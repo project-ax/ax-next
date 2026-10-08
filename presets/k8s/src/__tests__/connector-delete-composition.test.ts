@@ -36,7 +36,14 @@ import { createMcpOAuthPlugin } from '@ax/mcp-oauth';
 // while nobody from agents is listening yet — agents' own boot sweep, asking
 // `connectors:live-ids`, is what detaches those ids. The plugin list below is
 // in kernel order, and mcp-oauth is listed last so it also inits after
-// connectors, as in prod (it misses boot-time events — slice 5's to fix).
+// connectors, as in prod: it misses boot-time events, so its own boot sweep
+// (asking `connectors:live-ids`) drops agent markers for dead ids (slice 5).
+//
+// Slice 5 — nothing is per person any more. Connector keys live on agents
+// (or are the one company key), the person-level marker table is gone, and
+// @ax/credentials purges every old user-scope `account:` row once at boot.
+// This test plants such rows the way a pre-slice-5 vault holds them and
+// proves they are never read and are gone after the boot.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -149,14 +156,43 @@ async function attachments(agentId: string): Promise<string[]> {
   return r[0]!['connector_attachments'] as string[];
 }
 
-async function setKey(h: TestHarness, scope: 'user' | 'agent', ownerId: string, ref: string): Promise<void> {
+async function setAgentKey(h: TestHarness, agentId: string, ref: string): Promise<void> {
   await h.bus.call('credentials:set', h.ctx({ userId: ADMIN }), {
-    scope,
-    ownerId,
+    scope: 'agent',
+    ownerId: agentId,
     ref,
     kind: 'api-key',
-    payload: new TextEncoder().encode(`secret-${ownerId}-${ref}`),
+    payload: new TextEncoder().encode(`secret-${agentId}-${ref}`),
   });
+}
+
+/**
+ * Plant a person-level connector key the way a vault written before slice 5
+ * holds it: `credentials:set` refuses `account:` at user scope now, so copy a
+ * validly sealed blob (the agent's) into user scope through the store seam.
+ */
+async function plantPersonKey(h: TestHarness, fromAgentId: string, userId: string, ref: string): Promise<void> {
+  const ctx = h.ctx({ userId: ADMIN });
+  const { blob } = await h.bus.call<unknown, { blob: Uint8Array | undefined }>('credentials:store-blob:get', ctx, {
+    scope: 'agent',
+    ownerId: fromAgentId,
+    ref,
+  });
+  expect(blob).toBeDefined();
+  await h.bus.call('credentials:store-blob:put', ctx, { scope: 'user', ownerId: userId, ref, blob });
+}
+
+/** What a session of `userId` on `agentId` gets for `ref`: the value, or the error code. */
+async function readAs(h: TestHarness, userId: string, agentId: string, ref: string): Promise<string> {
+  try {
+    return await h.bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      h.ctx({ userId, agentId }),
+      { ref, userId },
+    );
+  } catch (err) {
+    return `error:${(err as { code?: string }).code ?? 'unknown'}`;
+  }
 }
 
 /** Every live credential as `scope/owner/ref`, sorted. */
@@ -170,12 +206,14 @@ async function keys(h: TestHarness): Promise<string[]> {
 }
 
 async function markers(): Promise<string[]> {
-  const user = await query('SELECT user_id, connector_id FROM mcp_oauth_v1_needs_reconnect');
   const agent = await query('SELECT agent_id, connector_id FROM mcp_oauth_v1_needs_reconnect_agent');
-  return [
-    ...user.map((r) => `user/${String(r['user_id'])}/${String(r['connector_id'])}`),
-    ...agent.map((r) => `agent/${String(r['agent_id'])}/${String(r['connector_id'])}`),
-  ].sort();
+  return agent.map((r) => `agent/${String(r['agent_id'])}/${String(r['connector_id'])}`).sort();
+}
+
+/** Whether the retired person-level marker table exists at all. */
+async function userMarkerTableExists(): Promise<boolean> {
+  const r = await query("SELECT to_regclass('mcp_oauth_v1_needs_reconnect') AS t");
+  return r[0]!['t'] !== null;
 }
 
 async function liveConnectors(): Promise<string[]> {
@@ -214,21 +252,26 @@ describe('connector delete composition: real connectors + agents + credentials +
     const agentA = await newAgent(seed, ['usertool', 'sameid', 'admintool', 'dupid']);
     const agentB = await newAgent(seed, ['usertool', 'keepme']);
 
-    // People's keys, agents' sign-ins, and reconnect markers for each id.
+    // Agents' keys and reconnect markers for each id, plus the person-level
+    // keys an old vault still holds for the same ids.
     for (const id of ['usertool', 'sameid', 'admintool', 'dupid']) {
-      await setKey(seed, 'user', PERSON, `account:${id}`);
-      await setKey(seed, 'agent', agentA, `account:${id}`);
+      await setAgentKey(seed, agentA, `account:${id}`);
+      await plantPersonKey(seed, agentA, PERSON, `account:${id}`);
     }
-    for (const id of ['admintool', 'dupid']) {
-      await query('INSERT INTO mcp_oauth_v1_needs_reconnect (user_id, connector_id, marked_at) VALUES ($1, $2, now())', [
-        PERSON,
-        id,
-      ]);
+    for (const id of ['usertool', 'admintool', 'dupid']) {
       await query(
         'INSERT INTO mcp_oauth_v1_needs_reconnect_agent (agent_id, connector_id, marked_at) VALUES ($1, $2, now())',
         [agentA, id],
       );
     }
+    // The person-level marker table was dropped by mcp-oauth's migration.
+    expect(await userMarkerTableExists()).toBe(false);
+    // Never readable: on an agent with no key, the person's own row is not
+    // consulted for an `account:` ref (it would have been before slice 5).
+    expect(await readAs(seed, PERSON, agentB, 'account:sameid')).toBe('error:credential-not-found');
+    // Simulate a vault from before slice 5: no purge marker yet (the seed
+    // boot already ran the one-time purge on an empty vault).
+    await query("DELETE FROM storage_postgres_v1_kv WHERE key LIKE '%user-account-purged'");
     await closeAll();
 
     // ---- (a) Real boot: connectors' one-time sweep + agents' boot sweep ----
@@ -244,18 +287,18 @@ describe('connector delete composition: real connectors + agents + credentials +
     // connector has it either, so it goes too — the sweep's documented rule.
     expect(await attachments(agentA)).toEqual(['sameid', 'admintool', 'dupid']);
     expect(await attachments(agentB)).toEqual([]);
-    // usertool's people's keys and agents' sign-ins are purged; sameid's stay
-    // (an admin's live connector still carries the id).
+    // usertool's agents' sign-ins are purged; sameid's stay (an admin's live
+    // shared connector still carries the id). Every person-level row is gone:
+    // @ax/credentials' one-time boot purge.
     expect(await keys(h)).toEqual(
       [
         `agent/${agentA}/account:admintool`,
         `agent/${agentA}/account:dupid`,
         `agent/${agentA}/account:sameid`,
-        `user/${PERSON}/account:admintool`,
-        `user/${PERSON}/account:dupid`,
-        `user/${PERSON}/account:sameid`,
       ].sort(),
     );
+    // mcp-oauth's boot sweep dropped the marker for the id removed at boot.
+    expect(await markers()).toEqual([`agent/${agentA}/admintool`, `agent/${agentA}/dupid`]);
 
     // ---- (b) Runtime admin delete of a shared connector (id now dead) ------
     await h.bus.call('connectors:delete', h.ctx({ userId: ADMIN }), {
@@ -274,9 +317,13 @@ describe('connector delete composition: real connectors + agents + credentials +
       purgeGlobal: true,
     });
     expect(await liveConnectors()).toEqual([`${ADMIN}/sameid`, `${ADMIN2}/dupid`]);
-    // The id is still live: attachments, people's keys and markers all stay.
+    // The id is still live (ADMIN2's private one): attachments and the agent's
+    // marker stay. The agents' sign-ins belonged to the deleted SHARED
+    // definition (a private twin can't read them), so they go.
     expect(await attachments(agentA)).toEqual(['sameid', 'dupid']);
-    expect(await keys(h)).toContain(`user/${PERSON}/account:dupid`);
-    expect(await markers()).toEqual([`agent/${agentA}/dupid`, `user/${PERSON}/dupid`]);
+    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([]);
+    expect(await markers()).toEqual([`agent/${agentA}/dupid`]);
+    // Nothing per person anywhere.
+    expect((await keys(h)).filter((k) => k.startsWith('user/'))).toEqual([]);
   });
 });
