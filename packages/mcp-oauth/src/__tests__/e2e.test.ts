@@ -604,7 +604,9 @@ describe('@ax/mcp-oauth e2e canary — begin→callback lands an agent-bound blo
     >('credentials:list', h.ctx({ agentId: 'agent-A', userId: 'owner' }), { scope: 'agent', ownerId: 'agent-A' });
     const row = listed.credentials.find((c) => c.ref === 'account:conn-1');
     expect(row?.metadata).toMatchObject({ account: 'owner@example.com' });
-    expect(typeof row?.metadata?.signedInBy).toBe('string');
+    // The signer is the person who began the sign-in (bob, per
+    // captureRouteServices' auth:require-user), not whoever reads it back.
+    expect(row?.metadata?.signedInBy).toBe('bob');
     expect(Number.isNaN(Date.parse(String(row?.metadata?.signedInAt)))).toBe(false);
   });
 });
@@ -624,6 +626,10 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
     };
     // The provider hands out a different account's token per redemption.
     const issued = ['account-1-AT', 'account-2-AT'];
+    // Slice 4 — and says which account each one is (signature unchecked).
+    const idTokenFor = (email: string) =>
+      `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.sig`;
+    const accounts = ['one@example.com', 'two@example.com'];
     let redemptions = 0;
     const attaches: unknown[] = [];
     const services = captureRouteServices(routes);
@@ -659,6 +665,7 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
               codeVerifier: 'verifier-0',
             })) as never,
             redeemCode: (async () => ({
+              id_token: idTokenFor(accounts[redemptions]!),
               access_token: issued[redemptions++]!,
               expires_in: 3600,
               token_type: 'Bearer',
@@ -711,6 +718,23 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
     expect(await get('agent-A')).toBe('account-1-AT');
     expect(await get('agent-B')).toBe('account-2-AT');
     await expect(get('')).rejects.toMatchObject({ code: 'credential-not-found' });
+
+    // Slice 4 — through the REAL vault, each agent's status-batch says its OWN
+    // account, and agent A's answer never carries B's.
+    const signInsOf = async (agentId: string) =>
+      (
+        await h.bus.call<unknown, { signIns: Record<string, { account: string | null; signedInBy: string | null }> }>(
+          'mcp-oauth:status-batch',
+          h.ctx({ agentId, userId: 'bob' }),
+          { userId: 'bob', agentId, connectorIds: ['conn-1'] },
+        )
+      ).signIns;
+    const a = await signInsOf('agent-A');
+    const b = await signInsOf('agent-B');
+    expect(a).toEqual({ 'conn-1': { account: 'one@example.com', signedInBy: 'bob', signedInAt: expect.any(String) } });
+    expect(b).toEqual({ 'conn-1': { account: 'two@example.com', signedInBy: 'bob', signedInAt: expect.any(String) } });
+    expect(JSON.stringify(a)).not.toContain('two@example.com');
+    expect(JSON.stringify(b)).not.toContain('one@example.com');
   });
 });
 

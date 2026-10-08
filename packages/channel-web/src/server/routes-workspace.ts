@@ -131,6 +131,7 @@ import type {
   AgentConnectorRemoved,
   AgentConnectorRow,
   AgentConnectorSetup,
+  AgentConnectorSignedIn,
   AgentConnectorSource,
   AgentConnectorTool,
   AgentConnectorToolsRead,
@@ -1834,6 +1835,58 @@ interface McpOAuthStatusBatchOutput {
   needsReconnect: string[];
   /** TASK-756 — the subset whose rejected sign-in is the agent's shared one. */
   shared?: string[];
+  /**
+   * Slice 4 — connector id → the agent's sign-in identity, for each requested
+   * connector the agent holds a sign-in for. `account` is untrusted provider
+   * text (sanitized there; display only). Absent from an older mcp-oauth.
+   */
+  signIns?: Record<string, unknown>;
+}
+
+/** Slice 4 — one `signIns` entry as read, every field checked. */
+interface SignInIdentityRead {
+  account: string | null;
+  signedInBy: string | null;
+  signedInAt: string | null;
+}
+
+/**
+ * Structural mirror of `auth:get-user` (registered by the auth plugin; no
+ * import — invariant 2). Only the display fields are read.
+ */
+interface AuthUserLike {
+  displayName?: string | null;
+  email?: string | null;
+}
+
+function nonEmptyStringOrNull(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * Slice 4 — the `signIns` entries for `connectorIds`, read defensively: a
+ * non-object entry is dropped, a non-string field is `null`, and an id not
+ * asked about is ignored.
+ */
+function readSignIns(
+  raw: unknown,
+  connectorIds: readonly string[],
+): Map<string, SignInIdentityRead> {
+  const out = new Map<string, SignInIdentityRead>();
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out;
+  const rec = raw as Record<string, unknown>;
+  for (const id of connectorIds) {
+    if (!Object.prototype.hasOwnProperty.call(rec, id)) continue;
+    const e = rec[id];
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) continue;
+    const f = e as Record<string, unknown>;
+    out.set(id, {
+      account: nonEmptyStringOrNull(f.account),
+      signedInBy: nonEmptyStringOrNull(f.signedInBy),
+      signedInAt: nonEmptyStringOrNull(f.signedInAt),
+    });
+  }
+  return out;
 }
 
 /**
@@ -3929,16 +3982,26 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     health: Map<string, AgentConnectorHealth>;
     sharedSignIn: Set<string>;
     setup: Map<string, AgentConnectorSetup>;
+    signedIn: Map<string, AgentConnectorSignedIn>;
   }> {
     const callerUserId = caller.id;
     const out = new Map<string, AgentConnectorHealth>();
     const sharedSignIn = new Set<string>();
     const setup = new Map<string, AgentConnectorSetup>();
-    if (connectorIds.length === 0) return { health: out, sharedSignIn, setup };
+    const signedIn = new Map<string, AgentConnectorSignedIn>();
+    if (connectorIds.length === 0) return { health: out, sharedSignIn, setup, signedIn };
     const ctx = agentWorkspaceCtx(agentId, callerUserId);
     const [signIn, inventory, missing] = await Promise.all([
-      (async (): Promise<{ marked: Set<string>; shared: Set<string> }> => {
-        const none = { marked: new Set<string>(), shared: new Set<string>() };
+      (async (): Promise<{
+        marked: Set<string>;
+        shared: Set<string>;
+        identities: Map<string, SignInIdentityRead>;
+      }> => {
+        const none = {
+          marked: new Set<string>(),
+          shared: new Set<string>(),
+          identities: new Map<string, SignInIdentityRead>(),
+        };
         if (!bus.hasService('mcp-oauth:status-batch')) return none;
         try {
           // TASK-756 — name the agent so a team agent's SHARED sign-in counts
@@ -3950,6 +4013,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           return {
             marked: new Set(Array.isArray(r?.needsReconnect) ? r.needsReconnect : []),
             shared: new Set(Array.isArray(r?.shared) ? r.shared : []),
+            // Slice 4 — who the agent signed in as. A list read of stored
+            // metadata (credentials:list in mcp-oauth), never a resolve.
+            identities: readSignIns(r?.signIns, connectorIds),
           };
         } catch (err) {
           initCtx.logger.warn('workspace_connector_health_signin_read_failed', {
@@ -4042,7 +4108,63 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const s = missing.get(id);
       if (h === 'needs-sign-in' && s !== undefined) setup.set(id, s);
     }
-    return { health: out, sharedSignIn, setup };
+    // Slice 4 — "Signed in as". Every viewer of the agent gets it (a team
+    // agent's members see who the agent acts as). The signer's name is looked
+    // up here, not stored: display names change.
+    const names = await signerNames(agentId, ctx, signIn.identities);
+    for (const [id, who] of signIn.identities) {
+      signedIn.set(id, {
+        account: who.account,
+        byName: who.signedInBy === null ? null : (names.get(who.signedInBy) ?? null),
+        byYou: who.signedInBy !== null && who.signedInBy === callerUserId,
+        at: who.signedInAt,
+      });
+    }
+    return { health: out, sharedSignIn, setup, signedIn };
+  }
+
+  /**
+   * Slice 4 — each distinct signer's display name, else email, asked ONCE per
+   * person. Fail-soft: no `auth:get-user`, a miss or a throw leaves that
+   * person out (the row says `byName: null`). A failure is logged once, by
+   * error NAME only — never an account, a name or an email.
+   */
+  async function signerNames(
+    agentId: string,
+    ctx: AgentContext,
+    identities: ReadonlyMap<string, SignInIdentityRead>,
+  ): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    const userIds = new Set<string>();
+    for (const who of identities.values()) {
+      if (who.signedInBy !== null) userIds.add(who.signedInBy);
+    }
+    if (userIds.size === 0 || !bus.hasService('auth:get-user')) return names;
+    let failure: unknown;
+    await Promise.all(
+      [...userIds].map(async (userId) => {
+        try {
+          const u = await bus.call<{ userId: string }, AuthUserLike | null>(
+            'auth:get-user',
+            ctx,
+            { userId },
+          );
+          const name = typeof u?.displayName === 'string' ? u.displayName.trim() : '';
+          const email = typeof u?.email === 'string' ? u.email.trim() : '';
+          const label = name.length > 0 ? name : email;
+          if (label.length > 0) names.set(userId, label);
+        } catch (err) {
+          failure ??= err;
+        }
+      }),
+    );
+    if (failure !== undefined) {
+      initCtx.logger.warn('workspace_connector_signed_in_by_lookup_failed', {
+        agentId,
+        name: failure instanceof Error ? failure.name : 'unknown',
+      });
+    }
+    return names;
   }
 
   /**
@@ -7018,6 +7140,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({
         connectors: rows.map((r) => {
           const setup = setupForCaller(health.setup.get(r.id), teamAgent, sharedCredentials);
+          const signedIn = health.signedIn.get(r.id);
           return {
             ...r,
             health: health.health.get(r.id) ?? 'ok',
@@ -7026,6 +7149,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             // plain needs-reconnect state ("Sign in again").
             ...(teamAgent && health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
             ...(setup !== undefined ? { setup } : {}),
+            // Slice 4 — for every viewer, a team agent's members included.
+            ...(signedIn !== undefined ? { signedIn } : {}),
             removable: manageable,
           };
         }),

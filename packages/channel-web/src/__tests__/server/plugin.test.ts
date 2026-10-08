@@ -790,6 +790,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
         },
         {
+          hook: 'auth:get-user',
+          degradation:
+            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did)',
+        },
+        {
           hook: 'credentials:has',
           degradation:
             'connector rows never show "Not signed in yet"; a connector nobody signed in to looks healthy until it is used',

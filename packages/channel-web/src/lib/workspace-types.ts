@@ -1094,6 +1094,26 @@ export type AgentConnectorHealth =
  */
 export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin' | 'ask-owner';
 
+/**
+ * Slice 4 — the account an agent's sign-in to a connector is, and who signed
+ * in. Every field is `null` when nothing was recorded (a sign-in from before
+ * slice 4 recorded nothing).
+ */
+export interface AgentConnectorSignedIn {
+  /**
+   * The account the provider says the agent signed in as (an email, a
+   * username…). UNTRUSTED provider text, sanitized server-side: render it as
+   * a text node only. Display only — never an access decision.
+   */
+  account: string | null;
+  /** Who signed in: their display name, else email; `null` when unknown. */
+  byName: string | null;
+  /** The viewer is the person who signed in. */
+  byYou: boolean;
+  /** When (ISO 8601), or `null`. */
+  at: string | null;
+}
+
 export interface AgentConnectorRow {
   id: string;
   name: string;
@@ -1111,6 +1131,12 @@ export interface AgentConnectorRow {
   sharedSignIn?: true;
   /** TASK-795 — present iff `health` is `needs-sign-in`. */
   setup?: AgentConnectorSetup;
+  /**
+   * Slice 4 — present iff the agent holds a sign-in for this connector. Every
+   * viewer of the agent gets it, a team agent's members included: they see
+   * who the agent acts as.
+   */
+  signedIn?: AgentConnectorSignedIn;
   /**
    * The caller may remove it from this agent. Since TASK-798 this is the
    * agent-wide {@link AgentConnectorsRead.manageable} answer for every row

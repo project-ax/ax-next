@@ -43,6 +43,12 @@ describe('sanitizeAccount', () => {
     expect([...out]).toHaveLength(254);
   });
 
+  it('trims again after the cap: a cut landing on a space leaves no trailing space', () => {
+    const out = sanitizeAccount('a'.repeat(253) + ' tail')!;
+    expect(out).toBe('a'.repeat(253));
+    expect(out.endsWith(' ')).toBe(false);
+  });
+
   it('never splits a surrogate pair at the 254 boundary', () => {
     const emoji = '\u{1F600}'; // two UTF-16 units, one code point
     const out = sanitizeAccount('a'.repeat(253) + emoji + 'tail')!;

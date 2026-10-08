@@ -18,7 +18,7 @@ const ACCOUNT_MAX_CODE_POINTS = 254;
  * the label reads on screen: LRM/RLM (U+200E/F), the embeddings and overrides
  * (U+202A–U+202E) and the isolates (U+2066–U+2069).
  */
-const STRIPPED = /[\p{Cc}‎‏‪-‮⁦-⁩]/gu;
+const STRIPPED = /[\p{Cc}\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 
 /** The claims we read, in order of preference (OIDC Core §5.1). */
 const ACCOUNT_CLAIMS = ['email', 'preferred_username', 'sub'] as const;
@@ -32,7 +32,8 @@ export function sanitizeAccount(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const cleaned = raw.replace(STRIPPED, '').trim();
   // Array.from iterates code points, so a surrogate pair stays whole.
-  const capped = Array.from(cleaned).slice(0, ACCOUNT_MAX_CODE_POINTS).join('');
+  // Trim again: the cut can land just after a space.
+  const capped = Array.from(cleaned).slice(0, ACCOUNT_MAX_CODE_POINTS).join('').trim();
   return capped.length > 0 ? capped : null;
 }
 

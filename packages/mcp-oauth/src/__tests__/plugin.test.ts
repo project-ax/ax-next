@@ -95,6 +95,9 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     expect(off.manifest.registers).not.toContain('mcp-oauth:remove-shared-sign-in');
     expect(off.manifest.registers).not.toContain('mcp-oauth:remove-personal-sign-in');
     expect(off.manifest.calls).toEqual(['database:get-instance']);
+    // Slice 4 — status-batch (registered always) reads the sign-in identity
+    // through credentials:list, optionally: without a vault it says nothing.
+    expect(off.manifest.optionalCalls?.map((c) => c.hook)).toEqual(['credentials:list']);
     // TASK-718: a deleted agent's in-flight handshakes go with it. Subscribed
     // whether or not the routes are mounted — the table exists either way.
     expect(off.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
@@ -129,6 +132,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     // manage-connectors question (workspace-admin bypass) is no longer asked.
     const optional = on.manifest.optionalCalls?.map((c) => c.hook);
     expect(optional).toContain('agents:can-set-shared-credential');
+    expect(optional).toContain('credentials:list');
     expect(optional).not.toContain('agents:can-manage-connectors');
   });
 });
@@ -356,11 +360,13 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
       needsReconnect: ['slack', 'gmail'],
       shared: ['gmail'],
+      signIns: {},
     });
     // Another member sees the shared one, and not u1's personal one.
     expect(await batch('u2', 'team-1', ['gmail', 'slack'])).toEqual({
       needsReconnect: ['gmail'],
       shared: ['gmail'],
+      signIns: {},
     });
 
     // u2's good refresh of the SHARED token clears it for u1 too.
@@ -369,6 +375,7 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
       needsReconnect: ['slack'],
       shared: [],
+      signIns: {},
     });
     // ...and u2's success says nothing about u1's personal sign-in.
     await resolveAs('u2', 'user', 'u2', 'account:slack');
@@ -395,7 +402,7 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     }
     expect(
       await h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: 'u1', agentId: 'team-1', connectorIds: ['gmail'] }),
-    ).toEqual({ needsReconnect: ['gmail'], shared: [] });
+    ).toEqual({ needsReconnect: ['gmail'], shared: [], signIns: {} });
   });
 
   it('status-batch refuses a malformed request', async () => {
@@ -412,6 +419,92 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
         connectorIds: Array.from({ length: 501 }, (_, i) => `c${i}`),
       }),
     ).rejects.toThrow();
+  });
+});
+
+// Slice 4 — status-batch says which account each connector's agent sign-in is,
+// from the vault's envelope metadata via credentials:list (a stand-in here; the
+// real vault is exercised in e2e.test.ts). Never a resolve.
+describe('@ax/mcp-oauth status-batch signIns (slice 4)', () => {
+  const signIn = { account: 'bob@example.com', signedInBy: 'bob', signedInAt: '2026-10-07T09:30:00.000Z' };
+
+  async function boot(list: ServiceHandler | null) {
+    const listCalls: unknown[] = [];
+    const resolves: unknown[] = [];
+    const services: Record<string, ServiceHandler> = {};
+    if (list !== null) {
+      services['credentials:list'] = (async (c, i) => {
+        listCalls.push(i);
+        return list(c, i);
+      }) as ServiceHandler;
+    }
+    const h = await createTestHarness({
+      services,
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin()],
+    });
+    harnesses.push(h);
+    const real = h.bus.call.bind(h.bus);
+    vi.spyOn(h.bus, 'call').mockImplementation(((name: string, ...rest: unknown[]) => {
+      if (name.startsWith('credentials:resolve') || name === 'credentials:get') resolves.push(name);
+      return (real as (n: string, ...r: unknown[]) => Promise<unknown>)(name, ...rest);
+    }) as typeof h.bus.call);
+    const batch = (input: Record<string, unknown>) =>
+      h.bus.call<unknown, { needsReconnect: string[]; shared: string[]; signIns: Record<string, unknown> }>(
+        'mcp-oauth:status-batch',
+        h.ctx(),
+        input,
+      );
+    return { h, batch, listCalls, resolves };
+  }
+
+  const rows = (ownerId: string) => [
+    { scope: 'agent', ownerId, ref: 'account:gmail', kind: 'mcp-oauth', createdAt: 'x', metadata: signIn },
+    // A key slot of the same connector: not a sign-in.
+    { scope: 'agent', ownerId, ref: 'account:gmail:API_KEY', kind: 'api-key', createdAt: 'x', metadata: signIn },
+    // A sign-in from before slice 4: no metadata.
+    { scope: 'agent', ownerId, ref: 'account:slack', kind: 'mcp-oauth', createdAt: 'x' },
+  ];
+
+  it("returns each requested connector's sign-in identity for the agent, from ONE list read, never a resolve", async () => {
+    const { batch, listCalls, resolves } = await boot((async (_c, i) => ({
+      credentials: rows((i as { ownerId: string }).ownerId),
+    })) as ServiceHandler);
+    const out = await batch({ userId: 'u1', agentId: 'agent-A', connectorIds: ['gmail', 'slack', 'figma'] });
+    expect(out).toEqual({
+      needsReconnect: [],
+      shared: [],
+      signIns: {
+        gmail: signIn,
+        slack: { account: null, signedInBy: null, signedInAt: null },
+      },
+    });
+    expect(listCalls).toEqual([{ scope: 'agent', ownerId: 'agent-A' }]);
+    expect(resolves).toEqual([]);
+  });
+
+  it('no agent named → {} and no list read', async () => {
+    const { batch, listCalls } = await boot((async () => ({ credentials: rows('agent-A') })) as ServiceHandler);
+    expect((await batch({ userId: 'u1', connectorIds: ['gmail'] })).signIns).toEqual({});
+    expect(listCalls).toEqual([]);
+  });
+
+  it('no credentials:list → {}; a throwing one → {} and the health answer still stands', async () => {
+    const none = await boot(null);
+    expect((await none.batch({ userId: 'u1', agentId: 'agent-A', connectorIds: ['gmail'] })).signIns).toEqual({});
+
+    const broken = await boot((async () => {
+      throw new Error('vault down');
+    }) as ServiceHandler);
+    const store = createMcpOAuthStore(
+      (await broken.h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>('database:get-instance', broken.h.ctx(), {}))
+        .db,
+    );
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'agent-A' }, 'gmail');
+    expect(await broken.batch({ userId: 'u1', agentId: 'agent-A', connectorIds: ['gmail'] })).toEqual({
+      needsReconnect: ['gmail'],
+      shared: ['gmail'],
+      signIns: {},
+    });
   });
 });
 
@@ -473,11 +566,12 @@ describe('@ax/mcp-oauth mcp-oauth:remove-shared-sign-in (TASK-858)', () => {
     expect(await batch(h, 'u1', 'team-1', ['gmail'])).toEqual({
       needsReconnect: ['gmail'],
       shared: ['gmail'],
+      signIns: {},
     });
 
     await h.bus.call(HOOK, h.ctx(), { agentId: 'team-1', connectorId: 'gmail' });
 
-    expect(await batch(h, 'u1', 'team-1', ['gmail'])).toEqual({ needsReconnect: [], shared: [] });
+    expect(await batch(h, 'u1', 'team-1', ['gmail'])).toEqual({ needsReconnect: [], shared: [], signIns: {} });
   });
 
   it('leaves other connectors, other agents and every user-scope marker alone', async () => {
@@ -498,6 +592,7 @@ describe('@ax/mcp-oauth mcp-oauth:remove-shared-sign-in (TASK-858)', () => {
     expect(await batch(h, 'u1', 'team-1', ['gmail', 'slack'])).toEqual({
       needsReconnect: ['gmail', 'slack'],
       shared: ['slack'],
+      signIns: {},
     });
   });
 

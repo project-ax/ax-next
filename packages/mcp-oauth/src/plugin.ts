@@ -20,6 +20,7 @@ import {
   refresh,
 } from './oauth-flow.js';
 import { registerMcpOAuthRoutes } from './routes.js';
+import { readAgentSignIns, type SignInIdentity } from './sign-ins.js';
 import { DEFAULT_CLIENT_NAME, oauthClientName } from './client-name.js';
 
 const PLUGIN_NAME = '@ax/mcp-oauth';
@@ -115,6 +116,18 @@ export interface StatusBatchOutput {
    * use of it reaches first, so it is theirs to fix.
    */
   shared: string[];
+  /**
+   * Slice 4 — which account the agent signed in as, per connector: keyed by
+   * each requested connector id that has a sign-in stored ON `agentId`. A
+   * sign-in from before slice 4 recorded nothing, so it is keyed with every
+   * field `null`. `{}` without an `agentId`, or when the vault can't be read.
+   *
+   * Boundary review: `account` / `signedInBy` / `signedInAt` name no storage
+   * or provider; an alternate impl (a vault that records identity itself)
+   * answers the same shape. `account` is UNTRUSTED provider text, sanitized
+   * here and for display only — never an access decision.
+   */
+  signIns: Record<string, SignInIdentity>;
 }
 const StatusBatchInputSchema = z
   .object({
@@ -126,6 +139,13 @@ const StatusBatchInputSchema = z
 const StatusBatchOutputSchema = z.object({
   needsReconnect: z.array(z.string()),
   shared: z.array(z.string()),
+  signIns: z.record(
+    z.object({
+      account: z.string().nullable(),
+      signedInBy: z.string().nullable(),
+      signedInAt: z.string().nullable(),
+    }),
+  ),
 }) as unknown as z.ZodType<StatusBatchOutput>;
 
 /**
@@ -283,11 +303,18 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       version: '0.0.0',
       registers,
       calls,
-      // The routes name AX on third-party consent screens after the operator's
-      // branding when a branding plugin is loaded.
-      ...(mountRoutes
-        ? {
-            optionalCalls: [
+      optionalCalls: [
+        {
+          // Slice 4 — `mcp-oauth:status-batch` (registered ALWAYS) reads the
+          // sign-in identity from the vault's envelope metadata. A list read:
+          // it never resolves or refreshes a token.
+          hook: 'credentials:list',
+          degradation: 'connector rows never say which account the agent signed in as',
+        },
+        // The routes name AX on third-party consent screens after the operator's
+        // branding when a branding plugin is loaded.
+        ...(mountRoutes
+          ? [
               {
                 hook: 'branding:get',
                 degradation: 'OAuth client name falls back to "AX"',
@@ -302,9 +329,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
                 hook: 'agents:can-set-shared-credential',
                 degradation: 'nobody may start a sign-in on a team agent',
               },
-            ],
-          }
-        : {}),
+            ]
+          : []),
+      ],
       // TASK-718: `@ax/agents` fires this after the agent row is gone; an
       // in-flight handshake for it can never complete. Subscribed whether or
       // not the routes are mounted — the pending table exists either way.
@@ -483,7 +510,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       bus.registerService<StatusBatchInput, StatusBatchOutput>(
         'mcp-oauth:status-batch',
         PLUGIN_NAME,
-        async (_ctx, raw) => {
+        async (ctx, raw) => {
           const parsed = StatusBatchInputSchema.safeParse(raw);
           if (!parsed.success) {
             throw new PluginError({
@@ -494,10 +521,18 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
             });
           }
           const { userId, agentId, connectorIds } = parsed.data;
-          const { personal, shared } = await store.listNeedsReconnect(userId, agentId, connectorIds);
+          const [{ personal, shared }, signIns] = await Promise.all([
+            store.listNeedsReconnect(userId, agentId, connectorIds),
+            // Slice 4 — who the agent signed in as. Agent sign-ins only (every
+            // sign-in is the agent's since slice 3), so no agent → nothing.
+            // Fail-soft: a vault fault leaves the health answer standing.
+            agentId === undefined
+              ? Promise.resolve({})
+              : readAgentSignIns({ bus, ctx, logger: initCtx.logger, agentId, connectorIds }),
+          ]);
           const own = new Set(personal);
           const sharedOnly = shared.filter((id) => !own.has(id));
-          return { needsReconnect: [...personal, ...sharedOnly], shared: sharedOnly };
+          return { needsReconnect: [...personal, ...sharedOnly], shared: sharedOnly, signIns };
         },
         { returns: StatusBatchOutputSchema },
       );

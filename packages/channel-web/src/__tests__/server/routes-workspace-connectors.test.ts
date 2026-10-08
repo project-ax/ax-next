@@ -314,6 +314,8 @@ describe('agent connector routes', () => {
     let cached: Map<string, string>;
     let describeStatus: string;
     let describeThrows: boolean;
+    /** Slice 4 — what status-batch says each connector's agent sign-in is. */
+    let signIns: Record<string, { account: string | null; signedInBy: string | null; signedInAt: string | null }>;
 
     function registerHealth(opts: { signIn?: boolean; inventory?: boolean; describe?: boolean } = {}) {
       if (opts.signIn !== false) {
@@ -323,6 +325,7 @@ describe('agent connector routes', () => {
           return {
             needsReconnect: connectorIds.filter((id) => marked.has(id) || sharedMarked.has(id)),
             shared: connectorIds.filter((id) => sharedMarked.has(id) && !marked.has(id)),
+            signIns: Object.fromEntries(Object.entries(signIns).filter(([id]) => connectorIds.includes(id))),
           };
         });
       }
@@ -357,6 +360,7 @@ describe('agent connector routes', () => {
       cached = new Map();
       describeStatus = 'ok';
       describeThrows = false;
+      signIns = {};
     });
 
     function healthById(r: Captured): Record<string, string> {
@@ -438,6 +442,149 @@ describe('agent connector routes', () => {
       const r = await list();
       expect(r.statusCode).toBe(200);
       expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+    });
+
+    // Slice 4 — "Signed in as". status-batch says which account each
+    // connector's agent sign-in is and who signed in; the rail resolves that
+    // person to a display name (never stored: names change) and says whether
+    // it was the viewer.
+    describe('signed in as (slice 4)', () => {
+      let users: Map<string, { displayName?: string | null; email?: string | null } | null>;
+      let getUserCalls: string[];
+      let getUserThrows: boolean;
+
+      function registerGetUser(): void {
+        bus.registerService('auth:get-user', 'auth', async (_c, i: unknown) => {
+          const { userId } = i as { userId: string };
+          getUserCalls.push(userId);
+          if (getUserThrows) throw new Error('auth db down');
+          return users.get(userId) ?? null;
+        });
+      }
+
+      beforeEach(() => {
+        users = new Map([
+          ['u1', { displayName: 'Una', email: 'una@corp.example' }],
+          ['u2', { displayName: '  ', email: 'dee@corp.example' }],
+          ['u3', { displayName: null, email: null }],
+        ]);
+        getUserCalls = [];
+        getUserThrows = false;
+      });
+
+      function rowsById(r: Captured): Record<string, Record<string, unknown>> {
+        const rows = (r.body as { connectors: Array<Record<string, unknown>> }).connectors;
+        return Object.fromEntries(rows.map((x) => [x.id as string, x]));
+      }
+
+      it('rows carry signedIn: the account, who (resolved to a name), byYou, and when', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = {
+          gmail: { account: 'una@gmail.example', signedInBy: 'u1', signedInAt: '2026-10-07T09:30:00.000Z' },
+          linear: { account: null, signedInBy: 'u2', signedInAt: '2026-10-06T08:00:00.000Z' },
+        };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toEqual({
+          account: 'una@gmail.example',
+          byName: 'Una',
+          byYou: true,
+          at: '2026-10-07T09:30:00.000Z',
+        });
+        // A blank display name falls to the email.
+        expect(byId.linear!.signedIn).toEqual({
+          account: null,
+          byName: 'dee@corp.example',
+          byYou: false,
+          at: '2026-10-06T08:00:00.000Z',
+        });
+        // No sign-in row → no key at all.
+        expect('signedIn' in byId.notes!).toBe(false);
+      });
+
+      it('a sign-in from before slice 4 (nothing recorded) is all null, and asks nobody', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = { gmail: { account: null, signedInBy: null, signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toEqual({ account: null, byName: null, byYou: false, at: null });
+        expect(getUserCalls).toEqual([]);
+      });
+
+      it('asks auth:get-user ONCE per distinct person', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = {
+          gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null },
+          linear: { account: 'b@x', signedInBy: 'u2', signedInAt: null },
+          notes: { account: 'c@x', signedInBy: 'u3', signedInAt: null },
+        };
+        const byId = rowsById(await list());
+        expect([...getUserCalls].sort()).toEqual(['u2', 'u3']);
+        // Neither a name nor an email → null (the client says "someone").
+        expect(byId.notes!.signedIn).toMatchObject({ byName: null, byYou: false });
+      });
+
+      it('auth:get-user throwing (or absent) → byName null; the list still loads and nothing is logged with the account', async () => {
+        registerHealth();
+        signIns = { gmail: { account: 'secret-acct@x.example', signedInBy: 'u2', signedInAt: null } };
+        let r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'secret-acct@x.example', byName: null });
+
+        registerGetUser();
+        getUserThrows = true;
+        const warn = vi.spyOn(initCtx.logger, 'warn');
+        r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'secret-acct@x.example', byName: null, byYou: false });
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_connector_signed_in_by_lookup_failed',
+          expect.objectContaining({ agentId: 'a1' }),
+        );
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-acct@x.example');
+        warn.mockRestore();
+      });
+
+      it('a member of a team agent sees who the agent acts as, too', async () => {
+        registerHealth();
+        registerGetUser();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        canSetShared = 'deny';
+        signIns = { gmail: { account: 'team@gmail.example', signedInBy: 'u2', signedInAt: '2026-10-07T09:30:00.000Z' } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toEqual({
+          account: 'team@gmail.example',
+          byName: 'dee@corp.example',
+          byYou: false,
+          at: '2026-10-07T09:30:00.000Z',
+        });
+      });
+
+      it('ignores a signIns entry for a connector that is not in the list, and a malformed one', async () => {
+        registerHealth({ signIn: false });
+        registerGetUser();
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => ({
+          needsReconnect: [],
+          shared: [],
+          signIns: {
+            elsewhere: { account: 'x@y', signedInBy: 'u1', signedInAt: null },
+            gmail: 'not an object',
+            linear: { account: 7, signedInBy: ['u1'], signedInAt: {} },
+          },
+        }));
+        const byId = rowsById(await list());
+        expect(Object.keys(byId)).toEqual(['gmail', 'linear', 'notes']);
+        expect('signedIn' in byId.gmail!).toBe(false);
+        expect(byId.linear!.signedIn).toEqual({ account: null, byName: null, byYou: false, at: null });
+      });
+
+      it('a status-batch without signIns (an older mcp-oauth) → no signedIn anywhere', async () => {
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => ({ needsReconnect: [], shared: [] }));
+        const byId = rowsById(await list());
+        for (const row of Object.values(byId)) expect('signedIn' in row).toBe(false);
+      });
     });
 
     // TASK-795 — a connector nobody this caller's use would reach has signed in

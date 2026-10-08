@@ -316,6 +316,14 @@ export function createChannelWebServerPlugin(
             'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
         },
         {
+          // Slice 4 — "Signed in as": the rail names the person who signed an
+          // agent in to a connector (display name, else email). Looked up per
+          // read, not stored — names change.
+          hook: 'auth:get-user',
+          degradation:
+            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did)',
+        },
+        {
           // TASK-795 — the Connectors tab's "Not signed in yet" icon. A vault
           // presence read (the same lookup order and authz as
           // credentials:get), never a token refresh.
