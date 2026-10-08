@@ -229,9 +229,11 @@ async function storeKey(h: TestHarness, resolved: ResolveOutput, agentId = DEFAU
   });
 }
 
+// Keys live on the agent (slice 5), so the check names the agent that holds them.
 function describeTools(h: TestHarness, force = false): Promise<DescribeToolsOutput> {
-  return h.bus.call<unknown, DescribeToolsOutput>('connectors:describe-tools', h.ctx({ userId: USER }), {
+  return h.bus.call<unknown, DescribeToolsOutput>('connectors:describe-tools', h.ctx({ userId: USER, agentId: DEFAULT_AGENT }), {
     userId: USER,
+    agentId: DEFAULT_AGENT,
     connectorId: CONNECTOR_ID,
     ...(force ? { force: true } : {}),
   });
