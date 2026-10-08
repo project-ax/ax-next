@@ -36,6 +36,7 @@ const firstFire: Fire = {
   triggerSource: 'tick',
   status: 'ok',
   error: null,
+  warning: null,
   conversationId: 'cnv_1',
   renderedPrompt: 'first fire prompt',
 };
@@ -73,5 +74,60 @@ describe('FireRowsTable React keys', () => {
     render(<FireRowsTable fires={[firstFire, secondFire]} />);
     // Status chip per fire — two fires, two chips.
     expect(screen.getAllByText('ok')).toHaveLength(2);
+  });
+});
+
+/**
+ * "This run went without a connector" (slice 6). A run that skipped a connector
+ * still finished — it is a note about the run, not a failure — so it is drawn
+ * as muted text with a warning mark, NOT in the destructive register the
+ * `error` line uses.
+ */
+describe('FireRowsTable warning', () => {
+  const WARNING = "Gmail isn't signed in on Bob, so this run went without it.";
+
+  it("shows a fire's warning under its status", () => {
+    render(<FireRowsTable fires={[{ ...firstFire, warning: WARNING }]} />);
+    const line = screen.getByTestId('routine-warning');
+    expect(line.textContent).toContain(WARNING);
+    expect(line.getAttribute('title')).toBe(WARNING);
+    expect(screen.getByText(WARNING)).toBeTruthy();
+  });
+
+  it('is not styled as an error', () => {
+    const { container } = render(
+      <FireRowsTable fires={[{ ...firstFire, warning: WARNING }]} />,
+    );
+    const line = screen.getByTestId('routine-warning');
+    expect(line.className).toContain('text-muted-foreground');
+    expect(line.className).not.toContain('destructive');
+    // Nothing inside the warning line is destructive either.
+    expect(line.querySelector('[class*="destructive"]')).toBeNull();
+    // And no destructive text anywhere in the row apart from the status chip
+    // (which is `ok` here, so nothing at all).
+    expect(container.querySelector('[class*="destructive"]')).toBeNull();
+  });
+
+  it('draws no warning line for a fire without one', () => {
+    render(<FireRowsTable fires={[firstFire, secondFire]} />);
+    expect(screen.queryByTestId('routine-warning')).toBeNull();
+  });
+
+  it('keeps a warning and an error apart: the error stays destructive, the warning does not', () => {
+    render(
+      <FireRowsTable
+        fires={[{ ...firstFire, status: 'error', error: 'boom', warning: WARNING }]}
+      />,
+    );
+    expect(screen.getByText('boom').className).toContain('text-destructive');
+    expect(screen.getByTestId('routine-warning').className).not.toContain('destructive');
+  });
+
+  it('renders a hostile warning as literal text', () => {
+    const hostile = '<img src=x onerror=alert(1)><b>bold</b>';
+    const { container } = render(<FireRowsTable fires={[{ ...firstFire, warning: hostile }]} />);
+    expect(screen.getByText(hostile)).toBeTruthy();
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('b')).toBeNull();
   });
 });
