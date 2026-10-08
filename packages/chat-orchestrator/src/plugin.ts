@@ -89,7 +89,26 @@ export function createChatOrchestratorPlugin(
           degradation:
             'never-signed-in connectors are not skipped: the session open fails on the missing credential and the turn ends with the generic proxy-open-failed (the pre-TASK-806 blocking behaviour)',
         },
+        {
+          // Slice 6 — ROUTINE turns only: a marker read (no resolve, no
+          // refresh) naming the agent's connectors whose sign-in was rejected
+          // and not yet renewed, so the run goes without them instead of
+          // failing. Bounded (SIGN_IN_STATUS_TIMEOUT_MS); any fault keeps them.
+          // No cycle: @ax/mcp-oauth calls nothing this plugin registers.
+          hook: 'mcp-oauth:status-batch',
+          degradation:
+            'a routine whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
+        },
       ],
+      // ----- fired events (the manifest has no `fires` list; recorded here) -----
+      //
+      // `chat:end`, `chat:turn-error`, `chat:permission-request`, and (slice 6)
+      // `chat:connectors-skipped` — an observation fired once per turn assembly
+      // that left at least one connector out: `{reqId, connectors:[{connectorId,
+      // name, reason: 'not-signed-in' | 'needs-reconnect'}]}`. Ids, sanitized
+      // labels and a reason word only (never vault refs). Every one is fired
+      // through `fireChatEvent`, which bounds each subscriber; @ax/routines
+      // subscribes to record a per-run warning.
       // ----- conditionally-called peers (NOT in `calls`) -----
       //
       // Week 10–12 Task 16 (J6) introduces `conversations:get`,

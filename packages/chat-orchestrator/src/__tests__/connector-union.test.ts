@@ -17,6 +17,8 @@ import {
   CONNECTOR_TOOL_NAMESPACE_RE,
   connectorCredentialSlots,
   partitionConnectorsBySignIn,
+  skipConnectorsNeedingReconnect,
+  connectorsSkippedPayload,
   skippedConnectorsPromptLine,
   reconnectDetail,
   RECONNECT_NAMES_MAX,
@@ -1135,7 +1137,7 @@ describe('partitionConnectorsBySignIn (TASK-806)', () => {
     });
     const out = await partitionConnectorsBySignIn(bus, ctx(), [conn('a'), conn('b', 2)]);
     expect(out.kept.map((c) => c.id)).toEqual(['a']);
-    expect(out.skipped).toEqual([{ connector: conn('b', 2), refs: ['account:b:S1'] }]);
+    expect(out.skipped).toEqual([{ connector: conn('b', 2), refs: ['account:b:S1'], reason: 'not-signed-in' }]);
     expect(new Set(asked.map((a) => a.userId))).toEqual(new Set(['u']));
   });
 
@@ -1160,6 +1162,109 @@ describe('partitionConnectorsBySignIn (TASK-806)', () => {
     expect((await partitionConnectorsBySignIn(undef, ctx(), [conn('a')])).skipped).toEqual([]);
     const none = busWith({});
     expect((await partitionConnectorsBySignIn(none, ctx(), [conn('a')])).kept.map((c) => c.id)).toEqual(['a']);
+  });
+});
+
+// Slice 6 — a ROUTINE turn also goes without a connector whose sign-in needs
+// doing again (the caller only calls this for routine turns).
+describe('skipConnectorsNeedingReconnect (slice 6)', () => {
+  const oauth = (id: string): ResolvedConnectorForOrch => ({
+    id,
+    name: id.toUpperCase(),
+    capabilities: CAPS({ credentials: [{ slot: 'TOKEN', kind: 'oauth' as const, server: id }] }),
+  });
+  const apiKey = (id: string): ResolvedConnectorForOrch => ({ id, capabilities: CAPS() });
+  const kept = (...cs: ResolvedConnectorForOrch[]) => ({ kept: cs, skipped: [] });
+
+  it('moves the kept OAuth connectors status-batch marks to skipped (needs-reconnect, no refs), asking as the caller about the agent', async () => {
+    const asked: unknown[] = [];
+    const bus = busWith({
+      'mcp-oauth:status-batch': async (_c, input) => {
+        asked.push(input);
+        return { needsReconnect: ['gmail', 'not-asked'], shared: ['gmail'], signIns: {} };
+      },
+    });
+    const notSignedIn = { connector: oauth('notion'), refs: ['account:notion'], reason: 'not-signed-in' as const };
+    const out = await skipConnectorsNeedingReconnect(bus, ctx(), 'agent-1', {
+      kept: [oauth('gmail'), apiKey('key'), oauth('linear')],
+      skipped: [notSignedIn],
+    });
+    // Only the kept OAuth connectors are asked about (an api-key has no sign-in to renew).
+    expect(asked).toEqual([{ userId: 'u', agentId: 'agent-1', connectorIds: ['gmail', 'linear'] }]);
+    expect(out.kept.map((c) => c.id)).toEqual(['key', 'linear']);
+    expect(out.skipped).toEqual([
+      notSignedIn,
+      { connector: oauth('gmail'), refs: [], reason: 'needs-reconnect' },
+    ]);
+  });
+
+  it('no kept OAuth connector → status-batch is not asked', async () => {
+    let calls = 0;
+    const bus = busWith({
+      'mcp-oauth:status-batch': async () => {
+        calls += 1;
+        return { needsReconnect: [] };
+      },
+    });
+    const input = kept(apiKey('key'));
+    expect(await skipConnectorsNeedingReconnect(bus, ctx(), 'agent-1', input)).toEqual(input);
+    expect(calls).toBe(0);
+  });
+
+  it('fails toward KEEPING: no hook, a throw, a hang past the bound, or a malformed answer keeps every connector', async () => {
+    const input = kept(oauth('gmail'));
+    const none = busWith({});
+    expect(await skipConnectorsNeedingReconnect(none, ctx(), 'agent-1', input)).toEqual(input);
+    const throwing = busWith({
+      'mcp-oauth:status-batch': async () => {
+        throw new Error('db blip');
+      },
+    });
+    expect(await skipConnectorsNeedingReconnect(throwing, ctx(), 'agent-1', input)).toEqual(input);
+    const hanging = busWith({ 'mcp-oauth:status-batch': () => new Promise<never>(() => {}) });
+    const started = Date.now();
+    expect(await skipConnectorsNeedingReconnect(hanging, ctx(), 'agent-1', input, 20)).toEqual(input);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    for (const answer of [undefined, null, {}, { needsReconnect: 'gmail' }, { needsReconnect: [7, null] }]) {
+      const odd = busWith({ 'mcp-oauth:status-batch': async () => answer });
+      expect(await skipConnectorsNeedingReconnect(odd, ctx(), 'agent-1', input)).toEqual(input);
+    }
+  });
+});
+
+describe('connectorsSkippedPayload (slice 6 — chat:connectors-skipped)', () => {
+  const c = (id: string, name?: string): ResolvedConnectorForOrch => ({
+    id,
+    ...(name !== undefined ? { name } : {}),
+    capabilities: CAPS({ credentials: [{ slot: 'S', kind: 'api-key' as const, account: 'vault-tag' }] }),
+  });
+
+  it('carries the turn reqId and each connector id, label and reason — never its refs', () => {
+    const p = connectorsSkippedPayload('req-9', [
+      { connector: c('gmail', 'Gmail'), refs: ['account:gmail'], reason: 'needs-reconnect' },
+      { connector: c('notion'), refs: ['account:vault-tag:S'], reason: 'not-signed-in' },
+    ]);
+    expect(p).toEqual({
+      reqId: 'req-9',
+      connectors: [
+        { connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' },
+        { connectorId: 'notion', name: 'notion', reason: 'not-signed-in' },
+      ],
+    });
+    // Invariant 1 — no vault vocabulary crosses the hook surface.
+    const wire = JSON.stringify(p);
+    expect(wire).not.toContain('account:');
+    expect(wire).not.toContain('refs');
+    expect(wire).not.toContain('vault-tag');
+  });
+
+  it('sanitizes a hostile name (control/format chars stripped, clamped)', () => {
+    const p = connectorsSkippedPayload('r', [
+      { connector: c('x', `Evil\n\u202e${'y'.repeat(500)}`), refs: [], reason: 'not-signed-in' },
+    ]);
+    const name = p.connectors[0]!.name;
+    expect(name).not.toMatch(/[\n\u202e]/);
+    expect(name).toBe(`Evil ${'y'.repeat(59)}…`);
   });
 });
 

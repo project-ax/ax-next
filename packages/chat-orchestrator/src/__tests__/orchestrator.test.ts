@@ -2669,6 +2669,16 @@ describe('chat-orchestrator', () => {
       vault: ReturnType<typeof buildVaultHooks>,
       sessionId: string,
       attached: Record<string, ReturnType<typeof oauthConnector>> = { gmail: GMAIL },
+      opts: {
+        /** Stamp `source:'routine'` on the turn ctx (routines' fire.ts does). */
+        routine?: boolean;
+        /** Extra services (e.g. `mcp-oauth:status-batch`). */
+        extra?: Record<string, ServiceHandler>;
+        /** Extra plugin config (e.g. the subscriber / status bounds). */
+        config?: Record<string, unknown>;
+        /** Subscribers registered BEFORE the event observer. */
+        preSubscribe?: (bus: HookBus) => void;
+      } = {},
     ) {
       const busRef: { current: HookBus | null } = { current: null };
       const mocks = buildMocks({
@@ -2681,11 +2691,15 @@ describe('chat-orchestrator', () => {
         }),
         openSession: makeChatEndOpenSession(busRef),
       });
-      Object.assign(mocks.services, vault.services, buildConnectorHooks({ attached }));
+      Object.assign(mocks.services, vault.services, buildConnectorHooks({ attached }), opts.extra ?? {});
       const h = await createTestHarness({
         services: mocks.services,
         plugins: [
-          createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
+          createChatOrchestratorPlugin({
+            runnerBinaries: { 'claude-sdk': '/irrelevant' },
+            chatTimeoutMs: 5_000,
+            ...(opts.config ?? {}),
+          }),
         ],
       });
       busRef.current = h.bus;
@@ -2694,9 +2708,27 @@ describe('chat-orchestrator', () => {
         turnErrors.push(p as { reqId?: string; reason?: string });
         return undefined;
       });
+      opts.preSubscribe?.(h.bus);
+      const skippedEvents: unknown[] = [];
+      h.bus.subscribe('chat:connectors-skipped', 'obs', async (_ctx, p: unknown) => {
+        skippedEvents.push(p);
+        return undefined;
+      });
+      const reqId = `r-${sessionId}`;
+      const turnCtx =
+        opts.routine === true
+          ? makeAgentContext({
+              sessionId,
+              agentId: 'test-agent',
+              userId: 'test-user',
+              reqId,
+              source: 'routine',
+              logger: createLogger({ reqId, writer: () => undefined }),
+            })
+          : turnErrorCtx(sessionId, reqId);
       const outcome = await h.bus.call<unknown, AgentOutcome>(
         'agent:invoke',
-        turnErrorCtx(sessionId, `r-${sessionId}`),
+        turnCtx,
         { message: { role: 'user', content: 'hi' } },
       );
       const sandboxIn = mocks.calls.lastSandboxInput as
@@ -2705,7 +2737,7 @@ describe('chat-orchestrator', () => {
             installedSkills: Array<{ id: string; mcpServers: Array<{ name: string }> }>;
           }
         | undefined;
-      return { outcome, turnErrors, mocks, sandboxIn };
+      return { outcome, turnErrors, mocks, sandboxIn, skippedEvents };
     }
 
     /** Every MCP server key handed to the runner. */
@@ -2801,6 +2833,156 @@ describe('chat-orchestrator', () => {
       const { outcome, turnErrors } = await invoke(vault, 'skip-provider');
       expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
       expect(turnErrors).toEqual([{ reqId: 'r-skip-provider', reason: 'proxy-open-failed' }]);
+    });
+
+    // Slice 6 — chat:connectors-skipped: one observation per turn assembly
+    // that skipped anything, carrying the turn's reqId, the connector ids,
+    // their sanitized labels and a reason word. Never vault refs.
+    it('a not-signed-in skip fires chat:connectors-skipped with the turn reqId and reason not-signed-in', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF] });
+      const { outcome, skippedEvents } = await invoke(vault, 'evt-nsi', { gmail: GMAIL, linear: LINEAR });
+      expect(outcome.kind).toBe('complete');
+      expect(skippedEvents).toEqual([
+        { reqId: 'r-evt-nsi', connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] },
+      ]);
+      // Invariant 1 — no vault vocabulary in the payload.
+      const wire = JSON.stringify(skippedEvents);
+      expect(wire).not.toContain('account:');
+      expect(wire).not.toContain('refs');
+    });
+
+    it('nothing skipped → no chat:connectors-skipped', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF, GMAIL_REF] });
+      const { outcome, skippedEvents } = await invoke(vault, 'evt-none');
+      expect(outcome.kind).toBe('complete');
+      expect(skippedEvents).toEqual([]);
+    });
+
+    it('a hostile connector name is sanitized in the event payload', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+      const evil = oauthConnector('gmail', 'c0123abcdef', `Gm\nail\u202e${'z'.repeat(500)}`);
+      const { skippedEvents } = await invoke(vault, 'evt-hostile', { gmail: evil });
+      const name = (skippedEvents[0] as { connectors: Array<{ name: string }> }).connectors[0]!.name;
+      expect(name).not.toMatch(/[\n\u202e]/);
+      expect(name).toBe(`Gm ail ${'z'.repeat(57)}…`);
+    });
+
+    it('a throwing or a never-settling chat:connectors-skipped subscriber does not fail the turn', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+      const { outcome, skippedEvents, turnErrors } = await invoke(vault, 'evt-bad-sub', { gmail: GMAIL }, {
+        config: { chatEventSubscriberTimeoutMs: 20 },
+        preSubscribe: (bus) => {
+          bus.subscribe('chat:connectors-skipped', '@ax/test-thrower', async () => {
+            throw new Error('subscriber blew up');
+          });
+          bus.subscribe('chat:connectors-skipped', '@ax/test-hanger', () => new Promise<never>(() => {}));
+        },
+      });
+      expect(outcome.kind).toBe('complete');
+      expect(turnErrors).toEqual([]);
+      // The observer after both still ran.
+      expect(skippedEvents).toHaveLength(1);
+    });
+
+    describe('slice 6: a ROUTINE turn goes without a connector whose sign-in needs doing again', () => {
+      function statusBatch(answer: () => Promise<unknown>) {
+        const asked: unknown[] = [];
+        const services: Record<string, ServiceHandler> = {
+          'mcp-oauth:status-batch': async (_c, input) => {
+            asked.push(input);
+            return answer();
+          },
+        };
+        return { asked, services };
+      }
+      const marksGmail = () =>
+        statusBatch(async () => ({ needsReconnect: ['gmail'], shared: ['gmail'], signIns: {} }));
+
+      it('routine + expired Gmail → skipped, the turn completes, the event says needs-reconnect', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF, LINEAR_REF], rejected: [GMAIL_REF] });
+        const sb = marksGmail();
+        const { outcome, turnErrors, sandboxIn, skippedEvents, mocks } = await invoke(
+          vault,
+          'rt-expired',
+          { gmail: GMAIL, linear: LINEAR },
+          { routine: true, extra: sb.services },
+        );
+        expect(outcome.kind).toBe('complete');
+        expect(turnErrors).toEqual([]);
+        expect(mocks.calls.sandboxOpen).toBe(1);
+        // Asked as the caller, about the agent, for the kept OAuth connectors.
+        expect(sb.asked).toEqual([
+          { userId: 'test-user', agentId: 'test-agent', connectorIds: ['gmail', 'linear'] },
+        ]);
+        // Gmail never reaches the open or the runner; Linear does.
+        expect(vault.state.openRefs).not.toContain(GMAIL_REF);
+        expect(vault.state.openRefs).toContain(LINEAR_REF);
+        expect(mcpKeys(sandboxIn)).toEqual(['c0456abcdef']);
+        // The agent is told, by name.
+        expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toContain('"Gmail"');
+        expect(skippedEvents).toEqual([
+          { reqId: 'r-rt-expired', connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
+        ]);
+        expect(JSON.stringify(skippedEvents)).not.toContain('account:');
+      });
+
+      it('routine with BOTH reasons → one event naming each with its reason', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+        const sb = marksGmail();
+        const { outcome, skippedEvents } = await invoke(
+          vault,
+          'rt-mixed',
+          { gmail: GMAIL, linear: LINEAR },
+          { routine: true, extra: sb.services },
+        );
+        expect(outcome.kind).toBe('complete');
+        // Linear was skipped by presence first, so only Gmail is asked about.
+        expect(sb.asked).toEqual([{ userId: 'test-user', agentId: 'test-agent', connectorIds: ['gmail'] }]);
+        expect(skippedEvents).toEqual([
+          {
+            reqId: 'r-rt-mixed',
+            connectors: [
+              { connectorId: 'linear', name: 'Linear', reason: 'not-signed-in' },
+              { connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' },
+            ],
+          },
+        ]);
+      });
+
+      it('an interactive chat with the same expired Gmail still ends connector-needs-reconnect (status-batch not asked)', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+        const sb = marksGmail();
+        const { outcome, turnErrors, skippedEvents } = await invoke(vault, 'chat-expired', { gmail: GMAIL }, {
+          extra: sb.services,
+        });
+        expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+        expect(turnErrors).toEqual([
+          { reqId: 'r-chat-expired', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+        ]);
+        expect(sb.asked).toEqual([]);
+        expect(skippedEvents).toEqual([]);
+      });
+
+      it.each([
+        ['missing', undefined],
+        [
+          'throwing',
+          statusBatch(async () => {
+            throw new Error('marker table blip');
+          }).services,
+        ],
+        ['hanging', statusBatch(() => new Promise<never>(() => {})).services],
+      ])('status-batch %s → the connector is kept (today\'s routine behaviour: the open fails)', async (_label, extra) => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+        const { outcome, skippedEvents } = await invoke(vault, `rt-keep-${_label}`, { gmail: GMAIL }, {
+          routine: true,
+          ...(extra !== undefined ? { extra } : {}),
+          config: { signInStatusTimeoutMs: 20 },
+        });
+        expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+        expect(vault.state.openRefs).toContain(GMAIL_REF);
+        expect(skippedEvents).toEqual([]);
+      });
     });
 
     // TASK-783 — the turn error names the connector whose credential failed,
@@ -7123,6 +7305,52 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       expect(counters.opens).toBe(1);
       expect(counters.terminates).not.toContain('s-1');
       expect(vault.hasCalls).toEqual(['account:gmail']);
+    });
+
+    // Slice 6 — a warm turn that RE-ASSEMBLES its connectors (the re-check
+    // retired the session) fires chat:connectors-skipped with ITS reqId; a
+    // routed turn that reuses the warm session assembles nothing and fires none.
+    it('chat:connectors-skipped: fired at each assembly with that turn\'s reqId, not on a reused warm turn', async () => {
+      const present = new Set<string>();
+      const connector = (id: string, name: string) => ({
+        summary: { id, name },
+        source: 'attached',
+        capabilities: {
+          allowedHosts: [`${id}.example.com`],
+          credentials: [{ slot: 'K', kind: 'api-key' }],
+          mcpServers: [],
+        },
+      });
+      const { h, counters } = await makeKeepaliveHarness({
+        'connectors:list-effective': async () => ({
+          connectors: [connector('gmail', 'Gmail'), connector('linear', 'Linear')],
+        }),
+        'credentials:has': async (_c: unknown, input: unknown) => ({
+          present: present.has((input as { ref: string }).ref),
+        }),
+      } as Record<string, ServiceHandler>);
+      const events: Array<{ reqId: string; connectors: Array<{ connectorId: string }> }> = [];
+      h.bus.subscribe('chat:connectors-skipped', 'obs', async (_c, p: unknown) => {
+        events.push(p as { reqId: string; connectors: Array<{ connectorId: string }> });
+        return undefined;
+      });
+      const turn = async (reqId: string) => {
+        fireTurnEnd(h.bus, 's-1', reqId);
+        await h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId }),
+          { message: { role: 'user', content: 'hi' } },
+        );
+      };
+      await turn('req-1'); // spawn: both skipped
+      await turn('req-2'); // routed, reused: nothing assembled
+      present.add('account:linear');
+      await turn('req-3'); // Linear signed in → retired + re-spawned: Gmail still skipped
+      expect(counters.opens).toBe(2);
+      expect(events.map((e) => [e.reqId, e.connectors.map((c) => c.connectorId)])).toEqual([
+        ['req-1', ['gmail', 'linear']],
+        ['req-3', ['gmail']],
+      ]);
     });
 
     it('a presence read that throws on the routed turn does not re-spawn', async () => {

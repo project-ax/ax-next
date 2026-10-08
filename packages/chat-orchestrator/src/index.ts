@@ -9,6 +9,7 @@ export type {
   AgentInterruptOutput,
   ApplyAuthoredCapabilityGrantInput,
   ApplyAuthoredCapabilityGrantOutput,
+  ConnectorsSkippedPayload,
 } from './orchestrator.js';
 export { KNOWN_PROVIDERS, type KnownProvider } from './orchestrator.js';
 // TASK-807 — the host's "which vault refs does this connector spend" derivation,

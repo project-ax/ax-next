@@ -26,6 +26,9 @@ import {
   resolveSkillReferencedConnectors,
   copyConnectorDefaultsForSession,
   partitionConnectorsBySignIn,
+  skipConnectorsNeedingReconnect,
+  connectorsSkippedPayload,
+  SIGN_IN_STATUS_TIMEOUT_MS,
   skippedConnectorsPromptLine,
   foldConnectorCaps,
   stampConnectorHeaders,
@@ -33,6 +36,7 @@ import {
   reconnectDetail,
   connectorSetFingerprint,
   type ResolvedConnectorForOrch,
+  type ConnectorsSkippedPayload,
   ConnectorServiceCollisionError,
   type FoldConnectorResult,
 } from './connector-union.js';
@@ -160,11 +164,18 @@ export interface ChatOrchestratorConfig {
    */
   chatStartSubscriberTimeoutMs?: number;
   /**
-   * Bound on each subscriber of the `chat:end`, `chat:turn-error` and
-   * `chat:permission-request` fires THIS plugin makes, in ms. Defaults to
-   * `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s). Exposed so tests need not wait.
+   * Bound on each subscriber of the `chat:end`, `chat:turn-error`,
+   * `chat:permission-request` and `chat:connectors-skipped` fires THIS plugin
+   * makes, in ms. Defaults to `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s).
+   * Exposed so tests need not wait.
    */
   chatEventSubscriberTimeoutMs?: number;
+  /**
+   * Slice 6 — how long a ROUTINE turn waits on `mcp-oauth:status-batch`
+   * before keeping every connector. Defaults to `SIGN_IN_STATUS_TIMEOUT_MS`
+   * (2 s). Exposed so tests need not wait.
+   */
+  signInStatusTimeoutMs?: number;
   /**
    * TASK-878 — how long a caller waits on `proxy:close-session` before it
    * logs `proxy_close_session_timeout` and moves on (to `session:terminate`,
@@ -201,6 +212,9 @@ export interface ChatOrchestratorConfig {
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
 }
+
+// Slice 6 — the `chat:connectors-skipped` payload (built in connector-union).
+export type { ConnectorsSkippedPayload };
 
 export interface AgentInvokeInput {
   message: AgentMessage;
@@ -1556,14 +1570,18 @@ export function createOrchestrator(
     'proxyCloseTimeoutMs',
     config.proxyCloseTimeoutMs ?? PROXY_CLOSE_TIMEOUT_MS,
   );
+  const signInStatusTimeoutMs = validSubscriberBound(
+    'signInStatusTimeoutMs',
+    config.signInStatusTimeoutMs ?? SIGN_IN_STATUS_TIMEOUT_MS,
+  );
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
-  // this plugin fires goes through here, so each subscriber is bounded by
+  // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through here, so each subscriber is bounded by
   // `chatEventSubscriberTimeoutMs`. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for
   // who waits on these. The runner-reported `chat:end` is fired by
   // @ax/ipc-core, not here, and bounded there (TASK-555).
   function fireChatEvent<P>(
-    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request',
+    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request' | 'chat:connectors-skipped',
     ctx: AgentContext,
     payload: P,
   ): Promise<FireResult<P>> {
@@ -3085,11 +3103,45 @@ export function createOrchestrator(
     // an explicit "no row" skips; a presence-read fault keeps the connector
     // (see partitionConnectorsBySignIn). A rejected refresh still has a row,
     // so it is kept and surfaces as connector-needs-reconnect below.
-    const connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
+    //
+    // Slice 6 — EXCEPT on a routine turn (`ctx.source` is stamped host-side by
+    // routines' fire.ts): there nobody is watching to sign in again, and one
+    // expired connector would fail the whole run. So a routine also goes
+    // without a connector whose sign-in needs doing again (status-batch's
+    // marker; any fault keeps it, today's behaviour). An interactive chat
+    // keeps failing with connector-needs-reconnect: that error is what tells
+    // the person to sign in again.
+    let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
+    if (ctx.source === 'routine') {
+      connectorSignIn = await skipConnectorsNeedingReconnect(
+        bus,
+        ctx,
+        agent.id,
+        connectorSignIn,
+        signInStatusTimeoutMs,
+      );
+    }
     if (connectorSignIn.skipped.length > 0) {
-      ctx.logger.info('connectors_skipped_not_signed_in', {
-        connectorIds: connectorSignIn.skipped.map((s) => s.connector.id),
+      ctx.logger.info('connectors_skipped', {
+        connectors: connectorSignIn.skipped.map((s) => ({ id: s.connector.id, reason: s.reason })),
       });
+      // Slice 6 — say what this turn went without, keyed by its reqId, so a
+      // routine can record "Gmail isn't signed in on Bob, so this run went
+      // without it." Observation only. Bounded per subscriber (fireChatEvent)
+      // and a throwing subscriber is isolated by the bus, so no subscriber can
+      // fail or hang the turn. Awaited (bounded) so a subscriber has seen it
+      // before the turn can end. Payload: ids, labels, reasons — never refs.
+      try {
+        await fireChatEvent<ConnectorsSkippedPayload>(
+          'chat:connectors-skipped',
+          ctx,
+          connectorsSkippedPayload(ctx.reqId, connectorSignIn.skipped),
+        );
+      } catch (err) {
+        ctx.logger.warn('chat_connectors_skipped_fire_failed', {
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+      }
       // Tell the agent, so it can say "sign in to Gmail first" instead of
       // acting as if the tool never existed. Normal mode only: the bootstrap
       // augment admits person-authored content alone (TASK-524), and this line
@@ -3461,11 +3513,12 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
-      if (connectorSignIn.skipped.length > 0) {
-        skippedConnectorRefsBySession.set(
-          sessionId,
-          [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))],
-        );
+      // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
+      // turns, slice 6) has a row, so re-asking presence would answer yes and
+      // retire the session on every turn.
+      const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
+      if (skippedRefs.length > 0) {
+        skippedConnectorRefsBySession.set(sessionId, skippedRefs);
       }
       if (keepAlive) {
         // Warm the session: the runner outlives this request. One handle.exited

@@ -530,14 +530,32 @@ export function connectorSlotRefs<S extends SlotRefInput>(
   });
 }
 
+/**
+ * Why a connector was left out of a turn. `not-signed-in`: a credential this
+ * caller never set up (TASK-806). `needs-reconnect`: a ROUTINE turn's OAuth
+ * sign-in that was rejected and not yet renewed (slice 6).
+ */
+export type ConnectorSkipReason = 'not-signed-in' | 'needs-reconnect';
+
+/** One connector a turn goes without. */
+export interface SkippedConnector {
+  connector: ResolvedConnectorForOrch;
+  /**
+   * HOST-INTERNAL. The vault refs that came back ABSENT, re-asked on a routed
+   * turn so a sign-in re-spawns the session. Empty for `needs-reconnect` (its
+   * row exists, so re-asking presence would retire the session every turn).
+   * Never crosses a hook surface — see {@link connectorsSkippedPayload}.
+   */
+  refs: string[];
+  reason: ConnectorSkipReason;
+}
+
 /** What {@link partitionConnectorsBySignIn} splits the connector set into. */
 export interface ConnectorSignInPartition {
   /** Connectors this caller can use: folded into the session as before. */
   kept: ResolvedConnectorForOrch[];
-  /** Connectors with at least one credential this caller has never set up,
-   *  with the refs that came back ABSENT (re-asked on a routed turn so a
-   *  sign-in re-spawns the session). */
-  skipped: Array<{ connector: ResolvedConnectorForOrch; refs: string[] }>;
+  /** Connectors this turn goes without, in the order they were skipped. */
+  skipped: SkippedConnector[];
 }
 
 /**
@@ -580,7 +598,7 @@ export async function partitionConnectorsBySignIn(
   );
   const partition: ConnectorSignInPartition = { kept: [], skipped: [] };
   for (const v of verdicts) {
-    if (v.skip) partition.skipped.push({ connector: v.connector, refs: v.refs });
+    if (v.skip) partition.skipped.push({ connector: v.connector, refs: v.refs, reason: 'not-signed-in' });
     else partition.kept.push(v.connector);
   }
   return partition;
@@ -605,6 +623,118 @@ export async function refAbsent(bus: HookBus, ctx: AgentContext, ref: string): P
     });
     return false;
   }
+}
+
+/** Slice 6 — how long a routine turn waits on `mcp-oauth:status-batch`. */
+export const SIGN_IN_STATUS_TIMEOUT_MS = 2_000;
+
+/**
+ * Slice 6 — for a ROUTINE turn only (the caller checks `ctx.source`): move the
+ * kept OAuth connectors whose sign-in on this agent was rejected and not yet
+ * renewed to `skipped` (`needs-reconnect`), so the run goes without them
+ * instead of `proxy:open-session` failing the whole run. An interactive chat
+ * does not call this: its `connector-needs-reconnect` error is what tells the
+ * person to sign in again.
+ *
+ * Asks `mcp-oauth:status-batch {userId, agentId, connectorIds}` — a marker
+ * read, no resolve or refresh — about the kept connectors with an OAuth slot
+ * (an api-key connector has no sign-in to renew).
+ *
+ * FAILS TOWARD KEEPING (today's routine behaviour: the open fails on the
+ * expired sign-in). No hook, a throw, an answer that is not a string array,
+ * or no answer within `timeoutMs` keeps every connector. Logged by error NAME
+ * only.
+ */
+export async function skipConnectorsNeedingReconnect(
+  bus: HookBus,
+  ctx: AgentContext,
+  agentId: string,
+  partition: ConnectorSignInPartition,
+  timeoutMs: number = SIGN_IN_STATUS_TIMEOUT_MS,
+): Promise<ConnectorSignInPartition> {
+  const asked = partition.kept.filter((c) => c.capabilities.credentials.some((s) => s.kind === 'oauth'));
+  if (asked.length === 0 || !bus.hasService('mcp-oauth:status-batch')) return partition;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let marked: Set<string>;
+  try {
+    const call = bus.call<
+      { userId: string; agentId: string; connectorIds: string[] },
+      { needsReconnect?: unknown }
+    >('mcp-oauth:status-batch', ctx, {
+      userId: ctx.userId,
+      agentId,
+      connectorIds: asked.map((c) => c.id),
+    });
+    // A late rejection after the timeout won the race must not go unhandled.
+    call.catch(() => undefined);
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+    const r = await Promise.race([call, timedOut]);
+    if (r === 'timeout') {
+      ctx.logger.warn('connector_reconnect_status_timeout', { timeoutMs });
+      return partition;
+    }
+    const list = r?.needsReconnect;
+    if (!Array.isArray(list) || !list.every((id) => typeof id === 'string')) {
+      ctx.logger.warn('connector_reconnect_status_malformed', {});
+      return partition;
+    }
+    marked = new Set(list as string[]);
+  } catch (err) {
+    ctx.logger.warn('connector_reconnect_status_failed', {
+      name: err instanceof Error ? err.name : 'unknown',
+    });
+    return partition;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  const askedIds = new Set(asked.map((c) => c.id));
+  const out: ConnectorSignInPartition = { kept: [], skipped: [...partition.skipped] };
+  for (const c of partition.kept) {
+    if (askedIds.has(c.id) && marked.has(c.id)) {
+      out.skipped.push({ connector: c, refs: [], reason: 'needs-reconnect' });
+    } else {
+      out.kept.push(c);
+    }
+  }
+  return out;
+}
+
+/**
+ * Slice 6 — the payload of `chat:connectors-skipped`, an observation event
+ * fired once per turn assembly that skipped at least one connector (chat and
+ * routine turns alike). @ax/routines keys it to its in-flight fire by `reqId`
+ * and records "Gmail isn't signed in on Bob, so this run went without it."
+ * (Routines mirrors this shape; invariant 2 keeps the import out.)
+ *
+ * Invariant 1: connector ids, display labels and a reason word only. No vault
+ * refs, env names or other storage vocabulary.
+ */
+export interface ConnectorsSkippedPayload {
+  /** The turn's `ctx.reqId`. */
+  reqId: string;
+  connectors: Array<{
+    connectorId: string;
+    /** {@link connectorLabel}: one line of plain text, clamped. Untrusted. */
+    name: string;
+    reason: ConnectorSkipReason;
+  }>;
+}
+
+/** Build {@link ConnectorsSkippedPayload}. Drops `refs` by construction. */
+export function connectorsSkippedPayload(
+  reqId: string,
+  skipped: readonly SkippedConnector[],
+): ConnectorsSkippedPayload {
+  return {
+    reqId,
+    connectors: skipped.map(({ connector, reason }) => ({
+      connectorId: connector.id,
+      name: connectorLabel(connector),
+      reason,
+    })),
+  };
 }
 
 /** Longest connector name the skipped-connectors line carries (code points). */
