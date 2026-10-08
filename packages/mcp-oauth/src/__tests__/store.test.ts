@@ -519,7 +519,7 @@ describe('createMcpOAuthStore', () => {
         .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
         .execute();
 
-      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3, markers: 0 });
+      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3, markers: 0, identityScope: 0 });
 
       for (const s of ['g1', 'g2', 'g3']) expect(await store.getPending(s)).toBeNull();
       for (const s of ['k1', 'k2']) expect(await store.getPending(s)).not.toBeNull();
@@ -575,15 +575,15 @@ describe('createMcpOAuthStore', () => {
       await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b');
       await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'linear-2b');
 
-      await store.markIdentityScopeRefused('gmail-2b', 'https://auth.a');
-      await store.markIdentityScopeRefused('gmail-2b', 'https://auth.b');
-      await store.markIdentityScopeRefused('linear-2b', 'https://auth.a');
+      await store.markIdentityScopeRefused('a1', 'gmail-2b', 'https://auth.a');
+      await store.markIdentityScopeRefused('a2', 'gmail-2b', 'https://auth.b');
+      await store.markIdentityScopeRefused('a1', 'linear-2b', 'https://auth.a');
 
       expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 1, agent: 2, identityScope: 2 });
 
-      expect(await store.isIdentityScopeRefused('gmail-2b', 'https://auth.a')).toBe(false);
-      expect(await store.isIdentityScopeRefused('gmail-2b', 'https://auth.b')).toBe(false);
-      expect(await store.isIdentityScopeRefused('linear-2b', 'https://auth.a')).toBe(true);
+      expect(await store.isIdentityScopeRefused('a1', 'gmail-2b', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('a2', 'gmail-2b', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('a1', 'linear-2b', 'https://auth.a')).toBe(true);
 
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b')).toBe(false);
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b')).toBe(false);
@@ -608,18 +608,33 @@ describe('createMcpOAuthStore', () => {
   // the openid/email add-on. Keyed (connector, authorization server); `begin`
   // asks before adding the identity scopes again.
   describe('identity-scope skip flag (slice 4)', () => {
-    it('is absent until marked; marking twice keeps one row; keyed on BOTH connector and auth server', async () => {
+    it('is absent until marked; marking twice keeps one row; keyed on agent, connector AND auth server', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
-      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.a')).toBe(false);
-      await store.markIdentityScopeRefused('gmail', 'https://auth.a');
-      await store.markIdentityScopeRefused('gmail', 'https://auth.a');
-      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.a')).toBe(true);
-      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.b')).toBe(false);
-      expect(await store.isIdentityScopeRefused('linear', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(false);
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(true);
+      // A flag set through agent A says nothing about agent B.
+      expect(await store.isIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'linear', 'https://auth.a')).toBe(false);
       const rows = await db.selectFrom('mcp_oauth_v1_identity_scope_refused').selectAll().execute();
       expect(rows).toHaveLength(1);
+    });
+
+    it("deleteAllForAgent removes that agent's flags, and only that agent's", async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-A', 'linear', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a');
+      expect(await store.deleteAllForAgent('agt-A')).toEqual({ deleted: 0, markers: 0, identityScope: 2 });
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'linear', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a')).toBe(true);
     });
 
     it('a pending row round-trips identityScope (absent → false)', async () => {

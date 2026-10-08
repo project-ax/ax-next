@@ -50,14 +50,17 @@ export interface McpOAuthStore {
    *
    * Touches `mcp_oauth_v1_pending` and `mcp_oauth_v1_needs_reconnect_agent`
    * (the agent's reconnect markers go with it; `deleted` counts pending rows,
-   * `markers` counts marker rows). `mcp_oauth_v1_clients` has no `agent_id`
+   * `markers` counts marker rows), and `mcp_oauth_v1_identity_scope_refused`
+   * (slice 4 — the agent's identity-scope skip flags; `identityScope`). `mcp_oauth_v1_clients` has no `agent_id`
    * column (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
    * agent), so it is not this method's to delete from.
    *
    * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
    * caller meant, so it is refused rather than run.
    */
-  deleteAllForAgent(agentId: string): Promise<{ deleted: number; markers: number }>;
+  deleteAllForAgent(
+    agentId: string,
+  ): Promise<{ deleted: number; markers: number; identityScope: number }>;
   /**
    * Slice 2b — a deleted connector's reconnect markers (every person's and
    * every agent's) go with it, in one transaction — and (slice 4) so does its
@@ -68,12 +71,14 @@ export interface McpOAuthStore {
     connectorId: string,
   ): Promise<{ user: number; agent: number; identityScope: number }>;
   /**
-   * Slice 4 — `authServerUrl` answered `invalid_scope` to a sign-in to
-   * `connectorId` that carried the `openid`/`email` add-on. Idempotent.
+   * Slice 4 — `authServerUrl` answered `invalid_scope` to a sign-in on
+   * `agentId` to `connectorId` that carried the `openid`/`email` add-on.
+   * Idempotent. Keyed by agent: the answer arrives through the browser, so it
+   * may only ever affect the agent that authorization was begun for.
    */
-  markIdentityScopeRefused(connectorId: string, authServerUrl: string): Promise<void>;
-  /** Slice 4 — should `begin` leave the identity add-on out for this pair? */
-  isIdentityScopeRefused(connectorId: string, authServerUrl: string): Promise<boolean>;
+  markIdentityScopeRefused(agentId: string, connectorId: string, authServerUrl: string): Promise<void>;
+  /** Slice 4 — should `begin` leave the identity add-on out for this triple? */
+  isIdentityScopeRefused(agentId: string, connectorId: string, authServerUrl: string): Promise<boolean>;
   /**
    * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
@@ -242,9 +247,14 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
           .where('agent_id', '=', agentId)
           .executeTakeFirst();
+        const identityScope = await trx
+          .deleteFrom('mcp_oauth_v1_identity_scope_refused')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
         return {
           deleted: Number(pending.numDeletedRows ?? 0n),
           markers: Number(markers.numDeletedRows ?? 0n),
+          identityScope: Number(identityScope.numDeletedRows ?? 0n),
         };
       });
     },
@@ -278,18 +288,24 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
       });
     },
 
-    async markIdentityScopeRefused(connectorId, authServerUrl) {
+    async markIdentityScopeRefused(agentId, connectorId, authServerUrl) {
       await db
         .insertInto('mcp_oauth_v1_identity_scope_refused')
-        .values({ connector_id: connectorId, auth_server: authServerUrl, created_at: new Date() })
-        .onConflict((oc) => oc.columns(['connector_id', 'auth_server']).doNothing())
+        .values({
+          agent_id: agentId,
+          connector_id: connectorId,
+          auth_server: authServerUrl,
+          created_at: new Date(),
+        })
+        .onConflict((oc) => oc.columns(['agent_id', 'connector_id', 'auth_server']).doNothing())
         .execute();
     },
 
-    async isIdentityScopeRefused(connectorId, authServerUrl) {
+    async isIdentityScopeRefused(agentId, connectorId, authServerUrl) {
       const row = await db
         .selectFrom('mcp_oauth_v1_identity_scope_refused')
         .select('connector_id')
+        .where('agent_id', '=', agentId)
         .where('connector_id', '=', connectorId)
         .where('auth_server', '=', authServerUrl)
         .executeTakeFirst();

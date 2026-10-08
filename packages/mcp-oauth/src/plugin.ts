@@ -355,7 +355,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       const store = createMcpOAuthStore(db);
 
       // TASK-718 — a deleted agent's in-flight OAuth handshakes (and its reconnect
-      // markers) must go with it.
+      // markers, and — slice 4 — its identity-scope skip flags) must go with it.
       // Payload (declared locally, no cross-plugin import): `{ agentId, ownerId,
       // ownerType }`; only `agentId` matters, and it is keyed on ALONE because a
       // team agent's connect can be started by several people. Tokens live in the
@@ -370,8 +370,8 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           return undefined;
         }
         try {
-          const { deleted, markers } = await store.deleteAllForAgent(agentId);
-          ctx.logger.info('mcp_oauth_purged_for_deleted_agent', { agentId, deleted, markers });
+          const { deleted, markers, identityScope } = await store.deleteAllForAgent(agentId);
+          ctx.logger.info('mcp_oauth_purged_for_deleted_agent', { agentId, deleted, markers, identityScope });
         } catch (err) {
           ctx.logger.error('mcp_oauth_purge_for_deleted_agent_failed', { agentId, err });
         }

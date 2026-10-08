@@ -37,12 +37,17 @@ import { sql, type Kysely } from 'kysely';
  *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), so a
  *     deleted agent leaves no marker behind.
  *
- *   mcp_oauth_v1_identity_scope_refused — slice 4. One row per (connector,
- *     authorization server) that answered `invalid_scope` to a sign-in which
- *     carried the `openid`/`email` add-on ("Signed in as"). `begin` leaves the
- *     add-on out while the row exists, so one failed sign-in heals the next.
- *     Cleaned with the connector (`deleteMarkersForConnector`, via
- *     `connectors:deleted`). Holds no secret: ids, a URL and a timestamp.
+ *   mcp_oauth_v1_identity_scope_refused — slice 4. One row per (agent,
+ *     connector, authorization server) that answered `invalid_scope` to a
+ *     sign-in which carried the `openid`/`email` add-on ("Signed in as").
+ *     `begin` leaves the add-on out while the row exists, so one failed sign-in
+ *     heals the next. Keyed by AGENT on purpose: the callback's `error` comes
+ *     through the browser, so whoever holds a state can forge it — scoping the
+ *     flag to the agent that state was begun for means a person can only ever
+ *     turn identity capture off for an agent they may sign in on. Cleaned with
+ *     the agent (`deleteAllForAgent`, via `agents:deleted`) and with the
+ *     connector (`deleteMarkersForConnector`, via `connectors:deleted`). Holds
+ *     no secret: ids, a URL and a timestamp.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -96,10 +101,11 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
     )`.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS mcp_oauth_v1_identity_scope_refused (
+      agent_id      TEXT NOT NULL,
       connector_id  TEXT NOT NULL,
       auth_server   TEXT NOT NULL,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (connector_id, auth_server)
+      PRIMARY KEY (agent_id, connector_id, auth_server)
     )`.execute(db);
 }
 
@@ -146,6 +152,7 @@ export interface McpOAuthNeedsReconnectAgentRow {
 }
 
 export interface McpOAuthIdentityScopeRefusedRow {
+  agent_id: string;
   connector_id: string;
   auth_server: string;
   created_at: Date;

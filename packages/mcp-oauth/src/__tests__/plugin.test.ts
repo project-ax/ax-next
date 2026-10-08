@@ -979,6 +979,21 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
     ).toMatchObject({ level: 'info', agentId: 'agt_del', deleted: 3 });
   });
 
+  it("also removes the deleted agent's identity-scope skip flags (slice 4), and only its", async () => {
+    const h = await boot();
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createMcpOAuthStore(db);
+    await store.markIdentityScopeRefused('agt_del', 'gmail', 'https://auth.example.com');
+    await store.markIdentityScopeRefused('agt_keep', 'gmail', 'https://auth.example.com');
+    const lines: string[] = [];
+    await h.bus.fire('agents:deleted', loggedCtx(h, lines), deleted('agt_del'));
+    expect(await store.isIdentityScopeRefused('agt_del', 'gmail', 'https://auth.example.com')).toBe(false);
+    expect(await store.isIdentityScopeRefused('agt_keep', 'gmail', 'https://auth.example.com')).toBe(true);
+    expect(
+      parse(lines).find((e) => e.msg === 'mcp_oauth_purged_for_deleted_agent'),
+    ).toMatchObject({ level: 'info', agentId: 'agt_del', identityScope: 1 });
+  });
+
   it('firing again for the same agent is a no-op that neither throws nor touches other agents', async () => {
     const h = await boot();
     await seed(h);
@@ -1061,8 +1076,9 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
     await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear');
     // Slice 4 — the provider refused the identity scopes for this connector.
-    await store.markIdentityScopeRefused('gmail', 'https://auth.example.com');
-    await store.markIdentityScopeRefused('linear', 'https://auth.example.com');
+    await store.markIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com');
+    await store.markIdentityScopeRefused('a2', 'gmail', 'https://auth.example.com');
+    await store.markIdentityScopeRefused('a1', 'linear', 'https://auth.example.com');
     return { h, store };
   }
   const loggedCtx = (h: TestHarness, lines: string[]) =>
@@ -1087,10 +1103,11 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear')).toBe(true);
     expect(
       parse(lines).find((e) => e.msg === 'mcp_oauth_markers_purged_for_deleted_connector'),
-    ).toMatchObject({ level: 'info', connectorId: 'gmail', user: 1, agent: 2, identityScope: 1 });
-    // The identity-scope skip flag goes with the connector; another's stays.
-    expect(await store.isIdentityScopeRefused('gmail', 'https://auth.example.com')).toBe(false);
-    expect(await store.isIdentityScopeRefused('linear', 'https://auth.example.com')).toBe(true);
+    ).toMatchObject({ level: 'info', connectorId: 'gmail', user: 1, agent: 2, identityScope: 2 });
+    // The identity-scope skip flags go with the connector, on every agent; another's stay.
+    expect(await store.isIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com')).toBe(false);
+    expect(await store.isIdentityScopeRefused('a2', 'gmail', 'https://auth.example.com')).toBe(false);
+    expect(await store.isIdentityScopeRefused('a1', 'linear', 'https://auth.example.com')).toBe(true);
   });
 
   it.each([true, undefined, 'false', null, 0])(
@@ -1101,7 +1118,7 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
       expect(res.rejected).toBe(false);
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(true);
       expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(true);
-      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.example.com')).toBe(true);
+      expect(await store.isIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com')).toBe(true);
     },
   );
 

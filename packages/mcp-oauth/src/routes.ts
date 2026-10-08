@@ -646,12 +646,13 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // the AUTHORIZATION SERVER advertises them, so the rail can say which
       // account this agent signed in as — unless this server already answered
       // `invalid_scope` to that add-on for this connector (the skip flag the
-      // callback sets), in which case the connector's scope goes out as-is.
+      // callback sets, keyed by THIS agent — see the callback), in which case
+      // the connector's scope goes out as-is.
       // Fail-soft: a failed flag read asks for the add-on (worst case, one
       // more refused sign-in, which sets the flag again).
       let identityRefused = false;
       try {
-        identityRefused = await store.isIdentityScopeRefused(connectorId, authServerUrl);
+        identityRefused = await store.isIdentityScopeRefused(agentId, connectorId, authServerUrl);
       } catch (err) {
         logger.warn('mcp_oauth_identity_scope_check_failed', { connectorId, ...errFields(err) });
       }
@@ -802,12 +803,16 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       const errorCode = PROVIDER_ERROR_CODES.has(providerError) ? providerError : 'other';
       logger.warn('mcp_oauth_callback_provider_error', { connectorId, error: errorCode });
       // Slice 4 — a server that refuses the openid/email add-on we asked for
-      // would refuse every sign-in that carries it. Remember that for this
-      // (connector, authorization server) so the next `begin` leaves it out;
-      // the person just tries again. The popup still says sign-in-failed.
-      if (errorCode === 'invalid_scope' && pending.identityScope === true) {
+      // would refuse every sign-in that carries it. Remember that so the next
+      // `begin` leaves it out; the person just tries again. The popup still
+      // says sign-in-failed. SECURITY: `error` arrives through the browser,
+      // so whoever holds this state can forge `invalid_scope`. The flag is
+      // therefore keyed by the AGENT this authorization was begun for (begin
+      // already checked this person may sign in on it) — never connector-wide,
+      // which would let one member switch identity capture off for every agent.
+      if (errorCode === 'invalid_scope' && pending.identityScope === true && agentId) {
         try {
-          await store.markIdentityScopeRefused(connectorId, pending.authServerUrl);
+          await store.markIdentityScopeRefused(agentId, connectorId, pending.authServerUrl);
         } catch (err) {
           logger.warn('mcp_oauth_identity_scope_flag_failed', { connectorId, ...errFields(err) });
         }

@@ -79,8 +79,8 @@ function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
   const getPending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const consumePending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const clearNeedsReconnect = vi.fn(async (_userId: string, _connectorId: string) => {});
-  const isIdentityScopeRefused = vi.fn(async (_connectorId: string, _authServerUrl: string) => false);
-  const markIdentityScopeRefused = vi.fn(async (_connectorId: string, _authServerUrl: string) => {});
+  const isIdentityScopeRefused = vi.fn(async (_agentId: string, _connectorId: string, _authServerUrl: string) => false);
+  const markIdentityScopeRefused = vi.fn(async (_agentId: string, _connectorId: string, _authServerUrl: string) => {});
   return {
     putPending,
     purgeExpiredPending,
@@ -458,11 +458,22 @@ describe('mcp-oauth begin route', () => {
       expect(none).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write', identityScope: false });
     });
 
-    it('a provider that refused the add-on before (skip flag for this connector + auth server) → no add-on anywhere', async () => {
+    it('a provider that refused the add-on before (skip flag for this agent + connector + auth server) → no add-on anywhere', async () => {
       const store = fakeStore({ isIdentityScopeRefused: vi.fn(async () => true) });
       const out = await beginWith(['openid', 'email', 'read', 'write'], ['read', 'write'], store);
       expect(out).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write', identityScope: false });
-      expect(store.isIdentityScopeRefused).toHaveBeenCalledWith('conn-1', 'https://auth.example.com');
+      expect(store.isIdentityScopeRefused).toHaveBeenCalledWith('agent-1', 'conn-1', 'https://auth.example.com');
+    });
+
+    it("a flag set on ANOTHER agent does not affect this agent's begin (the key includes the agent)", async () => {
+      // Only agent-other carries the flag; this begin is for agent-1.
+      const flagged = new Set(['agent-other|conn-1|https://auth.example.com']);
+      const store = fakeStore({
+        isIdentityScopeRefused: vi.fn(async (a: string, c: string, s: string) => flagged.has(`${a}|${c}|${s}`)),
+      });
+      const out = await beginWith(['openid', 'email', 'read', 'write'], ['read', 'write'], store);
+      expect(out.authorize).toBe('read write openid email');
+      expect(out.identityScope).toBe(true);
     });
 
     it('a failing skip-flag read is logged by name/code and the add-on is still asked for (fail-soft)', async () => {
@@ -2197,10 +2208,13 @@ describe('mcp-oauth callback route', () => {
       return { store, state, logger };
     }
 
-    it('sets the skip flag for (connector, auth server); the popup still says sign-in-failed', async () => {
+    it("sets the skip flag for (this authorization's agent, connector, auth server) only; the popup still says sign-in-failed", async () => {
+      // The `error` parameter arrives through the browser, so it is the
+      // signer's to forge: the flag is scoped to the agent `begin` already
+      // let this person sign in on, never to the whole connector.
       const { store, state } = await refuse({});
       expect(store.markIdentityScopeRefused).toHaveBeenCalledTimes(1);
-      expect(store.markIdentityScopeRefused).toHaveBeenCalledWith('conn-1', 'https://auth.example.com');
+      expect(store.markIdentityScopeRefused).toHaveBeenCalledWith('agent-1', 'conn-1', 'https://auth.example.com');
       expect(state.redirectUrl).toBe(
         'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed',
       );
@@ -2208,6 +2222,11 @@ describe('mcp-oauth callback route', () => {
 
     it('no add-on on that authorization → no flag (the connector\'s own scope was refused)', async () => {
       const { store } = await refuse({ identityScope: false, scope: 'read write' });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+    });
+
+    it('a row with no agent (from before every sign-in had one) → no flag', async () => {
+      const { store } = await refuse({ agentId: '' });
       expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
     });
 
