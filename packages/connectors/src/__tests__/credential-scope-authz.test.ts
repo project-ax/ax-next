@@ -428,8 +428,10 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'root', 'account:zendesk'));
   });
 
-  it("5) there is no user delete route, so a non-admin's copy cannot touch the company key alone", async () => {
-    // UNFIXED: passes (unchanged-behaviour pin; the delete purges the global row only for an admin caller).
+  it("5) a duplicate id fails closed for the company key: no copy's owner reads it until the duplicate is gone", async () => {
+    // Final review I2: the global read used to pick the caller's own row first, so
+    // the owner of EITHER copy read `account:zendesk` and the proxy spent it at
+    // that copy's hosts. A duplicate id now resolves for nobody.
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'root', 'zendesk', 'workspace', 'acme.zendesk.com', 'ZENDESK_API_KEY');
@@ -438,6 +440,24 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     // The user delete route is gone: a non-admin has no handler to call.
     expect(routes.has('DELETE /settings/connectors/:id')).toBe(false);
 
+    // While mallory's same-id copy is live, neither owner reads the key —
+    // including mallory, now that she is an admin (her copy would send it to
+    // attacker.example).
+    await expectNotFound(getKey(h, 'root', 'account:zendesk'));
+    users.set('mallory', { id: 'mallory', isAdmin: true });
+    await expectNotFound(getKey(h, 'mallory', 'account:zendesk'));
+
+    // Positive control: once the duplicate is gone (tombstoned directly, so the
+    // admin delete's key wipe does not muddy the check), root reads it again.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        "UPDATE connectors_v1_connectors SET deleted_at = now() WHERE owner_user_id = 'mallory' AND connector_id = 'zendesk'",
+      );
+    } finally {
+      await pg.end().catch(() => {});
+    }
     expect(await getKey(h, 'root', 'account:zendesk')).toBe(COMPANY_KEY);
   });
 

@@ -24,7 +24,8 @@ import type {
 // for an `account:` ref. We allow it iff, for the REQUESTING user:
 //
 //   1. the ref parses as `account:<id>` / `account:<id>:<SLOT>` with a valid id,
-//   2. that user can read a LIVE owned or unambiguous connector with that id,
+//   2. there is exactly ONE live connector with that id (`getSoleLiveById`;
+//      a duplicate id fails closed for every owner until an admin deletes one),
 //   3. the connector's derived credential plan contains EXACTLY this ref at
 //      scope `global` (i.e. `keyMode: 'workspace'`) — `deriveCredentialPlan` is
 //      the single function that decides both a slot's ref and its scope, so the
@@ -100,7 +101,10 @@ export async function authorizeGlobalAccountRead(
   }
 
   try {
-    const available = await store.getAvailableById(userId, connectorId);
+    // The ONE live definition with this id, or nothing: a duplicate id fails
+    // closed for the company key too. An own-row-first pick would let the
+    // owner of either copy read the key and spend it at that copy's hosts.
+    const available = await store.getSoleLiveById(userId, connectorId);
     if (available === null) return deny('no-such-connector');
     const { connector, ownerUserId } = available;
 
