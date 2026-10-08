@@ -777,7 +777,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'connectors:list-effective',
           degradation:
-            'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and Retry all answer 503 (there is no list of what this agent may use to check against)',
+            'the Connectors tab list, a connector\'s details, its tool verdicts and Remove all answer 503 (there is no list of what this agent may use to check against)',
         },
         {
           hook: 'mcp-oauth:status-batch',
@@ -797,7 +797,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'connectors:describe-tools',
           degradation:
-            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory), and a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',
+            'a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',
         },
         {
           hook: 'connectors:tool-labels',
@@ -908,52 +908,47 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add or Remove, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in, Add team key or Remove team sign-in on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key and DELETE …/connectors/:connectorId/team-sign-in answer 503 connectors-unavailable',
+            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           hook: 'mcp-oauth:remove-shared-sign-in',
           degradation:
-            'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
-        },
-        {
-          hook: 'mcp-oauth:remove-personal-sign-in',
-          degradation:
-            'a personal sign-in survives removing its connector from every agent, so re-adding it reuses that sign-in instead of asking again',
+            'removing an OAuth connector leaves the agent\'s sign-in behind and answers cleanup: partial (the token is unreadable once the connector is off the agent)',
         },
         {
           hook: 'credentials:authorize-agent:account',
           degradation:
-            'PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable (whether the agent\'s users could read the key cannot be checked)',
+            'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 connectors-unavailable (whether the key may be stored on the agent cannot be checked)',
         },
         {
           hook: 'credentials:set',
           degradation:
-            'PUT …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be saved)',
+            'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key cannot be saved)',
         },
         {
           hook: 'credentials:list',
           degradation:
-            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read), and nobody is offered Remove team sign-in',
+            'GET …/connectors/:connectorId/key answers 503 credentials-unavailable (whether a key is saved cannot be read)',
         },
         {
           hook: 'credentials:delete',
           degradation:
-            'DELETE …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be removed)',
+            'DELETE …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key, or a failed Add, cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
         },
         {
           hook: 'connectors:get',
           degradation:
-            'Add a connector answers 503 connectors-unavailable (the credential check cannot run)',
+            'Add a connector, and PUT, GET and DELETE …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
         },
         {
           hook: 'credentials:get',
           degradation:
-            'Add a connector that needs a sign-in or key answers 503 connector-check-failed; connectors with no credential slots still attach',
+            'Add a shared-key connector answers 503 connector-check-failed; connectors with no credential slots, or whose keys come with the Add, still attach',
         },
         {
           hook: 'decisions:get',

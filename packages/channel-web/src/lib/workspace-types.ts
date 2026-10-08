@@ -1119,15 +1119,18 @@ export interface AgentConnectorRow {
    * they add their own. Only on a team agent, only when
    * {@link AgentConnectorsRead.sharedCredentials} is true, only for a
    * connector with an api-key slot (not one that spends the company's key).
-   * Saved with `PUT …/connectors/:connectorId/team-key`, which decides again.
+   * Saved with `PUT …/connectors/:connectorId/key`, which decides again.
    */
   teamKey?: true;
   /**
    * TASK-858 — present (true) when this caller may remove the TEAM sign-in
    * for this connector: a sign-in saved ON this team agent that everyone
    * using it acts as. Only when {@link AgentConnectorsRead.sharedCredentials}
-   * is true (a team admin) and such a sign-in is actually saved. Removed with
-   * `DELETE …/connectors/:connectorId/team-sign-in`, which decides again.
+   * is true (a team admin) and such a sign-in is actually saved.
+   *
+   * Slice 3 — no longer sent: the server's team-sign-in route is gone
+   * (Remove deletes the agent's sign-in). The client's reader and menu item
+   * go with the rail menu rework.
    */
   teamSignIn?: true;
 }
@@ -1167,7 +1170,11 @@ export interface AgentConnectorsRead {
   connectorsSupported: boolean;
 }
 
-/** `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry`. */
+/**
+ * `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry` — slice
+ * 3 deleted that server route; this type and its client caller go with the
+ * rail menu rework.
+ */
 export interface AgentConnectorRetried {
   health: AgentConnectorHealth;
   /** TASK-756 — same meaning as on {@link AgentConnectorRow}. */
@@ -1192,9 +1199,9 @@ export interface AgentConnectorRemoved {
   removed: true;
   cleanup: 'complete' | 'partial';
   /**
-   * The connector is now on none of this person's agents, so their own
-   * sign-in / personal keys for it were deleted: adding it again asks them to
-   * sign in again.
+   * Slice 3 — no longer sent: Remove now always deletes the agent's own
+   * sign-in and keys, and never a person's. The client's reader goes with the
+   * rail menu rework.
    */
   signedOut?: true;
 }

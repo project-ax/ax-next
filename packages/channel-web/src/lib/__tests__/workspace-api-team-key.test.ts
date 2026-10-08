@@ -39,7 +39,7 @@ describe('workspaceApi.setTeamKey', () => {
     await workspaceApi.setTeamKey('a/1', 'linear', 'api_key', SECRET);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/linear/team-key');
+    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/linear/key');
     expect(init.method).toBe('PUT');
     expect((init.headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
     expect(JSON.parse(init.body as string)).toEqual({ slot: 'api_key', payloadB64: btoa(SECRET) });
@@ -99,7 +99,7 @@ describe('workspaceApi.getTeamKeys (TASK-854)', () => {
     );
     const slots = await workspaceApi.getTeamKeys('a/1', 'acme');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
-    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/team-key');
+    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/key');
     expect(init?.method ?? 'GET').toBe('GET');
     // Only the two fields we asked for, even if the body carried more.
     expect(slots).toEqual([
@@ -127,7 +127,7 @@ describe('workspaceApi.removeTeamKey (TASK-854)', () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ removed: true }), { status: 200 }));
     await workspaceApi.removeTeamKey('a/1', 'acme', 'ACME_KEY');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/team-key');
+    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/key');
     expect(init.method).toBe('DELETE');
     expect((init.headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
     expect(JSON.parse(init.body as string)).toEqual({ slot: 'ACME_KEY' });

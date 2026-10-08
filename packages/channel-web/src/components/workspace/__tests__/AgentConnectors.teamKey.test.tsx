@@ -219,7 +219,7 @@ describe('Team key (TASK-813)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/workspace/agents/a-quill/connectors/linear/team-key');
+    expect(url).toBe('/api/workspace/agents/a-quill/connectors/linear/key');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string)).toEqual({
       slot: 'LINEAR_API_KEY',

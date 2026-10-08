@@ -522,11 +522,12 @@ export interface TeamKeySlot {
 }
 
 function teamKeyUrl(agentId: string, connectorId: string): string {
-  return `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-key`;
+  return `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/key`;
 }
 
 /**
- * One call to `…/connectors/:connectorId/team-key` (TASK-813/854).
+ * One call to `…/connectors/:connectorId/key` (TASK-813/854; was `…/team-key`
+ * until slice 3).
  *
  * Not `req()`: a secret rides in the PUT body, so a transport exception is
  * replaced by a bare `HttpError` (the original may carry request details),

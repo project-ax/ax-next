@@ -293,13 +293,13 @@ export function createChannelWebServerPlugin(
         {
           // TASK-739 — the Connectors tab lists this agent's effective
           // connector set (the same union a session opens with), and every
-          // per-connector route (details, tool verdicts, remove, retry) checks
+          // per-connector route (details, tool verdicts, remove) checks
           // the connector is in it first. Every one of those routes is
           // hasService-gated; TASK-757 declares it here so the manifest names
           // the dependency the routes already degrade without.
           hook: 'connectors:list-effective',
           degradation:
-            'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and Retry all answer 503 (there is no list of what this agent may use to check against)',
+            'the Connectors tab list, a connector\'s details, its tool verdicts and Remove all answer 503 (there is no list of what this agent may use to check against)',
         },
         {
           // TASK-741 — the Connectors tab's "Sign-in expired" icon. A stored
@@ -324,10 +324,10 @@ export function createChannelWebServerPlugin(
             'connector rows never show "Not signed in yet"; a connector nobody signed in to looks healthy until it is used',
         },
         {
-          // TASK-741 — the row menu's Retry: one forced check of one connector.
+          // TASK-742 — a connector's details view lists the server's tools.
           hook: 'connectors:describe-tools',
           degradation:
-            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory), and a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',
+            'a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',
         },
         {
           // TASK-744 — names the connector behind a connector tool's opaque
@@ -496,70 +496,70 @@ export function createChannelWebServerPlugin(
         },
         {
           // TASK-765 / TASK-798 — whether this person may change this
-          // agent's connectors (add, remove, sign in on it).
+          // agent's connectors (add, remove). Slice 3 — asked with the admin
+          // bit off, it is also the personal-agent owner check before a key
+          // is put on the agent.
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add or Remove, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           // TASK-813 — may this person store a credential ON a team agent (sign in
-          // on it, add a team key)? Team admins only.
+          // on it, add a key)? Team admins only.
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in, Add team key or Remove team sign-in on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key and DELETE …/connectors/:connectorId/team-sign-in answer 503 connectors-unavailable',
+            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
-          // TASK-858 — remove a team agent's shared sign-in (its agent-scope
-          // token and needs-reconnect marker), owned by @ax/mcp-oauth.
+          // TASK-858 / slice 3 — Remove deletes the agent's own OAuth sign-in
+          // (its agent-scope token and needs-reconnect marker), owned by
+          // @ax/mcp-oauth.
           hook: 'mcp-oauth:remove-shared-sign-in',
           degradation:
-            'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
+            'removing an OAuth connector leaves the agent\'s sign-in behind and answers cleanup: partial (the token is unreadable once the connector is off the agent)',
         },
         {
-          // Removing a connector from the last agent a person uses it on
-          // deletes their own sign-in to it, owned by @ax/mcp-oauth.
-          hook: 'mcp-oauth:remove-personal-sign-in',
-          degradation:
-            'a personal sign-in survives removing its connector from every agent, so re-adding it reuses that sign-in instead of asking again',
-        },
-        {
-          // TASK-813 — before saving a team key: would the vault let the agent's
-          // users read it (TASK-788 read question)?
+          // TASK-813 — before saving an agent key: would the vault let the
+          // agent's users read it (TASK-788 read question)? Slice 3 — before a
+          // key-based Add writes its keys: may they be stored on the agent
+          // (the `purpose: 'store'` question)?
           hook: 'credentials:authorize-agent:account',
           degradation:
-            'PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable (whether the agent\'s users could read the key cannot be checked)',
+            'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 connectors-unavailable (whether the key may be stored on the agent cannot be checked)',
         },
         {
-          // TASK-813 — the team key's write, at scope agent.
+          // TASK-813 / slice 3 — an agent key's write, at scope agent.
           hook: 'credentials:set',
           degradation:
-            'PUT …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be saved)',
+            'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key cannot be saved)',
         },
         {
-          // TASK-854 — is a team key saved? Metadata only, at scope agent.
-          // TASK-858 — also: is a team sign-in saved (the list's teamSignIn flag)?
+          // TASK-854 — is an agent key saved? Metadata only, at scope agent.
           hook: 'credentials:list',
           degradation:
-            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read), and nobody is offered Remove team sign-in',
+            'GET …/connectors/:connectorId/key answers 503 credentials-unavailable (whether a key is saved cannot be read)',
         },
         {
-          // TASK-854 — remove a team key, at scope agent.
+          // TASK-854 / slice 3 — remove an agent key, undo a failed key-based
+          // Add, and delete the agent's keys on Remove — at scope agent.
           hook: 'credentials:delete',
           degradation:
-            'DELETE …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be removed)',
+            'DELETE …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key, or a failed Add, cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
         },
         {
-          // TASK-761 — the attach gate reads the connector's credential slots
-          // before attaching it.
+          // TASK-761 / slice 3 — Add reads what the connector needs (a sign-in,
+          // a per-agent key, a shared key or nothing) before attaching it; the
+          // key routes read its api-key slots.
           hook: 'connectors:get',
           degradation:
-            'Add a connector answers 503 connectors-unavailable (the credential check cannot run)',
+            'Add a connector, and PUT, GET and DELETE …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
         },
         {
-          // Same gate: is each required credential slot filled?
+          // The shared-key gate: does the admin's shared key exist, readable
+          // by this person?
           hook: 'credentials:get',
           degradation:
-            'Add a connector that needs a sign-in or key answers 503 connector-check-failed; connectors with no credential slots still attach',
+            'Add a shared-key connector answers 503 connector-check-failed; connectors with no credential slots, or whose keys come with the Add, still attach',
         },
         {
           // The decision routes resolve the row (and check it is yours) here

@@ -129,7 +129,6 @@ import type {
   AgentAbility,
   AgentConnectorHealth,
   AgentConnectorRemoved,
-  AgentConnectorRetried,
   AgentConnectorRow,
   AgentConnectorSetup,
   AgentConnectorSource,
@@ -1459,12 +1458,15 @@ interface AgentsCanSetSharedCredentialOutput {
  * Structural mirror of @ax/connectors' `credentials:authorize-agent:account`
  * (TASK-711 / TASK-788) — no import (invariant 2). With no `purpose` it asks
  * the READ question: would the vault let `userId` read this `account:` ref
- * from agent `agentId`'s row? A team key nobody could read is not saved.
+ * from agent `agentId`'s row? A key nobody could read is not saved. With
+ * `purpose: 'store'` it asks the WRITE question an Add asks before the
+ * connector is attached (slice 3): may this ref be stored on the agent at all?
  */
 interface CredentialsAuthorizeAgentInput {
   userId: string;
   agentId: string;
   ref: string;
+  purpose?: 'store';
 }
 interface CredentialsAuthorizeAgentOutput {
   allowed: boolean;
@@ -1480,7 +1482,8 @@ interface CredentialsSetInput {
 /**
  * Structural mirrors of @ax/credentials' `credentials:list` (metadata only —
  * never a value) and `credentials:delete` — no import (I2). TASK-854 reads
- * and removes a team key with them, always at scope `agent`.
+ * and removes an agent's key with them, and slice 3's Add undoes a key it
+ * wrote and Remove deletes the agent's keys — always at scope `agent`.
  */
 interface CredentialsListInput {
   scope: 'agent';
@@ -1495,24 +1498,16 @@ interface CredentialsListOutput {
   credentials: CredentialsListRow[];
 }
 interface CredentialsDeleteInput {
-  scope: 'agent' | 'user';
+  scope: 'agent';
   ownerId: string;
   ref: string;
 }
 /**
- * Structural mirror of @ax/mcp-oauth's `mcp-oauth:remove-personal-sign-in` —
- * no import (invariant 2). Removes ONE person's own OAuth sign-in for one
- * connector (the user-scope token and that person's needs-reconnect marker).
- */
-interface McpOauthRemovePersonalSignInInput {
-  userId: string;
-  connectorId: string;
-}
-/**
  * Structural mirror of @ax/mcp-oauth's `mcp-oauth:remove-shared-sign-in`
- * (TASK-858) — no import (invariant 2). Removes a team agent's shared OAuth
- * sign-in for one connector (the agent-scope token and the agent's
- * needs-reconnect marker); the vault ref is mcp-oauth's, never ours.
+ * (TASK-858) — no import (invariant 2). Removes an agent's OAuth sign-in for
+ * one connector (the agent-scope token and the agent's needs-reconnect
+ * marker); the vault ref is mcp-oauth's, never ours. Since slice 3 every
+ * sign-in is the agent's, so Remove calls it for any agent.
  */
 interface McpOauthRemoveSharedSignInInput {
   agentId: string;
@@ -1544,19 +1539,26 @@ function runnerLoadsConnectors(runner: string | undefined): boolean {
 }
 
 /**
- * TASK-761 — what stands between a connector and being attached.
+ * TASK-761 / slice 3 — the shared-key check before a shared-key connector is
+ * attached.
  *
  * Product rule (owner, 2026-10-02): a connector is attached to an agent ONLY
- * after its sign-in / key has succeeded. The Add subview already waits; this
- * is the server holding the same line, so a hand-rolled POST cannot attach an
- * OAuth connector nobody signed in to (measured on the TASK-743 walk).
+ * once what it needs is in place. Since slice 3 the Add itself puts it in
+ * place for everything the agent owns — an OAuth connector is attached by its
+ * sign-in callback, a per-agent key arrives in the same POST — so the only
+ * thing left to CHECK before attaching is a shared key (`keyMode:
+ * 'workspace'`), which an admin adds and nobody adds here. This gate is only
+ * ever asked about such a connector or one with no credential slots.
  *
- * Every credential slot must RESOLVE through `credentials:get` under
- * (caller, agent) — the same lookup a chat turn and the OAuth status route
- * make, so "signed in" here means what it means at run time (an agent-scope
- * sign-in on a team agent counts; a company key counts for a workspace
- * connector, subject to the vault's own global-read authorization). The value
- * is read host-side and DROPPED: it never leaves this function.
+ * It no longer reads an agent's own sign-in or key before the attach: that
+ * pre-attach read asked "is there already a token?", which is the wrong
+ * question once the account belongs to the agent (the slice-3 spec, §3).
+ *
+ * The shared key must RESOLVE through `credentials:get` under (caller,
+ * agent) — the same lookup a chat turn makes, so the vault's read-time rule
+ * (credentials:authorize-global:account, TASK-697) decides whether this
+ * person may spend it, exactly as at run time. The value is read host-side
+ * and DROPPED: it never leaves this function.
  *
  * Fails CLOSED: a missing service or an unexpected error refuses the attach.
  */
@@ -1634,22 +1636,24 @@ export const TEAM_KEY_PAYLOAD_B64_MAX_CHARS = 16 * 1024;
 /** Strict base64: `Buffer.from` silently coerces malformed input. */
 const STRICT_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/** One key a person typed for one of a connector's api-key slots. */
+interface SlotKey {
+  slot: string;
+  payload: Uint8Array;
+}
+
 /**
- * TASK-813 — the team-key PUT body, `{ slot, payloadB64 }` and nothing else
- * (a client-chosen `ref` is refused, not ignored). The error strings never
- * carry any part of the body.
+ * TASK-813 — one `{ slot, payloadB64 }` and nothing else (a client-chosen
+ * `ref` is refused, not ignored): strict base64, at most
+ * {@link TEAM_KEY_PAYLOAD_B64_MAX_CHARS}, decoding to something. The error
+ * strings never carry any part of the body. Shared by the key PUT and the
+ * key-based Add (slice 3), so both take a key on exactly the same terms.
  */
-function readTeamKeyBody(raw: Buffer): TeamKeyBodyResult<{ slot: string; payload: Uint8Array }> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw.toString('utf-8')) as unknown;
-  } catch {
-    return { ok: false, error: 'invalid-json' };
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+function readSlotKey(value: unknown): TeamKeyBodyResult<SlotKey> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'invalid-body' };
   }
-  const fields = parsed as Record<string, unknown>;
+  const fields = value as Record<string, unknown>;
   if (Object.keys(fields).some((k) => k !== 'slot' && k !== 'payloadB64')) {
     return { ok: false, error: 'invalid-body' };
   }
@@ -1669,6 +1673,60 @@ function readTeamKeyBody(raw: Buffer): TeamKeyBodyResult<{ slot: string; payload
   const payload = new Uint8Array(Buffer.from(payloadB64, 'base64'));
   if (payload.length === 0) return { ok: false, error: 'invalid-key' };
   return { ok: true, value: { slot, payload } };
+}
+
+/** TASK-813 — the key PUT body: one {@link readSlotKey}. */
+function readTeamKeyBody(raw: Buffer): TeamKeyBodyResult<SlotKey> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString('utf-8')) as unknown;
+  } catch {
+    return { ok: false, error: 'invalid-json' };
+  }
+  return readSlotKey(parsed);
+}
+
+/**
+ * Slice 3 — the most keys one Add may carry. Far above any real connector's
+ * slot count (the connector's own slots are the true bound, checked once its
+ * definition is read); this only stops an oversized list being parsed.
+ */
+const ATTACH_KEYS_MAX = 16;
+
+/**
+ * Slice 3 — the Add body: `{ connectorId, keys? }` and nothing else.
+ * `keys` (when present) is a list of {@link readSlotKey} entries with no slot
+ * named twice; whether the slots are the connector's — and all of them — is
+ * decided once its definition is read. `keys: undefined` = none were sent.
+ */
+function readAttachBody(
+  raw: Buffer,
+): TeamKeyBodyResult<{ connectorId: string; keys: SlotKey[] | undefined }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString('utf-8')) as unknown;
+  } catch {
+    return { ok: false, error: 'invalid-json' };
+  }
+  const fields = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed
+    : {}) as Record<string, unknown>;
+  if (!isConnectorId(fields.connectorId)) return { ok: false, error: 'invalid-connector' };
+  if (Object.keys(fields).some((k) => k !== 'connectorId' && k !== 'keys')) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  if (fields.keys === undefined) return { ok: true, value: { connectorId: fields.connectorId, keys: undefined } };
+  if (!Array.isArray(fields.keys) || fields.keys.length > ATTACH_KEYS_MAX) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  const keys: SlotKey[] = [];
+  for (const entry of fields.keys) {
+    const key = readSlotKey(entry);
+    if (!key.ok) return key;
+    if (keys.some((k) => k.slot === key.value.slot)) return { ok: false, error: 'invalid-body' };
+    keys.push(key.value);
+  }
+  return { ok: true, value: { connectorId: fields.connectorId, keys } };
 }
 
 /**
@@ -1701,105 +1759,65 @@ function noTeamKeyBody(): TeamKeyBodyResult<null> {
   return { ok: true, value: null };
 }
 
-/** TASK-854 — a team-key route's body reader: the value, or a 400 error string. */
+/** TASK-854 — a key route's body reader: the value, or a 400 error string. */
 type TeamKeyBodyResult<B> = { ok: true; value: B } | { ok: false; error: string };
 
-/** TASK-854 — what the shared team-key gate hands a route that passed it. */
-interface TeamKeyGate<B> {
+/** TASK-854 — what the shared agent-key gate hands a route that passed it. */
+interface AgentKeyGate<B> {
   actor: { id: string; isAdmin: boolean };
   agentId: string;
   connectorId: string;
   ctx: AgentContext;
-  /**
-   * The connector's plan entries for the gate's mode: its api-key entries
-   * (the slots a team key can fill) in `'key'` mode, its OAuth sign-in
-   * entries in `'sign-in'` mode (TASK-858).
-   */
+  /** The connector's api-key plan entries: the slots an agent key can fill. */
   checks: ConnectorCredentialCheck[];
   body: B;
   /** Log a check fault by error name and answer 503 `team-key-check-failed`. */
   failed: (step: string, err: unknown) => void;
 }
 
-async function attachCredentialGate(
+async function sharedKeyGate(
   bus: HookBus,
   ctx: AgentContext,
   logger: AgentContext['logger'],
   actor: { id: string; isAdmin: boolean },
-  connectorId: string,
+  connector: Connector,
 ): Promise<AttachGate> {
-  // A refusal for a reason that is not "nobody signed in" leaves an operator
-  // a trace of why (the error's NAME only — never its message, which could
+  // A refusal for a reason that is not "no shared key" leaves an operator a
+  // trace of why (the error's NAME only — never its message, which could
   // carry vault detail).
   const failed = (step: string, err: unknown): AttachGate => {
     logger.warn('workspace_connector_attach_check_failed', {
-      connectorId,
+      connectorId: connector.id,
       step,
       name: err instanceof Error ? err.name : 'unknown',
     });
     return { ok: false, status: 503, error: 'connector-check-failed' };
   };
-  const userId = actor.id;
-  if (!bus.hasService('connectors:get')) {
-    return { ok: false, status: 503, error: 'connectors-unavailable' };
-  }
-  let connector: Connector;
-  try {
-    const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
-      'connectors:get',
-      ctx,
-      { userId, connectorId },
-    );
-    connector = out.connector;
-  } catch (err) {
-    if (err instanceof PluginError && err.code === 'not-found') {
-      return { ok: false, status: 404, error: 'connector-not-found' };
-    }
-    return failed('connector', err);
-  }
-  // TASK-827 — a shared-key connector (`keyMode: 'workspace'`) is one anyone
-  // may add to their own agent; the agent spends the admin's shared key. The
-  // presence check below reads it AS THIS PERSON, so the vault's read-time
-  // rule (credentials:authorize-global:account, TASK-697 — an admin-owned
-  // shared definition only) decides whether they may use it, exactly as it
-  // will at run time. A missing shared key is something only an admin can
-  // add, so a non-admin is told to ask one rather than to add a key.
-  const sharedKeyFromAdmin = !actor.isAdmin && connector?.keyMode === 'workspace';
-  const checks = credentialChecks(connector);
+  // Asked only for a shared-key or no-auth connector (see the caller). The
+  // filter is belt and braces: a sign-in is never something checked here.
+  const checks = connector?.keyMode === 'workspace' ? credentialChecks(connector).filter((c) => !c.signIn) : [];
   if (checks.length === 0) return { ok: true };
   if (!bus.hasService('credentials:get')) {
     return failed('vault-missing', undefined);
   }
   for (const entry of checks) {
-    const signIn = entry.signIn;
     try {
       await bus.call<{ ref: string; userId: string }, unknown>('credentials:get', ctx, {
         ref: entry.ref,
-        userId,
+        userId: actor.id,
       });
     } catch (err) {
       if (credentialMissing(err)) {
-        return signIn
-          ? {
-              ok: false,
-              status: 409,
-              error: 'connector-needs-sign-in',
-              message: 'Sign in to this connector first, then add it.',
-            }
-          : sharedKeyFromAdmin
-            ? {
-                ok: false,
-                status: 409,
-                error: 'connector-needs-shared-key',
-                message:
-                  'This connector doesn’t have its shared key yet. Ask a workspace admin to add it.',
-              }
-            : {
-                ok: false,
-                status: 409,
-                error: 'connector-needs-key',
-                message: 'Add the key this connector needs first, then add it.',
-              };
+        // TASK-827 — a missing shared key is something only an admin can
+        // add, so a non-admin is told to ask one.
+        return {
+          ok: false,
+          status: 409,
+          error: 'connector-needs-shared-key',
+          message: actor.isAdmin
+            ? 'This connector doesn’t have its shared key yet. Add it in the connector’s settings first.'
+            : 'This connector doesn’t have its shared key yet. Ask a workspace admin to add it.',
+        };
       }
       return failed('credential', err);
     }
@@ -1875,51 +1893,9 @@ interface CredentialsHasOutput {
   present: boolean;
 }
 
-/**
- * TASK-756 — how long one Retry's answer stands for the same person and
- * connector. A held-down Retry must not turn into a stream of forced checks
- * against someone else's server; inside the window the route answers what the
- * last check found (with a fresh sign-in read) instead of checking again.
- * Per process: with several replicas it bounds each one, which is the point —
- * the per-key in-flight collapse in describe-tools only covers concurrency.
- */
-export const CONNECTOR_RETRY_COOLDOWN_MS = 30_000;
-/** Bound on remembered Retry keys, so the cooldown map cannot grow unbounded. */
-export const CONNECTOR_RETRY_COOLDOWN_MAX_KEYS = 1_000;
-
-/**
- * TASK-756 — insert `entry` under `key`, keeping `map` at most `maxKeys`.
- * When full: first drop every entry outside the window (or stamped in the
- * future — a clock step must not pin an entry forever), then, if it is
- * still full of live entries, the oldest (Map order is insertion; `key` is
- * re-inserted so a refresh moves to the back).
- */
-export function rememberBounded<V extends { at: number }>(
-  map: Map<string, V>,
-  key: string,
-  entry: V,
-  windowMs: number,
-  maxKeys: number,
-): void {
-  map.delete(key);
-  if (map.size >= maxKeys) {
-    for (const [k, v] of map) {
-      if (entry.at - v.at >= windowMs || entry.at < v.at) map.delete(k);
-    }
-    while (map.size >= maxKeys) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) break;
-      map.delete(oldest);
-    }
-  }
-  map.set(key, entry);
-}
 type ConnectorInventoryStatus = 'ok' | 'unreachable' | 'needs-auth' | 'unknown';
 interface InventoryStatusBatchOutput {
   statuses: Array<{ connectorId: string; status: ConnectorInventoryStatus; checkedAt: string }>;
-}
-interface DescribeToolsOutput {
-  status: ConnectorInventoryStatus;
 }
 
 /**
@@ -4110,17 +4086,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-756 — the last Retry per (person, connector): when it ran, under
-   * which agent, and what its check found (`failed` = the check itself could
-   * not run; `unavailable` = the sign-in could not be READ just now, so the
-   * server was never asked). Shared by concurrent Retries, so a burst is one
-   * check.
-   */
-  type RetryCheck = ConnectorInventoryStatus | 'failed' | 'unavailable';
-  type RetryEntry = { at: number; agentId: string; checked: Promise<RetryCheck> };
-  const retryCooldown = new Map<string, RetryEntry>();
-
-  /**
    * TASK-803 — ask @ax/agents whether this caller may change this agent's
    * connectors. Resolves `true` / `false` ONLY for an explicit
    * `{ allowed: true | false }`; a rejection, or a reply with no boolean
@@ -4170,41 +4135,33 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-813 / TASK-854 / TASK-858 — the checks every team-credential route
-   * (PUT, GET, DELETE …/connectors/:connectorId/team-key in `'key'` mode;
-   * DELETE …/connectors/:connectorId/team-sign-in in `'sign-in'` mode) runs,
-   * in order, before it touches the vault. Each fails closed and answers the
-   * response itself; `null` means it did, and the route stops.
+   * TASK-813 / TASK-854 / slice 3 — the checks every agent-key route (PUT,
+   * GET, DELETE …/connectors/:connectorId/key) runs, in order, before it
+   * touches the vault. Each fails closed and answers the response itself;
+   * `null` means it did, and the route stops.
    *
    *   1. signed in (401), an agent id (400 `missing-agent-id`), a connector id
    *      (400 `invalid-connector`), the agent resolves under the caller (404);
-   *   2. a team agent (409 `not-a-team-agent` — a personal agent's keys live
-   *      on the person);
-   *   3. `agents:can-set-shared-credential` says yes: only an admin of the
-   *      owning team, with no workspace-admin bypass (403 `forbidden`; agent
-   *      gone → 404 `agent-not-found`; absent → 503 `connectors-unavailable`,
+   *   2. the caller may choose this agent's account ({@link askMayStoreOnAgent}:
+   *      a team agent's team admin, a personal agent's owner — never a
+   *      workspace-admin bypass) (403 `forbidden`; agent gone → 404
+   *      `agent-not-found`; hook absent → 503 `connectors-unavailable`,
    *      faulting → 503 `team-key-check-failed`, logged by error name);
-   *   4. the route's body, via `readBody` (400 with its error string);
-   *   5. the connector exists for the caller (404 `connector-not-found`) and,
-   *      in `'key'` mode only, spends a per-person key (`keyMode: workspace`
-   *      → 409 `team-key-unavailable`). `'sign-in'` mode skips that refusal:
-   *      who pays for a key has nothing to do with whose sign-in the agent
-   *      uses.
+   *   3. the route's body, via `readBody` (400 with its error string);
+   *   4. the connector exists for the caller (404 `connector-not-found`) and
+   *      spends a per-agent key (`keyMode: workspace` → 409
+   *      `team-key-unavailable`).
    *
-   * Hands back the connector's plan entries for the mode (`checks`), each
-   * with its server-side ref: in `'key'` mode the api-key entries — the only
-   * slots a team key can fill; an OAuth slot or the admin's OAuth client
-   * secret is never one — and in `'sign-in'` mode the OAuth sign-in entries
-   * (possibly none; the route decides what that means). Plus a `failed` that
-   * logs a check fault by error name and answers 503 `team-key-check-failed`
-   * (in either mode).
+   * Hands back the connector's api-key plan entries (`checks`), each with its
+   * server-side ref — the only slots an agent key can fill; an OAuth slot or
+   * the admin's OAuth client secret is never one — plus a `failed` that logs
+   * a check fault by error name and answers 503 `team-key-check-failed`.
    */
-  async function teamKeyGate<B>(
+  async function agentKeyGate<B>(
     req: RouteRequest,
     res: RouteResponse,
     readBody: (raw: Buffer) => TeamKeyBodyResult<B>,
-    mode: 'key' | 'sign-in' = 'key',
-  ): Promise<TeamKeyGate<B> | null> {
+  ): Promise<AgentKeyGate<B> | null> {
     const actor = await authActorOr401(bus, initCtx, req, res);
     if (actor === null) return null;
     const agentId = req.params.agentId ?? '';
@@ -4219,10 +4176,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
     const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
     if (agent === null) return null;
-    if (agent.visibility !== 'team') {
-      res.status(409).json({ error: 'not-a-team-agent' });
-      return null;
-    }
     const failed = (step: string, err: unknown): void => {
       initCtx.logger.warn('workspace_team_key_check_failed', {
         agentId,
@@ -4232,13 +4185,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       });
       res.status(503).json({ error: 'team-key-check-failed' });
     };
-    if (!bus.hasService('agents:can-set-shared-credential')) {
+    if (!mayStoreOnAgentAskable(agent.visibility === 'team')) {
       res.status(503).json({ error: 'connectors-unavailable' });
       return null;
     }
     let allowed: boolean;
     try {
-      allowed = await askCanSetSharedCredential(agentId, actor);
+      allowed = await askMayStoreOnAgent(agentId, agent.visibility === 'team', actor);
     } catch (err) {
       if (err instanceof PluginError && err.code === 'not-found') {
         res.status(404).json({ error: 'agent-not-found' });
@@ -4279,7 +4232,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       failed('connector', err);
       return null;
     }
-    if (mode === 'key' && connector?.keyMode === 'workspace') {
+    if (connector?.keyMode === 'workspace') {
       res.status(409).json({ error: 'team-key-unavailable' });
       return null;
     }
@@ -4288,10 +4241,61 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       agentId,
       connectorId,
       ctx,
-      checks: credentialChecks(connector).filter((c) => (mode === 'sign-in' ? c.signIn : !c.signIn)),
+      checks: credentialChecks(connector).filter((c) => !c.signIn),
       body: body.value,
       failed,
     };
+  }
+
+  /**
+   * Slice 3 — may this caller choose the account THIS agent acts as (put a
+   * sign-in or key ON it)? The account belongs to the agent, so:
+   *
+   *   - a team agent: a team admin only (`agents:can-set-shared-credential`,
+   *     TASK-813) — a workspace admin who is not one is refused like a member;
+   *   - a personal agent: its owner only — `agents:can-manage-connectors`
+   *     asked with the admin bit OFF, so the hook's workspace-admin bypass
+   *     cannot put a key on someone else's agent.
+   *
+   * Same contract as the two hooks it asks: `true` / `false` only for an
+   * explicit verdict; a rejection or a reply without one THROWS, so a write
+   * can tell a fault (5xx) from a refusal (403). Check
+   * {@link mayStoreOnAgentAskable} first.
+   */
+  async function askMayStoreOnAgent(
+    agentId: string,
+    teamAgent: boolean,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    return teamAgent
+      ? askCanSetSharedCredential(agentId, actor)
+      : askCanManageConnectors(agentId, { id: actor.id, isAdmin: false });
+  }
+
+  /**
+   * `agents:attach-connector` under the caller's identity; resolves whether
+   * it changed anything (false = it was already attached). A refusal THROWS
+   * — the caller decides what else to undo before answering it.
+   */
+  async function attachToAgent(
+    ctx: AgentContext,
+    actor: { id: string; isAdmin: boolean },
+    agentId: string,
+    connectorId: string,
+  ): Promise<boolean> {
+    const out = await bus.call<AgentsAttachConnectorInput, AgentsConnectorChangeOutput>(
+      'agents:attach-connector',
+      ctx,
+      { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId, connectorId },
+    );
+    return out?.changed === true;
+  }
+
+  /** Is the hook {@link askMayStoreOnAgent} would ask registered? */
+  function mayStoreOnAgentAskable(teamAgent: boolean): boolean {
+    return teamAgent
+      ? bus.hasService('agents:can-set-shared-credential')
+      : bus.hasService('agents:can-manage-connectors');
   }
 
   /**
@@ -4375,136 +4379,70 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-858 — connector ids whose TEAM sign-in this caller may remove: a row
-   * sits at scope `agent` on this agent under one of the connector's OAuth
-   * sign-in plan refs. Asked only for a team admin (`sharedCredentials`),
-   * only when `mcp-oauth:remove-shared-sign-in` is registered, and only when
-   * some connector has a sign-in. One `credentials:list` per read — metadata
-   * only, and agent-scope only: `credentials:has` walks user → agent → global
-   * and would answer for the admin's OWN sign-in. Absent or failing → empty
-   * (the action is hidden), logged by error name; the list itself still loads.
-   */
-  async function teamSignInConnectors(
-    agentId: string,
-    callerId: string,
-    sharedCredentials: boolean,
-    effective: ConnectorsListEffectiveOutput,
-  ): Promise<Set<string>> {
-    const out = new Set<string>();
-    if (!sharedCredentials || !bus.hasService('mcp-oauth:remove-shared-sign-in')) return out;
-    const signInRefs = new Map<string, string[]>();
-    for (const e of Array.isArray(effective?.connectors) ? effective.connectors : []) {
-      const id = e?.summary?.id;
-      if (!isConnectorId(id)) continue;
-      const refs = credentialChecks({ id, keyMode: e.summary.keyMode, capabilities: e.capabilities })
-        .filter((c) => c.signIn)
-        .map((c) => c.ref);
-      if (refs.length > 0) signInRefs.set(id, refs);
-    }
-    if (signInRefs.size === 0 || !bus.hasService('credentials:list')) return out;
-    let rows: ReadonlyArray<CredentialsListRow>;
-    try {
-      const listed = await bus.call<CredentialsListInput, CredentialsListOutput>(
-        'credentials:list',
-        agentWorkspaceCtx(agentId, callerId),
-        { scope: 'agent', ownerId: agentId },
-      );
-      rows = Array.isArray(listed?.credentials) ? listed.credentials : [];
-    } catch (err) {
-      initCtx.logger.warn('workspace_team_sign_in_list_failed', {
-        agentId,
-        name: err instanceof Error ? err.name : 'unknown',
-      });
-      return out;
-    }
-    const saved = new Set(
-      rows.filter((r) => r?.scope === 'agent' && r.ownerId === agentId).map((r) => r.ref),
-    );
-    for (const [id, refs] of signInRefs) {
-      if (refs.some((ref) => saved.has(ref))) out.add(id);
-    }
-    return out;
-  }
-
-  /**
-   * After a connector leaves an agent: is it now on NONE of the agents this
-   * person uses? Then their own sign-in and personal keys for it go too, so
-   * adding it to an agent later asks them to sign in again instead of quietly
-   * reusing an old grant. A team agent's shared sign-in or team key is the
-   * team's and is never touched here.
+   * Slice 3 — after a connector leaves an agent, delete the account it had ON
+   * that agent: its OAuth sign-in (`mcp-oauth:remove-shared-sign-in` — the
+   * agent-scope token AND the agent's reconnect marker, which only
+   * @ax/mcp-oauth owns) and, for a per-agent key connector, each key slot at
+   * scope `agent`. The refs come from the connector's credential plan, never
+   * the client. A shared (company) key is the admin's and is never touched.
    *
-   * `kept` whenever we can't tell (a read failed, a hook is missing): a
-   * sign-in left in place is the cheaper way to be wrong than signing someone
-   * out of a connector one of their agents still uses. `failed` is a delete
-   * that was attempted and didn't land — reported as a partial cleanup.
+   * Resolves `true` only when every delete answered. Never throws: the detach
+   * already landed and a leftover row is unreadable without the attachment.
+   * Failures are logged by error name only.
    */
-  async function signOutIfUnused(
+  async function removeAgentCredentials(
     ctx: AgentContext,
-    userId: string,
+    agentId: string,
     connectorId: string,
-  ): Promise<'signed-out' | 'kept' | 'failed'> {
-    if (!bus.hasService('agents:list-for-user') || !bus.hasService('connectors:get')) {
-      return 'kept';
-    }
-    try {
-      for (const agent of await listAgents(userId)) {
-        const out = await listEffectiveConnectors(agent, userId);
-        const ids = (Array.isArray(out?.connectors) ? out.connectors : []).map((c) => c?.summary?.id);
-        if (ids.includes(connectorId)) return 'kept';
-      }
-    } catch (err) {
-      initCtx.logger.warn('workspace_connector_sign_out_check_failed', {
+    entry: ConnectorsListEffectiveOutput['connectors'][number],
+  ): Promise<boolean> {
+    const checks = credentialChecks({
+      id: connectorId,
+      keyMode: entry.summary?.keyMode,
+      capabilities: entry.capabilities,
+    });
+    const failed = (step: string, err: unknown): false => {
+      initCtx.logger.warn('workspace_connector_credential_cleanup_failed', {
+        agentId,
         connectorId,
+        step,
         name: err instanceof Error ? err.name : 'unknown',
       });
-      return 'kept';
-    }
-    let connector: Connector;
-    try {
-      const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
-        'connectors:get',
-        ctx,
-        { userId, connectorId },
-      );
-      connector = out.connector;
-    } catch (err) {
-      initCtx.logger.warn('workspace_connector_sign_out_check_failed', {
-        connectorId,
-        name: err instanceof Error ? err.name : 'unknown',
-      });
-      return 'kept';
-    }
-    // A shared-key connector holds nothing personal to sign out of.
-    if (connector?.keyMode === 'workspace') return 'kept';
-    const checks = credentialChecks(connector);
-    if (checks.length === 0) return 'kept';
-    try {
-      for (const check of checks) {
-        if (check.signIn) {
-          if (!bus.hasService('mcp-oauth:remove-personal-sign-in')) return 'kept';
-          await bus.call<McpOauthRemovePersonalSignInInput, unknown>(
-            'mcp-oauth:remove-personal-sign-in',
+      return false;
+    };
+    let complete = true;
+    if (checks.some((c) => c.signIn)) {
+      if (!bus.hasService('mcp-oauth:remove-shared-sign-in')) {
+        complete = failed('sign-in-unavailable', undefined);
+      } else {
+        try {
+          await bus.call<McpOauthRemoveSharedSignInInput, McpOauthRemoveSharedSignInOutput>(
+            'mcp-oauth:remove-shared-sign-in',
             ctx,
-            { userId, connectorId },
+            { agentId, connectorId },
           );
-        } else {
-          if (!bus.hasService('credentials:delete')) return 'kept';
-          await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
-            scope: 'user',
-            ownerId: userId,
-            ref: check.ref,
-          });
+        } catch (err) {
+          complete = failed('sign-in', err);
         }
       }
-    } catch (err) {
-      initCtx.logger.warn('workspace_connector_sign_out_failed', {
-        connectorId,
-        name: err instanceof Error ? err.name : 'unknown',
-      });
-      return 'failed';
     }
-    initCtx.logger.info('workspace_connector_signed_out', { connectorId });
-    return 'signed-out';
+    const keyRefs =
+      entry.summary?.keyMode === 'workspace' ? [] : checks.filter((c) => !c.signIn).map((c) => c.ref);
+    if (keyRefs.length > 0 && !bus.hasService('credentials:delete')) {
+      return failed('key-unavailable', undefined);
+    }
+    for (const ref of keyRefs) {
+      try {
+        await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
+          scope: 'agent',
+          ownerId: agentId,
+          ref,
+        });
+      } catch (err) {
+        complete = failed('key', err);
+      }
+    }
+    return complete;
   }
 
   /**
@@ -7133,8 +7071,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         sharedCredentialsAllowed(agentId, teamAgent, actor),
       ]);
       const teamKeys = sharedCredentials ? teamKeyConnectors(out) : new Set<string>();
-      // TASK-858 — whose team sign-in this caller may remove.
-      const teamSignIns = await teamSignInConnectors(agentId, userId, sharedCredentials, out);
       res.status(200).json({
         connectors: rows.map((r) => {
           const setup = setupForCaller(health.setup.get(r.id), teamAgent, sharedCredentials);
@@ -7145,7 +7081,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             ...(setup !== undefined ? { setup } : {}),
             removable: manageable,
             ...(teamKeys.has(r.id) ? { teamKey: true as const } : {}),
-            ...(teamSignIns.has(r.id) ? { teamSignIn: true as const } : {}),
           };
         }),
         shared: teamAgent,
@@ -7156,169 +7091,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * POST /api/workspace/agents/:agentId/connectors/:connectorId/retry —
-     * the row menu's "Retry" (TASK-741).
+     * PUT /api/workspace/agents/:agentId/connectors/:connectorId/key
+     * `{ slot, payloadB64 }` — save this agent's own key for one slot
+     * (TASK-813; renamed from `…/team-key` and opened to personal agents in
+     * slice 3): an agent-scope api-key the agent's runs use. Saving over a
+     * saved key replaces it (TASK-854). The rail's "Add key" on a row whose
+     * per-agent key is missing.
      *
-     * The ONE place the rail checks a connector afresh: exactly one forced
-     * `connectors:describe-tools` for one connector the caller can already see
-     * on this agent (a connector outside the agent's list is a 404, so this
-     * cannot be used to make the host reach arbitrary connectors). Answers the
-     * connector's health afterwards, from the same stored state the list reads
-     * — a check that hit a rejected sign-in comes back `needs-reconnect`. A
-     * check that could not run at all is a 502, unless nobody has signed in to
-     * the connector (TASK-805): that is `needs-sign-in` with its setup, a 200,
-     * because the vault already said what the person must do.
-     */
-    async retryConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
-      // TASK-795 — the admin bit picks a needs-sign-in row's setup.
-      const actor = await authActorOr401(bus, initCtx, req, res);
-      if (actor === null) return;
-      const userId = actor.id;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const connectorId = req.params.connectorId ?? '';
-      if (!isConnectorId(connectorId)) {
-        res.status(400).json({ error: 'invalid-connector' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
-      if (
-        !bus.hasService('connectors:list-effective') ||
-        !bus.hasService('connectors:describe-tools')
-      ) {
-        res.status(503).json({ error: 'connectors-unavailable' });
-        return;
-      }
-      const out = await listEffectiveConnectors(agent, userId);
-      const listed = (Array.isArray(out?.connectors) ? out.connectors : []).some(
-        (c) => c?.summary?.id === connectorId,
-      );
-      if (!listed) {
-        res.status(404).json({ error: 'connector-not-found' });
-        return;
-      }
-      // TASK-756 — cooldown per (person, connector). Inside the window no new
-      // check runs: the same agent gets what the last check found (a burst
-      // shares the one in flight); another agent gets its stored health.
-      const cooldownKey = JSON.stringify([userId, connectorId]);
-      const at = now().getTime();
-      const recent = retryCooldown.get(cooldownKey);
-      let checked: RetryCheck | 'stored';
-      if (recent !== undefined && at >= recent.at && at - recent.at < CONNECTOR_RETRY_COOLDOWN_MS) {
-        initCtx.logger.info('workspace_connector_retry_cooled_down', { agentId, connectorId });
-        checked = recent.agentId === agentId ? await recent.checked : 'stored';
-      } else {
-        const run = (async (): Promise<RetryCheck> => {
-          try {
-            const r = await bus.call<
-              { userId: string; agentId: string; connectorId: string; force: true },
-              DescribeToolsOutput
-            >('connectors:describe-tools', agentWorkspaceCtx(agentId, userId), {
-              userId,
-              agentId,
-              connectorId,
-              force: true,
-            });
-            return r?.status ?? 'unknown';
-          } catch (err) {
-            const transient = (err as { code?: unknown } | null)?.code === 'credential-unavailable';
-            initCtx.logger.warn('workspace_connector_retry_failed', {
-              agentId,
-              connectorId,
-              name: err instanceof Error ? err.name : 'unknown',
-              transient,
-            });
-            // `credential-unavailable` (TASK-756): the sign-in could not be
-            // read just now — which says nothing about whether it works.
-            return transient ? 'unavailable' : 'failed';
-          }
-        })();
-        const entry: RetryEntry = { at, agentId, checked: run };
-        rememberBounded(retryCooldown, cooldownKey, entry, CONNECTOR_RETRY_COOLDOWN_MS, CONNECTOR_RETRY_COOLDOWN_MAX_KEYS);
-        checked = await run;
-        // A credential blip never reached the server, so it is nothing the
-        // cooldown protects against — and "try again" must mean it. Forget it
-        // (only if nothing newer has replaced it), so the next Retry checks.
-        if (checked === 'unavailable' && retryCooldown.get(cooldownKey) === entry) {
-          retryCooldown.delete(cooldownKey);
-        }
-      }
-      // Reachability comes from the check just made; whether its sign-in was
-      // rejected comes from the marker that check's token resolve would have
-      // written — the same rule the list applies.
-      const notLoaded = connectorsNotLoaded(out);
-      // A missing credential (TASK-795) comes from the same stored read.
-      const stored = await connectorHealth(agentId, actor, [connectorId], out, notLoaded);
-      const storedHealth = stored.health.get(connectorId) ?? 'ok';
-      let health: AgentConnectorHealth;
-      if (checked === 'failed' || checked === 'unavailable') {
-        // TASK-805 — a check that could not run is a 502 ("we couldn't check")
-        // EXCEPT for a connector the vault's presence read says nobody has
-        // signed in to (or added a key for): that is `needs-sign-in` whatever
-        // the check did — no check result outranks it (`healthOf`) and Sign in
-        // / Add key is the fix a person can act on. The stored word is
-        // `needs-sign-in` only when neither not-loaded nor a rejected sign-in
-        // outranks it, and only when the presence read answered "absent": a
-        // failed or missing presence read counts as present, so "unknown"
-        // never becomes "never signed in". The failure was logged above.
-        if (storedHealth !== 'needs-sign-in') {
-          res.status(502).json({ error: 'retry-failed' });
-          return;
-        }
-        initCtx.logger.info('workspace_connector_retry_answered_needs_sign_in', {
-          agentId,
-          connectorId,
-        });
-        health = storedHealth;
-      } else if (checked === 'stored') {
-        health = storedHealth;
-      } else {
-        health = healthOf(
-          notLoaded,
-          new Set(storedHealth === 'needs-reconnect' ? [connectorId] : []),
-          new Set(storedHealth === 'needs-sign-in' ? [connectorId] : []),
-          new Map([[connectorId, checked]]),
-          connectorId,
-        );
-      }
-      const storedSetup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
-      // TASK-798 / TASK-813 — the same "ask the owner" rewrite the list
-      // applies; only asked when it could change the answer.
-      const setup =
-        storedSetup === 'sign-in' && agent.visibility === 'team'
-          ? setupForCaller(storedSetup, true, await sharedCredentialsAllowed(agentId, true, actor))
-          : storedSetup;
-      res.status(200).json({
-        health,
-        ...(health === 'needs-reconnect' && stored.sharedSignIn.has(connectorId)
-          ? { sharedSignIn: true as const }
-          : {}),
-        ...(setup !== undefined ? { setup } : {}),
-      } satisfies AgentConnectorRetried);
-    },
-
-    /**
-     * PUT /api/workspace/agents/:agentId/connectors/:connectorId/team-key
-     * `{ slot, payloadB64 }` — save a TEAM key (TASK-813): an agent-scope
-     * api-key every member of this team agent uses unless they add their own.
-     * Saving over a saved key replaces it (TASK-854).
+     * Only whoever may choose the agent's account may — a team agent's team
+     * admin, a personal agent's owner ({@link askMayStoreOnAgent}); a
+     * workspace admin who is neither is refused. Every check runs, in order,
+     * before the vault is written, and each fails closed:
      *
-     * Only an admin of the team that owns the agent may, per
-     * `agents:can-set-shared-credential` — a workspace admin who is not one is
-     * refused like a member. Every check runs, in order, before the vault is
-     * written, and each fails closed:
-     *
-     *   1–5. the shared team-key gate ({@link teamKeyGate}), with a
+     *   1–4. the agent-key gate ({@link agentKeyGate}), with a
      *      well-formed body — `slot` + strict base64 `payloadB64` ≤ 16 KiB
      *      that decodes to something (400 `invalid-json` / `invalid-body` /
      *      `invalid-key`) — checked after the permission and before the
      *      connector, and `slot` one of the connector's api-key slots (400
      *      `unknown-slot`);
-     *   6. the vault would let the agent's users READ that ref from the agent
+     *   5. the vault would let the agent's users READ that ref from the agent
      *      (`credentials:authorize-agent:account`, TASK-788): a key nobody can
      *      use is not saved (409 `team-key-unavailable`; absent or faulting →
      *      503).
@@ -7327,8 +7118,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `team-key-not-saved`. The key and `payloadB64` are never logged or
      * echoed; errors are logged by name only.
      */
-    async setTeamKey(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const gate = await teamKeyGate(req, res, readTeamKeyBody);
+    async setAgentKey(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await agentKeyGate(req, res, readTeamKeyBody);
       if (gate === null) return;
       const { actor, agentId, connectorId, ctx, failed } = gate;
       const check = gate.checks.find((c) => c.slot === gate.body.slot);
@@ -7385,20 +7176,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * GET /api/workspace/agents/:agentId/connectors/:connectorId/team-key —
-     * is a TEAM key saved (TASK-854)? `{ slots: [{ slot, saved }] }`, one
-     * entry per api-key slot a team key can fill, in the connector's order.
+     * GET /api/workspace/agents/:agentId/connectors/:connectorId/key — is
+     * this agent's key saved (TASK-854)? `{ slots: [{ slot, saved }] }`, one
+     * entry per api-key slot an agent key can fill, in the connector's order.
      *
-     * Behind the same team-key gate as the PUT ({@link teamKeyGate}): only an
-     * admin of the owning team may ask — a workspace admin who is not one is
-     * refused like a member, before the vault is read. Then `credentials:list`
+     * Behind the same agent-key gate as the PUT ({@link agentKeyGate}): only
+     * whoever may choose the agent's account may ask, before the vault is
+     * read. Then `credentials:list`
      * at scope `agent` for this agent (absent → 503 `credentials-unavailable`,
      * faulting → 503 `team-key-check-failed`, logged by error name). `saved`
      * is whether a row exists under the slot's plan ref; the response carries
      * the slot name and that boolean only — never a ref, kind, date or value.
      */
-    async getTeamKeys(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const gate = await teamKeyGate(req, res, noTeamKeyBody);
+    async getAgentKeys(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await agentKeyGate(req, res, noTeamKeyBody);
       if (gate === null) return;
       const { agentId, ctx, failed } = gate;
       if (!bus.hasService('credentials:list')) {
@@ -7425,11 +7216,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId/team-key
-     * `{ slot }` — remove a TEAM key (TASK-854). Members then need their own
-     * key for this connector.
+     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId/key
+     * `{ slot }` — remove this agent's key for one slot (TASK-854).
      *
-     * Behind the same team-key gate as the PUT ({@link teamKeyGate}), with a
+     * Behind the same agent-key gate as the PUT ({@link agentKeyGate}), with a
      * body of `{ slot }` and nothing else (400 `invalid-json` /
      * `invalid-body`) and `slot` one of the connector's api-key slots (400
      * `unknown-slot`). The ref comes from the connector's credential plan —
@@ -7441,8 +7231,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `{ removed: true }`. A failure there is a 502 `team-key-not-removed`,
      * logged by error name only.
      */
-    async removeTeamKey(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const gate = await teamKeyGate(req, res, readTeamKeySlotBody);
+    async removeAgentKey(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await agentKeyGate(req, res, readTeamKeySlotBody);
       if (gate === null) return;
       const { agentId, connectorId, ctx } = gate;
       const check = gate.checks.find((c) => c.slot === gate.body.slot);
@@ -7474,69 +7264,42 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId/team-sign-in
-     * — remove a team agent's shared sign-in (TASK-858). Everyone using the
-     * agent loses this connector until a team admin signs in again; anyone
-     * who signed in with their own account keeps it.
+     * POST /api/workspace/agents/:agentId/connectors `{ connectorId, keys? }`
+     * — add one connector to this agent, all or nothing (slice 3).
      *
-     * Behind the same team-credential gate as the team-key routes
-     * ({@link teamKeyGate}) in `'sign-in'` mode: only an admin of the owning
-     * team, no workspace-admin bypass; a shared-key (`keyMode: workspace`)
-     * connector is not refused. Any body is ignored — the client never names
-     * a ref. A connector with no OAuth sign-in slot is a 409
-     * `team-sign-in-unavailable`.
+     * What the connector needs decides how (from its definition,
+     * `connectors:get`):
      *
-     * Then `mcp-oauth:remove-shared-sign-in` with exactly `{ agentId,
-     * connectorId }` — it owns the agent-scope token row and the agent's
-     * needs-reconnect marker (absent → 503 `connectors-unavailable`). A
-     * failure there is a 502 `team-sign-in-not-removed`, logged by error
-     * name only. Success is 200 `{ removed: true }`.
-     */
-    async removeTeamSignIn(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const gate = await teamKeyGate(req, res, noTeamKeyBody, 'sign-in');
-      if (gate === null) return;
-      const { agentId, connectorId, ctx } = gate;
-      if (gate.checks.length === 0) {
-        res.status(409).json({ error: 'team-sign-in-unavailable' });
-        return;
-      }
-      if (!bus.hasService('mcp-oauth:remove-shared-sign-in')) {
-        res.status(503).json({ error: 'connectors-unavailable' });
-        return;
-      }
-      try {
-        await bus.call<McpOauthRemoveSharedSignInInput, McpOauthRemoveSharedSignInOutput>(
-          'mcp-oauth:remove-shared-sign-in',
-          ctx,
-          { agentId, connectorId },
-        );
-      } catch (err) {
-        initCtx.logger.warn('workspace_team_sign_in_remove_failed', {
-          agentId,
-          connectorId,
-          name: err instanceof Error ? err.name : 'unknown',
-        });
-        res.status(502).json({ error: 'team-sign-in-not-removed' });
-        return;
-      }
-      initCtx.logger.info('workspace_team_sign_in_removed', { agentId, connectorId });
-      res.status(200).json({ removed: true });
-    },
-
-    /**
-     * POST /api/workspace/agents/:agentId/connectors — attach one connector.
+     *   - an OAuth sign-in: 409 `connector-needs-sign-in`. An OAuth connector
+     *     is added by its sign-in — @ax/mcp-oauth's callback attaches it once
+     *     the token is written — so it is never attached here.
+     *   - a per-agent key (`keyMode: 'personal'`): `keys` must name every
+     *     api-key slot (400 `connector-needs-key` otherwise; a slot it does
+     *     not have is 400 `unknown-slot`). Each key is written ON the agent
+     *     (`credentials:set`, scope `agent`), then the connector is attached.
+     *     If a write or the attach fails, every key this request wrote is
+     *     deleted again and the answer is that first failure's — so nothing
+     *     is half-added.
+     *   - a shared key (`keyMode: 'workspace'`) or nothing: `keys` is refused
+     *     (400 `keys-not-accepted`), and a shared key must already exist
+     *     ({@link sharedKeyGate}).
      *
-     * One id per call, through `agents:attach-connector`, which is atomic
-     * (two people attaching at once never lose either write) and which owns
-     * the rule (TASK-798) that on a team agent only its owner (a team admin)
-     * or a workspace admin may attach at all. A shared-key connector is one
-     * anyone may add (TASK-827). This route does not re-decide that; it
-     * passes the caller's identity and reports the hook's refusal as a 403. It does ASK @ax/agents the TASK-798 question up
-     * front on a team agent, so a member's request never makes the host read
-     * credential presence on their behalf before being refused. That ask
-     * (TASK-803) is a 403 only for the hook's explicit `allowed: false`; a
-     * fault in it propagates (5xx) and a missing hook is a 503, so a person is
+     * Who may: `agents:attach-connector` is atomic (two people attaching at
+     * once never lose either write) and owns the rule (TASK-798) that on a
+     * team agent only its owner (a team admin) or a workspace admin may
+     * attach at all; its refusal is a 403 here. This route ASKS @ax/agents
+     * the TASK-798 question up front on a team agent, so a member's request
+     * never makes the host read or write a credential on their behalf. That
+     * ask (TASK-803) is a 403 only for the hook's explicit `allowed: false`;
+     * a fault propagates (5xx) and a missing hook is a 503, so a person is
      * never told "forbidden" about a question that was never answered.
+     *
+     * A key write is further gated, before anything is written, on whoever
+     * may choose the agent's account ({@link askMayStoreOnAgent}: a team
+     * agent's team admin, a personal agent's owner) and on the vault's
+     * agent-store question per ref (`credentials:authorize-agent:account`
+     * with `purpose: 'store'`, 403 `agent-store-refused`). Keys are never
+     * logged or echoed; failures are logged by error name only.
      */
     async attachConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -7548,29 +7311,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
       if (agent === null) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
-      } catch {
-        res.status(400).json({ error: 'invalid-json' });
+      const body = readAttachBody(req.body);
+      if (!body.ok) {
+        res.status(400).json({ error: body.error });
         return;
       }
-      const connectorId = (parsed as { connectorId?: unknown } | null)?.connectorId;
-      if (!isConnectorId(connectorId)) {
-        res.status(400).json({ error: 'invalid-connector' });
-        return;
-      }
+      const { connectorId, keys } = body.value;
       if (!bus.hasService('agents:attach-connector')) {
         res.status(503).json({ error: 'connectors-unavailable' });
         return;
       }
-      // TASK-798 — refuse a team agent's plain member before the gate below
-      // reads any credential presence for them. The hook decides again.
+      const teamAgent = agent.visibility === 'team';
+      // TASK-798 — refuse a team agent's plain member before anything below
+      // reads or writes a credential for them. The hook decides again.
       // TASK-803 — 403 ONLY on the hook's explicit `allowed: false`. A fault
       // (a rejection, a reply with no verdict) rethrows so the router answers
       // 5xx and logs it, and a missing hook is 503 — never "forbidden". All
       // three still stop here: nothing below runs without a yes.
-      if (agent.visibility === 'team' && !actor.isAdmin) {
+      if (teamAgent && !actor.isAdmin) {
         if (!bus.hasService('agents:can-manage-connectors')) {
           res.status(503).json({ error: 'connectors-unavailable' });
           return;
@@ -7590,31 +7348,191 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           return;
         }
       }
-      // TASK-761 — signed in / keyed FIRST, attached second (see the gate).
-      const gate = await attachCredentialGate(
-        bus,
-        agentWorkspaceCtx(agentId, actor.id),
-        initCtx.logger,
-        { id: actor.id, isAdmin: actor.isAdmin },
-        connectorId,
-      );
-      if (!gate.ok) {
-        res
-          .status(gate.status)
-          .json(gate.message === undefined ? { error: gate.error } : { error: gate.error, message: gate.message });
+
+      const ctx = agentWorkspaceCtx(agentId, actor.id);
+      if (!bus.hasService('connectors:get')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
         return;
       }
+      let connector: Connector;
       try {
-        const out = await bus.call<AgentsAttachConnectorInput, AgentsConnectorChangeOutput>(
-          'agents:attach-connector',
-          agentWorkspaceCtx(agentId, actor.id),
-          { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId, connectorId },
+        const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
+          'connectors:get',
+          ctx,
+          { userId: actor.id, connectorId },
         );
-        res.status(200).json({ attached: true, changed: out.changed === true });
+        connector = out.connector;
       } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-found') {
+          res.status(404).json({ error: 'connector-not-found' });
+          return;
+        }
+        initCtx.logger.warn('workspace_connector_attach_check_failed', {
+          connectorId,
+          step: 'connector',
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(503).json({ error: 'connector-check-failed' });
+        return;
+      }
+      const checks = credentialChecks(connector);
+
+      // An OAuth connector is added by its sign-in callback, never here.
+      if (checks.some((c) => c.signIn)) {
+        res.status(409).json({
+          error: 'connector-needs-sign-in',
+          message: 'This connector is added by signing in to it.',
+        });
+        return;
+      }
+
+      const keySlots = connector?.keyMode === 'workspace' ? [] : checks;
+      if (keySlots.length === 0) {
+        // A shared-key or no-auth connector: nothing of the agent's to write.
+        if (keys !== undefined) {
+          res.status(400).json({ error: 'keys-not-accepted' });
+          return;
+        }
+        const gate = await sharedKeyGate(bus, ctx, initCtx.logger, actor, connector);
+        if (!gate.ok) {
+          res
+            .status(gate.status)
+            .json(gate.message === undefined ? { error: gate.error } : { error: gate.error, message: gate.message });
+          return;
+        }
+        let changed: boolean;
+        try {
+          changed = await attachToAgent(ctx, actor, agentId, connectorId);
+        } catch (err) {
+          if (connectorWriteRefused(res, err)) return;
+          throw err;
+        }
+        res.status(200).json({ attached: true, changed });
+        return;
+      }
+
+      // A per-agent key connector: every slot's key, in this request.
+      const given = keys ?? [];
+      if (given.some((k) => !keySlots.some((c) => c.slot === k.slot))) {
+        res.status(400).json({ error: 'unknown-slot' });
+        return;
+      }
+      const planned = keySlots.map((c) => ({ ref: c.ref, key: given.find((k) => k.slot === c.slot) }));
+      if (planned.some((p) => p.key === undefined)) {
+        res.status(400).json({
+          error: 'connector-needs-key',
+          message: 'Add the key this connector needs, then add it.',
+        });
+        return;
+      }
+
+      // Who may choose this agent's account, then the vault's agent-store
+      // question per ref — both before anything is written.
+      if (!mayStoreOnAgentAskable(teamAgent)) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      let mayStore: boolean;
+      try {
+        mayStore = await askMayStoreOnAgent(agentId, teamAgent, actor);
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-found') {
+          res.status(404).json({ error: 'agent-not-found' });
+          return;
+        }
+        throw err;
+      }
+      if (!mayStore) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      if (!bus.hasService('credentials:authorize-agent:account')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      for (const { ref } of planned) {
+        let storable: boolean;
+        try {
+          const r = await bus.call<CredentialsAuthorizeAgentInput, CredentialsAuthorizeAgentOutput>(
+            'credentials:authorize-agent:account',
+            ctx,
+            { userId: actor.id, agentId, ref, purpose: 'store' },
+          );
+          storable = r?.allowed === true;
+        } catch (err) {
+          initCtx.logger.warn('workspace_connector_attach_check_failed', {
+            connectorId,
+            step: 'authorize',
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+          res.status(503).json({ error: 'connector-check-failed' });
+          return;
+        }
+        if (!storable) {
+          res.status(403).json({ error: 'agent-store-refused' });
+          return;
+        }
+      }
+      // A write that cannot be undone is not made: no delete, no Add.
+      if (!bus.hasService('credentials:set') || !bus.hasService('credentials:delete')) {
+        res.status(503).json({ error: 'credentials-unavailable' });
+        return;
+      }
+
+      // Every ref a write was ATTEMPTED for — a write that threw may still
+      // have landed, and deleting an absent row is a quiet success.
+      const attempted: string[] = [];
+      const undo = async (): Promise<void> => {
+        for (const ref of attempted) {
+          try {
+            await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
+              scope: 'agent',
+              ownerId: agentId,
+              ref,
+            });
+          } catch (err) {
+            initCtx.logger.warn('workspace_connector_key_rollback_failed', {
+              agentId,
+              connectorId,
+              name: err instanceof Error ? err.name : 'unknown',
+            });
+          }
+        }
+        initCtx.logger.info('workspace_connector_key_rolled_back', { agentId, connectorId });
+      };
+      for (const { ref, key } of planned) {
+        attempted.push(ref);
+        try {
+          await bus.call<CredentialsSetInput, unknown>('credentials:set', ctx, {
+            scope: 'agent',
+            ownerId: agentId,
+            ref,
+            kind: 'api-key',
+            payload: key!.payload,
+          });
+        } catch (err) {
+          initCtx.logger.warn('workspace_connector_key_save_failed', {
+            agentId,
+            connectorId,
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+          await undo();
+          res.status(502).json({ error: 'connector-key-not-saved' });
+          return;
+        }
+      }
+      // REVIEW FOCUS — the attach is refused (or throws) after the keys were
+      // written: undo them, then answer exactly as a refused attach does.
+      let changed: boolean;
+      try {
+        changed = await attachToAgent(ctx, actor, agentId, connectorId);
+      } catch (err) {
+        await undo();
         if (connectorWriteRefused(res, err)) return;
         throw err;
       }
+      initCtx.logger.info('workspace_connector_key_saved', { agentId, connectorId });
+      res.status(200).json({ attached: true, changed });
     },
 
     /**
@@ -7642,10 +7560,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * row is inert — and a miss is reported as `cleanup: 'partial'` rather
      * than dressed up as complete.
      *
-     * Last, when the connector is now on none of the caller's agents, their
-     * own sign-in and personal keys for it are deleted ({@link signOutIfUnused})
-     * and the answer says `signedOut: true` — so the next agent it's added to
-     * asks them to sign in again.
+     * Last (slice 3), what the connector's account was on THIS agent goes
+     * too ({@link removeAgentCredentials}): its OAuth sign-in
+     * (`mcp-oauth:remove-shared-sign-in`, which also clears the agent's
+     * reconnect marker) and its per-agent keys (`credentials:delete` at scope
+     * `agent`). Never a shared (company) key, never a person's own row, never
+     * another agent's. Best-effort like the rest of the cleanup — a leftover
+     * row is unreadable once the connector is off the agent — and a miss is
+     * `cleanup: 'partial'`.
      */
     async removeConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -7700,11 +7622,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         connectorId,
         Array.isArray(entry.toolNamespaces) ? entry.toolNamespaces : [],
       );
-      const signOut = await signOutIfUnused(ctx, actor.id, connectorId);
+      const credentialsGone = await removeAgentCredentials(ctx, agentId, connectorId, entry);
       res.status(200).json({
         removed: true,
-        cleanup: complete && signOut !== 'failed' ? 'complete' : 'partial',
-        ...(signOut === 'signed-out' ? { signedOut: true as const } : {}),
+        cleanup: complete && credentialsGone ? 'complete' : 'partial',
       } satisfies AgentConnectorRemoved);
     },
 
@@ -8801,34 +8722,23 @@ export async function registerWorkspaceRoutes(
       handler: handlers.removeConnector as unknown as RouteHandler,
     },
     {
-      // TASK-813 — a team agent's shared key, team admins only.
+      // TASK-813 / slice 3 — this agent's own key: a team agent's team admin,
+      // or a personal agent's owner.
       method: 'PUT',
-      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
-      handler: handlers.setTeamKey as unknown as RouteHandler,
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/key',
+      handler: handlers.setAgentKey as unknown as RouteHandler,
     },
     {
-      // TASK-854 — is a team key saved (per slot, a boolean only)? Team admins only.
+      // TASK-854 — is the agent's key saved (per slot, a boolean only)? Same gate.
       method: 'GET',
-      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
-      handler: handlers.getTeamKeys as unknown as RouteHandler,
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/key',
+      handler: handlers.getAgentKeys as unknown as RouteHandler,
     },
     {
-      // TASK-854 — remove a team key. Team admins only.
+      // TASK-854 — remove the agent's key. Same gate.
       method: 'DELETE',
-      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
-      handler: handlers.removeTeamKey as unknown as RouteHandler,
-    },
-    {
-      // TASK-858 — remove a team agent's shared sign-in. Team admins only.
-      method: 'DELETE',
-      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-sign-in',
-      handler: handlers.removeTeamSignIn as unknown as RouteHandler,
-    },
-    {
-      // TASK-741 — the row menu's "Retry": one forced check of one connector.
-      method: 'POST',
-      path: '/api/workspace/agents/:agentId/connectors/:connectorId/retry',
-      handler: handlers.retryConnector as unknown as RouteHandler,
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/key',
+      handler: handlers.removeAgentKey as unknown as RouteHandler,
     },
     {
       // TASK-742 — one connector's details: its tools and this agent's
