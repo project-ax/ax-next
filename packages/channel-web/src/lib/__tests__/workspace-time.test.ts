@@ -137,11 +137,20 @@ describe('conversationDate', () => {
 describe('shortDay', () => {
   const ISO = '2026-10-07T12:00:00.000Z';
 
-  it('says day then month, whatever order the locale would pick', async () => {
+  it('English: day then month, whichever order the locale would pick', async () => {
     const { shortDay } = await import('../workspace-time');
-    // en-US alone would say "Oct 7"; the copy is "7 Oct" everywhere.
+    // en-US alone would say "Oct 7"; the English copy reads "on 7 Oct".
     expect(shortDay(ISO, 'en-US')).toBe('7 Oct');
     expect(shortDay(ISO, 'en-GB')).toBe('7 Oct');
+  });
+
+  it("every other language keeps its own native short date", async () => {
+    const { shortDay } = await import('../workspace-time');
+    expect(shortDay(ISO, 'de')).toBe(new Intl.DateTimeFormat('de', { day: 'numeric', month: 'short' }).format(new Date(ISO)));
+    expect(shortDay(ISO, 'de')).toMatch(/^7\. Okt/);
+    // Never "7 10月": the parts must not be re-glued in English order.
+    expect(shortDay(ISO, 'ja')).toBe('10月7日');
+    expect(shortDay(ISO, 'zh')).toBe('10月7日');
   });
 
   it('reads the instant on the READER\'s calendar', async () => {

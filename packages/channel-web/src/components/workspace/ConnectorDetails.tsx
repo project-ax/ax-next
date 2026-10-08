@@ -26,7 +26,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -390,18 +390,34 @@ function ConnectionLine({
  */
 function SignedInLine({ signedIn }: { signedIn: AgentConnectorSignedIn | undefined }) {
   if (signedIn === undefined) return null;
+  // `title` is the whole sentence as plain text; the visible line isolates
+  // the provider's account (or the signer's name) in a `<bdi>`, so
+  // right-to-left text can't reorder the words around it.
   let text: string | null = null;
+  let line: ReactNode = null;
   if (signedIn.account !== null) {
     text = `Signed in as ${signedIn.account}`;
+    line = (
+      <>
+        Signed in as <bdi>{signedIn.account}</bdi>
+      </>
+    );
   } else if (signedIn.at !== null) {
     const day = shortDay(signedIn.at);
     const by = signedIn.byYou ? 'you' : (signedIn.byName ?? 'someone');
-    if (day !== '') text = `Signed in by ${by} on ${day}`;
+    if (day !== '') {
+      text = `Signed in by ${by} on ${day}`;
+      line = (
+        <>
+          Signed in by <bdi>{by}</bdi> on {day}
+        </>
+      );
+    }
   }
   if (text === null) return null;
   return (
     <p className="mt-0.5 truncate text-[12px] text-muted-foreground" title={text}>
-      {text}
+      {line}
     </p>
   );
 }

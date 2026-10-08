@@ -244,7 +244,7 @@ export function AgentConnectors({
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
   const [notice, setNotice] = useState<
-    { tone: 'error' | 'note'; text: string } | null
+    { tone: 'error' | 'note'; text: ReactNode } | null
   >(null);
   const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
   const [addingKey, setAddingKey] = useState<AgentConnectorRow | null>(null);
@@ -381,7 +381,8 @@ export function AgentConnectors({
                     {row.signedIn?.account != null && (
                       <span className="text-muted-foreground" title={row.signedIn.account}>
                         {' · '}
-                        {row.signedIn.account}
+                        {/* bdi: a right-to-left account can't reorder the row. */}
+                        <bdi>{row.signedIn.account}</bdi>
                       </span>
                     )}
                   </span>
@@ -521,11 +522,16 @@ export function AgentConnectors({
  * Slice 4 — "Now b@x (was a@x)" after Sign in again landed on a different
  * account; `null` (say nothing) when it's the same one, or when either side
  * is unknown: a sign-in from before slice 4 recorded no account, and a
- * provider may report none.
+ * provider may report none. Each account is provider text in its own `<bdi>`,
+ * so a right-to-left one can't reorder the sentence.
  */
-function accountChanged(was: string | null, now: string | null): string | null {
+function accountChanged(was: string | null, now: string | null): ReactNode {
   if (was === null || now === null || was === now) return null;
-  return `Now ${now} (was ${was})`;
+  return (
+    <>
+      Now <bdi>{now}</bdi> (was <bdi>{was}</bdi>)
+    </>
+  );
 }
 
 /** "Connectors <n>" and "+ Add" (TASK-740). */

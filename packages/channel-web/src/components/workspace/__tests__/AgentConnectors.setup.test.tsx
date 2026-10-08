@@ -395,6 +395,9 @@ describe('which account the agent uses (slice 4)', () => {
     renderTab();
     const account = await screen.findByTitle('bob@x.com');
     expect(account.textContent).toBe(' · bob@x.com');
+    // Provider text is isolated, so a right-to-left account can't reorder
+    // the separator or the name around it.
+    expect(account.querySelector('bdi')?.textContent).toBe('bob@x.com');
     expect(account.className).toContain('text-muted-foreground');
     expect(account.parentElement?.textContent).toBe('Gmail · bob@x.com');
     expect(account.parentElement?.className).toContain('truncate');
@@ -411,11 +414,12 @@ describe('which account the agent uses (slice 4)', () => {
   });
 
   it('renders a hostile account as literal text, never markup', async () => {
-    const evil = '<img src=x onerror=alert(1)>‮gro.live';
+    const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
     renderTab();
     const account = await screen.findByTitle(evil);
     expect(account.textContent).toBe(` · ${evil}`);
+    expect(account.querySelector('bdi')?.textContent).toBe(evil);
     expect(account.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
   });
@@ -436,9 +440,12 @@ describe('which account the agent uses (slice 4)', () => {
     );
   }
 
-  it('signing in again as a different account says so: "Now b@x (was a@x)"', async () => {
+  it('signing in again as a different account says so: "Now b@x (was a@x)", each account isolated', async () => {
     await signInAgainAs('a@x', 'b@x');
-    expect(await screen.findByText('Now b@x (was a@x)')).toBeTruthy();
+    const note = await screen.findByText(
+      (_c, el) => el?.tagName === 'P' && el.textContent === 'Now b@x (was a@x)',
+    );
+    expect([...note.querySelectorAll('bdi')].map((b) => b.textContent)).toEqual(['b@x', 'a@x']);
   });
 
   it.each([

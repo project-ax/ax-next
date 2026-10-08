@@ -10,7 +10,7 @@
  * the segmented control works from the keyboard; an inventory that could not
  * be read says so; approved access for this connector moves here with Revoke.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
 import type {
@@ -580,7 +580,40 @@ describe('when the tool list cannot be read', () => {
   });
 });
 
+/**
+ * The date assertions below ("on 7 Oct", "14 Aug") are about the READER's
+ * calendar and language, so pin both: the zone (`process.env.TZ`, read live —
+ * see workspace-timestamp-parity.test.tsx) and the default locale (the app
+ * passes no locale, so a default `Intl.DateTimeFormat` is answered as en-GB).
+ * Without this the suite passes or fails by where the runner sits — e.g.
+ * `TZ=Pacific/Auckland` reads 12:00Z on the 7th as the 8th.
+ */
+function pinReaderClock(): void {
+  let savedTz: string | undefined;
+  beforeAll(() => {
+    savedTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    const Real = Intl.DateTimeFormat;
+    // A `function`, not an arrow: the app calls it with `new`.
+    vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (
+      locales?: string | string[],
+      options?: Intl.DateTimeFormatOptions,
+    ) {
+      return new Real(locales ?? 'en-GB', options);
+    } as unknown as typeof Intl.DateTimeFormat);
+  });
+  afterAll(() => {
+    vi.mocked(Intl.DateTimeFormat).mockRestore();
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  });
+}
+
 describe('who the agent signed in as (slice 4)', () => {
+  pinReaderClock();
+  /** The line is split by `<bdi>`, so match the whole paragraph's text. */
+  const findLine = (text: string) =>
+    screen.findByText((_c, el) => el?.tagName === 'P' && el.textContent === text);
   function withSignIn(signedIn: AgentConnectorRow['signedIn']) {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false,
@@ -593,7 +626,9 @@ describe('who the agent signed in as (slice 4)', () => {
     withSignIn({ account: 'bob@x.com', byName: 'Vinay', byYou: false, at: AT });
     renderTab();
     await openDetails();
-    expect(await screen.findByText('Signed in as bob@x.com')).toBeTruthy();
+    const line = await findLine('Signed in as bob@x.com');
+    // The provider's account is isolated from the sentence around it.
+    expect(line.querySelector('bdi')?.textContent).toBe('bob@x.com');
     expect(screen.getByText('Connected')).toBeTruthy();
     expect(screen.queryByText(/Signed in by/)).toBeNull();
   });
@@ -606,7 +641,9 @@ describe('who the agent signed in as (slice 4)', () => {
     withSignIn({ account: null, at: AT, ...who });
     renderTab();
     await openDetails();
-    expect(await screen.findByText(text)).toBeTruthy();
+    const line = await findLine(text);
+    // Who signed in is isolated too (a display name can be right-to-left).
+    expect(line.querySelector('bdi')?.textContent).toBe(text.replace(/^Signed in by (.*) on .*$/, '$1'));
   });
 
   it('a sign-in from before slice 4 (nothing recorded) adds no line at all', async () => {
@@ -622,12 +659,14 @@ describe('who the agent signed in as (slice 4)', () => {
     withSignIn({ account: evil, byName: null, byYou: true, at: AT });
     renderTab();
     await openDetails();
-    expect(await screen.findByText(`Signed in as ${evil}`)).toBeTruthy();
+    const line = await findLine(`Signed in as ${evil}`);
+    expect(line.querySelector('bdi')?.textContent).toBe(evil);
     expect(document.querySelector('img')).toBeNull();
   });
 });
 
 describe('access you approved', () => {
+  pinReaderClock();
   it('moves a connector’s approved access into its details, with Revoke', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
       rail({ grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false } }),
