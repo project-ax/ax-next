@@ -1,6 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { deriveCredentialPlan } from './credential-plan.js';
-import { listEffectiveConnectors } from './effective-connectors.js';
+import { listEffectiveConnectors, logSkippedRow } from './effective-connectors.js';
 import { namesOAuthClientSecretRef, oauthClientSecretRefFor } from './oauth-client-secret-ref.js';
 import type { ConnectorStore } from './store.js';
 import type {
@@ -336,11 +336,11 @@ export async function authorizeAgentAccountRead(
     const exclusions = stringList(agent.connectorExclusions);
     if (attachmentIds === null || exclusions === null) return deny('agent-lists-malformed');
 
-    const { connectors } = await listEffectiveConnectors(store, {
-      userId,
-      attachmentIds,
-      exclusions,
-    });
+    const { connectors } = await listEffectiveConnectors(
+      store,
+      { userId, attachmentIds, exclusions },
+      logSkippedRow(ctx.logger),
+    );
     if (!connectors.some((entry) => entry.summary.id === connectorId)) {
       return deny('not-effective-on-agent');
     }

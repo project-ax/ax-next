@@ -238,6 +238,9 @@ async function selectAvailableRows(
     .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
 }
 
+/** Told about a stored row that no longer validates and was left out. */
+export type SkipRow = (connectorId: string, err: unknown) => void;
+
 export interface AvailableConnector {
   connector: Connector;
   /**
@@ -322,9 +325,12 @@ export interface ConnectorStore {
   ): Promise<Connector | null>;
   /**
    * TASK-744 — the same set `listForUser` returns, FULL and with each row's
-   * owner, so a caller can derive owner-keyed values (tool namespaces).
+   * owner, so a caller can derive owner-keyed values (tool namespaces). A row
+   * whose stored spec no longer validates is skipped and reported through
+   * `onSkip` (the `listAllLive` posture): one bad row must not break the list
+   * for every user.
    */
-  listAvailable(userId: string): Promise<AvailableConnector[]>;
+  listAvailable(userId: string, onSkip: SkipRow): Promise<AvailableConnector[]>;
   /** Read-only lookup: own definition first, otherwise an unambiguous live one. */
   getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /**
@@ -389,11 +395,19 @@ export function createConnectorStore(
         .map((row) => ({ ...rowToSummary(row), canEdit: row.owner_user_id === userId }));
     },
 
-    async listAvailable(userId) {
-      return (await selectAvailableRows(db, userId)).map((row) => ({
-        connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
-        ownerUserId: row.owner_user_id,
-      }));
+    async listAvailable(userId, onSkip) {
+      const out: AvailableConnector[] = [];
+      for (const row of await selectAvailableRows(db, userId)) {
+        try {
+          out.push({
+            connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
+            ownerUserId: row.owner_user_id,
+          });
+        } catch (err) {
+          onSkip(row.connector_id, err);
+        }
+      }
+      return out;
     },
 
     async getAvailableById(userId, connectorId) {

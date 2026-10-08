@@ -34,7 +34,7 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
-import { listEffectiveConnectors } from './effective-connectors.js';
+import { listEffectiveConnectors, logSkippedRow } from './effective-connectors.js';
 import { requireUserId } from './input-guards.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import { purgeConnectorState } from './purge.js';
@@ -297,8 +297,9 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       db = shared as Kysely<ConnectorDatabase>;
       await runConnectorsMigration(db);
       // stdio MCP servers were removed (2026-10-04). Sweep stored ones BEFORE any
-      // service is registered: the narrowed schema refuses them, and one such
-      // row would make every list over its owner throw.
+      // service is registered: the narrowed schema refuses them. Every list
+      // skips-and-logs a row it can't read (so one would only hide itself),
+      // but a single read of that connector would still throw.
       await sweepStdioConnectors(db, bus, initCtx);
       const localStore = createConnectorStore(db);
       _store = localStore;
@@ -339,7 +340,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<ListEffectiveInput, ListEffectiveOutput>(
         'connectors:list-effective',
         PLUGIN_NAME,
-        async (_ctx, input) => listEffectiveConnectors(localStore, input),
+        async (ctx, input) => listEffectiveConnectors(localStore, input, logSkippedRow(ctx.logger)),
         { returns: ListEffectiveOutputSchema },
       );
 
@@ -536,7 +537,7 @@ async function toolLabels(
   input: ToolLabelsInput,
 ): Promise<ToolLabelsOutput> {
   const userId = requireUserId(input.userId, 'connectors:tool-labels');
-  const available = await store.listAvailable(userId);
+  const available = await store.listAvailable(userId, logSkippedRow(ctx.logger));
   const connectors: ToolLabelsOutput['connectors'] = [];
   for (const { connector, ownerUserId } of available) {
     // Same derivation as `connectors:resolve` (ROW owner, not the caller), so

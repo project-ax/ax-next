@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { logSkippedRow } from '../effective-connectors.js';
 import {
   stopPostgresContainer,
   startTestContainer,
@@ -322,6 +323,49 @@ describe('createConnectorStore', () => {
     expect(await store.getSoleLiveById('mallory', 'linear')).toMatchObject({ ownerUserId: 'owner' });
   });
 
+  it('listAvailable skips a malformed row and reports it once, instead of failing the whole list', async () => {
+    // Final review M3: one bad row used to make listAvailable throw, which broke
+    // tool labels and the effective connector set for EVERY user.
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    await store.upsert({
+      userId: 'admin', connectorId: 'good', name: 'Good', description: '', usageNote: '',
+      keyMode: 'personal', capabilities: caps(),
+    });
+    // A row the narrowed schema refuses (a stored stdio server), written past the store.
+    await db
+      .insertInto('connectors_v1_connectors')
+      .values({
+        owner_user_id: 'admin',
+        connector_id: 'bad',
+        name: 'Bad',
+        description: '',
+        usage_note: '',
+        key_mode: 'personal',
+        capabilities: JSON.stringify({
+          ...caps(),
+          mcpServers: [{ name: 'local', transport: 'stdio', command: 'npx', allowedHosts: [], credentials: [] }],
+        }) as unknown as object,
+        deleted_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+
+    // The callers' reporter: one warn, the id and the reason — never the owner.
+    const warn = vi.fn();
+    const logger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Parameters<typeof logSkippedRow>[0];
+    const available = await store.listAvailable('reader', logSkippedRow(logger));
+    expect(available.map((entry) => entry.connector.id)).toEqual(['good']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('connectors_list_skipped_row', {
+      connectorId: 'bad',
+      err: 'Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('admin');
+  });
+
   it('connector and summary shapes carry no defaultAttached key (TASK-808 negative space)', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
@@ -344,7 +388,7 @@ describe('createConnectorStore', () => {
       expect(summary).not.toHaveProperty('capabilities');
     }
     expect(await store.getByIdNotDeleted('u', 'c')).not.toHaveProperty('defaultAttached');
-    for (const entry of await store.listAvailable('u')) {
+    for (const entry of await store.listAvailable('u', () => { throw new Error('no row should be skipped'); })) {
       expect(entry.connector).not.toHaveProperty('defaultAttached');
     }
     expect(await store.getAvailableById('u', 'c')).not.toHaveProperty('connector.defaultAttached');
