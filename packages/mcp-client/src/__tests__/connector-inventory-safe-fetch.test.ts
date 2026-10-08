@@ -10,7 +10,8 @@ import {
 
 // ---------------------------------------------------------------------------
 // The host-side SSRF guard for `connectors:describe-tools`. The connector URL
-// is author-supplied (any user can author a private connector), so every rule
+// is admin-written but still treated as hostile (mistyped, server changed
+// hands, compromised admin), so every rule
 // here is a refusal we must be able to see fail.
 // ---------------------------------------------------------------------------
 

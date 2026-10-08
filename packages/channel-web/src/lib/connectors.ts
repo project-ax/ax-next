@@ -119,7 +119,6 @@ export interface ConnectorCapabilities {
 }
 
 export type ConnectorKeyMode = 'personal' | 'workspace';
-export type ConnectorVisibility = 'private' | 'shared';
 
 /** Metadata-only descriptor for the list view (no capabilities — those load on
  *  demand via {@link getConnector}). */
@@ -133,7 +132,6 @@ export interface ConnectorSummary {
   description: string;
   usageNote: string;
   keyMode: ConnectorKeyMode;
-  visibility: ConnectorVisibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -150,7 +148,6 @@ export interface ConnectorUpsertInput {
   description?: string;
   usageNote?: string;
   keyMode: ConnectorKeyMode;
-  visibility: ConnectorVisibility;
   capabilities: ConnectorCapabilities;
 }
 

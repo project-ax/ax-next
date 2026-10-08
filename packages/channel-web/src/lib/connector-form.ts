@@ -41,7 +41,6 @@ import {
   type ConnectorSummary,
   type ConnectorCapabilities,
   type ConnectorKeyMode,
-  type ConnectorVisibility,
   type ConnectorMcpServerSpec,
   type ConnectorCredentialSlot,
   type ConnectorApiKeySlot,
@@ -94,7 +93,6 @@ export interface ConnectorFormState {
   description: string;
   usageNote: string;
   keyMode: ConnectorKeyMode;
-  visibility: ConnectorVisibility;
   /** The chosen backing mechanism — reshapes which fields the form edits. */
   mechanism: Mechanism;
   // MCP fields (mechanism === 'mcp').
@@ -130,7 +128,6 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   description: '',
   usageNote: '',
   keyMode: 'personal',
-  visibility: 'shared',
   mechanism: 'mcp',
   url: '',
   packageRegistry: 'npm',
@@ -211,7 +208,6 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     description: c.description,
     usageNote: c.usageNote,
     keyMode: c.keyMode,
-    visibility: c.visibility,
     mechanism,
     url: mcp?.url ?? '',
     packageRegistry: pkg.registry,
@@ -528,7 +524,6 @@ export function summaryToForm(c: ConnectorSummary): Partial<ConnectorFormState> 
     description: c.description,
     usageNote: c.usageNote,
     keyMode: c.keyMode,
-    visibility: c.visibility,
   };
 }
 

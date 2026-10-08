@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CLIENT_SECRET_NEEDS_SHARED,
   OAUTH_CLIENT_SECRET_SLOT,
   newHeaderSlot,
 } from '../connector-credential-slots';
@@ -23,11 +22,5 @@ describe('connector credential slots', () => {
 
   it('names the OAuth client secret slot', () => {
     expect(OAUTH_CLIENT_SECRET_SLOT).toBe('OAUTH_CLIENT_SECRET');
-  });
-
-  // Slice 5 — the custom OAuth client secret is always the workspace's
-  // (global): nothing is stored per person. A private connector can't carry one.
-  it('tells the admin how to use a client secret on a private connector', () => {
-    expect(CLIENT_SECRET_NEEDS_SHARED).toBe('Make it Shared to use a client secret.');
   });
 });

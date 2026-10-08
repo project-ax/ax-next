@@ -11,25 +11,23 @@ import {
   headingOutlineProblems,
 } from '@/test-utils/heading-outline';
 
-const PRIVATE_CONN: ConnectorSummary = {
+const PERSONAL_CONN: ConnectorSummary = {
   id: 'my-notion',
   name: 'My Notion',
   description: 'Personal Notion workspace.',
   usageNote: 'Ask the agent to read or update Notion pages.',
   keyMode: 'personal',
-  visibility: 'private',
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
 
-// A SHARED connector (catalog-sourced). keyMode workspace → it needs one shared key.
+// A workspace-key connector. keyMode workspace → it needs one shared key.
 const SHARED_CONN: ConnectorSummary = {
   id: 'company-salesforce',
   name: 'Salesforce',
   description: 'The company Salesforce org.',
   usageNote: 'Drive the sf CLI for our workflows.',
   keyMode: 'workspace',
-  visibility: 'shared',
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
@@ -50,14 +48,14 @@ function fullOf(summary: ConnectorSummary): Connector {
 describe('ConnectorsTab', () => {
   beforeEach(() => {
     vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
-      PRIVATE_CONN,
+      PERSONAL_CONN,
       SHARED_CONN,
     ]);
     // The tab no longer reads a connector's full record or anyone's credential
     // presence (no Ready / Needs a key status, no Connect). These spies stay so
     // a test can assert those reads never happen.
     vi.spyOn(connectorsLib, 'getConnector').mockImplementation(async (id: string) => {
-      if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN);
+      if (id === PERSONAL_CONN.id) return fullOf(PERSONAL_CONN);
       return fullOf(SHARED_CONN);
     });
     vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
@@ -77,25 +75,12 @@ describe('ConnectorsTab', () => {
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
   });
 
-  // SIGNINS-7 — an agent can hold a sign-in or key only for a shared
-  // connector. A private one is never made shared for the admin: its row
-  // says why it does nothing and what fixes it.
-  const PRIVATE_NOTICE =
-    "Private connectors can't be used by agents. Make it Shared to use it, or delete it.";
-
-  it('a private connector says agents can’t use it, and how to fix that', async () => {
+  it('no row says agents can’t use it — every connector is shared', async () => {
     render(<ConnectorsTab />);
-    const tile = await screen.findByTestId('connector-tile-my-notion');
-    const note = within(tile).getByText(PRIVATE_NOTICE);
-    // A note beside the row, not an error.
-    expect(note.closest('[role="note"]')).not.toBeNull();
-    expect(within(tile).queryByRole('alert')).toBeNull();
-  });
-
-  it('a shared connector has no such notice', async () => {
-    render(<ConnectorsTab />);
-    const tile = await screen.findByTestId('connector-tile-company-salesforce');
-    expect(within(tile).queryByText(PRIVATE_NOTICE)).toBeNull();
+    await screen.findByTestId('connector-tile-my-notion');
+    expect(screen.queryByText(/can't be used by agents/i)).toBeNull();
+    expect(screen.queryByText(/can’t be used by agents/i)).toBeNull();
+    expect(screen.queryByRole('note')).toBeNull();
   });
 
   // Slice 2c — Awaiting approval: every person's connector requests (an agent
@@ -275,14 +260,14 @@ describe('ConnectorsTab', () => {
     expect(
       within(note).getByText('sending the key LINEAR_API_KEY as the header X-Key'),
     ).toBeInTheDocument();
-    expect(within(dialog).getByRole('combobox', { name: /sharing/i })).toBeDisabled();
+    expect(within(dialog).queryByRole('combobox', { name: /sharing/i })).toBeNull();
     await waitFor(() =>
       expect(within(dialog).getByLabelText(/service name/i)).toHaveValue('Linear'),
     );
     fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const [body] = create.mock.calls[0]!;
-    expect(body.visibility).toBe('shared');
+    expect(body).not.toHaveProperty('visibility');
     expect(body.capabilities.packages).toEqual({ npm: ['@linear/cli'], pypi: [] });
     expect(body.capabilities.credentials).toEqual([
       { slot: 'LINEAR_API_KEY', kind: 'api-key' },
@@ -359,7 +344,6 @@ describe('ConnectorsTab', () => {
       connectorId: 'linear',
       name: 'Linear',
       usageNote: 'Drive the Linear CLI',
-      visibility: 'shared',
       keyMode: 'personal',
     });
     expect(body.capabilities.allowedHosts).toEqual(['api.linear.app']);
@@ -484,7 +468,7 @@ describe('ConnectorsTab', () => {
 
   it('an owner can edit a shared personal definition', async () => {
     vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
-      { ...PRIVATE_CONN, visibility: 'shared', canEdit: true },
+      { ...PERSONAL_CONN, canEdit: true },
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');

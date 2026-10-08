@@ -22,15 +22,3 @@ export const OAUTH_CLIENT_SECRET_SLOT = 'OAUTH_CLIENT_SECRET';
 export function newHeaderSlot(): string {
   return `HEADER_${crypto.randomUUID().replace(/-/g, '').toUpperCase()}`;
 }
-
-/**
- * A connector's custom OAuth client secret is stored at the workspace (global
- * scope), so everyone who signs in can use it. The host serves a global secret
- * only to signers of a connector that is shared AND admin-owned, so a PRIVATE
- * connector can't carry one: nobody, its owner included, could read it.
- *
- * Slice 5 — nothing is stored per person, so there is no "keep it with its
- * author" fallback any more. The editors refuse the save with this message
- * and write nothing.
- */
-export const CLIENT_SECRET_NEEDS_SHARED = 'Make it Shared to use a client secret.';

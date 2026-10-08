@@ -12,7 +12,6 @@ const connector: Connector = {
   description: 'Keep description',
   usageNote: 'Keep instructions',
   keyMode: 'personal',
-  visibility: 'shared',
   createdAt: '',
   updatedAt: '',
   capabilities: {

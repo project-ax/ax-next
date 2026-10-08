@@ -126,8 +126,8 @@ function refusalCopy(
     };
   }
   if (code === 'agent-store-refused') {
-    // SIGNINS-7 — the connector isn't the shared one (a private connector):
-    // no agent may hold its key. An admin fixes that; trying again won't.
+    // The workspace refused to store a key for this connector. An admin
+    // fixes that; trying again won't.
     return { text: beginRefusalMessage('agent-store-refused'), retry: false };
   }
   if (code === 'connector-needs-shared-key') {

@@ -22,7 +22,6 @@ const input: ConnectorUpsertInput = {
   connectorId: 'gdrive',
   name: 'Google Drive',
   keyMode: 'personal',
-  visibility: 'private',
   capabilities: {
     allowedHosts: [],
     credentials: [],

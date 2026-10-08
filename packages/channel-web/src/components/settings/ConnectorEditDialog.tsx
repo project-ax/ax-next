@@ -29,7 +29,6 @@ export type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
  * Slice 2c — a request with no MCP server (hosts / keys / packages) opens the
  * general editor, which reads a connector to start from. This is that starting
  * point: NOT a saved connector — the target stays `'new'`, so Save creates it.
- * Shared by default (only a shared create clears the request).
  */
 function draftFromPrefill(prefill: ConnectorPrefill): Connector {
   return {
@@ -38,7 +37,6 @@ function draftFromPrefill(prefill: ConnectorPrefill): Connector {
     description: '',
     usageNote: prefill.usageNote,
     keyMode: prefill.keyMode,
-    visibility: 'shared',
     createdAt: '',
     updatedAt: '',
     capabilities: prefill.capabilities,

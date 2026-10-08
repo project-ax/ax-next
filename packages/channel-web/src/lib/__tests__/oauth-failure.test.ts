@@ -45,10 +45,9 @@ describe('oauthFailureMessage', () => {
 
 describe('beginRefusalMessage', () => {
   it('each refusal before the popup opens has its own fixed sentence', () => {
-    // SIGNINS-7 — the refusal a private connector meets: say the cause and
-    // who can fix it.
+    // The refusal when the store question says no: who can fix it.
     expect(beginRefusalMessage('agent-store-refused')).toBe(
-      "This connector can't be used by agents yet. Ask a workspace admin to make it Shared.",
+      "This connector can't be added to agents right now. Ask a workspace admin.",
     );
     // SIGNINS-7 — a custom OAuth client whose secret is gone (a person-level
     // copy removed at boot): trying again won't help, an admin will.

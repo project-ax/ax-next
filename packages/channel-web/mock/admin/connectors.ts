@@ -54,7 +54,6 @@ import { requireSession } from '../auth';
 type RouteMode = 'admin' | 'user';
 
 type KeyMode = 'personal' | 'workspace';
-type Visibility = 'private' | 'shared';
 
 interface CapabilitySlot {
   slot: string;
@@ -87,7 +86,6 @@ export interface ConnectorSummary {
   description: string;
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -165,7 +163,6 @@ function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
     description: row.description,
     usageNote: row.usageNote,
     keyMode: row.keyMode,
-    visibility: row.visibility,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -212,7 +209,7 @@ type Validated =
 
 /**
  * Lightweight validation mirroring the SHAPE the real `connectors:upsert` hook
- * enforces (slug grammar + required name/keyMode/visibility). The mock does NOT
+ * enforces (slug grammar + required name/keyMode). The mock does NOT
  * re-implement the full zod capability parse — it stores `capabilities` verbatim
  * (defaulting to empty) because the mock is offline UI parity and the real route
  * owns strict validation. `existing` supplies merge defaults for a PATCH.
@@ -247,11 +244,6 @@ function validateUpsert(
     return { ok: false, message: "keyMode must be 'personal' or 'workspace'" };
   }
 
-  const visibility = body.visibility ?? existing?.visibility ?? 'shared';
-  if (visibility !== 'private' && visibility !== 'shared') {
-    return { ok: false, message: "visibility must be 'private' or 'shared'" };
-  }
-
   const description = body.description ?? existing?.description ?? '';
   const usageNote = body.usageNote ?? existing?.usageNote ?? '';
   if (typeof description !== 'string' || typeof usageNote !== 'string') {
@@ -262,13 +254,12 @@ function validateUpsert(
 
   return {
     ok: true,
-    value: { id: connectorId, name, description, usageNote, keyMode, visibility, capabilities },
+    value: { id: connectorId, name, description, usageNote, keyMode, capabilities },
   };
 }
 
 function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boolean {
-  return row.userId !== actorId || (mode === 'user' &&
-    (row.visibility === 'shared' && row.keyMode === 'workspace'));
+  return row.userId !== actorId || (mode === 'user' && row.keyMode === 'workspace');
 }
 
 /** Reject admin-only write fields on the user surface (mirrors the real route's
@@ -396,7 +387,6 @@ function connectorsMiddleware(
     const availableRows = () => {
       const grouped = new Map<string, StoredConnector[]>();
       for (const row of connectors.list()) {
-        if (row.userId !== actor.id && row.visibility !== 'shared') continue;
         const group = grouped.get(row.connectorId) ?? [];
         group.push(row);
         grouped.set(row.connectorId, group);
@@ -418,7 +408,7 @@ function connectorsMiddleware(
         // Ids already live as a shared connector are hidden; one row per
         // (person, id) — the newest of that person's agents' requests.
         const live = new Set(
-          connectors.list().filter((c) => c.visibility === 'shared').map((c) => c.connectorId),
+          connectors.list().map((c) => c.connectorId),
         );
         const newest = new Map<string, StoredConnectorRequest>();
         for (const r of requests.list()) {
@@ -481,8 +471,7 @@ function connectorsMiddleware(
       }
       const available = typeof body.connectorId === 'string' ? availableById(body.connectorId) : undefined;
       // Slice 2c — the admin POST is CREATE only, like the real route: any
-      // live connector with this id (the caller's own included, any owner, any
-      // visibility) is a 409. Edits are a PATCH.
+      // live connector with this id (the caller's own included, any owner) is a 409. Edits are a PATCH.
       if (
         mode === 'admin' &&
         connectors.list().some((row) => row.connectorId === body.connectorId)
@@ -514,9 +503,9 @@ function connectorsMiddleware(
         updatedAt: now,
       };
       connectors.upsert(row);
-      // Slice 2c — approval is creation: a new SHARED connector resolves every
-      // request for its id, whoever asked. A private one resolves nobody's.
-      if (!existing && row.visibility === 'shared') clearRequests(row.connectorId);
+      // Slice 2c — approval is creation: a new connector resolves every
+      // request for its id, whoever asked.
+      if (!existing) clearRequests(row.connectorId);
       send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
       return true;
     }

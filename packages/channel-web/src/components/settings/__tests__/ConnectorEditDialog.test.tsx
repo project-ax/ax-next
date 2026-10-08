@@ -13,7 +13,6 @@ const SUMMARY: ConnectorSummary = {
   description: 'Drive files.',
   usageNote: 'Read and write Drive.',
   keyMode: 'personal',
-  visibility: 'private',
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
 };
@@ -180,7 +179,7 @@ describe('ConnectorEditDialog', () => {
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.connectorId).toBe('stripe-billing');
     expect(body.name).toBe('Stripe Billing');
-    expect(body.visibility).toBe('shared');
+    expect(body).not.toHaveProperty('visibility');
     expect(onSaved).toHaveBeenCalled();
   });
 
@@ -369,7 +368,7 @@ describe('ConnectorEditDialog', () => {
 
   // --- admin vs user variant ----------------------------------------------
 
-  it('admin variant exposes Sharing (and no default-on control)', async () => {
+  it('admin variant has no Sharing control and no default-on control', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -379,11 +378,11 @@ describe('ConnectorEditDialog', () => {
       />,
     );
     await screen.findByLabelText(/service name/i);
-    expect(screen.getByText(/^Sharing$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Sharing$/i)).toBeNull();
     expect(screen.queryByText(/default-on/i)).toBeNull();
   });
 
-  it('defaults a new connector to shared', async () => {
+  it('creates a new connector with no visibility in the body', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -397,7 +396,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
-    expect(body.visibility).toBe('shared');
+    expect(body).not.toHaveProperty('visibility');
     expect(body).not.toHaveProperty('defaultAttached');
   });
 
@@ -811,49 +810,6 @@ describe('ConnectorEditDialog', () => {
     // The raw secret must NOT appear anywhere in the connector body.
     expect(JSON.stringify(body)).not.toContain('super-secret-value');
   });
-
-  // Slice 5 — a client secret is only ever the workspace's (global), and only a
-  // shared connector may read one, so a PRIVATE connector can't carry it. Nothing
-  // is written; the admin is told how to use one.
-  it(
-    'a private connector with a client secret says to make it Shared, and writes nothing',
-    async () => {
-      render(
-        <ConnectorEditDialog
-          target="new"
-          open
-          onOpenChange={() => {}}
-          onSaved={() => {}}
-        />,
-      );
-      fireEvent.change(await screen.findByLabelText(/service name/i), {
-        target: { value: 'My OAuth Svc' },
-      });
-      fireEvent.click(screen.getByRole('combobox', { name: /sharing/i }));
-      fireEvent.click(await screen.findByRole('option', { name: /^private/i }));
-      fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
-      fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
-      await waitFor(() => expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument());
-      const machineNames = screen.getAllByLabelText(/machine name/i);
-      fireEvent.change(machineNames[machineNames.length - 1]!, {
-        target: { value: 'MY_OAUTH' },
-      });
-      fireEvent.click(screen.getByRole('combobox', { name: /mcp server/i }));
-      fireEvent.click(await screen.findByRole('option', { name: 'my-oauth-svc' }));
-      fireEvent.click(
-        screen.getByRole('button', { name: /advanced — custom oauth client/i }),
-      );
-      fireEvent.change(await screen.findByLabelText(/client secret/i), {
-        target: { value: 'super-secret-value' },
-      });
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-      expect(
-        await screen.findByText('Make it Shared to use a client secret.'),
-      ).toBeInTheDocument();
-      expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
-      expect(connectorsLib.createConnector).not.toHaveBeenCalled();
-    },
-  );
 });
 
 // TASK-700 — the launch disclosure (TASK-328) on the authoring form. Defining a

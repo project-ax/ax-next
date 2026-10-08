@@ -8,7 +8,6 @@ import { emptyCapabilities, type Connector, type ConnectorSummary } from '../con
 function summary(
   id: string,
   keyMode: 'personal' | 'workspace',
-  visibility: 'private' | 'shared' = 'shared',
 ): ConnectorSummary {
   return {
     id,
@@ -16,7 +15,6 @@ function summary(
     description: '',
     usageNote: '',
     keyMode,
-    visibility,
     createdAt: '',
     updatedAt: '',
   };
@@ -37,15 +35,12 @@ describe('availableConnectors', () => {
     expect(list.map((c) => c.id)).toEqual(['a', 'b']);
   });
 
-  // SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED
-  // connector, so a private one can't be added any more. It is left out,
-  // never quietly made shared.
-  it('leaves out private connectors', () => {
+  it('offers every connector that is not already on the agent, whatever its key mode', () => {
     const list = availableConnectors(
-      [summary('p', 'personal', 'private'), summary('w', 'workspace', 'private'), summary('s', 'personal')],
-      new Set(),
+      [summary('p', 'personal'), summary('w', 'workspace'), summary('s', 'personal')],
+      new Set(['s']),
     );
-    expect(list.map((c) => c.id)).toEqual(['s']);
+    expect(list.map((c) => c.id)).toEqual(['p', 'w']);
   });
 });
 

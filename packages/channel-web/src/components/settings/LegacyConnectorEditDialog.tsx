@@ -49,7 +49,6 @@ import {
   type ConnectorPrefill,
   type ConnectorSummary,
   type ConnectorKeyMode,
-  type ConnectorVisibility,
   type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
@@ -98,7 +97,6 @@ import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
 import {
-  CLIENT_SECRET_NEEDS_SHARED,
   OAUTH_CLIENT_SECRET_SLOT,
 } from '@/lib/connector-credential-slots';
 import {
@@ -588,7 +586,6 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    const visibility: ConnectorVisibility = fromRequest ? 'shared' : form.visibility;
 
     // --- oauth client_secret persistence ------------------------------------
     // For each oauth slot that has a newly-entered client_secret: write the
@@ -601,20 +598,8 @@ export function LegacyConnectorEditDialog({
     // pointing at a missing ref.
     //
     // NOTE: the secret is always stored at the workspace (global), so anyone
-    // who signs in can use it. Nothing is stored per person (slice 5), so a
-    // PRIVATE connector can't carry one — the host would serve it to nobody.
-    // Refuse before anything is written (see `CLIENT_SECRET_NEEDS_SHARED`).
-    // DCR (blank client) avoids this entirely.
+    // who signs in can use it. Nothing is stored per person (slice 5).
     let updatedSlots = form.credentialSlots;
-    const typesClientSecret = Object.entries(oauthClientSecrets).some(
-      ([idx, secret]) =>
-        form.credentialSlots[Number(idx)]?.kind === 'oauth' && secret.trim().length > 0,
-    );
-    if (typesClientSecret && visibility !== 'shared') {
-      setError(CLIENT_SECRET_NEEDS_SHARED);
-      setBusy(false);
-      return;
-    }
     try {
       const slotPatches: Record<number, { clientSecretRef: string }> = {};
       for (const [idxStr, secret] of Object.entries(oauthClientSecrets)) {
@@ -665,7 +650,6 @@ export function LegacyConnectorEditDialog({
       description: form.description,
       usageNote: form.usageNote,
       keyMode: form.keyMode,
-      visibility,
       capabilities: capabilitiesFromForm(formWithSecretRefs),
     };
     try {
@@ -827,33 +811,6 @@ export function LegacyConnectorEditDialog({
                 To change whose key it uses, create a new connector.
               </p>
             )}
-          </div>
-
-          {/* Workspace-level field: Sharing (visibility). */}
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="connector-visibility">Sharing</Label>
-            {/* From a request it is fixed: approval is a shared create. */}
-            <Select
-              disabled={fromRequest}
-              value={fromRequest ? 'shared' : form.visibility}
-              onValueChange={(v) =>
-                setForm((f) => ({ ...f, visibility: v as ConnectorVisibility }))
-              }
-            >
-              <SelectTrigger id="connector-visibility">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {/* SIGNINS-7 — the same words as the remote form: an agent
-                    can hold a sign-in or key only for a shared connector. */}
-                <SelectItem value="private">
-                  Private — agents can’t use it
-                </SelectItem>
-                <SelectItem value="shared">
-                  Shared — agents can use it
-                </SelectItem>
-              </SelectContent>
-            </Select>
           </div>
 
           {/* Per-mechanism fields. */}

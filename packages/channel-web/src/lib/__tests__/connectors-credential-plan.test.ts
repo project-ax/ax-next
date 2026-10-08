@@ -26,7 +26,6 @@ function connector(overrides: Partial<Connector>): Connector {
     description: '',
     usageNote: '',
     keyMode: 'personal',
-    visibility: 'private',
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     capabilities: emptyCapabilities(),

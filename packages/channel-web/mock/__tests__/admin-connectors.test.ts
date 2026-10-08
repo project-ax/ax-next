@@ -51,7 +51,6 @@ function upsertBody(over: Record<string, unknown> = {}): Record<string, unknown>
     description: 'Files in my Drive',
     usageNote: 'Ask me about your documents.',
     keyMode: 'personal',
-    visibility: 'private',
     capabilities: {
       allowedHosts: ['www.googleapis.com'],
       credentials: [{ slot: 'GDRIVE_API_KEY', kind: 'api-key' }],
@@ -123,7 +122,7 @@ describe('mock admin connectors', () => {
       const seeded = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn', visibility: 'shared' })),
+        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
       await expectStatus(seeded, 201);
 
@@ -211,7 +210,6 @@ describe('mock admin connectors', () => {
         id: 'gdrive',
         name: 'Google Drive',
         keyMode: 'personal',
-        visibility: 'private',
       });
       expect(body.connector).not.toHaveProperty('defaultAttached');
       expect(body.connector.capabilities.allowedHosts).toEqual(['www.googleapis.com']);
@@ -333,7 +331,7 @@ describe('mock admin connectors', () => {
     }
   });
 
-  it('is owner-scoped: one user cannot see/get/patch/delete another user\'s connector', async () => {
+  it('every connector is shared: another admin sees it, and the mock leaves editing to its owner', async () => {
     const { url, close } = await startServer(store);
     try {
       // A second admin (u3) creates a connector.
@@ -343,26 +341,28 @@ describe('mock admin connectors', () => {
         body: JSON.stringify(upsertBody()),
       });
 
-      // Admin (a different user) does not see it in their list.
+      // The other admin sees it, read-only, and with no visibility field.
       const adminList = await fetch(`${url}/admin/connectors`, { headers: { cookie: ADMIN } });
-      expect((await adminList.json()).connectors).toEqual([]);
+      const listed = (await adminList.json()).connectors;
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ id: 'gdrive', canEdit: false });
+      expect(listed[0]).not.toHaveProperty('visibility');
 
-      // Cross-tenant get/patch/delete all surface as 404 (not 403).
       const get = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      await expectStatus(get, 404);
+      await expectStatus(get, 200);
 
       const patch = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'PATCH',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'hijack' }),
       });
-      await expectStatus(patch, 404);
+      await expectStatus(patch, 403);
 
       const del = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      await expectStatus(del, 404);
+      await expectStatus(del, 403);
 
       // The second admin's connector is untouched.
       const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
@@ -383,11 +383,11 @@ describe('mock admin connectors', () => {
       });
       await expectStatus(create, 201);
 
-      // It belongs to u3 (session), not the forged u1.
+      // It belongs to u3 (session), not the forged u1: u1 reads it but can't edit it.
       const adminGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      await expectStatus(adminGet, 404);
+      expect((await adminGet.json()).connector.canEdit).toBe(false);
       const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
-      await expectStatus(ownerGet, 200);
+      expect((await ownerGet.json()).connector.canEdit).toBe(true);
     } finally {
       await close();
     }
@@ -452,12 +452,12 @@ describe('mock user connectors (/settings/connectors)', () => {
       const seed = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ visibility: 'shared' })),
+        body: JSON.stringify(upsertBody()),
       });
       await expectStatus(seed, 201);
       const shown = await fetch(`${url}/settings/connectors/gdrive`, { headers: { cookie: ALICE } });
       await expectStatus(shown, 200);
-      expect(await shown.json()).toMatchObject({ connector: { canEdit: false, visibility: 'shared' } });
+      expect(await shown.json()).toMatchObject({ connector: { canEdit: false } });
       const list = await fetch(`${url}/settings/connectors`, { headers: { cookie: ALICE } });
       expect(await list.json()).toMatchObject({ connectors: [{ id: 'gdrive', canEdit: false }] });
     } finally {
@@ -471,7 +471,7 @@ describe('mock user connectors (/settings/connectors)', () => {
       const seed = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn', visibility: 'shared' })),
+        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
       await expectStatus(seed, 201);
       const json = { cookie: ALICE, 'content-type': 'application/json' };
@@ -573,7 +573,6 @@ describe('mock connector tool permissions', () => {
     upsertBody({
       connectorId: 'linear',
       name: 'Linear',
-      visibility: 'shared',
       capabilities: {
         allowedHosts: ['mcp.linear.app'],
         credentials: [],
@@ -795,7 +794,7 @@ describe('mock connector tool permissions', () => {
       }
     });
 
-    it('a shared create clears every request with its id; a private one clears none', async () => {
+    it('a create clears every request with its id, and only that id', async () => {
       seedTwo();
       seedConnectorRequest(store, {
         ownerUserId: 'u2',
@@ -812,19 +811,13 @@ describe('mock connector tool permissions', () => {
           (d) => d.connectorId,
         );
       try {
-        const priv = await fetch(`${url}/admin/connectors`, {
-          method: 'POST',
-          headers: { cookie: ADMIN, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'notion', visibility: 'private' })),
-        });
-        await expectStatus(priv, 201);
         expect(await ids()).toEqual(['linear', 'linear', 'notion']);
-        const shared = await fetch(`${url}/admin/connectors`, {
+        const created = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN2, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
         });
-        await expectStatus(shared, 201);
+        await expectStatus(created, 201);
         expect(await ids()).toEqual(['notion']);
       } finally {
         await close();
@@ -838,7 +831,7 @@ describe('mock connector tool permissions', () => {
           fetch(`${url}/admin/connectors`, {
             method: 'POST',
             headers: { cookie: ADMIN, 'content-type': 'application/json' },
-            body: JSON.stringify(upsertBody({ connectorId: 'mine', name, visibility: 'shared' })),
+            body: JSON.stringify(upsertBody({ connectorId: 'mine', name })),
           });
         await expectStatus(await post('Mine'), 201);
         const again = await post('Overwritten');
@@ -851,13 +844,13 @@ describe('mock connector tool permissions', () => {
       }
     });
 
-    it('hides a request whose id is already live as a shared connector', async () => {
+    it('hides a request whose id is already live as a connector', async () => {
       const { url, close } = await startServer(store);
       try {
         const created = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
         });
         await expectStatus(created, 201);
         seedTwo();
@@ -873,13 +866,13 @@ describe('mock connector tool permissions', () => {
         const first = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
         });
         await expectStatus(first, 201);
         const second = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN2, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
         });
         await expectStatus(second, 409);
         expect(await second.json()).toEqual({ error: 'connector-id-taken' });

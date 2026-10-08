@@ -30,17 +30,6 @@ export function skillSource(scope: 'global' | 'user'): ItemSource {
 }
 
 /**
- * Map a connector's visibility to its source. A connector shared into the
- * workspace is catalog-sourced; a private connector shows no badge.
- * (`visibility` is a storage-agnostic flag — never a backing-mechanism field.)
- */
-export function connectorSource(input: {
-  visibility: 'private' | 'shared';
-}): ItemSource {
-  return input.visibility === 'shared' ? 'catalog' : 'private';
-}
-
-/**
  * Render the source badge. `source="private"` renders nothing — the absence of
  * a badge IS the "private" signal, so there is no second tag to add.
  */

@@ -3863,8 +3863,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * the server's cached tool titles), for ONE reader.
    *
    * Scoped to `userId` by `connectors:tool-labels` itself: it answers only for
-   * connectors that person can resolve, so another owner's private connector
-   * is never named here. The name is author-written and the titles come from
+   * connectors that person can resolve, so a connector they can't
+   * resolve is never named here. The name is author-written and the titles come from
    * a third-party server, so both are fenced HERE (`connectorNamesFromRows`)
    * — they ride the wire (`AgentDetail.connectorTools`) as well as the shaped
    * rows. A namespace that is not the documented shape is dropped: it is a
@@ -7307,9 +7307,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * a fault propagates (5xx) and a missing hook is a 503, so a person is
      * never told "forbidden" about a question that was never answered.
      *
-     * SIGNINS-7 — a connector that isn't `visibility: 'shared'` is refused
-     * (403 `agent-store-refused`) as soon as it is read, before any gate below.
-     *
      * A key write is further gated, before anything is written, on whoever
      * may choose the agent's account ({@link askMayStoreOnAgent}: a team
      * agent's team admin, a personal agent's owner) and on the vault's
@@ -7389,15 +7386,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           name: err instanceof Error ? err.name : 'unknown',
         });
         res.status(503).json({ error: 'connector-check-failed' });
-        return;
-      }
-      // SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED
-      // connector, so a private one is never added — not even one that needs
-      // nothing or spends the workspace's key. Refused before any credential
-      // read or write and before the attach; anything but exactly 'shared'
-      // (a missing field included) is a refusal. Never auto-shared.
-      if (connector?.visibility !== 'shared') {
-        res.status(403).json({ error: 'agent-store-refused' });
         return;
       }
       const checks = credentialChecks(connector);

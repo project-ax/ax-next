@@ -60,7 +60,6 @@ function fullConnector(overrides: Partial<Connector>): Connector {
     description: '',
     usageNote: '',
     keyMode: 'personal',
-    visibility: 'shared',
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     capabilities: connectorsLib.emptyCapabilities(),
