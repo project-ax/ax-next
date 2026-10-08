@@ -1,7 +1,8 @@
 /**
  * The connector details subview (TASK-742, connectors-rail slice 9).
  *
- * Pinned, through the real rail: "View details" swaps the whole tab for the
+ * Pinned, through the real rail: "Edit" (a plain member's "View details")
+ * swaps the whole tab for the
  * subview and back; tools sit in "Looks things up" / "Makes changes"; a
  * segment looser than the admin's ceiling is refused in the browser AND says
  * why (on hover and keyboard focus); a choice is written one tool at a time
@@ -103,7 +104,12 @@ async function openDetails(name = 'Linear') {
   const trigger = await screen.findByRole('button', { name: `Actions for ${name}` });
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
   const menu = await screen.findByRole('menu');
-  fireEvent.click(within(menu).getByRole('menuitem', { name: 'View details' }));
+  // Slice 3 — "Edit" for whoever may manage the agent; a plain member's
+  // read-only "View details" opens the same view.
+  const item =
+    within(menu).queryByRole('menuitem', { name: 'Edit' }) ??
+    within(menu).getByRole('menuitem', { name: 'View details' });
+  fireEvent.click(item);
   await screen.findByRole('button', { name: 'Connectors' });
 }
 
@@ -135,7 +141,7 @@ beforeEach(() => {
 });
 
 describe('opening and closing', () => {
-  it('View details replaces the whole tab, and ‹ Connectors brings the list back', async () => {
+  it('Edit replaces the whole tab, and ‹ Connectors brings the list back', async () => {
     renderTab();
     await openDetails();
     expect(screen.getByRole('heading', { level: 3, name: 'Linear' })).toBeTruthy();
@@ -181,7 +187,7 @@ describe('opening and closing', () => {
     expect(screen.queryByRole('button', { name: 'Edit connector' })).toBeNull();
   });
 
-  it('the details menu offers neither View details nor Edit permissions', async () => {
+  it('the details menu offers no Edit — and no Retry: only Remove', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
       connectorsSupported: true,
@@ -197,7 +203,6 @@ describe('opening and closing', () => {
     });
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
-      'Retry',
       'Remove from Quill',
     ]);
   });
@@ -225,18 +230,12 @@ describe('a member on a team agent (TASK-798)', () => {
     expect(screen.queryByTestId('connector-details-footer')).toBeNull();
   });
 
-  it('has no Remove in the details menu either', async () => {
-    asMember([{ ...ROWS[0]!, health: 'unreachable', removable: false }]);
+  it('has no details menu at all — nothing in it is theirs', async () => {
+    asMember([{ ...ROWS[0]!, health: 'needs-reconnect', removable: false }]);
     renderTab();
     await openDetails();
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for Linear' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    const menu = await screen.findByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
-      'Retry',
-    ]);
+    await screen.findByText('Search issues');
+    expect(screen.queryByRole('button', { name: 'Actions for Linear' })).toBeNull();
   });
 
   it('an ask-owner row says to ask the agent’s owner, with no Sign in button', async () => {
@@ -245,7 +244,7 @@ describe('a member on a team agent (TASK-798)', () => {
     ]);
     renderTab();
     await openDetails();
-    expect(screen.getByText('Ask the agent’s owner to sign in')).toBeTruthy();
+    expect(screen.getByText('Ask the agent’s owner to set it up')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add key' })).toBeNull();
   });
@@ -499,8 +498,8 @@ describe('when the tool list cannot be read', () => {
   // TASK-817 — the tool read is where a provider's 401 on a stored token is
   // first seen; the check that saw it may have just written the "sign-in
   // expired" marker. So a needs-auth read under a row the list still calls
-  // healthy re-reads the list once, and the row (and its Reconnect) catch up.
-  it('a needs-auth tool read under a healthy row re-reads the list once; the row turns to Sign-in expired with Reconnect', async () => {
+  // healthy re-reads the list once, and the row (and its Sign in again) catch up.
+  it('a needs-auth tool read under a healthy row re-reads the list once; the row turns to Sign-in expired with Sign in again', async () => {
     const list = vi.mocked(workspaceApi.connectors);
     list.mockReset();
     list
@@ -519,7 +518,7 @@ describe('when the tool list cannot be read', () => {
     const trigger = screen.getByRole('button', { name: 'Actions for Linear' });
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'Sign in again' })).toBeTruthy();
   });
 
   it('re-reads the list at most once per tool read when the row stays healthy', async () => {

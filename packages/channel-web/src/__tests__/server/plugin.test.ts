@@ -908,12 +908,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
+            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
+            'nobody is offered Sign in again or Add key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           hook: 'mcp-oauth:remove-shared-sign-in',
@@ -931,19 +931,14 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key cannot be saved)',
         },
         {
-          hook: 'credentials:list',
-          degradation:
-            'GET …/connectors/:connectorId/key answers 503 credentials-unavailable (whether a key is saved cannot be read)',
-        },
-        {
           hook: 'credentials:delete',
           degradation:
-            'DELETE …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key, or a failed Add, cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
+            'adding a key-based connector answers 503 credentials-unavailable (a failed Add cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
         },
         {
           hook: 'connectors:get',
           degradation:
-            'Add a connector, and PUT, GET and DELETE …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
+            'Add a connector, and PUT …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
         },
         {
           hook: 'credentials:get',

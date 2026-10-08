@@ -501,14 +501,14 @@ export function createChannelWebServerPlugin(
           // is put on the agent.
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
+            'the Connectors tab offers no Add or Remove, Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin, and on a personal agent adding a key-based connector and PUT …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
-          // TASK-813 — may this person store a credential ON a team agent (sign in
-          // on it, add a key)? Team admins only.
+          // TASK-813 — may this person choose a team agent's account (sign in
+          // on it, add its key)? Team admins only.
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT, GET and DELETE …/connectors/:connectorId/key answer 503 connectors-unavailable',
+            'nobody is offered Sign in again or Add key on a team agent (members are told to ask the owner), and on a team agent adding a key-based connector and PUT …/connectors/:connectorId/key answer 503 connectors-unavailable',
         },
         {
           // TASK-858 / slice 3 — Remove deletes the agent's own OAuth sign-in
@@ -534,17 +534,11 @@ export function createChannelWebServerPlugin(
             'PUT …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key cannot be saved)',
         },
         {
-          // TASK-854 — is an agent key saved? Metadata only, at scope agent.
-          hook: 'credentials:list',
-          degradation:
-            'GET …/connectors/:connectorId/key answers 503 credentials-unavailable (whether a key is saved cannot be read)',
-        },
-        {
-          // TASK-854 / slice 3 — remove an agent key, undo a failed key-based
-          // Add, and delete the agent's keys on Remove — at scope agent.
+          // Slice 3 — undo a failed key-based Add, and delete the agent's keys
+          // on Remove — at scope agent.
           hook: 'credentials:delete',
           degradation:
-            'DELETE …/connectors/:connectorId/key and adding a key-based connector answer 503 credentials-unavailable (a key, or a failed Add, cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
+            'adding a key-based connector answers 503 credentials-unavailable (a failed Add cannot be undone), and removing a key-based connector leaves its keys behind with cleanup: partial',
         },
         {
           // TASK-761 / slice 3 — Add reads what the connector needs (a sign-in,
@@ -552,7 +546,7 @@ export function createChannelWebServerPlugin(
           // key routes read its api-key slots.
           hook: 'connectors:get',
           degradation:
-            'Add a connector, and PUT, GET and DELETE …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
+            'Add a connector, and PUT …/connectors/:connectorId/key, answer 503 connectors-unavailable (what the connector needs cannot be read)',
         },
         {
           // The shared-key gate: does the admin's shared key exist, readable

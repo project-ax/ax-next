@@ -9,38 +9,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
-import type {
-  AgentConnectorHealth,
-  AgentConnectorRow,
-  AgentConnectorSetup,
-} from './workspace-types';
+import type { AgentConnectorRow } from './workspace-types';
 
 export type AgentConnectorsStatus = 'loading' | 'ok' | 'unavailable' | 'failed';
 
 /**
- * `removed-signed-out` — it was on none of this person's other agents, so
- * their own sign-in / keys for it went too (adding it again asks again).
+ * What a Remove answered. Slice 3 — Remove deletes this agent's own sign-in
+ * and keys, never a person's, so there is no "signed you out" outcome.
  */
-export type RemoveOutcome = 'removed' | 'removed-partial' | 'removed-signed-out' | 'failed';
-
-/** What Retry found (TASK-741), or that the check itself could not run. */
-export type RetryOutcome = AgentConnectorHealth | 'failed';
-
-/**
- * TASK-774 — Retry's answer plus whose sign-in it found expired, so the
- * caller can name the right fix (Reconnect for the team's shared sign-in,
- * Sign in again for this person's own).
- */
-export interface RetryResult {
-  outcome: RetryOutcome;
-  /** True only when `outcome` is `needs-reconnect` and the sign-in is shared. */
-  sharedSignIn: boolean;
-  /**
-   * TASK-795 — present only when `outcome` is `needs-sign-in`: the first-time
-   * setup the row now offers (Sign in / Add key / ask an admin).
-   */
-  setup?: AgentConnectorSetup;
-}
+export type RemoveOutcome = 'removed' | 'removed-partial' | 'failed';
 
 export interface AgentConnectorsState {
   connectors: AgentConnectorRow[] | null;
@@ -48,7 +25,7 @@ export interface AgentConnectorsState {
   /** Connector ids with a remove in flight. */
   removing: ReadonlySet<string>;
   remove: (connectorId: string) => Promise<RemoveOutcome>;
-  /** The agent is a team agent (Reconnect asks before signing in for everyone). */
+  /** The agent is a team agent (signing in on it asks first: everyone acts as the signer). */
   shared: boolean;
   /**
    * TASK-798 — this person may add and remove its connectors (always on
@@ -66,15 +43,19 @@ export interface AgentConnectorsState {
    */
   sharedCredentials: boolean;
   /**
+   * Slice 3 — this person may choose the account the agent acts as: Sign in
+   * again and Add key. A personal agent's owner (a personal agent's list is
+   * only readable by its owner), or a team agent's team admin
+   * (`sharedCredentials`). False until the list is read, like the others;
+   * the server decides again on every write.
+   */
+  canSetAccount: boolean;
+  /**
    * TASK-761 — false when this agent's runner gets no connector tools at all
    * (a runner that doesn't load connectors: an allow-list in
    * `runnerLoadsConnectors`), so the tab says so instead of offering setup that can't apply.
    */
   connectorsSupported: boolean;
-  /** Connector ids with a Retry in flight (TASK-741). */
-  retrying: ReadonlySet<string>;
-  /** One fresh check of one connector; the row takes the health it answers. */
-  retry: (connectorId: string) => Promise<RetryResult>;
   refresh: () => void;
 }
 
@@ -82,7 +63,6 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   const [connectors, setConnectors] = useState<AgentConnectorRow[] | null>(null);
   const [status, setStatus] = useState<AgentConnectorsStatus>('loading');
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
-  const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());
   const [shared, setShared] = useState(false);
   const [manageable, setManageable] = useState(false);
   const [sharedCredentials, setSharedCredentials] = useState(false);
@@ -100,7 +80,6 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         setConnectors(null);
         setStatus('loading');
         setRemoving(new Set());
-        setRetrying(new Set());
         setShared(false);
         setManageable(false);
         setSharedCredentials(false);
@@ -140,7 +119,6 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
       try {
         const out = await workspaceApi.removeConnector(agentId, connectorId);
         if (agentScope.current === agentAtStart) load(false);
-        if (out.signedOut === true) return 'removed-signed-out';
         return out.cleanup === 'complete' ? 'removed' : 'removed-partial';
       } catch (e) {
         logRequestFailure(e, 'agent-connectors');
@@ -158,56 +136,6 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
     [agentId, load],
   );
 
-  const retry = useCallback(
-    async (connectorId: string): Promise<RetryResult> => {
-      const agentAtStart = agentScope.current;
-      setRetrying((prev) => new Set(prev).add(connectorId));
-      try {
-        const out = await workspaceApi.retryConnector(agentId, connectorId);
-        if (agentScope.current === agentAtStart) {
-          setConnectors((prev) =>
-            prev === null
-              ? prev
-              : prev.map((r) => {
-                  if (r.id !== connectorId) return r;
-                  // TASK-756 — whose sign-in expired comes with the answer;
-                  // an absent flag must clear one the row carried before.
-                  // TASK-795 — same for the setup a needs-sign-in row offers.
-                  const { sharedSignIn: _was, setup: _wasSetup, ...rest } = r;
-                  return {
-                    ...rest,
-                    health: out.health,
-                    ...(out.sharedSignIn === true ? { sharedSignIn: true as const } : {}),
-                    ...(out.health === 'needs-sign-in' && out.setup !== undefined
-                      ? { setup: out.setup }
-                      : {}),
-                  };
-                }),
-          );
-        }
-        return {
-          outcome: out.health,
-          sharedSignIn: out.health === 'needs-reconnect' && out.sharedSignIn === true,
-          ...(out.health === 'needs-sign-in' && out.setup !== undefined
-            ? { setup: out.setup }
-            : {}),
-        };
-      } catch (e) {
-        logRequestFailure(e, 'agent-connectors');
-        return { outcome: 'failed', sharedSignIn: false };
-      } finally {
-        if (agentScope.current === agentAtStart) {
-          setRetrying((prev) => {
-            const next = new Set(prev);
-            next.delete(connectorId);
-            return next;
-          });
-        }
-      }
-    },
-    [agentId],
-  );
-
   const refresh = useCallback(() => load(false), [load]);
 
   return {
@@ -218,9 +146,8 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
     shared,
     manageable,
     sharedCredentials,
+    canSetAccount: status === 'ok' && (!shared || sharedCredentials),
     connectorsSupported,
-    retrying,
-    retry,
     refresh,
   };
 }

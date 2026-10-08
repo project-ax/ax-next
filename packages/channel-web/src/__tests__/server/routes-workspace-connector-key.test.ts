@@ -1,17 +1,18 @@
 // @vitest-environment node
 /**
- * TASK-813 / TASK-854 / slice 3 — an agent's own connector key, stored ON
- * the agent (team agents and, since slice 3, personal agents):
+ * TASK-813 / slice 3 — an agent's own connector key, stored ON the agent
+ * (team agents and, since slice 3, personal agents): the rail's Add key.
  *
- *   PUT    /api/workspace/agents/:agentId/connectors/:connectorId/key
- *          { slot, payloadB64 }   (save; saving again replaces)
- *   GET    …/key            ({ slots: [{ slot, saved }] })
- *   DELETE …/key { slot }   (remove)
+ *   PUT /api/workspace/agents/:agentId/connectors/:connectorId/key
+ *       { slot, payloadB64 }   (save; saving again replaces)
+ *
+ * Slice 3 deleted the GET (is a key saved?) and DELETE (remove one key)
+ * variants: the rail only fills a missing key, and Remove deletes the
+ * agent's keys with the connector (routes-workspace-connectors.test.ts).
  *
  * What the tests are for, most expensive first:
  *
- *   1. ONLY WHOEVER MAY CHOOSE THE AGENT'S ACCOUNT WRITES, READS OR REMOVES
- *      IT. On a team agent that is a team admin (`agents:can-set-shared-credential`)
+ *   1. ONLY WHOEVER MAY CHOOSE THE AGENT'S ACCOUNT WRITES IT. On a team agent that is a team admin (`agents:can-set-shared-credential`)
  *      — a workspace admin who is not one is refused exactly like a member. On
  *      a personal agent it is the owner (`agents:can-manage-connectors` asked
  *      with the admin bit off). No vault write happens before every check
@@ -19,8 +20,7 @@
  *   2. THE REF IS THE SERVER'S. It comes from the connector's credential plan
  *      for the named api-key slot — never from the client — and an OAuth slot
  *      or the admin's OAuth client secret is not a team key.
- *   3. THE KEY NEVER LEAVES. Not in the response, not in a log line. The GET
- *      answers a boolean per slot — never a ref, kind or date.
+ *   3. THE KEY NEVER LEAVES. Not in the response, not in a log line.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
@@ -96,10 +96,6 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
   let logged: unknown[][];
   /** TASK-854 — the agent-scope vault rows, `${ownerId}|${ref}` → value. */
   let vault: Map<string, string>;
-  let listCalls: Array<Record<string, unknown>>;
-  let listThrows: boolean;
-  let deleteCalls: Array<Record<string, unknown>>;
-  let deleteThrows: boolean;
 
   const conn = (id: string, keyMode: string, credentials: Array<Record<string, unknown>>) => ({
     id,
@@ -146,10 +142,6 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
     setThrows = false;
     logged = [];
     vault = new Map();
-    listCalls = [];
-    listThrows = false;
-    deleteCalls = [];
-    deleteThrows = false;
 
     bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
@@ -194,30 +186,6 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
       if (setThrows) throw new Error(`vault refused ${SECRET}`);
       const { ownerId, ref, payload } = i as { ownerId: string; ref: string; payload: Uint8Array };
       vault.set(`${ownerId}|${ref}`, Buffer.from(payload).toString('utf-8'));
-      return undefined;
-    });
-    bus.registerService('credentials:list', 'credentials', async (_c, i: unknown) => {
-      listCalls.push(i as Record<string, unknown>);
-      if (listThrows) throw new Error(`vault list failed near ${SECRET}`);
-      const { scope, ownerId } = i as { scope: string; ownerId: string };
-      return {
-        credentials: [...vault.keys()]
-          .map((k) => k.split('|') as [string, string])
-          .filter(([owner]) => scope === 'agent' && owner === ownerId)
-          .map(([owner, ref]) => ({
-            scope: 'agent',
-            ownerId: owner,
-            ref,
-            kind: 'api-key',
-            createdAt: '2026-10-04T00:00:00.000Z',
-          })),
-      };
-    });
-    bus.registerService('credentials:delete', 'credentials', async (_c, i: unknown) => {
-      deleteCalls.push(i as Record<string, unknown>);
-      if (deleteThrows) throw new Error(`vault delete failed near ${SECRET}`);
-      const { ownerId, ref } = i as { ownerId: string; ref: string };
-      vault.delete(`${ownerId}|${ref}`);
       return undefined;
     });
     for (const level of ['info', 'warn', 'error', 'debug'] as const) {
@@ -340,15 +308,15 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
     caller = { id: 'owner', isAdmin: false };
     canManageThrows = true;
     const r = await put({ slot: 'STRIPE_KEY', payloadB64: SECRET_B64 }, 'stripe', 'my-agent');
-    expect(r).toEqual({ statusCode: 503, body: { error: 'team-key-check-failed' } });
+    expect(r).toEqual({ statusCode: 503, body: { error: 'agent-key-check-failed' } });
     expect(setCalls).toEqual([]);
     expect(JSON.stringify(logged)).not.toContain('corrupt');
   });
 
-  it('a workspace-key connector: 409 team-key-unavailable, nothing written', async () => {
+  it('a workspace-key connector: 409 agent-key-unavailable, nothing written', async () => {
     const r = await put({ slot: 'KEY', payloadB64: SECRET_B64 }, 'company');
     expect(r.statusCode).toBe(409);
-    expect(r.body).toEqual({ error: 'team-key-unavailable' });
+    expect(r.body).toEqual({ error: 'agent-key-unavailable' });
     expect(setCalls).toEqual([]);
   });
 
@@ -386,7 +354,7 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
     authorize = 'deny';
     const r = await put({ slot: 'STRIPE_KEY', payloadB64: SECRET_B64 });
     expect(r.statusCode).toBe(409);
-    expect(r.body).toEqual({ error: 'team-key-unavailable' });
+    expect(r.body).toEqual({ error: 'agent-key-unavailable' });
     expect(setCalls).toEqual([]);
   });
 
@@ -403,7 +371,7 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
     const r = await put({ slot: 'STRIPE_KEY', payloadB64: SECRET_B64 });
     expect(r.statusCode).toBe(503);
     expect(setCalls).toEqual([]);
-    const line = logged.find((l) => l[0] === 'workspace_team_key_check_failed');
+    const line = logged.find((l) => l[0] === 'workspace_agent_key_check_failed');
     expect(line?.[1]).toEqual({ agentId: 'team-agent', connectorId: 'stripe', step: 'permission', name: expect.any(String) });
     expect(JSON.stringify(logged)).not.toContain('corrupt');
     expectNoLeak(r);
@@ -460,288 +428,12 @@ describe('PUT …/connectors/:connectorId/key (TASK-813, slice 3)', () => {
     expectNoLeak(r);
   });
 
-  it('a vault failure on the write: 502 team-key-not-saved, logged by name only — never the key', async () => {
+  it('a vault failure on the write: 502 agent-key-not-saved, logged by name only — never the key', async () => {
     setThrows = true;
     const r = await put({ slot: 'STRIPE_KEY', payloadB64: SECRET_B64 });
     expect(r.statusCode).toBe(502);
-    expect(r.body).toEqual({ error: 'team-key-not-saved' });
-    expect(logged.some((l) => l[0] === 'workspace_team_key_save_failed')).toBe(true);
+    expect(r.body).toEqual({ error: 'agent-key-not-saved' });
+    expect(logged.some((l) => l[0] === 'workspace_agent_key_save_failed')).toBe(true);
     expectNoLeak(r);
-  });
-
-  // ---------------------------------------------------------------------
-  // TASK-854 — GET (is a team key saved?) and DELETE (remove it), behind the
-  // same team-admin gate as the PUT.
-  // ---------------------------------------------------------------------
-
-  async function get(connectorId = 'stripe', agentId = 'team-agent'): Promise<Captured> {
-    const { res, captured } = mkRes();
-    await makeWorkspaceHandlers({ bus, initCtx }).getAgentKeys(mkReq({ agentId, connectorId }), res);
-    return captured;
-  }
-
-  async function del(
-    body: unknown,
-    connectorId = 'stripe',
-    agentId = 'team-agent',
-    raw?: string,
-  ): Promise<Captured> {
-    const { res, captured } = mkRes();
-    await makeWorkspaceHandlers({ bus, initCtx }).removeAgentKey(
-      mkReq({ agentId, connectorId }, body, raw),
-      res,
-    );
-    return captured;
-  }
-
-  function rewire(names: readonly string[], omit: string): void {
-    const old = bus;
-    bus = new HookBus();
-    for (const name of names) {
-      if (name === omit) continue;
-      bus.registerService(name, 'x', (c, i) => old.call(name, c, i));
-    }
-  }
-
-  describe('GET …/key (TASK-854)', () => {
-    it('a team admin reads one entry per api-key slot, saved true/false — never a ref, kind or date', async () => {
-      vault.set('team-agent|account:multi:B_KEY', SECRET);
-      vault.set('other-agent|account:multi:A_KEY', SECRET);
-      const r = await get('multi');
-      expect(r.statusCode).toBe(200);
-      expect(r.body).toEqual({
-        slots: [
-          { slot: 'A_KEY', saved: false },
-          { slot: 'B_KEY', saved: true },
-        ],
-      });
-      expect(listCalls).toEqual([{ scope: 'agent', ownerId: 'team-agent' }]);
-      const text = JSON.stringify(r.body);
-      expect(text).not.toContain('account:');
-      expect(text).not.toContain('api-key');
-      expect(text).not.toContain('2026-10-04');
-      expectNoLeak(r);
-    });
-
-    it('a saved single-slot key reads saved: true; OAuth slots and the client secret are not listed', async () => {
-      vault.set('team-agent|account:stripe', SECRET);
-      expect((await get('stripe')).body).toEqual({ slots: [{ slot: 'STRIPE_KEY', saved: true }] });
-      expect((await get('figma')).body).toEqual({ slots: [] });
-    });
-
-    it('a workspace admin who is not a team admin is refused 403; the vault is never read', async () => {
-      caller = { id: 'ws-admin', isAdmin: true };
-      canSet = 'deny';
-      const r = await get();
-      expect(r.statusCode).toBe(403);
-      expect(r.body).toEqual({ error: 'forbidden' });
-      expect(canSetCalls).toEqual([{ actor: { userId: 'ws-admin', isAdmin: true }, agentId: 'team-agent' }]);
-      expect(listCalls).toEqual([]);
-    });
-
-    it('a plain member is refused 403', async () => {
-      caller = { id: 'member', isAdmin: false };
-      canSet = 'deny';
-      expect((await get()).statusCode).toBe(403);
-      expect(listCalls).toEqual([]);
-    });
-
-    it('a non-member is refused 404 before any hook runs', async () => {
-      caller = { id: 'stranger', isAdmin: true };
-      expect((await get()).statusCode).toBe(404);
-      expect(canSetCalls).toEqual([]);
-      expect(listCalls).toEqual([]);
-    });
-
-    it("slice 3 — a personal agent's owner reads its key presence; anyone else is 403", async () => {
-      vault.set('my-agent|account:stripe', SECRET);
-      caller = { id: 'owner', isAdmin: false };
-      expect(await get('stripe', 'my-agent')).toEqual({
-        statusCode: 200,
-        body: { slots: [{ slot: 'STRIPE_KEY', saved: true }] },
-      });
-      caller = { id: 'ws-admin', isAdmin: true };
-      expect((await get('stripe', 'my-agent')).statusCode).toBe(403);
-      expect(listCalls).toEqual([{ scope: 'agent', ownerId: 'my-agent' }]);
-    });
-
-    it('the agent vanished between resolve and the permission check: 404 agent-not-found', async () => {
-      canSet = 'not-found';
-      expect(await get()).toEqual({ statusCode: 404, body: { error: 'agent-not-found' } });
-    });
-
-    it('a rejecting permission hook: 503 team-key-check-failed, logged by name only', async () => {
-      canSet = 'throw';
-      const r = await get();
-      expect(r.statusCode).toBe(503);
-      expect(r.body).toEqual({ error: 'team-key-check-failed' });
-      expect(JSON.stringify(logged)).not.toContain('corrupt');
-      expect(listCalls).toEqual([]);
-    });
-
-    it('an unknown connector 404; a workspace-key connector 409 team-key-unavailable; a bad id 400', async () => {
-      expect(await get('ghost')).toEqual({ statusCode: 404, body: { error: 'connector-not-found' } });
-      expect(await get('company')).toEqual({ statusCode: 409, body: { error: 'team-key-unavailable' } });
-      expect((await get('../etc')).statusCode).toBe(400);
-      expect(listCalls).toEqual([]);
-    });
-
-    it('a vault list fault: 503 team-key-check-failed, logged by name only', async () => {
-      listThrows = true;
-      const r = await get();
-      expect(r).toEqual({ statusCode: 503, body: { error: 'team-key-check-failed' } });
-      const line = logged.find((l) => l[0] === 'workspace_team_key_check_failed');
-      expect(line?.[1]).toEqual({ agentId: 'team-agent', connectorId: 'stripe', step: 'list', name: expect.any(String) });
-      expectNoLeak(r);
-    });
-
-    it.each([
-      ['agents:can-set-shared-credential', 'connectors-unavailable'],
-      ['connectors:get', 'connectors-unavailable'],
-      ['credentials:list', 'credentials-unavailable'],
-    ])('no %s: 503 %s', async (omit, error) => {
-      rewire(
-        ['auth:require-user', 'agents:resolve', 'agents:can-set-shared-credential', 'connectors:get', 'credentials:list'],
-        omit,
-      );
-      expect(await get()).toEqual({ statusCode: 503, body: { error } });
-    });
-  });
-
-  describe('DELETE …/key (TASK-854)', () => {
-    it('a team admin removes the key from the agent, under the plan ref — 200 { removed: true }', async () => {
-      vault.set('team-agent|account:multi:B_KEY', SECRET);
-      vault.set('team-agent|account:multi:A_KEY', SECRET);
-      const r = await del({ slot: 'B_KEY' }, 'multi');
-      expect(r).toEqual({ statusCode: 200, body: { removed: true } });
-      expect(deleteCalls).toEqual([{ scope: 'agent', ownerId: 'team-agent', ref: 'account:multi:B_KEY' }]);
-      expect([...vault.keys()]).toEqual(['team-agent|account:multi:A_KEY']);
-      // Removing asks no readability question — it only takes access away.
-      expect(authorizeCalls).toEqual([]);
-      expect(logged.some((l) => l[0] === 'workspace_team_key_removed')).toBe(true);
-      expectNoLeak(r);
-    });
-
-    it('is idempotent: no saved key is still 200 { removed: true }', async () => {
-      expect(await del({ slot: 'STRIPE_KEY' })).toEqual({ statusCode: 200, body: { removed: true } });
-      expect(deleteCalls).toHaveLength(1);
-    });
-
-    it('replace = a second PUT overwrites the saved key; GET still reads saved', async () => {
-      const other = 'sk-team-REPLACEMENT-456';
-      expect((await put({ slot: 'STRIPE_KEY', payloadB64: SECRET_B64 })).statusCode).toBe(200);
-      expect(
-        (await put({ slot: 'STRIPE_KEY', payloadB64: Buffer.from(other).toString('base64') })).statusCode,
-      ).toBe(200);
-      expect(vault.get('team-agent|account:stripe')).toBe(other);
-      expect(setCalls.map((c) => c.input.ref)).toEqual(['account:stripe', 'account:stripe']);
-      expect((await get()).body).toEqual({ slots: [{ slot: 'STRIPE_KEY', saved: true }] });
-    });
-
-    it('a workspace admin who is not a team admin is refused 403; nothing removed', async () => {
-      vault.set('team-agent|account:stripe', SECRET);
-      caller = { id: 'ws-admin', isAdmin: true };
-      canSet = 'deny';
-      expect(await del({ slot: 'STRIPE_KEY' })).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
-      expect(canSetCalls).toEqual([{ actor: { userId: 'ws-admin', isAdmin: true }, agentId: 'team-agent' }]);
-      expect(deleteCalls).toEqual([]);
-      expect(vault.has('team-agent|account:stripe')).toBe(true);
-    });
-
-    it('a plain member is refused 403; nothing removed', async () => {
-      caller = { id: 'member', isAdmin: false };
-      canSet = 'deny';
-      expect((await del({ slot: 'STRIPE_KEY' })).statusCode).toBe(403);
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it('a non-member is refused 404 before any hook runs', async () => {
-      caller = { id: 'stranger', isAdmin: true };
-      expect((await del({ slot: 'STRIPE_KEY' })).statusCode).toBe(404);
-      expect(canSetCalls).toEqual([]);
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it("slice 3 — a personal agent's owner removes its key; anyone else is 403, nothing removed", async () => {
-      vault.set('my-agent|account:stripe', SECRET);
-      caller = { id: 'ws-admin', isAdmin: true };
-      expect((await del({ slot: 'STRIPE_KEY' }, 'stripe', 'my-agent')).statusCode).toBe(403);
-      expect(deleteCalls).toEqual([]);
-      caller = { id: 'owner', isAdmin: false };
-      expect(await del({ slot: 'STRIPE_KEY' }, 'stripe', 'my-agent')).toEqual({
-        statusCode: 200,
-        body: { removed: true },
-      });
-      expect(deleteCalls).toEqual([{ scope: 'agent', ownerId: 'my-agent', ref: 'account:stripe' }]);
-    });
-
-    it('a rejecting permission hook: 503 team-key-check-failed, nothing removed', async () => {
-      canSet = 'throw';
-      expect(await del({ slot: 'STRIPE_KEY' })).toEqual({
-        statusCode: 503,
-        body: { error: 'team-key-check-failed' },
-      });
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it('a workspace-key connector: 409 team-key-unavailable; an unknown connector: 404', async () => {
-      expect(await del({ slot: 'KEY' }, 'company')).toEqual({
-        statusCode: 409,
-        body: { error: 'team-key-unavailable' },
-      });
-      expect(await del({ slot: 'X' }, 'ghost')).toEqual({ statusCode: 404, body: { error: 'connector-not-found' } });
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it.each([
-      ['a slot the connector does not have', 'stripe', 'NOPE_KEY'],
-      ['an OAuth (sign-in) slot', 'figma', 'MCP_OAUTH'],
-      ["the admin's OAuth client secret", 'figma', 'OAUTH_CLIENT_SECRET'],
-    ])('%s: 400 unknown-slot, nothing removed', async (_label, connectorId, slot) => {
-      expect(await del({ slot }, connectorId)).toEqual({ statusCode: 400, body: { error: 'unknown-slot' } });
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it.each([
-      ['a client-chosen ref', { slot: 'STRIPE_KEY', ref: 'provider:anthropic' }],
-      ['a payload', { slot: 'STRIPE_KEY', payloadB64: SECRET_B64 }],
-      ['no slot', {}],
-      ['an empty slot', { slot: '' }],
-      ['a slot over 64 chars', { slot: 'A'.repeat(65) }],
-      ['an array', ['STRIPE_KEY']],
-    ])('a malformed body (%s): 400 invalid-body, nothing removed', async (_label, body) => {
-      expect(await del(body)).toEqual({ statusCode: 400, body: { error: 'invalid-body' } });
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it('invalid JSON: 400 invalid-json', async () => {
-      expect(await del(undefined, 'stripe', 'team-agent', '{"slot":')).toEqual({
-        statusCode: 400,
-        body: { error: 'invalid-json' },
-      });
-      expect(deleteCalls).toEqual([]);
-    });
-
-    it('a vault failure on the delete: 502 team-key-not-removed, logged by name only', async () => {
-      deleteThrows = true;
-      const r = await del({ slot: 'STRIPE_KEY' });
-      expect(r).toEqual({ statusCode: 502, body: { error: 'team-key-not-removed' } });
-      const line = logged.find((l) => l[0] === 'workspace_team_key_remove_failed');
-      expect(line?.[1]).toEqual({ agentId: 'team-agent', connectorId: 'stripe', name: expect.any(String) });
-      expectNoLeak(r);
-    });
-
-    it.each([
-      ['agents:can-set-shared-credential', 'connectors-unavailable'],
-      ['connectors:get', 'connectors-unavailable'],
-      ['credentials:delete', 'credentials-unavailable'],
-    ])('no %s: 503 %s, nothing removed', async (omit, error) => {
-      rewire(
-        ['auth:require-user', 'agents:resolve', 'agents:can-set-shared-credential', 'connectors:get', 'credentials:delete'],
-        omit,
-      );
-      expect(await del({ slot: 'STRIPE_KEY' })).toEqual({ statusCode: 503, body: { error } });
-      expect(deleteCalls).toEqual([]);
-    });
   });
 });

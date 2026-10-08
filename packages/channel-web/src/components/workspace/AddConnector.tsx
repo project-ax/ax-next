@@ -22,10 +22,10 @@
  *     no keys in the request at all.
  *
  * A team agent's sign-in is stored ON THE AGENT, so everyone using it acts as
- * the person who signed in. That gets the same consent line the rail's Reconnect
- * shows before the sign-in starts. Whether the agent is a team agent comes
- * from the server, on the same read as its connector list (`shared`, the flag
- * Reconnect already uses — TASK-741).
+ * the person who signed in. That gets the same consent line the rail's Sign in
+ * again shows before the sign-in starts. Whether the agent is a team agent
+ * comes from the server, on the same read as its connector list (`shared`,
+ * the flag Sign in again uses too — TASK-741).
  *
  * Only an admin of the team that owns a team agent may put a sign-in or a key
  * ON it (TASK-813, `sharedCredentials` on the same read). For anyone else a
@@ -63,7 +63,6 @@ import { useOAuthPopup } from '@/lib/use-oauth-popup';
 import { useUser } from '@/lib/user-context';
 import { AttachConnectorError, workspaceApi, type AgentConnectorKey } from '@/lib/workspace-api';
 import { AddKeyDialog } from './AddKeyDialog';
-import { SETUP_REASON } from './ConnectorDetails';
 
 interface Props {
   agentId: string;
@@ -84,7 +83,8 @@ interface RowProblem {
   retry: boolean;
 }
 
-/** A key row on a team agent this person may not put a key on. */
+/** A sign-in / key row on a team agent this person may not put an account on. */
+const ASK_OWNER_SIGN_IN = 'Ask the agent’s owner to sign in';
 const ASK_OWNER_KEY = 'Ask the agent’s owner to add its key';
 
 /** A fresh read that the connector's details couldn't load. */
@@ -110,6 +110,11 @@ function refusalCopy(
   }
   if (code === 'connector-needs-sign-in') {
     return { text: `${c.name} is added by signing in. Go back and open Add again.`, retry: false };
+  }
+  if (code === 'keys-not-accepted') {
+    // Its definition changed since the list was read: it no longer takes a
+    // key of the agent's own.
+    return { text: `${c.name} doesn’t take a key any more. Go back and open Add again.`, retry: false };
   }
   if (code === 'connector-needs-key') {
     return {
@@ -442,7 +447,7 @@ function AvailableRow({
   } else if ((action === 'sign-in' || action === 'key') && !canSetCredential) {
     control = (
       <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">
-        {action === 'sign-in' ? SETUP_REASON['ask-owner'] : ASK_OWNER_KEY}
+        {action === 'sign-in' ? ASK_OWNER_SIGN_IN : ASK_OWNER_KEY}
       </span>
     );
   } else {

@@ -1,13 +1,13 @@
 /**
- * TASK-795 — Retry's answer patches the row it checked: health, whose
- * sign-in (TASK-756), and now which first-time setup a `needs-sign-in` row
- * offers. A setup the answer leaves out must not linger on the row.
+ * The Connectors tab's list as state: who may do what (TASK-798 / TASK-813 /
+ * slice 3), and what a Remove answered. Slice 3 — no Retry (its route is
+ * gone), and Remove never signs anyone out of anything.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { AgentConnectorRow } from '@/lib/workspace-types';
-import { useAgentConnectors, type RetryResult } from '../agent-connectors';
+import { useAgentConnectors, type RemoveOutcome } from '../agent-connectors';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -16,13 +16,12 @@ vi.mock('@/lib/workspace-api', async () => {
     workspaceApi: {
       connectors: vi.fn(),
       removeConnector: vi.fn(),
-      retryConnector: vi.fn(),
     },
   };
 });
 
 const connectorsMock = vi.mocked(workspaceApi.connectors);
-const retryMock = vi.mocked(workspaceApi.retryConnector);
+const removeMock = vi.mocked(workspaceApi.removeConnector);
 
 function row(over: Partial<AgentConnectorRow> = {}): AgentConnectorRow {
   return {
@@ -47,32 +46,63 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('retry() and the row setup (TASK-795)', () => {
-  it('carries the setup a needs-sign-in answer names onto the row, and returns it', async () => {
+describe('remove() (slice 3)', () => {
+  it.each([
+    ['complete', 'removed'],
+    ['partial', 'removed-partial'],
+  ] as const)('cleanup %s answers %s', async (cleanup, outcome) => {
     const hook = await loaded([row()]);
-    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup: 'add-key' });
-    let out: RetryResult | undefined;
+    removeMock.mockResolvedValueOnce({ removed: true, cleanup });
+    let out: RemoveOutcome | undefined;
     await act(async () => {
-      out = await hook.result.current.retry('slack');
+      out = await hook.result.current.remove('slack');
     });
-    expect(out).toEqual({ outcome: 'needs-sign-in', sharedSignIn: false, setup: 'add-key' });
-    expect(hook.result.current.connectors?.[0]).toMatchObject({
-      health: 'needs-sign-in',
-      setup: 'add-key',
-    });
+    expect(out).toBe(outcome);
   });
 
-  it('drops a stale setup when the answer has none', async () => {
-    const hook = await loaded([row({ setup: 'sign-in' })]);
-    retryMock.mockResolvedValueOnce({ health: 'unreachable' });
-    let out: RetryResult | undefined;
+  it('a failed remove answers failed', async () => {
+    const hook = await loaded([row()]);
+    removeMock.mockRejectedValueOnce(new Error('boom'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let out: RemoveOutcome | undefined;
     await act(async () => {
-      out = await hook.result.current.retry('slack');
+      out = await hook.result.current.remove('slack');
     });
-    expect(out).toEqual({ outcome: 'unreachable', sharedSignIn: false });
-    const after = hook.result.current.connectors?.[0];
-    expect(after?.health).toBe('unreachable');
-    expect(after !== undefined && 'setup' in after).toBe(false);
+    expect(out).toBe('failed');
+  });
+});
+
+describe('canSetAccount (slice 3)', () => {
+  async function read(over: { shared: boolean; sharedCredentials?: boolean }) {
+    connectorsMock.mockResolvedValueOnce({
+      connectors: [row()],
+      connectorsSupported: true,
+      manageable: true,
+      ...over,
+    } as never);
+    const hook = renderHook(() => useAgentConnectors('a-quill'));
+    expect(hook.result.current.canSetAccount).toBe(false);
+    await waitFor(() => expect(hook.result.current.status).toBe('ok'));
+    return hook.result.current.canSetAccount;
+  }
+
+  it('is true on a personal agent (its owner), once the list is read', async () => {
+    expect(await read({ shared: false, sharedCredentials: false })).toBe(true);
+  });
+
+  it('on a team agent, follows sharedCredentials: a team admin yes, anyone else no', async () => {
+    expect(await read({ shared: true, sharedCredentials: true })).toBe(true);
+    expect(await read({ shared: true, sharedCredentials: false })).toBe(false);
+    // A server that never sent the flag: nothing is offered.
+    expect(await read({ shared: true })).toBe(false);
+  });
+
+  it('is false while the list could not be read', async () => {
+    connectorsMock.mockRejectedValueOnce(new Error('boom'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const hook = renderHook(() => useAgentConnectors('a-quill'));
+    await waitFor(() => expect(hook.result.current.status).toBe('failed'));
+    expect(hook.result.current.canSetAccount).toBe(false);
   });
 });
 

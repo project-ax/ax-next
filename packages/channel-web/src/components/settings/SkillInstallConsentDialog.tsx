@@ -2,8 +2,7 @@
  * SkillInstallConsentDialog — the capability-consent moment shown when a user
  * self-installs a skill from the workspace catalog (Skills app-store, TASK-126).
  *
- * Same posture as {@link ConnectorConnectDialog}: before the user-scoped attach
- * completes, show what the skill is and what reach it brings, then let the user
+ * Before the user-scoped attach completes, show what the skill is and what reach it brings, then let the user
  * confirm. A skill declares NO capability block of its own (TASK-100) — its
  * reach is the connectors it references — so the consent surface lists those
  * connectors. The item is admin-vetted (it's on the workspace catalog), so this

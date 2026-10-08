@@ -510,10 +510,10 @@ describe('agent connector routes', () => {
       // TASK-798 — a sign-in on a team agent is stored ON the agent, so only
       // its owner is offered Sign in; a member is told to ask the owner.
       // TASK-813 — "its owner" is a team admin ONLY (agents:can-set-shared-credential),
-      // no workspace-admin bypass. A missing key stays add-key: the rail's Add
-      // key is their own.
-      // UNFIXED: gmail says `sign-in` to the member -> fails.
-      it('a team-agent member: a missing sign-in is ask-owner, a missing key stays add-key', async () => {
+      // no workspace-admin bypass. Slice 3 — a key is the agent's too, so a
+      // missing key is ask-owner for them as well.
+      // UNFIXED: linear says `add-key` to the member -> fails.
+      it('a team-agent member: a missing sign-in or key is ask-owner', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
@@ -521,18 +521,22 @@ describe('agent connector routes', () => {
         canSetShared = 'deny';
         const byId = rowsById(await list());
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
       });
 
-      it("the team agent's owner still gets sign-in; a personal agent never asks", async () => {
+      it("the team agent's owner still gets sign-in and add-key; a personal agent's owner too", async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
-        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+        let byId = rowsById(await list());
+        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
+        expect(byId.linear).toMatchObject({ setup: 'add-key' });
         agentRow = { ...agentRow, visibility: 'personal' };
         canManage = 'deny';
         canSetShared = 'deny';
-        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+        byId = rowsById(await list());
+        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
+        expect(byId.linear).toMatchObject({ setup: 'add-key' });
       });
 
       // TASK-813 — sign-in on a team agent follows sharedCredentials, NOT
@@ -550,34 +554,24 @@ describe('agent connector routes', () => {
         expect(r.body).toMatchObject({ shared: true, manageable: true, sharedCredentials: false });
         const byId = rowsById(r);
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
-        expect('teamKey' in byId.linear!).toBe(false);
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
         expect(canSetSharedCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
       });
 
-      it('a team admin: sharedCredentials, sign-in, and a team key offered on the api-key personal connector only', async () => {
+      // Slice 3 — the row no longer says `teamKey`: Add key follows `setup`.
+      it('a team admin: sharedCredentials, sign-in and add-key — and no row says teamKey', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
-        // notes: a workspace-keyed api-key connector — the company key, never a team key.
-        effective[2] = {
-          ...effective[2]!,
-          summary: { ...effective[2]!.summary, keyMode: 'workspace' },
-          capabilities: { credentials: [key('NOTES_KEY')] },
-        };
         const r = await list();
         expect(r.body).toMatchObject({ shared: true, sharedCredentials: true });
         const byId = rowsById(r);
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
-        expect('teamKey' in byId.gmail!).toBe(false);
-        expect(byId.linear).toMatchObject({ teamKey: true });
-        expect('teamKey' in byId.notes!).toBe(false);
-        // Present whatever the row's health: a team key can replace a working one.
-        present = new Set(['account:gmail', 'account:linear']);
-        expect(rowsById(await list()).linear).toMatchObject({ health: 'ok', teamKey: true });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        for (const row of Object.values(byId)) expect('teamKey' in row).toBe(false);
       });
 
-      it('a plain member: no sharedCredentials, no team key', async () => {
+      it('a plain member: no sharedCredentials', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
@@ -585,17 +579,14 @@ describe('agent connector routes', () => {
         canSetShared = 'deny';
         const r = await list();
         expect(r.body).toMatchObject({ manageable: false, sharedCredentials: false });
-        for (const row of Object.values(rowsById(r))) expect('teamKey' in row).toBe(false);
       });
 
-      it('a personal agent: sharedCredentials false, no team key, the hook is never asked', async () => {
+      it('a personal agent: sharedCredentials false, the hook is never asked', async () => {
         registerHealth();
         registerHas();
         const r = await list();
         expect(r.body).toMatchObject({ shared: false, manageable: true, sharedCredentials: false });
-        const byId = rowsById(r);
-        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
-        for (const row of Object.values(byId)) expect('teamKey' in row).toBe(false);
+        expect(rowsById(r).gmail).toMatchObject({ setup: 'sign-in' });
         expect(canSetSharedCalls).toEqual([]);
       });
 
@@ -658,7 +649,11 @@ describe('agent connector routes', () => {
         expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
       });
 
-      it('a workspace-key connector asks a member to ask an admin, and offers an admin Add key', async () => {
+      // Slice 3 — Add key writes the AGENT's key, which a company-key
+      // connector refuses (409): the company key is added in Admin ›
+      // Connectors, so even an admin's row says ask-admin, never add-key.
+      // UNFIXED: the admin's row says add-key -> fails.
+      it('a workspace-key connector says ask-admin to everyone — an admin too', async () => {
         registerHealth();
         registerHas();
         effective[1] = {
@@ -667,7 +662,20 @@ describe('agent connector routes', () => {
         };
         expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-admin' });
         caller = { id: 'u1', isAdmin: true };
-        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-admin' });
+      });
+
+      // Slice 3 — an OAuth connector that also declares a header key: once
+      // signed in, the row offers Add key for the header key.
+      it('an OAuth connector signed in but missing its header key says add-key', async () => {
+        registerHealth();
+        registerHas();
+        effective[0] = {
+          ...effective[0]!,
+          capabilities: { credentials: [oauth('gmail'), key('GMAIL_HEADER')] },
+        };
+        present = new Set(['account:gmail:MCP_OAUTH', 'account:linear']);
+        expect(rowsById(await list()).gmail).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
       });
 
       it('a rejected refresh outranks never-signed-in', async () => {

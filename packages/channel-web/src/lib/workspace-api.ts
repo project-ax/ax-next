@@ -71,7 +71,6 @@ import type {
   AgentAbilityWrite,
   AgentConnectorAttached,
   AgentConnectorRemoved,
-  AgentConnectorRetried,
   AgentConnectorToolsRead,
   AgentToolVerdict,
   AgentToolVerdictSaved,
@@ -500,6 +499,7 @@ export const ATTACH_REFUSAL_CODES = [
   'connector-needs-key',
   'connector-needs-shared-key',
   'already-attached',
+  'keys-not-accepted',
 ] as const;
 export type AttachRefusalCode = (typeof ATTACH_REFUSAL_CODES)[number];
 
@@ -517,11 +517,15 @@ export class AttachConnectorError extends WorkspaceApiError {
   }
 }
 
-/** TASK-813 — the team-key refusals a person can act on. */
-export const TEAM_KEY_FORBIDDEN = 'Only the team’s admins can add or remove a team key.';
-export const TEAM_KEY_UNAVAILABLE =
-  'A team key can’t be used for this connector. Each person can still add their own key.';
-export const TEAM_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
+/**
+ * TASK-813 / slice 3 — the agent-key refusals a person can act on (the
+ * rail's Add key). The server decides who may: a team agent's team admin, a
+ * personal agent's owner.
+ */
+export const AGENT_KEY_FORBIDDEN = 'Only the agent’s owner can add its key.';
+export const AGENT_KEY_UNAVAILABLE =
+  'This connector uses your workspace’s key, so the agent can’t have its own. Ask a workspace admin.';
+export const AGENT_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
 
 /** UTF-8 → base64, same encoding the credentials routes take. */
 function utf8Base64(s: string): string {
@@ -531,98 +535,20 @@ function utf8Base64(s: string): string {
 }
 
 /**
- * The sentence for a refused team-key save, or `undefined` for the generic
+ * The sentence for a refused agent-key save, or `undefined` for the generic
  * per-status copy. Only the `error` code is read — never rendered — so an
  * unexpected body can't put anything on screen.
  */
-async function teamKeyRefusal(res: Response): Promise<string | undefined> {
-  if (res.status === 403) return TEAM_KEY_FORBIDDEN;
-  if (res.status === 409) return TEAM_KEY_UNAVAILABLE;
+async function agentKeyRefusal(res: Response): Promise<string | undefined> {
+  if (res.status === 403) return AGENT_KEY_FORBIDDEN;
+  if (res.status === 409) return AGENT_KEY_UNAVAILABLE;
   if (res.status !== 400) return undefined;
   try {
     const body = (await res.json()) as { error?: unknown } | null;
-    return body?.error === 'invalid-key' ? TEAM_KEY_INVALID : undefined;
+    return body?.error === 'invalid-key' ? AGENT_KEY_INVALID : undefined;
   } catch {
     return undefined;
   }
-}
-
-/** TASK-854 — one team-key slot and whether a key is saved for it. Never the key. */
-export interface TeamKeySlot {
-  slot: string;
-  saved: boolean;
-}
-
-function teamKeyUrl(agentId: string, connectorId: string): string {
-  return `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/key`;
-}
-
-/**
- * One call to `…/connectors/:connectorId/key` (TASK-813/854; was `…/team-key`
- * until slice 3).
- *
- * Not `req()`: a secret rides in the PUT body, so a transport exception is
- * replaced by a bare `HttpError` (the original may carry request details),
- * and nothing here logs anything but the route and status. A refusal wears
- * {@link teamKeyRefusal}'s sentence. Answers the ok `Response`.
- */
-async function teamKeyCall(
-  agentId: string,
-  connectorId: string,
-  method: 'GET' | 'PUT' | 'DELETE',
-  body?: Record<string, string>,
-): Promise<Response> {
-  return teamCredentialCall(teamKeyUrl(agentId, connectorId), method, teamKeyRefusal, body);
-}
-
-/** TASK-858 — the team-sign-in refusals a person can act on. */
-export const TEAM_SIGN_IN_FORBIDDEN = 'Only the team’s admins can remove its sign-in.';
-export const TEAM_SIGN_IN_UNAVAILABLE =
-  'There’s no team sign-in to remove here. Anyone who signed in with their own account keeps it.';
-export const TEAM_SIGN_IN_NOT_REMOVED =
-  'We couldn’t remove the team sign-in just now. Nothing changed — please try again.';
-export const TEAM_SIGN_IN_OFFLINE =
-  'Connectors aren’t available right now, so the team sign-in stays as it is. Try again in a bit.';
-
-/**
- * The sentence for a refused team-sign-in removal, or `undefined` for the
- * generic per-status copy. Status only — the body is never read, so nothing a
- * server says can reach the screen.
- */
-function teamSignInRefusal(res: Response): string | undefined {
-  if (res.status === 403) return TEAM_SIGN_IN_FORBIDDEN;
-  if (res.status === 409) return TEAM_SIGN_IN_UNAVAILABLE;
-  if (res.status === 502) return TEAM_SIGN_IN_NOT_REMOVED;
-  if (res.status === 503) return TEAM_SIGN_IN_OFFLINE;
-  return undefined;
-}
-
-/**
- * One call to a team agent's credential route — team key (TASK-813/854) or
- * team sign-in (TASK-858). A transport exception becomes a bare `HttpError`
- * (the original may carry request details); only route + status are logged;
- * a refusal wears `refusal`'s sentence. Answers the ok `Response`.
- */
-async function teamCredentialCall(
-  url: string,
-  method: 'GET' | 'PUT' | 'DELETE',
-  refusal: (res: Response) => Promise<string | undefined> | string | undefined,
-  body?: Record<string, string>,
-): Promise<Response> {
-  const route = url.slice('/api/workspace'.length);
-  let res: Response;
-  try {
-    res = await httpFetch(url, {
-      method,
-      ...(method === 'GET' ? {} : { headers: writeHeaders }),
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-  } catch {
-    throw new HttpError(url, 0);
-  }
-  if (res.ok) return res;
-  console.warn(`[workspace] ${method} ${route} → ${res.status}`);
-  throw new HttpError(url, res.status, await refusal(res));
 }
 
 export interface RouteProposal {
@@ -1158,77 +1084,37 @@ export const workspaceApi = {
     ),
 
   /**
-   * TASK-813 — save a TEAM key: an api-key on this team agent that everyone
-   * using it uses unless they've added their own. Only the team's admins may
-   * (`sharedCredentials` / a row's `teamKey`); the server decides again.
+   * TASK-813 / slice 3 — the rail's Add key: save this agent's own key for
+   * one slot (`PUT …/connectors/:connectorId/key`). Only whoever may choose
+   * the agent's account may — a team agent's team admin, a personal agent's
+   * owner; the server decides. Saving over a saved key replaces it.
    *
    * Not `req()`: a secret rides in this body, so a transport exception is
    * replaced by a bare `HttpError` (the original may carry request details),
-   * and nothing here logs anything but the route and status.
+   * and nothing here logs anything but the route and status. A refusal wears
+   * {@link agentKeyRefusal}'s sentence.
    */
-  setTeamKey: async (
+  setAgentKey: async (
     agentId: string,
     connectorId: string,
     slot: string,
     payload: string,
   ): Promise<void> => {
-    await teamKeyCall(agentId, connectorId, 'PUT', {
-      slot,
-      payloadB64: utf8Base64(payload),
-    });
-  },
-
-  /**
-   * TASK-854 — which of this connector's team-key slots have a key saved.
-   * Presence only: the server answers `{ slot, saved }` per slot and nothing
-   * else, and only those two fields are kept even if more arrive. A body that
-   * isn't that shape is a failure — never read as "no keys".
-   */
-  getTeamKeys: async (agentId: string, connectorId: string): Promise<TeamKeySlot[]> => {
-    const res = await teamKeyCall(agentId, connectorId, 'GET');
-    const body = (await res.json().catch(() => null)) as { slots?: unknown } | null;
-    if (body === null || !Array.isArray(body.slots)) {
-      throw new HttpError(teamKeyUrl(agentId, connectorId), 502);
+    const url = `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/key`;
+    let res: Response;
+    try {
+      res = await httpFetch(url, {
+        method: 'PUT',
+        headers: writeHeaders,
+        body: JSON.stringify({ slot, payloadB64: utf8Base64(payload) }),
+      });
+    } catch {
+      throw new HttpError(url, 0);
     }
-    return body.slots.flatMap((s: unknown) => {
-      const e = s as { slot?: unknown; saved?: unknown } | null;
-      return e !== null && typeof e.slot === 'string' && typeof e.saved === 'boolean'
-        ? [{ slot: e.slot, saved: e.saved }]
-        : [];
-    });
+    if (res.ok) return;
+    console.warn(`[workspace] PUT ${url.slice('/api/workspace'.length)} → ${res.status}`);
+    throw new HttpError(url, res.status, await agentKeyRefusal(res));
   },
-
-  /**
-   * TASK-854 — remove this team agent's key for one slot. The server derives
-   * the vault ref itself; only the slot name is sent. Idempotent.
-   */
-  removeTeamKey: async (agentId: string, connectorId: string, slot: string): Promise<void> => {
-    await teamKeyCall(agentId, connectorId, 'DELETE', { slot });
-  },
-
-  /**
-   * TASK-858 — remove the TEAM sign-in on this team agent: the one everyone
-   * using it acts as. Only the team's admins may (a row's `teamSignIn`); the
-   * server decides again. No body — the server derives what to remove.
-   * Anyone's own personal sign-in is untouched.
-   */
-  removeTeamSignIn: async (agentId: string, connectorId: string): Promise<void> => {
-    await teamCredentialCall(
-      `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-sign-in`,
-      'DELETE',
-      teamSignInRefusal,
-    );
-  },
-
-  /**
-   * The row menu's "Retry" (TASK-741): one fresh check of one connector.
-   * Answers its health afterwards.
-   */
-  retryConnector: (agentId: string, connectorId: string) =>
-    req<AgentConnectorRetried>(
-      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/retry`,
-      { method: 'POST' },
-    ),
 
   /**
    * The connector details view (TASK-742): this agent's choice for each of

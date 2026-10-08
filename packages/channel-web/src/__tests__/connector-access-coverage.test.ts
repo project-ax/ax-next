@@ -97,12 +97,12 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
   it('finds the surfaces it is meant to guard (a scan that matches nothing guards nothing)', () => {
     const rels = scanned.map((s) => s.rel);
     for (const expected of [
-      'components/settings/ConnectorConnectDialog.tsx',
       'components/settings/LegacyConnectorEditDialog.tsx',
       'components/settings/RemoteMcpConnectorForm.tsx',
       'components/workspace/GrantRow.tsx',
       'components/workspace/AddConnector.tsx',
-      // Slice 3 — the per-agent key form whose save is the Add.
+      // Slice 3 — the per-agent key form whose save is the Add (and a row's
+      // Add key).
       'components/workspace/AddKeyDialog.tsx',
       // TASK-799 — AgentForm no longer attaches connectors or signs a team agent
       // in; that moved to the workspace rail.

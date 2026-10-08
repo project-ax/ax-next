@@ -254,6 +254,27 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     expect(attachMock).not.toHaveBeenCalled();
   });
 
+  // Review focus — the popup closed mid-flow with no answer: nothing is added,
+  // no spinner is left behind, and the row offers Add again.
+  it('a popup closed without any message puts the row back to Add — no spinner, no attach', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
+    popup.closed = true;
+    expect(
+      await screen.findByRole('button', { name: 'Add — Notion' }, { timeout: 2000 }),
+    ).toBeTruthy();
+    expect(within(row('Notion')).queryByLabelText('Waiting for sign-in')).toBeNull();
+    expect(within(row('Notion')).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    // Nobody is listening any more: a late answer adds nothing either.
+    postOAuth('notion', 'success');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAttached).not.toHaveBeenCalled();
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
   it('Cancel while the sign-in is still starting never opens the popup', async () => {
     let resolveBegin: (v: { authorizationUrl: string }) => void = () => {};
     vi.mocked(beginOAuth).mockReturnValueOnce(
@@ -422,6 +443,7 @@ describe('per-agent key: the key form, saved with the Add', () => {
   it.each([
     [400, 'connector-needs-key', 'Zendesk needs every key filled in before it can be added.'],
     [409, 'connector-needs-sign-in', 'Zendesk is added by signing in. Go back and open Add again.'],
+    [400, 'keys-not-accepted', 'Zendesk doesn’t take a key any more. Go back and open Add again.'],
     [409, 'already-attached', 'Zendesk is already on Quill. To change its key, remove it and add it again.'],
     [403, 'agent-store-refused', 'You can’t add keys to Quill. Ask the agent’s owner.'],
     [403, 'forbidden', 'You can’t add keys to Quill. Ask the agent’s owner.'],

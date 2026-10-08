@@ -1,13 +1,14 @@
 /**
- * A connector nobody has set up yet (TASK-795).
+ * A connector nobody has set up yet (TASK-795, slice 3).
  *
  * Pinned: a `needs-sign-in` row wears a NEUTRAL icon (not the red error one)
  * whose reason is its accessible name and a tooltip on hover AND keyboard
- * focus; the `⋯` menu leads with the row's setup — **Sign in** (OAuth) or
- * **Add key** (API key) — and offers nothing for `ask-admin`; Sign in opens a
- * dialog around the OAuth widget on THIS agent, Add key opens the Settings key
- * dialog, and finishing either re-reads the list. The details view says the
- * same word and offers the same button.
+ * focus; the `⋯` menu leads with the row's fix — **Sign in again** (OAuth) or
+ * **Add key** (the agent's own key) — and offers nothing for `ask-admin`;
+ * Sign in again opens a dialog around the OAuth widget on THIS agent, as a
+ * sign-in-again (it is already on the agent); Add key opens the agent key
+ * dialog; finishing either re-reads the list. The details view says the same
+ * word and offers the same button.
  *
  * The OAuth widget and the key dialog are stubbed: their own tests pin what
  * they do; here we pin that the rail hands them the right connector and
@@ -31,7 +32,6 @@ vi.mock('@/lib/workspace-api', async () => {
       setAbility: vi.fn(),
       connectors: vi.fn(),
       removeConnector: vi.fn(),
-      retryConnector: vi.fn(),
       connectorTools: vi.fn(),
       setToolVerdict: vi.fn(),
     },
@@ -41,14 +41,16 @@ vi.mock('@/lib/workspace-api', async () => {
 vi.mock('@/components/settings/ConnectorOAuthConnect', () => ({
   ConnectorOAuthConnect: (props: {
     connectorId: string;
-    agentId?: string;
+    agentId: string;
+    mode: string;
     requiresConsent?: boolean;
     onConnected?: () => void;
   }) => (
     <div
       data-testid="oauth-connect"
       data-connector={props.connectorId}
-      data-agent={props.agentId ?? ''}
+      data-agent={props.agentId}
+      data-mode={props.mode}
       data-consent={String(props.requiresConsent ?? false)}
     >
       <button type="button" onClick={() => props.onConnected?.()}>
@@ -58,30 +60,27 @@ vi.mock('@/components/settings/ConnectorOAuthConnect', () => ({
   ),
 }));
 
-vi.mock('@/components/settings/ConnectorConnectDialog', () => ({
-  ConnectorConnectDialog: (props: {
+vi.mock('../AgentKeyDialog', () => ({
+  AgentKeyDialog: (props: {
+    agentId: string;
     connectorId: string;
     connectorName: string;
-    isAdmin: boolean;
-    open: boolean;
-    onConnected: () => void;
-  }) =>
-    props.open ? (
-      <div
-        data-testid="key-dialog"
-        data-connector={props.connectorId}
-        data-name={props.connectorName}
-        data-admin={String(props.isAdmin)}
-      >
-        <button type="button" onClick={props.onConnected}>
-          Finish key
-        </button>
-      </div>
-    ) : null,
+    onSaved: () => void;
+  }) => (
+    <div
+      data-testid="key-dialog"
+      data-agent={props.agentId}
+      data-connector={props.connectorId}
+      data-name={props.connectorName}
+    >
+      <button type="button" onClick={props.onSaved}>
+        Finish key
+      </button>
+    </div>
+  ),
 }));
 
 const connectorsMock = vi.mocked(workspaceApi.connectors);
-const retryMock = vi.mocked(workspaceApi.retryConnector);
 
 function row(over: Partial<AgentConnectorRow>): AgentConnectorRow {
   return {
@@ -100,6 +99,7 @@ const ADD_KEY = row({ id: 'brave', name: 'Brave', health: 'needs-sign-in', setup
 const ASK_ADMIN = row({ id: 'acme', name: 'Acme', health: 'needs-sign-in', setup: 'ask-admin' });
 const OK = row({ id: 'gmail', name: 'Gmail', health: 'ok' });
 const UNREACHABLE = row({ id: 'slack', name: 'Slack', health: 'unreachable' });
+const EDIT_REMOVE = ['Edit', 'Remove from Quill'];
 
 function detail(): AgentDetail {
   return {
@@ -208,14 +208,14 @@ describe('the row icon', () => {
 });
 
 describe('the row menu', () => {
-  it('leads with Sign in for a sign-in row, and offers no Retry or Reconnect', async () => {
+  it('leads with Sign in again for a sign-in row', async () => {
     renderTab();
-    expect(await menuItems('Linear')).toEqual(['Sign in', 'View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Linear')).toEqual(['Sign in again', ...EDIT_REMOVE]);
   });
 
   it('leads with Add key for a key row', async () => {
     renderTab();
-    expect(await menuItems('Brave')).toEqual(['Add key', 'View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Brave')).toEqual(['Add key', ...EDIT_REMOVE]);
   });
 
   it('offers no setup for a row only an admin can set up — the icon says who can', async () => {
@@ -223,30 +223,31 @@ describe('the row menu', () => {
     expect(
       await screen.findByRole('button', { name: 'Needs a key from a workspace admin' }),
     ).toBeTruthy();
-    expect(await menuItems('Acme')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Acme')).toEqual(EDIT_REMOVE);
   });
 
   it('offers no setup on a healthy row beside one that has it', async () => {
     renderTab();
     const menu = await openMenu('Linear');
-    expect(within(menu).getByRole('menuitem', { name: 'Sign in' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'Sign in again' })).toBeTruthy();
     fireEvent.keyDown(menu, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(await menuItems('Gmail')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Gmail')).toEqual(EDIT_REMOVE);
   });
 });
 
-describe('Sign in', () => {
-  it('opens a sign-in on THIS agent, and finishing it re-reads the list', async () => {
+describe('Sign in again', () => {
+  it('opens a sign-in-again on THIS agent, and finishing it re-reads the list', async () => {
     renderTab();
     const menu = await openMenu('Linear');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear')).toBeTruthy();
-    expect(within(dialog).getByText('Sign in and Quill can use Linear for you.')).toBeTruthy();
+    expect(within(dialog).getByText('Sign in to Linear again')).toBeTruthy();
+    expect(within(dialog).getByText('Sign in and Quill can keep using Linear.')).toBeTruthy();
     const widget = within(dialog).getByTestId('oauth-connect');
     expect(widget.dataset.connector).toBe('linear');
     expect(widget.dataset.agent).toBe('a-quill');
+    expect(widget.dataset.mode).toBe('sign-in-again');
     expect(widget.dataset.consent).toBe('false');
     const reads = connectorsMock.mock.calls.length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
@@ -258,24 +259,24 @@ describe('Sign in', () => {
     list([SIGN_IN], true);
     renderTab();
     const menu = await openMenu('Linear');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
     const dialog = await screen.findByRole('dialog');
     expect(
-      within(dialog).getByText('Signing in here lets everyone using Quill use Linear as you.'),
+      within(dialog).getByText('Sign in, and everyone using Quill uses Linear as you.'),
     ).toBeTruthy();
     expect(within(dialog).getByTestId('oauth-connect').dataset.consent).toBe('true');
   });
 });
 
 describe('Add key', () => {
-  it('opens the key dialog for that connector, and finishing it re-reads the list', async () => {
+  it('opens the agent key dialog for that connector, and finishing it re-reads the list', async () => {
     renderTab();
     const menu = await openMenu('Brave');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add key' }));
     const dialog = await screen.findByTestId('key-dialog');
     expect(dialog.dataset.connector).toBe('brave');
     expect(dialog.dataset.name).toBe('Brave');
-    expect(dialog.dataset.admin).toBe('false');
+    expect(dialog.dataset.agent).toBe('a-quill');
     const reads = connectorsMock.mock.calls.length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish key' }));
     await waitFor(() => expect(connectorsMock.mock.calls.length).toBeGreaterThan(reads));
@@ -283,37 +284,10 @@ describe('Add key', () => {
   });
 });
 
-describe('Retry finding nobody signed in', () => {
-  it.each([
-    ['sign-in', /Slack is reachable, but nobody has signed in yet\. Choose Sign in to set it up\./, 'Sign in'],
-    ['add-key', /Slack is reachable, but no key has been added yet\. Choose Add key to set it up\./, 'Add key'],
-  ] as const)('setup %s says so and the menu follows', async (setup, note, item) => {
-    list([UNREACHABLE]);
-    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup });
-    renderTab();
-    const menu = await openMenu('Slack');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
-    expect(await screen.findByText(note)).toBeTruthy();
-    const next = await openMenu('Slack');
-    expect(within(next).getAllByRole('menuitem')[0]?.textContent).toBe(item);
-  });
-
-  it('ask-admin points at a workspace admin', async () => {
-    list([UNREACHABLE]);
-    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup: 'ask-admin' });
-    renderTab();
-    const menu = await openMenu('Slack');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
-    expect(
-      await screen.findByText(/Slack is reachable, but it needs a key from a workspace admin\./),
-    ).toBeTruthy();
-  });
-});
-
 describe('the details view', () => {
   async function openDetails(name: string) {
     const menu = await openMenu(name);
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'View details' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Connectors' });
   }
 
@@ -326,8 +300,10 @@ describe('the details view', () => {
     expect(screen.queryByText('Sign-in needed')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear')).toBeTruthy();
-    expect(within(dialog).getByTestId('oauth-connect').dataset.agent).toBe('a-quill');
+    expect(within(dialog).getByText('Sign in to Linear again')).toBeTruthy();
+    const widget = within(dialog).getByTestId('oauth-connect');
+    expect(widget.dataset.agent).toBe('a-quill');
+    expect(widget.dataset.mode).toBe('sign-in-again');
   });
 
   it('says “No key added yet” and its Add key button opens the key dialog', async () => {

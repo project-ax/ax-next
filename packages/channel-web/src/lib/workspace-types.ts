@@ -1059,10 +1059,11 @@ export type AgentConnectorSource = 'attached' | 'legacy-owned';
  *     signed in to it / added its key yet: no credential resolves along the
  *     vault's lookup order for (caller, agent). A presence read, never a
  *     token refresh. Fix: the row's {@link AgentConnectorSetup} action.
- *   - `unreachable` — the last check could not reach it (fix: Retry).
+ *   - `unreachable` — the last check could not reach it. Nothing to click:
+ *     the next check (a session, or the details view) tries again.
  *   - `not-loaded` (TASK-745) — a session on this agent would open without
- *     some of its servers, because of how the connector is set up. Neither
- *     Reconnect nor Retry fixes that; editing the connector does.
+ *     some of its servers, because of how the connector is set up. Signing in
+ *     again does not fix that; editing the connector does.
  *   - `ok` — nothing stored says otherwise (including "never checked").
  */
 export type AgentConnectorHealth =
@@ -1073,21 +1074,22 @@ export type AgentConnectorHealth =
   | 'not-loaded';
 
 /**
- * TASK-795 — the first-time setup a `needs-sign-in` row offers.
+ * TASK-795 — the setup a `needs-sign-in` row offers.
  *
- *   - `sign-in` — a sign-in slot (OAuth) has no credential: **Sign in**.
- *   - `add-key` — only key slots are missing, and this caller may add them:
- *     **Add key**.
- *   - `ask-admin` — only the company key of a workspace connector is missing,
- *     and this caller is not a workspace admin: nothing to click, the tooltip
- *     says who can fix it.
- *   - `ask-owner` (TASK-798) — a sign-in is missing on a TEAM agent and this
- *     caller may not sign in for it: nothing to click, "Ask the agent’s owner
- *     to sign in". Since TASK-813 only an admin of the owning team may sign in
- *     on a team agent ({@link AgentConnectorsRead.sharedCredentials}) — a
- *     workspace admin who is not a team admin gets `ask-owner` too. A missing
- *     key stays `add-key` for them: the rail's Add key writes the caller's OWN
- *     key, which a member may always do.
+ *   - `sign-in` — a sign-in slot (OAuth) has no credential: **Sign in again**
+ *     (the connector is already on the agent).
+ *   - `add-key` — only the agent's own key slots are missing, and this caller
+ *     may choose the agent's account: **Add key** (`PUT …/key`). Slice 3 — an
+ *     OAuth connector that also declares a header key gets it after its
+ *     sign-in.
+ *   - `ask-admin` — only the company key of a workspace connector is missing:
+ *     nothing to click here (an agent key can't stand in for it); a workspace
+ *     admin adds it in Admin › Connectors.
+ *   - `ask-owner` (TASK-798) — a sign-in or key is missing on a TEAM agent and
+ *     this caller may not choose its account (only an admin of the owning
+ *     team may, {@link AgentConnectorsRead.sharedCredentials} — a workspace
+ *     admin who is not one gets `ask-owner` too): nothing to click, "Ask the
+ *     agent’s owner to set it up".
  */
 export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin' | 'ask-owner';
 
@@ -1113,26 +1115,6 @@ export interface AgentConnectorRow {
    * (attached or legacy-owned alike); the server still decides on the DELETE.
    */
   removable: boolean;
-  /**
-   * TASK-813 — present (true) when this caller may add a TEAM key for this
-   * connector: an agent-scope key every member of this team agent uses unless
-   * they add their own. Only on a team agent, only when
-   * {@link AgentConnectorsRead.sharedCredentials} is true, only for a
-   * connector with an api-key slot (not one that spends the company's key).
-   * Saved with `PUT …/connectors/:connectorId/key`, which decides again.
-   */
-  teamKey?: true;
-  /**
-   * TASK-858 — present (true) when this caller may remove the TEAM sign-in
-   * for this connector: a sign-in saved ON this team agent that everyone
-   * using it acts as. Only when {@link AgentConnectorsRead.sharedCredentials}
-   * is true (a team admin) and such a sign-in is actually saved.
-   *
-   * Slice 3 — no longer sent: the server's team-sign-in route is gone
-   * (Remove deletes the agent's sign-in). The client's reader and menu item
-   * go with the rail menu rework.
-   */
-  teamSignIn?: true;
 }
 
 /** `GET /api/workspace/agents/:agentId/connectors` answers this. */
@@ -1153,12 +1135,12 @@ export interface AgentConnectorsRead {
    */
   manageable: boolean;
   /**
-   * TASK-813 — the caller may sign in, or add a team key, ON this agent: a
-   * credential stored on the agent that everyone using it acts as. Only an
-   * admin of the team that owns the agent — a workspace admin who is not one
-   * is refused like any member. Always false on a personal agent (its
-   * sign-ins and keys are stored on the person), and false when the answer
-   * could not be read; the server decides again on every write.
+   * TASK-813 — on a TEAM agent, the caller may choose the account it acts as
+   * (sign in, add its key): only an admin of the team that owns the agent —
+   * a workspace admin who is not one is refused like any member. Always false
+   * on a personal agent: there the owner chooses, and the rail reads
+   * "personal agent" as that (`canSetAccount`). False when the answer could
+   * not be read; the server decides again on every write.
    */
   sharedCredentials: boolean;
   /**
@@ -1168,19 +1150,6 @@ export interface AgentConnectorsRead {
    * nobody sets up access that can't apply.
    */
   connectorsSupported: boolean;
-}
-
-/**
- * `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry` — slice
- * 3 deleted that server route; this type and its client caller go with the
- * rail menu rework.
- */
-export interface AgentConnectorRetried {
-  health: AgentConnectorHealth;
-  /** TASK-756 — same meaning as on {@link AgentConnectorRow}. */
-  sharedSignIn?: true;
-  /** TASK-795 — same meaning as on {@link AgentConnectorRow}. */
-  setup?: AgentConnectorSetup;
 }
 
 /** `POST /api/workspace/agents/:agentId/connectors {connectorId}` answers this. */
@@ -1198,12 +1167,6 @@ export interface AgentConnectorAttached {
 export interface AgentConnectorRemoved {
   removed: true;
   cleanup: 'complete' | 'partial';
-  /**
-   * Slice 3 — no longer sent: Remove now always deletes the agent's own
-   * sign-in and keys, and never a person's. The client's reader goes with the
-   * rail menu rework.
-   */
-  signedOut?: true;
 }
 
 /**

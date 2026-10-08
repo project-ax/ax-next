@@ -7,8 +7,9 @@
  * "Remove" stays pinned at the bottom while the list scrolls. There is no
  * "Edit connector" here: a connector's settings are a workspace admin's, in
  * Admin › Connectors. What a person may change is what this agent may do
- * with it — this view, or the list's "Edit permissions" dialog
- * ({@link EditPermissionsDialog}), which draws the same tool list.
+ * with it — this view, which the row menu's "Edit" opens (a plain member's
+ * read-only "View details" opens it too; the store still refuses anything
+ * above their ceiling).
  *
  * WHAT THE CONTROL CAN DO. It writes this agent's own choice through
  * `PUT …/tool-verdicts`, and the store refuses anything looser than the
@@ -38,13 +39,6 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -81,8 +75,9 @@ export const SETUP_REASON: Record<AgentConnectorSetup, string> = {
   'sign-in': 'Not signed in yet',
   'add-key': 'No key added yet',
   'ask-admin': 'Needs a key from a workspace admin',
-  // TASK-798 — a team agent's sign-in is its owner's (or an admin's) to make.
-  'ask-owner': 'Ask the agent’s owner to sign in',
+  // TASK-798 / slice 3 — a team agent's sign-in and key are its team admin's
+  // to choose.
+  'ask-owner': 'Ask the agent’s owner to set it up',
 };
 
 /** An older server may send `needs-sign-in` without a setup: no action then. */
@@ -114,7 +109,8 @@ interface Props {
   unsupported?: boolean;
   /**
    * TASK-795 — Sign in / Add key for a `needs-sign-in` row: the same dialogs
-   * the `⋯` menu opens.
+   * the `⋯` menu opens. Absent for someone who may not choose the agent's
+   * account (slice 3): no button then.
    */
   onSetUp?: () => void;
   /**
@@ -163,8 +159,8 @@ export function ConnectorDetails({
   const { data } = state;
   // TASK-812 — the list's health word is the source of truth for sign-in;
   // this view's tool read is only as fresh as when it was taken. When the
-  // list's word changes (a sign-in or key just finished, a Retry or
-  // Reconnect landed), that read is stale by definition: take a new one.
+  // list's word changes (a sign-in or key just finished), that read is
+  // stale by definition: take a new one.
   // Forced, because an unforced read is answered from the server's cache of
   // the very check that said "needs sign-in" a moment ago.
   const { reload } = state;
@@ -279,8 +275,7 @@ export function ConnectorDetails({
 
 /**
  * What this agent may do with one connector: the loading / failed states and
- * the per-tool list. Shared by the details view and {@link EditPermissionsDialog}
- * so the two never disagree.
+ * the per-tool list.
  */
 function ToolPermissions({
   agentName,
@@ -324,43 +319,6 @@ function ToolPermissions({
         />
       )}
     </>
-  );
-}
-
-/**
- * "Edit permissions" from a row's `⋯` menu: the same per-tool Allow / Ask
- * first / Deny list as the details view, in a dialog. Only what THIS agent may
- * do with the connector — the connector's own settings stay a workspace
- * admin's, in Admin › Connectors. Every change saves as it is made (same
- * write as the details view), so there is no Save button to forget.
- */
-export function EditPermissionsDialog({
-  agentId,
-  agentName,
-  row,
-  onOpenChange,
-}: {
-  agentId: string;
-  agentName: string;
-  row: AgentConnectorRow;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const state = useConnectorTools(agentId, row.id);
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit permissions · {row.name}</DialogTitle>
-          <DialogDescription>
-            Choose what {agentName} may do with each of {row.name}’s tools. Changes
-            save as you make them.
-          </DialogDescription>
-        </DialogHeader>
-        <div>
-          <ToolPermissions agentName={agentName} row={row} state={state} />
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -420,10 +378,10 @@ function ConnectionLine({
 
 /**
  * TASK-795 — nobody has set this connector up yet. Muted, not red: nothing is
- * broken. The button is the same first-time setup the `⋯` menu leads with;
- * `ask-admin` has none (only a workspace admin can add that key), and nor
- * does `ask-owner` (TASK-798: only the team agent's owner or an admin can
- * sign in on it).
+ * broken. The button is the same fix the `⋯` menu leads with; `ask-admin`
+ * has none (only a workspace admin can add that key), and nor does
+ * `ask-owner` (TASK-798 / slice 3: only the team agent's team admin chooses
+ * its account).
  */
 function SetupLine({
   setup,
