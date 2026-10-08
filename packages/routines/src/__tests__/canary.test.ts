@@ -60,6 +60,12 @@ async function makeHarness(
      * Read at invoke time, so a test can change it between fires.
      */
     skipped?: (ctx: AgentContext) => unknown[] | undefined;
+    /**
+     * Final review — when set and it returns an outcome, the invoke answers
+     * that outcome at once, with no event and no turn end (a refusal at
+     * agent:invoke's front gates, e.g. a chat:start veto).
+     */
+    refuse?: () => unknown;
   },
   tick?: TickOpts,
 ) {
@@ -118,6 +124,8 @@ async function makeHarness(
           reqId: ctx.reqId ?? '',
           conversationId: ctx.conversationId,
         });
+        const refused = replyOnInvoke.refuse?.();
+        if (refused !== undefined) return refused;
         const skipped = replyOnInvoke.skipped?.(ctx);
         if (skipped !== undefined) {
           await busRef.current!.bus.fire('chat:connectors-skipped', ctx, {
@@ -513,6 +521,32 @@ describe('slice 6 canary — a run that went without a connector', () => {
     const second = await waitForFires('.ax/routines/r.md', 2);
     expect(second.fires.map((f) => f.warning)).toEqual([W, null]);
     expect(second.lastWarning).toBeNull();
+  });
+
+  // Final review ruling — a fire refused before turn assembly says nothing
+  // about connectors, so it leaves the routine's warning as it was.
+  it('a fire vetoed at chat:start records an error row and leaves lastWarning unchanged', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const reply: Parameters<typeof makeHarness>[1] = {
+      contentBlocks: [{ type: 'text', text: 'done' }],
+      skipped: () => [GMAIL],
+    };
+    const h = await makeHarness(captured, reply);
+    await applyRoutine(h, '.ax/routines/r.md');
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+    const W = "Gmail isn't signed in on Bob, so this run went without it.";
+    expect((await waitForFires('.ax/routines/r.md', 1)).lastWarning).toBe(W);
+
+    reply.refuse = () => ({ kind: 'terminated', reason: 'chat:start:vetoed' });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+      const out = await waitForFires('.ax/routines/r.md', 2);
+      expect(out.fires.map((f) => f.warning)).toEqual([W, null]);
+      expect(out.lastWarning).toBe(W);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it('a silenced fire that skipped a connector still records the warning', async () => {

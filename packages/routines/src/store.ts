@@ -44,9 +44,13 @@ export interface RecordFireInput {
   renderedPrompt?: string | null;
   /**
    * Slice 6 — "Gmail isn't signed in on Bob, so this run went without it."
-   * Written to the fire row AND to the routine's `last_warning`, null
-   * included: a clean run clears the previous run's warning. Omitted means
-   * null (a fire recorded before its turn ever ran skipped nothing).
+   * A string or null is written to the fire row AND to the routine's
+   * `last_warning`: null means the run reached turn assembly and went
+   * without nothing, so it clears the previous run's warning. Omitted
+   * (`undefined`) means the fire failed before turn assembly (agent resolve
+   * refused, chat:start veto, dispatch error): the fire row's warning is
+   * null and the routine's `last_warning` is left UNCHANGED — such a fire
+   * says nothing about which connectors a run would go without.
    */
   warning?: string | null;
 }
@@ -452,14 +456,28 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       const MAX = 64 * 1024;
       const raw = input.renderedPrompt ?? null;
       const renderedPrompt = raw !== null ? truncateUtf8(raw, MAX) : null;
-      const warning = input.warning ?? null;
+      // Slice 6 — omitted: a fire that never reached turn assembly. Its row
+      // carries no warning and the routine's `last_warning` is not touched.
+      if (input.warning === undefined) {
+        const row = await db.insertInto('routines_v1_fires').values({
+          agent_id: input.agentId,
+          path: input.path,
+          trigger_source: input.triggerSource,
+          conversation_id: input.conversationId,
+          status: input.status,
+          error: input.error,
+          rendered_prompt: renderedPrompt,
+        }).returning('id').executeTakeFirstOrThrow();
+        return Number(row.id);
+      }
+      const warning = input.warning;
       // Slice 6 — the fire row and the routine's `last_warning` in ONE
-      // statement, so every path that records a fire (turn end, a terminated
-      // invoke, a fire that failed before dispatch, any trigger kind) also
-      // sets or clears the routine's warning, and neither write can land
-      // without the other. The UPDATE matches nothing when the routine has
-      // since been deleted; the fire row is still written, as before.
-      // `advance` never touches `last_warning`.
+      // statement, so every path that records a fire that reached turn
+      // assembly (turn end, a terminated invoke) sets or clears the
+      // routine's warning, and neither write can land without the other.
+      // The UPDATE matches nothing when the routine has since been deleted;
+      // the fire row is still written, as before. `advance` never touches
+      // `last_warning`.
       const res = await sql<{ id: number | string }>`
         WITH warn AS (
           UPDATE routines_v1_definitions

@@ -9,7 +9,17 @@
  * discipline. The UI renders the result as text.
  */
 
-export type SkipReason = 'not-signed-in' | 'needs-reconnect';
+/**
+ * Why a run went without a connector. `'unavailable'` is how routines files
+ * any reason it does not know (a producer newer than this plugin): the skip
+ * is still reported, in generic words, rather than dropped.
+ */
+export type SkipReason = 'not-signed-in' | 'needs-reconnect' | 'unavailable';
+
+/** Map a reported reason onto one this plugin words; unknown → 'unavailable'. */
+export function normalizeSkipReason(raw: unknown): SkipReason {
+  return raw === 'not-signed-in' || raw === 'needs-reconnect' ? raw : 'unavailable';
+}
 
 /** Longest warning stored, in code points (including the trailing `…`). */
 export const SKIP_WARNING_MAX = 300;
@@ -36,42 +46,55 @@ function clampCodePoints(value: string, max: number): string {
   return `${points.slice(0, max - 1).join('').trimEnd()}…`;
 }
 
-/** "A", "A and B", "A, B and C". */
-function listNames(names: readonly string[]): string {
+/** Most names one sentence lists before "and N more". */
+export const SKIP_NAMES_SHOWN = 3;
+
+/** Sentence order: the actionable reasons first, the generic one last. */
+const REASON_ORDER: readonly SkipReason[] = ['not-signed-in', 'needs-reconnect', 'unavailable'];
+
+/** "A", "A and B", "A, B and C", "A, B, C and 4 more". */
+function listNames(names: readonly string[], shown: number): string {
+  if (names.length > shown) {
+    return `${names.slice(0, shown).join(', ')} and ${names.length - shown} more`;
+  }
   if (names.length <= 1) return names[0] ?? '';
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-function sentence(names: readonly string[], reason: SkipReason, agent: string): string {
+function sentence(names: readonly string[], reason: SkipReason, agent: string, shown: number): string {
   const one = names.length === 1;
   const verb = reason === 'not-signed-in'
     ? (one ? "isn't signed in" : "aren't signed in")
-    : (one ? 'needs to be signed in again' : 'need to be signed in again');
-  return `${listNames(names)} ${verb} on ${agent}, so this run went without ${one ? 'it' : 'them'}.`;
+    : reason === 'needs-reconnect'
+      ? (one ? 'needs to be signed in again' : 'need to be signed in again')
+      : (one ? "wasn't available" : "weren't available");
+  return `${listNames(names, shown)} ${verb} on ${agent}, so this run went without ${one ? 'it' : 'them'}.`;
 }
 
 export function buildSkipWarning(
   agentName: string | null,
   skips: ReadonlyArray<{ name: string; reason: SkipReason }>,
 ): string | null {
-  const byReason: Record<SkipReason, string[]> = { 'not-signed-in': [], 'needs-reconnect': [] };
+  const byReason: Record<SkipReason, string[]> = {
+    'not-signed-in': [], 'needs-reconnect': [], unavailable: [],
+  };
   for (const s of skips) {
-    // Checked against the set, not by indexing: an inherited key like
-    // 'constructor' would otherwise reach Object.prototype.
-    if (s.reason !== 'not-signed-in' && s.reason !== 'needs-reconnect') continue;
-    const list = byReason[s.reason];
+    // Normalized, not indexed raw: an inherited key like 'constructor' would
+    // otherwise reach Object.prototype. An unknown reason is still a skip.
+    const list = byReason[normalizeSkipReason(s.reason)];
     const name = sanitizeSkipName(typeof s.name === 'string' ? s.name : '');
     if (name.length === 0 || list.includes(name)) continue;
     list.push(name);
   }
   const agent = sanitizeSkipName(agentName ?? '') || 'this agent';
-  const parts: string[] = [];
-  if (byReason['not-signed-in'].length > 0) {
-    parts.push(sentence(byReason['not-signed-in'], 'not-signed-in', agent));
+  const groups = REASON_ORDER.filter((r) => byReason[r].length > 0);
+  if (groups.length === 0) return null;
+  // At most SKIP_NAMES_SHOWN names per sentence, so every sentence survives
+  // the cap; with long names, show fewer before giving up to the clamp.
+  let text = '';
+  for (let shown = SKIP_NAMES_SHOWN; shown >= 1; shown -= 1) {
+    text = groups.map((r) => sentence(byReason[r], r, agent, shown)).join(' ');
+    if (Array.from(text).length <= SKIP_WARNING_MAX) return text;
   }
-  if (byReason['needs-reconnect'].length > 0) {
-    parts.push(sentence(byReason['needs-reconnect'], 'needs-reconnect', agent));
-  }
-  if (parts.length === 0) return null;
-  return clampCodePoints(parts.join(' '), SKIP_WARNING_MAX);
+  return clampCodePoints(text, SKIP_WARNING_MAX);
 }

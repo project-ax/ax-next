@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSkipWarning, SKIP_WARNING_MAX } from '../skip-warning.js';
+import { buildSkipWarning, SKIP_WARNING_MAX, type SkipReason } from '../skip-warning.js';
 
 describe('buildSkipWarning (slice 6)', () => {
   it('nothing skipped → null', () => {
@@ -93,5 +93,62 @@ describe('buildSkipWarning (slice 6)', () => {
     })))!;
     expect(Array.from(out).length).toBeLessThanOrEqual(300);
     expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  // Final review — at most three names per reason, then "and N more", so a
+  // long list can't push the second sentence past the cap.
+  it('lists at most 3 names per reason, then "and N more"', () => {
+    expect(buildSkipWarning('Bob', ['Gmail', 'Linear', 'Notion', 'Slack', 'Jira', 'Drive', 'Figma']
+      .map((name) => ({ name, reason: 'not-signed-in' as const }))))
+      .toBe("Gmail, Linear, Notion and 4 more aren't signed in on Bob, so this run went without them.");
+  });
+
+  it('4 names: "A, B, C and 1 more"', () => {
+    expect(buildSkipWarning('Bob', ['A', 'B', 'C', 'D'].map((name) => ({ name, reason: 'needs-reconnect' as const }))))
+      .toBe('A, B, C and 1 more need to be signed in again on Bob, so this run went without them.');
+  });
+
+  it('12 not-signed-in names plus one needs-reconnect: both sentences survive the cap', () => {
+    const skips: Array<{ name: string; reason: SkipReason }> = Array.from({ length: 12 }, (_, i) => ({
+      name: `Connector number ${i + 1}`, reason: 'not-signed-in' as const,
+    }));
+    skips.push({ name: 'Linear', reason: 'needs-reconnect' });
+    const out = buildSkipWarning('Bob the research assistant', skips)!;
+    expect(Array.from(out).length).toBeLessThanOrEqual(SKIP_WARNING_MAX);
+    expect(out).toBe(
+      "Connector number 1, Connector number 2, Connector number 3 and 9 more aren't signed in on "
+      + 'Bob the research assistant, so this run went without them. '
+      + 'Linear needs to be signed in again on Bob the research assistant, so this run went without it.',
+    );
+  });
+
+  it('long names: shows fewer names per sentence before falling back to the clamp', () => {
+    // 60 code points each: three of them plus the second sentence pass 300.
+    const name = (i: number) => `${i} ${'Long connector name '.repeat(3)}`.slice(0, 60);
+    const skips: Array<{ name: string; reason: SkipReason }> = [
+      ...Array.from({ length: 5 }, (_, i) => ({ name: name(i), reason: 'not-signed-in' as const })),
+      { name: 'Linear', reason: 'needs-reconnect' },
+    ];
+    const out = buildSkipWarning('Bob', skips)!;
+    expect(Array.from(out).length).toBeLessThanOrEqual(SKIP_WARNING_MAX);
+    expect(out.endsWith('…')).toBe(false);
+    expect(out).toContain('and 3 more'); // two names shown, not three
+    expect(out).toContain('Linear needs to be signed in again on Bob, so this run went without it.');
+  });
+
+  // Final review — a reason this plugin does not know is worded generically,
+  // never dropped.
+  it('an unknown reason reads "wasn\'t available", after the known ones', () => {
+    expect(buildSkipWarning('Bob', [
+      { name: 'Drive', reason: 'quota-exceeded' as unknown as SkipReason },
+      { name: 'Gmail', reason: 'not-signed-in' },
+    ])).toBe(
+      "Gmail isn't signed in on Bob, so this run went without it. "
+      + "Drive wasn't available on Bob, so this run went without it.",
+    );
+    expect(buildSkipWarning('Bob', [
+      { name: 'Drive', reason: 'unavailable' },
+      { name: 'Box', reason: 'constructor' as unknown as SkipReason },
+    ])).toBe("Drive and Box weren't available on Bob, so this run went without them.");
   });
 });

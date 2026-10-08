@@ -3,7 +3,9 @@ import type { RoutineRow, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
 import type { RecordFireInput } from './store.js';
-import { buildSkipWarning, sanitizeSkipName, type SkipReason } from './skip-warning.js';
+import {
+  buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
+} from './skip-warning.js';
 
 /**
  * Slice 6 — one connector the turn went without, as `chat:connectors-skipped`
@@ -31,6 +33,11 @@ export type PendingFires = Map<string, PendingFire>;
 
 const MAX_SKIPS_PER_FIRE = 50;
 
+/** Where `stashConnectorsSkipped` reports entries it had to drop. */
+export interface StashLogger {
+  warn(msg: string, fields: Record<string, unknown>): void;
+}
+
 /**
  * Slice 6 — the `chat:connectors-skipped` subscriber's whole job: if `reqId`
  * is an in-flight fire, add the skips to it. A map write and nothing else, so
@@ -39,28 +46,53 @@ const MAX_SKIPS_PER_FIRE = 50;
  *
  * The payload crosses a plugin boundary, so it is validated here rather than
  * trusted: malformed entries are dropped, a repeat is merged by connector id.
+ * A reason this plugin does not know is NOT dropped — it is kept as
+ * 'unavailable' and worded generically. When a payload for a real in-flight
+ * fire loses entries, that is logged (counts only — never names or ids), so a
+ * producer/consumer drift shows up instead of silently shortening a warning.
  */
-export function stashConnectorsSkipped(pending: PendingFires, payload: unknown): void {
+export function stashConnectorsSkipped(
+  pending: PendingFires,
+  payload: unknown,
+  logger?: StashLogger,
+): void {
   if (typeof payload !== 'object' || payload === null) return;
   const { reqId, connectors } = payload as { reqId?: unknown; connectors?: unknown };
   if (typeof reqId !== 'string' || !Array.isArray(connectors)) return;
   const pf = pending.get(reqId);
   if (pf === undefined) return;
+  let malformed = 0;
+  let overCap = 0;
   for (const c of connectors) {
     // Bounded: the warning shows a few names and is capped at 300 chars, so
     // there is no reason to hold more than this per fire.
-    if (pf.skips.length >= MAX_SKIPS_PER_FIRE) break;
-    if (typeof c !== 'object' || c === null) continue;
+    if (pf.skips.length >= MAX_SKIPS_PER_FIRE) {
+      overCap += 1;
+      continue;
+    }
+    if (typeof c !== 'object' || c === null) {
+      malformed += 1;
+      continue;
+    }
     const { connectorId, name, reason } = c as Record<string, unknown>;
-    if (typeof connectorId !== 'string' || connectorId.length === 0) continue;
-    if (typeof name !== 'string') continue;
-    if (reason !== 'not-signed-in' && reason !== 'needs-reconnect') continue;
+    if (typeof connectorId !== 'string' || connectorId.length === 0 || typeof name !== 'string') {
+      malformed += 1;
+      continue;
+    }
     if (pf.skips.some((s) => s.connectorId === connectorId)) continue;
     // A name that sanitizes to nothing falls back to the id, as the
     // producer's own label does.
     const label = sanitizeSkipName(name) || sanitizeSkipName(connectorId);
-    if (label.length === 0) continue;
-    pf.skips.push({ connectorId, name: label, reason });
+    if (label.length === 0) {
+      malformed += 1;
+      continue;
+    }
+    pf.skips.push({ connectorId, name: label, reason: normalizeSkipReason(reason) });
+  }
+  if (malformed > 0 || overCap > 0) {
+    logger?.warn('routines_connectors_skipped_entries_dropped', {
+      received: connectors.length, malformed, overCap,
+    });
   }
 }
 
@@ -92,6 +124,18 @@ export interface FireDeps {
 }
 
 const DEFAULT_TURN_END_GRACE_MS = 60_000;
+
+/**
+ * Slice 6 — a `terminated` reason from one of agent:invoke's front gates,
+ * which refuse a turn before anything else runs: a `chat:start` veto
+ * (`chat:start:<reason>`) or an `agents:resolve` refusal
+ * (`agent-resolve:<code>`; the orchestrator documents the prefix for callers
+ * to branch on). Such a fire never chose its connectors, so it leaves the
+ * routine's last warning alone.
+ */
+function refusedBeforeAssembly(reason: string): boolean {
+  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:');
+}
 
 let nextReqIdCounter = 0;
 function makeReqId(): string {
@@ -246,7 +290,19 @@ export function createFireRoutine(deps: FireDeps) {
     // fire's one row, and then it is an error: a fire that never produced a
     // turn must not vanish from the log (routines design §5.2, "errors are
     // visible").
-    const settleWithoutTurn = async (error: string): Promise<void> => {
+    //
+    // Slice 6 — `last_warning` moves only for a fire that reached turn
+    // assembly (where the orchestrator decides which connectors to go
+    // without). Here the entry exists and the invoke was dispatched, so
+    // assembly MAY have happened: write the warning (or null) unless the
+    // outcome proves the turn stopped before it — the invoke threw (a
+    // dispatch error: agent:invoke otherwise always answers an outcome), or
+    // it was refused at the gates in front of everything else, chat:start
+    // or agents:resolve (`reachedAssembly: false`). Other `terminated`
+    // reasons are not classified: a pre-assembly config error clears a
+    // stale warning, which is the cheaper mistake than a post-assembly
+    // failure keeping one.
+    const settleWithoutTurn = async (error: string, reachedAssembly: boolean): Promise<void> => {
       const entry = deps.pending.get(reqId);
       if (entry === undefined || !deps.pending.delete(reqId)) return;
       process.stderr.write(
@@ -260,7 +316,9 @@ export function createFireRoutine(deps: FireDeps) {
           status: 'error', error,
           renderedPrompt: prompt,
           // Slice 6 — a terminated run that skipped a connector says so too.
-          warning: warningFor(entry),
+          // Omitted (last_warning untouched) when the turn never got as far
+          // as choosing its connectors; see above.
+          ...(reachedAssembly ? { warning: warningFor(entry) } : {}),
         });
       } catch (err) {
         process.stderr.write(
@@ -276,17 +334,18 @@ export function createFireRoutine(deps: FireDeps) {
     ).then(
       (outcome) => {
         if (outcome?.kind === 'terminated') {
-          return settleWithoutTurn(`terminated: ${String(outcome.reason ?? 'unknown')}`);
+          const reason = String(outcome.reason ?? 'unknown');
+          return settleWithoutTurn(`terminated: ${reason}`, !refusedBeforeAssembly(reason));
         }
         if (deps.pending.has(reqId)) {
           const timer = setTimeout(() => {
-            void settleWithoutTurn('the run finished without reporting a result');
+            void settleWithoutTurn('the run finished without reporting a result', true);
           }, deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS);
           timer.unref?.();
         }
         return undefined;
       },
-      (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err)),
+      (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err), false),
     );
 
     // TASK-679: the row for this fire is written when the turn settles, not

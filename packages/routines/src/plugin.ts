@@ -197,7 +197,7 @@ export function createRoutinesPlugin(
         'chat:connectors-skipped', PLUGIN_NAME,
         async (ctx, payload) => {
           try {
-            stashConnectorsSkipped(pending, payload);
+            stashConnectorsSkipped(pending, payload, ctx.logger);
           } catch (err) {
             ctx.logger.warn('routines_connectors_skipped_failed', {
               err: err instanceof Error ? err.message : String(err),
