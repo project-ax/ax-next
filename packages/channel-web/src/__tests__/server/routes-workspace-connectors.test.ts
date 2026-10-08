@@ -114,7 +114,7 @@ describe('agent connector routes', () => {
   let approvedListThrows: boolean;
   let revokeClears: boolean;
   /** TASK-761 — what `connectors:get` knows, by id (absent = not visible). */
-  let catalog: Map<string, { id: string; name: string; keyMode: string; capabilities: { credentials: Array<Record<string, unknown>> } }>;
+  let catalog: Map<string, { id: string; name: string; keyMode: string; visibility?: 'private' | 'shared'; capabilities: { credentials: Array<Record<string, unknown>> } }>;
   /** TASK-761 — refs `credentials:get` resolves; anything else is not-found. */
   let vault: Set<string>;
   let credentialReads: Array<{ ref: string; userId: string; agentId: string }>;
@@ -198,7 +198,8 @@ describe('agent connector routes', () => {
       if (found === undefined) {
         throw new PluginError({ code: 'not-found', plugin: 'connectors', message: 'nope' });
       }
-      return { connector: found };
+      // Every connector an admin defines is shared unless a test says not.
+      return { connector: { visibility: 'shared', ...found } };
     });
     bus.registerService('credentials:get', 'credentials', async (c, i: unknown) => {
       const { ref, userId } = i as { ref: string; userId: string };
@@ -1452,6 +1453,28 @@ describe('agent connector routes', () => {
   });
 
   describe('POST (attach)', () => {
+    // SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED
+    // connector, so a private one can't be added at all — not even one that
+    // needs nothing (no auth) or spends the workspace's key. Refused right
+    // after the connector is read: no credential read, no attach.
+    it.each([
+      ['a private no-auth connector', 'linear'],
+      ['a private shared-key connector', 'company'],
+    ])('SECURITY: %s → 403 agent-store-refused, nothing read or attached', async (_label, id) => {
+      catalog.set(id, { ...catalog.get(id)!, visibility: 'private' });
+      vault.add(`account:${id}`);
+      const r = await attach({ connectorId: id });
+      expect(r).toEqual({ statusCode: 403, body: { error: 'agent-store-refused' } });
+      expect(credentialReads).toHaveLength(0);
+      expect(attachCalls).toHaveLength(0);
+    });
+
+    it('SECURITY: a connector with no visibility at all is refused too (fail closed)', async () => {
+      catalog.set('linear', { ...catalog.get('linear')!, visibility: undefined as never });
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(403);
+      expect(attachCalls).toHaveLength(0);
+    });
     it("hands the hook the caller's real admin bit", async () => {
       caller = { id: 'u1', isAdmin: true };
       const r = await attach({ connectorId: 'linear' });
@@ -1546,7 +1569,7 @@ describe('agent connector routes', () => {
       // slots), so only the missing-hook branch itself can produce this 503 —
       // without it the attach would land and this reads 200.
       bus.registerService('connectors:get', 'connectors', async () => ({
-        connector: { id: 'linear', name: 'Linear', keyMode: 'user', capabilities: { credentials: [] } },
+        connector: { id: 'linear', name: 'Linear', keyMode: 'user', visibility: 'shared', capabilities: { credentials: [] } },
       }));
       const r = await attach({ connectorId: 'linear' });
       expect(r.statusCode).toBe(503);
