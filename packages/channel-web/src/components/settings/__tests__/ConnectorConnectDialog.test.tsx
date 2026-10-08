@@ -472,9 +472,9 @@ describe('ConnectorConnectDialog', () => {
     expect(await screen.findByText('get boom')).toBeInTheDocument();
   });
 
-  // Task 12 — oauth slot branch in ConnectKeyForms.
-
-  it('oauth slot: renders the ConnectorOAuthConnect surface ("Connect with <name>") not a password input', async () => {
+  // Slice 3 — a sign-in belongs to an agent, so this (person-level) dialog
+  // offers none: it says where signing in happens instead.
+  it('oauth slot: no sign-in widget and no key field — it points at the agent', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(OAUTH_PERSONAL);
     render(
       <ConnectorConnectDialog
@@ -486,12 +486,12 @@ describe('ConnectorConnectDialog', () => {
         onConnected={() => {}}
       />,
     );
-    // The OAuth connect widget renders a "Connect with <serviceName>" button.
     expect(
-      await screen.findByRole('button', { name: /Connect with GitHub/i }),
+      await screen.findByText('You sign in to GitHub from an agent’s Connectors list.'),
     ).toBeInTheDocument();
-    // No password input — this is not an API-key slot.
+    expect(screen.queryByRole('button', { name: /Connect with/i })).toBeNull();
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
+    expect(connectorsOauth.beginOAuth).not.toHaveBeenCalled();
   });
 
   it('api-key slot still renders the password field (no oauth widget)', async () => {
@@ -602,23 +602,15 @@ describe('ConnectorConnectDialog — access disclosure (TASK-700)', () => {
     expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 
-  it('a sign-in connector shows the sign-in notice once, next to the Connect button', async () => {
+  it('a sign-in connector takes no key here, so shows no notice', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(OAUTH_PERSONAL);
     renderDialog('my-github', 'GitHub');
-    const button = await screen.findByRole('button', { name: /Connect with GitHub/i });
-    const notices = screen.getAllByTestId(NOTICE);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toHaveTextContent(connectorAccessCopy('sign-in').headline);
-    expect(
-      notices[0]!.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    await screen.findByText(/from an agent’s Connectors list/);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 
-  it('a connector with BOTH a key and a sign-in shows one notice for each, each in its own words', async () => {
-    // Two distinct grants on one dialog (a key, and an account sign-in), so two
-    // notices is the honest count: the key one says "key", the sign-in one says
-    // "sign-in", and neither claims the other's advice (a sign-in has no key to
-    // narrow). Found by review: the mixed shape was reasoned about but untested.
+  it('a connector with BOTH a key and a sign-in takes only the key here, with the key notice', async () => {
+    // Slice 3 — the sign-in half happens on an agent, never in this dialog.
     const MIXED = fullConnector({
       id: 'mixed-svc',
       name: 'Mixed Service',
@@ -644,12 +636,10 @@ describe('ConnectorConnectDialog — access disclosure (TASK-700)', () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MIXED);
     renderDialog('mixed-svc', 'Mixed Service');
     await screen.findByLabelText(/API key/i);
-    await screen.findByRole('button', { name: /Connect with Mixed Service/i });
+    expect(screen.queryByRole('button', { name: /Connect with/i })).toBeNull();
     const notices = screen.getAllByTestId(NOTICE);
-    expect(notices).toHaveLength(2);
+    expect(notices).toHaveLength(1);
     expect(notices[0]).toHaveTextContent(connectorAccessCopy('key').headline);
-    expect(notices[1]).toHaveTextContent(connectorAccessCopy('sign-in').headline);
-    expect(notices[1]).not.toHaveTextContent(/fewest permissions/i);
   });
 
   it('a failed load shows the error and no notice', async () => {

@@ -658,7 +658,9 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
     ]);
   });
 
-  it('Sign in again runs a PERSONAL sign-in: no agent, no shared-agent consent', async () => {
+  // Slice 3 — every sign-in belongs to the agent. Until the menu is reworked
+  // (Task 5), Sign in again opens the agent's own sign-in, as a sign-in-again.
+  it('Sign in again signs in on THIS agent, as a sign-in-again', async () => {
     connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true, manageable: true, sharedCredentials: true });
     beginMock.mockResolvedValue({ authorizationUrl: 'https://auth.example/authorize' });
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
@@ -667,16 +669,13 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
       const menu = await openMenu('Gmail');
       fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
       const dialog = await screen.findByRole('dialog');
-      expect(within(dialog).getByText('Sign in to Gmail again')).toBeTruthy();
-      expect(within(dialog).getByText(/This only affects you/)).toBeTruthy();
-      // Asks about THIS person's sign-in, not the agent's.
-      await waitFor(() => expect(statusMock).toHaveBeenCalledWith({ connectorId: 'gmail' }));
-      const button = await within(dialog).findByRole('button', { name: 'Sign in again' });
-      // A personal sign-in hands nobody else this person's account.
-      expect(within(dialog).queryByText(/anyone who uses this shared agent/)).toBeNull();
-      fireEvent.click(button);
+      await waitFor(() =>
+        expect(statusMock).toHaveBeenCalledWith({ connectorId: 'gmail', agentId: 'a-quill' }),
+      );
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'Continue' }));
+      fireEvent.click(await within(dialog).findByRole('button', { name: /Reconnect|Connect with Gmail/ }));
       await waitFor(() => expect(beginMock).toHaveBeenCalledTimes(1));
-      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail' });
+      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail', agentId: 'a-quill', mode: 'sign-in-again' });
     } finally {
       open.mockRestore();
     }
@@ -695,7 +694,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
       fireEvent.click(await within(dialog).findByRole('button', { name: 'Continue' }));
       fireEvent.click(await within(dialog).findByRole('button', { name: 'Reconnect' }));
       await waitFor(() => expect(beginMock).toHaveBeenCalledTimes(1));
-      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail', agentId: 'a-quill' });
+      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail', agentId: 'a-quill', mode: 'sign-in-again' });
     } finally {
       open.mockRestore();
     }

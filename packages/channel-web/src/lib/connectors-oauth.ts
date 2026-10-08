@@ -11,6 +11,8 @@
  * server's { message } or { error } field.
  */
 
+import type { OAuthMode } from './oauth-failure';
+
 export type OAuthStatus = 'connected' | 'needs-reconnect' | 'not-connected';
 
 export async function getOAuthClientMetadata(): Promise<{ clientId: string; redirectUri: string }> {
@@ -57,15 +59,18 @@ export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Pro
 /**
  * Begin an OAuth flow for a connector. Returns the provider authorization URL
  * that the caller should open in a popup (or redirect to).
+ *
+ * Slice 3 — every sign-in belongs to an agent, so `agentId` and `mode` are
+ * required: `'add'` signs in AND adds the connector (the server's callback
+ * attaches it); `'sign-in-again'` replaces the sign-in of a connector already
+ * on the agent.
  */
 export async function beginOAuth(args: {
   connectorId: string;
-  agentId?: string;
+  agentId: string;
+  mode: OAuthMode;
 }): Promise<{ authorizationUrl: string }> {
-  const body =
-    args.agentId !== undefined
-      ? { connectorId: args.connectorId, agentId: args.agentId }
-      : { connectorId: args.connectorId };
+  const body = { connectorId: args.connectorId, agentId: args.agentId, mode: args.mode };
 
   const res = await fetch('/api/connectors/oauth/begin', {
     method: 'POST',

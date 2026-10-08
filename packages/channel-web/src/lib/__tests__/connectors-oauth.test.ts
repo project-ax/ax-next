@@ -32,11 +32,11 @@ describe('discoverOAuthHosts', () => {
 });
 
 describe('beginOAuth', () => {
-  it('POSTs connectorId/agentId and returns authorizationUrl', async () => {
+  it('POSTs connectorId/agentId/mode and returns authorizationUrl', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ authorizationUrl: 'https://p/auth' }), { status: 200 }),
     );
-    expect(await beginOAuth({ connectorId: 'c', agentId: 'A' })).toEqual({
+    expect(await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' })).toEqual({
       authorizationUrl: 'https://p/auth',
     });
     const [url, init] = (fetch as Mock).mock.calls[0]!;
@@ -44,24 +44,37 @@ describe('beginOAuth', () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       connectorId: 'c',
       agentId: 'A',
+      mode: 'add',
     });
   });
 
-  it('omits agentId when not given', async () => {
+  it('sends mode sign-in-again as given', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ authorizationUrl: 'u' }), { status: 200 }),
     );
-    await beginOAuth({ connectorId: 'c' });
+    await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' });
     expect(
       JSON.parse(((fetch as Mock).mock.calls[0]![1] as RequestInit).body as string),
-    ).toEqual({ connectorId: 'c' });
+    ).toEqual({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' });
+  });
+
+  it('every sign-in belongs to an agent: agentId and mode are required by the type', () => {
+    // Compile-time pins (channel-web's tsc includes tests). Never called.
+    const noAgent = () =>
+      // @ts-expect-error — agentId is required
+      beginOAuth({ connectorId: 'c', mode: 'add' });
+    const noMode = () =>
+      // @ts-expect-error — mode is required
+      beginOAuth({ connectorId: 'c', agentId: 'A' });
+    expect(typeof noAgent).toBe('function');
+    expect(typeof noMode).toBe('function');
   });
 
   it('throws the server message on non-ok', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ message: 'oauth_discovery_failed' }), { status: 502 }),
     );
-    await expect(beginOAuth({ connectorId: 'c' })).rejects.toThrow('oauth_discovery_failed');
+    await expect(beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' })).rejects.toThrow('oauth_discovery_failed');
   });
 });
 

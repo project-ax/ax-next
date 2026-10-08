@@ -52,7 +52,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { CredentialSlotForm } from '@/components/credentials/CredentialSlotForm';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
-import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import {
   getConnector,
   deriveCredentialPlan,
@@ -67,6 +66,14 @@ import {
   adminCredentials,
   type CredentialMeta,
 } from '@/lib/credentials';
+
+/** The plan's key slots: everything but a sign-in (slice 3 — those are an agent's). */
+function keyPlan(connector: Connector): ConnectorCredentialPlanEntry[] {
+  return deriveCredentialPlan(connector).filter(
+    (entry) =>
+      connector.capabilities.credentials.find((s) => s.slot === entry.slot)?.kind !== 'oauth',
+  );
+}
 
 export interface ConnectorConnectDialogProps {
   connectorId: string;
@@ -183,7 +190,7 @@ export function ConnectorConnectDialog({
     const fresh = await loadCreds();
     onConnected();
     if (connector === null) return;
-    const allSet = deriveCredentialPlan(connector).every((entry) =>
+    const allSet = keyPlan(connector).every((entry) =>
       (entry.scope === 'user' ? fresh.user : fresh.global).some(
         (c) => c.ref === entry.ref && c.scope === entry.scope,
       ),
@@ -250,14 +257,20 @@ function ConnectBody({
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
 
-  const plan = deriveCredentialPlan(connector);
+  // Slice 3 — a sign-in belongs to an agent, so this dialog never starts one:
+  // only the key slots are entered here.
+  const signIn = connector.capabilities.credentials.some((s) => s.kind === 'oauth');
+  const plan = keyPlan(connector);
 
-  // No credential slots → nothing to prompt (e.g. an MCP server that needs no
-  // key). The service is reachable as soon as it's in the library.
+  // Nothing to enter here. A sign-in connector is signed in to from an agent;
+  // anything else (e.g. an MCP server that needs no key) is reachable as soon
+  // as it's in the library.
   if (plan.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        This service needs no key — your assistant can already reach it.
+        {signIn
+          ? `You sign in to ${connector.name} from an agent’s Connectors list.`
+          : 'This service needs no key — your assistant can already reach it.'}
       </p>
     );
   }
@@ -304,10 +317,8 @@ function ConnectBody({
 }
 
 /**
- * One key-entry form per credential slot. For `kind: 'oauth'` slots, renders
- * the OAuth connect widget (no agentId, no requiresConsent — the Connectors tab
- * is always personal/user-scope). For `kind: 'api-key'` slots, renders the
- * existing CredentialSlotForm (password field + base64 write).
+ * One key-entry form per key slot (the plan arrives with sign-in slots already
+ * removed): the existing CredentialSlotForm (password field + base64 write).
  *
  * The destination is the service-keyed `account:<service>` vault row; the scope
  * comes from the derived plan ('user' for personal, 'global' for workspace).
@@ -331,35 +342,13 @@ function ConnectKeyForms({
     [connector],
   );
 
-  // (TASK-700) Does anything below take an API key? A sign-in slot renders
-  // `ConnectorOAuthConnect`, which carries its own (sign-in) notice, so this one
-  // is for the key forms only — and it is ONE notice for the dialog, not one per
-  // slot: a multi-key connector is still a single decision to hand the assistant
-  // access. Same test the renderer below uses: anything that is not an OAuth slot
-  // gets the key form.
-  const takesAnApiKey = plan.some((entry) => slotByName(entry.slot)?.kind !== 'oauth');
-
+  // (TASK-700) ONE notice for the dialog, not one per slot: a multi-key
+  // connector is still a single decision to hand the assistant access.
   return (
     <div className="flex flex-col gap-5">
-      {takesAnApiKey && <ConnectorAccessNotice kind="key" />}
+      <ConnectorAccessNotice kind="key" />
       {plan.map((entry) => {
         const slotMeta = slotByName(entry.slot);
-
-        // OAuth slot — render the OAuth connect widget.
-        // No agentId (personal/user-scope) and no requiresConsent (the Connectors
-        // tab is the single home for personal connect; consent is only for
-        // team-agent connects on the workspace rail).
-        if (slotMeta?.kind === 'oauth') {
-          return (
-            <div key={entry.slot} className="flex flex-col gap-2">
-              <ConnectorOAuthConnect
-                connectorId={connector.id}
-                serviceName={connector.name}
-                onConnected={onSaved}
-              />
-            </div>
-          );
-        }
 
         // API-key slot (or unknown — default to key-entry form).
         // TASK-124 — build the destination from the plan's STRUCTURED fields, not

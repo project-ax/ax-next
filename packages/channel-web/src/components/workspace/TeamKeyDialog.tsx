@@ -46,13 +46,8 @@ import {
 } from '@/components/ui/dialog';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { CredentialSlotForm } from '@/components/credentials/CredentialSlotForm';
-import { OAUTH_CLIENT_SECRET_SLOT } from '@/lib/connector-credential-slots';
-import {
-  deriveCredentialPlan,
-  getConnector,
-  type Connector,
-  type ConnectorCredentialPlanEntry,
-} from '@/lib/connectors';
+import { agentKeyEntries } from '@/lib/add-connector';
+import { getConnector, type Connector, type ConnectorCredentialPlanEntry } from '@/lib/connectors';
 import { humanizeSlotLabel } from '@/lib/humanize';
 import { TEAM_KEY_UNAVAILABLE, workspaceApi } from '@/lib/workspace-api';
 
@@ -71,15 +66,6 @@ export interface TeamKeyDialogProps {
   onSaved: () => void;
   /** TASK-854 — a team key was removed: re-read (the dialog stays open). */
   onRemoved?: () => void;
-}
-
-/** The api-key slots a team key can fill (no sign-in, no OAuth client secret). */
-export function teamKeyEntries(connector: Connector): ConnectorCredentialPlanEntry[] {
-  return deriveCredentialPlan(connector).filter(
-    (entry) =>
-      connector.capabilities.credentials.find((s) => s.slot === entry.slot)?.kind === 'api-key' &&
-      !entry.ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`),
-  );
 }
 
 /** slot → has a key. A slot missing from the map is unknown. */
@@ -136,7 +122,7 @@ export function TeamKeyDialog({
     };
   }, [open, agentId, connectorId, base]);
 
-  const entries = connector === null ? [] : teamKeyEntries(connector);
+  const entries = connector === null ? [] : agentKeyEntries(connector);
 
   function onSlotSaved(slot: string) {
     const next = { ...keys, [slot]: true };

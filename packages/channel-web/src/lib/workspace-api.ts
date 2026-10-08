@@ -485,6 +485,38 @@ async function req<T>(
   return (await res.json()) as T;
 }
 
+/** Slice 3 — one key an Add saves on the agent: the slot's name and the key itself. */
+export interface AgentConnectorKey {
+  slot: string;
+  payload: string;
+}
+
+/**
+ * Slice 3 — the attach refusals the Add subview words itself. Only these
+ * codes are kept off a refusal's body; anything else reads as `undefined`.
+ */
+export const ATTACH_REFUSAL_CODES = [
+  'connector-needs-sign-in',
+  'connector-needs-key',
+  'connector-needs-shared-key',
+  'already-attached',
+] as const;
+export type AttachRefusalCode = (typeof ATTACH_REFUSAL_CODES)[number];
+
+/** A refused (or unreachable — status 0) `attachConnector`. */
+export class AttachConnectorError extends WorkspaceApiError {
+  readonly code: AttachRefusalCode | undefined;
+
+  constructor(route: string, status: number, code?: unknown) {
+    super(route, status);
+    this.name = 'AttachConnectorError';
+    this.code =
+      typeof code === 'string' && (ATTACH_REFUSAL_CODES as readonly string[]).includes(code)
+        ? (code as AttachRefusalCode)
+        : undefined;
+  }
+}
+
 /** TASK-813 — the team-key refusals a person can act on. */
 export const TEAM_KEY_FORBIDDEN = 'Only the team’s admins can add or remove a team key.';
 export const TEAM_KEY_UNAVAILABLE =
@@ -1063,17 +1095,57 @@ export const workspaceApi = {
     req<AgentConnectorsRead>(`/agents/${encodeURIComponent(agentId)}/connectors`),
 
   /**
-   * Attach one connector to this agent (TASK-740, the rail's Add subview).
+   * Add one connector to this agent (TASK-740, the rail's Add subview).
    * Atomic server-side, and it copies the connector's tool defaults onto the
-   * agent. Called ONLY after the connector's sign-in / key has succeeded.
-   * 403 = a company-key connector and the caller isn't an admin, or a team
-   * agent and the caller is neither its owner nor an admin (TASK-798).
+   * agent. Never for a sign-in connector (409 `connector-needs-sign-in`: its
+   * sign-in callback adds it).
+   *
+   * Slice 3 — a per-agent key connector's keys ride in THIS request (`keys`,
+   * every slot): the server saves them on the agent and attaches, or neither.
+   * A shared-key or no-auth Add passes no `keys`, and then the body has no
+   * `keys` field at all — an empty array counts as present and is refused.
+   *
+   * Not `req()`: a secret may ride in this body, so a transport exception is
+   * replaced by a bare status-0 error (the original may carry request
+   * details), and nothing here logs anything but the route and status. A
+   * refusal carries its status and, if it is one the Add subview words
+   * itself, its `code` — never the server's text.
    */
-  attachConnector: (agentId: string, connectorId: string) =>
-    req<AgentConnectorAttached>(`/agents/${encodeURIComponent(agentId)}/connectors`, {
-      method: 'POST',
-      body: { connectorId },
-    }),
+  attachConnector: async (
+    agentId: string,
+    connectorId: string,
+    keys?: ReadonlyArray<AgentConnectorKey>,
+  ): Promise<AgentConnectorAttached> => {
+    const route = `/agents/${encodeURIComponent(agentId)}/connectors`;
+    const body =
+      keys === undefined
+        ? { connectorId }
+        : {
+            connectorId,
+            keys: keys.map((k) => ({ slot: k.slot, payloadB64: utf8Base64(k.payload) })),
+          };
+    let res: Response;
+    try {
+      res = await httpFetch(`/api/workspace${route}`, {
+        method: 'POST',
+        headers: writeHeaders,
+        body: JSON.stringify(body),
+      });
+    } catch {
+      throw new AttachConnectorError(route, 0);
+    }
+    if (!res.ok) {
+      console.warn(`[workspace] POST ${route} → ${res.status}`);
+      let code: unknown;
+      try {
+        code = ((await res.json()) as { error?: unknown } | null)?.error;
+      } catch {
+        code = undefined;
+      }
+      throw new AttachConnectorError(route, res.status, code);
+    }
+    return (await res.json()) as AgentConnectorAttached;
+  },
 
   /**
    * "Remove from <agent>". The server decides what removing means for this

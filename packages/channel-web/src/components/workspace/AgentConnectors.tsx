@@ -50,9 +50,9 @@
  * expired is this member's OWN personal one (TASK-774: no `sharedSignIn` on
  * the row), Reconnect would sign in for the team and leave theirs expired —
  * their personal sign-in is reached first — so the menu offers **Sign in
- * again** instead, which runs a personal sign-in (no agent, so it is stored
- * for this person only). A personal agent's sign-in is always personal, and
- * its Reconnect already signs in that way, so it keeps Reconnect.
+ * again** instead. Since slice 3 every sign-in belongs to the agent, so it
+ * opens the same agent sign-in as Reconnect (`mode:'sign-in-again'`); Task 5
+ * reworks this menu. A personal agent keeps Reconnect.
  *
  * A connector nobody has set up yet (TASK-795, health `needs-sign-in`: no
  * sign-in or key this person's use of the agent would reach) is not broken,
@@ -258,8 +258,6 @@ export function AgentConnectors({
   >(null);
   const [editingPermissions, setEditingPermissions] = useState<AgentConnectorRow | null>(null);
   const [reconnecting, setReconnecting] = useState<AgentConnectorRow | null>(null);
-  // TASK-774 — a team-agent member re-signing in for themselves only.
-  const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
   // TASK-795 — first-time setup of a `needs-sign-in` row: an OAuth sign-in on
   // this agent, or the Settings key dialog.
   const [firstSignIn, setFirstSignIn] = useState<AgentConnectorRow | null>(null);
@@ -413,9 +411,11 @@ export function AgentConnectors({
         setNotice(null);
         setRemovingSignIn(row);
       }}
+      // Slice 3 — every sign-in belongs to the agent, so Sign in again is
+      // the agent's own sign-in (the Reconnect dialog) until Task 5's menu.
       onSignInAgain={() => {
         setNotice(null);
-        setSigningIn(row);
+        setReconnecting(row);
       }}
       onRetry={() => void onRetry(row)}
       onSetUp={() => onSetUp(row)}
@@ -607,46 +607,11 @@ export function AgentConnectors({
               connectorId={reconnecting.id}
               serviceName={reconnecting.name}
               agentId={agentId}
+              mode="sign-in-again"
               requiresConsent={shared}
               showAccessNotice={false}
               onConnected={() => {
                 setReconnecting(null);
-                refresh();
-              }}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={signingIn !== null}
-        onOpenChange={(open) => {
-          if (!open) setSigningIn(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Sign in to {signingIn?.name} again</DialogTitle>
-            <DialogDescription>
-              Your sign-in to {signingIn?.name} expired. Sign in again and {name} can
-              keep using it for you. This only affects you — everyone else on {name}{' '}
-              stays as they are.
-            </DialogDescription>
-          </DialogHeader>
-          {/* What signing in hands the assistant — drawn here, in the file that
-              starts the sign-in, so the TASK-700 coverage scan sees it. */}
-          <ConnectorAccessNotice kind="sign-in" />
-          {signingIn !== null && (
-            // No agentId on purpose: the flow is then personal (stored for this
-            // person only), which is the sign-in their use of this team agent
-            // reaches first. With the agent it would sign in for the team.
-            // No shared-agent consent either — nobody else acts as them.
-            <ConnectorOAuthConnect
-              connectorId={signingIn.id}
-              serviceName={signingIn.name}
-              showAccessNotice={false}
-              reconnectLabel="Sign in again"
-              onConnected={() => {
-                setSigningIn(null);
                 refresh();
               }}
             />
@@ -676,6 +641,8 @@ export function AgentConnectors({
               connectorId={firstSignIn.id}
               serviceName={firstSignIn.name}
               agentId={agentId}
+              // Already on the agent: this only adds its sign-in.
+              mode="sign-in-again"
               requiresConsent={shared}
               showAccessNotice={false}
               onConnected={() => {
