@@ -56,7 +56,13 @@ export interface AgentConnectorsState {
    * `runnerLoadsConnectors`), so the tab says so instead of offering setup that can't apply.
    */
   connectorsSupported: boolean;
-  refresh: () => void;
+  /**
+   * Re-read the list. Slice 4 — resolves with the rows that landed, so a
+   * caller can compare before and after (Sign in again's "Now X (was Y)")
+   * without guessing when the re-read arrived; `null` when the read failed
+   * or a newer one superseded it.
+   */
+  refresh: () => Promise<AgentConnectorRow[] | null>;
 }
 
 export function useAgentConnectors(agentId: string): AgentConnectorsState {
@@ -73,7 +79,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   const agentScope = useRef(0);
 
   const load = useCallback(
-    (fresh: boolean) => {
+    (fresh: boolean): Promise<AgentConnectorRow[] | null> => {
       const id = ++scope.current;
       if (fresh) {
         agentScope.current = id;
@@ -85,10 +91,10 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         setSharedCredentials(false);
         setConnectorsSupported(true);
       }
-      void (async () => {
+      return (async () => {
         try {
           const out = await workspaceApi.connectors(agentId);
-          if (scope.current !== id) return;
+          if (scope.current !== id) return null;
           setConnectors(out.connectors);
           setShared(out.shared === true);
           setManageable(out.manageable === true);
@@ -97,20 +103,24 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
           // sent the flag keeps today's behaviour.
           setConnectorsSupported(out.connectorsSupported !== false);
           setStatus('ok');
+          return out.connectors;
         } catch (e) {
-          if (scope.current !== id) return;
+          if (scope.current !== id) return null;
           logRequestFailure(e, 'agent-connectors');
           // A failed read drops the list: an old list beside a failure reads
           // as the current one.
           setConnectors(null);
           setStatus(e instanceof HttpError && e.status === 503 ? 'unavailable' : 'failed');
+          return null;
         }
       })();
     },
     [agentId],
   );
 
-  useEffect(() => load(true), [load]);
+  useEffect(() => {
+    void load(true);
+  }, [load]);
 
   const remove = useCallback(
     async (connectorId: string): Promise<RemoveOutcome> => {
@@ -118,7 +128,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
       setRemoving((prev) => new Set(prev).add(connectorId));
       try {
         const out = await workspaceApi.removeConnector(agentId, connectorId);
-        if (agentScope.current === agentAtStart) load(false);
+        if (agentScope.current === agentAtStart) void load(false);
         return out.cleanup === 'complete' ? 'removed' : 'removed-partial';
       } catch (e) {
         logRequestFailure(e, 'agent-connectors');

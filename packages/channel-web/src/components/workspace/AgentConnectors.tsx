@@ -345,7 +345,7 @@ export function AgentConnectors({
           onBack={() => onView?.(null)}
           onRemove={() => setConfirming(open)}
           {...(canSetAccount ? { onSetUp: () => onSetUp(open) } : {})}
-          onHealthStale={refresh}
+          onHealthStale={() => void refresh()}
         />
       ) : (
       <>
@@ -374,7 +374,17 @@ export function AgentConnectors({
               {i > 0 && <Separator />}
               <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <span className="min-w-0 truncate text-[13px]">{row.name}</span>
+                  <span className="min-w-0 truncate text-[13px]">
+                    {row.name}
+                    {/* Slice 4 — which account the agent signed in as.
+                        Provider text: a text node only, never markup. */}
+                    {row.signedIn?.account != null && (
+                      <span className="text-muted-foreground" title={row.signedIn.account}>
+                        {' · '}
+                        {row.signedIn.account}
+                      </span>
+                    )}
+                  </span>
                   {row.health !== 'ok' && (
                     <HealthIcon
                       reason={healthReason(row, canSetAccount, isAdmin)}
@@ -467,8 +477,18 @@ export function AgentConnectors({
               requiresConsent={shared}
               showAccessNotice={false}
               onConnected={() => {
+                const before = signingIn;
                 setSigningIn(null);
-                refresh();
+                // Slice 4 — compare against the rows THIS re-read returned,
+                // not whatever the list holds when some effect next runs.
+                void refresh().then((rows) => {
+                  const after = rows?.find((r) => r.id === before.id);
+                  const text = accountChanged(
+                    before.signedIn?.account ?? null,
+                    after?.signedIn?.account ?? null,
+                  );
+                  if (text !== null) setNotice({ tone: 'note', text });
+                });
               }}
             />
           )}
@@ -489,12 +509,23 @@ export function AgentConnectors({
           }}
           onSaved={() => {
             setAddingKey(null);
-            refresh();
+            void refresh();
           }}
         />
       )}
     </>
   );
+}
+
+/**
+ * Slice 4 — "Now b@x (was a@x)" after Sign in again landed on a different
+ * account; `null` (say nothing) when it's the same one, or when either side
+ * is unknown: a sign-in from before slice 4 recorded no account, and a
+ * provider may report none.
+ */
+function accountChanged(was: string | null, now: string | null): string | null {
+  if (was === null || now === null || was === now) return null;
+  return `Now ${now} (was ${was})`;
 }
 
 /** "Connectors <n>" and "+ Add" (TASK-740). */

@@ -57,10 +57,12 @@ import {
 } from '@/lib/agent-connector-tools';
 import { cn } from '@/lib/utils';
 import type { GrantRow } from '@/lib/workspace-api';
+import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentConnectorHealth,
   AgentConnectorRow,
   AgentConnectorSetup,
+  AgentConnectorSignedIn,
   AgentConnectorTool,
   AgentConnectorToolsRead,
   AgentToolVerdict,
@@ -198,7 +200,10 @@ export function ConnectorDetails({
       {row.health === 'needs-sign-in' ? (
         <SetupLine setup={row.setup} onSetUp={onSetUp} />
       ) : (
-        <ConnectionLine data={data} health={row.health} />
+        <>
+          <ConnectionLine data={data} health={row.health} />
+          <SignedInLine signedIn={row.signedIn} />
+        </>
       )}
       {unsupported && (
         <div className="mt-4">
@@ -323,10 +328,11 @@ function ToolPermissions({
 }
 
 /**
- * "Connected · signed in as you". Only what we know: the row's stored health
- * (the same word the list's error icon uses), else the last time we asked the
- * connector for its tools; "as you" is said only for a connector that acts
- * with the person's own access.
+ * "Connected". Only what we know: the row's stored health (the same word the
+ * list's error icon uses), else the last time we asked the connector for its
+ * tools. Who the agent signed in as is {@link SignedInLine}'s job — slice 4
+ * retired the old guess "signed in as you", which an agent's own sign-in made
+ * untrue. A workspace connector still says it uses the workspace's account.
  */
 function ConnectionLine({
   data,
@@ -356,7 +362,7 @@ function ConnectionLine({
         : data.status === 'unreachable'
           ? 'Can’t reach it'
           : 'We can’t check this one from here';
-  const who = data.connector.access === 'workspace' ? 'uses your workspace’s account' : 'signed in as you';
+  const who = data.connector.access === 'workspace' ? 'uses your workspace’s account' : null;
   const Icon = ok ? CircleCheck : CircleAlert;
   return (
     <p
@@ -370,8 +376,32 @@ function ConnectionLine({
       <Icon aria-hidden="true" className="size-3.5 shrink-0" />
       <span>
         {word}
-        {ok && ` · ${who}`}
+        {ok && who !== null && ` · ${who}`}
       </span>
+    </p>
+  );
+}
+
+/**
+ * Slice 4 — who the agent acts as. "Signed in as bob@x.com" when the provider
+ * named the account; else "Signed in by you|Vinay|someone on 7 Oct"; nothing
+ * for a sign-in from before slice 4 (no account, no date). The account is
+ * UNTRUSTED provider text: a text node only, truncated, whole in `title`.
+ */
+function SignedInLine({ signedIn }: { signedIn: AgentConnectorSignedIn | undefined }) {
+  if (signedIn === undefined) return null;
+  let text: string | null = null;
+  if (signedIn.account !== null) {
+    text = `Signed in as ${signedIn.account}`;
+  } else if (signedIn.at !== null) {
+    const day = shortDay(signedIn.at);
+    const by = signedIn.byYou ? 'you' : (signedIn.byName ?? 'someone');
+    if (day !== '') text = `Signed in by ${by} on ${day}`;
+  }
+  if (text === null) return null;
+  return (
+    <p className="mt-0.5 truncate text-[12px] text-muted-foreground" title={text}>
+      {text}
     </p>
   );
 }

@@ -345,7 +345,7 @@ describe('the details view', () => {
     const dialog = await screen.findByRole('dialog');
     list([row({ id: 'linear', name: 'Linear', health: 'ok' }), ADD_KEY, ASK_ADMIN, OK]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(await screen.findByText('Connected')).toBeTruthy();
     expect(screen.queryByText('Sign-in needed')).toBeNull();
     expect(screen.queryByText(/sign in to this connector again/i)).toBeNull();
     expect(screen.queryByText('Not signed in yet')).toBeNull();
@@ -368,7 +368,7 @@ describe('the details view', () => {
     const dialog = await screen.findByTestId('key-dialog');
     list([SIGN_IN, row({ id: 'brave', name: 'Brave', health: 'ok' }), ASK_ADMIN, OK]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish key' }));
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(await screen.findByText('Connected')).toBeTruthy();
     expect(screen.queryByText('Sign-in needed')).toBeNull();
   });
 
@@ -377,5 +377,76 @@ describe('the details view', () => {
     await openDetails('Acme');
     expect(await screen.findByText('Needs a key from a workspace admin')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^(Sign in|Add key)$/ })).toBeNull();
+  });
+});
+
+describe('which account the agent uses (slice 4)', () => {
+  const signedIn = (account: string | null) => ({
+    account,
+    byName: null,
+    byYou: true,
+    at: '2026-10-07T12:00:00.000Z',
+  });
+  const EXPIRED = (account: string | null) =>
+    row({ id: 'gmail', name: 'Gmail', health: 'needs-reconnect', signedIn: signedIn(account) });
+
+  it('a row says "Gmail · bob@x.com", the account muted and whole on hover', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') }), SIGN_IN]);
+    renderTab();
+    const account = await screen.findByTitle('bob@x.com');
+    expect(account.textContent).toBe(' · bob@x.com');
+    expect(account.className).toContain('text-muted-foreground');
+    expect(account.parentElement?.textContent).toBe('Gmail · bob@x.com');
+    expect(account.parentElement?.className).toContain('truncate');
+    // A row with no sign-in is just its name.
+    expect(screen.getByText('Linear').textContent).toBe('Linear');
+  });
+
+  it('a row whose sign-in recorded no account is just its name', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
+    renderTab();
+    const name = await screen.findByText('Gmail');
+    expect(name.textContent).toBe('Gmail');
+    expect(name.querySelector('span')).toBeNull();
+  });
+
+  it('renders a hostile account as literal text, never markup', async () => {
+    const evil = '<img src=x onerror=alert(1)>‮gro.live';
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
+    renderTab();
+    const account = await screen.findByTitle(evil);
+    expect(account.textContent).toBe(` · ${evil}`);
+    expect(account.querySelector('img')).toBeNull();
+    expect(document.querySelector('img[src="x"]')).toBeNull();
+  });
+
+  async function signInAgainAs(before: string | null, after: string | null) {
+    list([EXPIRED(before)]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
+    const dialog = await screen.findByRole('dialog');
+    list([row({ id: 'gmail', name: 'Gmail', health: 'ok', signedIn: signedIn(after) })]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
+    // The re-read has landed once the row wears its new health.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Sign-in expired/ })).toBeNull(),
+    );
+  }
+
+  it('signing in again as a different account says so: "Now b@x (was a@x)"', async () => {
+    await signInAgainAs('a@x', 'b@x');
+    expect(await screen.findByText('Now b@x (was a@x)')).toBeTruthy();
+  });
+
+  it.each([
+    ['the same account', 'a@x', 'a@x'],
+    ['no account recorded before', null, 'b@x'],
+    ['no account reported now', 'a@x', null],
+  ])('says nothing extra for %s', async (_label, before, after) => {
+    await signInAgainAs(before, after);
+    expect(screen.queryByText(/^Now /)).toBeNull();
   });
 });

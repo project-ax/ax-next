@@ -131,3 +131,35 @@ describe('conversationDate', () => {
     expect(conversationDate('2026-08-18T12:00:00Z')).toMatch(/18/);
   });
 });
+
+// Slice 4 — "Signed in by you on 7 Oct". One day-and-month helper for every
+// surface (the grant line's private `grantedDay` folded into it).
+describe('shortDay', () => {
+  const ISO = '2026-10-07T12:00:00.000Z';
+
+  it('says day then month, whatever order the locale would pick', async () => {
+    const { shortDay } = await import('../workspace-time');
+    // en-US alone would say "Oct 7"; the copy is "7 Oct" everywhere.
+    expect(shortDay(ISO, 'en-US')).toBe('7 Oct');
+    expect(shortDay(ISO, 'en-GB')).toBe('7 Oct');
+  });
+
+  it('reads the instant on the READER\'s calendar', async () => {
+    const { shortDay } = await import('../workspace-time');
+    const saved = process.env.TZ;
+    // 23:30Z on the 7th is already the 8th in Kolkata (+5:30).
+    process.env.TZ = 'Asia/Kolkata';
+    try {
+      expect(shortDay('2026-10-07T23:30:00.000Z', 'en-GB')).toBe('8 Oct');
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
+  it('is empty on an instant it cannot read, never "Invalid Date"', async () => {
+    const { shortDay } = await import('../workspace-time');
+    expect(shortDay('')).toBe('');
+    expect(shortDay('not-a-date')).toBe('');
+  });
+});

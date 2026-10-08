@@ -151,3 +151,36 @@ describe('sharedCredentials (TASK-813)', () => {
     expect(old.result.current.sharedCredentials).toBe(false);
   });
 });
+
+describe('refresh() (slice 4)', () => {
+  it('resolves with the rows the re-read returned', async () => {
+    const hook = await loaded([row({ signedIn: { account: 'a@x', byName: null, byYou: true, at: null } })]);
+    const fresh = [row({ signedIn: { account: 'b@x', byName: null, byYou: true, at: null } })];
+    connectorsMock.mockResolvedValueOnce({ connectors: fresh, shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    let out: AgentConnectorRow[] | null | undefined;
+    await act(async () => {
+      out = await hook.result.current.refresh();
+    });
+    expect(out).toEqual(fresh);
+    expect(hook.result.current.connectors).toEqual(fresh);
+  });
+
+  it('resolves null when the re-read fails, or a newer read superseded it', async () => {
+    const hook = await loaded([row()]);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    connectorsMock.mockRejectedValueOnce(new Error('boom'));
+    let failed: AgentConnectorRow[] | null | undefined;
+    await act(async () => {
+      failed = await hook.result.current.refresh();
+    });
+    expect(failed).toBeNull();
+
+    connectorsMock.mockResolvedValue({ connectors: [row()], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    let first: Promise<AgentConnectorRow[] | null> | undefined;
+    await act(async () => {
+      first = hook.result.current.refresh();
+      await hook.result.current.refresh();
+    });
+    expect(await first).toBeNull();
+  });
+});

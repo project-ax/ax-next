@@ -142,7 +142,10 @@ describe('opening and closing', () => {
     renderTab();
     await openDetails();
     expect(screen.getByRole('heading', { level: 3, name: 'Linear' })).toBeTruthy();
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    // A sign-in from before slice 4 recorded no account: just the health word,
+    // and never the old guess "signed in as you".
+    expect(await screen.findByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/signed in/i)).toBeNull();
     const heading = screen.getByRole('heading', { name: /What Quill may do/ });
     expect(heading.textContent).toBe('What Quill may do3 tools');
     // The subview IS the tab: Other abilities is not drawn under it.
@@ -577,6 +580,53 @@ describe('when the tool list cannot be read', () => {
   });
 });
 
+describe('who the agent signed in as (slice 4)', () => {
+  function withSignIn(signedIn: AgentConnectorRow['signedIn']) {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false,
+      connectors: [{ ...ROWS[0]!, ...(signedIn !== undefined ? { signedIn } : {}) }],
+    });
+  }
+  const AT = '2026-10-07T12:00:00.000Z';
+
+  it('names the account the provider reported', async () => {
+    withSignIn({ account: 'bob@x.com', byName: 'Vinay', byYou: false, at: AT });
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText('Signed in as bob@x.com')).toBeTruthy();
+    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/Signed in by/)).toBeNull();
+  });
+
+  it.each([
+    [{ byName: 'Vinay', byYou: true }, 'Signed in by you on 7 Oct'],
+    [{ byName: 'Vinay', byYou: false }, 'Signed in by Vinay on 7 Oct'],
+    [{ byName: null, byYou: false }, 'Signed in by someone on 7 Oct'],
+  ])('with no account, says who signed in and when (%o)', async (who, text) => {
+    withSignIn({ account: null, at: AT, ...who });
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it('a sign-in from before slice 4 (nothing recorded) adds no line at all', async () => {
+    withSignIn({ account: null, byName: null, byYou: false, at: null });
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/Signed in/)).toBeNull();
+  });
+
+  it('renders a hostile account as literal text', async () => {
+    const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
+    withSignIn({ account: evil, byName: null, byYou: true, at: AT });
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText(`Signed in as ${evil}`)).toBeTruthy();
+    expect(document.querySelector('img')).toBeNull();
+  });
+});
+
 describe('access you approved', () => {
   it('moves a connector’s approved access into its details, with Revoke', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
@@ -593,6 +643,8 @@ describe('access you approved', () => {
     expect(within(section).getByText('uploads.linear.app')).toBeTruthy();
     expect(within(section).queryByText('api.linear.app')).toBeNull();
     expect(within(section).getByRole('button', { name: /Revoke/ })).toBeTruthy();
+    // The grant line's date comes from the shared `shortDay` helper: day first.
+    expect(within(section).getByText('14 Aug')).toBeTruthy();
   });
 
   it('says it could not read approved access when the grants read failed, instead of hiding the section (TASK-757)', async () => {
