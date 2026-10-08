@@ -6,16 +6,16 @@ import type { AvailableConnector, ConnectorStore } from '../store.js';
 // ---------------------------------------------------------------------------
 // TASK-711 — the `credentials:authorize-agent:account` provider, as a pure
 // function over a fake store (no database). The store's own selection rule
-// (`getSoleSharedById`) is tested against real postgres in store.test.ts;
+// (`getSoleLiveById`) is tested against real postgres in store.test.ts;
 // this file pins what the provider does with the store's answer and with
 // malformed input. Every case says what it does against an always-allow
 // provider: the deny cases fail there, the allow case is the positive control.
 //
 // TASK-788 — a READ also requires the connector to be effective on the agent
 // for this user (attached, or the user's own legacy row, minus exclusions),
-// read through `agents:resolve`. Against the TASK-711 provider (shared check
+// read through `agents:resolve`. Against the TASK-711 provider (sole-definition check
 // only) every `DENIES` case in the TASK-788 block below fails: it allowed any
-// sole-shared connector whatever the agent carried. The end-to-end version,
+// sole live connector whatever the agent carried. The end-to-end version,
 // through the real vault and real postgres, is agent-credential-attachment.test.ts.
 // ---------------------------------------------------------------------------
 
@@ -52,7 +52,6 @@ function row(
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'shared',
       capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
@@ -68,7 +67,7 @@ const SHARED = row('linear', 'owner', { canEdit: false, requiresAttachment: true
 /**
  * A store with the reads the provider uses. `available` is what this user
  * resolves (`getAvailableById` / `listAvailable`); `sole` answers
- * `getSoleSharedById`. Every other call fails the test.
+ * `getSoleLiveById`. Every other call fails the test.
  */
 function fakeStore(
   answer: (userId: string, connectorId: string) => Promise<AvailableConnector | null>,
@@ -89,7 +88,7 @@ function fakeStore(
     async listAvailable() {
       return available;
     },
-    async getSoleSharedById(userId: string, connectorId: string) {
+    async getSoleLiveById(userId: string, connectorId: string) {
       calls.push([userId, connectorId]);
       return answer(userId, connectorId);
     },
@@ -122,7 +121,7 @@ const agentWith = (agent: AgentFixture) => fakeBus(() => ({ agent }));
 const ATTACHED = agentWith({ connectorAttachments: ['linear'], connectorExclusions: [] });
 
 describe('authorizeAgentAccountRead (TASK-711)', () => {
-  it('ALLOWS (positive control) when the user resolves the one shared definition; asks about the id, not the slot', async () => {
+  it('ALLOWS (positive control) when the user resolves the one live definition; asks about the id, not the slot', async () => {
     const { store, calls } = fakeStore(async () => SHARED);
     const { ctx } = ctxWithLog();
     expect(
@@ -137,7 +136,7 @@ describe('authorizeAgentAccountRead (TASK-711)', () => {
     ]);
   });
 
-  it('DENIES when the store says this user does not resolve the shared definition (shadowed, ambiguous or absent)', async () => {
+  it('DENIES when the store says this user does not resolve the sole live definition (ambiguous or absent)', async () => {
     const { store, calls } = fakeStore(async () => null);
     const { ctx, lines } = ctxWithLog();
     expect(
@@ -146,11 +145,11 @@ describe('authorizeAgentAccountRead (TASK-711)', () => {
     expect(calls).toEqual([['mallory', 'linear']]);
     expect(lines).toContainEqual({
       msg: 'connectors_agent_credential_denied',
-      bindings: { reason: 'not-the-shared-connector', ref: 'account:linear' },
+      bindings: { reason: 'not-the-connector', ref: 'account:linear' },
     });
   });
 
-  it('DENIES the store-purpose question too when the user does not resolve the shared definition', async () => {
+  it('DENIES the store-purpose question too when the user does not resolve the sole live definition', async () => {
     const { store } = fakeStore(async () => null);
     const { ctx } = ctxWithLog();
     expect(

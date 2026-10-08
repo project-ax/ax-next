@@ -85,7 +85,7 @@ export async function listEffectiveConnectors(
     if (available !== null) add(available, 'attached');
   }
 
-  // 2. LEGACY OWNED rows keep their implicit attachment. A shared definition the
+  // 2. LEGACY OWNED rows keep their implicit attachment. A definition the
   //    user does not own, or any row created after explicit attachment landed,
   //    is discoverable but never attached implicitly.
   for (const entry of await store.listAvailable(userId)) {

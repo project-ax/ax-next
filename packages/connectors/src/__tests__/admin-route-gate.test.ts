@@ -35,7 +35,7 @@ import type {
 // THE BUG. Every handler behind `/admin/connectors*` called only `requireUser`, so
 // a signed-in NON-admin could list / create / read / patch / test / delete through
 // the admin bundle. The visible damage: `POST /admin/connectors` with
-// `keyMode: workspace, visibility: shared` returned 201 and
+// `keyMode: workspace` (then also `visibility: shared`) returned 201 and
 // stored exactly that row for a non-admin, while the same body on the locked-down
 // `/settings/connectors` twin 400s (`visibility: shared is admin-only`). And
 // `POST /admin/connectors/:id/test` told a non-admin which global `account:` keys
@@ -249,7 +249,6 @@ async function seed(h: TestHarness, owner: string, connectorId: string, keyMode:
       connectorId,
       name: `${connectorId} (seeded)`,
       keyMode,
-      visibility: 'private',
       capabilities: caps(`${connectorId}.example.com`),
     },
   );
@@ -290,7 +289,7 @@ const ADMIN_ROUTES: RouteCase[] = [
     method: 'POST',
     path: '/admin/connectors',
     opts: (id) => ({
-      body: { connectorId: `new-${id}`, name: 'New', keyMode: 'personal', visibility: 'private', capabilities: caps('n.example.com') },
+      body: { connectorId: `new-${id}`, name: 'New', keyMode: 'personal', capabilities: caps('n.example.com') },
     }),
     adminStatus: 201,
   },
@@ -369,7 +368,6 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
       connectorId: 'mal-shared',
       name: 'Mal shared',
       keyMode: 'workspace',
-      visibility: 'shared',
       capabilities: caps('m.example.com'),
     };
     // The locked-down twin no longer exists, and the admin route refuses a non-admin.
@@ -390,16 +388,19 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     expect(credentialListCalls).toEqual([]);
   });
 
-  it('an admin still gets the probe verdict, and the gate did not close the owner scoping (foreign id 404s)', async () => {
+  it('an admin still gets the probe verdict, reads a connector someone else defined, and 404s an unknown id', async () => {
     const h = await makeHarness();
     await seed(h, ROOT.id, 'ws-conn', 'workspace');
     await seed(h, MALLORY.id, 'mal-only');
     const ok = await call('POST', '/admin/connectors/:id/test', ROOT, { params: { id: 'ws-conn' } });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ status: 'reachable' });
-    // An admin is not a super-user over other people's private connectors.
+    // SIGNINS-9 — every connector is shared, so an admin reads (and curates)
+    // one another person defined; an id nobody defined is still a 404.
     const foreign = await call('GET', '/admin/connectors/:id', ROOT, { params: { id: 'mal-only' } });
-    expect(foreign.status).toBe(404);
+    expect(foreign.status).toBe(200);
+    const missing = await call('GET', '/admin/connectors/:id', ROOT, { params: { id: 'nobody-made-this' } });
+    expect(missing.status).toBe(404);
   });
 
   it('only the two READ /settings/connectors routes exist: no write or authored route is registered (production answers 405 or 404)', async () => {

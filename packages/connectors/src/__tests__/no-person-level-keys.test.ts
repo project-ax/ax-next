@@ -68,7 +68,6 @@ function connector(over: Partial<Connector> = {}): Connector {
     description: '',
     usageNote: '',
     keyMode: 'personal',
-    visibility: 'shared',
     capabilities: {
       allowedHosts: ['drive.googleapis.com'],
       credentials: [{ slot: 'GDRIVE', kind: 'api-key' }],
@@ -140,13 +139,13 @@ describe('purgeConnectorState — no user-scope deletes, no user-scope purge-acc
     };
   }
 
-  it('a shared personal connector: agents\' keys go via purge-account [agent] only; nothing is deleted per person', async () => {
+  it('a personal connector: agents\' keys go via purge-account [agent] only; nothing is deleted per person', async () => {
     const { bus, calls } = recordingBus();
     const c = connector({ capabilities: OAUTH_CAPS } as Partial<Connector>) as PurgeableConnector;
     const { failed } = await purgeConnectorState(bus, ctx(), 'admin', c, opts());
     expect(failed).toEqual([]);
     expect(calls).toEqual([
-      // The shared connector's client secret, at global.
+      // The connector's client secret, at global.
       {
         name: 'credentials:delete',
         input: { scope: 'global', ownerId: null, ref: 'account:gdrive:OAUTH_CLIENT_SECRET' },
@@ -163,35 +162,33 @@ describe('purgeConnectorState — no user-scope deletes, no user-scope purge-acc
     ]);
   });
 
-  it('a private personal connector deletes nothing (no per-person rows; agent rows belong to the shared definition)', async () => {
-    const { bus, calls } = recordingBus();
-    const c = connector({ visibility: 'private', capabilities: OAUTH_CAPS } as Partial<Connector>) as PurgeableConnector;
-    await purgeConnectorState(bus, ctx(), 'admin', c, opts());
-    expect(calls).toEqual([]);
-  });
-
   it('a workspace connector deletes its global key when authorized, and skips it when not', async () => {
     const authorized = recordingBus();
-    const c = connector({ keyMode: 'workspace', visibility: 'private' }) as PurgeableConnector;
+    const c = connector({ keyMode: 'workspace' }) as PurgeableConnector;
     await purgeConnectorState(authorized.bus, ctx(), 'admin', c, opts());
     expect(authorized.calls).toEqual([
       { name: 'credentials:delete', input: { scope: 'global', ownerId: null, ref: 'account:gdrive' } },
+      { name: 'credentials:purge-account', input: { connectorId: 'gdrive', scopes: ['agent'] } },
     ]);
 
     const unauthorized = recordingBus();
-    await purgeConnectorState(unauthorized.bus, ctx(), 'admin', c, opts({ purgeGlobal: false }));
+    await purgeConnectorState(
+      unauthorized.bus,
+      ctx(),
+      'admin',
+      c,
+      opts({ purgeGlobal: false, purgeAgentSignIns: false }),
+    );
     expect(unauthorized.calls).toEqual([]);
   });
 
   it('no call ever names user scope', async () => {
     for (const keyMode of ['personal', 'workspace'] as const) {
-      for (const visibility of ['private', 'shared'] as const) {
-        for (const idStillLive of [true, false]) {
-          const { bus, calls } = recordingBus();
-          const c = connector({ keyMode, visibility, capabilities: OAUTH_CAPS } as Partial<Connector>) as PurgeableConnector;
-          await purgeConnectorState(bus, ctx(), 'admin', c, opts({ idStillLive }));
-          expect(JSON.stringify(calls), `${keyMode}/${visibility}/${idStillLive}`).not.toContain('"user"');
-        }
+      for (const idStillLive of [true, false]) {
+        const { bus, calls } = recordingBus();
+        const c = connector({ keyMode, capabilities: OAUTH_CAPS } as Partial<Connector>) as PurgeableConnector;
+        await purgeConnectorState(bus, ctx(), 'admin', c, opts({ idStillLive }));
+        expect(JSON.stringify(calls), `${keyMode}/${idStillLive}`).not.toContain('"user"');
       }
     }
   });

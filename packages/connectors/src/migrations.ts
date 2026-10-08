@@ -59,6 +59,15 @@ export async function runConnectorsMigration<DB>(
     )
   `.execute(db);
 
+  // SIGNINS-9 (slice 7) — every connector is shared. Code no longer writes
+  // `visibility`, so new rows take this default. The column (and its CHECK and
+  // the `_shared` partial index below) stays only so a rolled-back image still
+  // reads every row as shared; a later cleanup drops it. Idempotent.
+  await sql`
+    ALTER TABLE connectors_v1_connectors
+      ALTER COLUMN visibility SET DEFAULT 'shared'
+  `.execute(db);
+
   // Owner list index excludes tombstones so list-by-owner stays fast even with
   // many soft-deleted rows. Idempotent (IF NOT EXISTS).
   await sql`
@@ -147,7 +156,11 @@ export interface ConnectorsRow {
   description: string;
   usage_note: string;
   key_mode: string;
-  visibility: string;
+  /**
+   * Vestigial since SIGNINS-9: always `'shared'` (the column DEFAULT). No code
+   * reads or writes it except the one-time boot step (`all-shared-step.ts`).
+   */
+  visibility: Generated<string>;
   capabilities: unknown;
   /**
    * TASK-97, retired by TASK-808 — see the migration header. `Generated` so no

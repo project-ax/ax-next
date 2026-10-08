@@ -386,8 +386,8 @@ describe('AuthoredConnectorsStore.deleteAllForAgent (TASK-718)', () => {
     // registry, not the agent's data, so the purge must not reach it.
     await sql`
       INSERT INTO connectors_v1_connectors
-        (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
-      VALUES ('u1', 'linear', 'Linear', 'personal', 'private', ${JSON.stringify(caps())}::jsonb)
+        (owner_user_id, connector_id, name, key_mode, capabilities)
+      VALUES ('u1', 'linear', 'Linear', 'personal', ${JSON.stringify(caps())}::jsonb)
     `.execute(db);
 
     await store.deleteAllForAgent('agt_A');

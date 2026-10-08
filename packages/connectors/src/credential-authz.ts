@@ -24,7 +24,7 @@ import type {
 // for an `account:` ref. We allow it iff, for the REQUESTING user:
 //
 //   1. the ref parses as `account:<id>` / `account:<id>:<SLOT>` with a valid id,
-//   2. that user can read a LIVE owned or unambiguous shared connector with that id,
+//   2. that user can read a LIVE owned or unambiguous connector with that id,
 //   3. the connector's derived credential plan contains EXACTLY this ref at
 //      scope `global` (i.e. `keyMode: 'workspace'`) — `deriveCredentialPlan` is
 //      the single function that decides both a slot's ref and its scope, so the
@@ -144,9 +144,10 @@ export async function authorizeGlobalAccountRead(
 // THE RULE. A global read of `account:<id>:OAUTH_CLIENT_SECRET` is allowed iff
 // ALL of these hold for the REQUESTING user:
 //
-//   1. the connector this user resolves for `<id>` is the ONE live SHARED
-//      definition with that id (`getSoleSharedById`, TASK-711's predicate) —
-//      not a private one (theirs or anyone's), and not one of two sharers,
+//   1. the connector this user resolves for `<id>` is the ONE live
+//      definition with that id (`getSoleLiveById`, TASK-711's predicate) —
+//      not one of two legacy duplicates (SIGNINS-9: every connector is
+//      shared, so there is no private definition to rule out),
 //   2. one of its OAuth slots names EXACTLY this ref as `clientSecretRef`,
 //   3. the ref is NOT also a credential-plan ref of that connector. The plan is
 //      what the credential proxy injects into the sandbox; a connector that
@@ -178,9 +179,9 @@ async function authorizeGlobalClientSecretRead(
   deny: (reason: string) => AuthorizeGlobalOutput,
 ): Promise<AuthorizeGlobalOutput> {
   try {
-    const shared = await store.getSoleSharedById(userId, connectorId);
-    if (shared === null) return deny('client-secret-not-the-shared-connector');
-    const { connector, ownerUserId } = shared;
+    const sole = await store.getSoleLiveById(userId, connectorId);
+    if (sole === null) return deny('client-secret-not-the-connector');
+    const { connector, ownerUserId } = sole;
 
     if (!namesOAuthClientSecretRef(connector.capabilities, ref)) {
       return deny('client-secret-ref-mismatch');
@@ -225,13 +226,14 @@ async function authorizeGlobalClientSecretRead(
 // THE RULE. @ax/credentials asks this hook before it takes the agent step for
 // an `account:` ref. We allow it iff the ref parses as `account:<id>` /
 // `account:<id>:<SLOT>` and the connector the REQUESTING user resolves for
-// `<id>` is the ONE live shared definition with that id (`getSoleSharedById`).
+// `<id>` is the ONE live definition with that id (`getSoleLiveById`).
 // That is the connector every member of the agent sees under the id, so it is
-// the only connector a credential stored on the agent can belong to. A private
-// definition (the user's own or anyone's), two shared definitions with one id,
-// or no definition at all is a deny.
+// the only connector a credential stored on the agent can belong to. Two live
+// definitions with one id (a legacy duplicate) or no definition at all is a
+// deny. (SIGNINS-9: every connector is shared, so there is no private
+// definition left to shadow the id.)
 //
-// THE SAME SHARED-DEFINITION RULE GATES THE WRITE. @ax/mcp-oauth calls this hook when a
+// THE SAME SOLE-DEFINITION RULE GATES THE WRITE. @ax/mcp-oauth calls this hook when a
 // sign-in starts: allowed => the token will be stored on the agent, denied =>
 // `begin` refuses the sign-in with 403 `agent-store-refused`, for an Add and
 // (since SIGNINS-7) for Sign in again alike; Sign in again then also asks the
@@ -295,8 +297,8 @@ export async function authorizeAgentAccountRead(
   if (connectorId === null) return deny('not-a-connector-ref');
 
   try {
-    const shared = await store.getSoleSharedById(userId, connectorId);
-    if (shared === null) return deny('not-the-shared-connector');
+    const sole = await store.getSoleLiveById(userId, connectorId);
+    if (sole === null) return deny('not-the-connector');
 
     // TASK-788 — only the exact value 'store' skips the attachment half.
     if (input.purpose === 'store') return { allowed: true };

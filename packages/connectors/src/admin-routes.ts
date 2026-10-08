@@ -82,14 +82,14 @@ interface AuthoredProposalView {
 // (list + show GET; any signed-in user). No
 // write route is registered there: a POST / PATCH / DELETE on a path a GET
 // shares answers 405 (Allow: GET) from the http-server router, and the handlers
-// themselves are adminOnly in case one is ever bundled there. Connectors are
-// readable when owned by the actor or explicitly shared. Writes are owner-only,
-// with one exception: on the admin bundle any admin may edit or delete a SHARED
-// definition someone else owns, and the write lands on the OWNER's row (owner
-// taken from the stored row, never the request; ownership never changes).
-// Actor identity is forced from the session and canEdit is derived by the store.
-// Private foreign definitions stay invisible. On the user surface shared foreign
-// definitions are read-only.
+// themselves are adminOnly in case one is ever bundled there. Every connector is
+// shared (SIGNINS-9), so every live definition is readable by any signed-in
+// user. Writes are owner-only, with one exception: on the admin bundle any
+// admin may edit or delete a definition someone else owns, and the write lands
+// on the OWNER's row (owner taken from the stored row, never the request;
+// ownership never changes). Actor identity is forced from the session and
+// canEdit is derived by the store. On the user surface foreign definitions are
+// read-only.
 //
 // Responses NEVER include resolved credential VALUES — a connector declares
 // credential SLOT names only (the `capabilities.credentials[].slot`); the actual
@@ -318,8 +318,8 @@ export interface AdminRouteDeps {
  * Connector registry and the read-only `/settings` surface (TASK-129).
  *
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
- *     may curate the workspace catalog: set `visibility: 'shared'` and
- *     `keyMode: 'workspace'`. Owner is still forced from the session.
+ *     may curate the workspace catalog, including `keyMode: 'workspace'`.
+ *     Owner is still forced from the session.
  *   - `'user'`  — the `/settings/connectors` READ surface (list/show). Only admins write
  *     connector definitions (slice 2a), so no write route is registered in this
  *     mode and the write handlers 403 a non-admin even if one were wired.
@@ -331,25 +331,25 @@ export interface AdminRouteDeps {
  */
 export type ConnectorRouteMode = 'admin' | 'user';
 
-/** Shared reads grant no writes; workspace credentials remain admin-curated. */
+/** A foreign read grants no writes; workspace credentials remain admin-curated. */
 function isReadOnly(c: Connector): boolean {
   return c.canEdit === false;
 }
 
 /**
- * Slice 2a — any admin may curate any SHARED connector, whoever defined it. True
- * only on the admin bundle (whose `authenticate` already 403s a non-admin) and
- * only for a shared definition: a private one someone else owns never reaches
- * here (`connectors:get` 404s it), and the user surface never gets this reach.
+ * Slice 2a — any admin may curate any connector, whoever defined it (every
+ * connector is shared since SIGNINS-9). True only on the admin bundle (whose
+ * `authenticate` already 403s a non-admin); the user surface never gets this
+ * reach.
  */
-function adminCurates(c: Connector, mode: ConnectorRouteMode): boolean {
-  return mode === 'admin' && c.visibility === 'shared';
+function adminCurates(mode: ConnectorRouteMode): boolean {
+  return mode === 'admin';
 }
 
 /**
  * Whose row a write acts on, or null when the actor may only read it. The
- * actor's own row when they may edit it; on the admin bundle, a shared row
- * another person owns is written AS that owner's row — the hooks are keyed by
+ * actor's own row when they may edit it; on the admin bundle, a row another
+ * person owns is written AS that owner's row — the hooks are keyed by
  * owner, and ownership never changes on an edit. The owner always comes from
  * the stored row (`connectors:get`), never from the request.
  */
@@ -359,7 +359,7 @@ function writeOwner(
   mode: ConnectorRouteMode,
 ): string | null {
   if (!isReadOnly(got.connector) && got.connector.canEdit === true) return actorId;
-  if (adminCurates(got.connector, mode)) return got.ownerUserId;
+  if (adminCurates(mode)) return got.ownerUserId;
   return null;
 }
 
@@ -376,18 +376,18 @@ function canonicalJson(v: unknown): string {
 
 /**
  * The only body fields a NON-owner admin's PATCH writes: the labels. Everything
- * that decides reach (capabilities, keyMode, visibility) is taken from the
- * stored row on that path.
+ * that decides reach (capabilities, keyMode) is taken from the stored row on
+ * that path.
  */
 const DISPLAY_FIELDS = ['name', 'description', 'usageNote'] as const;
 
 /**
  * Whether a NON-owner admin's PATCH body tries to change an owner-only field.
- * Such an admin may relabel a shared connector (name / description / usage
+ * Such an admin may relabel a connector (name / description / usage
  * note; tool permissions on their own route) but never change where it
  * connects or who supplies the key. `capabilities` (servers + endpoints,
  * allowed hosts, credential slots incl. OAuth client fields, packages,
- * services), `keyMode` and `visibility` are the owner's: an endpoint change
+ * services) and `keyMode` are the owner's: an endpoint change
  * would hand every agent's stored sign-ins and the shared key to the new host
  * through the credential proxy (only tool permissions are reset on a move —
  * TASK-758). A field sent with its STORED value is fine; editors send the whole
@@ -405,7 +405,6 @@ const DISPLAY_FIELDS = ['name', 'description', 'usageNote'] as const;
  */
 function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unknown>): boolean {
   if ('keyMode' in patch && patch.keyMode !== existing.keyMode) return true;
-  if ('visibility' in patch && patch.visibility !== existing.visibility) return true;
   if ('capabilities' in patch) {
     const parsed = CapabilitiesSchema.safeParse(patch.capabilities);
     if (!parsed.success) return true;
@@ -419,14 +418,12 @@ function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unkno
 }
 
 /** What the admin surface tells the UI it may edit (the store's `canEdit` is
- *  owner-only; an admin may also curate any shared connector). */
-function presentCanEdit<T extends { canEdit?: boolean; visibility: Connector['visibility'] }>(
+ *  owner-only; an admin may also curate any connector). */
+function presentCanEdit<T extends { canEdit?: boolean }>(
   c: T,
   mode: ConnectorRouteMode,
 ): T {
-  return c.canEdit !== true && mode === 'admin' && c.visibility === 'shared'
-    ? { ...c, canEdit: true }
-    : c;
+  return c.canEdit !== true && adminCurates(mode) ? { ...c, canEdit: true } : c;
 }
 
 /**
@@ -497,7 +494,7 @@ export function createConnectorRouteHandlers(
   }
 
   /**
-   * When an admin acts on a shared connector someone else defined, record WHO
+   * When an admin acts on a connector someone else defined, record WHO
    * did it (the hooks only see the row owner).
    */
   function logCuration(
@@ -643,16 +640,15 @@ export function createConnectorRouteHandlers(
         return;
       }
       const raw = parsed.value as Record<string, unknown>;
-      // The route decides uniqueness, never the body (it would be an existence
-      // probe for other owners' private ids).
+      // The route decides uniqueness, never the body.
       delete raw.requireUniqueId;
       // Likewise `updateOnly` (PATCH only) and `createOnly` (set below).
       delete raw.updateOnly;
       delete raw.createOnly;
       // Answered before the upsert hook runs any side effect (ceiling sources,
-      // endpoint resets): a live id this admin can see — their own or a shared
-      // one — is taken. One they can't see (another owner's private row) is
-      // refused by the store's `requireUniqueId`.
+      // endpoint resets): a live id (their own or another owner's) is taken.
+      // The store's `requireUniqueId` re-checks at the write, and also covers
+      // an id `connectors:get` can't pick (a legacy duplicate).
       if (typeof raw.connectorId === 'string' && raw.connectorId.length > 0) {
         try {
           await deps.bus.call<GetInput, GetOutput>(
@@ -667,7 +663,6 @@ export function createConnectorRouteHandlers(
           }
         }
       }
-      raw.visibility ??= 'shared';
       // Every create is an admin create (the handler is adminOnly): an id
       // another owner holds is taken (`requireUniqueId`), and so is one the
       // caller holds (`createOnly`) — both answer 409 via handleHookError.
@@ -691,7 +686,7 @@ export function createConnectorRouteHandlers(
       }
     },
 
-    /** PATCH /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
+    /** PATCH /admin/connectors/:id — the owner, or (admin bundle) any admin. */
     async update(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
@@ -711,9 +706,9 @@ export function createConnectorRouteHandlers(
         res.status(400).json({ error: removed });
         return;
       }
-      // PATCH requires a live definition the actor may write. Missing/private
-      // foreign ids return 404; a shared foreign definition is read-only except
-      // to an admin on the admin bundle, who writes the OWNER's row.
+      // PATCH requires a live definition the actor may write. Missing ids
+      // return 404; a foreign definition is read-only except to an admin on
+      // the admin bundle, who writes the OWNER's row.
       let got: GetOutput;
       try {
         got = await deps.bus.call<GetInput, GetOutput>(
@@ -740,8 +735,8 @@ export function createConnectorRouteHandlers(
       const crossOwner = owner !== actor.id;
       // `changesOwnerOnlyFields` only picks the ANSWER (a humane 403 for a body
       // that really tries to retarget). It is not what keeps reach safe: a
-      // cross-owner save below writes the STORED capabilities / keyMode /
-      // visibility whatever the body says, so a disagreement between the
+      // cross-owner save below writes the STORED capabilities / keyMode
+      // whatever the body says, so a disagreement between the
       // comparison's reading of a field and the runtime's can at worst give a
       // wrong 200/403 — never a changed reach.
       if (crossOwner && changesOwnerOnlyFields(existing, patchRaw)) {
@@ -758,7 +753,6 @@ export function createConnectorRouteHandlers(
         description: existing.description,
         usageNote: existing.usageNote,
         keyMode: existing.keyMode,
-        visibility: existing.visibility,
         capabilities: existing.capabilities,
         ...editable,
         requireUniqueId: false,
@@ -789,7 +783,7 @@ export function createConnectorRouteHandlers(
       }
     },
 
-    /** DELETE /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
+    /** DELETE /admin/connectors/:id — the owner, or (admin bundle) any admin. */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
@@ -896,7 +890,7 @@ export function createConnectorRouteHandlers(
             ctx,
             {
               // The actor's id resolves the same row `loadEditable` did (own row
-              // first, else the single shared one); the owner only keys the namespaces.
+              // first, else the single live one); the owner only keys the namespaces.
               userId: actor.id,
               connectorId: connector.id,
               ...(req.query.refresh === '1' && { force: true }),

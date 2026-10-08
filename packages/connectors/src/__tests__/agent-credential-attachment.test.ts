@@ -198,7 +198,6 @@ async function seedTeamConnector(h: TestHarness): Promise<void> {
     connectorId: 'linear',
     name: 'Linear',
     keyMode: 'personal',
-    visibility: 'shared',
     capabilities: {
       allowedHosts: ['mcp.linear.app'],
       credentials: [{ slot: 'API_TOKEN', kind: 'api-key' }],
@@ -344,7 +343,6 @@ describe('deleting a shared connector purges agents\' sign-ins in the real vault
       connectorId: 'linear',
       name: 'Linear',
       keyMode: 'personal',
-      visibility: 'shared',
       capabilities: {
         allowedHosts: ['mcp.linear.app'],
         credentials: [{ slot: 'API_TOKEN', kind: 'api-key' }],

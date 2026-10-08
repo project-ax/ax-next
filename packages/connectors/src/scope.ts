@@ -4,8 +4,8 @@ import type { ConnectorDatabase } from './migrations.js';
 /**
  * Tenant-scoping helper (Invariant I7).
  *
- * Owner-only multi-row reads go through this helper; shared-definition reads
- * use availableConnectors below. The lint rule `local/no-bare-tenant-tables` enforces that a bare
+ * Owner-only multi-row reads go through this helper; definition reads (every
+ * live connector, any owner) use availableConnectors below. The lint rule `local/no-bare-tenant-tables` enforces that a bare
  * `db.selectFrom('connectors_v1_*')` only appears in `store.ts` / `scope.ts` /
  * test files.
  *
@@ -36,18 +36,18 @@ export function scopedConnectors(
     .where('deleted_at', 'is', null);
 }
 
-/** Shared definitions are readable by signed-in users; mutations remain owner-scoped. */
+/**
+ * Every live definition is readable by signed-in users (SIGNINS-9: every
+ * connector is shared); mutations remain owner-scoped. `scope` is kept so the
+ * read stays a per-user call site — the caller's own row still wins a pick.
+ */
 export function availableConnectors(
   db: Kysely<ConnectorDatabase>,
-  scope: ConnectorScope,
+  _scope: ConnectorScope,
 ) {
   return db
     .selectFrom('connectors_v1_connectors')
     .selectAll('connectors_v1_connectors')
-    .where((eb) => eb.or([
-      eb('owner_user_id', '=', scope.userId),
-      eb('visibility', '=', 'shared'),
-    ]))
     .where('deleted_at', 'is', null);
 }
 
@@ -128,7 +128,7 @@ export function hasStdioMcpServer(column: 'capabilities' | 'capability_proposal'
 export function stdioConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
-    .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities', 'deleted_at'])
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'capabilities', 'deleted_at'])
     .where(hasStdioMcpServer('capabilities'));
 }
 
@@ -163,7 +163,7 @@ export async function hasSurvivingSameIdConnectorForSystemSweep(
 export function liveConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
-    .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities'])
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'capabilities'])
     .where('deleted_at', 'is', null)
     .orderBy('owner_user_id', 'asc')
     .orderBy('connector_id', 'asc');
@@ -171,26 +171,39 @@ export function liveConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
 
 /**
  * DELIBERATELY UNSCOPED — does any live connector OTHER than (ownerUserId,
- * connectorId) carry `connectorId`? With `sharedOnly`, only shared rows count.
- * Asked BEFORE the non-admin sweep tombstones a row, so it answers exactly
- * what `hasLiveById` / `hasLiveSharedById` would answer after it. Only the
- * boot-time non-admin sweep (non-admin-sweep.ts) calls this.
+ * connectorId) carry `connectorId`? Asked BEFORE the non-admin sweep
+ * tombstones a row, so it answers exactly what `hasLiveById` would answer
+ * after it. Only the boot-time non-admin sweep (non-admin-sweep.ts) calls this.
  */
 export async function hasOtherLiveSameIdConnectorForSystemSweep(
   db: Kysely<ConnectorDatabase>,
   ownerUserId: string,
   connectorId: string,
-  opts: { sharedOnly: boolean },
 ): Promise<boolean> {
-  let query = db
+  const row = await db
     .selectFrom('connectors_v1_connectors')
     .select('owner_user_id')
     .where('connector_id', '=', connectorId)
     .where('owner_user_id', '<>', ownerUserId)
-    .where('deleted_at', 'is', null);
-  if (opts.sharedOnly) query = query.where('visibility', '=', 'shared');
-  const row = await query.limit(1).executeTakeFirst();
+    .where('deleted_at', 'is', null)
+    .limit(1)
+    .executeTakeFirst();
   return row !== undefined;
+}
+
+/**
+ * DELIBERATELY UNSCOPED — every owner's LIVE connector rows, identity plus the
+ * vestigial `visibility` column and `created_at`: exactly what the one-time
+ * SIGNINS-9 boot step (all-shared-step.ts) needs to pick one row per id. The
+ * step is the ONLY caller (it runs as `system` during plugin init, inside its
+ * own transaction, hence the `db` parameter); no request path may use it.
+ * This is the one remaining read of `visibility`.
+ */
+export function liveRowsForAllSharedStep(db: Kysely<ConnectorDatabase>) {
+  return db
+    .selectFrom('connectors_v1_connectors')
+    .select(['owner_user_id', 'connector_id', 'visibility', 'created_at'])
+    .where('deleted_at', 'is', null);
 }
 
 /**

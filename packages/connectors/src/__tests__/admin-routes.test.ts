@@ -251,7 +251,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Google Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -312,7 +311,6 @@ describe('admin connector routes', () => {
           connectorId: 'pg-bundle',
           name: 'Postgres bundle',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: caps,
         },
       }),
@@ -347,7 +345,6 @@ describe('admin connector routes', () => {
           connectorId: 'sf',
           name: 'Salesforce',
           keyMode: 'workspace',
-          visibility: 'shared',
           capabilities: {
             allowedHosts: ['login.salesforce.com'],
             credentials: [{ slot: 'sf', kind: 'api-key' }],
@@ -375,7 +372,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -407,7 +403,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'shared',
           capabilities: mcpCaps(),
         },
       }),
@@ -442,7 +437,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -458,55 +452,62 @@ describe('admin connector routes', () => {
     expect(gCap.status).toBe(404);
   });
 
-  it('cross-tenant: User B never sees User A’s connector and 404s on its id', async () => {
+  it('SIGNINS-9: a POST with visibility:\'private\' is 201, stored with no visibility, and listed for another user', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    const created = makeRes();
+    await handlers.create(
+      makeReq({
+        // A stale SPA tab may still send the retired field: ignored, not a 400.
+        body: { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() },
+      }),
+      created.res,
+    );
+    expect(created.captured.status).toBe(201);
+    expect((created.captured.body as { connector: object }).connector).not.toHaveProperty('visibility');
+
+    // Another user (not an admin) sees it in `connectors:list`, read-only.
+    const listed = await h.bus.call<{ userId: string }, { connectors: Array<Record<string, unknown>> }>(
+      'connectors:list',
+      h.ctx({ userId: 'userB' }),
+      { userId: 'userB' },
+    );
+    expect(listed.connectors.map((c) => [c['id'], c['canEdit']])).toEqual([['gdrive', false]]);
+    expect(listed.connectors[0]).not.toHaveProperty('visibility');
+  });
+
+  it('SIGNINS-9: the owner PATCHing visibility:\'private\' is 200 and the connector stays listed for others', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
     await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'gdrive',
-          name: 'Drive',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
+      makeReq({ body: { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', capabilities: mcpCaps() } }),
       makeRes().res,
     );
-
-    // User B is an ADMIN too: `/admin/connectors*` 403s a non-admin before
-    // ownership is ever looked at (TASK-698, admin-route-gate.test.ts), so the
-    // cross-tenant 404 is only reachable — and only worth proving — for another admin.
-    currentActor = { id: 'userB', isAdmin: true };
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.list(makeReq({}), lRes);
-    expect((lCap.body as { connectors: Array<{ id: string }> }).connectors).toHaveLength(0);
-
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'gdrive' } }), gRes);
-    expect(gCap.status).toBe(404);
-
-    const { res: pRes, captured: pCap } = makeRes();
+    const patched = makeRes();
     await handlers.update(
-      makeReq({ params: { id: 'gdrive' }, body: { name: 'hijack' } }),
-      pRes,
+      makeReq({ params: { id: 'gdrive' }, body: { name: 'Drive (mine?)', visibility: 'private' } }),
+      patched.res,
     );
-    expect(pCap.status).toBe(404);
+    expect(patched.captured.status).toBe(200);
+    expect((patched.captured.body as { connector: object }).connector).not.toHaveProperty('visibility');
 
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'gdrive' } }), dRes);
-    expect(dCap.status).toBe(404);
+    const listed = await h.bus.call<{ userId: string }, { connectors: Array<Record<string, unknown>> }>(
+      'connectors:list',
+      h.ctx({ userId: 'userB' }),
+      { userId: 'userB' },
+    );
+    expect(listed.connectors.map((c) => [c['id'], c['name']])).toEqual([['gdrive', 'Drive (mine?)']]);
   });
 
-  it('POST 409 connector-id-taken when another owner holds the id as a private connector', async () => {
+  it('POST 409 connector-id-taken when another owner holds the id', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     const body = {
       connectorId: 'gmail',
       name: 'Gmail',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: mcpCaps(),
     };
     currentActor = { id: 'admin1', isAdmin: true };
@@ -521,12 +522,11 @@ describe('admin connector routes', () => {
     expect(second.captured.body).toEqual({ error: 'connector-id-taken' });
   });
 
-  describe('any admin may edit or delete a SHARED connector, whoever owns it', () => {
+  describe('any admin may edit or delete any connector, whoever owns it (SIGNINS-9: every connector is shared)', () => {
     const crm = {
       connectorId: 'crm',
       name: 'CRM',
       keyMode: 'personal',
-      visibility: 'shared',
       capabilities: mcpCaps(),
     };
 
@@ -677,29 +677,6 @@ describe('admin connector routes', () => {
       expect(listed.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: false }] });
     });
 
-    it('admin2 still cannot see or touch admin1’s PRIVATE connector (404)', async () => {
-      const h = await makeHarness();
-      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-      currentActor = { id: 'admin1', isAdmin: true };
-      await handlers.create(makeReq({ body: { ...crm, visibility: 'private' } }), makeRes().res);
-
-      currentActor = { id: 'admin2', isAdmin: true };
-      const patched = makeRes();
-      await handlers.update(
-        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
-        patched.res,
-      );
-      expect(patched.captured.status).toBe(404);
-      const deleted = makeRes();
-      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
-      expect(deleted.captured.status).toBe(404);
-
-      currentActor = { id: 'admin1', isAdmin: true };
-      const shown = makeRes();
-      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
-      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
-    });
-
     // A NON-OWNER admin may relabel a shared connector, never retarget it — an endpoint / host / slot change would send every
     // agent's stored sign-ins and the shared key somewhere new.
     describe('a non-owner admin cannot change where it connects or who it is for', () => {
@@ -732,7 +709,6 @@ describe('admin connector routes', () => {
         }],
         ['packages', { capabilities: { ...caps, packages: { npm: ['evil-pkg'], pypi: [] } } }],
         ['keyMode', { keyMode: 'workspace' }],
-        ['visibility (shared → private)', { visibility: 'private' }],
       ];
 
       for (const [what, patch] of changes) {
@@ -755,6 +731,27 @@ describe('admin connector routes', () => {
           expect((after.captured.body as { connector: unknown }).connector).toEqual(before);
         });
       }
+
+      it('SIGNINS-9: a non-owner admin renames another admin\'s connector (200); a key_mode change is 403 owner-only-change', async () => {
+        const h = await makeHarness();
+        const { handlers } = await seedAndShow(h);
+        currentActor = { id: 'admin2', isAdmin: true };
+        const renamed = makeRes();
+        // A stale `visibility` in the body is ignored, never owner-only.
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { name: 'CRM (by admin2)', visibility: 'private' } }),
+          renamed.res,
+        );
+        expect(renamed.captured.status).toBe(200);
+        expect(renamed.captured.body).toMatchObject({ connector: { name: 'CRM (by admin2)', canEdit: true } });
+        const rekeyed = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { keyMode: 'workspace' } }),
+          rekeyed.res,
+        );
+        expect(rekeyed.captured).toMatchObject({ status: 403, body: { error: 'owner-only-change' } });
+        expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      });
 
       it('accepts the whole unchanged form plus a new name: 200, canEdit, no owner id', async () => {
         const h = await makeHarness();
@@ -1100,7 +1097,6 @@ describe('admin connector routes', () => {
           description: 'Invoices.',
           usageNote: 'Read invoices.',
           keyMode: 'workspace',
-          visibility: 'shared',
           capabilities,
         };
         currentActor = { id: 'admin1', isAdmin: true };
@@ -1129,7 +1125,7 @@ describe('admin connector routes', () => {
       });
     }
 
-    it('same-id shared rows from two owners, none the admin’s: PATCH and DELETE 404 (fail closed)', async () => {
+    it('same-id rows from two owners (a legacy duplicate), none the admin’s: PATCH and DELETE 404 (fail closed)', async () => {
       const h = await makeHarness();
       for (const owner of ['ownerA', 'ownerB']) {
         await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
@@ -1185,7 +1181,6 @@ describe('admin connector routes', () => {
           description: '',
           usageNote: '',
           keyMode: 'personal',
-          visibility: 'shared',
           capabilities: mcpCaps(),
           updateOnly: true,
         }),
@@ -1226,7 +1221,6 @@ describe('admin connector routes', () => {
           connectorId: 'bad',
           name: 'Bad',
           keyMode: 'nonsense',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -1258,7 +1252,6 @@ describe('admin connector routes', () => {
             connectorId: 'local',
             name: 'Local',
             keyMode: 'personal',
-            visibility: 'private',
             capabilities: stdioCaps(),
           },
         }),
@@ -1281,7 +1274,6 @@ describe('admin connector routes', () => {
             connectorId: 'gdrive',
             name: 'Drive',
             keyMode: 'personal',
-            visibility: 'private',
             capabilities: mcpCaps(),
           },
         }),
@@ -1331,18 +1323,9 @@ describe('admin connector routes', () => {
     expect(captured.status).toBe(401);
   });
 
-  it('test: 404 for a connector the actor does not own', async () => {
+  it('test: 404 for a connector id with no live definition', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-    currentActor = { id: 'userA', isAdmin: true };
-    await seedConnector(handlers, {
-      connectorId: 'gdrive',
-      name: 'Google Drive',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: mcpCaps(),
-    });
-    // userB cannot probe userA's connector.
     currentActor = { id: 'userB', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
@@ -1357,7 +1340,6 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'workspace',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
     // No credential rows seeded ⟹ the `gdrive` slot is unfilled.
@@ -1376,7 +1358,6 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
     // An old person-level row for the admin must NOT make the connector look
@@ -1399,7 +1380,6 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'workspace',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
     // An agent-scoped row must NOT satisfy a workspace slot — the workspace key
@@ -1423,7 +1403,6 @@ describe('admin connector routes', () => {
       connectorId: 'sf',
       name: 'Salesforce',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: {
         allowedHosts: ['login.salesforce.com'],
         credentials: [],
@@ -1445,7 +1424,6 @@ describe('admin connector routes', () => {
       connectorId: 'broken',
       name: 'Broken MCP',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: {
         allowedHosts: [],
         credentials: [],
@@ -1474,7 +1452,6 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'workspace',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
     credentialsListThrows = true;
@@ -1535,7 +1512,6 @@ describe('user connector routes (/settings/connectors)', () => {
       connectorId: 'user-bundle-shared',
       name: 'Shared',
       keyMode: 'workspace',
-      visibility: 'shared',
       capabilities: mcpCaps(),
     });
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
@@ -1560,12 +1536,11 @@ describe('user connector routes (/settings/connectors)', () => {
     ]);
   });
 
-  it('a shared connector is readable, never editable, for another user on the user bundle (reads)', async () => {
+  it('a connector is readable, never editable, for another user on the user bundle (reads)', async () => {
     const h = await makeHarness();
     currentActor = { id: 'author', isAdmin: true };
     await adminSeed(h.bus, {
-      connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal',
-      visibility: 'shared', capabilities: mcpCaps(),
+      connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal', capabilities: mcpCaps(),
     });
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
     currentActor = { id: 'reader', isAdmin: false };
@@ -1577,19 +1552,6 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(shown.captured.status).toBe(200);
     expect(shown.captured.body).toMatchObject({ connector: { name: 'Shared', canEdit: false } });
     expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty('ownerUserId');
-  });
-
-  it('admin create defaults to shared; an edit preserves the saved visibility and key mode', async () => {
-    const h = await makeHarness();
-    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-    currentActor = { id: 'root', isAdmin: true };
-    const fresh = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'fresh', name: 'Fresh', keyMode: 'personal', capabilities: mcpCaps() } }), fresh.res);
-    expect(fresh.captured.body).toMatchObject({ connector: { visibility: 'shared' } });
-    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Legacy', keyMode: 'workspace', visibility: 'private', capabilities: mcpCaps() } }), makeRes().res);
-    const patch = makeRes();
-    await handlers.update(makeReq({ params: { id: 'legacy' }, body: { name: 'Edited' } }), patch.res);
-    expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
   });
 
   // Slice 2c — POST is create-only. "Set it up" from an agent's request must
@@ -1626,7 +1588,7 @@ describe('user connector routes (/settings/connectors)', () => {
 
   it('the connectors:upsert hook refuses createOnly for an id the caller holds', async () => {
     const h = await makeHarness();
-    const input = { userId: 'root', connectorId: 'hooked', name: 'Hooked', keyMode: 'personal', visibility: 'shared', capabilities: mcpCaps() };
+    const input = { userId: 'root', connectorId: 'hooked', name: 'Hooked', keyMode: 'personal', capabilities: mcpCaps() };
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), input);
     await expect(
       h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), { ...input, name: 'Again', createOnly: true }),
@@ -1666,7 +1628,6 @@ describe('user connector routes (/settings/connectors)', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'shared',
       capabilities: mcpCaps(),
     });
     const shown = makeRes();
@@ -1710,7 +1671,6 @@ describe('user connector routes (/settings/connectors)', () => {
                 connectorId: 'stale',
                 name: 'Stale client',
                 keyMode: 'personal',
-                visibility: 'private',
                 defaultAttached: value,
                 capabilities: mcpCaps(),
               },
@@ -1729,7 +1689,7 @@ describe('user connector routes (/settings/connectors)', () => {
           const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
           currentActor = { id: 'userU', isAdmin: true };
           await handlers.create(
-            makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() } }),
+            makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', capabilities: mcpCaps() } }),
             makeRes().res,
           );
           const { res, captured } = makeRes();
@@ -1780,8 +1740,7 @@ describe('user connector routes (/settings/connectors)', () => {
     currentActor = { id: 'admin1', isAdmin: true };
     const created = makeRes();
     await adminHandlers.create(makeReq({ body: {
-      connectorId: 'ws-shared', name: 'Workspace svc', keyMode: 'workspace',
-      visibility: 'shared', capabilities: mcpCaps(),
+      connectorId: 'ws-shared', name: 'Workspace svc', keyMode: 'workspace', capabilities: mcpCaps(),
     } }), created.res);
     expect(created.captured.status).toBe(201);
 
@@ -2041,7 +2000,6 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     connectorId: id,
     name: id,
     keyMode,
-    visibility: 'private',
     capabilities: oauthCaps(clientSecretRef),
   });
 
@@ -2153,7 +2111,6 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
         connectorId: 'mine',
         name: 'mine',
         keyMode: 'personal',
-        visibility: 'private',
         capabilities: oauthCaps('provider:anthropic'),
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
@@ -2177,7 +2134,6 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: legacyCaps,
     });
 

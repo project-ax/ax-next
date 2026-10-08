@@ -7,7 +7,7 @@ import type { Capabilities, CapabilitySlot, Connector, KeyMode } from './types.j
 // module turns that into the credential PLAN the connect flow (and the future
 // credential-proxy router — design Phase 5: "resolving slots through the
 // connector instead of the skill") routes on. Reach is derived PURELY from where
-// the key attaches — there is NO public/private visibility flag on a credential:
+// the key attaches — there is NO public/private flag on a credential:
 //
 //   keyMode 'personal'  → credential scope 'agent'  — each agent adds its own
 //                         key (or sign-in) when the connector is added to it
@@ -148,26 +148,4 @@ export function deriveCredentialPlan(
       ...(perSlot ? { slotTag: slot.slot } : {}),
     };
   });
-}
-
-// ---------------------------------------------------------------------------
-// Consent — the "act as you" gate (design "Consent caveat", invariant #5).
-//
-// The credential-proxy stops key THEFT, not authorized MISUSE: anyone who can
-// drive an agent that spends a shared key can make it act as that identity on the
-// service. Sharing a key for USE is therefore NOT as harmless as sharing a skill,
-// and the design surfaces one explicit consent moment BEFORE the key becomes
-// spendable by a shared/team agent — not fine print.
-// ---------------------------------------------------------------------------
-
-/**
- * Whether connecting this connector must surface the shared-key consent moment
- * before the key becomes spendable. True iff the resolved key is spendable by an
- * identity the keyholder doesn't solely control:
- *   - `keyMode === 'workspace'` — one key, every allowed agent spends it, OR
- *   - `visibility === 'shared'` — bound to a shared / team agent.
- * `personal` + `private` → false (you only ever act as yourself; no consent needed).
- */
-export function requiresSharedKeyConsent(connector: Connector): boolean {
-  return connector.keyMode === 'workspace' || connector.visibility === 'shared';
 }

@@ -201,7 +201,6 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
         connectorId: 'authored',
         name: 'Authored',
         keyMode: 'personal',
-        visibility: 'shared',
         capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
       }),
     ).rejects.toThrow(/reserved/);
@@ -246,12 +245,12 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
 
 // ---------------------------------------------------------------------------
 // TASK-114 item 1 — re-propose dedup against the live registry, reshaped in
-// slice 2c. A re-propose of an id that is already live as a SHARED connector
-// must NOT create a draft (nothing for an admin to approve). The rule is a pure
-// id match against live shared rows of any owner.
+// slice 2c. A re-propose of an id that is already live must NOT create a draft
+// (nothing for an admin to approve). The rule is a pure id match against live
+// rows of any owner (every connector is shared, SIGNINS-9).
 // ---------------------------------------------------------------------------
 
-/** Seed a live SHARED connector into the registry (the admin-created state). */
+/** Seed a live connector into the registry (the admin-created state). */
 async function seedRegistryConnector(
   h: TestHarness,
   over: Partial<UpsertInput> = {},
@@ -264,7 +263,6 @@ async function seedRegistryConnector(
       connectorId: 'linear',
       name: 'Linear',
       keyMode: 'personal',
-      visibility: 'shared',
       capabilities: {
         allowedHosts: ['api.linear.app'],
         credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }],
@@ -337,7 +335,6 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
         connectorId: 'linear',
         name: 'Linear',
         keyMode: 'personal',
-        visibility: 'shared',
         capabilities: {
           allowedHosts: ['api.linear.app'],
           credentials: [],
@@ -362,28 +359,6 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
     expect(all.drafts).toEqual([]);
   });
 
-  it('does NOT dedup against another owner’s PRIVATE connector: the draft is written (no "taken" leak)', async () => {
-    const h = await makeHarness();
-    await h.bus.call<UpsertInput, UpsertOutput>(
-      'connectors:upsert',
-      h.ctx({ userId: 'userB' }),
-      {
-        userId: 'userB',
-        connectorId: 'linear',
-        name: 'Linear',
-        keyMode: 'personal',
-        visibility: 'private',
-        capabilities: { allowedHosts: ['api.linear.app'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
-      },
-    );
-    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput(),
-    );
-    expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
-    expect((await draftsOf('userA', 'agent1')).map((d) => d.connectorId)).toEqual(['linear']);
-  });
 });
 
 // Slice 2c — install-authored no longer fires `connectors:proposed`: nothing
@@ -409,8 +384,7 @@ describe('@ax/connectors — install-authored fires no proposal event (slice 2c)
 
 // ---------------------------------------------------------------------------
 // Slice 2c — agent proposals go to admins. `connectors:list-authored-pending-all`
-// is the admin queue (every owner's pending drafts, minus ids already live as a
-// SHARED connector); `connectors:clear-authored-by-id` is Dismiss; and creating a live
+// is the admin queue (every owner's pending drafts, minus ids already live); `connectors:clear-authored-by-id` is Dismiss; and creating a live
 // connector through `connectors:upsert` resolves every proposal for that id.
 // ---------------------------------------------------------------------------
 
@@ -420,7 +394,6 @@ function sharedUpsert(over: Partial<UpsertInput> = {}): UpsertInput {
     connectorId: 'linear',
     name: 'Linear',
     keyMode: 'workspace',
-    visibility: 'shared',
     capabilities: {
       allowedHosts: ['api.linear.app'],
       credentials: [],
@@ -524,18 +497,16 @@ describe('@ax/connectors — one malformed request does not empty the admin queu
   });
 });
 
-describe('@ax/connectors — the admin queue hides only SHARED-live ids', () => {
-  it('keeps a request whose id is live only as someone’s PRIVATE connector, so an admin can still see and dismiss it', async () => {
+describe('@ax/connectors — the admin queue hides any live id (SIGNINS-9)', () => {
+  it('hides a request whose id is live under any owner, and keeps one that is not, so an admin can dismiss it', async () => {
     const h = await makeHarness();
-    // userC has a private 'linear'. userA's agent proposes 'linear' (the install
-    // dedup ignores private rows, so the draft is written).
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userC' }),
-      sharedUpsert({ userId: 'userC', keyMode: 'personal', visibility: 'private' }));
+    // userA's agent proposes 'linear', which nobody has defined.
     await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
       installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
-    // And a draft for an id that is live as SHARED, written behind the dedup.
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
-      sharedUpsert({ connectorId: 'gmail', name: 'Gmail' }));
+    // And a draft for an id another user (not an admin) already defined,
+    // written behind the install dedup.
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userC' }),
+      sharedUpsert({ userId: 'userC', connectorId: 'gmail', name: 'Gmail', keyMode: 'personal' }));
     await insertDraftBehindTheStore('userA', 'agent1', 'gmail');
 
     expect((await pendingAll(h)).map((d) => d.connectorId)).toEqual(['linear']);
@@ -583,7 +554,7 @@ describe('@ax/connectors — connectors:clear-authored-by-id (Dismiss)', () => {
 });
 
 describe('@ax/connectors — creating a connector resolves its proposals', () => {
-  it('connectors:upsert that CREATES a SHARED connector clears both proposers’ drafts for that id', async () => {
+  it('connectors:upsert that CREATES a connector clears both proposers’ drafts for that id', async () => {
     const h = await makeHarness();
     await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
       installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
@@ -599,23 +570,6 @@ describe('@ax/connectors — creating a connector resolves its proposals', () =>
     expect((await pendingAll(h)).map((d) => d.connectorId)).toEqual(['notion']);
     // Gone from the table too (no stale row left behind).
     expect(await draftsOf('userA', 'agent1')).toEqual([]);
-  });
-
-  it('creating a PRIVATE connector leaves other people’s requests in place (no cross-tenant clear)', async () => {
-    const h = await makeHarness();
-    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
-      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
-    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
-      installInput({ ownerUserId: 'userB', agentId: 'agent2' }));
-
-    const up = await h.bus.call<UpsertInput, UpsertOutput>(
-      'connectors:upsert', h.ctx({ userId: 'userC' }),
-      sharedUpsert({ userId: 'userC', keyMode: 'personal', visibility: 'private' }),
-    );
-    expect(up.created).toBe(true);
-    for (const [owner, agent] of [['userA', 'agent1'], ['userB', 'agent2']] as const) {
-      expect((await draftsOf(owner, agent)).map((d) => d.connectorId)).toEqual(['linear']);
-    }
   });
 
   it('a failing clear never fails the create: upsert returns created:true and logs connectors_proposals_clear_failed', async () => {

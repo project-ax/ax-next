@@ -54,7 +54,7 @@ import {
   liveConnectorRowsForSystemSweep,
   markBootStepDone,
 } from './scope.js';
-import { validateCapabilities, validateKeyMode, validateVisibility, type ConnectorStore } from './store.js';
+import { validateCapabilities, validateKeyMode, type ConnectorStore } from './store.js';
 
 interface AuthUserLike {
   isAdmin?: unknown;
@@ -146,7 +146,6 @@ export async function sweepNonAdminConnectors(
         connector = {
           id: connectorId,
           keyMode: validateKeyMode(row.key_mode),
-          visibility: validateVisibility(row.visibility),
           capabilities: validateCapabilities(row.capabilities),
         };
       } catch (err) {
@@ -162,12 +161,7 @@ export async function sweepNonAdminConnectors(
 
       // The same answers `deleteConnector` gets after its soft-delete, asked
       // about every OTHER live row instead. Ids aren't unique across owners.
-      const idStillLive = await hasOtherLiveSameIdConnectorForSystemSweep(db, ownerUserId, connectorId, {
-        sharedOnly: false,
-      });
-      const sharedSurvivor =
-        connector.visibility === 'shared' &&
-        (await hasOtherLiveSameIdConnectorForSystemSweep(db, ownerUserId, connectorId, { sharedOnly: true }));
+      const idStillLive = await hasOtherLiveSameIdConnectorForSystemSweep(db, ownerUserId, connectorId);
 
       // Admin authority (slice-1 ruling), except for GLOBAL refs while another
       // live connector keeps the id: a global ref carries no owner, so that key
@@ -177,7 +171,7 @@ export async function sweepNonAdminConnectors(
       }
       const { failed } = await purgeConnectorState(bus, ctx, ownerUserId, connector, {
         purgeGlobal: !idStillLive,
-        purgeAgentSignIns: !sharedSurvivor,
+        purgeAgentSignIns: !idStillLive,
         agentSignInsSkipReason: 'same-id-survives',
         idStillLive,
         announce: false,

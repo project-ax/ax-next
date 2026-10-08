@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   deriveCredentialPlan,
-  requiresSharedKeyConsent,
   serviceTagForSlot,
   accountRef,
 } from '../credential-plan.js';
@@ -15,7 +14,7 @@ import type { Connector } from '../types.js';
 // where the key attaches:
 //   - keyMode 'personal'  → scope 'agent'  (each agent adds its own account:<svc> key)
 //   - keyMode 'workspace' → scope 'global' (one admin/company key, shared)
-// No credential gets a visibility flag — scope IS the reach.
+// No credential gets a public/private flag — scope IS the reach.
 // ---------------------------------------------------------------------------
 
 function connector(over: Partial<Connector> = {}): Connector {
@@ -25,7 +24,6 @@ function connector(over: Partial<Connector> = {}): Connector {
     description: '',
     usageNote: '',
     keyMode: 'personal',
-    visibility: 'private',
     capabilities: {
       allowedHosts: ['login.salesforce.com'],
       credentials: [{ slot: 'SF_TOKEN', kind: 'api-key' }],
@@ -224,28 +222,3 @@ describe('deriveCredentialPlan — edges', () => {
   });
 });
 
-describe('requiresSharedKeyConsent — the act-as-you gate', () => {
-  it('workspace keyMode requires consent (one key, every allowed agent spends it)', () => {
-    expect(requiresSharedKeyConsent(connector({ keyMode: 'workspace', visibility: 'private' }))).toBe(
-      true,
-    );
-  });
-
-  it('a shared-visibility connector requires consent (bound to a shared/team agent)', () => {
-    expect(requiresSharedKeyConsent(connector({ keyMode: 'personal', visibility: 'shared' }))).toBe(
-      true,
-    );
-  });
-
-  it('personal + private requires NO consent (you only ever act as yourself)', () => {
-    expect(requiresSharedKeyConsent(connector({ keyMode: 'personal', visibility: 'private' }))).toBe(
-      false,
-    );
-  });
-
-  it('workspace + shared still requires consent', () => {
-    expect(requiresSharedKeyConsent(connector({ keyMode: 'workspace', visibility: 'shared' }))).toBe(
-      true,
-    );
-  });
-});

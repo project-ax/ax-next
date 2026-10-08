@@ -49,7 +49,6 @@ export async function sweepStdioConnectors(
         const connector = {
           id: row.connector_id,
           keyMode: row.key_mode,
-          visibility: row.visibility,
           capabilities: shape.data,
         } as unknown as PurgeableConnector;
         // Global refs carry no owner. If another owner's live, non-stdio

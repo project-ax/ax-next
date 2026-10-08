@@ -241,7 +241,6 @@ const linear = {
   connectorId: 'linear',
   name: 'Linear',
   keyMode: 'personal',
-  visibility: 'shared',
   capabilities: caps(),
 };
 
@@ -440,19 +439,11 @@ describe('tool-permissions routes — authz', () => {
     });
   });
 
-  it('another admin still gets 404 for a PRIVATE connector they do not own', async () => {
+  it('404 for a connector id with no live definition', async () => {
     const h = await makeHarness();
     currentActor = { id: 'admin1', isAdmin: true };
-    await create(h, 'admin', { ...linear, visibility: 'private' });
-    currentActor = { id: 'admin2', isAdmin: true };
     expect((await getPerms(h, 'admin', 'linear')).status).toBe(404);
     expect((await putPerms(h, 'admin', 'linear', { verdicts: [] })).status).toBe(404);
-  });
-
-  it('404 for a private connector someone else owns', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'author', isAdmin: true };
-    await create(h, 'admin', { ...linear, visibility: 'private' });
     currentActor = { id: 'u2', isAdmin: false };
     expect((await getPerms(h, 'user', 'linear')).status).toBe(404);
   });

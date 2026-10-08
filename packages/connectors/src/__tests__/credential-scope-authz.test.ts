@@ -258,7 +258,6 @@ async function seedConnector(
     connectorId,
     name: connectorId,
     keyMode,
-    visibility: 'private',
     capabilities: caps(host, ...slots),
   });
 }
@@ -402,7 +401,6 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
         connectorId: 'zendesk',
         name: 'Zendesk',
         keyMode: 'workspace',
-        visibility: 'private',
         capabilities: caps('acme.zendesk.com', 'ZENDESK_API_KEY'),
       },
     });
@@ -469,7 +467,7 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     const h = await makeHarness();
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-personal', name: 'Shared personal',
-      keyMode: 'personal', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+      keyMode: 'personal', capabilities: caps('acme.example', 'TOKEN'),
     });
     // Each AGENT adds its own key; nobody can store one per person...
     await expectPersonLevelWriteRefused(h, 'root', 'account:shared-personal');
@@ -480,7 +478,7 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'root', 'account:shared-personal'));
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-workspace', name: 'Shared workspace',
-      keyMode: 'workspace', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+      keyMode: 'workspace', capabilities: caps('acme.example', 'TOKEN'),
     });
     await setCompanyKey(h, 'account:shared-workspace', COMPANY_KEY);
     expect(await getKey(h, 'victim', 'account:shared-workspace')).toBe(COMPANY_KEY);

@@ -20,8 +20,8 @@ import {
 // direct API) must live ONLY inside the `capabilities` spec object — never as a
 // FIRST-CLASS field on a hook payload. This test pins that: a regression that
 // hoisted `transport` / `command` / `stdio` / `url` / `mcp` (or `mcpServers`)
-// to a top-level hook field would fail here. `keyMode` / `visibility` /
-// `usageNote` are storage-agnostic and explicitly allowed.
+// to a top-level hook field would fail here. `keyMode` / `usageNote` are
+// storage-agnostic and explicitly allowed.
 // ---------------------------------------------------------------------------
 
 const LEAKY_FIRST_CLASS_FIELDS = [
@@ -94,24 +94,25 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
 
   it('the storage-agnostic fields ARE present on the connector get shape', () => {
     const keys = topLevelKeysOutsideCapabilities(GetOutputSchema);
-    // keyMode / visibility / usageNote are fine (design: storage-agnostic).
+    // keyMode / usageNote are fine (design: storage-agnostic).
     expect(keys).toContain('keyMode');
-    expect(keys).toContain('visibility');
     expect(keys).toContain('usageNote');
+    // SIGNINS-9 — every connector is shared: no visibility field on any shape.
+    expect(keys).not.toContain('visibility');
     // capabilities IS a top-level key (it just isn't descended into).
     expect(keys).toContain('capabilities');
   });
 
-  it('the resolve credential plan + consent gate are storage-agnostic (TASK-96)', () => {
-    // The derived credentialPlan exposes only neutral fields — slot / scope / ref
-    // — and the consent gate is a boolean. `scope` carries the neutral
+  it('the resolve credential plan is storage-agnostic (TASK-96)', () => {
+    // The derived credentialPlan exposes only neutral fields — slot / scope / ref. `scope` carries the neutral
     // credential-scope contract (`agent`/`global`), NOT backend vocabulary, so it
     // is NOT in the leaky-field list above. The plan never surfaces a backing
     // mechanism (transport/command/url/mcp) — that already lives only inside
     // capabilities, which the walk above pins for the resolve shape too.
     const keys = topLevelKeysOutsideCapabilities(ResolveOutputSchema);
     expect(keys).toContain('credentialPlan');
-    expect(keys).toContain('requiresSharedKeyConsent');
+    // SIGNINS-9 — the shared-key consent flag left `connectors:resolve`.
+    expect(keys).not.toContain('requiresSharedKeyConsent');
     // usageNote is storage-agnostic, model-facing text (the orchestrator folds
     // it into the connector's SKILL.md body) — resolve MUST carry it.
     expect(keys).toContain('usageNote');

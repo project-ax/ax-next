@@ -7,7 +7,6 @@ import {
   type Connector,
   type ConnectorSummary,
   type KeyMode,
-  type Visibility,
 } from './types.js';
 import type { ConnectorDatabase, ConnectorsRow } from './migrations.js';
 import { availableConnectors } from './scope.js';
@@ -17,7 +16,7 @@ type StoredConnectorRow = Selectable<ConnectorsRow>;
 
 // ---------------------------------------------------------------------------
 // Validation helpers — caller-supplied values are bounded BEFORE INSERT. The
-// DB has CHECKs on key_mode / visibility; everything else (lengths, the JSONB
+// DB has a CHECK on key_mode; everything else (lengths, the JSONB
 // capabilities shape) is enforced here because length limits and structural
 // shape don't translate cleanly to SQL, and we want a structured
 // invalid-payload error close to the field rather than a raw pg error at write.
@@ -126,13 +125,6 @@ export function validateSlotName(value: unknown): string {
   return value;
 }
 
-export function validateVisibility(value: unknown): Visibility {
-  if (value !== 'private' && value !== 'shared') {
-    throw invalid("visibility must be 'private' or 'shared'");
-  }
-  return value;
-}
-
 /**
  * Parse the mechanism-agnostic capability spec against the canonical schema
  * (single source of truth in @ax/skills-parser, re-declared as zod locally per
@@ -187,7 +179,6 @@ function rowToConnector(row: StoredConnectorRow): Connector {
     description: row.description,
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
-    visibility: validateVisibility(row.visibility),
     capabilities: validateCapabilities(row.capabilities),
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
@@ -204,22 +195,24 @@ function rowToSummary(
     description: row.description,
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
-    visibility: validateVisibility(row.visibility),
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
-/** Prefer the caller's definition. Ambiguous shared ids fail closed. */
+/**
+ * Prefer the caller's definition. An id with more than one live row (only a
+ * legacy duplicate the SIGNINS-9 boot step did not resolve) fails closed.
+ */
 function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
   return rows.find((row) => row.owner_user_id === userId) ??
     (rows.length === 1 ? rows[0]! : null);
 }
 
 /**
- * Every row `userId` can resolve (own first, otherwise an unambiguous shared
- * one — the same pick `getAvailableById` makes), newest-updated first. Shared
+ * Every row `userId` can resolve (own first, otherwise an unambiguous one —
+ * the same pick `getAvailableById` makes), newest-updated first. Shared
  * by `listForUser` and `listAvailable` so the two can never disagree about
  * which record a connector id means for this person.
  */
@@ -276,12 +269,11 @@ export interface UpsertArgs {
   description: string;
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   capabilities: Capabilities;
   /**
    * Opt-in. When true and no live row exists for (userId, connectorId), refuse
-   * with `connector-id-taken` if ANY other owner holds a live row (any
-   * visibility) with this id. Tombstones never block.
+   * with `connector-id-taken` if ANY other owner holds a live row with this
+   * id. Tombstones never block.
    */
   requireUniqueId?: boolean;
   /**
@@ -306,7 +298,7 @@ export interface ConnectorStore {
    * reported through `onSkip` rather than failing the whole listing.
    */
   listAllLive(onSkip: (connectorId: string, err: unknown) => void): Promise<LiveConnectorRow[]>;
-  /** Owned and unambiguous shared definitions, newest-updated first. */
+  /** Owned and unambiguous live definitions, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
   /**
    * TASK-808, TRANSITIONAL — every LIVE row still carrying the retired
@@ -330,44 +322,31 @@ export interface ConnectorStore {
    * owner, so a caller can derive owner-keyed values (tool namespaces).
    */
   listAvailable(userId: string): Promise<AvailableConnector[]>;
-  /** Read-only lookup: own definition first, otherwise an unambiguous shared one. */
+  /** Read-only lookup: own definition first, otherwise an unambiguous live one. */
   getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /**
-   * TASK-711 — the connector `userId` resolves for this id, but ONLY when it is
-   * the one live SHARED definition with that id (exactly one shared row exists,
-   * and `getAvailableById` picks that row for this user rather than their own
-   * private one). This is "the connector every member of a team agent sees
-   * under this id": the only connector a credential stored ON an agent can
-   * belong to. Null otherwise (no shared row, two or more, or a private row of
-   * the user's own shadows the shared one).
+   * TASK-711, SIGNINS-9 — the connector `userId` resolves for this id, but ONLY
+   * when it is the one live definition with that id (exactly one live row
+   * exists, and it is the row `getAvailableById` picks). This is "the
+   * connector every member of a team agent sees under this id": the only
+   * connector a credential stored ON an agent can belong to. Null otherwise
+   * (no live row, or two or more — a legacy duplicate).
    */
-  getSoleSharedById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
+  getSoleLiveById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /**
-   * Does any LIVE shared row (any owner) carry `connectorId`? Call after a
-   * soft-delete to learn whether a surviving shared definition still reads the
-   * id's agent-scope sign-ins. Internal: unscoped, never reachable from a hook.
-   */
-  hasLiveSharedById(connectorId: string): Promise<boolean>;
-  /**
-   * Slice 2b — does any LIVE row of ANY owner and ANY visibility carry
-   * `connectorId`? Call after a soft-delete to learn whether the id is still
-   * in use (`connectors:deleted`'s `idStillLive`). Internal: unscoped.
+   * Slice 2b — does any LIVE row of ANY owner carry `connectorId`? Call after
+   * a soft-delete to learn whether the id is still in use
+   * (`connectors:deleted`'s `idStillLive`) and whether a surviving definition
+   * still reads the id's agent-scope sign-ins. Internal: unscoped.
    */
   hasLiveById(connectorId: string): Promise<boolean>;
   /**
    * Slice 2b — the subset of `connectorIds` that at least one LIVE row (any
-   * owner, any visibility) carries, deduped. Callers validate and cap the list
-   * (`connectors:live-ids`). Internal: unscoped, answers only ids it is given.
+   * owner) carries, deduped, in the caller's order. Callers validate and cap
+   * the list (`connectors:live-ids`). Internal: unscoped, answers only ids it
+   * is given.
    */
   liveIds(connectorIds: readonly string[]): Promise<string[]>;
-  /**
-   * Slice 2c — the subset of `connectorIds` that at least one LIVE **shared**
-   * row (any owner) carries, deduped, in the caller's order. The batched form
-   * of `hasLiveSharedById`: the admin proposal queue hides a request only
-   * when its id is live as a shared connector. Internal: unscoped, answers
-   * only ids it is given.
-   */
-  liveSharedIds(connectorIds: readonly string[]): Promise<string[]>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -424,32 +403,19 @@ export function createConnectorStore(
       };
     },
 
-    async getSoleSharedById(userId, connectorId) {
+    async getSoleLiveById(userId, connectorId) {
       const rows = await availableConnectors(db, { userId })
         .where('connector_id', '=', connectorId)
         .execute();
-      // `availableConnectors` returns every live shared row (any owner) plus the
-      // caller's own rows, so this is the complete set of shared rows for the id.
-      const shared = rows.filter((row) => row.visibility === 'shared');
-      if (shared.length !== 1) return null;
+      // `availableConnectors` returns every live row (any owner), so this is
+      // the complete set of live rows for the id.
+      if (rows.length !== 1) return null;
       const picked = selectAvailableRow(rows, userId);
-      if (picked === null || picked !== shared[0]) return null;
+      if (picked === null || picked !== rows[0]) return null;
       return {
         connector: { ...rowToConnector(picked), canEdit: picked.owner_user_id === userId },
         ownerUserId: picked.owner_user_id,
       };
-    },
-
-    async hasLiveSharedById(connectorId) {
-      const row = await db
-        .selectFrom('connectors_v1_connectors')
-        .select('owner_user_id')
-        .where('connector_id', '=', connectorId)
-        .where('visibility', '=', 'shared')
-        .where('deleted_at', 'is', null)
-        .limit(1)
-        .executeTakeFirst();
-      return row !== undefined;
     },
 
     async hasLiveById(connectorId) {
@@ -478,21 +444,6 @@ export function createConnectorStore(
       return wanted.filter((id) => live.has(id));
     },
 
-    async liveSharedIds(connectorIds) {
-      const wanted = [...new Set(connectorIds)];
-      if (wanted.length === 0) return [];
-      const rows = await db
-        .selectFrom('connectors_v1_connectors')
-        .select('connector_id')
-        .distinct()
-        .where('connector_id', 'in', wanted)
-        .where('visibility', '=', 'shared')
-        .where('deleted_at', 'is', null)
-        .execute();
-      const live = new Set(rows.map((row) => row.connector_id));
-      return wanted.filter((id) => live.has(id));
-    },
-
     async getByIdNotDeleted(userId, connectorId) {
       const row = await db
         .selectFrom('connectors_v1_connectors')
@@ -514,7 +465,6 @@ export function createConnectorStore(
             description: args.description,
             usage_note: args.usageNote,
             key_mode: args.keyMode,
-            visibility: args.visibility,
             capabilities: sql<unknown>`${JSON.stringify(args.capabilities)}::jsonb`,
             updated_at: now,
           })
@@ -589,7 +539,6 @@ export function createConnectorStore(
         description: args.description,
         usage_note: args.usageNote,
         key_mode: args.keyMode,
-        visibility: args.visibility,
         capabilities: capabilitiesJson,
         // Resurrect a tombstoned row on upsert — re-creating a deleted
         // connector under the same id is allowed.
@@ -607,7 +556,6 @@ export function createConnectorStore(
           description: args.description,
           usage_note: args.usageNote,
           key_mode: args.keyMode,
-          visibility: args.visibility,
           capabilities: capabilitiesJson,
           requires_attachment: true,
           deleted_at: null,

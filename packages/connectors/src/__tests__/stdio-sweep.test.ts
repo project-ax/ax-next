@@ -96,11 +96,11 @@ async function captureLogs<T>(fn: () => Promise<T>): Promise<{ result: T; logs: 
   }
 }
 
-async function insertConnector(owner: string, id: string, capsJson: string, opts: { keyMode?: string; visibility?: string; deleted?: boolean } = {}) {
+async function insertConnector(owner: string, id: string, capsJson: string, opts: { keyMode?: string; deleted?: boolean } = {}) {
   await sql(
-    `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, visibility, capabilities, deleted_at)
-     VALUES ($1, $2, $2, $3, $4, $5::jsonb, $6)`,
-    [owner, id, opts.keyMode ?? 'personal', opts.visibility ?? 'private', capsJson, opts.deleted ? new Date() : null],
+    `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, capabilities, deleted_at)
+     VALUES ($1, $2, $2, $3, $4::jsonb, $5)`,
+    [owner, id, opts.keyMode ?? 'personal', capsJson, opts.deleted ? new Date() : null],
   );
 }
 
@@ -138,8 +138,9 @@ describe('@ax/connectors stdio sweep', () => {
     expect(events).toEqual([
       { connectorId: 'localtool', toolNamespaces: deriveToolNamespaces('userA', { id: 'localtool', capabilities: { mcpServers: [stdioServer as never] } }), idStillLive: false },
     ]);
-    // A personal private connector has no global key and no per-person rows
-    // (its keys would live on agents, and only a SHARED definition owns those).
+    // A personal connector has no global key and no per-person rows (its keys
+    // live on agents, which `credentials:purge-account` reaches; this capture
+    // records `credentials:delete` only).
     expect(purged).toEqual([]);
 
     // Regression: one stdio row used to make the whole list throw.
@@ -147,19 +148,19 @@ describe('@ax/connectors stdio sweep', () => {
     expect(list.connectors.map((c) => c.id)).toEqual(['gdrive']);
   });
 
-  it('purges a shared workspace connector\'s GLOBAL key (system cleanup)', async () => {
+  it('purges a workspace connector\'s GLOBAL key (system cleanup)', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     const purged: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
     await boot([capturePlugin([], purged)]);
     expect(purged).toEqual([{ scope: 'global', ownerId: null, ref: 'account:teamtool' }]);
   });
 
-  it('purges every agent\'s sign-ins for a sole shared stdio connector (system cleanup)', async () => {
+  it('purges every agent\'s sign-ins for a sole stdio connector (system cleanup)', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     const accountPurges: unknown[] = [];
     await boot([capturePlugin([], [], accountPurges)]);
     // Agent scope only: nothing is stored per person (slice 5).
@@ -169,8 +170,8 @@ describe('@ax/connectors stdio sweep', () => {
   it('keeps agents\' sign-ins when another admin\'s live shared http connector keeps the id', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
-    await insertConnector('admin2', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
+    await insertConnector('admin2', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     const events: ConnectorDeletedEvent[] = [];
     const accountPurges: unknown[] = [];
     await boot([capturePlugin(events, [], accountPurges)]);
@@ -184,7 +185,7 @@ describe('@ax/connectors stdio sweep', () => {
   it('keeps the GLOBAL key when another owner\'s live non-stdio connector shares the id', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     await insertConnector('userB', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     const events: ConnectorDeletedEvent[] = [];
     const purged: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
@@ -241,7 +242,7 @@ describe('@ax/connectors stdio sweep', () => {
   it('list-effective works for a user when an admin\'s SHARED stdio connector was stored', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([stdioServer]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([stdioServer]), { keyMode: 'workspace' });
     await insertConnector('userA', 'gdrive', caps([httpServer]));
 
     const h = await boot();
@@ -260,7 +261,7 @@ describe('@ax/connectors stdio sweep', () => {
   it('logs the skipped global purge for a same-id survivor (no per-person key to purge)', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     await insertConnector('userB', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
     const purged: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
     const { logs } = await captureLogs(() => boot([capturePlugin([], purged)]));

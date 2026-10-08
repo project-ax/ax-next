@@ -11,10 +11,7 @@ import {
   runConnectorsMigration,
   type ConnectorDatabase,
 } from './migrations.js';
-import {
-  deriveCredentialPlan,
-  requiresSharedKeyConsent,
-} from './credential-plan.js';
+import { deriveCredentialPlan } from './credential-plan.js';
 import {
   assertConnectorIdCreatable,
   createConnectorStore,
@@ -26,7 +23,6 @@ import {
   validateName,
   validateOptionalText,
   validateSlotName,
-  validateVisibility,
   type ConnectorStore,
 } from './store.js';
 import {
@@ -38,6 +34,7 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
+import { makeAllConnectorsShared } from './all-shared-step.js';
 import { listEffectiveConnectors } from './effective-connectors.js';
 import { requireUserId } from './input-guards.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
@@ -112,7 +109,7 @@ const PLUGIN_NAME = '@ax/connectors';
 //
 // Registers the five `connectors:*` service hooks. The connector is the
 // first-class ACCESS object (design "Connectors as a first-class concept") —
-// `{ id, name, description, usageNote, keyMode, visibility } + Capabilities`,
+// `{ id, name, description, usageNote, keyMode } + Capabilities`,
 // backed by its own `connectors_v1_*` table (Invariant I4 — one source of
 // truth).
 //
@@ -306,6 +303,17 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       await sweepStdioConnectors(db, bus, initCtx);
       const localStore = createConnectorStore(db);
       _store = localStore;
+      // SIGNINS-9 — every connector is shared: once, dedupe ids held by more
+      // than one live row and flip private rows to shared (all-shared-step.ts).
+      // Runs before the non-admin sweep so that sweep sees one row per id.
+      // The step catches its own errors; this guard only keeps boot alive.
+      try {
+        await makeAllConnectorsShared(db, initCtx.logger);
+      } catch (err) {
+        initCtx.logger.warn('connectors_all_shared_failed', {
+          name: err instanceof Error ? err.name : typeof err,
+        });
+      }
       // Slice 2b — only admins define connectors: remove the ones people made,
       // once, with full delete cleanup (non-admin-sweep.ts). Skips entirely
       // without an `auth:get-user` provider. Never fails the boot.
@@ -662,7 +670,6 @@ async function upsertConnector(
     USAGE_NOTE_MAX,
   );
   const keyMode = validateKeyMode(input.keyMode);
-  const visibility = validateVisibility(input.visibility);
   const capabilities = validateCapabilities(input.capabilities);
   // TASK-712 — an OAuth slot's clientSecretRef may name only this connector's own
   // account key. Checked on WRITE only (the read schema must keep parsing a legacy
@@ -754,7 +761,6 @@ async function upsertConnector(
     description,
     usageNote,
     keyMode,
-    visibility,
     capabilities,
     requireUniqueId: input.requireUniqueId === true,
     createOnly: input.createOnly === true,
@@ -763,14 +769,13 @@ async function upsertConnector(
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
   }
-  // Slice 2c — approval is creation. A new SHARED connector resolves every
-  // pending agent request for its id, whoever asked: it is what they asked for.
-  // A PRIVATE one resolves nobody else's request, so it must not touch other
-  // people's rows (cross-tenant). An edit leaves them (the queue already hides
-  // an id that is live). Best-effort: the connector is committed, and a
-  // leftover draft is still hidden from the queue and refused by the install
-  // dedup, so a failure only logs.
-  if (created && connector.visibility === 'shared') {
+  // Slice 2c — approval is creation. A new connector (every connector is
+  // shared, SIGNINS-9) resolves every pending agent request for its id,
+  // whoever asked: it is what they asked for. An edit leaves them (the queue
+  // already hides an id that is live). Best-effort: the connector is
+  // committed, and a leftover draft is still hidden from the queue and refused
+  // by the install dedup, so a failure only logs.
+  if (created) {
     try {
       const { cleared } = await authored.clearAllById(connectorId);
       if (cleared > 0) {
@@ -972,7 +977,7 @@ async function announceNamespaceChange(
 
 /** Exported for tests only (a store seam the hook path cannot reach). */
 export async function deleteConnector(
-  store: Pick<ConnectorStore, 'getByIdNotDeleted' | 'softDelete' | 'hasLiveSharedById' | 'hasLiveById'>,
+  store: Pick<ConnectorStore, 'getByIdNotDeleted' | 'softDelete' | 'hasLiveById'>,
   bus: HookBus,
   ctx: AgentContext,
   input: DeleteInput,
@@ -990,16 +995,16 @@ export async function deleteConnector(
   // announces nothing.
   if (deleted && connector !== null) {
     // Agent sign-ins are keyed `account:<id>` with no owner: wipe them only for
-    // an authorized (admin) delete of a SHARED connector AND when no other live
-    // shared connector with this id survives to read them. Checked AFTER the
-    // soft-delete. The row is already gone, so a failing check must not reject
-    // the delete (a retry would find nothing to purge): log it and keep the
-    // rows — unknown means "maybe a survivor".
+    // an authorized (admin) delete AND when no other live connector with this
+    // id survives to read them. Checked AFTER the soft-delete. The row is
+    // already gone, so a failing check must not reject the delete (a retry
+    // would find nothing to purge): log it and keep the rows — unknown means
+    // "maybe a survivor".
     let survivor = true;
     let survivorCheckFailed = false;
-    if (connector.visibility === 'shared' && input.purgeGlobal === true) {
+    if (input.purgeGlobal === true) {
       try {
-        survivor = await store.hasLiveSharedById(connectorId);
+        survivor = await store.hasLiveById(connectorId);
       } catch (err) {
         survivorCheckFailed = true;
         ctx.logger.warn('connectors_delete_survivor_check_failed', {
@@ -1008,10 +1013,9 @@ export async function deleteConnector(
         });
       }
     }
-    // Slice 2b — is the id still in use by ANY live connector (any owner, any
-    // visibility)? Same post-soft-delete rule: a failed check never rejects
-    // the delete, and unknown means "still live" (subscribers keep id-keyed
-    // state).
+    // Slice 2b — is the id still in use by ANY live connector (any owner)?
+    // Same post-soft-delete rule: a failed check never rejects the delete, and
+    // unknown means "still live" (subscribers keep id-keyed state).
     let idStillLive = true;
     try {
       idStillLive = await store.hasLiveById(connectorId);
@@ -1094,9 +1098,8 @@ async function resolveConnector(
   // TASK-96 — reach-by-attachment: the derived credentialPlan maps the
   // connector's keyMode to the credential SCOPE each slot's key attaches to
   // (`personal` → `agent`, each agent's own key; `workspace` → `global` company key) and
-  // the deterministic `account:<service>` ref. requiresSharedKeyConsent gates the
-  // "act as you" consent moment (workspace mode or a shared connector). Reach
-  // derives PURELY from this scope — no visibility flag on the credential itself.
+  // the deterministic `account:<service>` ref. Reach derives PURELY from this
+  // scope — a credential carries no public/private flag of its own.
   // The plan is also what the vault consults to decide who may READ a `global`
   // key (TASK-697, credential-authz.ts): only an admin's workspace-keyed connector.
   //
@@ -1109,7 +1112,6 @@ async function resolveConnector(
     usageNote: connector.usageNote,
     capabilities: connector.capabilities,
     credentialPlan: deriveCredentialPlan(connector),
-    requiresSharedKeyConsent: requiresSharedKeyConsent(connector),
     // TASK-734 — keyed by the ROW owner (`ownerUserId`), NOT the
     // requesting `userId`: a shared connector resolved by a non-owner must
     // yield the same namespace the owner gets, or one connector would present
@@ -1200,14 +1202,13 @@ async function installAuthoredConnector(
   );
   const keyMode = validateKeyMode(input.keyMode);
 
-  // Re-propose dedup (TASK-114, reshaped in slice 2c). If a live SHARED
-  // connector already carries this id, the install is a NO-OP: we write no
-  // draft and report `active`, so the model learns it is already available (a
-  // person adds it to their agent from Connectors). Only SHARED counts: a
-  // private connector of someone else is nothing the proposer can add, and
-  // answering `active` for it would leak that the id is taken. Pure id match.
+  // Re-propose dedup (TASK-114, reshaped in slice 2c). If a live connector
+  // already carries this id, the install is a NO-OP: we write no draft and
+  // report `active`, so the model learns it is already available (a person
+  // adds it to their agent from Connectors). Every connector is shared
+  // (SIGNINS-9), so any live row counts. Pure id match.
   // SECURITY: grants zero new reach — it writes nothing.
-  if (await registry.hasLiveSharedById(connectorId)) {
+  if (await registry.hasLiveById(connectorId)) {
     return { connectorId, status: 'active' };
   }
 
@@ -1227,10 +1228,9 @@ async function installAuthoredConnector(
 
 /**
  * Slice 2c — the admin proposal queue: every owner's pending drafts, minus any
- * whose id is already live as a SHARED connector (any owner) — everyone can
- * already add that one, so there is nothing left to approve. A draft whose id
- * is only PRIVATELY live stays listed, so an admin can still see and dismiss
- * it. One batched shared-liveness lookup.
+ * whose id is already live (any owner) — everyone can already add that one
+ * (every connector is shared, SIGNINS-9), so there is nothing left to approve.
+ * One batched liveness lookup.
  */
 async function listAuthoredPendingAll(
   store: AuthoredConnectorsStore,
@@ -1245,7 +1245,7 @@ async function listAuthoredPendingAll(
     });
   });
   if (pending.length === 0) return { drafts: [] };
-  const live = new Set(await registry.liveSharedIds(pending.map((d) => d.connectorId)));
+  const live = new Set(await registry.liveIds(pending.map((d) => d.connectorId)));
   return {
     drafts: pending
       .filter((d) => !live.has(d.connectorId))

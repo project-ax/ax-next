@@ -154,11 +154,11 @@ const tokenSlot = [{ slot: 'TOKEN', kind: 'api-key' }];
 const caps = (credentials: unknown[] = tokenSlot) =>
   JSON.stringify({ allowedHosts: [], credentials, mcpServers: [httpServer], packages: { npm: [], pypi: [] } });
 
-async function insertConnector(owner: string, id: string, opts: { keyMode?: string; visibility?: string; capsJson?: string } = {}) {
+async function insertConnector(owner: string, id: string, opts: { keyMode?: string; capsJson?: string } = {}) {
   await sql(
-    `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
-     VALUES ($1, $2, $2, $3, $4, $5::jsonb)`,
-    [owner, id, opts.keyMode ?? 'personal', opts.visibility ?? 'private', opts.capsJson ?? caps()],
+    `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, capabilities)
+     VALUES ($1, $2, $2, $3, $4::jsonb)`,
+    [owner, id, opts.keyMode ?? 'personal', opts.capsJson ?? caps()],
   );
 }
 
@@ -193,19 +193,20 @@ afterEach(async () => {
   await sql('DROP TABLE IF EXISTS connectors_v1_boot_steps');
 });
 
+// This sweep's marker only: the SIGNINS-9 all-shared step records its own.
 const doneMarkers = async () =>
-  (await sql('SELECT name FROM connectors_v1_boot_steps')).map((r) => r['name']);
+  (await sql("SELECT name FROM connectors_v1_boot_steps WHERE name <> 'all-connectors-shared'")).map((r) => r['name']);
 
 afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
 describe('@ax/connectors boot removal of non-admin connectors', () => {
-  it("keeps an admin's connectors; soft-deletes a non-admin's private and shared ones with full cleanup", async () => {
+  it("keeps an admin's connectors; soft-deletes a non-admin's with full cleanup", async () => {
     await bootAndClose();
-    await insertConnector('admin1', 'admintool', { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'admintool', { keyMode: 'workspace' });
     await insertConnector('userB', 'mytool');
-    await insertConnector('userB', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
 
     const events: ConnectorDeletedEvent[] = [];
     const purged: Purge[] = [];
@@ -219,13 +220,17 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
       ['userB', 'mytool', false],
       ['userB', 'teamtool', false],
     ]);
-    // Purge with full authority: the shared workspace key at GLOBAL scope. The
-    // personal private `mytool` has no row to delete (nothing per person).
+    // Purge with full authority: the workspace key at GLOBAL scope. The
+    // personal `mytool` has no global row to delete (nothing per person).
     expect(purged).toEqual([
       { scope: 'global', ownerId: null, ref: 'account:teamtool' },
     ]);
-    // Only the SHARED connector's agents' sign-ins — agent scope, never user.
-    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
+    // Every connector is shared (SIGNINS-9): each one's agents' sign-ins go —
+    // agent scope, never user.
+    expect(accountPurges).toEqual([
+      { connectorId: 'mytool', scopes: ['agent'] },
+      { connectorId: 'teamtool', scopes: ['agent'] },
+    ]);
     expect(events).toEqual([
       { connectorId: 'mytool', toolNamespaces: ns('userB', 'mytool'), idStillLive: false },
       { connectorId: 'teamtool', toolNamespaces: ns('userB', 'teamtool'), idStillLive: false },
@@ -279,10 +284,10 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     ]);
   });
 
-  it("keeps the GLOBAL key and agents' sign-ins when an admin's live shared connector keeps the id", async () => {
+  it("keeps the GLOBAL key and agents' sign-ins when an admin's live connector keeps the id", async () => {
     await bootAndClose();
-    await insertConnector('admin1', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
-    await insertConnector('userB', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin1', 'teamtool', { keyMode: 'workspace' });
+    await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
     const events: ConnectorDeletedEvent[] = [];
     const purged: Purge[] = [];
     const accountPurges: unknown[] = [];
@@ -296,10 +301,10 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
   });
 
-  it('two non-admins with the same shared id: the last one removed purges, once', async () => {
+  it('two non-admins with the same id: the last one removed purges, once', async () => {
     await bootAndClose();
-    await insertConnector('userB', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
-    await insertConnector('userC', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
+    await insertConnector('userC', 'teamtool', { keyMode: 'workspace' });
     const events: ConnectorDeletedEvent[] = [];
     const accountPurges: unknown[] = [];
     await boot([authPlugin({ userB: 'user', userC: 'user' }), capturePlugin(events, [], accountPurges)]);
@@ -312,17 +317,6 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
       ['teamtool', true],
       ['teamtool', false],
     ]);
-  });
-
-  it('a private same-id survivor does not block the agent sign-ins purge', async () => {
-    await bootAndClose();
-    await insertConnector('admin1', 'teamtool');
-    await insertConnector('userB', 'teamtool', { visibility: 'shared' });
-    const events: ConnectorDeletedEvent[] = [];
-    const accountPurges: unknown[] = [];
-    await boot([authPlugin({ admin1: 'admin', userB: 'user' }), capturePlugin(events, [], accountPurges)]);
-    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
-    expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
   });
 
   it('is idempotent: a second boot removes, purges and announces nothing', async () => {
@@ -410,7 +404,7 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
 
   it("removes the platform 'system' owner's connectors too (owner decision 2026-10-07) and completes", async () => {
     await bootAndClose();
-    await insertConnector('system', 'skilltool', { visibility: 'shared' });
+    await insertConnector('system', 'skilltool');
     const events: ConnectorDeletedEvent[] = [];
     const accountPurges: unknown[] = [];
     // No auth user named 'system' (null) → non-admin, removed with full cleanup.
@@ -458,7 +452,7 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
 
   it('a failed credentials:purge-account keeps the row and the marker unwritten; the next boot finishes', async () => {
     await bootAndClose();
-    await insertConnector('userB', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
     const auth = { userB: 'user' as const };
 
     // Pin the ordering: the purge runs while the row is still live.
@@ -527,7 +521,8 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
       bootAndClose([authPlugin(auth), capturePlugin(events, purged, [], { failDelete: true, onPurge })]),
     );
     expect(purged).toEqual([{ scope: 'global', ownerId: null, ref: 'account:mytool' }]);
-    expect(liveDuringPurge).toEqual([true]);
+    // Both purges (the global key, then the agents' sign-ins) run while the row is live.
+    expect(liveDuringPurge).toEqual([true, true]);
     expect(await rows()).toEqual([['userB', 'mytool', true]]);
     expect(events).toEqual([]);
     expect(await doneMarkers()).toEqual([]);

@@ -8,7 +8,7 @@ import { deriveToolNamespaces } from './tool-namespace.js';
 import type { Capabilities, Connector, ConnectorDeletedEvent } from './types.js';
 
 /** What `purgeConnectorState` reads from a connector — no more. */
-export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode' | 'visibility'> & {
+export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode'> & {
   capabilities: Pick<Capabilities, 'credentials' | 'mcpServers'>;
 };
 
@@ -31,13 +31,13 @@ export async function purgeConnectorState(
   connector: PurgeableConnector,
   opts: {
     purgeGlobal: boolean;
-    /** Caller-computed: authorized AND no other live shared same-id connector survives. */
+    /** Caller-computed: authorized AND no other live same-id connector survives. */
     purgeAgentSignIns: boolean;
     /** Why `purgeAgentSignIns` is false (for the skip log). */
     agentSignInsSkipReason: 'not-authorized' | 'same-id-survives' | 'survivor-check-failed';
     /**
      * Slice 2b — caller-computed AFTER the row is removed: does any live
-     * connector (any owner, any visibility) still carry this id? A failed check
+     * connector (any owner) still carry this id? A failed check
      * must be passed as `true` (keep data when unsure). Rides the
      * `connectors:deleted` event.
      */
@@ -77,18 +77,18 @@ export async function purgeConnectorState(
   if (bus.hasService('credentials:delete')) {
     const purgeGlobal = opts.purgeGlobal;
     // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
-    // is the connector's own key too: the editor stores it at global for a
-    // shared connector. Only a SHARED connector's secret is ever read at global
-    // (credential-authz), so only a shared connector's delete may purge it
-    // there: a private connector that happens to share the id must not wipe the
-    // shared one's.
+    // is the connector's own key too: the editor stores it at global. Like the
+    // plan's global refs it is owner-independent, so it is purged only with
+    // `purgeGlobal` (which callers withhold while another same-id connector
+    // survives). SIGNINS-9: every connector is shared, so there is no private
+    // definition whose delete must be kept away from it.
     const clientSecretRef = oauthClientSecretRefFor(connectorId);
     const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
     const globalRefs: string[] = [
       ...deriveCredentialPlan(connector)
         .filter((entry) => entry.scope === 'global')
         .map((entry) => entry.ref),
-      ...(ownsClientSecret && connector.visibility === 'shared' ? [clientSecretRef] : []),
+      ...(ownsClientSecret ? [clientSecretRef] : []),
     ];
     for (const ref of globalRefs) {
       if (!purgeGlobal) {
@@ -112,17 +112,16 @@ export async function purgeConnectorState(
 
   // Agent-owned sign-ins (2026-10-07 design): every agent's sign-in / per-agent
   // key for this connector lives at AGENT scope under `account:<id>[:SLOT]`.
-  // Only a SHARED connector's delete may purge them: agent-scope rows are
-  // readable only for the sole shared definition (TASK-711), so a private
-  // connector that happens to share the id must never wipe them. Best-effort,
-  // like the credential purge above. Requires admin authority (purgeGlobal) and
-  // no surviving same-id shared connector (ids are not unique across owners).
-  if (connector.visibility === 'shared' && !opts.purgeAgentSignIns) {
+  // Best-effort, like the credential purge above. Requires admin authority
+  // (purgeGlobal) and no surviving same-id connector (ids are not unique across
+  // owners): the survivor would still read them. SIGNINS-9: every connector is
+  // shared, so every delete is a candidate.
+  if (!opts.purgeAgentSignIns) {
     ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
       connectorId,
       reason: opts.agentSignInsSkipReason,
     });
-  } else if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
+  } else if (bus.hasService('credentials:purge-account')) {
     const scopes: Array<'agent'> = ['agent'];
     try {
       const out = await bus.call<

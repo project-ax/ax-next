@@ -63,7 +63,6 @@ export type {
   ToolLabelsOutput,
   UpsertInput,
   UpsertOutput,
-  Visibility,
 } from './types.js';
 export { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
 export { runConnectorsMigration } from './migrations.js';
@@ -92,7 +91,6 @@ export { scopedConnectors, scopedAuthoredConnectors } from './scope.js';
 export type { ConnectorScope, AuthoredConnectorScope } from './scope.js';
 export {
   deriveCredentialPlan,
-  requiresSharedKeyConsent,
   serviceTagForSlot,
   accountRef,
 } from './credential-plan.js';
