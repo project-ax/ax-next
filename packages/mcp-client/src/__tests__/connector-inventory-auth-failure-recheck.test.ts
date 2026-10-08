@@ -24,7 +24,7 @@ function connector() {
       credentials: [{ slot: 'token', kind: 'oauth', server: 'main' }],
       mcpServers: [{ name: 'main', transport: 'http', url: 'https://mcp.linear.app/mcp' }],
     },
-    credentialPlan: [{ slot: 'token', ref: 'account:linear', scope: 'user', service: 'linear' }],
+    credentialPlan: [{ slot: 'token', ref: 'account:linear', scope: 'agent', service: 'linear' }],
     toolNamespaces: [{ server: 'main', toolNamespace: NS }],
   };
 }
