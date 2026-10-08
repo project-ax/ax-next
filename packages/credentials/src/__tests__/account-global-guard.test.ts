@@ -32,6 +32,7 @@ import {
 } from '@ax/core';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '../plugin.js';
+import { putLegacyRow } from './legacy-rows.js';
 
 const HOOK = 'credentials:authorize-global:account';
 const TEST_KEY_HEX = '42'.repeat(32);
@@ -202,16 +203,6 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
     });
   }
 
-  async function tombstone(
-    bus: HookBus,
-    scope: 'global' | 'user' | 'agent',
-    ownerId: string | null,
-    ref: string,
-  ): Promise<void> {
-    const ctx = makeAgentContext({ sessionId: 'seed', agentId: 'seed', userId: 'admin' });
-    await bus.call('credentials:delete', ctx, { scope, ownerId, ref });
-  }
-
   const get = (bus: HookBus, ctx: AgentContext, ref: string, userId: string) =>
     bus.call<{ ref: string; userId: string }, string>('credentials:get', ctx, { ref, userId });
 
@@ -263,15 +254,17 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
     expect(stub.calls).toEqual([{ userId: 'admin', ref: 'account:zendesk' }]);
   });
 
-  it('(d) PIN: a user-scope row at the same ref wins and the provider is NEVER called', async () => {
+  it('(d) slice 5: a person\'s own user-scope row at the same ref is never read; the gated global row answers', async () => {
+    // Before slice 5 the user row won and the provider was never called.
+    // Connector credentials no longer resolve from the person's own scope.
     const stub = authzStub(() => ({ allowed: true }));
     const bus = await makeBus({ stub });
     await seed(bus, 'global', null, 'account:zendesk', 'COMPANY-ZENDESK-KEY');
-    await seed(bus, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
+    await putLegacyRow(bus, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
     const { ctx } = recordingCtx({ userId: 'alice' });
 
-    expect(await get(bus, ctx, 'account:zendesk', 'alice')).toBe('ALICE-OWN-KEY');
-    expect(stub.calls).toEqual([]);
+    expect(await get(bus, ctx, 'account:zendesk', 'alice')).toBe('COMPANY-ZENDESK-KEY');
+    expect(stub.calls).toEqual([{ userId: 'alice', ref: 'account:zendesk' }]);
   });
 
   it('(e) PIN: an agent-scope row the AGENT gate opens resolves, and the GLOBAL provider is NEVER called', async () => {
@@ -397,26 +390,28 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
     expect(stub.calls).toEqual([]);
   });
 
-  it('(k) PIN + FAILS UNFIXED (deny half): a tombstoned user-scope row falls through to global exactly as before, and the global step is still gated', async () => {
+  it('(k) slice 5: a person\'s own user-scope row is not a fallback — the global step is still gated, and a denial is not-found', async () => {
     const allow = authzStub(() => ({ allowed: true }));
     const allowed = await makeBus({ stub: allow });
     await seed(allowed, 'global', null, 'account:zendesk', 'COMPANY-ZENDESK-KEY');
-    await seed(allowed, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
-    await tombstone(allowed, 'user', 'alice', 'account:zendesk');
-    const { ctx } = recordingCtx({ userId: 'alice' });
-    // Tombstone at user scope is skipped; the (allowed) global row is returned.
+    await putLegacyRow(allowed, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
+    const { ctx, lines } = recordingCtx({ userId: 'alice' });
+    // The user row is skipped; the (allowed) global row is returned.
     expect(await get(allowed, ctx, 'account:zendesk', 'alice')).toBe('COMPANY-ZENDESK-KEY');
     expect(allow.calls).toEqual([{ userId: 'alice', ref: 'account:zendesk' }]);
 
     const deny = authzStub(() => ({ allowed: false }));
     const denied = await makeBus({ stub: deny });
     await seed(denied, 'global', null, 'account:zendesk', 'COMPANY-ZENDESK-KEY');
-    await seed(denied, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
-    await tombstone(denied, 'user', 'alice', 'account:zendesk');
-    // Same tombstone, but the guard denies global -> not found (no leak).
-    await expect(get(denied, ctx, 'account:zendesk', 'alice')).rejects.toMatchObject({
-      code: 'credential-not-found',
-    });
+    await putLegacyRow(denied, 'user', 'alice', 'account:zendesk', 'ALICE-OWN-KEY');
+    // The guard denies global, and the person's own row does NOT answer instead.
+    const err = await get(denied, ctx, 'account:zendesk', 'alice').then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect((err as PluginError).code).toBe('credential-not-found');
+    expect((err as PluginError).message).not.toContain('ALICE-OWN-KEY');
+    expect(JSON.stringify(lines)).not.toContain('ALICE-OWN-KEY');
   });
 
   it('(l) FAILS UNFIXED (global answers before env): a denied global step still falls through to the operator-configured envFallback', async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, makeAgentContext, bootstrap } from '@ax/core';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '../plugin.js';
+import { putLegacyRow } from './legacy-rows.js';
 
 function memStoragePlugin() {
   const store = new Map<string, Uint8Array>();
@@ -77,6 +78,13 @@ async function makeHarness() {
 const enc = (s: string) => new TextEncoder().encode(s);
 
 async function put(bus: HookBus, scope: 'user' | 'agent' | 'global', ownerId: string | null, ref: string) {
+  // credentials:set refuses `account:` at user scope (slice 5), so a
+  // person-level connector credential — what a pre-slice-5 vault holds and
+  // what this purge exists to remove — is planted through the store seam.
+  if (scope === 'user' && ref.startsWith('account:')) {
+    await putLegacyRow(bus, scope, ownerId, ref, 'v');
+    return;
+  }
   await bus.call('credentials:set', ctx(), { scope, ownerId, ref, kind: 'api-key', payload: enc('v') });
 }
 

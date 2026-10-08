@@ -1,22 +1,25 @@
 /**
  * vault.test.ts — service-keyed credential vault (JIT P2, decision #13).
  *
- * The "vault" is NOT a new store — it is the existing user-scoped credential
- * store addressed by a new opaque ref shape `account:<service>`. This test
- * locks in the design property that falls out of the shared ref:
+ * The "vault" is NOT a new store — it is the existing credential store
+ * addressed by an opaque ref shape `account:<service>`. Since agent-owned
+ * sign-ins (slice 5) the entry lives on the AGENT (or globally), never on the
+ * person chatting: an agent must never act as that person. This test locks in
+ * the design property that falls out of the shared ref:
  *
- *   - One user-scoped `account:<service>` entry resolves for EVERY skill whose
+ *   - One agent-scoped `account:<service>` entry resolves for EVERY skill whose
  *     slot declares `account: <service>` (entered once, reused everywhere).
  *   - Revoking that single entry pulls the credential out from under every
  *     referencing skill ("revoke-pulls-from-all").
- *   - User scoping holds: one user's vault entry is invisible to another user.
+ *   - Agent scoping holds: one agent's vault entry is invisible to another
+ *     agent, and a person-level entry can't be written at all.
  *
- * No production code change — the property is a consequence of binding every
- * `account: linear` slot to the same `account:linear` ref. This guard fails if
- * a future change forks per-skill vault rows.
+ * This guard fails if a future change forks per-skill vault rows.
  *
  * Harness mirrors colon-refs.test.ts (in-memory storage + the real
- * credentials-store-db + credentials facade).
+ * credentials-store-db + credentials facade), plus an allow-all stand-in for
+ * the `credentials:authorize-agent:account` provider (@ax/connectors in
+ * production), without which no agent-scope `account:` row is readable.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -80,31 +83,49 @@ function memStoragePlugin() {
   };
 }
 
+function allowAgentAccountReads() {
+  const hook = 'credentials:authorize-agent:account';
+  return {
+    manifest: { name: 'agent-authz-stub', version: '0.0.0', registers: [hook], calls: [], subscribes: [] },
+    async init({ bus }: { bus: HookBus }) {
+      bus.registerService(hook, 'agent-authz-stub', async () => ({ allowed: true }));
+    },
+  };
+}
+
 const TEST_KEY_HEX = '42'.repeat(32);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 describe('service-keyed credential vault (account:<service>)', () => {
   let bus: HookBus;
-  const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'user-1' });
+  const ctx = makeAgentContext({ sessionId: 's', agentId: 'agent-1', userId: 'user-1' });
 
   beforeEach(async () => {
     process.env.AX_CREDENTIALS_KEY = TEST_KEY_HEX;
     bus = new HookBus();
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        allowAgentAccountReads(),
+        createCredentialsPlugin(),
+      ],
       config: {},
     });
   });
 
-  it('one vaulted entry resolves for two skills that both bind account:linear', async () => {
-    await bus.call('credentials:set', ctx, {
-      scope: 'user',
-      ownerId: 'user-1',
+  const vaultLinear = () =>
+    bus.call('credentials:set', ctx, {
+      scope: 'agent',
+      ownerId: 'agent-1',
       ref: 'account:linear',
       kind: 'api-key',
       payload: enc('lin-key'),
     });
+
+  it('one vaulted entry resolves for two skills that both bind account:linear', async () => {
+    await vaultLinear();
     // Skill A's slot binds account:linear; Skill B's DIFFERENT slot binds the
     // same ref. Both resolve the one stored key — that IS the shared vault.
     const a = await bus.call('credentials:get', ctx, { ref: 'account:linear', userId: 'user-1' });
@@ -114,16 +135,10 @@ describe('service-keyed credential vault (account:<service>)', () => {
   });
 
   it('revoking the vault entry removes it from under every referencing skill', async () => {
-    await bus.call('credentials:set', ctx, {
-      scope: 'user',
-      ownerId: 'user-1',
-      ref: 'account:linear',
-      kind: 'api-key',
-      payload: enc('lin-key'),
-    });
+    await vaultLinear();
     await bus.call('credentials:delete', ctx, {
-      scope: 'user',
-      ownerId: 'user-1',
+      scope: 'agent',
+      ownerId: 'agent-1',
       ref: 'account:linear',
     });
     await expect(
@@ -131,17 +146,23 @@ describe('service-keyed credential vault (account:<service>)', () => {
     ).rejects.toThrow(/credential-not-found|no credential/i);
   });
 
-  it('a different user does not see another user’s vault entry', async () => {
-    await bus.call('credentials:set', ctx, {
-      scope: 'user',
-      ownerId: 'user-1',
-      ref: 'account:linear',
-      kind: 'api-key',
-      payload: enc('lin-key'),
-    });
-    const other = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'user-2' });
+  it('a different agent does not see another agent’s vault entry', async () => {
+    await vaultLinear();
+    const other = makeAgentContext({ sessionId: 's', agentId: 'agent-2', userId: 'user-1' });
     await expect(
-      bus.call('credentials:get', other, { ref: 'account:linear', userId: 'user-2' }),
-    ).rejects.toThrow();
+      bus.call('credentials:get', other, { ref: 'account:linear', userId: 'user-1' }),
+    ).rejects.toThrow(/credential-not-found|no credential/i);
+  });
+
+  it('a person-level vault entry is refused', async () => {
+    await expect(
+      bus.call('credentials:set', ctx, {
+        scope: 'user',
+        ownerId: 'user-1',
+        ref: 'account:linear',
+        kind: 'api-key',
+        payload: enc('lin-key'),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 });
