@@ -14,7 +14,11 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GrantRow } from '../GrantRow';
 import { grantKey } from '@/lib/workspace-grant-store';
-import { getGrantDraft, resetGrantDraftsForTest } from '@/lib/workspace-grant-drafts';
+import {
+  getGrantDraft,
+  resetGrantDraftsForTest,
+  setGrantDraftValue,
+} from '@/lib/workspace-grant-drafts';
 import { HTTP_SERVER_ERROR, HTTP_UNAVAILABLE } from '@/lib/http';
 import {
   GRANT_NO_CONVERSATION,
@@ -711,5 +715,83 @@ describe('invalid caller-id credential floor', () => {
     expect(onResolved).not.toHaveBeenCalled();
     expect(onGranted).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+  });
+});
+
+/*
+  Slice 5 — a connector's key (`account:<service>`) belongs to the agent or the
+  workspace, never to the person answering the card. So the card asks for no
+  connector key: it says who can add one. A skill's own key (`skill-slot`) is
+  still the person's to type.
+*/
+describe('a grant that needs a connector key', () => {
+  const ASK_ADMIN = 'Ask a workspace admin to add a Linear connector, then add it to this agent.';
+  const connectorSlotReq: PermissionRequest = {
+    ...skillReq,
+    slots: [{ slot: 'api_key', kind: 'api-key', service: 'linear' }],
+  };
+
+  test('says to ask an admin, and offers no key field', () => {
+    row(connectorSlotReq);
+    expect(screen.getByText(ASK_ADMIN)).toBeInTheDocument();
+    // A note, so a failed Connect stays the row's only alert.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+    expect(screen.queryByText(KEY_SAFETY)).toBeNull();
+    // Nothing is handed over from here, so there is no key to disclose.
+    expect(screen.queryByTestId('connector-access-notice')).toBeNull();
+    // Nothing typed here can fill it, so it doesn't hold Connect back.
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
+    expect(screen.queryByText(SLOT_HINT)).toBeNull();
+  });
+
+  test('a legacy card naming the account the same way gets the same answer', () => {
+    row({ ...skillReq, slots: [{ slot: 'api_key', kind: 'api-key', account: 'linear' }] });
+    expect(screen.getByText(ASK_ADMIN)).toBeInTheDocument();
+    expect(screen.queryByLabelText('API key')).toBeNull();
+  });
+
+  test('Connect writes no connector key — not even one left in a draft — and posts the decision', async () => {
+    const fetchMock = okFetch();
+    const key = grantKey(connectorSlotReq);
+    setGrantDraftValue(key, 'api_key', 'lin_left_over');
+    const { onResolved } = row(connectorSlotReq);
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalled());
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('/destinations/'))).toEqual([]);
+    expect(urls).toContain('/api/chat/permission-decision');
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(btoa('lin_left_over'));
+  });
+
+  test('a connector key the agent already has is used, not asked about', () => {
+    row({
+      ...skillReq,
+      slots: [{ slot: 'api_key', kind: 'api-key', service: 'linear', haveExisting: true }],
+    });
+    expect(screen.queryByText(ASK_ADMIN)).toBeNull();
+    expect(screen.getByText(/already set up/)).toBeInTheDocument();
+    expect(screen.getByTestId('connector-access-notice')).toBeInTheDocument();
+  });
+
+  test('a skill’s own key beside it is still asked for, and written', async () => {
+    const fetchMock = okFetch();
+    const mixed: PermissionRequest = {
+      ...skillReq,
+      slots: [
+        { slot: 'api_key', kind: 'api-key', service: 'linear' },
+        { slot: 'webhook_secret', kind: 'api-key' },
+      ],
+    };
+    const { onResolved } = row(mixed);
+    expect(screen.getByText(ASK_ADMIN)).toBeInTheDocument();
+    const field = screen.getByLabelText(/webhook secret/i);
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'whsec_1' } });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalled());
+    const creds = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/destinations/'));
+    expect(creds.map((c) => c[0])).toEqual(['/settings/destinations/skill-slot/credential']);
   });
 });

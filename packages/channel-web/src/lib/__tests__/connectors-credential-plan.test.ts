@@ -3,9 +3,6 @@ import {
   accountRef,
   serviceTagForSlot,
   deriveCredentialPlan,
-  requiresSharedKeyConsent,
-  sharedKeyConsentMessage,
-  SHARED_KEY_CONSENT_COPY,
   emptyCapabilities,
   mechanismHint,
   type Connector,
@@ -18,7 +15,7 @@ import {
  * forbidden (eslint invariant I2 — it is NOT on the allowlist), so — exactly as
  * `lib/credentials.ts` re-declares `refForDestination` — these functions are
  * copied locally and pinned here. If the canonical derivation in `@ax/connectors`
- * ever changes the scope mapping, ref shape, consent rule, or consent COPY, this
+ * ever changes the scope mapping or ref shape, this
  * test and that module must be updated together.
  */
 
@@ -52,7 +49,7 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
   });
 
   describe('deriveCredentialPlan — keyMode → scope', () => {
-    it('personal keyMode → scope:user, one entry per credential slot, account:<connectorId> ref', () => {
+    it('personal keyMode → scope:agent (each agent adds its own key), one entry per credential slot, account:<connectorId> ref', () => {
       const c = connector({
         id: 'my-notion',
         keyMode: 'personal',
@@ -64,7 +61,7 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
       expect(deriveCredentialPlan(c)).toEqual([
         // Single-slot connector keeps the collapsed ref + `service`, keyed by the
         // connector id (no share-by-service).
-        { slot: 'token', scope: 'user', ref: 'account:my-notion', service: 'my-notion' },
+        { slot: 'token', scope: 'agent', ref: 'account:my-notion', service: 'my-notion' },
       ]);
     });
 
@@ -104,14 +101,14 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
       expect(deriveCredentialPlan(c)).toEqual([
         {
           slot: 'CLIENT_ID',
-          scope: 'user',
+          scope: 'agent',
           ref: 'account:oauthsvc:CLIENT_ID',
           service: 'oauthsvc',
           slotTag: 'CLIENT_ID',
         },
         {
           slot: 'CLIENT_SECRET',
-          scope: 'user',
+          scope: 'agent',
           ref: 'account:oauthsvc:CLIENT_SECRET',
           service: 'oauthsvc',
           slotTag: 'CLIENT_SECRET',
@@ -130,37 +127,6 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
       const plan = deriveCredentialPlan(c);
       expect(plan[0]).not.toHaveProperty('slotTag');
       expect(plan[0]!.service).toBe('gh');
-    });
-  });
-
-  describe('requiresSharedKeyConsent — the "act as you" gate', () => {
-    it('personal + private → false (you only ever act as yourself)', () => {
-      expect(
-        requiresSharedKeyConsent(connector({ keyMode: 'personal', visibility: 'private' })),
-      ).toBe(false);
-    });
-    it('workspace → true (one key, every allowed agent spends it)', () => {
-      expect(
-        requiresSharedKeyConsent(connector({ keyMode: 'workspace', visibility: 'private' })),
-      ).toBe(true);
-    });
-    it('shared visibility → true (bound to a shared/team agent)', () => {
-      expect(
-        requiresSharedKeyConsent(connector({ keyMode: 'personal', visibility: 'shared' })),
-      ).toBe(true);
-    });
-  });
-
-  describe('consent copy — the security-relevant contract', () => {
-    it('pins the EXACT shared-key consent copy', () => {
-      expect(SHARED_KEY_CONSENT_COPY).toBe(
-        "Sharing this key lets their assistant act as you on %SERVICE%. They can't copy the key — but they can use it.",
-      );
-    });
-    it('fills the %SERVICE% placeholder', () => {
-      expect(sharedKeyConsentMessage('Salesforce')).toBe(
-        "Sharing this key lets their assistant act as you on Salesforce. They can't copy the key — but they can use it.",
-      );
     });
   });
 

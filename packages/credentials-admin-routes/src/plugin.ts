@@ -32,7 +32,8 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 //   Both write trees are implemented in destination-routes.ts.
 //
 // The legacy /settings/credentials* CRUD routes and the /oauth/* routes
-// were removed in the credentials UX redesign (Task 19).
+// were removed in the credentials UX redesign (Task 19); the last of them,
+// the per-person GET /settings/credentials list, went in slice 5.
 // ---------------------------------------------------------------------------
 
 export function createCredentialsAdminRoutesPlugin(): Plugin {

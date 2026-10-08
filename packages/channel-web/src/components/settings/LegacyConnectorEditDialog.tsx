@@ -98,8 +98,8 @@ import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
 import {
+  CLIENT_SECRET_NEEDS_SHARED,
   OAUTH_CLIENT_SECRET_SLOT,
-  clientSecretScope,
 } from '@/lib/connector-credential-slots';
 import {
   Select,
@@ -600,13 +600,21 @@ export function LegacyConnectorEditDialog({
     // self-healing on re-save; the reverse order would leave the connector
     // pointing at a missing ref.
     //
-    // NOTE: where the secret is stored decides who can sign in (see
-    // `clientSecretScope`): a workspace-key connector and a shared connector
-    // keep it at the workspace, so anyone can; a private connector
-    // keeps it at its author's own scope, where only the author can sign in. DCR
-    // (blank client) avoids this entirely. There is no migration here for an
-    // admin's older copy at their own scope; the remote-server form offers that.
+    // NOTE: the secret is always stored at the workspace (global), so anyone
+    // who signs in can use it. Nothing is stored per person (slice 5), so a
+    // PRIVATE connector can't carry one — the host would serve it to nobody.
+    // Refuse before anything is written (see `CLIENT_SECRET_NEEDS_SHARED`).
+    // DCR (blank client) avoids this entirely.
     let updatedSlots = form.credentialSlots;
+    const typesClientSecret = Object.entries(oauthClientSecrets).some(
+      ([idx, secret]) =>
+        form.credentialSlots[Number(idx)]?.kind === 'oauth' && secret.trim().length > 0,
+    );
+    if (typesClientSecret && visibility !== 'shared') {
+      setError(CLIENT_SECRET_NEEDS_SHARED);
+      setBusy(false);
+      return;
+    }
     try {
       const slotPatches: Record<number, { clientSecretRef: string }> = {};
       for (const [idxStr, secret] of Object.entries(oauthClientSecrets)) {
@@ -621,13 +629,7 @@ export function LegacyConnectorEditDialog({
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
-          scope: {
-            scope: clientSecretScope({
-              keyMode: form.keyMode,
-              visibility,
-            }),
-            ownerId: null,
-          },
+          scope: { scope: 'global', ownerId: null },
           payload: secret,
         });
         slotPatches[idx] = {
@@ -813,7 +815,7 @@ export function LegacyConnectorEditDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="personal">
-                  Personal — each user brings their own key
+                  Each agent adds its own key
                 </SelectItem>
                 <SelectItem value="workspace">
                   Shared — one key the whole workspace spends

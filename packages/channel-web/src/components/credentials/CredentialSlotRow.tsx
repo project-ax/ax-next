@@ -10,13 +10,14 @@ import {
 } from '@/components/ui/sheet';
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
-import { adminCredentials, myCredentials, refForDestination } from '@/lib/credentials';
+import { adminCredentials, refForDestination } from '@/lib/credentials';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 
 export interface CredentialSlotRowProps {
   destination: Destination;
   slot: { label: string; kind: 'api-key'; description?: string };
-  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+  /** Admin-set keys only: a model provider's (global) or a routine's (agent). */
+  scope: { scope: 'global' | 'agent'; ownerId: string | null };
 }
 
 export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRowProps) {
@@ -54,10 +55,7 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
 
   const refresh = useCallback(async () => {
     try {
-      const list =
-        scope.scope === 'user'
-          ? await myCredentials.list()
-          : await adminCredentials.list();
+      const list = await adminCredentials.list();
       setIsSet(
         list.some(
           (c) => c.ref === ref && c.scope === scope.scope && c.ownerId === scope.ownerId,

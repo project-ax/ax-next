@@ -63,12 +63,13 @@ import {
   PACKAGES_LINE,
   REACH_LEAD_IN,
   SLOT_HINT,
+  askAdminForConnector,
   grantDescription,
   grantPackagesVisible,
   grantTitle,
 } from '@/lib/grant-copy';
 import { FindHighlight, type FindView } from './ThreadFind';
-import { accountOrSkillDestination } from '@/lib/grant-destinations';
+import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-destinations';
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
@@ -125,9 +126,24 @@ interface Props {
   fieldKeyBase?: string;
 }
 
-/** Slots the person still has to fill — the vaulted ones need no input. */
-function blankSlots(slots: readonly { slot: string; haveExisting?: boolean }[]): string[] {
-  return slots.filter((s) => s.haveExisting !== true).map((s) => s.slot);
+type GrantSlot = Extract<WorkspaceGrant['request'], { kind: 'skill' }>['slots'][number];
+
+/**
+ * A connector key the agent doesn't have yet. Nobody types one on this card
+ * (slice 5): it's the agent's or the workspace's, added with the connector.
+ */
+function missingConnectorKey(s: GrantSlot): boolean {
+  return s.haveExisting !== true && connectorServiceOf(s) !== undefined;
+}
+
+/**
+ * Slots the person still has to fill — the vaulted ones need no input, and a
+ * missing connector key is not theirs to fill.
+ */
+function blankSlots(slots: readonly GrantSlot[]): string[] {
+  return slots
+    .filter((s) => s.haveExisting !== true && connectorServiceOf(s) === undefined)
+    .map((s) => s.slot);
 }
 
 export function GrantRow({
@@ -254,10 +270,14 @@ export function GrantRow({
     }
   }
 
-  /** Write each freshly-typed key to the host credential store, then decide. */
+  /**
+   * Write each freshly-typed SKILL key to the host credential store, then
+   * decide. A connector key is never written from here — not even one left in
+   * a draft from before slice 5.
+   */
   async function writeKeys(skillId: string): Promise<void> {
     for (const s of slots) {
-      if (s.haveExisting === true) continue;
+      if (s.haveExisting === true || connectorServiceOf(s) !== undefined) continue;
       const value = (values[s.slot] ?? '').trim();
       if (value.length === 0) continue;
       await setDestinationCredential({
@@ -561,13 +581,29 @@ export function GrantRow({
           reassurance it sounded like: it validates ONE field of them.
         */
         const account = slotAccount(s);
+        const connectorService = connectorServiceOf(s);
+        if (connectorService !== undefined && s.haveExisting !== true)
+          // Slice 5 — not the person's to type: see `askAdminForConnector`.
+          // A note, not an interruption: the shared Alert defaults to
+          // role="alert", which belongs to a failed Connect alone.
+          return (
+            <Alert key={s.slot} role="note" className="mt-3 max-w-[660px]">
+              <AlertDescription className="text-[13px] leading-relaxed">
+                {askAdminForConnector(connectorService)}
+              </AlertDescription>
+            </Alert>
+          );
         return s.haveExisting === true ? (
           <div
             key={s.slot}
             className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground"
           >
             <Badge variant="secondary">{humanizeId(account ?? s.slot)}</Badge>
-            <span>Using the {humanizeSlotLabel(s.slot, account)} you already saved.</span>
+            <span>
+              {connectorService !== undefined
+                ? `Using the ${humanizeSlotLabel(s.slot, account)} that’s already set up.`
+                : `Using the ${humanizeSlotLabel(s.slot, account)} you already saved.`}
+            </span>
           </div>
         ) : (
           <div key={s.slot} className="mt-3 grid max-w-[420px] gap-1.5">
@@ -602,11 +638,12 @@ export function GrantRow({
         sends it. Keyed on the KEY, not the kind: a grant with key slots (typed
         or already saved — Connect attaches either) is handing access over, and
         a grant with none (reach only) is not, so a notice there would be about
-        something that is not happening. One notice however many slots there are.
-        Words in `lib/connector-access-copy.ts`; `KEY_SAFETY` above says where the
+        something that is not happening. Nor is a connector key the agent
+        doesn't have yet: nothing is handed over from here (slice 5). One notice
+        however many slots there are. Words in `lib/connector-access-copy.ts`; `KEY_SAFETY` above says where the
         key goes, this says what the agent can do with it.
       */}
-      {request.slots.length > 0 && (
+      {request.slots.some((s) => !missingConnectorKey(s)) && (
         <ConnectorAccessNotice kind="key" className="mt-3 max-w-[660px]" />
       )}
 

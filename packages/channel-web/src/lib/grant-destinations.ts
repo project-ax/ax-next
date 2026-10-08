@@ -44,10 +44,10 @@ export interface CardSlot {
  * either would select a vault row the request did not name.
  * An invalid floor throws before a credential write; both grant surfaces
  * catch submission failures and keep the card visible.
- * Both grant surfaces use the user-scoped settings endpoint. The server
- * validates destinations, computes refs, and forces user scope with
- * the authenticated actor as owner. This client check is defense in depth,
- * not the authority for destination grammar or ownership.
+ * The grant card writes only `skill-slot` keys, through the user-scoped
+ * settings endpoint. The server validates destinations, computes refs, and
+ * forces user scope with the authenticated actor as owner. This client check
+ * is defense in depth, not the authority for destination grammar or ownership.
  */
 function tag(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -57,6 +57,17 @@ function requiredCallerId(value: unknown): string {
   const id = tag(value);
   if (id === undefined) throw new TypeError('Invalid credential caller identifier.');
   return id;
+}
+
+/**
+ * Slice 5 — the connector a slot's key belongs to, or `undefined` for a skill's
+ * own key. A connector key (`account:<service>`) is the agent's or the
+ * workspace's, never the person answering the card, so the card never asks
+ * for one: it says who can add the connector instead. Same tag precedence as
+ * {@link accountOrSkillDestination}.
+ */
+export function connectorServiceOf(s: CardSlot): string | undefined {
+  return tag(s.service) ?? tag(s.account);
 }
 
 /**

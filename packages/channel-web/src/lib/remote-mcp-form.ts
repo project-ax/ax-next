@@ -2,6 +2,7 @@ import {
   emptyCapabilities,
   type Connector,
   type ConnectorCapabilities,
+  type ConnectorKeyMode,
   type ConnectorOAuthSlot,
 } from './connectors';
 
@@ -117,7 +118,16 @@ export function serverHost(url: string): string | undefined {
   }
 }
 
-export function remoteErrors(draft: RemoteMcpDraft): Record<string, string> {
+/**
+ * `keyMode` decides whether the admin types header values at all. A shared
+ * key (`workspace`) is typed once here; a per-agent key (`personal`) never is —
+ * each agent adds its own value when it adds the connector — so its headers are
+ * names only, and no value is asked for.
+ */
+export function remoteErrors(
+  draft: RemoteMcpDraft,
+  keyMode: ConnectorKeyMode,
+): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!draft.name.trim()) errors.name = 'Enter a name for this connector.';
   else if (draft.name.trim().length > 128)
@@ -148,6 +158,7 @@ export function remoteErrors(draft: RemoteMcpDraft): Record<string, string> {
     else if (names.has(name))
       errors[`name-${header.slot}`] = 'Each header needs a different name.';
     names.add(name);
+    if (keyMode !== 'workspace') continue;
     if (!header.saved && !header.value)
       errors[`value-${header.slot}`] = 'Enter a header value.';
     if (/[\x00-\x1f\x7f]/.test(header.value) || header.value.length > 8192)

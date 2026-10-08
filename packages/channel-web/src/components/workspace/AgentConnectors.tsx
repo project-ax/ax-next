@@ -135,7 +135,7 @@ const HEALTH_REASON: Record<
   Exclude<AgentConnectorHealth, 'ok' | 'not-loaded' | 'needs-sign-in'>,
   string
 > = {
-  'needs-reconnect': 'Your sign-in expired',
+  'needs-reconnect': 'Sign-in expired',
   unreachable: 'Can’t reach it',
 };
 
@@ -459,7 +459,7 @@ export function AgentConnectors({
             </DialogTitle>
             <DialogDescription>
               {shared
-                ? `Sign in, and everyone using ${name} uses ${signingIn?.name ?? ''} as you.`
+                ? `Sign in, and ${name} will use your ${signingIn?.name ?? ''} account for everyone who uses this agent.`
                 : signingIn !== null && signInLabelFor(signingIn) === 'Sign in'
                   ? `Sign in and ${name} can use ${signingIn.name}.`
                   : `Sign in and ${name} can keep using ${signingIn?.name ?? ''}.`}

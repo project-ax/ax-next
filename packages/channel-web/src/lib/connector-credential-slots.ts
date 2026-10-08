@@ -24,27 +24,13 @@ export function newHeaderSlot(): string {
 }
 
 /**
- * Where the editors store a connector's custom OAuth client secret.
+ * A connector's custom OAuth client secret is stored at the workspace (global
+ * scope), so everyone who signs in can use it. The host serves a global secret
+ * only to signers of a connector that is shared AND admin-owned, so a PRIVATE
+ * connector can't carry one: nobody, its owner included, could read it.
  *
- * `'global'` is readable workspace-wide, which is what lets people other than
- * the author sign in. It is only safe to read that widely when the connector
- * itself is workspace-wide, so the host serves a global secret only to signers
- * of a connector that is shared AND admin-owned. That decides the rule here:
- *
- * Only admins write connectors (slice 2a), so the author is always an admin:
- *
- *   - a workspace-key connector keeps its secret at the workspace, as ever;
- *   - a shared connector does too, so everyone can sign in with the OAuth app
- *     the admin registered;
- *   - a PRIVATE connector stays at the author's own scope. A global secret
- *     would be unreadable even by its owner (it is not shared), so the only
- *     person who could sign in would be locked out.
+ * Slice 5 — nothing is stored per person, so there is no "keep it with its
+ * author" fallback any more. The editors refuse the save with this message
+ * and write nothing.
  */
-export function clientSecretScope(args: {
-  keyMode: 'personal' | 'workspace';
-  visibility: 'private' | 'shared';
-}): 'global' | 'user' {
-  return args.keyMode === 'workspace' || args.visibility === 'shared'
-    ? 'global'
-    : 'user';
-}
+export const CLIENT_SECRET_NEEDS_SHARED = 'Make it Shared to use a client secret.';

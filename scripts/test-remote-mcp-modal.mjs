@@ -143,9 +143,6 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
     writes.push({ kind: 'secret', body: route.request().postDataJSON() });
     return route.fulfill({ json: {} });
   });
-  await page.route('**/settings/credentials', (route) =>
-    route.fulfill({ json: { credentials: [] } }),
-  );
   await page.route('**/admin/credentials**', (route) =>
     route.fulfill({ json: { credentials: [] } }),
   );

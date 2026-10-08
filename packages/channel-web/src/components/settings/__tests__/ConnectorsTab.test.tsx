@@ -60,7 +60,6 @@ describe('ConnectorsTab', () => {
       if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN);
       return fullOf(SHARED_CONN);
     });
-    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
     vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
     // No connector requests by default → the Awaiting approval shelf is absent.
     // Tests that exercise it override this.
@@ -612,7 +611,6 @@ describe('ConnectorsTab', () => {
     await waitFor(() => expect(connectorsLib.listConnectors).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 0));
     expect(connectorsLib.getConnector).not.toHaveBeenCalled();
-    expect(credLib.myCredentials.list).not.toHaveBeenCalled();
     expect(credLib.adminCredentials.list).not.toHaveBeenCalled();
   });
 

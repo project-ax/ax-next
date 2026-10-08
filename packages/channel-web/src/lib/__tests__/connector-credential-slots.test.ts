@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLIENT_SECRET_NEEDS_SHARED,
   OAUTH_CLIENT_SECRET_SLOT,
-  clientSecretScope,
   newHeaderSlot,
 } from '../connector-credential-slots';
 
@@ -25,33 +25,9 @@ describe('connector credential slots', () => {
     expect(OAUTH_CLIENT_SECRET_SLOT).toBe('OAUTH_CLIENT_SECRET');
   });
 
-  // The custom OAuth client secret is written once, by the author, and read by
-  // whoever signs in. Where it is stored decides who can sign in.
-  describe('clientSecretScope', () => {
-    it('stores a workspace-key connector secret at the workspace, shared or not', () => {
-      for (const visibility of ['shared', 'private'] as const)
-        expect(
-          clientSecretScope({ keyMode: 'workspace', visibility }),
-        ).toBe('global');
-    });
-
-    it('stores a shared admin connector secret at the workspace so everyone can sign in', () => {
-      expect(
-        clientSecretScope({
-          keyMode: 'personal',
-          visibility: 'shared',
-        }),
-      ).toBe('global');
-    });
-
-    it('keeps a private admin connector secret with its author', () => {
-      expect(
-        clientSecretScope({
-          keyMode: 'personal',
-          visibility: 'private',
-        }),
-      ).toBe('user');
-    });
-
+  // Slice 5 — the custom OAuth client secret is always the workspace's
+  // (global): nothing is stored per person. A private connector can't carry one.
+  it('tells the admin how to use a client secret on a private connector', () => {
+    expect(CLIENT_SECRET_NEEDS_SHARED).toBe('Make it Shared to use a client secret.');
   });
 });

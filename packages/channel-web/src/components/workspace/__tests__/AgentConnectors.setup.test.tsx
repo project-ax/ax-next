@@ -259,14 +259,14 @@ describe('Sign in (a row never signed in)', () => {
     await waitFor(() => expect(connectorsMock.mock.calls.length).toBeGreaterThan(reads));
   });
 
-  it('on a team agent, says everyone will use it as you, and asks first', async () => {
+  it('on a team agent, says your account is used for everyone on it, and asks first', async () => {
     list([SIGN_IN], true);
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
     expect(
-      within(dialog).getByText('Sign in, and everyone using Quill uses Linear as you.'),
+      within(dialog).getByText('Sign in, and Quill will use your Linear account for everyone who uses this agent.'),
     ).toBeTruthy();
     expect(within(dialog).getByTestId('oauth-connect').dataset.consent).toBe('true');
   });

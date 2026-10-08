@@ -749,7 +749,7 @@ scenario we hate skipping the most.
 - `credentials.admin.enabled=true` on the chart values. The default is
   off — flip it on with `--set credentials.admin.enabled=true` on the
   `helm upgrade` from the goldenpath section. Without this flag the
-  `/admin/credentials*` and `/settings/credentials*` routes don't mount,
+  `/admin/credentials*` and `/settings/destinations/*` routes don't mount,
   and the user menu's "Credentials" entries do nothing.
 - The chat UI at `http://localhost:9090/` loads, and you can sign in.
   Dev-bootstrap (single shared admin user) is the simplest path; Google

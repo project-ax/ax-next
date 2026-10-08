@@ -24,14 +24,13 @@ import {
   type OAuthDiscovery,
 } from '@/lib/connectors-oauth';
 import {
-  deleteDestinationCredential,
-  myCredentials,
+  adminCredentials,
   setDestinationCredential,
   refForDestination,
 } from '@/lib/credentials';
 import {
+  CLIENT_SECRET_NEEDS_SHARED,
   OAUTH_CLIENT_SECRET_SLOT,
-  clientSecretScope,
   newHeaderSlot,
 } from '@/lib/connector-credential-slots';
 import {
@@ -141,9 +140,6 @@ export function RemoteMcpConnectorForm({
   const [usageNote, setUsageNote] = useState(prefill?.usageNote ?? '');
   const [headersOpen, setHeadersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  // The connector's saved key mode. A new connector starts per-person; the
-  // effective `keyMode` (below, once the sign-in is known) may differ.
-  const savedKeyMode = connector?.keyMode ?? 'personal';
   // TASK-827 — an admin adding a connector that doesn't sign in with OAuth
   // picks whose key it uses. Fixed once created (the server refuses a change).
   // A request's suggestion is only the starting choice; the admin decides.
@@ -167,19 +163,17 @@ export function RemoteMcpConnectorForm({
   >('loading');
   const [copied, setCopied] = useState(false);
   const [editingClientSecret, setEditingClientSecret] = useState(false);
-  // Where the client secret is stored (see `clientSecretScope`). A new
-  // connector is created shared.
-  // Keyed on the SAVED mode: a new OAuth connector is always per-person.
-  const secretScope = clientSecretScope({
-    keyMode: savedKeyMode,
-    visibility: connector?.visibility ?? 'shared',
-  });
+  // The client secret is always the workspace's (global scope), so everyone
+  // who signs in can use it. A private connector can't carry one (see
+  // `CLIENT_SECRET_NEEDS_SHARED`); a new connector is created shared.
+  const sharedConnector = (connector?.visibility ?? 'shared') === 'shared';
   // What the connector pointed at when this form opened. Stays put while the
   // draft's own reference changes (Remove clears it).
   const [savedClientSecretRef] = useState(draft.clientSecretRef);
-  // An admin's secret saved before it moved to the workspace is still in their
-  // own scope. It can't be moved without being typed again.
-  const [needsMigration, setNeedsMigration] = useState(false);
+  // Slice 5 — the connector names a secret the workspace doesn't have (an
+  // admin's old per-person copy was removed at boot). Then the box is simply
+  // empty, ready to fill in, rather than claiming it's saved.
+  const [clientSecretMissing, setClientSecretMissing] = useState(false);
   const [newId] = useState(
     () =>
       `${connectorIdFromName(connector?.name ?? 'remote').slice(0, 48)}-${crypto.randomUUID().slice(0, 8)}`,
@@ -328,36 +322,32 @@ export function RemoteMcpConnectorForm({
       stale = true;
     };
   }, []);
-  const movesSecretToWorkspace =
-    Boolean(connector) &&
-    secretScope === 'global' &&
-    savedKeyMode === 'personal' &&
-    Boolean(savedClientSecretRef);
   useEffect(() => {
-    if (!movesSecretToWorkspace) return;
+    if (!connector || !savedClientSecretRef) return;
     let stale = false;
-    // A convenience, never a gate: if we can't tell, say nothing and let the
-    // save go ahead as usual.
-    void myCredentials.list().then(
+    // A convenience, never a gate: if we can't tell, say nothing and keep
+    // showing the saved state. Only a workspace (global) copy counts — the
+    // host never reads anyone's own.
+    void adminCredentials.list().then(
       (rows) => {
         if (stale || !Array.isArray(rows)) return;
         if (
-          rows.some(
+          !rows.some(
             (row) =>
               typeof row === 'object' &&
               row !== null &&
-              row.scope === 'user' &&
+              row.scope === 'global' &&
               row.ref === savedClientSecretRef,
           )
         )
-          setNeedsMigration(true);
+          setClientSecretMissing(true);
       },
       () => {},
     );
     return () => {
       stale = true;
     };
-  }, [movesSecretToWorkspace, savedClientSecretRef]);
+  }, [connector, savedClientSecretRef]);
   useEffect(() => {
     setDestinationConfirmed(false);
     if (!host) {
@@ -443,7 +433,11 @@ export function RemoteMcpConnectorForm({
       return;
     }
     if (saving || blocked) return;
-    const nextErrors = remoteErrors(effectiveDraft);
+    const nextErrors = remoteErrors(effectiveDraft, keyMode);
+    const writesClientSecret =
+      signIn === 'oauth' && registration === 'custom' && Boolean(draft.clientSecret);
+    if (writesClientSecret && !sharedConnector)
+      nextErrors.clientSecret = CLIENT_SECRET_NEEDS_SHARED;
     if (
       signIn === 'oauth' &&
       keyMode === 'workspace' &&
@@ -482,13 +476,11 @@ export function RemoteMcpConnectorForm({
     // A request is created under its own id: that is what clears it.
     const connectorId = connector?.id ?? prefill?.connectorId ?? newId;
     try {
-      const scope = {
-        scope:
-          keyMode === 'workspace' ? ('global' as const) : ('user' as const),
-        ownerId: null,
-      };
+      // Every secret this editor writes is the workspace's. Nothing is ever
+      // stored per person (slice 5).
+      const workspace = { scope: 'global' as const, ownerId: null };
       let clientSecretRef = draft.clientSecretRef;
-      if (signIn === 'oauth' && registration === 'custom' && draft.clientSecret) {
+      if (writesClientSecret) {
         const destination = {
           kind: 'account' as const,
           service: connectorId,
@@ -497,31 +489,28 @@ export function RemoteMcpConnectorForm({
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
-          scope: { scope: secretScope, ownerId: null },
+          scope: workspace,
           payload: draft.clientSecret,
         });
-        // Only once the workspace copy is stored: if this fails the save
-        // fails, and a retry writes the same copy again and tries again.
-        if (needsMigration)
-          await deleteDestinationCredential({
-            destination,
-            scope: { scope: 'user', ownerId: null },
-          });
         clientSecretRef = refForDestination(destination);
       }
-      for (const header of draft.headers) {
-        if (header.value)
-          await setDestinationCredential({
-            destination: {
-              kind: 'account',
-              service: connectorId,
-              slot: header.slot,
-            },
-            slot: { kind: 'api-key' },
-            scope,
-            payload: header.value,
-          });
-      }
+      // A per-agent key's header values are each agent's own, added when it
+      // adds the connector — so only a shared key's are written here. (A
+      // value typed before switching to per-agent keys is dropped.)
+      if (keyMode === 'workspace')
+        for (const header of draft.headers) {
+          if (header.value)
+            await setDestinationCredential({
+              destination: {
+                kind: 'account',
+                service: connectorId,
+                slot: header.slot,
+              },
+              slot: { kind: 'api-key' },
+              scope: workspace,
+              payload: header.value,
+            });
+        }
       const capabilities = remoteCapabilities(
         { ...effectiveDraft, clientSecretRef },
         connectorId,
@@ -543,7 +532,7 @@ export function RemoteMcpConnectorForm({
       // The connector now names the stored copy. A retry (say, of tool
       // permissions below) must not point it back at the one it replaced.
       update('clientSecretRef', clientSecretRef);
-      setNeedsMigration(false);
+      if (writesClientSecret) setClientSecretMissing(false);
       if (added && signIn !== 'oauth') {
         // TASK-809 — stay open on the new connector for step two (its tools).
         setCreated(added);
@@ -610,11 +599,11 @@ export function RemoteMcpConnectorForm({
         : 'This server doesn’t need sign-in. If it expects a key, add it as a request header.'
       : registration === 'custom'
         ? automaticMethod
-          ? 'Each person connects with their own account, using the OAuth client you registered with this service.'
-          : 'Each person connects with their own account. This server doesn’t support automatic setup, so enter the OAuth client you registered with it.'
+          ? 'Each agent connects with its own account, using the OAuth client you registered with this service.'
+          : 'Each agent connects with its own account. This server doesn’t support automatic setup, so enter the OAuth client you registered with it.'
         : automaticMethod === 'cimd'
-          ? 'Each person connects with their own account. AX identifies itself with its published client details, so there’s nothing to set up.'
-          : 'Each person connects with their own account. AX registers itself with this server automatically, so there’s nothing to set up.';
+          ? 'Each agent connects with its own account. AX identifies itself with its published client details, so there’s nothing to set up.'
+          : 'Each agent connects with its own account. AX registers itself with this server automatically, so there’s nothing to set up.';
 
   return (
     <Dialog
@@ -778,7 +767,7 @@ export function RemoteMcpConnectorForm({
                             />
                             <FieldContent>
                               <FieldLabel htmlFor={fieldId('sign-in-oauth')}>
-                                Each person signs in (OAuth)
+                                Each agent signs in (OAuth)
                               </FieldLabel>
                             </FieldContent>
                           </Field>
@@ -799,7 +788,7 @@ export function RemoteMcpConnectorForm({
                     {signIn === 'oauth' && registration === 'custom' && (
                       <FieldGroup className="gap-4">
                           {textField('clientId', 'Client ID')}
-                          <Field>
+                          <Field data-invalid={Boolean(errors.clientSecret)}>
                             <FieldLabel htmlFor={fieldId('client-secret')}>
                               Client secret{' '}
                               <span className="font-normal text-muted-foreground">
@@ -808,7 +797,7 @@ export function RemoteMcpConnectorForm({
                             </FieldLabel>
                             {draft.clientSecretRef &&
                             !editingClientSecret &&
-                            !needsMigration ? (
+                            !clientSecretMissing ? (
                               <div className="flex min-h-10 flex-wrap items-center gap-2">
                                 <span className="flex-1 text-sm text-muted-foreground">
                                   Saved securely
@@ -840,20 +829,22 @@ export function RemoteMcpConnectorForm({
                                 placeholder="Enter only if the service requires it"
                                 autoComplete="new-password"
                                 value={draft.clientSecret}
+                                aria-invalid={Boolean(errors.clientSecret)}
+                                aria-describedby={
+                                  errors.clientSecret
+                                    ? fieldId('client-secret-error')
+                                    : undefined
+                                }
                                 onChange={(event) =>
                                   update('clientSecret', event.target.value)
                                 }
                               />
                             )}
-                            {needsMigration &&
-                              Boolean(draft.clientSecretRef) &&
-                              !draft.clientSecret && (
-                                <Alert>
-                                  <AlertDescription>
-                                    Re-enter the client secret so others can sign in
-                                  </AlertDescription>
-                                </Alert>
-                              )}
+                            {errors.clientSecret && (
+                              <FieldError id={fieldId('client-secret-error')}>
+                                {errors.clientSecret}
+                              </FieldError>
+                            )}
                           </Field>
                           <Field className="gap-2">
                             <FieldTitle>Redirect URL</FieldTitle>
@@ -918,7 +909,7 @@ export function RemoteMcpConnectorForm({
                             />
                             <FieldContent>
                               <FieldLabel htmlFor={fieldId('key-mode-personal')}>
-                                Each person adds their own key
+                                Each agent adds its own key
                               </FieldLabel>
                             </FieldContent>
                           </Field>
@@ -929,7 +920,7 @@ export function RemoteMcpConnectorForm({
                       <FieldDescription>
                         {keyMode === 'workspace'
                           ? 'Everyone uses one shared key. To change this, create a new connector.'
-                          : 'Each person adds their own key. To change this, create a new connector.'}
+                          : 'Each agent adds its own key. To change this, create a new connector.'}
                       </FieldDescription>
                     )}
                     <div>
@@ -943,13 +934,31 @@ export function RemoteMcpConnectorForm({
                     open={headersOpen}
                     onOpenChange={setHeadersOpen}
                   >
-                    <FieldDescription>
-                      Sent with requests to this server. Values are hidden after
-                      saving.
-                    </FieldDescription>
+                    {keyMode === 'workspace' ? (
+                      <FieldDescription>
+                        Sent with requests to this server. Values are hidden
+                        after saving.
+                      </FieldDescription>
+                    ) : (
+                      <>
+                        <FieldDescription>
+                          Sent with requests to this server.
+                        </FieldDescription>
+                        <FieldDescription>
+                          Each agent adds its own value when it adds this
+                          connector.
+                        </FieldDescription>
+                      </>
+                    )}
                     {draft.headers.map((header, index) => (
                       <FieldGroup key={header.slot} className="gap-3">
-                        <FieldGroup className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,190fr)_minmax(0,310fr)]">
+                        <FieldGroup
+                          className={cn(
+                            'grid min-w-0 gap-3',
+                            keyMode === 'workspace' &&
+                              'sm:grid-cols-[minmax(0,190fr)_minmax(0,310fr)]',
+                          )}
+                        >
                           <Field
                             data-invalid={Boolean(
                               errors[`name-${header.slot}`],
@@ -987,63 +996,65 @@ export function RemoteMcpConnectorForm({
                               spellCheck={false}
                             />
                           </Field>
-                          <Field
-                            data-invalid={Boolean(
-                              errors[`value-${header.slot}`],
-                            )}
-                          >
-                            <FieldLabel
-                              htmlFor={fieldId(`value-${header.slot}`)}
+                          {keyMode === 'workspace' && (
+                            <Field
+                              data-invalid={Boolean(
+                                errors[`value-${header.slot}`],
+                              )}
                             >
-                              Value
-                              {draft.headers.length > 1 ? ` ${index + 1}` : ''}
-                            </FieldLabel>
-                            {header.saved ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                className="h-10 justify-between font-normal text-muted-foreground"
-                                onClick={() =>
-                                  update(
-                                    'headers',
-                                    draft.headers.map((h) =>
-                                      h.slot === header.slot
-                                        ? { ...h, saved: false }
-                                        : h,
-                                    ),
-                                  )
-                                }
+                              <FieldLabel
+                                htmlFor={fieldId(`value-${header.slot}`)}
                               >
-                                <span className="truncate">Saved securely</span>
-                                <span>Replace</span>
-                              </Button>
-                            ) : (
-                              <Input
-                                id={fieldId(`value-${header.slot}`)}
-                                type="password"
-                                value={header.value}
-                                autoComplete="new-password"
-                                aria-invalid={Boolean(
-                                  errors[`value-${header.slot}`],
-                                )}
-                                aria-describedby={
-                                  errors[`value-${header.slot}`]
-                                    ? fieldId(`header-${header.slot}-error`)
-                                    : undefined
-                                }
-                                onChange={(event) =>
-                                  update(
-                                    'headers',
-                                    draft.headers.map((h) =>
-                                      h.slot === header.slot
-                                        ? { ...h, value: event.target.value }
-                                        : h,
-                                    ),
-                                  )
-                                }
-                              />
-                            )}
-                          </Field>
+                                Value
+                                {draft.headers.length > 1 ? ` ${index + 1}` : ''}
+                              </FieldLabel>
+                              {header.saved ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-10 justify-between font-normal text-muted-foreground"
+                                  onClick={() =>
+                                    update(
+                                      'headers',
+                                      draft.headers.map((h) =>
+                                        h.slot === header.slot
+                                          ? { ...h, saved: false }
+                                          : h,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  <span className="truncate">Saved securely</span>
+                                  <span>Replace</span>
+                                </Button>
+                              ) : (
+                                <Input
+                                  id={fieldId(`value-${header.slot}`)}
+                                  type="password"
+                                  value={header.value}
+                                  autoComplete="new-password"
+                                  aria-invalid={Boolean(
+                                    errors[`value-${header.slot}`],
+                                  )}
+                                  aria-describedby={
+                                    errors[`value-${header.slot}`]
+                                      ? fieldId(`header-${header.slot}-error`)
+                                      : undefined
+                                  }
+                                  onChange={(event) =>
+                                    update(
+                                      'headers',
+                                      draft.headers.map((h) =>
+                                        h.slot === header.slot
+                                          ? { ...h, value: event.target.value }
+                                          : h,
+                                      ),
+                                    )
+                                  }
+                                />
+                              )}
+                            </Field>
+                          )}
                         </FieldGroup>
                         {(errors[`name-${header.slot}`] ||
                           errors[`value-${header.slot}`]) && (
@@ -1081,13 +1092,15 @@ export function RemoteMcpConnectorForm({
                         {errors.keyHeader}
                       </FieldError>
                     )}
-                    {draft.headers.length > 0 && (
+                    {/* Only a shared key is typed here, so only then is there a
+                        key to warn about. */}
+                    {keyMode === 'workspace' && draft.headers.length > 0 && (
                       <FieldDescription>
                         Only add a key with the permissions this assistant
                         needs.
                       </FieldDescription>
                     )}
-                    {draft.headers.length > 0 && (
+                    {keyMode === 'workspace' && draft.headers.length > 0 && (
                       <ConnectorAccessNotice kind="author" />
                     )}
                     {changedDestination && (

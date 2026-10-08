@@ -159,7 +159,7 @@ export function ConnectorOAuthConnect({
         <div className="flex flex-col gap-4">
           <Alert>
             <AlertDescription>
-              {`Authorizing lets anyone who uses this shared agent act as you on ${serviceName}. Only people already on this agent are affected.`}
+              {`Signing in lets this agent use your ${serviceName} account for everyone who uses this agent. Only people already on it are affected.`}
             </AlertDescription>
           </Alert>
           <div className="flex justify-end">

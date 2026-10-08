@@ -24,7 +24,7 @@ import {
 } from '@/lib/connectors';
 import { BeginOAuthError, beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
 import { HttpError } from '@/lib/http';
-import { myCredentials, adminCredentials } from '@/lib/credentials';
+import { adminCredentials } from '@/lib/credentials';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
 import { UserProvider } from '@/lib/user-context';
 import { AddConnector } from '../AddConnector';
@@ -48,7 +48,6 @@ vi.mock('@/lib/credentials', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/credentials');
   return {
     ...actual,
-    myCredentials: { list: vi.fn() },
     adminCredentials: { list: vi.fn() },
   };
 });
@@ -101,7 +100,6 @@ beforeEach(() => {
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
   vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
   vi.mocked(beginOAuth).mockResolvedValue({ authorizationUrl: 'https://provider.example/auth' });
-  vi.mocked(myCredentials.list).mockResolvedValue([]);
   vi.mocked(adminCredentials.list).mockResolvedValue([]);
   attachMock.mockResolvedValue({ attached: true, changed: true });
 });
@@ -176,7 +174,6 @@ describe('what it shows', () => {
     renderAdd('admin');
     await ready();
     expect(getOAuthStatus).not.toHaveBeenCalled();
-    expect(myCredentials.list).not.toHaveBeenCalled();
     expect(adminCredentials.list).not.toHaveBeenCalled();
     expect(listConnectors).toHaveBeenCalledWith('/admin/connectors');
   });
@@ -430,7 +427,7 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     expect(
-      await screen.findByText(/lets anyone who uses Quill act as you on Notion/),
+      await screen.findByText(/lets Quill use your Notion account for everyone who uses this agent/),
     ).toBeTruthy();
     expect(beginOAuth).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -461,7 +458,7 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     expect(screen.queryByText('Ask the agent’s owner to sign in')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
-    expect(screen.queryByText(/act as you on Notion/)).toBeNull();
+    expect(screen.queryByText(/use your Notion account/)).toBeNull();
   });
 });
 

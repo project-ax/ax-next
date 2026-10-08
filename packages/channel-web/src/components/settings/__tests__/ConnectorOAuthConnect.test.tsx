@@ -96,7 +96,7 @@ describe('consent gate', () => {
     // Consent copy must be present with exact wording.
     expect(
       await screen.findByText(
-        'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
+        'Signing in lets this agent use your MyService account for everyone who uses this agent. Only people already on it are affected.',
       ),
     ).toBeInTheDocument();
     // Connect button is NOT reachable before consent.
@@ -119,13 +119,13 @@ describe('consent gate', () => {
       />,
     );
     await screen.findByText(
-      'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
+      'Signing in lets this agent use your MyService account for everyone who uses this agent. Only people already on it are affected.',
     );
     fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
     await waitFor(() =>
       expect(
         screen.queryByText(
-          'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
+          'Signing in lets this agent use your MyService account for everyone who uses this agent. Only people already on it are affected.',
         ),
       ).toBeNull(),
     );

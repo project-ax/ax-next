@@ -812,11 +812,11 @@ describe('ConnectorEditDialog', () => {
     expect(JSON.stringify(body)).not.toContain('super-secret-value');
   });
 
-  // TASK-797 — the other answer to "where does the secret go": a PRIVATE
-  // connector keeps it with its author (only a shared one may keep it at the
-  // workspace).
+  // Slice 5 — a client secret is only ever the workspace's (global), and only a
+  // shared connector may read one, so a PRIVATE connector can't carry it. Nothing
+  // is written; the admin is told how to use one.
   it(
-    'keeps the client secret with its author when the connector is private',
+    'a private connector with a client secret says to make it Shared, and writes nothing',
     async () => {
       render(
         <ConnectorEditDialog
@@ -847,10 +847,11 @@ describe('ConnectorEditDialog', () => {
         target: { value: 'super-secret-value' },
       });
       fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-      await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
-      expect(credentialsLib.setDestinationCredential).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: { scope: 'user', ownerId: null } }),
-      );
+      expect(
+        await screen.findByText('Make it Shared to use a client secret.'),
+      ).toBeInTheDocument();
+      expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
+      expect(connectorsLib.createConnector).not.toHaveBeenCalled();
     },
   );
 });

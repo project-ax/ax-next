@@ -523,22 +523,22 @@ export function emptyCapabilities(): ConnectorCapabilities {
 // local `refForDestination` re-declaration in `lib/credentials.ts`: a pure
 // string/scope computation with no side effects, pinned against the canonical
 // behavior by `__tests__/connectors-credential-plan.test.ts`. If the upstream
-// derivation changes the scope mapping, ref shape, consent rule, or the consent
-// COPY, update BOTH this module and that test.
+// derivation changes the scope mapping or ref shape, update BOTH this module
+// and that test.
 //
 // THE DERIVATION. `keyMode` decides WHOSE key the connect flow prompts for /
 // spends — reach derives PURELY from where the key attaches (no visibility flag
 // on a credential):
-//   'personal'  → credential scope 'user'   — each user supplies their own key
-//                 the first time (per-user JIT `account:<service>` vault).
+//   'personal'  → credential scope 'agent'  — each agent adds its own key when
+//                 it adds the connector (slice 5: never a person's).
 //   'workspace' → credential scope 'global' — an admin supplies ONE company key;
 //                 every allowed agent spends it as a shared service identity.
 // Both modes use the SAME `account:<service>` ref — only the SCOPE differs.
 // ---------------------------------------------------------------------------
 
 /** The credential scope a connector slot's key binds to (reach-by-attachment).
- *  The connect flow only ever produces 'user' (personal) or 'global' (workspace). */
-export type ConnectorCredentialScope = 'user' | 'global';
+ *  Only ever 'agent' (personal) or 'global' (workspace) — never a person's. */
+export type ConnectorCredentialScope = 'agent' | 'global';
 
 /** One derived credential binding: which scope + vault ref a connector slot spends. */
 export interface ConnectorCredentialPlanEntry {
@@ -580,7 +580,7 @@ export function serviceTagForSlot(
   return connectorId;
 }
 
-/** Build the per-user / company vault ref for a service. Identical to
+/** Build the per-agent / company vault ref for a service. Identical to
  *  `refForDestination({kind:'account', service, slot?})`. TASK-124 — pass `slot`
  *  for a multi-slot connector (→ `account:<service>:<slot>`); omit it for a
  *  single-slot connector (→ collapsed `account:<service>`, back-compat). */
@@ -590,13 +590,13 @@ export function accountRef(service: string, slot?: string): string {
 
 /** keyMode → the credential scope the key attaches to (reach-by-attachment). */
 function scopeForKeyMode(keyMode: ConnectorKeyMode): ConnectorCredentialScope {
-  return keyMode === 'workspace' ? 'global' : 'user';
+  return keyMode === 'workspace' ? 'global' : 'agent';
 }
 
 /**
  * Derive one credential-plan entry per declared credential slot. The connect flow
  * uses this to know WHOSE key to prompt for / spend: a `personal` connector
- * resolves every slot to the per-user vault (`scope:'user'`), a `workspace`
+ * resolves every slot to the agent's own key (`scope:'agent'`), a `workspace`
  * connector to the single company key (`scope:'global'`). A connector with no
  * credential slots yields an empty plan (nothing to prompt — e.g. an MCP server
  * that needs no key); the connect flow treats that as "connected, needs no key".
@@ -650,34 +650,6 @@ export function mechanismHint(connector: Connector): MechanismHint {
   return connector.capabilities.mcpServers[0]?.transport === 'http'
     ? 'header'
     : 'request auth';
-}
-
-/**
- * Whether connecting this connector must surface the shared-key consent moment
- * BEFORE the key becomes spendable. True iff the resolved key is spendable by an
- * identity the keyholder doesn't solely control:
- *   - `keyMode === 'workspace'` — one key, every allowed agent spends it, OR
- *   - `visibility === 'shared'` — bound to a shared / team agent.
- * `personal` + `private` → false (you only ever act as yourself; no consent needed).
- */
-export function requiresSharedKeyConsent(connector: Connector): boolean {
-  return connector.keyMode === 'workspace' || connector.visibility === 'shared';
-}
-
-/**
- * The shared-key consent copy (design "Consent caveat", invariant #5). The proxy
- * stops key THEFT, not authorized MISUSE — sharing a key for USE lets anyone who
- * can drive a shared agent act as that identity. `%SERVICE%` is filled by
- * {@link sharedKeyConsentMessage}. This wording is a SECURITY contract, not
- * throwaway copy — it must match `@ax/connectors`'s `SHARED_KEY_CONSENT_COPY`
- * verbatim (pinned by the credential-plan test).
- */
-export const SHARED_KEY_CONSENT_COPY =
-  "Sharing this key lets their assistant act as you on %SERVICE%. They can't copy the key — but they can use it.";
-
-/** Fill the consent copy with a concrete service name. */
-export function sharedKeyConsentMessage(service: string): string {
-  return SHARED_KEY_CONSENT_COPY.replace('%SERVICE%', service);
 }
 
 /** Extract a server `{ error }` message from a response body excerpt. */

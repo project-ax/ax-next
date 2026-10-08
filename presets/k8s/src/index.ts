@@ -542,8 +542,8 @@ export interface K8sPresetConfig {
   };
   /**
    * When true, load @ax/credentials-admin-routes — mounts
-   * /admin/credentials* (admin-only CRUD over the full scope axis) and
-   * /settings/credentials* (per-user CRUD restricted to scope='user').
+   * /admin/credentials* (admin-only reads over the full scope axis) and the
+   * /admin|/settings/destinations/* credential write routes.
    * Off by default; the chart flips it via
    * `--set credentials.admin.enabled=true` which in turn sets
    * `AX_CREDENTIALS_ADMIN_ENABLED=true` on the host pod.

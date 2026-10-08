@@ -133,12 +133,20 @@ describe('remote MCP form data', () => {
       { slot: 'b', name: 'X-Key', value: 'x\r\nInjected: yes', saved: false },
       { slot: 'c', name: 'x-key', value: '', saved: true },
     ];
-    expect(Object.keys(remoteErrors(draft))).toEqual([
+    expect(Object.keys(remoteErrors(draft, 'workspace'))).toEqual([
       'clientId',
       'name-a',
       'value-b',
       'name-c',
     ]);
+  });
+  // Slice 5 — a per-agent-key connector's header values are never entered in
+  // the editor: each agent adds its own when it adds the connector.
+  it('asks for no header value when each agent adds its own key', () => {
+    const draft = remoteDraft(connector);
+    draft.headers = [{ slot: 'a', name: 'X-Key', value: '', saved: false }];
+    expect(Object.keys(remoteErrors(draft, 'workspace'))).toContain('value-a');
+    expect(Object.keys(remoteErrors(draft, 'personal'))).not.toContain('value-a');
   });
   describe('OAuth or an API key (TASK-761)', () => {
     const keyConnector: Connector = {
@@ -167,16 +175,16 @@ describe('remote MCP form data', () => {
     });
     it('accepts an Authorization header in API-key mode but not with OAuth', () => {
       const draft = remoteDraft(keyConnector);
-      expect(remoteErrors(draft)).toEqual({});
+      expect(remoteErrors(draft, 'workspace')).toEqual({});
       expect(
-        Object.keys(remoteErrors({ ...draft, useKey: false, signIn: 'oauth' })),
+        Object.keys(remoteErrors({ ...draft, useKey: false, signIn: 'oauth' }, 'workspace')),
       ).toEqual(['name-header-key']);
     });
     it('asks for the header that carries the key when API-key mode has none', () => {
       const draft = { ...remoteDraft(keyConnector), headers: [] };
-      expect(Object.keys(remoteErrors(draft))).toEqual(['keyHeader']);
+      expect(Object.keys(remoteErrors(draft, 'workspace'))).toEqual(['keyHeader']);
       expect(
-        remoteErrors({ ...draft, useKey: false, signIn: 'none' }),
+        remoteErrors({ ...draft, useKey: false, signIn: 'none' }, 'workspace'),
       ).toEqual({});
     });
     it('saves API-key mode as header slots with no OAuth slot', () => {
@@ -186,7 +194,7 @@ describe('remote MCP form data', () => {
       draft.headers = [
         { slot: 'header-key', name: 'Authorization', value: 'Bearer k', saved: false },
       ];
-      expect(remoteErrors(draft)).toEqual({});
+      expect(remoteErrors(draft, 'workspace')).toEqual({});
       expect(
         remoteCapabilities(draft, connector.id, connector).credentials,
       ).toEqual([

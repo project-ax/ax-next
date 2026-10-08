@@ -54,5 +54,7 @@ describe('LegacyConnectorEditDialog — whose key (TASK-827)', () => {
     const trigger = await screen.findByLabelText('Whose key');
     expect(trigger).toBeEnabled();
     expect(screen.queryByText(LOCKED)).not.toBeInTheDocument();
+    // Slice 5 — a per-agent key is the default, and the words say whose.
+    expect(trigger).toHaveTextContent('Each agent adds its own key');
   });
 });

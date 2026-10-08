@@ -89,6 +89,14 @@ export const GRANT_REASSURANCE =
  * credential store and never reaches the model or the transcript (§10,
  * TASK-35).
  */
+/**
+ * Slice 5 — a connector's key is the agent's or the workspace's, never the
+ * person answering the card, so the card asks for none. It says who can add it.
+ */
+export function askAdminForConnector(service: string): string {
+  return `Ask a workspace admin to add a ${humanizeId(service)} connector, then add it to this agent.`;
+}
+
 export const KEY_SAFETY =
   'We store this key on the server. The agent never sees it, and it never ' +
   'appears in your conversation.';

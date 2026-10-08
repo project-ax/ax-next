@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   act,
   fireEvent,
@@ -45,14 +45,19 @@ const fixture: Connector = {
   },
 };
 let writes: { url: string; body: Record<string, unknown> }[];
-// Every state-changing request in the order it was sent, so a test can say
-// "the new secret was stored BEFORE the old copy was removed".
+// Every state-changing request in the order it was sent.
 let calls: string[];
-let deletes: { url: string; body: Record<string, unknown> }[];
-let deleteStatus: number;
-// What `GET /settings/credentials` (the signed-in person's own secrets) says.
-let myCredentialsGets: number;
-let myCredentialsResponse: () => Response;
+// What `GET /admin/credentials` says: is the connector's client secret really
+// stored at the workspace? The fixture's is, unless a test says otherwise.
+let adminCredentialsGets: number;
+let adminCredentialsResponse: () => Response;
+const workspaceSecretRow = (ref: string) => ({
+  scope: 'global',
+  ownerId: null,
+  ref,
+  kind: 'api-key',
+  createdAt: '',
+});
 let failLoad = false;
 let failDiscovery = false;
 let discovery: Record<string, unknown>;
@@ -72,10 +77,11 @@ beforeEach(() => {
   fixture.capabilities = structuredClone(initialCapabilities);
   writes = [];
   calls = [];
-  deletes = [];
-  deleteStatus = 204;
-  myCredentialsGets = 0;
-  myCredentialsResponse = () => new Response(JSON.stringify({ credentials: [] }));
+  adminCredentialsGets = 0;
+  adminCredentialsResponse = () =>
+    new Response(
+      JSON.stringify({ credentials: [workspaceSecretRow('account:linear:client')] }),
+    );
   failLoad = false;
   failDiscovery = false;
   discovery = {
@@ -121,20 +127,12 @@ beforeEach(() => {
         return failDiscovery
           ? new Response('', { status: 503 })
           : new Response(JSON.stringify(discovery));
-      if (input === '/settings/credentials') {
-        myCredentialsGets++;
-        return myCredentialsResponse();
+      if (input === '/admin/credentials') {
+        adminCredentialsGets++;
+        return adminCredentialsResponse();
       }
-      if (init?.method === 'DELETE') {
-        calls.push(`DELETE ${input}`);
-        deletes.push({
-          url: input,
-          body: JSON.parse(String(init.body)) as Record<string, unknown>,
-        });
-        return new Response(null, { status: deleteStatus });
-      }
+      if (init?.method && init.method !== 'GET') calls.push(`${init.method} ${input}`);
       if (init?.method === 'POST' || init?.method === 'PATCH') {
-        calls.push(`${init.method} ${input}`);
         writes.push({
           url: input,
           body: JSON.parse(String(init.body)) as Record<string, unknown>,
@@ -150,6 +148,13 @@ beforeEach(() => {
         : new Response(JSON.stringify({ connector: fixture }));
     }),
   );
+});
+// Slice 5 — connector credentials are never a person's: no path through the
+// editor writes (or deletes) one at user scope, whatever the test was about.
+afterEach(() => {
+  expect(calls.filter((c) => c.includes('/settings/'))).toEqual([]);
+  expect(calls.filter((c) => c.startsWith('DELETE'))).toEqual([]);
+  expect(writes.filter((w) => w.body.scope === 'user')).toEqual([]);
 });
 const props = () => ({
   target: fixture,
@@ -344,6 +349,8 @@ describe('remote connector editor', () => {
   });
   it('hides OAuth when the server needs no sign-in and keeps header values out of connector JSON', async () => {
     discovery = { hosts: ['mcp.example.com'], auth: 'none' };
+    // A shared key: the one kind of header value an admin types here.
+    fixture.keyMode = 'workspace';
     await openEditor();
     expect(screen.getByText('Sign-in: none')).toBeVisible();
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
@@ -449,17 +456,17 @@ describe('remote connector editor', () => {
     // The request's key suggestion is only the starting choice.
     const shared = await screen.findByLabelText('One shared key for everyone');
     expect(shared).toBeChecked();
-    fireEvent.click(screen.getByLabelText('Each person adds their own key'));
-    // The header NAME comes from the request; its value is the admin's to type.
-    const value = await screen.findByLabelText(/^Value/);
-    expect(value).toHaveValue('');
-    fireEvent.change(value, { target: { value: 'admin-typed' } });
+    fireEvent.click(screen.getByLabelText('Each agent adds its own key'));
+    // The header NAME comes from the request; its value is each agent's own,
+    // so the admin isn't asked for one.
+    expect(screen.queryByLabelText(/^Value/)).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     await finishAdding();
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes.filter((w) => w.url.includes('/destinations/'))).toEqual([]);
     const create = writes.find((w) => w.url === '/admin/connectors')!;
     expect(create.body).toMatchObject({
       connectorId: 'notion',
@@ -626,12 +633,11 @@ describe('remote connector editor', () => {
       fireEvent.change(screen.getByLabelText('Header name'), {
         target: { value: 'X-Key' },
       });
-      fireEvent.change(screen.getByLabelText('Value'), {
-        target: { value: 'new-key' },
-      });
+      // Each agent signs in and adds its own header value; none is typed here.
+      expect(screen.queryByLabelText('Value')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-      await waitFor(() => expect(writes).toHaveLength(2));
-      expect(writes[1]!.body.capabilities).toMatchObject({
+      await waitFor(() => expect(writes).toHaveLength(1));
+      expect(writes[0]!.body.capabilities).toMatchObject({
         credentials: [
           { kind: 'oauth', clientRegistration: 'auto' },
           { kind: 'api-key', headerName: 'X-Key' },
@@ -734,6 +740,7 @@ describe('remote connector editor', () => {
     });
   });
   it('removes the chosen header and keeps the remaining value and summary', async () => {
+    fixture.keyMode = 'workspace';
     await openEditor();
     fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
@@ -766,7 +773,7 @@ describe('remote connector editor', () => {
       await openNew();
       expect(screen.getByText('Sign-in: OAuth')).toBeVisible();
       expect(
-        screen.getByRole('radio', { name: 'Each person signs in (OAuth)' }),
+        screen.getByRole('radio', { name: 'Each agent signs in (OAuth)' }),
       ).toBeChecked();
       expect(
         screen.getByRole('radio', { name: 'API key in a request header' }),
@@ -786,6 +793,8 @@ describe('remote connector editor', () => {
       ).not.toBeInTheDocument();
       // The headers section opens with an Authorization header ready to fill.
       expect(screen.getByLabelText('Header name')).toHaveValue('Authorization');
+      // One shared key: the admin types it once.
+      fireEvent.click(screen.getByRole('radio', { name: 'One shared key for everyone' }));
       fireEvent.change(screen.getByLabelText('Value'), {
         target: { value: 'Bearer secret-key' },
       });
@@ -971,6 +980,7 @@ describe('tool permissions (TASK-737)', () => {
       serve(inventory({ defaults: [] }));
       const options = await openNew();
       fireEvent.click(screen.getByRole('radio', { name: 'API key in a request header' }));
+      fireEvent.click(screen.getByRole('radio', { name: 'One shared key for everyone' }));
       fireEvent.change(screen.getByLabelText('Value'), {
         target: { value: 'Bearer secret-key' },
       });
@@ -1467,27 +1477,18 @@ describe('tool permissions (TASK-737)', () => {
   });
 });
 
-// TASK-797 — where the custom OAuth client secret lives decides who can sign
-// in. A shared connector keeps it at the workspace, so everyone can; a private
-// one keeps it with its author (only admins author connectors since slice 2a).
-const RE_ENTER = 'Re-enter the client secret so others can sign in';
-const ownSecretRow = {
-  scope: 'user',
-  ownerId: 'me',
-  // The editors only ever stored the canonical ref (TASK-762), so that is the
-  // copy an admin's old secret sits at — and the one the migration deletes.
-  ref: 'account:linear:OAUTH_CLIENT_SECRET',
-  kind: 'api-key',
-  createdAt: '',
-};
+// The custom OAuth client secret is the workspace's: it is stored at global
+// scope, so everyone who signs in can use it. Slice 5 — nothing is stored per
+// person, so a private connector can't carry one at all.
+const CANONICAL_SECRET_REF = 'account:linear:OAUTH_CLIENT_SECRET';
+const NEEDS_SHARED = 'Make it Shared to use a client secret.';
 const secretDestination = {
   kind: 'account',
   service: 'linear',
   slot: 'OAUTH_CLIENT_SECRET',
 };
-const SAVE_FAILED = 'We couldn’t save this connector. Check the settings and try again.';
-// Let the open-time lookup of the person's own secrets finish before looking
-// for a notice that should NOT be there.
+// Let the open-time lookup of the workspace's secrets finish before looking
+// for a state that should NOT change.
 const settle = () => act(() => new Promise<void>((done) => setTimeout(done, 50)));
 function replaceClientSecret(value: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
@@ -1503,8 +1504,6 @@ describe('custom client secret scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(2);
-    // The admin route, at global scope: the settings route would pin it to the
-    // admin's own scope, where nobody else could ever read it.
     expect(writes[0]!.url).toBe('/admin/destinations/account/credential');
     expect(writes[0]!.body).toMatchObject({
       scope: 'global',
@@ -1514,9 +1513,8 @@ describe('custom client secret scope', () => {
     });
     // TASK-762 — the connector still names the slot the route accepts.
     expect(writes[1]!.body.capabilities).toMatchObject({
-      credentials: [{ clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET' }],
+      credentials: [{ clientSecretRef: CANONICAL_SECRET_REF }],
     });
-    expect(deletes).toEqual([]);
   });
 
   it('stores a new admin connector’s secret at the workspace too', async () => {
@@ -1536,84 +1534,82 @@ describe('custom client secret scope', () => {
     expect(writes[0]!.body).toMatchObject({ scope: 'global', ownerId: null });
     expect(writes[1]!.url).toBe('/admin/connectors');
     expect(writes[1]!.body).toMatchObject({ visibility: 'shared' });
-    expect(myCredentialsGets).toBe(0);
   });
 
-  it('keeps a private admin connector’s secret with its author, where only they could read it anyway', async () => {
+  it('a private connector with a client secret says to make it Shared, and writes nothing', async () => {
     fixture.visibility = 'private';
     const options = await openEditor();
     replaceClientSecret('private-secret');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(NEEDS_SHARED)).toBeVisible();
+    expect(screen.getByLabelText(/Client secret/)).toHaveAttribute('aria-invalid', 'true');
+    expect(writes).toEqual([]);
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
+  it('a private connector saves as usual when no new secret was typed', async () => {
+    fixture.visibility = 'private';
+    const options = await openEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
-    expect(writes[0]!.url).toBe('/settings/destinations/account/credential');
-    expect(writes[0]!.body).toMatchObject({ scope: 'user' });
-    expect(myCredentialsGets).toBe(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.url).toBe('/admin/connectors/linear');
+    expect(screen.queryByText(NEEDS_SHARED)).not.toBeInTheDocument();
   });
 });
 
-describe('moving an admin’s own copy of the client secret to the workspace', () => {
+// Slice 5 — an admin's old per-person copy of the secret is gone (purged at
+// boot), so there is nothing to move. The editor only asks whether the
+// workspace copy exists; when it doesn't, the box is simply empty to fill in.
+describe('a client secret missing from the workspace', () => {
   beforeEach(() => {
     const slot = fixture.capabilities.credentials[0] as { clientSecretRef?: string };
-    slot.clientSecretRef = 'account:linear:OAUTH_CLIENT_SECRET';
+    slot.clientSecretRef = CANONICAL_SECRET_REF;
   });
-  it('asks the admin to re-enter the secret, then stores it at the workspace before removing their own copy', async () => {
-    myCredentialsResponse = () =>
-      new Response(JSON.stringify({ credentials: [ownSecretRow] }));
+
+  it('shows the empty box, with no migration notice, and saves the new secret at the workspace', async () => {
+    adminCredentialsResponse = () =>
+      new Response(
+        JSON.stringify({
+          credentials: [
+            // An admin's own old copy says nothing about the workspace's.
+            { ...workspaceSecretRow(CANONICAL_SECRET_REF), scope: 'user', ownerId: 'me' },
+          ],
+        }),
+      );
     const options = await openEditor();
-    expect(await screen.findByText(RE_ENTER)).toBeVisible();
-    // The secret can't be moved without being typed again, so the box is open
-    // without a Replace click.
+    const box = await screen.findByLabelText(/Client secret/);
+    expect(box).toHaveValue('');
     expect(screen.queryByText('Saved securely')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Replace' }),
-    ).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/Client secret/), {
-      target: { value: 'moved-secret' },
-    });
+    expect(screen.queryByText(/Re-enter the client secret/)).not.toBeInTheDocument();
+    fireEvent.change(box, { target: { value: 'fresh-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(calls).toEqual([
       'POST /admin/destinations/account/credential',
-      'DELETE /settings/destinations/account/credential',
       'PATCH /admin/connectors/linear',
     ]);
     expect(writes[0]!.body).toMatchObject({
       scope: 'global',
       destination: secretDestination,
-      payloadB64: btoa('moved-secret'),
+      payloadB64: btoa('fresh-secret'),
     });
-    expect(deletes).toEqual([
-      {
-        url: '/settings/destinations/account/credential',
-        body: { destination: secretDestination, scope: 'user', ownerId: null },
-      },
-    ]);
-    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
   });
 
-  it('looks once on open for an admin editing a shared connector', async () => {
+  it('says it is saved when the workspace has it', async () => {
+    adminCredentialsResponse = () =>
+      new Response(JSON.stringify({ credentials: [workspaceSecretRow(CANONICAL_SECRET_REF)] }));
     await openEditor();
     await settle();
-    expect(myCredentialsGets).toBe(1);
+    expect(adminCredentialsGets).toBe(1);
+    expect(screen.getByText('Saved securely')).toBeVisible();
   });
 
-  it('does not ask when the admin has no copy of this connector’s secret', async () => {
-    myCredentialsResponse = () =>
-      new Response(
-        JSON.stringify({
-          credentials: [
-            { ...ownSecretRow, ref: 'account:other:client' },
-            { ...ownSecretRow, scope: 'global', ownerId: null },
-          ],
-        }),
-      );
-    const options = await openEditor();
+  it('never looks when the connector has no saved secret', async () => {
+    withoutClientId();
+    await openEditor();
     await settle();
-    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
-    expect(screen.getByText('Saved securely')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
-    expect(deletes).toEqual([]);
+    expect(adminCredentialsGets).toBe(0);
   });
 
   it.each([
@@ -1629,50 +1625,14 @@ describe('moving an admin’s own copy of the client secret to the workspace', (
       },
     ],
   ])('stays out of the way when %s', async (_name, respond) => {
-    myCredentialsResponse = respond;
+    adminCredentialsResponse = respond;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const options = await openEditor();
     await settle();
-    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
-    // No error for a lookup that is only a convenience (other alerts, such as
-    // the tool list's, are unrelated).
-    expect(
-      screen
-        .queryAllByRole('alert')
-        .filter((alert) => /secret|couldn’t|can’t/i.test(alert.textContent ?? '')),
-    ).toEqual([]);
     expect(screen.getByText('Saved securely')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
-    expect(deletes).toEqual([]);
-  });
-
-  it('fails the save if the old copy can’t be removed, and a retry finishes the move', async () => {
-    myCredentialsResponse = () =>
-      new Response(JSON.stringify({ credentials: [ownSecretRow] }));
-    deleteStatus = 500;
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const options = await openEditor();
-    await screen.findByText(RE_ENTER);
-    fireEvent.change(screen.getByLabelText(/Client secret/), {
-      target: { value: 'moved-secret' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByText(SAVE_FAILED)).toBeVisible();
-    expect(options.onSaved).not.toHaveBeenCalled();
-    // The connector was not pointed at the new copy before the old one was gone.
-    expect(calls).toEqual([
-      'POST /admin/destinations/account/credential',
-      'DELETE /settings/destinations/account/credential',
-    ]);
-    expect(JSON.stringify(warn.mock.calls)).not.toContain('moved-secret');
-    deleteStatus = 204;
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
-    expect(calls.slice(2)).toEqual([
-      'POST /admin/destinations/account/credential',
-      'DELETE /settings/destinations/account/credential',
-      'PATCH /admin/connectors/linear',
-    ]);
+    expect(calls).toEqual(['PATCH /admin/connectors/linear']);
   });
 });
 
@@ -1684,10 +1644,11 @@ describe('whose key (TASK-827)', () => {
     fireEvent.change(screen.getByLabelText('Header name'), {
       target: { value: 'X-API-Key' },
     });
+  };
+  const typeKey = () =>
     fireEvent.change(screen.getByLabelText('Value'), {
       target: { value: 'the-key' },
     });
-  };
 
   it('an admin adding an API-key connector can choose one shared key for everyone', async () => {
     discovery = NO_SIGN_IN;
@@ -1700,6 +1661,7 @@ describe('whose key (TASK-827)', () => {
     ).toBeVisible();
     fireEvent.click(screen.getByRole('radio', { name: 'One shared key for everyone' }));
     addKeyHeader();
+    typeKey();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[0]!.body.scope).toBe('global');
@@ -1707,17 +1669,39 @@ describe('whose key (TASK-827)', () => {
     expect(writes[1]!.body).toMatchObject({ keyMode: 'workspace', visibility: 'shared' });
   });
 
-  it('defaults to each person adding their own key', async () => {
+  // Slice 5 — a per-agent key is never typed here: each agent adds its own
+  // when it adds the connector. The admin names the header, nothing more.
+  it('defaults to each agent adding its own key, and asks the admin for no key', async () => {
     discovery = NO_SIGN_IN;
     await openNew();
     expect(
-      screen.getByRole('radio', { name: 'Each person adds their own key' }),
+      screen.getByRole('radio', { name: 'Each agent adds its own key' }),
     ).toBeChecked();
     addKeyHeader();
+    expect(screen.queryByLabelText('Value')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Each agent adds its own value when it adds this connector.'),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
-    await waitFor(() => expect(writes).toHaveLength(2));
-    expect(writes[0]!.body.scope).toBe('user');
-    expect(writes[1]!.body).toMatchObject({ keyMode: 'personal' });
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]!.url).toBe('/admin/connectors');
+    expect(writes[0]!.body).toMatchObject({ keyMode: 'personal' });
+    expect(writes[0]!.body.capabilities).toMatchObject({
+      credentials: [{ kind: 'api-key', headerName: 'X-API-Key' }],
+    });
+  });
+
+  it('a key typed for a shared key is not written when the admin switches to per-agent keys', async () => {
+    discovery = NO_SIGN_IN;
+    await openNew();
+    fireEvent.click(screen.getByRole('radio', { name: 'One shared key for everyone' }));
+    addKeyHeader();
+    typeKey();
+    fireEvent.click(screen.getByRole('radio', { name: 'Each agent adds its own key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]!.url).toBe('/admin/connectors');
+    expect(JSON.stringify(writes)).not.toContain(btoa('the-key'));
   });
 
   it('never offers the choice for a server where people sign in with OAuth', async () => {
@@ -1733,7 +1717,7 @@ describe('whose key (TASK-827)', () => {
 
   it.each([
     ['workspace', 'Everyone uses one shared key. To change this, create a new connector.'],
-    ['personal', 'Each person adds their own key. To change this, create a new connector.'],
+    ['personal', 'Each agent adds its own key. To change this, create a new connector.'],
   ] as const)(
     'editing a %s connector shows the choice as one read-only line',
     async (mode, line) => {

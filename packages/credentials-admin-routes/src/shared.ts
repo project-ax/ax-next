@@ -6,7 +6,7 @@ import {
 } from '@ax/core';
 
 // ---------------------------------------------------------------------------
-// Shared route plumbing for /admin/credentials* and /settings/credentials*.
+// Shared route plumbing for /admin/credentials* and the destination routes.
 //
 // Both trees share:
 //   - Duck-typed RouteRequest / RouteResponse (no @ax/http-server import,

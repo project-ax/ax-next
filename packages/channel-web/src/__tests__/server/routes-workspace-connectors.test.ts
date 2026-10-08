@@ -1339,7 +1339,6 @@ describe('agent connector routes', () => {
   describe("DELETE — the agent's own sign-in and keys go with it", () => {
     let sharedSignOuts: Array<{ input: Record<string, unknown>; detachedFirst: boolean }>;
     let sharedSignOutThrows: boolean;
-    let personalSignOuts: unknown[];
     let credentialDeletes: Array<Record<string, unknown>>;
     let credentialDeleteThrows: boolean;
 
@@ -1357,7 +1356,6 @@ describe('agent connector routes', () => {
     beforeEach(() => {
       sharedSignOuts = [];
       sharedSignOutThrows = false;
-      personalSignOuts = [];
       credentialDeletes = [];
       credentialDeleteThrows = false;
       effective.push(
@@ -1371,12 +1369,6 @@ describe('agent connector routes', () => {
       bus.registerService('mcp-oauth:remove-shared-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
         sharedSignOuts.push({ input: i as Record<string, unknown>, detachedFirst: detachCalls.length === 1 });
         if (sharedSignOutThrows) throw new Error('vault row 7 for account:figma is corrupt');
-        return { removed: true };
-      });
-      // Retired from @ax/mcp-oauth in slice 5; stubbed here so a regression
-      // that still calls it from Remove is caught (Remove must not call it).
-      bus.registerService('mcp-oauth:remove-personal-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
-        personalSignOuts.push(i);
         return { removed: true };
       });
       bus.registerService('credentials:delete', 'credentials', async (_c, i: unknown) => {
@@ -1394,7 +1386,6 @@ describe('agent connector routes', () => {
       expect(sharedSignOuts).toEqual([
         { input: { agentId: 'a1', connectorId: 'figma' }, detachedFirst: true },
       ]);
-      expect(personalSignOuts).toEqual([]);
       expect(credentialDeletes).toEqual([]);
     });
 
@@ -1406,7 +1397,6 @@ describe('agent connector routes', () => {
         { scope: 'agent', ownerId: 'a1', ref: 'account:multi:B_KEY' },
       ]);
       expect(sharedSignOuts).toEqual([]);
-      expect(personalSignOuts).toEqual([]);
     });
 
     it("never touches a shared-key (workspace) connector's key, nor a connector that needs nothing", async () => {

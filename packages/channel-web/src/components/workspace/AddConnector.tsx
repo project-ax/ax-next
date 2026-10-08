@@ -520,7 +520,7 @@ function AvailableRow({
         <div className="flex flex-col gap-2 px-3 pb-3">
           <Alert>
             <AlertDescription className="text-[12px]">
-              {`Signing in here lets anyone who uses ${agentName} act as you on ${connector.name}. Only people already on this agent are affected.`}
+              {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
             </AlertDescription>
           </Alert>
           <div className="flex justify-end gap-2">
