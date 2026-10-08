@@ -523,8 +523,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       throw err;
     }
 
-    // TASK-711 — a sign-in is stored ON the agent only for the one shared
-    // connector every member sees under this id. The vault asks the same
+    // TASK-711 — a sign-in is stored ON the agent only for the one live
+    // connector definition under this id. The vault asks the same
     // `credentials:authorize-agent:account` question before it lets anyone READ
     // an agent row for an `account:` ref, so asking it here keeps the two halves
     // in step. Nothing is ever downgraded to the signer: a "no" refuses the
@@ -537,8 +537,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     //                   `already-attached` (the key path's twin), before any
     //                   pending row. Signing in again is the row's own item.
     //   sign-in-again — the same WRITE question first, so a connector no agent
-    //                   may hold a sign-in for (one that isn't the shared
-    //                   definition, e.g. a private one still attached) gets the
+    //                   may hold a sign-in for (one without exactly one
+    //                   live definition, e.g. a deleted one still attached) gets the
     //                   same 403 `agent-store-refused` as an Add, and the person
     //                   is told why. Then the READ question (no `purpose`),
     //                   which also requires the connector to be on the agent
@@ -604,11 +604,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       let clientSecret: string | undefined;
       if (slot.clientSecretRef) {
         // TASK-797 — read with NO agent step (agentId ''). A client secret is
-        // stored at global for a SHARED connector so every signer can use it
+        // stored at global for the connector so every signer can use it
         // (@ax/connectors' credential-authz decides who may read it there); it
         // is never stored on an agent. Slice 5: the vault no longer reads an
         // `account:` ref at user scope, so this walk reaches global only. With the
-        // placeholder agentId the agent step ran first, and for a shared
+        // placeholder agentId the agent step ran first, and for a
         // connector it threw on the vault's ownerId grammar before the walk
         // reached global. The value is used only below, against the provider's
         // token endpoint, and never logged or returned.

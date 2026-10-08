@@ -39,7 +39,6 @@ interface StubSlot {
 /** The subset of `connectors:resolve` output a test stub returns. */
 interface StubResolve {
   keyMode?: 'personal' | 'workspace';
-  requiresSharedKeyConsent?: boolean;
   /**
    * The connector's model-facing blurb. Present here ONLY so a test can prove
    * the digest ignores it — it is prose, not reach, and rewording it must not
@@ -236,6 +235,22 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
   };
   const REACHES: StubResolve = { capabilities: REACH_CAPS };
 
+  it('PINS the digest: a resolve with no shared-key bit hashes to what `requiresSharedKeyConsent: true` hashed to before SIGNINS-9', async () => {
+    // Every connector is shared now, so `connectors:resolve` no longer says
+    // whether approving spends a key that is not only this person's, and
+    // `reachShape` carries `sharedKeyConsent: true` as a literal. That literal
+    // is what keeps an in-flight approval for a connector that WAS shared from
+    // going stale on the deploy. The string below was produced by the old code
+    // (`resolved.requiresSharedKeyConsent === true`) fed a resolve that said
+    // `requiresSharedKeyConsent: true`; a resolve with no such field has to land
+    // on the same bytes. If this fails, the shape moved and every in-flight
+    // request_capability row for a connector re-asks.
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+    expect((predicate as { value: string }).value).toBe('linear@83c589cad3b30036');
+  });
+
   it('DISAGREES when a connector reaches somewhere new under a STABLE id', async () => {
     const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
     const bus = await bootWith(catalog);
@@ -277,9 +292,6 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
         },
       },
       { keyMode: 'workspace', capabilities: REACH_CAPS },
-      // The shared-key consent bit is a first-class field on ResolveOutput, and
-      // approving means spending a key that is not this person's.
-      { requiresSharedKeyConsent: true, capabilities: REACH_CAPS },
     ];
     for (const moved of moves) {
       const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };

@@ -22,7 +22,7 @@
  * WHAT THE DIGEST COVERS (TASK-262, widened by TASK-319). The catalog entry —
  * its description and the connector ids it references — AND, where
  * `connectors:resolve` is on the bus, what each of those ids actually resolves
- * to for this owner: `keyMode`, the shared-key consent bit, hosts, credential
+ * to for this owner: `keyMode`, hosts, credential
  * slots (name, grant kind, OAuth server, OAuth SCOPES, and the PINNED OAuth
  * client + endpoints — `clientId`, `clientSecretRef`, `authServerUrl`,
  * `tokenUrl`), npm/pypi packages, MCP servers (their own hosts, argv, url, env
@@ -243,8 +243,6 @@ interface ConnectorService {
 interface ConnectorsResolveOutput {
   id?: string;
   keyMode?: string;
-  /** A first-class consent bit on `ResolveOutput` — a shared key being spent as one identity. */
-  requiresSharedKeyConsent?: boolean;
   capabilities?: {
     allowedHosts?: string[];
     credentials?: ConnectorSlot[];
@@ -378,9 +376,10 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
   const caps = resolved.capabilities ?? {};
   return {
     keyMode: typeof resolved.keyMode === 'string' ? resolved.keyMode : '',
-    // Whether approving means spending a key that is not this person's. A
-    // consent bit, so a change to it is a changed question.
-    sharedKeyConsent: resolved.requiresSharedKeyConsent === true,
+    // Every connector is shared since SIGNINS-9, so approving always spends a
+    // key that is not only this person's; kept as a literal so approval digests
+    // don't change.
+    sharedKeyConsent: true,
     hosts: asSet(caps.allowedHosts),
     slots: slotShapes(caps.credentials),
     npm: asSet(caps.packages?.npm),

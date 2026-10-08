@@ -35,7 +35,7 @@ import type { McpOAuthDatabase } from '../migrations.js';
 //     `account:<id>:OAUTH_CLIENT_SECRET`, and @ax/connectors'
 //     `credentials:authorize-global:account` provider lets the vault hand that one
 //     global row to anybody who resolves the connector, but ONLY when the connector
-//     is the sole shared definition, an oauth slot names exactly that ref, the ref
+//     is the sole live definition, an oauth slot names exactly that ref, the ref
 //     is not a plan slot, and the owner is (still) an admin;
 //   - `begin` reads the secret with a ctx whose agentId is '' (user -> global, no
 //     agent step). The old placeholder agentId `'@ax/mcp-oauth'` made the vault's
@@ -291,18 +291,20 @@ async function boot() {
   if (!begin) throw new Error('begin route not registered');
 
   /** Author a custom-client OAuth connector the way the editor's save does. */
-  const author = (
-    owner: Actor,
-    visibility: 'shared' | 'private',
-    connectorId = 'gmail',
-  ) =>
+  const author = (owner: Actor, connectorId = 'gmail') =>
     h.bus.call('connectors:upsert', h.ctx({ userId: owner.id }), {
       userId: owner.id,
       connectorId,
       name: 'Gmail',
       keyMode: 'personal',
-      visibility,
       capabilities: gmailCapabilities(),
+    });
+
+  /** Soft-delete the owner's definition, as an admin's Delete does. */
+  const remove = (owner: Actor, connectorId = 'gmail') =>
+    h.bus.call('connectors:delete', h.ctx({ userId: owner.id }), {
+      userId: owner.id,
+      connectorId,
     });
 
   /** An admin's shared connector keeps the client secret at GLOBAL scope. */
@@ -332,7 +334,7 @@ async function boot() {
     return createMcpOAuthStore(db).getPending(state);
   };
 
-  return { h, users, author, putGlobalSecret, signIn, pendingRow };
+  return { h, users, author, remove, putGlobalSecret, signIn, pendingRow };
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +343,7 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
     // UNFIXED: FAILS with 400 oauth_client_secret_unavailable (the secret sat at the
     // author's user scope, and `begin`'s placeholder agentId broke the walk to global).
     const s = await boot();
-    await s.author(ROOT, 'shared');
+    await s.author(ROOT);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
 
     const out = await s.signIn(ALICE);
@@ -370,7 +372,7 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
 
   it('the admin signs in to their own shared connector too (global secret, no user-scope copy)', async () => {
     const s = await boot();
-    await s.author(ROOT, 'shared');
+    await s.author(ROOT);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
 
     const out = await s.signIn(ROOT);
@@ -385,7 +387,7 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
     // The row is what a non-admin can end up with (legacy data, an un-gated write
     // path). The role is checked at read time, so the global row stays closed.
     const s = await boot();
-    await s.author(BOB, 'shared');
+    await s.author(BOB);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
 
     const out = await s.signIn(ALICE);
@@ -397,7 +399,7 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
 
   it('demoting the admin closes the global secret again, at once', async () => {
     const s = await boot();
-    await s.author(ROOT, 'shared');
+    await s.author(ROOT);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
     expect((await s.signIn(ALICE)).status).toBe(200);
 
@@ -409,9 +411,10 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
     expect(secretLeaked()).toBe(false);
   });
 
-  it('a PRIVATE admin connector is invisible to a non-admin: 404 not-found, and the secret goes nowhere', async () => {
+  it('a connector with no live definition is not-found: 404, and the global secret it left behind goes nowhere', async () => {
     const s = await boot();
-    await s.author(ROOT, 'private');
+    await s.author(ROOT);
+    await s.remove(ROOT);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
 
     const out = await s.signIn(ALICE);
@@ -422,14 +425,15 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
     expect(secretLeaked()).toBe(false);
   });
 
-  it('a private connector of the signer’s own, named like the admin’s shared one, does not borrow the global secret', async () => {
-    // alice's own definition shadows the shared one for her id lookup, so it is not
-    // "the sole shared definition she resolves". Since every sign-in belongs to an
+  it('two live definitions of one id fail closed: 403 agent-store-refused, and the signer’s own copy does not borrow the global secret', async () => {
+    // alice's own definition shadows the admin's for her id lookup, so it is not
+    // "the sole live definition she resolves". Since every sign-in belongs to an
     // agent, @ax/connectors refuses to let her agent hold it at all — before any
-    // vault read or provider request — so the global row stays closed.
+    // vault read or provider request — so the global row stays closed. A duplicate
+    // id fails closed until an admin deletes one.
     const s = await boot();
-    await s.author(ROOT, 'shared');
-    await s.author(ALICE, 'private');
+    await s.author(ROOT);
+    await s.author(ALICE);
     await s.putGlobalSecret(SECRET_REF, ADMIN_SECRET);
 
     const out = await s.signIn(ALICE);

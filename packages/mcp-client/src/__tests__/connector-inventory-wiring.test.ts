@@ -192,10 +192,6 @@ async function seedConnector(h: TestHarness): Promise<ResolveOutput> {
     connectorId: CONNECTOR_ID,
     name: 'Inventory fake',
     keyMode: 'personal',
-    // Shared: a personal connector's key lives on the AGENT it is added to, and
-    // an agent-scope `account:` key is readable only through the one shared
-    // definition (TASK-711) that is attached to that agent (the stub above).
-    visibility: 'shared',
     capabilities: {
       allowedHosts: [HOST],
       // Bound to `primary` only: `secondary` must be listed without it.

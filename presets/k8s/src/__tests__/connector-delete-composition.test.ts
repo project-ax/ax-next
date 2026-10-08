@@ -114,18 +114,12 @@ function caps(id: string) {
   };
 }
 
-async function upsertConnector(
-  h: TestHarness,
-  owner: string,
-  id: string,
-  visibility: 'shared' | 'private',
-): Promise<void> {
+async function upsertConnector(h: TestHarness, owner: string, id: string): Promise<void> {
   await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
     userId: owner,
     connectorId: id,
     name: id,
     keyMode: 'personal',
-    visibility,
     capabilities: caps(id),
   });
 }
@@ -243,12 +237,12 @@ describe('connector delete composition: real connectors + agents + credentials +
   it('boot removal, runtime admin delete, and a same-id survivor all leave agents consistent', async () => {
     // ---- Seed boot (no auth provider → the non-admin sweep skips) ----------
     const seed = await boot({ withAuth: false });
-    await upsertConnector(seed, USER, 'usertool', 'shared'); // non-admin's: removed at boot
-    await upsertConnector(seed, USER, 'sameid', 'shared'); // non-admin's, but an admin's survives
-    await upsertConnector(seed, ADMIN, 'sameid', 'shared');
-    await upsertConnector(seed, ADMIN, 'admintool', 'shared'); // removed at runtime (b)
-    await upsertConnector(seed, ADMIN, 'dupid', 'shared'); // (c): removed at runtime…
-    await upsertConnector(seed, ADMIN2, 'dupid', 'private'); // …while this one keeps the id
+    await upsertConnector(seed, USER, 'usertool'); // non-admin's: removed at boot
+    await upsertConnector(seed, USER, 'sameid'); // non-admin's, but an admin's survives
+    await upsertConnector(seed, ADMIN, 'sameid');
+    await upsertConnector(seed, ADMIN, 'admintool'); // removed at runtime (b)
+    await upsertConnector(seed, ADMIN, 'dupid'); // (c): removed at runtime…
+    await upsertConnector(seed, ADMIN2, 'dupid'); // …while this one keeps the id
     const agentA = await newAgent(seed, ['usertool', 'sameid', 'admintool', 'dupid']);
     const agentB = await newAgent(seed, ['usertool', 'keepme']);
 
@@ -288,7 +282,7 @@ describe('connector delete composition: real connectors + agents + credentials +
     expect(await attachments(agentA)).toEqual(['sameid', 'admintool', 'dupid']);
     expect(await attachments(agentB)).toEqual([]);
     // usertool's agents' sign-ins are purged; sameid's stay (an admin's live
-    // shared connector still carries the id). Every person-level row is gone:
+    // connector still carries the id). Every person-level row is gone:
     // @ax/credentials' one-time boot purge.
     expect(await keys(h)).toEqual(
       [
@@ -300,7 +294,7 @@ describe('connector delete composition: real connectors + agents + credentials +
     // mcp-oauth's boot sweep dropped the marker for the id removed at boot.
     expect(await markers()).toEqual([`agent/${agentA}/admintool`, `agent/${agentA}/dupid`]);
 
-    // ---- (b) Runtime admin delete of a shared connector (id now dead) ------
+    // ---- (b) Runtime admin delete of a connector (id now dead) -------------
     await h.bus.call('connectors:delete', h.ctx({ userId: ADMIN }), {
       userId: ADMIN,
       connectorId: 'admintool',
@@ -311,18 +305,25 @@ describe('connector delete composition: real connectors + agents + credentials +
     expect((await markers()).filter((m) => m.endsWith('/admintool'))).toEqual([]);
 
     // ---- (c) Runtime delete while a same-id connector survives -------------
+    // Two live definitions of `dupid` (ADMIN's and ADMIN2's): the id is
+    // ambiguous, so it fails closed — agent A's stored sign-in reads as absent
+    // (the vault's own "no such credential"), not as whichever definition
+    // happens to be asked about. The read after the delete below is the control:
+    // the same row is there, and the survivor can read it.
+    expect(await readAs(h, ADMIN, agentA, 'account:dupid')).toBe('error:credential-not-found');
     await h.bus.call('connectors:delete', h.ctx({ userId: ADMIN }), {
       userId: ADMIN,
       connectorId: 'dupid',
       purgeGlobal: true,
     });
     expect(await liveConnectors()).toEqual([`${ADMIN}/sameid`, `${ADMIN2}/dupid`]);
-    // The id is still live (ADMIN2's private one): attachments and the agent's
-    // marker stay. The agents' sign-ins belonged to the deleted SHARED
-    // definition (a private twin can't read them), so they go.
+    // The id is still live (ADMIN2's): attachments, the agent's marker AND the
+    // agent's sign-in stay, because the survivor is now the one definition that
+    // can read them. It works again, with no re-sign-in.
     expect(await attachments(agentA)).toEqual(['sameid', 'dupid']);
-    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([]);
+    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([`agent/${agentA}/account:dupid`]);
     expect(await markers()).toEqual([`agent/${agentA}/dupid`]);
+    expect(await readAs(h, ADMIN, agentA, 'account:dupid')).toBe(`secret-${agentA}-account:dupid`);
     // Nothing per person anywhere.
     expect((await keys(h)).filter((k) => k.startsWith('user/'))).toEqual([]);
   });

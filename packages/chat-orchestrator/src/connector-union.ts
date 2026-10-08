@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 // what the person sees on the agent and what the sandbox gets cannot drift.
 // The orchestrator only forwards the agent row's `connector_attachments` +
 // `connector_exclusions` and folds the result. New definitions require an
-// explicit attachment; foreign shared items never attach implicitly — both
+// explicit attachment; other owners' definitions never attach implicitly — both
 // enforced store-side by the hook.
 //
 // NON-FATAL. Connectors are ADDITIVE reach. Every resolve here fails OPEN (log +
@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 // terminates the session (same posture as `skills:list-defaults` /
 // `host-grants:list`).
 //
-// APPROVAL. Catalog/private connectors are admin/owner-CURATED, so their
+// APPROVAL. Connectors are admin-CURATED, so their
 // caps flow into the sandbox directly — the SAME trust posture as catalog/default
 // SKILL caps (which `skills:resolve` / `skills:list-defaults` return ungated). The
 // approved-caps wall (TASK-93) gates MODEL-AUTHORED declarations at their resolver
@@ -472,7 +472,7 @@ export interface FoldConnectorResult {
  * so the check asks the vault about exactly the rows the open would resolve.
  *
  * TASK-797 — `account:<id>:OAUTH_CLIENT_SECRET` is where a connector's OAuth
- * CLIENT secret lives, and an admin's shared connector stores it at global
+ * CLIENT secret lives, and an admin's connector stores it at global
  * scope for every signer. It is used host-side only, by @ax/mcp-oauth, against
  * the provider's token endpoint; it never enters the credential proxy, so a
  * slot that would resolve to that ref is not returned. (@ax/connectors'

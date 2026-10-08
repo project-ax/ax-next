@@ -4101,7 +4101,6 @@ describe('chat-orchestrator', () => {
             keyMode: 'personal',
             capabilities: capsOf(c),
             credentialPlan: [],
-            requiresSharedKeyConsent: false,
           };
         },
       },

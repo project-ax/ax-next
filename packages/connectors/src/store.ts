@@ -202,8 +202,9 @@ function rowToSummary(
 }
 
 /**
- * Prefer the caller's definition. An id with more than one live row (only a
- * legacy duplicate the SIGNINS-9 boot step did not resolve) fails closed.
+ * Prefer the caller's definition. An id with more than one live row is a
+ * legacy duplicate that nothing resolves; it fails closed until an admin
+ * deletes one.
  */
 function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
   return rows.find((row) => row.owner_user_id === userId) ??

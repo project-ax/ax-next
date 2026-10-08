@@ -1296,7 +1296,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // TASK-91 (connectors-first-class, design Phase 1). Registers the five
   // `connectors:*` service hooks (list/get/upsert/delete/resolve) backed by its
   // own `connectors_v1_*` table — the one source of truth for the first-class
-  // Connector object `{ id, name, description, usageNote, keyMode, visibility } +
+  // Connector object `{ id, name, description, usageNote, keyMode } +
   // Capabilities` (the neutral capability shape lifted into @ax/skills-parser by
   // TASK-90). Calls `database:get-instance` (loaded above; topo-sort orders it).
   //
