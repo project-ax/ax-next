@@ -345,7 +345,7 @@ export function AgentConnectors({
           onBack={() => onView?.(null)}
           onRemove={() => setConfirming(open)}
           {...(canSetAccount ? { onSetUp: () => onSetUp(open) } : {})}
-          onHealthStale={() => void refresh()}
+          onHealthStale={refresh}
         />
       ) : (
       <>
