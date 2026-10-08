@@ -26,6 +26,8 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 //                                              ownerId are forced to the
 //                                              authenticated user; body values
 //                                              for those fields are ignored).
+//                                              No `account` kind: connector
+//                                              keys are never per person (404).
 //
 //   Both write trees are implemented in destination-routes.ts.
 //

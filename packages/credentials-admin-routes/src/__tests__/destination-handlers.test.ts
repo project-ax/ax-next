@@ -576,12 +576,14 @@ describe('destination credential handlers', () => {
     expect(stored?.ownerId).toBe('alice');
   });
 
-  // JIT P2 — service-keyed user vault. An account destination stores the
-  // shared key under account:<service> at user scope.
-  it('POST /settings/destinations/account: stores under account:<service> at user scope', async () => {
+  // Agent-owned sign-ins, slice 5 — connector keys (`account:` destinations)
+  // are never stored per person, so the /settings account route is GONE (404)
+  // for both POST and DELETE, and nothing reaches the vault. Other destination
+  // kinds keep their /settings route (the skill-slot tests around this one).
+  it('POST /settings/destinations/account is gone (404) and stores nothing', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });
-    const { res, statusOf } = mkRes();
+    const { res, statusOf, bodyOf } = mkRes();
 
     await handlers.createSettings(
       mkReq({
@@ -597,35 +599,114 @@ describe('destination credential handlers', () => {
       res,
     );
 
-    expect(statusOf()).toBe(204);
-
-    const out = await bus.call<
-      Record<string, never>,
-      { credentials: Array<{ ref: string; scope: string; ownerId: string | null; kind: string }> }
-    >(
+    expect(statusOf()).toBe(404);
+    expect(bodyOf()).toEqual({ error: 'not-found' });
+    const out = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
       'credentials:list',
       makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
       {},
     );
-    const stored = out.credentials.find((c) => c.ref === 'account:linear');
-    expect(stored).toMatchObject({ ref: 'account:linear', scope: 'user', ownerId: 'alice', kind: 'api-key' });
+    expect(out.credentials.map((c) => c.ref)).toEqual([]);
   });
 
-  it('POST /settings/destinations/account: accepts a connector-id-shaped service (underscore / leading digit)', async () => {
+  it('DELETE /settings/destinations/account is gone (404) and never touches the vault', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    // Plant an old person-level row (a vault written before slice 5 holds
+    // them until the boot purge) by copying a sealed blob into user scope.
+    const seed = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await bus.call('credentials:set', seed, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'account:linear',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('old'),
+    });
+    const { blob } = await bus.call<object, { blob: Uint8Array }>('credentials:store-blob:get', seed, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'account:linear',
+    });
+    await bus.call('credentials:store-blob:put', seed, { scope: 'user', ownerId: 'alice', ref: 'account:linear', blob });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.destroySettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: { destination: { kind: 'account', service: 'linear' }, scope: 'user', ownerId: null },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(404);
+    expect(bodyOf()).toEqual({ error: 'not-found' });
+    // The route never reached the vault: alice's old row is still listed.
+    const out = await bus.call<object, { credentials: Array<{ ref: string; ownerId: string | null }> }>(
+      'credentials:list',
+      seed,
+      { scope: 'user', ownerId: 'alice' },
+    );
+    expect(out.credentials.map((c) => c.ref)).toEqual(['account:linear']);
+  });
+
+  it('SECURITY: /admin refuses an account key at USER scope (POST and DELETE) and stores nothing', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+
+    const post = mkRes();
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'linear' },
+          scope: 'user',
+          ownerId: 'alice',
+          kind: 'api-key',
+          payloadB64: Buffer.from('lin-secret').toString('base64'),
+        },
+      }),
+      post.res,
+    );
+    expect(post.statusOf()).toBe(400);
+    expect(post.bodyOf()).toEqual({ error: 'account-not-per-person' });
+
+    const del = mkRes();
+    await handlers.destroy(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: { destination: { kind: 'account', service: 'linear' }, scope: 'user', ownerId: 'alice' },
+      }),
+      del.res,
+    );
+    expect(del.statusOf()).toBe(400);
+    expect(del.bodyOf()).toEqual({ error: 'account-not-per-person' });
+
+    const out = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.map((c) => c.ref)).toEqual([]);
+  });
+
+  // The account destination grammar still guards the ADMIN route, which is
+  // where a shared connector's company key and OAuth client secret are written
+  // (global scope).
+  it('POST /admin/destinations/account: accepts a connector-id-shaped service (underscore / leading digit)', async () => {
     // After credentials-into-connectors the account `service` is ALWAYS the
     // connector id, which permits `_` and a leading digit (e.g. `1password`,
     // `my_crm` per the connectors id grammar). The destination grammar must accept
     // anything a valid connector id can be, or such connectors are unconnectable.
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'account' },
         body: {
           destination: { kind: 'account', service: '1password_cli' },
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: Buffer.from('s').toString('base64'),
@@ -639,17 +720,17 @@ describe('destination credential handlers', () => {
 
   // TASK-124 — per-slot credential refs. A multi-slot connector supplies a
   // `slot` so the key lands under the distinct `account:<service>:<slot>` row.
-  it('POST /settings/destinations/account: stores under account:<service>:<slot> when slot is supplied', async () => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+  it('POST /admin/destinations/account: stores under account:<service>:<slot> at global when slot is supplied', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'account' },
         body: {
           destination: { kind: 'account', service: 'github', slot: 'GITHUB_TOKEN' },
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: Buffer.from('gh-secret').toString('base64'),
@@ -671,24 +752,24 @@ describe('destination credential handlers', () => {
     const stored = out.credentials.find((c) => c.ref === 'account:github:GITHUB_TOKEN');
     expect(stored).toMatchObject({
       ref: 'account:github:GITHUB_TOKEN',
-      scope: 'user',
-      ownerId: 'alice',
+      scope: 'global',
+      ownerId: null,
       kind: 'api-key',
     });
   });
 
-  it('POST /settings/destinations/account: rejects an invalid slot grammar (400)', async () => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+  it('POST /admin/destinations/account: rejects an invalid slot grammar (400)', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'account' },
         body: {
           // lowercase slot — rejected by the SCREAMING_SNAKE slot grammar.
           destination: { kind: 'account', service: 'github', slot: 'github_token' },
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: 'eA==',
@@ -710,17 +791,17 @@ describe('destination credential handlers', () => {
   it.each([
     ['a request-header slot', 'HEADER_0F3C2A9B7D1E4F6A8B0C2D4E6F8A0B1C'],
     ['the OAuth client secret slot', 'OAUTH_CLIENT_SECRET'],
-  ])('POST /settings/destinations/account: accepts %s the connector editor mints', async (_label, slot) => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+  ])('POST /admin/destinations/account: accepts %s the connector editor mints', async (_label, slot) => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf, bodyOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'account' },
         body: {
           destination: { kind: 'account', service: 'remote-mcp', slot },
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: Buffer.from('Bearer k').toString('base64'),
@@ -752,17 +833,17 @@ describe('destination credential handlers', () => {
     '1HEADER',
     'HEADER:X',
     `H${'A'.repeat(64)}`,
-  ])('POST /settings/destinations/account: still refuses slot %s (400 invalid account slot)', async (slot) => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+  ])('POST /admin/destinations/account: still refuses slot %s (400 invalid account slot)', async (slot) => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf, bodyOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'account' },
         body: {
           destination: { kind: 'account', service: 'remote-mcp', slot },
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: 'eA==',
@@ -777,17 +858,17 @@ describe('destination credential handlers', () => {
     );
   });
 
-  it('POST /settings/destinations/account: rejects when destination.kind mismatches route param (400)', async () => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
+  it('POST /admin/destinations/account: rejects when destination.kind mismatches route param (400)', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf } = mkRes();
 
-    await handlers.createSettings(
+    await handlers.create(
       mkReq({
         params: { destinationKind: 'skill-slot' }, // route says skill-slot
         body: {
           destination: { kind: 'account', service: 'linear' }, // body says account
-          scope: 'user',
+          scope: 'global',
           ownerId: null,
           kind: 'api-key',
           payloadB64: 'eA==',
@@ -799,16 +880,38 @@ describe('destination credential handlers', () => {
     expect(statusOf()).toBe(400);
   });
 
-  it('POST /settings/destinations/account: rejects an invalid service slug (400)', async () => {
+  it('POST /admin/destinations/account: rejects an invalid service slug (400)', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'Linear' }, // uppercase — rejected by grammar
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'eA==',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
+  it('POST /settings: a body claiming account behind the skill-slot route is still a 400 mismatch', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });
     const { res, statusOf } = mkRes();
 
     await handlers.createSettings(
       mkReq({
-        params: { destinationKind: 'account' },
+        params: { destinationKind: 'skill-slot' },
         body: {
-          destination: { kind: 'account', service: 'Linear' }, // uppercase — rejected by grammar
+          destination: { kind: 'account', service: 'linear' },
           scope: 'user',
           ownerId: null,
           kind: 'api-key',
