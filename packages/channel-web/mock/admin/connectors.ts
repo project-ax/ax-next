@@ -4,8 +4,9 @@ import { requireSession } from '../auth';
 
 /**
  * Offline Vite mock for the connector REST surface. Both route bundles list
- * owned and shared definitions. Only the admin bundle writes (slice 2a); new
- * definitions default to shared. Mirrors the real connectors plugin.
+ * every definition (every connector is shared). Only the admin bundle writes
+ * (slice 2a); any admin may edit or delete any definition, but changing
+ * keyMode or capabilities is owner-only. Mirrors the real connectors plugin.
  *
  * The real backend registers these routes in `@ax/connectors`
  * (`mountAdminRoutes` → `admin-routes.ts`), bridging the `connectors:*` service
@@ -30,7 +31,7 @@ import { requireSession } from '../auth';
  *   GET    /admin/connectors/authored              → { drafts: ConnectorRequestView[] }
  *   DELETE /admin/connectors/authored/:connectorId → 204
  *          (slice 2c — "Awaiting approval": every person's connector requests;
- *          admin bundle only. A SHARED create clears every request with its id;
+ *          admin bundle only. A create clears every request with its id;
  *          the id `authored` is reserved.)
  *
  * Note the path has NO `/api/` prefix — it matches the real `@ax/connectors`
@@ -41,8 +42,7 @@ import { requireSession } from '../auth';
  * `/settings/connectors*` is READ-ONLY and open to any signed-in user: list +
  * show only. A write on those paths answers 405 (Allow: GET), as production's
  * router does, and `<base>/:id/tool-permissions` has no route there (404).
- * Private foreign rows are
- * invisible; shared foreign rows are read-only. Credential values never appear.
+ * Foreign rows are read-only on the user surface. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
  * channel-web is not a `@ax/connectors` dependency and plugins talk through the
@@ -154,9 +154,9 @@ function emptyCapabilities(): Capabilities {
   return { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
 }
 
-function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
+function toSummary(row: StoredConnector, actorId: string, mode: RouteMode): ConnectorSummary {
   return {
-    canEdit: row.userId === actorId,
+    canEdit: row.userId === actorId || mode === 'admin',
     requiresAttachment: row.requiresAttachment ?? false,
     id: row.connectorId,
     name: row.name,
@@ -168,8 +168,8 @@ function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
   };
 }
 
-function toConnector(row: StoredConnector, actorId: string): Connector {
-  return { ...toSummary(row, actorId), capabilities: row.capabilities };
+function toConnector(row: StoredConnector, actorId: string, mode: RouteMode): Connector {
+  return { ...toSummary(row, actorId, mode), capabilities: row.capabilities };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -258,8 +258,18 @@ function validateUpsert(
   };
 }
 
+// The user surface is read-only for foreign rows; on the admin surface any admin
+// may edit or delete any connector (mirrors the real route's `writeOwner`).
 function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boolean {
-  return row.userId !== actorId || (mode === 'user' && row.keyMode === 'workspace');
+  return mode === 'user' && (row.userId !== actorId || row.keyMode === 'workspace');
+}
+
+/** Mirrors the real `changesOwnerOnlyFields`: keyMode and capabilities. */
+function changesOwnerOnlyFields(existing: StoredConnector, body: Record<string, unknown>): boolean {
+  if ('keyMode' in body && body.keyMode !== existing.keyMode) return true;
+  if ('capabilities' in body && JSON.stringify(body.capabilities) !== JSON.stringify(existing.capabilities))
+    return true;
+  return false;
 }
 
 /** Reject admin-only write fields on the user surface (mirrors the real route's
@@ -405,7 +415,7 @@ function connectorsMiddleware(
     // ---- /admin/connectors/authored[/:connectorId] (slice 2c) ---------------
     if (isRequestRoute) {
       if (path === requestsPath && method === 'GET') {
-        // Ids already live as a shared connector are hidden; one row per
+        // Ids already live as a connector are hidden; one row per
         // (person, id) — the newest of that person's agents' requests.
         const live = new Set(
           connectors.list().map((c) => c.connectorId),
@@ -452,7 +462,7 @@ function connectorsMiddleware(
 
     // ---- collection routes -------------------------------------------------
     if (path === base && method === 'GET') {
-      send(res, 200, { connectors: availableRows().map((row) => toSummary(row, actor.id)) });
+      send(res, 200, { connectors: availableRows().map((row) => toSummary(row, actor.id, mode)) });
       return true;
     }
 
@@ -506,7 +516,7 @@ function connectorsMiddleware(
       // Slice 2c — approval is creation: a new connector resolves every
       // request for its id, whoever asked.
       if (!existing) clearRequests(row.connectorId);
-      send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
+      send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id, mode), created: !existing });
       return true;
     }
 
@@ -569,7 +579,6 @@ function connectorsMiddleware(
     const idMatch = path.match(idRe);
     if (idMatch && idMatch[1]) {
       const connectorId = decodeURIComponent(idMatch[1]);
-      const key = rowKey(actor.id, connectorId);
 
       if (method === 'GET') {
         const row = availableById(connectorId);
@@ -577,7 +586,7 @@ function connectorsMiddleware(
           send(res, 404, { error: 'not-found' });
           return true;
         }
-        send(res, 200, { connector: toConnector(row, actor.id) });
+        send(res, 200, { connector: toConnector(row, actor.id, mode) });
         return true;
       }
 
@@ -602,6 +611,13 @@ function connectorsMiddleware(
             return true;
           }
         }
+        // Another admin may relabel a connector, but keyMode and capabilities
+        // stay the owner's (mirrors the real route).
+        const crossOwner = existing.userId !== actor.id;
+        if (crossOwner && changesOwnerOnlyFields(existing, body)) {
+          send(res, 403, { error: 'owner-only-change' });
+          return true;
+        }
         // TASK-827 — whose key a connector uses is fixed once it exists
         // (mirrors the real route). Re-sending the same value is fine.
         if (body.keyMode !== undefined && body.keyMode !== existing.keyMode) {
@@ -617,15 +633,15 @@ function connectorsMiddleware(
         // URL slug is authoritative, so a body field can't rename or hijack.
         const row: StoredConnector = {
           ...result.value,
-          id: key,
-          userId: actor.id,
+          id: existing.id,
+          userId: existing.userId,
           connectorId,
           requiresAttachment: existing.requiresAttachment ?? false,
           createdAt: existing.createdAt,
           updatedAt: new Date().toISOString(),
         };
         connectors.upsert(row);
-        send(res, 200, { connector: toConnector(row, actor.id), created: false });
+        send(res, 200, { connector: toConnector(row, actor.id, mode), created: false });
         return true;
       }
 
@@ -642,7 +658,7 @@ function connectorsMiddleware(
           send(res, 403, { error: 'read-only' });
           return true;
         }
-        connectors.remove(key);
+        connectors.remove(existing.id);
         send(res, 204);
         return true;
       }

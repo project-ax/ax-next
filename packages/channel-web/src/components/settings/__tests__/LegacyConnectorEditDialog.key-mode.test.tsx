@@ -41,7 +41,7 @@ describe('LegacyConnectorEditDialog — whose key (TASK-827)', () => {
       <LegacyConnectorEditDialog target={SUMMARY} open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     const trigger = await screen.findByLabelText('Whose key');
-    await waitFor(() => expect(trigger).toHaveTextContent(/Shared/));
+    await waitFor(() => expect(trigger).toHaveTextContent(/One shared key for everyone/));
     expect(trigger).toBeDisabled();
     expect(screen.getByText(LOCKED)).toBeInTheDocument();
   });

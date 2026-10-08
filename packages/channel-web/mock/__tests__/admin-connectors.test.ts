@@ -331,7 +331,7 @@ describe('mock admin connectors', () => {
     }
   });
 
-  it('every connector is shared: another admin sees it, and the mock leaves editing to its owner', async () => {
+  it('every connector is shared: any admin sees and edits it, but keyMode and capabilities stay the owner’s', async () => {
     const { url, close } = await startServer(store);
     try {
       // A second admin (u3) creates a connector.
@@ -341,32 +341,51 @@ describe('mock admin connectors', () => {
         body: JSON.stringify(upsertBody()),
       });
 
-      // The other admin sees it, read-only, and with no visibility field.
+      // The other admin sees it, editable, with no visibility field.
       const adminList = await fetch(`${url}/admin/connectors`, { headers: { cookie: ADMIN } });
       const listed = (await adminList.json()).connectors;
       expect(listed).toHaveLength(1);
-      expect(listed[0]).toMatchObject({ id: 'gdrive', canEdit: false });
+      expect(listed[0]).toMatchObject({ id: 'gdrive', canEdit: true });
       expect(listed[0]).not.toHaveProperty('visibility');
 
       const get = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
       await expectStatus(get, 200);
 
+      // Another admin's relabel is fine, and lands on the owner's row.
       const patch = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'PATCH',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'hijack' }),
+        body: JSON.stringify({ name: 'Renamed' }),
       });
-      await expectStatus(patch, 403);
+      await expectStatus(patch, 200);
+      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
+      const owned = (await ownerGet.json()).connector;
+      expect(owned.name).toBe('Renamed');
+      expect(owned.canEdit).toBe(true);
 
+      // Changing keyMode is refused the way the real route refuses it.
+      const keyMode = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'workspace' }),
+      });
+      await expectStatus(keyMode, 403);
+      expect(await keyMode.json()).toEqual({ error: 'owner-only-change' });
+      const caps = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ capabilities: { allowedHosts: ['evil.example'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } } }),
+      });
+      await expectStatus(caps, 403);
+
+      // Any admin may delete it.
       const del = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      await expectStatus(del, 403);
-
-      // The second admin's connector is untouched.
-      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
-      expect((await ownerGet.json()).connector.name).toBe('Google Drive');
+      await expectStatus(del, 204);
+      const gone = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
+      await expectStatus(gone, 404);
     } finally {
       await close();
     }
@@ -383,11 +402,14 @@ describe('mock admin connectors', () => {
       });
       await expectStatus(create, 201);
 
-      // It belongs to u3 (session), not the forged u1: u1 reads it but can't edit it.
-      const adminGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      expect((await adminGet.json()).connector.canEdit).toBe(false);
-      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
-      expect((await ownerGet.json()).connector.canEdit).toBe(true);
+      // It belongs to u3 (session), not the forged u1: u1's keyMode change is
+      // refused as owner-only, while u3's own passes the owner check.
+      const forged = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'workspace' }),
+      });
+      await expectStatus(forged, 403);
     } finally {
       await close();
     }

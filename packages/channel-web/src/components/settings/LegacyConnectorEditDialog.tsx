@@ -1,7 +1,7 @@
 /**
- * ConnectorEditDialog — the SHARED, mechanism-first connector create/edit form
+ * ConnectorEditDialog — the mechanism-first connector create/edit form
  * (TASK-128, settings-unified epic). Admin-only since slice 2a: opened from
- * Admin › Connectors, it exposes the workspace-level fields (Sharing) and reads
+ * Admin › Connectors, it exposes the workspace-level fields and reads
  * and writes through `/admin/connectors`.
  *
  * MECHANISM-FIRST. A segmented picker at the top — MCP server / Direct API /
@@ -481,7 +481,7 @@ export function LegacyConnectorEditDialog({
   connector,
   prefill,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
-  // Slice 2c — opened by "Set it up": approval is a SHARED create.
+  // Slice 2c — opened by "Set it up": approval is a create.
   const fromRequest = target === 'new' && prefill !== undefined;
   const [form, setForm] = useState<ConnectorFormState>(() =>
     connector ? formFromConnector(connector) : emptyConnectorForm(),
@@ -802,7 +802,7 @@ export function LegacyConnectorEditDialog({
                   Each agent adds its own key
                 </SelectItem>
                 <SelectItem value="workspace">
-                  Shared — one key the whole workspace spends
+                  One shared key for everyone
                 </SelectItem>
               </SelectContent>
             </Select>

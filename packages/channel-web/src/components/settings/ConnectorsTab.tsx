@@ -16,13 +16,13 @@
  * AUTHORING (slice 2a): only admins define connectors, so this tab is mounted
  * only for an admin (AdminShell gates it; the server gates every write), and
  * every read and write goes through `/admin/connectors`. Any admin may edit or
- * delete a shared connector; the server says so per row (`canEdit`). The site
+ * delete a connector; the server says so per row (`canEdit`). The site
  * lists that used to sit at the bottom moved to Settings › Sites.
  *
  * AWAITING APPROVAL (slice 2c): an agent that needs a connector nobody has
  * defined files a request, and every admin sees every person's requests here.
  * Approval is creation — "Set it up" opens the normal create editor prefilled
- * from the request, and the server clears the request when the shared
+ * from the request, and the server clears the request when the
  * connector is created. "Dismiss" clears it without creating anything.
  *
  * Untrusted text (connector name / description, and everything in a request,
@@ -273,7 +273,7 @@ export function ConnectorsTab() {
             from each agent’s Connectors tab.
           </p>
         </div>
-        {/* New definitions are shared with the workspace. */}
+        {/* Every connector is shared with the workspace. */}
         <Button
           size="sm"
           onClick={() => {
