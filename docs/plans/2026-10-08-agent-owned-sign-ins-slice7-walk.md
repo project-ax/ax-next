@@ -69,3 +69,12 @@
 ## Exit
 
 Every scenario passes, or its finding is fixed with a regression test and re-walked. Record the results in the slice 7 PR body and in a SIGNINS-9 context shard.
+
+## After the walk — owner decision (2026-10-08)
+
+**Every connector is shared and usable by agents.** Remove the Private option. This supersedes the slice 5 ruling "private connectors aren't auto-shared".
+
+- Drop the Sharing control from `RemoteMcpConnectorForm` and `LegacyConnectorEditDialog`, along with the "private connector" notices and the Add-list exclusion.
+- Migrate the existing private connectors to shared once, guarded by a marker. Creation always writes shared.
+- The server-side 403 `agent-store-refused` for non-shared connectors becomes unreachable. Remove it, or keep it only as a defensive backstop with a test.
+- Tests for each piece. Add a SIGNINS-9 decisions shard recording the superseded ruling.
