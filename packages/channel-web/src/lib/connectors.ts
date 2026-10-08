@@ -1,10 +1,11 @@
 /**
  * Connector client — typed wrappers around the connector REST routes.
  *
- * Shared definitions are readable by all signed-in users. Only admins write
+ * Every connector is shared (slice 7): its definition is readable by every
+ * signed-in user. Only admins write
  * connector definitions (slice 2a): writes go to `/admin/connectors`, which is
  * ADMIN-ONLY server-side (403 for a signed-in non-admin, TASK-698). Any admin
- * may edit or delete a shared connector; a non-owner admin may only relabel it
+ * may edit or delete a connector; a non-owner admin may only relabel it
  * (see {@link OWNER_ONLY_CHANGE}). `/settings/connectors` is the READ bundle
  * any signed-in user can reach (list + show).
  *
@@ -24,7 +25,7 @@
  * `/admin/connectors/:id/test`.)
  *
  * SECURITY — actor identity comes from the session, never the request body.
- * Shared definitions contain credential references, never secret values.
+ * Connector definitions contain credential references, never secret values.
  * A connector's credentials belong to an agent (its sign-in or its own key)
  * or to the workspace (one shared key) — never to a person (slice 5).
  *
@@ -304,7 +305,7 @@ export function isConnectorIdTaken(err: unknown): boolean {
 // Awaiting approval (slice 2c). An agent that needs a connector nobody has
 // defined yet files a REQUEST; every admin sees every person's requests in
 // Admin › Connectors. Approval is creation: an admin sets the connector up
-// through the normal create path (`POST /admin/connectors`, shared), and the
+// through the normal create path (`POST /admin/connectors`), and the
 // server clears every request with that id. Dismiss clears them without
 // creating anything. Both routes are admin-only.
 //

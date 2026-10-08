@@ -1092,7 +1092,7 @@ export async function registerAdminConnectorRoutes(
     // prefers an exact path over a `:id` pattern, so `authored` would shadow a
     // connector with that id — no NEW connector may take it
     // (`assertConnectorIdCreatable`). Approving is creating: POST
-    // /admin/connectors (shared) clears the requests.
+    // /admin/connectors clears the requests.
     { method: 'GET', path: '/admin/connectors/authored', handler: handlers.listAuthoredProposals },
     {
       method: 'DELETE',

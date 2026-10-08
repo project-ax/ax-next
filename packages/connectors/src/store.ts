@@ -223,7 +223,7 @@ async function selectAvailableRows(
   db: Kysely<ConnectorDatabase>,
   userId: string,
 ): Promise<StoredConnectorRow[]> {
-  const rows = await availableConnectors(db, { userId })
+  const rows = await availableConnectors(db)
     .orderBy('updated_at', 'desc')
     .execute();
   const grouped = new Map<string, StoredConnectorRow[]>();
@@ -411,7 +411,7 @@ export function createConnectorStore(
     },
 
     async getAvailableById(userId, connectorId) {
-      const rows = await availableConnectors(db, { userId })
+      const rows = await availableConnectors(db)
         .where('connector_id', '=', connectorId)
         .execute();
       const row = selectAvailableRow(rows, userId);
@@ -422,7 +422,7 @@ export function createConnectorStore(
     },
 
     async getSoleLiveById(userId, connectorId) {
-      const rows = await availableConnectors(db, { userId })
+      const rows = await availableConnectors(db)
         .where('connector_id', '=', connectorId)
         .execute();
       // `availableConnectors` returns every live row (any owner), so this is

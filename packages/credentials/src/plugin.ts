@@ -330,7 +330,7 @@ export interface CredentialsPurgeByOwnerOutput {
  * and anything else — 'user' or 'global' — is refused (invalid-payload).
  * Connector credentials live on agents or globally; a company key is a
  * connector's OWN key, purged by ref via `credentials:delete`. Other ref
- * namespaces are never touched. Used when a shared connector is deleted.
+ * namespaces are never touched. Used when a connector is deleted.
  *
  * The one-time boot purge of person-level connector credentials
  * (purge-user-account.ts) needs user scope; it calls this plugin's internal

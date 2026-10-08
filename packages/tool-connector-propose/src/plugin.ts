@@ -56,7 +56,7 @@ interface ConnectorProposeInput {
 interface ConnectorProposeOutput {
   connectorId: string;
   // `pending` — a request is waiting for a workspace admin.
-  // `active` — a live shared connector with this id already exists; no request
+  // `active` — a live connector with this id already exists; no request
   // was filed. The person just adds it from the Connectors tab.
   status: 'pending' | 'active';
 }

@@ -32,7 +32,7 @@ Open-source, 24/7 agents for teams. Self-hostable, admin-brandable, and built ar
 ## Capabilities and Constraints
 
 - Agents: per-agent sandbox, conversations, durable user files, per-fact memory with Fix / Forget correction, "What I learned in this chat" and "Memory used" signals.
-- Connectors: direct-API and remote MCP; shared by default with explicit attachment to an agent; OAuth for MCP connectors only.
+- Connectors: direct-API and remote MCP; every connector is shared across the workspace, with explicit attachment to an agent; OAuth for MCP connectors only.
 - Skills: installable and authored, with install consent.
 - Routines: scheduled work that runs without the user present.
 - Approvals: agents can be held for review before acting; Stop interrupts a running turn.

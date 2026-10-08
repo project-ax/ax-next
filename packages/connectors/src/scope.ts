@@ -37,14 +37,14 @@ export function scopedConnectors(
 }
 
 /**
- * Every live definition is readable by signed-in users (SIGNINS-9: every
- * connector is shared); mutations remain owner-scoped. `scope` is kept so the
- * read stays a per-user call site — the caller's own row still wins a pick.
+ * Every live definition, of every owner (SIGNINS-9: every connector is
+ * shared). Deliberately unscoped — mutations stay owner-scoped through
+ * `scopedConnectors`. Which row an id means is the store's call:
+ * `selectAvailableRow` for reads (own row first, else the only one) and
+ * `getSoleLiveById` wherever credentials are involved (a duplicate id fails
+ * closed for everyone).
  */
-export function availableConnectors(
-  db: Kysely<ConnectorDatabase>,
-  _scope: ConnectorScope,
-) {
+export function availableConnectors(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
     .selectAll('connectors_v1_connectors')

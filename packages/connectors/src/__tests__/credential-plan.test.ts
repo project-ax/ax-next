@@ -221,4 +221,3 @@ describe('deriveCredentialPlan — edges', () => {
     expect(plan[0]!.ref).not.toBe(plan[1]!.ref);
   });
 });
-
