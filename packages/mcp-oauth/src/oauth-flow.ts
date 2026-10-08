@@ -247,12 +247,21 @@ export async function buildAuthorization(opts: {
     resource: new URL(resource),
   });
 
-  // Google's web clients need offline access for a refresh token, and renewed
-  // consent to issue one when this client was authorized previously. Without it
-  // a successful Gmail connection stops working when its access token expires.
+  // Every sign-in belongs to one agent, and two agents of one person may act
+  // as two different accounts. So the provider is always asked to show its
+  // account picker instead of silently reusing the browser's current session.
+  // `prompt` is an OIDC parameter; a plain OAuth server ignores it (RFC 6749
+  // §3.1: unrecognized request parameters MUST be ignored).
+  //
+  // Google's web clients also need offline access for a refresh token, and
+  // renewed consent to issue one when this client was authorized previously.
+  // Without it a successful Gmail connection stops working when its access
+  // token expires. OIDC allows several space-separated `prompt` values.
   if (metadata.issuer === 'https://accounts.google.com') {
     authorizationUrl.searchParams.set('access_type', 'offline');
-    authorizationUrl.searchParams.set('prompt', 'consent');
+    authorizationUrl.searchParams.set('prompt', 'select_account consent');
+  } else {
+    authorizationUrl.searchParams.set('prompt', 'select_account');
   }
 
   return { authorizationUrl: authorizationUrl.toString(), codeVerifier };

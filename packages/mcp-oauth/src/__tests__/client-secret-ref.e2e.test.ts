@@ -269,6 +269,12 @@ async function boot() {
     // TASK-798/813 — let her past the team-admin gate, so these cases still
     // exercise the client-secret-ref checks behind it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
+    // @ax/connectors' "may this agent hold the sign-in?" — yes to begin's STORE
+    // question only. Every vault READ (no `purpose`) is denied, exactly as when
+    // no provider is loaded, so the agent-scope read behaviour is unchanged.
+    'credentials:authorize-agent:account': (async (_c, input) => ({
+      allowed: (input as { purpose?: unknown }).purpose === 'store',
+    })) as ServiceHandler,
     'connectors:get': (async (_c, input) => {
       const { connectorId } = input as { connectorId: string };
       if (!refs.has(connectorId)) throw new Error(`unexpected connector ${connectorId}`);
@@ -330,9 +336,10 @@ async function boot() {
 type Stack = Awaited<ReturnType<typeof boot>>;
 
 /** begin -> (attacker approves) -> callback, all as mallory, against `begin`/`callback` handlers. */
-async function runFlow(begin: Handler, callback: Handler, connectorId: string, agentId?: string) {
+async function runFlow(begin: Handler, callback: Handler, connectorId: string, agentId = 'agent-T') {
   const b = fakeRes();
-  await begin(fakeReq('mallory', { body: { connectorId, ...(agentId ? { agentId } : {}) } }), b.res);
+  // Every sign-in belongs to an agent (begin requires one): mallory's team agent.
+  await begin(fakeReq('mallory', { body: { connectorId, agentId, mode: 'add' } }), b.res);
   if (b.rec.status === 200) {
     const state = new URL(b.rec.json!.authorizationUrl!).searchParams.get('state')!;
     await callback(fakeReq('mallory', { query: { code: 'attacker-code', state } }), fakeRes().res);
@@ -363,10 +370,12 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
       );
     },
     // TASK-798/813 — begin's team-agent team-admin check fails closed when the
-    // hook is absent, so show it the real answer for THAT hook. Every other
-    // optional hook stays invisible, exactly as before this wrapper knew of it.
+    // hook is absent, and so does its "may this agent hold the sign-in?" check,
+    // so show it the real answer for THOSE hooks. Every other optional hook stays
+    // invisible, exactly as before this wrapper knew of them.
     hasService: (hook: string) =>
-      hook === 'agents:can-set-shared-credential' && s.h.bus.hasService(hook),
+      (hook === 'agents:can-set-shared-credential' || hook === 'credentials:authorize-agent:account') &&
+      s.h.bus.hasService(hook),
   };
   const handlers = createMcpOAuthRouteHandlers({
     bus: wrapped as never,

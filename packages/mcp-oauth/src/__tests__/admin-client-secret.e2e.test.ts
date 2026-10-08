@@ -252,9 +252,11 @@ async function boot() {
     // What @ax/connectors asks to prove a connector's OWNER is an admin.
     'auth:get-user': (async (_c, input) =>
       users.get((input as { userId: string }).userId) ?? null) as ServiceHandler,
-    // Declared by @ax/mcp-oauth for the team-agent path; these sign-ins carry no agentId.
-    'agents:resolve': (async () => {
-      throw new Error('agents:resolve must not be called: no agentId is sent');
+    // Every sign-in belongs to an agent: each signer signs in for their own
+    // personal agent (`agent-<id>`), so no team-admin question arises.
+    'agents:resolve': (async (_c, input) => {
+      const { agentId, userId } = input as { agentId: string; userId: string };
+      return { agent: { id: agentId, visibility: 'personal', ownerId: userId } };
     }) as ServiceHandler,
   };
   globalThis.fetch = ((i: string | URL, init?: RequestInit) => {
@@ -313,7 +315,7 @@ async function boot() {
 
   const signIn = async (who: Actor, connectorId = 'gmail') => {
     const r = fakeRes();
-    await begin(fakeReq(who.id, { connectorId }), r.res);
+    await begin(fakeReq(who.id, { connectorId, agentId: `agent-${who.id}`, mode: 'add' }), r.res);
     return r.rec;
   };
 
@@ -420,7 +422,9 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
 
   it('a private connector of the signer’s own, named like the admin’s shared one, does not borrow the global secret', async () => {
     // alice's own definition shadows the shared one for her id lookup, so it is not
-    // "the sole shared definition she resolves": the global row stays closed.
+    // "the sole shared definition she resolves". Since every sign-in belongs to an
+    // agent, @ax/connectors refuses to let her agent hold it at all — before any
+    // vault read or provider request — so the global row stays closed.
     const s = await boot();
     await s.author(ROOT, 'shared');
     await s.author(ALICE, 'private');
@@ -428,8 +432,9 @@ describe('an admin’s shared custom-client connector is signable by everyone (T
 
     const out = await s.signIn(ALICE);
 
-    expect(out.status).toBe(400);
-    expect(out.json).toEqual({ error: 'oauth_client_secret_unavailable' });
+    expect(out.status).toBe(403);
+    expect(out.json).toEqual({ error: 'agent-store-refused' });
+    expect(seen).toEqual([]); // not even a discovery request
     expect(secretLeaked()).toBe(false);
   });
 });

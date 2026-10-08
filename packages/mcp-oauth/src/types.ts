@@ -62,12 +62,23 @@ export interface PendingAuthorization {
   /**
    * The credential STORAGE scope the token will be written under once the
    * callback completes. Distinct from `scope` (the OAuth scopes string).
-   *   'user'  — personal agent: one connection, shared across all the owner's agents.
-   *   'agent' — team agent: each agent holds its own token; sharees ride along.
+   * Every sign-in belongs to an agent, so `begin` always writes 'agent' (the
+   * agent holds its own token; a team agent's members ride along). 'user' is
+   * read back only from a row written before that rule, still in flight.
    */
   credScope: 'user' | 'agent';
+  /**
+   * Which flow started this authorization:
+   *   'add'           — adding the connector to the agent; the callback attaches it.
+   *   'sign-in-again' — the connector is already on the agent; nothing is attached.
+   * A row without a known value reads as 'sign-in-again', so it never attaches.
+   */
+  mode: SignInMode;
   createdAt: number;
 }
+
+/** The two flows a sign-in can belong to (see {@link PendingAuthorization.mode}). */
+export type SignInMode = 'add' | 'sign-in-again';
 
 /** The OAuth client credentials the token-endpoint calls need. */
 export interface OAuthClientCredentials {

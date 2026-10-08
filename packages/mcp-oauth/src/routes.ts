@@ -190,27 +190,33 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   }
 
   /**
-   * TASK-711 — see the call in `begin`. Fails closed to "store on the signer".
+   * TASK-711 — may `agentId` hold this user's sign-in for `connectorId`? See
+   * the call in `begin`. Fails closed: no provider, a throw or an answer that
+   * is not exactly `allowed: true` is "no".
    *
-   * TASK-788 — asks with `purpose: 'store'`: the shared-definition question
-   * only, NOT "is the connector attached to this agent?". The Add-connector
-   * flow signs in before it attaches, so requiring the attachment here would
-   * store every such team sign-in on the signer. Reading the token back (the
-   * vault's question, no `purpose`) still requires the attachment.
+   * TASK-788 — with `purpose: 'store'` it is the shared-definition question
+   * only, NOT "is the connector attached to this agent?": an Add signs in
+   * before it attaches. Without `purpose` it is exactly the vault's READ
+   * question, which also requires the attachment (Sign in again).
    */
-  async function mayStoreOnAgent(userId: string, agentId: string, connectorId: string): Promise<boolean> {
+  async function mayHoldOnAgent(
+    userId: string,
+    agentId: string,
+    connectorId: string,
+    purpose?: 'store',
+  ): Promise<boolean> {
     if (bus.hasService?.(AUTHORIZE_AGENT_ACCOUNT_HOOK) !== true) return false;
     try {
       const out = await bus.call<
-        { userId: string; agentId: string; ref: string; purpose: 'store' },
+        { userId: string; agentId: string; ref: string; purpose?: 'store' },
         { allowed: boolean }
       >(AUTHORIZE_AGENT_ACCOUNT_HOOK, ctxFor(userId), {
         userId,
         agentId,
         ref: `account:${connectorId}`,
-        purpose: 'store',
+        ...(purpose !== undefined ? { purpose } : {}),
       });
-      return out.allowed === true;
+      return out?.allowed === true;
     } catch (err) {
       logger.warn('mcp_oauth_agent_scope_check_failed', { connectorId, ...errFields(err) });
       return false;
@@ -346,7 +352,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    // Parse + validate the body (small cap; connectorId required, agentId optional).
+    // Parse + validate the body (small cap; connectorId, agentId and mode required).
     if (req.body.length > OAUTH_BODY_MAX_BYTES) {
       res.status(413).json({ error: 'body-too-large' });
       return;
@@ -358,57 +364,60 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'invalid-json' });
       return;
     }
-    const body = parsed as { connectorId?: unknown; agentId?: unknown };
+    const body = parsed as { connectorId?: unknown; agentId?: unknown; mode?: unknown };
     const connectorId = body.connectorId;
-    const rawAgentId = body.agentId;
+    const agentId = body.agentId;
+    const mode = body.mode;
     if (typeof connectorId !== 'string' || !connectorId) {
       res.status(400).json({ error: 'connectorId is required' });
       return;
     }
-    // agentId is optional: when present it must be a non-empty string.
-    if (rawAgentId !== undefined && (typeof rawAgentId !== 'string' || !rawAgentId)) {
+    // Every sign-in belongs to an agent — never to a person. There is no
+    // "connect once for all my agents" sign-in.
+    if (agentId === undefined) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+    if (typeof agentId !== 'string' || !agentId) {
       res.status(400).json({ error: 'agentId must be a non-empty string' });
       return;
     }
-    const agentId = rawAgentId as string | undefined;
+    // `add`: the sign-in is part of adding the connector to the agent (the
+    // callback attaches it). `sign-in-again`: the connector is already on the
+    // agent and only its sign-in is replaced.
+    if (mode !== 'add' && mode !== 'sign-in-again') {
+      res.status(400).json({ error: 'mode must be "add" or "sign-in-again"' });
+      return;
+    }
 
-    // Authz gate + credScope selection. When agentId is present, a successful
-    // agents:resolve is the "may use this agent" check, and on a team agent the
-    // team-admin check below (TASK-798, TASK-813) is the "may sign in for everyone"
-    // one; the agent's visibility
-    // determines which scope the token is stored under. When absent, the flow is
-    // user-scoped and gated only by connector ownership (connectors:get below).
-    let credScope: 'user' | 'agent' = 'user';
-    let pendingAgentId = '';
-    if (agentId !== undefined) {
-      let agent: { visibility: 'personal' | 'team'; ownerId: string };
-      try {
-        const out = await bus.call<
-          { agentId: string; userId: string },
-          { agent: { visibility: 'personal' | 'team'; ownerId: string } }
-        >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
-        agent = out.agent;
-      } catch (err) {
-        if (isReject(err)) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        throw err;
-      }
-      // TASK-798 — on a TEAM agent, `agents:resolve` admits every member, but
-      // a sign-in started with the agent decides whose account EVERY member's
-      // runs act as. So only a team admin may begin one — TASK-813: a workspace
-      // admin who is not a team admin is refused too; whose account the team
-      // acts as is the team's call. Anyone else is refused here, before any
-      // connector read, vault read, state write or provider redirect. A
-      // user-scoped sign-in (no agentId) is untouched. Fails closed: no
-      // @ax/agents answer, `allowed: false` or a rejection is a 403.
-      if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
+    // Authz gate. A successful agents:resolve is the "may use this agent"
+    // check; on a team agent the team-admin check below (TASK-798, TASK-813) is
+    // the "may sign in for everyone" one. The token is always stored on the
+    // agent, whatever its visibility.
+    let agent: { visibility: 'personal' | 'team'; ownerId: string };
+    try {
+      const out = await bus.call<
+        { agentId: string; userId: string },
+        { agent: { visibility: 'personal' | 'team'; ownerId: string } }
+      >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
+      agent = out.agent;
+    } catch (err) {
+      if (isReject(err)) {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      credScope = agent.visibility === 'team' ? 'agent' : 'user';
-      pendingAgentId = agentId;
+      throw err;
+    }
+    // TASK-798 — on a TEAM agent, `agents:resolve` admits every member, but
+    // a sign-in started with the agent decides whose account EVERY member's
+    // runs act as. So only a team admin may begin one — TASK-813: a workspace
+    // admin who is not a team admin is refused too; whose account the team
+    // acts as is the team's call. Anyone else is refused here, before any
+    // connector read, vault read, state write or provider redirect. Fails
+    // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403.
+    if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
     }
 
     // Resolve the connector (owner-scoped by userId).
@@ -427,15 +436,26 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       throw err;
     }
 
-    // TASK-711 — a team agent's sign-in is stored ON the agent only for the one
-    // shared connector every member sees under this id. The vault asks the same
+    // TASK-711 — a sign-in is stored ON the agent only for the one shared
+    // connector every member sees under this id. The vault asks the same
     // `credentials:authorize-agent:account` question before it lets anyone READ
     // an agent row for an `account:` ref, so asking it here keeps the two halves
-    // in step: a sign-in for anything else (this person's own private connector
-    // that happens to share the id) lands on the signer instead, where only they
-    // can use it. No provider, a denial or a throw all mean "the signer".
-    if (credScope === 'agent' && !(await mayStoreOnAgent(user.id, pendingAgentId, connectorId))) {
-      credScope = 'user';
+    // in step. Nothing is ever downgraded to the signer: a "no" refuses the
+    // sign-in, before any vault read, state write or provider request. No
+    // provider, a denial or a throw all mean "no" (fail closed).
+    //   add           — the WRITE question (`purpose: 'store'`): the connector
+    //                   is attached only once the sign-in worked (TASK-788).
+    //   sign-in-again — the READ question (no `purpose`), which also requires
+    //                   the connector to be on the agent already. A sign-in the
+    //                   agent could never read back is refused, not stored.
+    if (mode === 'add') {
+      if (!(await mayHoldOnAgent(user.id, agentId, connectorId, 'store'))) {
+        res.status(403).json({ error: 'agent-store-refused' });
+        return;
+      }
+    } else if (!(await mayHoldOnAgent(user.id, agentId, connectorId))) {
+      res.status(409).json({ error: 'not-on-agent' });
+      return;
     }
 
     const caps = connector.capabilities;
@@ -563,7 +583,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       const pending: PendingAuthorization = {
         state,
         userId: user.id,
-        agentId: pendingAgentId,
+        agentId,
         connectorId,
         slot: slot.slot,
         codeVerifier,
@@ -579,7 +599,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
         resource,
         scope,
-        credScope,
+        credScope: 'agent',
+        mode,
         createdAt: now(),
       };
       await store.putPending(pending);

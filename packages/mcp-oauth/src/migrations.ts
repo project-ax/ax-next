@@ -64,6 +64,10 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS issuer_required BOOLEAN NOT NULL DEFAULT false`.execute(db);
+  // Agent-owned sign-ins: 'add' | 'sign-in-again'. The default is the flow that
+  // never attaches, so an authorization in flight across the upgrade can't add a
+  // connector nobody asked to add.
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'sign-in-again'`.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect (
       user_id       TEXT NOT NULL,
@@ -101,6 +105,8 @@ export interface McpOAuthPendingRow {
   resource: string;
   scope: string | null;
   cred_scope: string;
+  /** 'add' | 'sign-in-again'; the column default is 'sign-in-again'. */
+  mode: string;
   /** The client this authorization started with; NULL on a pre-TASK-696 row. */
   client_id: string | null;
   client_secret: string | null;

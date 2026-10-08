@@ -43,6 +43,8 @@ interface BusStubs {
   'connectors:get'?: (input: unknown) => unknown;
   'credentials:get'?: (input: unknown) => unknown;
   'credentials:set'?: (input: unknown) => unknown;
+  /** `undefined` models "no provider loaded" (overrides makeDeps' default). */
+  'credentials:authorize-agent:account'?: ((input: unknown) => unknown) | undefined;
 }
 
 /** A bus whose `call` dispatches by hook name to a per-test stub. A stub that
@@ -164,7 +166,13 @@ function connectorFixture(over: Partial<{ credentials: unknown[]; mcpServers: un
 }
 
 function makeDeps(stubs: BusStubs, opts: { store?: ReturnType<typeof fakeStore>; flow?: McpOAuthRouteDeps['flow'] } = {}) {
-  const { bus, calls } = fakeBus(stubs);
+  // Every begin asks @ax/connectors whether this agent may hold the sign-in.
+  // Default to "yes" so tests about other gates needn't repeat it; a test about
+  // this gate overrides it (or sets it to `undefined` to model "not loaded").
+  const { bus, calls } = fakeBus({
+    'credentials:authorize-agent:account': () => ({ allowed: true }),
+    ...stubs,
+  });
   const store = opts.store ?? fakeStore();
   const flow = opts.flow ?? fakeFlow();
   const logger = { error: vi.fn(), warn: vi.fn() };
@@ -359,13 +367,14 @@ describe('mcp-oauth begin route', () => {
     })) });
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
       'connectors:get': () => connectorFixture({ credentials: [{
         slot: 'oauth-main', kind: 'oauth', server: 'srv', ...(scopes ? { scopes } : {}),
       }] }),
     }, { flow });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers(deps).begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res,
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res,
     );
     expect(state.status).toBe(200);
     expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
@@ -389,7 +398,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
 
@@ -427,7 +436,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
 
@@ -449,7 +458,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
 
@@ -467,7 +476,7 @@ describe('mcp-oauth begin route', () => {
   describe('team agent: only a team admin may begin (TASK-798, TASK-813)', () => {
     const TEAM_AGENT = { agent: { id: 'agent-T', visibility: 'team', ownerId: 'team-1' } };
     const body = () =>
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-T' })) });
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-T', mode: 'add' })) });
 
     // UNFIXED: 200, a pending row written and the provider asked -> fails.
     it('SECURITY: a plain member → 403; no connector read, no state write, no provider redirect', async () => {
@@ -612,25 +621,6 @@ describe('mcp-oauth begin route', () => {
       expect(state.status).toBe(403);
       expect(store.putPending).not.toHaveBeenCalled();
     });
-
-    // A member's OWN sign-in (Settings › Connectors) names no agent: untouched.
-    it('a member beginning WITHOUT an agentId is unaffected → 200', async () => {
-      const canManage = vi.fn(() => ({ allowed: false }));
-      const { deps, store } = makeDeps({
-        'auth:require-user': () => OK_USER,
-        'agents:can-set-shared-credential': canManage,
-        'connectors:get': () => connectorFixture(),
-      });
-      const { res, state } = fakeRes();
-      await createMcpOAuthRouteHandlers(deps).begin(
-        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
-        res,
-      );
-
-      expect(state.status).toBe(200);
-      expect(store.putPending).toHaveBeenCalledTimes(1);
-      expect(canManage).not.toHaveBeenCalled();
-    });
   });
 
   it('3. connector lacks oauth slot → 400; no discovery', async () => {
@@ -643,7 +633,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
 
@@ -662,17 +652,62 @@ describe('mcp-oauth begin route', () => {
     expect(state.json).toEqual({ error: 'unauthenticated' });
   });
 
-  it('missing connectorId → 400 (agentId is optional)', async () => {
+  it('missing connectorId → 400', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(400);
+  });
+
+  // Every sign-in belongs to an agent: there is no "connect once for all my
+  // agents" sign-in any more, so a begin that names no agent is refused before
+  // any agent, connector, vault, state or provider work.
+  it('missing agentId → 400 agentId is required; nothing read, nothing written, no provider', async () => {
+    const { deps, store, flow, calls } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'connectors:get': () => connectorFixture(),
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', mode: 'add' })) }),
+      res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'agentId is required' });
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', {}],
+    ['unknown', { mode: 'connect' }],
+    ['empty', { mode: '' }],
+    ['not a string', { mode: 1 }],
+    ['case-varied', { mode: 'Add' }],
+  ])('mode %s → 400; nothing read, nothing written', async (_label, extra) => {
+    const { deps, store, flow, calls } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'connectors:get': () => connectorFixture(),
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', ...extra })) }),
+      res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'mode must be "add" or "sign-in-again"' });
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
   });
 
   it('agentId present but empty string → 400', async () => {
@@ -682,7 +717,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: '' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: '', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(400);
@@ -697,7 +732,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(404);
@@ -720,7 +755,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(502);
@@ -750,7 +785,7 @@ describe('mcp-oauth begin route', () => {
       const handlers = createMcpOAuthRouteHandlers(deps);
       const { res, state } = fakeRes();
       await handlers.begin(
-        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
         res,
       );
       expect(state.status).toBe(502);
@@ -789,7 +824,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(getSecret).toHaveBeenCalledTimes(1);
@@ -822,7 +857,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(400);
@@ -873,7 +908,7 @@ describe('mcp-oauth begin route', () => {
       const handlers = createMcpOAuthRouteHandlers(deps);
       const { res, state } = fakeRes();
       await handlers.begin(
-        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
         res,
       );
       return { getSecret, flow, store, logger, state };
@@ -970,7 +1005,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(400);
@@ -1003,7 +1038,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(400);
@@ -1015,13 +1050,14 @@ describe('mcp-oauth begin route', () => {
     const flow = fakeFlow();
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
       'connectors:get': () => connectorFixture({ credentials: [
         { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'dcr' },
       ] }),
     }, { flow });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers({ ...deps, clientName: async () => 'Canopy AI' })
-      .begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res);
+      .begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res);
     expect(state.status).toBe(200);
     expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ registration: 'dcr', clientName: 'Canopy AI' }));
   });
@@ -1030,13 +1066,14 @@ describe('mcp-oauth begin route', () => {
     const flow = fakeFlow();
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
       'connectors:get': () => connectorFixture({ credentials: [
         { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'cimd' },
         { slot: 'header-one', kind: 'api-key', server: 'srv', headerName: 'X-API-Key' },
       ] }),
     }, { flow });
     const { res, state } = fakeRes();
-    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res);
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res);
     expect(state.status).toBe(200);
     expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ registration: 'cimd', clientMetadataUrl: 'https://app.example.com/api/connectors/oauth/client-metadata' }));
     expect(store.putPending).toHaveBeenCalled();
@@ -1058,7 +1095,7 @@ describe('mcp-oauth begin route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
       res,
     );
     expect(state.status).toBe(200);
@@ -1066,57 +1103,41 @@ describe('mcp-oauth begin route', () => {
     expect(flow.discover).toHaveBeenCalledTimes(1);
   });
 
-  // Phase 2 credScope selection: personal agent → 'user'; team agent → 'agent'
+  // Agent-owned sign-ins (slice 3): every sign-in belongs to an agent. The
+  // pending row is always agent scope and records which flow started it —
+  // `add` (the callback will attach the connector) or `sign-in-again` (the
+  // connector must already be on the agent; nothing is attached).
 
-  it('credScope: personal agent (visibility=personal) → pending.credScope === "user"', async () => {
-    const store = fakeStore();
-    const { deps } = makeDeps(
-      {
-        'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
-        'connectors:get': () => connectorFixture(),
-      },
-      { store },
-    );
-    const handlers = createMcpOAuthRouteHandlers(deps);
-    const { res, state } = fakeRes();
-    await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
-      res,
-    );
-    expect(state.status).toBe(200);
-    expect(store.putPending).toHaveBeenCalledTimes(1);
-    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
-    expect(pending.credScope).toBe('user');
-  });
+  const PERSONAL = { agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } };
+  const TEAM = { agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } };
+  const beginReq = (mode: string) =>
+    fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode })) });
 
-  it('credScope: team agent (visibility=team) + the shared connector → pending.credScope === "agent"', async () => {
-    const store = fakeStore();
+  it.each([
+    ['personal', PERSONAL],
+    ['team', TEAM],
+  ])('mode add on a %s agent → agent-scope pending row with agentId and mode add; asks the STORE question', async (_label, agent) => {
     const authz = vi.fn(() => ({ allowed: true }));
-    const { deps } = makeDeps(
-      {
-        'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
-        // TASK-798/813 — the signer is a team admin.
-        'agents:can-set-shared-credential': () => ({ allowed: true }),
-        'connectors:get': () => connectorFixture(),
-        'credentials:authorize-agent:account': authz,
-      },
-      { store },
-    );
-    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => agent,
+      // TASK-798/813 — on a team agent the signer is a team admin.
+      'agents:can-set-shared-credential': () => ({ allowed: true }),
+      'connectors:get': () => connectorFixture(),
+      'credentials:authorize-agent:account': authz,
+    });
     const { res, state } = fakeRes();
-    await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
-      res,
-    );
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('add'), res);
+
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
     expect(pending.credScope).toBe('agent');
-    // The vault's agent-scope question, asked for the signer — as the WRITE-scope
-    // question (TASK-788): a sign-in can precede the attachment, so it must not
-    // ask the read question (which also requires the connector on the agent).
+    expect(pending.agentId).toBe('agent-1');
+    expect(pending.mode).toBe('add');
+    // The WRITE-scope question (TASK-788): an Add signs in before it attaches,
+    // so it must not ask the read question (which requires the attachment).
+    expect(authz).toHaveBeenCalledTimes(1);
     expect(authz).toHaveBeenCalledWith({
       userId: OK_USER.user.id,
       agentId: 'agent-1',
@@ -1125,91 +1146,95 @@ describe('mcp-oauth begin route', () => {
     });
   });
 
-  // TASK-711 — a team-agent sign-in is stored ON the agent only when the vault
-  // would let members read it back there. Anything else lands on the signer.
-  // Each of these FAILS against the unfixed begin (which stored on the agent
-  // for every team agent).
+  // `begin` refuses instead of downgrading: before slice 3 a "no" silently
+  // stored the sign-in on the signer. Fails closed — no provider, a throw or
+  // an answer that is not exactly `allowed: true` is a refusal.
   it.each([
     ['the provider denies (a private connector that shares the id)', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
-    ['no provider is loaded', {}],
+    ['no provider is loaded', { 'credentials:authorize-agent:account': undefined }],
     ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
     ['the provider answers a truthy non-true', { 'credentials:authorize-agent:account': () => ({ allowed: 'yes' }) }],
-  ])('credScope: team agent but %s → pending.credScope === "user" (stored on the signer)', async (_label, extra) => {
-    const store = fakeStore();
-    const { deps } = makeDeps(
-      {
-        'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
-        // TASK-798/813 — the signer is a team admin.
-        'agents:can-set-shared-credential': () => ({ allowed: true }),
-        'connectors:get': () => connectorFixture(),
-        ...extra,
-      },
-      { store },
-    );
-    const handlers = createMcpOAuthRouteHandlers(deps);
-    const { res, state } = fakeRes();
-    await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
-      res,
-    );
-    expect(state.status).toBe(200);
-    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
-    expect(pending.credScope).toBe('user');
-  });
-
-  it('credScope: personal agent never asks the agent-scope question', async () => {
-    const store = fakeStore();
-    const authz = vi.fn(() => ({ allowed: true }));
-    const { deps } = makeDeps(
-      {
-        'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
-        'connectors:get': () => connectorFixture(),
-        'credentials:authorize-agent:account': authz,
-      },
-      { store },
-    );
-    const handlers = createMcpOAuthRouteHandlers(deps);
-    const { res } = fakeRes();
-    await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
-      res,
-    );
-    expect((store.putPending.mock.calls[0]![0] as PendingAuthorization).credScope).toBe('user');
-    expect(authz).not.toHaveBeenCalled();
-  });
-
-  it('credScope: no agentId in body → credScope === "user", agentId === "", agents:resolve NOT called', async () => {
-    const store = fakeStore();
-    const resolveStub = vi.fn(() => ({ agent: { id: 'agent-1' } }));
-    const { deps } = makeDeps(
-      {
-        'auth:require-user': () => OK_USER,
-        'connectors:get': () => connectorFixture(),
-      },
-      { store },
-    );
-    // Override bus to track resolve calls independently
-    const { bus, calls: busCalls } = fakeBus({
+  ])('SECURITY: mode add but %s → 403 agent-store-refused; no pending row, no discovery', async (_label, extra) => {
+    const { deps, store, flow } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': resolveStub,
+      'agents:resolve': () => PERSONAL,
       'connectors:get': () => connectorFixture(),
+      ...extra,
     });
-    const handlers = createMcpOAuthRouteHandlers({ ...deps, bus });
     const { res, state } = fakeRes();
-    await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
-      res,
-    );
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('add'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.json).toEqual({ error: 'agent-store-refused' });
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
+    expect(flow.buildAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('mode sign-in-again on an attached connector → 200; asks the READ question (no purpose); pending mode sign-in-again', async () => {
+    const authz = vi.fn(() => ({ allowed: true }));
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL,
+      'connectors:get': () => connectorFixture(),
+      'credentials:authorize-agent:account': authz,
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('sign-in-again'), res);
+
     expect(state.status).toBe(200);
-    expect(store.putPending).toHaveBeenCalledTimes(1);
+    // Exactly the vault's read question: no `purpose`, so @ax/connectors also
+    // requires the connector to be effective on the agent.
+    expect(authz).toHaveBeenCalledTimes(1);
+    expect(authz.mock.calls[0]![0]).toEqual({
+      userId: OK_USER.user.id,
+      agentId: 'agent-1',
+      ref: 'account:conn-1',
+    });
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
-    expect(pending.credScope).toBe('user');
-    expect(pending.agentId).toBe('');
-    expect(resolveStub).not.toHaveBeenCalled();
-    // agents:resolve must not appear in bus calls
-    expect(busCalls.filter(c => c.hook === 'agents:resolve')).toHaveLength(0);
+    expect(pending.mode).toBe('sign-in-again');
+    expect(pending.credScope).toBe('agent');
+    expect(pending.agentId).toBe('agent-1');
+  });
+
+  it.each([
+    ['the connector is not on the agent', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
+    ['no provider is loaded', { 'credentials:authorize-agent:account': undefined }],
+    ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
+  ])('SECURITY: mode sign-in-again but %s → 409 not-on-agent; no pending row, no discovery', async (_label, extra) => {
+    const { deps, store, flow } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL,
+      'connectors:get': () => connectorFixture(),
+      ...extra,
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('sign-in-again'), res);
+
+    expect(state.status).toBe(409);
+    expect(state.json).toEqual({ error: 'not-on-agent' });
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  it('SECURITY: a team member who is not a team admin is refused before the sign-in-again question', async () => {
+    const authz = vi.fn(() => ({ allowed: true }));
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => TEAM,
+      'agents:can-set-shared-credential': () => ({ allowed: false }),
+      'connectors:get': () => connectorFixture(),
+      'credentials:authorize-agent:account': authz,
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('sign-in-again'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.json).toEqual({ error: 'forbidden' });
+    expect(authz).not.toHaveBeenCalled();
+    expect(store.putPending).not.toHaveBeenCalled();
   });
 
   // --- TASK-696: the pending row carries the client this authorization started with ---
@@ -1219,7 +1244,7 @@ describe('mcp-oauth begin route', () => {
     'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
     'connectors:get': () => connectorFixture(),
   };
-  const BEGIN_BODY = Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' }));
+  const BEGIN_BODY = Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' }));
 
   it('TASK-696a. putPending carries the client ensureClient returned (clientId + clientSecret) and the legacy clientKey', async () => {
     const flow = fakeFlow({
@@ -1333,6 +1358,7 @@ describe('mcp-oauth callback route', () => {
     resource: 'https://mcp.example.com/mcp',
     scope: 'read write',
     credScope: 'agent',
+    mode: 'add',
     createdAt: 1_000_000,
   };
   // A row written by the PRE-fix begin (an authorization in flight across the

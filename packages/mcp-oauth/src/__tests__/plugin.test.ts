@@ -185,6 +185,7 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:false)', () => {
       resource: 'https://mcp.example.com',
       scope: 'read',
       credScope: 'agent',
+      mode: 'add',
       createdAt: Date.now(),
     });
     const pending = await store.getPending('st1');
@@ -790,6 +791,7 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
       resource: 'https://api.example.com',
       scope: 'read',
       credScope: 'agent' as const,
+      mode: 'add' as const,
       createdAt: Date.now(),
       ...over,
     };

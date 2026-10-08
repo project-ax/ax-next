@@ -283,8 +283,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               {
                 // TASK-711 — provided by @ax/connectors.
                 hook: 'credentials:authorize-agent:account',
-                degradation:
-                  "a team agent's sign-in is stored for the person who signed in, not shared with the agent's other members",
+                degradation: 'nobody may start a connector sign-in for any agent',
               },
               {
                 // TASK-798 / TASK-813 — provided by @ax/agents.

@@ -19,7 +19,7 @@ const allow = new Set(['auth.example.com']);
 const resolver = async () => '93.184.216.34';
 
 describe('buildAuthorization', () => {
-  it('requests offline access and fresh consent for a pinned Google OAuth client', async () => {
+  it('requests offline access, an account picker and fresh consent for a pinned Google OAuth client', async () => {
     const { authorizationUrl } = await buildAuthorization({
       metadata: { ...meta, issuer: 'https://accounts.google.com', authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth' },
       client: { clientId: 'google-client', clientSecret: 'secret' },
@@ -30,7 +30,9 @@ describe('buildAuthorization', () => {
     });
     const url = new URL(authorizationUrl);
     expect(url.searchParams.get('access_type')).toBe('offline');
-    expect(url.searchParams.get('prompt')).toBe('consent');
+    // The picker first (which account this agent acts as), then renewed consent
+    // so Google issues a refresh token even for a previously-authorized client.
+    expect(url.searchParams.get('prompt')).toBe('select_account consent');
     expect(url.searchParams.get('state')).toBe('google-state');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
   });
@@ -53,7 +55,9 @@ describe('buildAuthorization', () => {
     expect(u.searchParams.get('client_id')).toBe('cid');
     expect(u.searchParams.get('scope')).toBe('read');
     expect(u.searchParams.has('access_type')).toBe(false);
-    expect(u.searchParams.has('prompt')).toBe(false);
+    // Every sign-in belongs to an agent, so the popup always asks which account.
+    expect(u.searchParams.get('prompt')).toBe('select_account');
+    expect(u.searchParams.getAll('prompt')).toHaveLength(1);
     expect(codeVerifier.length).toBeGreaterThan(20);
   });
 

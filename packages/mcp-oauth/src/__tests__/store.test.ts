@@ -100,6 +100,8 @@ describe('runMcpOAuthMigration', () => {
     expect(row.client_id).toBeNull();
     expect(row.client_secret).toBeNull();
     expect(row.issuer_required).toBe(false);
+    // An in-flight authorization from before slice 3 never auto-attaches.
+    expect(row.mode).toBe('sign-in-again');
   });
 });
 
@@ -127,6 +129,7 @@ describe('createMcpOAuthStore', () => {
       resource: 'https://api.example.com',
       scope: 'read write',
       credScope: 'agent',
+      mode: 'add',
       createdAt: Date.now(),
       ...overrides,
     };
@@ -278,10 +281,46 @@ describe('createMcpOAuthStore', () => {
     await store.putPending({
       state: 'st-cs', userId: 'u', agentId: '', connectorId: 'c', slot: 'S',
       codeVerifier: 'v', authServerUrl: 'https://auth', clientKey: 'c|a',
-      resource: 'https://mcp', scope: 'read', credScope: 'user', createdAt: 1000,
+      resource: 'https://mcp', scope: 'read', credScope: 'user', mode: 'sign-in-again', createdAt: 1000,
     }, 1000);
     expect((await store.getPending('st-cs'))?.credScope).toBe('user');
     expect((await store.consumePending('st-cs', 2000, 600000))?.credScope).toBe('user');
+  });
+
+  // Agent-owned sign-ins (slice 3): the pending row records which flow began it.
+  it.each(['add', 'sign-in-again'] as const)('round-trips mode %s through put/get/consume', async (mode) => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await store.putPending(makePending({ state: `st-mode-${mode}`, mode }));
+    expect((await store.getPending(`st-mode-${mode}`))?.mode).toBe(mode);
+    expect((await store.consumePending(`st-mode-${mode}`, Date.now(), 60_000))?.mode).toBe(mode);
+  });
+
+  // An in-flight row from before the upgrade must never auto-attach: it reads
+  // as `sign-in-again`. So does a value this code does not know.
+  it('a row inserted without a mode (pre-upgrade) and an unknown mode both read as sign-in-again', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await sql`
+      INSERT INTO mcp_oauth_v1_pending
+        (state, user_id, agent_id, connector_id, slot, code_verifier, auth_server_url, client_key, resource)
+      VALUES ('st-no-mode', 'u', 'a', 'c', 's', 'v', 'https://auth', 'c|https://auth', 'https://mcp')`.execute(db);
+    const raw = await db
+      .selectFrom('mcp_oauth_v1_pending')
+      .select(['mode'])
+      .where('state', '=', 'st-no-mode')
+      .executeTakeFirstOrThrow();
+    expect(raw.mode).toBe('sign-in-again');
+    expect((await store.getPending('st-no-mode'))?.mode).toBe('sign-in-again');
+
+    await store.putPending(makePending({ state: 'st-odd-mode' }));
+    await sql`UPDATE mcp_oauth_v1_pending SET mode = 'ADD' WHERE state = 'st-odd-mode'`.execute(db);
+    expect((await store.getPending('st-odd-mode'))?.mode).toBe('sign-in-again');
+    expect((await store.consumePending('st-odd-mode', Date.now(), 60_000))?.mode).toBe('sign-in-again');
   });
 
   // --- TASK-696: the pending row carries the client the authorization started with ---

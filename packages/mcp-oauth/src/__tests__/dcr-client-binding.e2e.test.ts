@@ -369,9 +369,10 @@ type ResolveResult =
 interface Stack {
   h: TestHarness;
   db: Kysely<McpOAuthDatabase>;
+  /** Every sign-in belongs to an agent; `mode` defaults to an Add. */
   begin(
     user: string,
-    body: { connectorId: string; agentId?: string },
+    body: { connectorId: string; agentId: string; mode?: 'add' | 'sign-in-again' },
   ): Promise<{ status: number; authorizationUrl?: string }>;
   callback(user: string, code: string, state: string): Promise<string | undefined>;
   /** begin -> (browser approve) -> callback, all sequential. `clientId` is the client the
@@ -379,7 +380,7 @@ interface Stack {
   connect(
     user: string,
     connectorId: string,
-    agentId?: string,
+    agentId: string,
   ): Promise<{ redirect: string | undefined; clientId: string }>;
   status(
     user: string,
@@ -456,7 +457,7 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     db,
     async begin(user, body) {
       const { res, rec } = fakeRes();
-      await route('/api/connectors/oauth/begin')(fakeReq(user, { body }), res);
+      await route('/api/connectors/oauth/begin')(fakeReq(user, { body: { mode: 'add', ...body } }), res);
       return {
         status: rec.status,
         ...(rec.json?.authorizationUrl !== undefined ? { authorizationUrl: rec.json.authorizationUrl } : {}),
@@ -468,7 +469,7 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
       return rec.redirectUrl;
     },
     async connect(user, connectorId, agentId) {
-      const b = await stack.begin(user, { connectorId, ...(agentId ? { agentId } : {}) });
+      const b = await stack.begin(user, { connectorId, agentId });
       if (b.status !== 200 || !b.authorizationUrl) throw new Error(`begin failed ${b.status}`);
       const { code, state } = fas.authorize(b.authorizationUrl);
       const redirect = await stack.callback(user, code, state);
@@ -527,7 +528,7 @@ const SUCCESS = expect.stringContaining('oauth=success');
 describe('challenge-only OAuth discovery through the production plugin', () => {
   it('discovers, authorizes, stores and refreshes a token without well-known resource metadata', async () => {
     const s = await boot({ visibility: 'personal', scopes: [], asOpts: { challengeOnly: true } });
-    const begun = await s.begin('alice', { connectorId: 'conn-1' });
+    const begun = await s.begin('alice', { connectorId: 'conn-1', agentId: 'agent-A' });
     expect(begun.status).toBe(200);
     expect(new URL(begun.authorizationUrl!).searchParams.get('scope')).toBe('resource.read');
     const { code, state } = fas.authorize(begun.authorizationUrl!);
@@ -535,7 +536,7 @@ describe('challenge-only OAuth discovery through the production plugin', () => {
     const resolved = await s.resolve('alice', 'agent-A');
     expect(outcome(resolved)).toBe('ok');
     expect(refreshGrants()).toHaveLength(1);
-    expect(await s.status('alice', 'conn-1')).toEqual({ status: 200, json: { status: 'connected' } });
+    expect(await s.status('alice', 'conn-1', 'agent-A')).toEqual({ status: 200, json: { status: 'connected' } });
   });
 });
 
@@ -583,19 +584,19 @@ describe('two agents connect the same connector (strict RFC 6749 authorization s
     ]);
   });
 
-  it('two users, each with a personal connector of the same id: both stay connected', async () => {
-    // Connectors are keyed (owner, slug), so alice and bob can both have `conn-1`. The shared
-    // client row key `conn-1|<AS>` knew nothing about the owner. No agentId => user-scope tokens.
+  it('two users, each signing in for their own personal agent on the same connector: both stay connected', async () => {
+    // The shared client row key `conn-1|<AS>` knows nothing about the owner. Each sign-in
+    // belongs to the signer's own agent.
     const s = await boot({ visibility: 'personal' });
-    const alice = await s.connect('alice', 'conn-1');
+    const alice = await s.connect('alice', 'conn-1', 'agent-alice');
     expect(alice.redirect).toEqual(SUCCESS);
-    expect(outcome(await s.resolve('alice', ''))).toBe('ok'); // precondition
-    const bob = await s.connect('bob', 'conn-1');
+    expect(outcome(await s.resolve('alice', 'agent-alice'))).toBe('ok'); // precondition
+    const bob = await s.connect('bob', 'conn-1', 'agent-bob');
     expect(bob.redirect).toEqual(SUCCESS);
 
     const mark = fas.grants.length;
-    expect(outcome(await s.resolve('alice', '')), 'alice after bob connected').toBe('ok');
-    expect(outcome(await s.resolve('bob', '')), 'bob after bob connected').toBe('ok');
+    expect(outcome(await s.resolve('alice', 'agent-alice')), 'alice after bob connected').toBe('ok');
+    expect(outcome(await s.resolve('bob', 'agent-bob')), 'bob after bob connected').toBe('ok');
     expect(refreshGrants(mark).map((g) => [g.clientId, g.outcome])).toEqual([
       [alice.clientId, 'ok'],
       [bob.clientId, 'ok'],
@@ -650,12 +651,30 @@ describe('two agents connect the same connector (strict RFC 6749 authorization s
 // Controls: behaviour that must be identical before and after the fix.
 // ---------------------------------------------------------------------------
 describe('[CONTROL] shapes that never depended on the per-token client', () => {
-  it('[CONTROL] two PERSONAL agents of one user share one user-scope token; both resolve', async () => {
+  // Agent-owned sign-ins (slice 3, Review Focus): one person, two personal agents, one
+  // connector — each Add writes the agent's OWN token. Neither overwrites the other, and
+  // nothing lands on the person (before slice 3 both wrote ONE user-scope token).
+  it('two personal agents of one user get SEPARATE agent-scope tokens; neither overwrites the other', async () => {
     const s = await boot({ visibility: 'personal' });
-    await s.connect('alice', 'conn-1', 'agent-A');
-    await s.connect('alice', 'conn-1', 'agent-B'); // overwrites the user-scope token; no orphan
-    expect(outcome(await s.resolve('alice', 'agent-A'))).toBe('ok');
-    expect(outcome(await s.resolve('alice', 'agent-B'))).toBe('ok');
+    const a = await s.connect('alice', 'conn-1', 'agent-A');
+    expect(a.redirect).toEqual(SUCCESS);
+    const b = await s.connect('alice', 'conn-1', 'agent-B');
+    expect(b.redirect).toEqual(SUCCESS);
+    expect(b.clientId, 'each begin registers its own client').not.toBe(a.clientId);
+
+    const mark = fas.grants.length;
+    const ra = await s.resolve('alice', 'agent-A');
+    const rb = await s.resolve('alice', 'agent-B');
+    expect(outcome(ra), 'agent-A after agent-B signed in').toBe('ok');
+    expect(outcome(rb)).toBe('ok');
+    // Two tokens, each refreshed as the client it was issued to: A's survived B's Add.
+    expect(refreshGrants(mark).map((g) => [g.clientId, g.outcome])).toEqual([
+      [a.clientId, 'ok'],
+      [b.clientId, 'ok'],
+    ]);
+    expect(ra.ok && rb.ok && ra.token !== rb.token).toBe(true);
+    // Nothing was written for the person: the agent-less (user-scope) read finds no row.
+    expect(await s.resolve('alice', '')).toMatchObject({ ok: false, code: 'credential-not-found' });
   });
 
   it('[CONTROL] the same agent reconnecting replaces its own token; it resolves and reports connected', async () => {
