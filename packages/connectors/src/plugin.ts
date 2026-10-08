@@ -232,7 +232,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins and people's keys for it are left in the vault (a later connector with the same id could read them)",
+            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
         },
         // TASK-737 — the connector editor's per-tool permissions routes. The
         // values live in @ax/tool-policy: without it the routes answer 503
@@ -696,9 +696,9 @@ async function upsertConnector(
   // already holds one can still be edited.
   if (prior === null) assertConnectorIdCreatable(connectorId);
   // TASK-827 — who supplies the key is fixed for a live connector. A switch
-  // would leave the old mode's key behind (orphaned), and a personal key left
-  // behind would SHADOW the shared one: credentials:get walks
-  // user -> agent -> global. Refused before anything is written; a delete
+  // would leave the old mode's key behind (orphaned), and an agent's key left
+  // behind would SHADOW the shared one: credentials:get walks agent -> global
+  // for `account:` refs. Refused before anything is written; a delete
   // purges the keys, so a deleted id may come back in the other mode.
   if (prior !== null && prior.keyMode !== keyMode) {
     throw new PluginError({
@@ -1010,8 +1010,8 @@ export async function deleteConnector(
     }
     // Slice 2b — is the id still in use by ANY live connector (any owner, any
     // visibility)? Same post-soft-delete rule: a failed check never rejects
-    // the delete, and unknown means "still live" (keep people's keys, and
-    // subscribers keep id-keyed state).
+    // the delete, and unknown means "still live" (subscribers keep id-keyed
+    // state).
     let idStillLive = true;
     try {
       idStillLive = await store.hasLiveById(connectorId);
@@ -1093,7 +1093,7 @@ async function resolveConnector(
   //
   // TASK-96 — reach-by-attachment: the derived credentialPlan maps the
   // connector's keyMode to the credential SCOPE each slot's key attaches to
-  // (`personal` → `user` per-user vault, `workspace` → `global` company key) and
+  // (`personal` → `agent`, each agent's own key; `workspace` → `global` company key) and
   // the deterministic `account:<service>` ref. requiresSharedKeyConsent gates the
   // "act as you" consent moment (workspace mode or a shared connector). Reach
   // derives PURELY from this scope — no visibility flag on the credential itself.

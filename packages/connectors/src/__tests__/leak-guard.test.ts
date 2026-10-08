@@ -105,7 +105,7 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
   it('the resolve credential plan + consent gate are storage-agnostic (TASK-96)', () => {
     // The derived credentialPlan exposes only neutral fields — slot / scope / ref
     // — and the consent gate is a boolean. `scope` carries the neutral
-    // credential-scope contract (`user`/`global`), NOT backend vocabulary, so it
+    // credential-scope contract (`agent`/`global`), NOT backend vocabulary, so it
     // is NOT in the leaky-field list above. The plan never surfaces a backing
     // mechanism (transport/command/url/mcp) — that already lives only inside
     // capabilities, which the walk above pins for the resolve shape too.

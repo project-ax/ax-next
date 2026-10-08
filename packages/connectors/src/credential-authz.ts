@@ -16,7 +16,7 @@ import type {
 // THE BUG THIS CLOSES. A connector's credential ref is `account:<connectorId>`
 // (or `account:<connectorId>:<SLOT>` for a connector with two or more slots) and
 // the connector id is chosen by whoever authors the connector. @ax/credentials'
-// `credentials:get` walks user -> agent -> global for every ref, so a user who
+// `credentials:get` walked user -> agent -> global for every ref, so a user who
 // authored a connector called `zendesk` read the company's `account:zendesk` key
 // at global scope, whatever their connector's keyMode said.
 //
@@ -135,11 +135,11 @@ export async function authorizeGlobalAccountRead(
 // TASK-797 — who may read a connector's OAuth CLIENT SECRET at global scope.
 //
 // THE GAP THIS CLOSES. A custom-client OAuth connector pins a client id and a
-// client secret. The editor stored the secret at the AUTHOR's user scope, and
-// @ax/mcp-oauth's `begin` reads it as the person signing in, so only the
-// author could ever sign in (`400 oauth_client_secret_unavailable` for
-// everyone else). An admin's shared connector now stores it at global scope
-// instead, and this rule decides who may read it there.
+// client secret. The editor used to store the secret at the AUTHOR's user
+// scope, so only the author could ever sign in (`400
+// oauth_client_secret_unavailable` for everyone else). An admin's shared
+// connector stores it at global scope instead (and since slice 5 nothing is
+// stored per person), and this rule decides who may read it there.
 //
 // THE RULE. A global read of `account:<id>:OAUTH_CLIENT_SECRET` is allowed iff
 // ALL of these hold for the REQUESTING user:

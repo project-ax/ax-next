@@ -365,9 +365,9 @@ export interface DeleteInput {
   connectorId: string;
   /**
    * Whether the caller is authorized to purge GLOBAL-scope (shared/company)
-   * credentials as part of the delete. Omitted/false ⟹ ONLY the caller's own
-   * per-user (`scope:'user'`, `ownerId:userId`) credential refs are purged;
-   * global-scope refs are LEFT INTACT. A global (company) key is shared
+   * credentials as part of the delete. Omitted/false ⟹ global-scope refs and
+   * agents' keys are LEFT INTACT (nothing is stored per person any more, so
+   * there is no caller-owned row to purge). A global (company) key is shared
    * infrastructure — owner-independent, keyed by the connector id — so only an
    * admin may tombstone it on delete. Routes pass `actor.isAdmin`. This is the
    * security boundary that stops a non-admin who somehow owns a workspace
@@ -817,7 +817,7 @@ export const LiveIdsOutputSchema = z.object({
 // the leak-guard test pins that they introduce no mechanism vocabulary.
 const CredentialPlanEntrySchema = z.object({
   slot: z.string(),
-  scope: z.union([z.literal('user'), z.literal('global')]),
+  scope: z.union([z.literal('agent'), z.literal('global')]),
   ref: z.string(),
   // TASK-124 — structured destination bits so the connect-flow UI rebuilds the
   // `{kind:'account', service, slot?}` destination without string-parsing the

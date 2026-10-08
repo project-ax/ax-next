@@ -1349,14 +1349,14 @@ describe('admin connector routes', () => {
     expect(captured.status).toBe(404);
   });
 
-  it('test: needs-key when a declared slot has no key in the vault', async () => {
+  it('test: needs-key when a declared shared slot has no key in the vault', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
     await seedConnector(handlers, {
       connectorId: 'gdrive',
       name: 'Google Drive',
-      keyMode: 'personal',
+      keyMode: 'workspace',
       visibility: 'private',
       capabilities: mcpCaps(),
     });
@@ -1368,7 +1368,7 @@ describe('admin connector routes', () => {
     expect((captured.body as { detail?: string }).detail).toContain('gdrive');
   });
 
-  it('test: reachable when the personal slot is filled in the actor vault', async () => {
+  it('test: a personal connector is needs-key (each agent adds its key), never read from the admin vault', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
@@ -1379,14 +1379,14 @@ describe('admin connector routes', () => {
       visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // The connector owns its own key: the ref is account:<connectorId>
-    // (account:gdrive) — the slot's legacy account tag is ignored. A personal
-    // connector resolves it at scope:'user' under the actor's id.
+    // An old person-level row for the admin must NOT make the connector look
+    // ready: connector keys live on agents, and the probe has no agent.
     credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
-    expect((captured.body as { status: string }).status).toBe('reachable');
+    expect((captured.body as { status: string }).status).toBe('needs-key');
+    expect((captured.body as { detail?: string }).detail).toMatch(/each agent adds its own key/i);
   });
 
   it('test: a workspace connector resolves its slot at scope:global (ownerId:null)', async () => {
@@ -1400,9 +1400,9 @@ describe('admin connector routes', () => {
       visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // A user-scoped row under the actor must NOT satisfy a workspace slot — the
-    // workspace key lives at scope:'global' / ownerId:null. Ref is account:gdrive.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
+    // An agent-scoped row must NOT satisfy a workspace slot — the workspace key
+    // lives at scope:'global' / ownerId:null. Ref is account:gdrive.
+    credentialRows = [{ scope: 'agent', ownerId: 'agent-1', ref: 'account:gdrive' }];
     const { res: r1, captured: c1 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r1);
     expect((c1.body as { status: string }).status).toBe('needs-key');
@@ -1471,7 +1471,7 @@ describe('admin connector routes', () => {
     await seedConnector(handlers, {
       connectorId: 'gdrive',
       name: 'Google Drive',
-      keyMode: 'personal',
+      keyMode: 'workspace',
       visibility: 'private',
       capabilities: mcpCaps(),
     });

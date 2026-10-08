@@ -9,10 +9,11 @@ import type { Capabilities, CapabilitySlot, Connector, KeyMode } from './types.j
 // connector instead of the skill") routes on. Reach is derived PURELY from where
 // the key attaches — there is NO public/private visibility flag on a credential:
 //
-//   keyMode 'personal'  → credential scope 'user'   — each user supplies their
-//                         own key the first time they use the connector (the
-//                         JIT `account:<connector id>` per-user vault flow);
-//                         everyone acts as themselves.
+//   keyMode 'personal'  → credential scope 'agent'  — each agent adds its own
+//                         key (or sign-in) when the connector is added to it
+//                         (`ownerId` = the agent id). Nothing is ever stored per
+//                         PERSON: an agent never acts as the person chatting
+//                         with it (agent-owned sign-ins, slice 5).
 //   keyMode 'workspace' → credential scope 'global' — an admin supplies ONE key;
 //                         every allowed agent spends it as a shared service
 //                         identity (the company key).
@@ -41,9 +42,9 @@ import type { Capabilities, CapabilitySlot, Connector, KeyMode } from './types.j
 // (`global | user | agent`) is the stable inter-plugin contract, re-declared
 // LOCALLY here (same posture as the local zod re-declaration of Capabilities in
 // types.ts). The plan only emits the two scopes the keyMode derivation produces
-// (`user` | `global`); `agent` exists in the union for completeness of the
-// contract (a key bound to a shared agent is the design's other reach) but is not
-// produced by this derivation.
+// (`agent` | `global`); `user` stays in the union for completeness of the
+// contract (other ref kinds still live per person) but a connector key never
+// lands there.
 // ---------------------------------------------------------------------------
 
 /** The neutral credential-scope contract (mirrors @ax/credentials' scope).
@@ -55,8 +56,10 @@ export type CredentialScope = 'global' | 'user' | 'agent';
 export interface CredentialPlanEntry {
   /** The capability slot name this binding satisfies. */
   slot: string;
-  /** The credential scope the key binds to — reach derives from this alone. */
-  scope: Extract<CredentialScope, 'user' | 'global'>;
+  /** The credential scope the key binds to — reach derives from this alone.
+   *  `agent` means "on whichever agent the connector is added to" (`ownerId` =
+   *  that agent's id); `global` is the one shared company key. */
+  scope: Extract<CredentialScope, 'agent' | 'global'>;
   /**
    * The deterministic vault ref the proxy resolves. `account:<service>` for a
    * single-slot connector (back-compat); `account:<service>:<slot>` for a
@@ -95,7 +98,7 @@ export function serviceTagForSlot(_slot: CapabilitySlot, connectorId: string): s
 }
 
 /**
- * Build the per-user / company vault ref for a service. Re-derived locally (no
+ * Build the per-agent / company vault ref for a service. Re-derived locally (no
  * @ax/credentials import) — identical to `refForDestination({kind:'account', …})`
  * and to the ref `applyCapabilityGrant` binds for an `account`-tagged slot, so the
  * key a connector resolves and the key a skill stored always address the same row.
@@ -110,14 +113,14 @@ export function accountRef(service: string, slot?: string): string {
 }
 
 /** keyMode → the credential scope the key attaches to (reach-by-attachment). */
-function scopeForKeyMode(keyMode: KeyMode): Extract<CredentialScope, 'user' | 'global'> {
-  return keyMode === 'workspace' ? 'global' : 'user';
+function scopeForKeyMode(keyMode: KeyMode): Extract<CredentialScope, 'agent' | 'global'> {
+  return keyMode === 'workspace' ? 'global' : 'agent';
 }
 
 /**
  * Derive one credential-plan entry per declared credential slot. The connect flow
  * uses this to know WHOSE key to prompt for / spend: a `personal` connector
- * resolves every slot to the per-user vault (`scope:'user'`), a `workspace`
+ * resolves every slot to the agent's own key (`scope:'agent'`), a `workspace`
  * connector to the single company key (`scope:'global'`). A connector with no
  * credential slots yields an empty plan (nothing to prompt — e.g. an MCP server
  * that needs no key).

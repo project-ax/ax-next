@@ -280,6 +280,19 @@ async function setKey(
   });
 }
 
+/** A per-person `account:` write is refused by the vault (slice 5), and nothing is stored. */
+async function expectPersonLevelWriteRefused(h: TestHarness, userId: string, ref: string): Promise<void> {
+  await expect(setKey(h, 'user', userId, ref, VICTIM_KEY)).rejects.toSatisfy(
+    (err: unknown) => err instanceof PluginError && err.code === 'invalid-payload',
+  );
+  const listed = await h.bus.call<{ scope: string; ownerId: string }, { credentials: Array<{ ref: string }> }>(
+    'credentials:list',
+    h.ctx({ userId }),
+    { scope: 'user', ownerId: userId },
+  );
+  expect(listed.credentials.map((c) => c.ref)).not.toContain(ref);
+}
+
 /** The company key exactly as the admin connect flow stores it. */
 function setCompanyKey(h: TestHarness, ref: string, value: string): Promise<void> {
   return setKey(h, 'global', null, ref, value);
@@ -361,8 +374,8 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
   });
 
-  it('2) a personal connector named like the company one gets nothing until its owner stores their own key', async () => {
-    // UNFIXED: FAILS at the first check (victim would resolve COMPANY_KEY); the own-key half is unchanged behaviour.
+  it('2) a personal connector named like the company one gets nothing, and its owner cannot store a per-person key', async () => {
+    // UNFIXED: FAILS at the first check (victim would resolve COMPANY_KEY). Slice 5: a per-person copy is refused.
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'mallory', 'zendesk', 'workspace', 'attacker.example', 'ZENDESK_API_KEY');
@@ -372,11 +385,10 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
 
-    // Their own key, at user scope, is what resolves for them...
-    await setKey(h, 'user', 'victim', 'account:zendesk', VICTIM_KEY);
-    expect(await getKey(h, 'victim', 'account:zendesk')).toBe(VICTIM_KEY);
-
-    // ...and it is theirs alone: mallory still gets neither key.
+    // Connector keys are never stored per person (slice 5): the write is
+    // refused, and nothing resolves for either of them afterwards.
+    await expectPersonLevelWriteRefused(h, 'victim', 'account:zendesk');
+    await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
     await expectNotFound(getKey(h, 'mallory', 'account:zendesk'));
   });
 
@@ -453,17 +465,19 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'mallory', entry.ref));
   });
 
-  it('shared personal definitions keep each user’s vault separate; shared workspace keys require an admin owner', async () => {
+  it('shared personal definitions take no per-person key and no company key; shared workspace keys require an admin owner', async () => {
     const h = await makeHarness();
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-personal', name: 'Shared personal',
       keyMode: 'personal', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
     });
-    await setKey(h, 'user', 'root', 'account:shared-personal', 'AUTHOR-KEY');
+    // Each AGENT adds its own key; nobody can store one per person...
+    await expectPersonLevelWriteRefused(h, 'root', 'account:shared-personal');
+    await expectPersonLevelWriteRefused(h, 'victim', 'account:shared-personal');
+    // ...and a company row under the same ref is not read for a personal connector.
+    await setCompanyKey(h, 'account:shared-personal', COMPANY_KEY);
     await expectNotFound(getKey(h, 'victim', 'account:shared-personal'));
-    await setKey(h, 'user', 'victim', 'account:shared-personal', VICTIM_KEY);
-    expect(await getKey(h, 'victim', 'account:shared-personal')).toBe(VICTIM_KEY);
-    expect(await getKey(h, 'root', 'account:shared-personal')).toBe('AUTHOR-KEY');
+    await expectNotFound(getKey(h, 'root', 'account:shared-personal'));
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-workspace', name: 'Shared workspace',
       keyMode: 'workspace', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),

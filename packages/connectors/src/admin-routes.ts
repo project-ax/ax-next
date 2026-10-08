@@ -213,10 +213,11 @@ function handleHookError(err: unknown, res: RouteResponse): void {
 // connection. Two checks, both derivable from data the connectors plugin
 // already owns plus a metadata-only credential read:
 //
-//   needs-key   — a declared credential slot has no key in the vault yet
-//                 (`credentials:list` is metadata-only — it NEVER returns a
-//                 secret value; we only check whether a row at the derived
-//                 `(scope, ref)` exists).
+//   needs-key   — a declared credential slot has no shared (global) key in the
+//                 vault yet (`credentials:list` is metadata-only — it NEVER
+//                 returns a secret value; we only check whether a row at the
+//                 derived ref exists), or the connector's keys are added per
+//                 agent, which the probe has no agent to check.
 //   unreachable — the config is malformed: an MCP-backed connector whose
 //                 leading server declares no `url`, so it can't connect to
 //                 anything.
@@ -250,9 +251,14 @@ interface CredentialMetaLike {
 }
 
 /**
- * Probe a connector for setup-completeness. Owner-scoped: `actorId` is the
- * authenticated caller, used to look up `scope:'user'` (personal) keys in the
- * caller's own vault; `scope:'global'` (workspace) keys live under `ownerId:null`.
+ * Probe a connector for setup-completeness. `scope:'global'` (workspace) keys
+ * live under `ownerId:null` and are checked by presence.
+ *
+ * A `personal` connector's keys live on each AGENT it is added to
+ * (`scope:'agent'`), and the admin's Test runs outside any agent, so there is no
+ * single row to check: it reports `needs-key` without reading anything. It never
+ * looks in the admin's own (user) scope — connector keys are never stored per
+ * person (agent-owned sign-ins, slice 5).
  *
  * Returns `needs-key` the moment a required slot has no key, otherwise checks
  * config sanity, otherwise `reachable`. Never throws on a missing credential —
@@ -260,27 +266,29 @@ interface CredentialMetaLike {
  */
 export async function probeConnector(
   connector: Connector,
-  deps: { bus: HookBus; ctx: AgentContext; actorId: string },
+  deps: { bus: HookBus; ctx: AgentContext },
 ): Promise<ProbeResult> {
   const plan = deriveCredentialPlan(connector);
   for (const entry of plan) {
-    // `scope:'user'` keys are owned by the caller; `scope:'global'` (workspace)
-    // keys live under ownerId:null. The credential store scopes its read by
-    // (scope, ownerId) — we then check the derived ref is present.
-    const ownerId = entry.scope === 'global' ? null : deps.actorId;
+    if (entry.scope === 'agent') {
+      return {
+        status: 'needs-key',
+        detail: 'Each agent adds its own key. We can test it once an agent has added one.',
+      };
+    }
     let rows: CredentialMetaLike[];
     try {
       const out = await deps.bus.call<
         { scope: string; ownerId: string | null },
         { credentials: CredentialMetaLike[] }
-      >('credentials:list', deps.ctx, { scope: entry.scope, ownerId });
+      >('credentials:list', deps.ctx, { scope: 'global', ownerId: null });
       rows = out.credentials;
     } catch {
       // A read failure can't prove the key exists — conservatively report the
       // connector as not-yet-usable rather than a false "reachable".
       return { status: 'unreachable', detail: 'could not verify credentials' };
     }
-    const present = rows.some((r) => r.ref === entry.ref && r.scope === entry.scope);
+    const present = rows.some((r) => r.ref === entry.ref && r.scope === 'global');
     if (!present) {
       return { status: 'needs-key', detail: `missing key for slot "${entry.slot}"` };
     }
@@ -855,11 +863,7 @@ export function createConnectorRouteHandlers(
         handleHookError(err, res);
         return;
       }
-      const result = await probeConnector(connector, {
-        bus: deps.bus,
-        ctx,
-        actorId: actor.id,
-      });
+      const result = await probeConnector(connector, { bus: deps.bus, ctx });
       res.status(200).json(result);
     },
 

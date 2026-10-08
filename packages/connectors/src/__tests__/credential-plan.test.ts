@@ -15,7 +15,7 @@ import type { Connector } from '../types.js';
 // The credential PLAN is the keyMode→credential-scope mapping the connect flow
 // (and the future credential-proxy router) routes on. Reach derives PURELY from
 // where the key attaches:
-//   - keyMode 'personal'  → scope 'user'   (per-user JIT account:<svc> vault)
+//   - keyMode 'personal'  → scope 'agent'  (each agent adds its own account:<svc> key)
 //   - keyMode 'workspace' → scope 'global' (one admin/company key, shared)
 // No credential gets a visibility flag — scope IS the reach.
 // ---------------------------------------------------------------------------
@@ -63,8 +63,8 @@ describe('accountRef', () => {
   });
 });
 
-describe('deriveCredentialPlan — personal keyMode binds the per-user vault (scope=user)', () => {
-  it('maps each slot to scope=user, ref=account:<connectorId>, ignoring a legacy account tag', () => {
+describe('deriveCredentialPlan — personal keyMode puts the key on the agent (scope=agent, never per person)', () => {
+  it('maps each slot to scope=agent, ref=account:<connectorId>, ignoring a legacy account tag', () => {
     const plan = deriveCredentialPlan(
       connector({
         id: 'salesforce',
@@ -80,7 +80,7 @@ describe('deriveCredentialPlan — personal keyMode binds the per-user vault (sc
       }),
     );
     expect(plan).toEqual([
-      { slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce', service: 'salesforce' },
+      { slot: 'SF_TOKEN', scope: 'agent', ref: 'account:salesforce', service: 'salesforce' },
     ]);
   });
 
@@ -98,7 +98,7 @@ describe('deriveCredentialPlan — personal keyMode binds the per-user vault (sc
       }),
     );
     expect(plan).toEqual([
-      { slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce', service: 'salesforce' },
+      { slot: 'SF_TOKEN', scope: 'agent', ref: 'account:salesforce', service: 'salesforce' },
     ]);
   });
 });
@@ -155,7 +155,7 @@ describe('deriveCredentialPlan — edges', () => {
       }),
     );
     expect(plan).toEqual([
-      { slot: 'GITHUB_TOKEN', scope: 'user', ref: 'account:gh', service: 'gh' },
+      { slot: 'GITHUB_TOKEN', scope: 'agent', ref: 'account:gh', service: 'gh' },
     ]);
     // No slotTag on a single-slot connector (drives the collapsed destination).
     expect(plan[0]).not.toHaveProperty('slotTag');
@@ -183,14 +183,14 @@ describe('deriveCredentialPlan — edges', () => {
     expect(plan).toEqual([
       {
         slot: 'CLIENT_ID',
-        scope: 'user',
+        scope: 'agent',
         ref: 'account:oauthsvc:CLIENT_ID',
         service: 'oauthsvc',
         slotTag: 'CLIENT_ID',
       },
       {
         slot: 'CLIENT_SECRET',
-        scope: 'user',
+        scope: 'agent',
         ref: 'account:oauthsvc:CLIENT_SECRET',
         service: 'oauthsvc',
         slotTag: 'CLIENT_SECRET',
@@ -219,8 +219,8 @@ describe('deriveCredentialPlan — edges', () => {
       }),
     );
     expect(plan).toEqual([
-      { slot: 'A', scope: 'user', ref: 'account:gdrive:A', service: 'gdrive', slotTag: 'A' },
-      { slot: 'B', scope: 'user', ref: 'account:gdrive:B', service: 'gdrive', slotTag: 'B' },
+      { slot: 'A', scope: 'agent', ref: 'account:gdrive:A', service: 'gdrive', slotTag: 'A' },
+      { slot: 'B', scope: 'agent', ref: 'account:gdrive:B', service: 'gdrive', slotTag: 'B' },
     ]);
     expect(plan[0]!.ref).not.toBe(plan[1]!.ref);
   });

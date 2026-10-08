@@ -53,14 +53,12 @@ export async function sweepStdioConnectors(
           capabilities: shape.data,
         } as unknown as PurgeableConnector;
         // Global refs carry no owner. If another owner's live, non-stdio
-        // connector keeps this id, its company key may be that very ref: purge
-        // only the owner-scoped (user) refs and still announce the removal.
+        // connector keeps this id, its company key may be that very ref: skip
+        // the global purge and still announce the removal.
         const shared = await hasSurvivingSameIdConnectorForSystemSweep(db, row.connector_id);
         if (shared) {
           ctx.logger.info('connectors_stdio_sweep_skipped_global_purge', {
             connectorId: row.connector_id,
-            // The owner's own (user-scope) key is still purged below.
-            ownKeyPurged: true,
           });
         }
         await purgeConnectorState(bus, ctx, row.owner_user_id, connector, {

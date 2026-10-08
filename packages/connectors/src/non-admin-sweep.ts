@@ -5,7 +5,7 @@
 // define connectors from now on.
 //
 // Each removal gets the cleanup a real admin `connectors:delete` has (key purge
-// at full authority, agents' sign-ins, people's keys, the `connectors:deleted`
+// at full authority, agents' sign-ins, the `connectors:deleted`
 // announcement), with one ordering difference: the purge runs BEFORE the
 // soft-delete (like the stdio sweep), so a crash in between leaves the live row
 // for the next boot to finish instead of an orphaned key. The survivor answers
@@ -24,8 +24,8 @@
 //     `credentials:purge-account` step) → kept, not announced, and the pass is
 //     incomplete: tombstoning it would strand its keys for a later same-id
 //     connector to inherit, so the next boot retries the whole row;
-//   - an id another live connector still carries → its GLOBAL keys, and its
-//     people's keys, stay (they may be the survivor's).
+//   - an id another live connector still carries → its GLOBAL keys stay (they
+//     may be the survivor's).
 // A deleted account (`auth:get-user` → explicit null) counts as non-admin. So
 // does the platform owner `'system'` (skills cap-migration): DELIBERATE, owner
 // decision 2026-10-07 — skills relying on such connectors may break.

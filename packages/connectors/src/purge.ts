@@ -39,7 +39,7 @@ export async function purgeConnectorState(
      * Slice 2b — caller-computed AFTER the row is removed: does any live
      * connector (any owner, any visibility) still carry this id? A failed check
      * must be passed as `true` (keep data when unsure). Rides the
-     * `connectors:deleted` event, and gates the person-scope purge below.
+     * `connectors:deleted` event.
      */
     idStillLive: boolean;
     /**
@@ -52,66 +52,58 @@ export async function purgeConnectorState(
   },
 ): Promise<{ failed: string[] }> {
   const connectorId = connector.id;
-  // Which purge steps failed, e.g. `credentials:delete:user:account:x` or
+  // Which purge steps failed, e.g. `credentials:delete:global:account:x` or
   // `credentials:purge-account`. Empty = every attempted purge succeeded.
   const failed: string[] = [];
 
-  // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
-  // home. Soft-dep: only attempted when credentials:delete is present (a preset
-  // without @ax/credentials still deletes the connector). The purge targets ONLY
-  // the deleted connector's derived refs, at the scope it declares.
+  // Purge the connector's OWN stored company key(s) so a secret never lingers
+  // with no UI home. Soft-dep: only attempted when credentials:delete is present
+  // (a preset without @ax/credentials still deletes the connector). The purge
+  // targets ONLY the deleted connector's derived refs.
   //
-  // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:ownerUserId) is
-  // unambiguously the row owner's own — always safe to purge. A GLOBAL ref
-  // (scope:'global', shared company key, owner-independent) is purged ONLY when
-  // the caller is authorized (opts.purgeGlobal — `connectors:delete` passes the
-  // caller's `purgeGlobal`, which only the admin-only DELETE route sets; the boot
-  // stdio sweep sets it unless another owner's same-id connector survives).
-  // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
-  // a non-admin global-credential wipe, whatever path reaches
-  // connectors:upsert / connectors:delete. Each
+  // Only GLOBAL rows are deleted here. A `personal` connector's plan entries are
+  // at AGENT scope (one row per agent it was added to), so they go through
+  // `credentials:purge-account` below, which reaches every agent at once.
+  // Nothing is stored per PERSON any more (agent-owned sign-ins, slice 5), so
+  // there is no user-scope row to delete.
+  //
+  // SECURITY (invariant #5): a GLOBAL ref (shared company key, owner-
+  // independent) is purged ONLY when the caller is authorized (opts.purgeGlobal —
+  // `connectors:delete` passes the caller's `purgeGlobal`, which only the
+  // admin-only DELETE route sets; the boot stdio sweep sets it unless another
+  // owner's same-id connector survives). Gating the PURGE here, not just the HTTP
+  // create route, closes EVERY path to a non-admin global-credential wipe. Each
   // failure is logged + swallowed so a credential hiccup never wedges the delete.
   if (bus.hasService('credentials:delete')) {
     const purgeGlobal = opts.purgeGlobal;
     // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
-    // is the connector's own key too: the editor stores it at the author's user
-    // scope, or at global for an admin's shared connector. Purge it from both
-    // (global under the same purgeGlobal gate), or a later connector with the
-    // same id would silently inherit it.
+    // is the connector's own key too: the editor stores it at global for a
+    // shared connector. Only a SHARED connector's secret is ever read at global
+    // (credential-authz), so only a shared connector's delete may purge it
+    // there: a private connector that happens to share the id must not wipe the
+    // shared one's.
     const clientSecretRef = oauthClientSecretRefFor(connectorId);
     const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
-    // Only a SHARED connector's secret is ever read at global (credential-authz),
-    // so only a shared connector's delete may purge it there: a private
-    // connector that happens to share the id must not wipe the shared one's.
-    const purgeEntries: Array<{ scope: 'user' | 'global'; ref: string }> = [
-      ...deriveCredentialPlan(connector),
-      ...(ownsClientSecret ? [{ scope: 'user' as const, ref: clientSecretRef }] : []),
-      ...(ownsClientSecret && connector.visibility === 'shared'
-        ? [{ scope: 'global' as const, ref: clientSecretRef }]
-        : []),
+    const globalRefs: string[] = [
+      ...deriveCredentialPlan(connector)
+        .filter((entry) => entry.scope === 'global')
+        .map((entry) => entry.ref),
+      ...(ownsClientSecret && connector.visibility === 'shared' ? [clientSecretRef] : []),
     ];
-    for (const entry of purgeEntries) {
-      if (entry.scope === 'global' && !purgeGlobal) {
+    for (const ref of globalRefs) {
+      if (!purgeGlobal) {
         // Unauthorized to purge a shared/company key — leave it intact. (An admin
         // delete passes purgeGlobal:true; a non-admin's never does.)
-        ctx.logger.info('connectors_delete_skipped_global_purge', {
-          connectorId,
-          ref: entry.ref,
-        });
+        ctx.logger.info('connectors_delete_skipped_global_purge', { connectorId, ref });
         continue;
       }
-      const ownerId = entry.scope === 'user' ? ownerUserId : null;
       try {
-        await bus.call('credentials:delete', ctx, {
-          scope: entry.scope,
-          ownerId,
-          ref: entry.ref,
-        });
+        await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
       } catch (err) {
-        failed.push(`credentials:delete:${entry.scope}:${entry.ref}`);
+        failed.push(`credentials:delete:global:${ref}`);
         ctx.logger.warn('connectors_delete_credential_purge_failed', {
           connectorId,
-          ref: entry.ref,
+          ref,
           err: err instanceof Error ? err.message : String(err),
         });
       }
@@ -125,27 +117,16 @@ export async function purgeConnectorState(
   // connector that happens to share the id must never wipe them. Best-effort,
   // like the credential purge above. Requires admin authority (purgeGlobal) and
   // no surviving same-id shared connector (ids are not unique across owners).
-  //
-  // Slice 2b — PEOPLE's keys for it (user-scope `account:<id>[:SLOT]`, every
-  // user) go in the same call, under the same rule PLUS `!idStillLive`: no live
-  // connector of ANY owner or visibility keeps the id. A surviving private
-  // same-id connector's users may hold exactly those rows, so it keeps them.
   if (connector.visibility === 'shared' && !opts.purgeAgentSignIns) {
     ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
       connectorId,
       reason: opts.agentSignInsSkipReason,
     });
   } else if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
-    const scopes: Array<'agent' | 'user'> = opts.idStillLive ? ['agent'] : ['agent', 'user'];
-    if (opts.idStillLive) {
-      ctx.logger.info('connectors_delete_skipped_user_keys_purge', {
-        connectorId,
-        reason: 'id-still-live',
-      });
-    }
+    const scopes: Array<'agent'> = ['agent'];
     try {
       const out = await bus.call<
-        { connectorId: string; scopes: Array<'agent' | 'user'> },
+        { connectorId: string; scopes: Array<'agent'> },
         { purged: number }
       >('credentials:purge-account', ctx, { connectorId, scopes });
       ctx.logger.info('connectors_delete_agent_signins_purged', {

@@ -325,7 +325,7 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
       { userId: 'userA', connectorId: 'legacy' },
     );
     expect(resolved.credentialPlan).toEqual([
-      { slot: 'TOKEN', scope: 'user', ref: 'account:legacy', service: 'legacy' },
+      { slot: 'TOKEN', scope: 'agent', ref: 'account:legacy', service: 'legacy' },
     ]);
   });
 });
@@ -335,7 +335,7 @@ describe('@ax/connectors hooks — resolve', () => {
     const h = await makeHarness();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ visibility: 'shared' }));
     const resolved = await h.bus.call<ResolveInput, ResolveOutput>('connectors:resolve', h.ctx({ userId: 'userB' }), { userId: 'userB', connectorId: 'gdrive' });
-    expect(resolved.credentialPlan).toMatchObject([{ scope: 'user', ref: 'account:gdrive' }]);
+    expect(resolved.credentialPlan).toMatchObject([{ scope: 'agent', ref: 'account:gdrive' }]);
     expect(resolved.capabilities).toEqual(mcpCaps());
     // A shared definition is not an attachment: it is not effective for a user
     // who never attached it (TASK-808 — there is no default path left either).
@@ -437,7 +437,7 @@ describe('@ax/connectors hooks — resolve', () => {
       // Single-slot connector keeps the collapsed ref + `service` tag. Keyed by
       // the connector id 'gdrive' — the slot's legacy `account: 'google'` tag is
       // stripped on read + ignored (each connector owns its own key).
-      { slot: 'gdrive', scope: 'user', ref: 'account:gdrive', service: 'gdrive' },
+      { slot: 'gdrive', scope: 'agent', ref: 'account:gdrive', service: 'gdrive' },
     ]);
     expect(resolved.requiresSharedKeyConsent).toBe(false);
   });
@@ -618,7 +618,7 @@ async function makeHarnessWithCredSpy(): Promise<{
 }
 
 describe('@ax/connectors hooks — delete purges the connector\'s credentials', () => {
-  it('a personal connector purges its slot at scope:user / ownerId:userId', async () => {
+  it('a personal connector deletes no per-person key (its keys live on agents)', async () => {
     const { h, calls } = await makeHarnessWithCredSpy();
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
@@ -628,13 +628,12 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     const del = await h.bus.call<DeleteInput, DeleteOutput>(
       'connectors:delete',
       h.ctx({ userId: 'userA' }),
-      { userId: 'userA', connectorId: 'gdrive' },
+      { userId: 'userA', connectorId: 'gdrive', purgeGlobal: true },
     );
     expect(del.deleted).toBe(true);
-    // mcpCaps() is single-slot → collapsed ref account:<connectorId>.
-    expect(calls).toEqual([
-      { scope: 'user', ownerId: 'userA', ref: 'account:gdrive' },
-    ]);
+    // Agent-scope keys go through credentials:purge-account (shared only), never
+    // a per-row credentials:delete; nothing is stored per person.
+    expect(calls).toEqual([]);
   });
 
   it('a workspace connector purges its GLOBAL key only when purgeGlobal is authorized (admin)', async () => {
@@ -688,13 +687,14 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     expect(calls).toEqual([]);
   });
 
-  it('a multi-slot connector purges every per-slot ref (no key left behind)', async () => {
+  it('a multi-slot workspace connector purges every per-slot global ref (no key left behind)', async () => {
     const { h, calls } = await makeHarnessWithCredSpy();
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
       h.ctx({ userId: 'userA' }),
       upsertInput({
         connectorId: 'oauthsvc',
+        keyMode: 'workspace',
         capabilities: {
           allowedHosts: ['api.example.com'],
           credentials: [
@@ -709,17 +709,18 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     await h.bus.call<DeleteInput, DeleteOutput>(
       'connectors:delete',
       h.ctx({ userId: 'userA' }),
-      { userId: 'userA', connectorId: 'oauthsvc' },
+      { userId: 'userA', connectorId: 'oauthsvc', purgeGlobal: true },
     );
     expect(calls).toEqual([
-      { scope: 'user', ownerId: 'userA', ref: 'account:oauthsvc:CLIENT_ID' },
-      { scope: 'user', ownerId: 'userA', ref: 'account:oauthsvc:CLIENT_SECRET' },
+      { scope: 'global', ownerId: null, ref: 'account:oauthsvc:CLIENT_ID' },
+      { scope: 'global', ownerId: null, ref: 'account:oauthsvc:CLIENT_SECRET' },
     ]);
   });
 
   // TASK-797 — a custom-client OAuth connector's client secret is the
-  // connector's own key too: user copy always, global copy (an admin's shared
-  // connector) only under purgeGlobal, and only for a SHARED connector.
+  // connector's own key too: its global copy (an admin's shared connector) is
+  // purged only under purgeGlobal, and only for a SHARED connector. There is no
+  // per-person copy any more (agent-owned sign-ins, slice 5).
   function customClientCaps(id: string) {
     return {
       allowedHosts: ['mcp.example.com'],
@@ -740,7 +741,7 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     };
   }
 
-  it('an admin deleting a shared custom-client connector purges its client secret at user AND global scope', async () => {
+  it('an admin deleting a shared custom-client connector purges its client secret at global scope only', async () => {
     const { h, calls } = await makeHarnessWithCredSpy();
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
@@ -758,8 +759,6 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
       { userId: 'admin', connectorId: 'gmail', purgeGlobal: true },
     );
     expect(calls).toEqual([
-      { scope: 'user', ownerId: 'admin', ref: 'account:gmail' },
-      { scope: 'user', ownerId: 'admin', ref: 'account:gmail:OAUTH_CLIENT_SECRET' },
       { scope: 'global', ownerId: null, ref: 'account:gmail:OAUTH_CLIENT_SECRET' },
     ]);
   });
@@ -796,17 +795,9 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
       h.ctx({ userId: 'admin2' }),
       { userId: 'admin2', connectorId: 'gmail', purgeGlobal: true },
     );
-    expect(calls.filter((c) => c.scope === 'global')).toEqual([]);
-    expect(calls).toContainEqual({
-      scope: 'user',
-      ownerId: 'mallory',
-      ref: 'account:gmail:OAUTH_CLIENT_SECRET',
-    });
-    expect(calls).toContainEqual({
-      scope: 'user',
-      ownerId: 'admin2',
-      ref: 'account:gmail:OAUTH_CLIENT_SECRET',
-    });
+    // Nothing at all: no global copy is touched, and there is no per-person
+    // copy to delete.
+    expect(calls).toEqual([]);
   });
 
   it('deleting an absent connector purges nothing', async () => {
@@ -1884,7 +1875,7 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     const lines: string[] = [];
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
-    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent', 'user'] }]);
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
     expect(logged(lines, 'connectors_delete_agent_signins_purged')).toEqual([
       expect.objectContaining({ connectorId: 'sf', purged: 2 }),
     ]);
@@ -1934,8 +1925,8 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), privateSf('admin2'));
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin1' }),
       { userId: 'admin1', connectorId: 'sf', purgeGlobal: true });
-    // Agent rows go, but the id is still live (the private twin), so people's
-    // keys stay: the private connector's users may hold `account:sf` too.
+    // Agent rows go. The id is still live (the private twin), but that never
+    // widens the purge: nothing is stored per person.
     expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
   });
 
@@ -1991,7 +1982,7 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     ]);
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
       { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
-    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent', 'user'] }]);
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
   });
 
   it('a failing survivor check after the soft-delete still completes the delete and keeps agent rows', async () => {
@@ -2062,10 +2053,10 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
 
 // ---------------------------------------------------------------------------
 // Agent-owned sign-ins slice 2b — `connectors:deleted` says whether the id is
-// still in use, a shared delete with authority and no live same-id connector
-// left also purges people's keys, and `connectors:live-ids`.
+// still in use, and `connectors:live-ids`. (Slice 5: the purge never reaches
+// person scope — there are no per-person connector keys.)
 // ---------------------------------------------------------------------------
-describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)', () => {
+describe('@ax/connectors hooks — idStillLive + the agent-scope purge (slice 2b, slice 5)', () => {
   function captureDeleted(h: TestHarness): ConnectorDeletedEvent[] {
     const events: ConnectorDeletedEvent[] = [];
     h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
@@ -2101,15 +2092,15 @@ describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)',
     expect(events.map((e) => e.idStillLive)).toEqual([true, false]);
   });
 
-  it('a shared crm deleted with authority and no survivor purges agent AND user scopes', async () => {
+  it('a shared crm deleted with authority and no survivor purges agent scope only, never user', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
       { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
-    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent', 'user'] }]);
+    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
   });
 
-  it('a surviving shared same-id crm blocks both purges', async () => {
+  it('a surviving shared same-id crm blocks the purge', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), crm('admin2'));
@@ -2118,7 +2109,7 @@ describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)',
     expect(purges).toEqual([]);
   });
 
-  it('a shared delete WITHOUT authority purges neither scope, even when the id dies', async () => {
+  it('a shared delete WITHOUT authority purges nothing, even when the id dies', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     const events = captureDeleted(h);
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
@@ -2128,7 +2119,7 @@ describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)',
     expect(events.map((e) => e.idStillLive)).toEqual([false]);
   });
 
-  it('a PRIVATE delete never purges people\'s keys, even when the id dies', async () => {
+  it('a PRIVATE delete never calls purge-account, even when the id dies', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin', 'private'));
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
@@ -2136,7 +2127,7 @@ describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)',
     expect(purges).toEqual([]);
   });
 
-  it('a failing liveness check after the soft-delete keeps people\'s keys and announces idStillLive: true', async () => {
+  it('a failing liveness check after the soft-delete announces idStillLive: true and still purges agent rows', async () => {
     const purges: unknown[] = [];
     const h = await createTestHarness({
       services: {
