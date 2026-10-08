@@ -14,6 +14,9 @@ const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
 // real auth identity. The (userId, ref) storage key (Phase 3, I14) keeps
 // the door open without forcing the change today.
 const CLI_USER_ID = 'cli';
+// Connector credential refs (`account:<connector>[:<SLOT>]`), mirrored from
+// @ax/credentials (no runtime import of its internals).
+const CONNECTOR_REF_PREFIX = 'account:';
 
 export interface RunCredentialsOptions {
   /** argv slice starting at the subcommand args, e.g. ['set', 'gh-token']. */
@@ -30,6 +33,8 @@ const USAGE = `usage:
   ax-next credentials set <ref>
     <ref> must match [a-z0-9][a-z0-9_.-]{0,127}
     the secret is read from stdin (NOT argv) — pipe or paste then EOF
+    connector credentials (account:…) aren't set here: each agent adds
+    its own from its Connectors tab
 
   ax-next credentials migrate [--yes]
     Copies legacy v1 storage keys (credential:<userId>:<ref>) to v2 keys
@@ -56,6 +61,15 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
   if (ref === undefined || ref === '') {
     err(USAGE);
     return 2;
+  }
+  // Agent-owned sign-ins, slice 5: a connector credential (`account:` ref)
+  // belongs to an agent (or is the one shared company key), never to a
+  // person, and this command only writes at its own user scope. The vault
+  // would refuse it too; say where it goes instead, before the secret is
+  // even read.
+  if (ref.startsWith(CONNECTOR_REF_PREFIX)) {
+    err("error: Connector credentials belong to agents now; add them from the agent's Connectors tab");
+    return 1;
   }
 
   // Read stdin to a Buffer (preserves bytes), then UTF-8 decode.
