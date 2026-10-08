@@ -7494,7 +7494,13 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     });
 
     it('an overlapping ROUTINE fire into a busy session that skipped nothing fires no event', async () => {
-      const { h, counters, events } = await skipHarness(new Set(['account:gmail', 'account:linear']));
+      const queued: string[] = [];
+      const { h, counters, events } = await skipHarness(new Set(['account:gmail', 'account:linear']), {
+        'session:queue-work': async (_c: unknown, input: unknown) => {
+          queued.push((input as { sessionId?: string }).sessionId ?? '?');
+          return { cursor: 0 };
+        },
+      });
       const invoke = (reqId: string, sessionId: string) =>
         h.bus.call<unknown, AgentOutcome>(
           'agent:invoke',
@@ -7512,7 +7518,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         expect(r.alive).toBe(true);
       });
       const second = invoke('req-r2', 's-2');
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.waitFor(() => expect(queued.length).toBeGreaterThanOrEqual(2));
       fireTurnEnd(h.bus, 's-1', 'req-r1');
       fireTurnEnd(h.bus, 's-1', 'req-r2');
       await Promise.all([first, second]);

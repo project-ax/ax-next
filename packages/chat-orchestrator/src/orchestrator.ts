@@ -2521,26 +2521,6 @@ export function createOrchestrator(
       // sandbox's lifecycle is owned by whoever opened it originally.
       const sessionId = routedSessionId;
 
-      // Slice 6 — a ROUTINE turn routed here queued into a BUSY session (an
-      // idle one is retired above). It assembles nothing, but the session's
-      // tools were fixed at spawn, so what that spawn went without is exactly
-      // what this run goes without: announce it under THIS turn's reqId, the
-      // same bounded, isolated, awaited fire as the spawn path. Nothing
-      // skipped at spawn → nothing fired, as for a fresh spawn.
-      const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
-      if (spawnSkips !== undefined && spawnSkips.length > 0) {
-        try {
-          await fireChatEvent<ConnectorsSkippedPayload>('chat:connectors-skipped', ctx, {
-            reqId: ctx.reqId,
-            connectors: spawnSkips.map((c) => ({ ...c })),
-          });
-        } catch (err) {
-          ctx.logger.warn('chat_connectors_skipped_fire_failed', {
-            name: err instanceof Error ? err.name : 'unknown',
-          });
-        }
-      }
-
       // Turn starting on a warm session: cancel any pending idle reap. It is
       // re-armed on this turn's chat:turn-end. (Narrow race: if the idle timer
       // already fired and queued a cancel during its grace window, that cancel
@@ -2585,6 +2565,29 @@ export function createOrchestrator(
       //     declaration for the rationale.
       const deferred = newDeferred<AgentOutcome>();
       registerWaiter(sessionId, ctx.reqId, deferred);
+
+      // Slice 6 — a ROUTINE turn routed here queued into a BUSY session (an
+      // idle one is retired above). It assembles nothing, but the session's
+      // tools were fixed at spawn, so what that spawn went without is exactly
+      // what this run goes without: announce it under THIS turn's reqId, the
+      // same bounded, isolated, awaited fire as the spawn path. Nothing
+      // skipped at spawn → nothing fired, as for a fresh spawn. AFTER
+      // registerWaiter, so this turn already counts as busy while the fire is
+      // awaited (a third fire can't see the session idle and retire it), and
+      // BEFORE queue-work, so a subscriber has seen it before the turn ends.
+      const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
+      if (spawnSkips !== undefined && spawnSkips.length > 0) {
+        try {
+          await fireChatEvent<ConnectorsSkippedPayload>('chat:connectors-skipped', ctx, {
+            reqId: ctx.reqId,
+            connectors: spawnSkips.map((c) => ({ ...c })),
+          });
+        } catch (err) {
+          ctx.logger.warn('chat_connectors_skipped_fire_failed', {
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+        }
+      }
 
       // (3) Enqueue the user message.
       try {
