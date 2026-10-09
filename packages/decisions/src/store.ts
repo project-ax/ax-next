@@ -17,7 +17,7 @@
  * plugin always does. User A's queries must never touch user B's rows.
  */
 import { createHash } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { SafeToolError, PluginError, type SafeToolCode } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import type { DecisionRow, DecisionsDatabase } from './migrations.js';
 import { RECEIPT_STATUSES } from './receipts.js';
@@ -104,10 +104,7 @@ function openHoldLockKey(agentId: string, callFingerprint: string): string {
 }
 
 /** The statuses `restore()` (undo) can walk back from. */
-const UNDOABLE_STATUSES: readonly DecisionStatus[] = [
-  ...AUTHORISING_STATUSES,
-  'dismissed',
-];
+const UNDOABLE_STATUSES: readonly DecisionStatus[] = [...AUTHORISING_STATUSES, 'dismissed'];
 
 export interface DecisionListFilter {
   ownerUserId: string;
@@ -288,6 +285,9 @@ export interface DecisionStore {
       replayClaimedAt?: string | null;
       deliveryDueAt?: string | null;
       continuationReqId?: string | null;
+      approvalScope?: Decision['approvalScope'];
+      consentExpectedRevision?: string | null;
+      routineReleaseAt?: string | null;
     },
   ): Promise<Decision | null>;
 
@@ -335,7 +335,7 @@ export interface DecisionStore {
    */
   markFailed(
     decisionId: string,
-    opts: { error: string | null },
+    opts: { error: string | null; failureCode?: SafeToolCode },
   ): Promise<Decision | null>;
 
   /**
@@ -491,11 +491,7 @@ export interface DecisionStore {
    * — the warm agent retrying its call and (from AW-5) a host replay — cannot
    * both win.
    */
-  takeApproval(
-    agentId: string,
-    callFingerprint: string,
-    nowIso: string,
-  ): Promise<Decision | null>;
+  takeApproval(agentId: string, callFingerprint: string, nowIso: string): Promise<Decision | null>;
 
   /**
    * DELETE EVERY DECISION FOR AN AGENT, whatever its status and whoever owns it
@@ -512,6 +508,39 @@ export interface DecisionStore {
    * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
    * caller meant, so it is refused rather than run.
    */
+  findRoutineApproval(
+    agentId: string,
+    userId: string,
+    fingerprint: string,
+    nowIso: string,
+  ): Promise<Decision | null>;
+  claimRoutineAuthority(input: {
+    agentId: string;
+    userId: string;
+    fingerprint: string;
+    requestId: string;
+    authorizationId: string;
+    nowIso: string;
+    expiresAt: string;
+    consent: boolean;
+  }): Promise<{ authorizationId: string; requestId: string }>;
+  settleRoutineAuthority(input: {
+    agentId: string;
+    userId: string;
+    authorizationId: string;
+    requestId: string;
+    fingerprint: string;
+    outcome: 'succeeded' | 'failed';
+    failureCode: SafeToolCode | null;
+    nowIso: string;
+  }): Promise<void>;
+  claimRoutineConsent(nowIso: string, limit: number): Promise<Decision[]>;
+  finishRoutineConsent(
+    decisionId: string,
+    state: 'delivered' | 'failed',
+    granted: boolean,
+  ): Promise<void>;
+  recoverRoutineReplays(nowIso: string, claimedBeforeIso: string): Promise<void>;
   deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
@@ -543,10 +572,12 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       replayClaimedAt?: string | null | undefined;
       deliveryDueAt?: string | null | undefined;
       continuationReqId?: string | null | undefined;
+      approvalScope?: Decision['approvalScope'];
+      consentExpectedRevision?: string | null;
+      routineReleaseAt?: string | null;
     },
   ): Promise<Decision | null> {
-    const { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId } =
-      opts;
+    const { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId } = opts;
     return transition(decisionId, OPEN_STATUSES, {
       status,
       resolved_at: new Date(nowIso),
@@ -571,6 +602,10 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       delivery_req_id:
         continuationReqId === undefined || continuationReqId === null ? null : continuationReqId,
       delivered_at: null,
+      approval_scope: opts.approvalScope ?? 'once',
+      consent_expected_revision: opts.consentExpectedRevision ?? null,
+      consent_delivery_state: opts.approvalScope === 'agent-routines' ? 'pending' : 'none',
+      routine_release_at: opts.routineReleaseAt ? new Date(opts.routineReleaseAt) : null,
     });
   }
 
@@ -727,10 +762,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             eb('status', '!=', 'executed'),
             eb('replayed_at', 'is not', null),
             eb('consumed_at', 'is not', null),
-            eb.and([
-              eb('replay_due_at', 'is', null),
-              eb('replay_claimed_at', 'is', null),
-            ]),
+            eb.and([eb('replay_due_at', 'is', null), eb('replay_claimed_at', 'is', null)]),
           ]),
         )
         .orderBy('resolved_at', 'desc')
@@ -821,10 +853,17 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       });
     },
 
-    markFailed(decisionId, { error }) {
+    markFailed(decisionId, { error, failureCode }) {
       return transition(decisionId, ['executed'], {
         status: 'failed',
         replay_error: error,
+        ...(failureCode
+          ? {
+              routine_failure_code: failureCode,
+              routine_failure_field: 'input',
+              routine_outcome: 'failed',
+            }
+          : {}),
         replay_due_at: null,
       });
     },
@@ -871,10 +910,17 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           // re-issues a call that would be held a second time.
           delivery_due_at: null,
           delivery_req_id: null,
+          approval_scope: 'once',
+          consent_expected_revision: null,
+          consent_delivery_state: 'none',
+          consent_granted: null,
+          routine_release_at: null,
         })
         .where('decision_id', '=', decisionId)
         .where('status', 'in', UNDOABLE_STATUSES as string[])
         .where('consumed_at', 'is', null)
+        .where('consent_delivery_claimed_at', 'is', null)
+        .where('routine_authorization_id', 'is', null)
         // Nor once the warm agent has been TOLD. The resolution is on its
         // inbox and no Undo can recall it; reopening the row would leave the
         // agent's re-issued call to meet a pending question and be held again
@@ -910,6 +956,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .selectFrom(table)
         .select('decision_id')
         .where('status', '=', 'executed')
+        .where('consent_delivery_state', 'not in', ['pending', 'failed'])
         .where('replay_due_at', 'is not', null)
         .where('replay_due_at', '<=', new Date(nowIso))
         .where('replay_claimed_at', 'is', null)
@@ -932,6 +979,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           due.map((d) => d.decision_id),
         )
         .where('status', '=', 'executed')
+        .where('consent_delivery_state', 'not in', ['pending', 'failed'])
         .where('replay_due_at', 'is not', null)
         .where('replay_claimed_at', 'is', null)
         .returningAll()
@@ -944,6 +992,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .selectFrom(table)
         .select('decision_id')
         .where('status', '=', 'executed')
+        .where('consent_delivery_state', 'not in', ['pending', 'failed'])
         .where('delivery_due_at', 'is not', null)
         .where('delivery_due_at', '<=', new Date(nowIso))
         .where('consumed_at', 'is', null)
@@ -964,6 +1013,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           due.map((d) => d.decision_id),
         )
         .where('status', '=', 'executed')
+        .where('consent_delivery_state', 'not in', ['pending', 'failed'])
         .where('delivery_due_at', 'is not', null)
         .where('delivery_due_at', '<=', new Date(nowIso))
         .where('consumed_at', 'is', null)
@@ -984,6 +1034,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .selectFrom(table)
         .select('decision_id')
         .where('status', '=', 'executed')
+        .where('routine_release_at', 'is', null)
         // THE PREDICATE THAT MAKES THIS A STRANDED FLIGHT and not simply an old
         // approval. An attended `executed` row waits for its warm agent with
         // `replay_claimed_at` NULL, for as long as it takes — and `NULL <=
@@ -1024,6 +1075,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // consuming agent could have moved the row. Whoever moved it owns what
         // it says, and this write must then match nothing.
         .where('status', '=', 'executed')
+        .where('routine_release_at', 'is', null)
         .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
         .where('replayed_at', 'is', null)
         .where('consumed_at', 'is', null)
@@ -1065,6 +1117,239 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return row === undefined ? null : toDecision(row);
     },
 
+    async findRoutineApproval(agentId, userId, fingerprint, nowIso) {
+      const row = await db
+        .selectFrom(table)
+        .selectAll()
+        .where('agent_id', '=', agentId)
+        .where('owner_user_id', '=', userId)
+        .where('call_fingerprint', '=', fingerprint)
+        .where('status', 'in', AUTHORISING_STATUSES as string[])
+        .where('expires_at', '>', new Date(nowIso))
+        .orderBy('created_at', 'desc')
+        .executeTakeFirst();
+      return row ? toDecision(row) : null;
+    },
+    async claimRoutineAuthority(input) {
+      return db.transaction().execute(async (trx) => {
+        await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${input.agentId},18427151))`.execute(
+          trx,
+        );
+        const retired = await trx
+          .selectFrom('decisions_v1_routine_retired_agents')
+          .select('agent_id')
+          .where('agent_id', '=', input.agentId)
+          .executeTakeFirst();
+        if (retired) throw new SafeToolError('not-found', 'input');
+        await sql`SELECT pg_advisory_xact_lock(${openHoldLockKey(input.agentId, input.userId + ':' + input.requestId)}::bigint)`.execute(
+          trx,
+        );
+        const previous = await trx
+          .selectFrom('decisions_v1_routine_authorizations')
+          .selectAll()
+          .where('agent_id', '=', input.agentId)
+          .where('user_id', '=', input.userId)
+          .where('request_id', '=', input.requestId)
+          .executeTakeFirst();
+        if (previous) {
+          if (previous.fingerprint !== input.fingerprint)
+            throw new SafeToolError('request-conflict', 'requestId');
+          if (previous.outcome === 'failed')
+            throw new SafeToolError(
+              (previous.failure_code ?? 'unavailable') as SafeToolCode,
+              'input',
+            );
+          if (previous.expires_at <= new Date(input.nowIso))
+            throw new SafeToolError('approval-required', 'input');
+          return { authorizationId: previous.authorization_id, requestId: previous.request_id };
+        }
+        const decision = await trx
+          .selectFrom(table)
+          .selectAll()
+          .where('agent_id', '=', input.agentId)
+          .where('owner_user_id', '=', input.userId)
+          .where('call_fingerprint', '=', input.fingerprint)
+          .where('status', 'in', [...AUTHORISING_STATUSES, 'expired', 'failed'] as string[])
+          .where('routine_release_at', 'is not', null)
+          .where('routine_authorization_id', 'is', null)
+          .orderBy('created_at', 'desc')
+          .forUpdate()
+          .executeTakeFirst();
+        if (
+          decision &&
+          (!AUTHORISING_STATUSES.includes(decision.status as DecisionStatus) ||
+            decision.routine_release_at === null ||
+            decision.routine_release_at > new Date(input.nowIso) ||
+            decision.expires_at <= new Date(input.nowIso) ||
+            ['pending', 'failed'].includes(decision.consent_delivery_state))
+        ) {
+          throw new SafeToolError('approval-required', 'input');
+        }
+        if (!decision && !input.consent) throw new SafeToolError('approval-required', 'input');
+        await trx
+          .insertInto('decisions_v1_routine_authorizations')
+          .values({
+            authorization_id: input.authorizationId,
+            agent_id: input.agentId,
+            user_id: input.userId,
+            request_id: input.requestId,
+            fingerprint: input.fingerprint,
+            decision_id: decision?.decision_id ?? null,
+            expires_at: decision?.expires_at ?? new Date(input.expiresAt),
+            created_at: new Date(input.nowIso),
+            outcome: null,
+            failure_code: null,
+          })
+          .execute();
+        if (decision)
+          await trx
+            .updateTable(table)
+            .set({
+              routine_authorization_id: input.authorizationId,
+              routine_execution_fingerprint: input.fingerprint,
+              consumed_at: new Date(input.nowIso),
+            })
+            .where('decision_id', '=', decision.decision_id)
+            .execute();
+        return { authorizationId: input.authorizationId, requestId: input.requestId };
+      });
+    },
+    async settleRoutineAuthority(input) {
+      await db.transaction().execute(async (trx) => {
+        const row = await trx
+          .selectFrom('decisions_v1_routine_authorizations')
+          .selectAll()
+          .where('authorization_id', '=', input.authorizationId)
+          .where('agent_id', '=', input.agentId)
+          .where('user_id', '=', input.userId)
+          .where('request_id', '=', input.requestId)
+          .where('fingerprint', '=', input.fingerprint)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!row) throw new SafeToolError('forbidden', 'input');
+        if (row.outcome !== null) {
+          if (row.outcome !== input.outcome)
+            throw new SafeToolError('request-conflict', 'requestId');
+          return;
+        }
+        await trx
+          .updateTable('decisions_v1_routine_authorizations')
+          .set({ outcome: input.outcome, failure_code: input.failureCode })
+          .where('authorization_id', '=', input.authorizationId)
+          .execute();
+        if (row.decision_id)
+          await trx
+            .updateTable(table)
+            .set({
+              routine_outcome: input.outcome,
+              routine_failure_code: input.failureCode,
+              routine_failure_field: input.failureCode ? 'input' : null,
+              status: input.outcome === 'failed' ? 'failed' : 'executed',
+              replay_due_at: null,
+              delivery_due_at: null,
+              replay_abandoned_at: null,
+              replay_error: null,
+            })
+            .where('decision_id', '=', row.decision_id)
+            .execute();
+      });
+    },
+    async claimRoutineConsent(nowIso, limit) {
+      // The first claim must precede expiry. A persisted claim means permission delivery
+      // was accepted before expiry; its idempotent acknowledgement may be recovered later.
+      // This does not extend the separate execution authorization's expiry.
+      return db.transaction().execute(async (trx) => {
+        const rows = await trx
+          .selectFrom(table)
+          .selectAll()
+          .where('status', 'in', AUTHORISING_STATUSES as string[])
+          .where('approval_scope', '=', 'agent-routines')
+          .where('consent_delivery_state', '=', 'pending')
+          .where('routine_release_at', '<=', new Date(nowIso))
+          .where((eb) =>
+            eb.or([
+              eb('expires_at', '>', new Date(nowIso)),
+              eb('consent_delivery_claimed_at', 'is not', null),
+            ]),
+          )
+          .limit(limit)
+          .forUpdate()
+          .skipLocked()
+          .execute();
+        if (rows.length)
+          await trx
+            .updateTable(table)
+            .set({
+              consent_delivery_claimed_at: sql`COALESCE(consent_delivery_claimed_at, ${new Date(nowIso)})`,
+            })
+            .where(
+              'decision_id',
+              'in',
+              rows.map((r) => r.decision_id),
+            )
+            .execute();
+        return rows.map(toDecision);
+      });
+    },
+    async finishRoutineConsent(decisionId, state, granted) {
+      await db
+        .updateTable(table)
+        .set({
+          consent_delivery_state: state,
+          consent_granted: granted,
+          ...(state === 'failed'
+            ? {
+                status: 'failed',
+                routine_outcome: 'failed',
+                routine_failure_code: 'approval-required',
+                routine_failure_field: 'input',
+                replay_due_at: null,
+                delivery_due_at: null,
+              }
+            : {}),
+        })
+        .where('decision_id', '=', decisionId)
+        .where('consent_delivery_state', '=', 'pending')
+        .execute();
+    },
+    async recoverRoutineReplays(nowIso, claimedBeforeIso) {
+      // Expired unsent consent never acquires a grant after its decision lifetime.
+      await db
+        .updateTable(table)
+        .set({
+          status: 'expired',
+          consent_delivery_state: 'failed',
+          consent_granted: false,
+          replay_due_at: null,
+          delivery_due_at: null,
+        })
+        .where('status', 'in', AUTHORISING_STATUSES as string[])
+        .where('consent_delivery_state', '=', 'pending')
+        .where('consent_delivery_claimed_at', 'is', null)
+        .where('expires_at', '<=', new Date(nowIso))
+        .execute();
+      // A host may die after claiming delivery but before the warm runner hears.
+      await db
+        .updateTable(table)
+        .set({ delivery_due_at: new Date(nowIso) })
+        .where('status', '=', 'executed')
+        .where('routine_release_at', 'is not', null)
+        .where('routine_outcome', 'is', null)
+        .where('consumed_at', 'is', null)
+        .where('delivery_due_at', 'is', null)
+        .where('replay_claimed_at', 'is', null)
+        .where('delivered_at', '<=', new Date(claimedBeforeIso))
+        .execute();
+      await db
+        .updateTable(table)
+        .set({ replay_due_at: new Date(nowIso), replay_claimed_at: null })
+        .where('status', '=', 'executed')
+        .where('routine_release_at', 'is not', null)
+        .where('routine_outcome', 'is', null)
+        .where('replayed_at', 'is', null)
+        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        .execute();
+    },
     async deleteAllForAgent(agentId) {
       if (typeof agentId !== 'string' || agentId.length === 0) {
         throw new PluginError({
@@ -1073,8 +1358,20 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           message: 'agentId is required',
         });
       }
-      const res = await db.deleteFrom(table).where('agent_id', '=', agentId).executeTakeFirst();
-      return { deleted: Number(res.numDeletedRows ?? 0n) };
+      return db.transaction().execute(async (trx) => {
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended(${agentId},18427151))`.execute(trx);
+        await trx
+          .insertInto('decisions_v1_routine_retired_agents')
+          .values({ agent_id: agentId })
+          .onConflict((oc) => oc.column('agent_id').doNothing())
+          .execute();
+        await trx
+          .deleteFrom('decisions_v1_routine_authorizations')
+          .where('agent_id', '=', agentId)
+          .execute();
+        const res = await trx.deleteFrom(table).where('agent_id', '=', agentId).executeTakeFirst();
+        return { deleted: Number(res.numDeletedRows ?? 0n) };
+      });
     },
   };
 }
@@ -1111,17 +1408,27 @@ function fromDecision(d: Decision): DecisionRow {
     consumed_at: d.consumedAt === null ? null : new Date(d.consumedAt),
     irreversible: d.irreversible,
     replay_due_at: d.replayDueAt === null ? null : new Date(d.replayDueAt),
-    replay_claimed_at:
-      d.replayClaimedAt === null ? null : new Date(d.replayClaimedAt),
+    replay_claimed_at: d.replayClaimedAt === null ? null : new Date(d.replayClaimedAt),
     replayed_at: d.replayedAt === null ? null : new Date(d.replayedAt),
-    replay_abandoned_at:
-      d.replayAbandonedAt === null ? null : new Date(d.replayAbandonedAt),
+    replay_abandoned_at: d.replayAbandonedAt === null ? null : new Date(d.replayAbandonedAt),
     replay_error: d.replayError,
     delivery_due_at: d.deliveryDueAt === null ? null : new Date(d.deliveryDueAt),
     // Never on `Decision`: it is chat correlation, not decision state. Only
     // `claimForApproval` writes it.
     delivery_req_id: null,
     delivered_at: d.deliveredAt === null ? null : new Date(d.deliveredAt),
+    approval_scope: d.approvalScope,
+    consent_expected_revision: d.consentExpectedRevision,
+    consent_delivery_state: d.consentDeliveryState,
+    consent_granted: d.consentGranted,
+    consent_delivery_claimed_at:
+      d.consentDeliveryClaimedAt === null ? null : new Date(d.consentDeliveryClaimedAt),
+    routine_release_at: d.routineReleaseAt === null ? null : new Date(d.routineReleaseAt),
+    routine_authorization_id: d.routineAuthorizationId,
+    routine_execution_fingerprint: d.routineExecutionFingerprint,
+    routine_outcome: d.routineOutcome,
+    routine_failure_code: d.routineFailureCode,
+    routine_failure_field: d.routineFailureField,
   };
 }
 
@@ -1138,9 +1445,7 @@ function toDecision(row: DecisionRow): Decision {
     callFingerprint: row.call_fingerprint,
     ruleId: row.rule_id,
     freshness:
-      row.freshness_json === null
-        ? null
-        : (JSON.parse(row.freshness_json) as FreshnessPredicate),
+      row.freshness_json === null ? null : (JSON.parse(row.freshness_json) as FreshnessPredicate),
     summary: row.summary,
     detail: row.detail,
     preview:
@@ -1159,13 +1464,27 @@ function toDecision(row: DecisionRow): Decision {
     consumedAt: row.consumed_at === null ? null : row.consumed_at.toISOString(),
     irreversible: row.irreversible === true,
     replayDueAt: row.replay_due_at === null ? null : row.replay_due_at.toISOString(),
-    replayClaimedAt:
-      row.replay_claimed_at === null ? null : row.replay_claimed_at.toISOString(),
+    replayClaimedAt: row.replay_claimed_at === null ? null : row.replay_claimed_at.toISOString(),
     replayedAt: row.replayed_at === null ? null : row.replayed_at.toISOString(),
     replayAbandonedAt:
       row.replay_abandoned_at === null ? null : row.replay_abandoned_at.toISOString(),
     replayError: row.replay_error,
     deliveryDueAt: row.delivery_due_at === null ? null : row.delivery_due_at.toISOString(),
     deliveredAt: row.delivered_at === null ? null : row.delivered_at.toISOString(),
+    approvalScope: row.approval_scope as Decision['approvalScope'],
+    consentExpectedRevision: row.consent_expected_revision as Decision['consentExpectedRevision'],
+    consentDeliveryState: row.consent_delivery_state as Decision['consentDeliveryState'],
+    consentGranted: row.consent_granted as Decision['consentGranted'],
+    consentDeliveryClaimedAt:
+      row.consent_delivery_claimed_at === null
+        ? null
+        : row.consent_delivery_claimed_at.toISOString(),
+    routineReleaseAt: row.routine_release_at === null ? null : row.routine_release_at.toISOString(),
+    routineAuthorizationId: row.routine_authorization_id as Decision['routineAuthorizationId'],
+    routineExecutionFingerprint:
+      row.routine_execution_fingerprint as Decision['routineExecutionFingerprint'],
+    routineOutcome: row.routine_outcome as Decision['routineOutcome'],
+    routineFailureCode: row.routine_failure_code as Decision['routineFailureCode'],
+    routineFailureField: row.routine_failure_field as Decision['routineFailureField'],
   };
 }

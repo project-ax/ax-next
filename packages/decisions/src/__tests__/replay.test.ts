@@ -9,7 +9,7 @@
  * writes when things go wrong.
  */
 import { describe, expect, it } from 'vitest';
-import { HookBus, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { HookBus, SafeToolError, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { receiptFor } from '../receipts.js';
 import { replayContext, replayOnApprove, settleReplay } from '../replay.js';
 import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
@@ -66,6 +66,18 @@ function base(over: Partial<Decision> = {}): Decision {
     replayError: null,
     deliveryDueAt: null,
     deliveredAt: null,
+    approvalScope: 'once',
+    consentExpectedRevision: null,
+    consentDeliveryState: 'none',
+    consentGranted: null,
+    consentDeliveryClaimedAt: null,
+    routineReleaseAt: null,
+    routineAuthorizationId: null,
+    routineExecutionFingerprint: null,
+    routineOutcome: null,
+    routineFailureCode: null,
+    routineFailureField: null,
+
     ...over,
   };
 }
@@ -359,5 +371,32 @@ describe('settleReplay — a completed replay stops being a standing authorisati
     expect(row.replayedAt).toBe(T0);
     // And the undo cannot be retried now.
     expect(await store.restore(decision.id)).toBeNull();
+  });
+});
+
+ describe('routine safe failures', () => {
+  it('does not mark a stale routine edit as successfully replayed', async () => {
+    const decision = base({ call: { id: 'call1', name: 'routine_update', input: {
+      requestId: 'edit1', routineId: 'rtn_a', expectedRevision: 'old', patch: { name: 'New name' },
+    } } });
+    const bus = new HookBus();
+    bus.registerService('tool:execute:routine_update', '@ax/test-routine', async () => {
+      const error = new SafeToolError('revision-conflict', 'expectedRevision');
+      error.message = 'SECRET from a corrupt plugin';
+      throw error;
+    });
+    const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+    expect(outcome.executed).toBe(false);
+    expect(outcome.error).toContain('routine_get');
+    expect(outcome.error).not.toContain('SECRET');
+  });
+  it('does not expose unknown routine exceptions', async () => {
+    const decision = base({ call: { id: 'c', name: 'routine_update', input: {} } });
+    const bus = new HookBus();
+    bus.registerService('tool:execute:routine_update', 'test', async () => { throw new Error('SECRET'); });
+    const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+    expect(outcome.executed).toBe(false);
+    expect(outcome.error).not.toContain('SECRET');
+    expect(outcome.error).toContain('temporarily unavailable');
   });
 });

@@ -126,6 +126,19 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // The pre-AW-5 index is dropped by name first; dropping an index destroys no
   // data, and leaving the narrower one in place would both misstate where the
   // guarantee lives and keep enforcing the version without `replayed_at`.
+  await sql`ALTER TABLE decisions_v1_decisions
+    ADD COLUMN IF NOT EXISTS approval_scope TEXT NOT NULL DEFAULT 'once',
+    ADD COLUMN IF NOT EXISTS consent_expected_revision TEXT,
+    ADD COLUMN IF NOT EXISTS consent_delivery_state TEXT NOT NULL DEFAULT 'none',
+    ADD COLUMN IF NOT EXISTS consent_granted BOOLEAN,
+    ADD COLUMN IF NOT EXISTS consent_delivery_claimed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS routine_release_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS routine_authorization_id TEXT,
+    ADD COLUMN IF NOT EXISTS routine_execution_fingerprint TEXT,
+    ADD COLUMN IF NOT EXISTS routine_outcome TEXT,
+    ADD COLUMN IF NOT EXISTS routine_failure_code TEXT,
+    ADD COLUMN IF NOT EXISTS routine_failure_field TEXT
+  `.execute(db);
   await sql`DROP INDEX IF EXISTS decisions_v1_approved_unconsumed`.execute(db);
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS decisions_v1_authorised_unconsumed
@@ -166,6 +179,16 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
         AND replay_claimed_at IS NOT NULL
         AND replayed_at IS NULL
   `.execute(db);
+  await sql`CREATE TABLE IF NOT EXISTS decisions_v1_routine_retired_agents (agent_id TEXT PRIMARY KEY)`.execute(
+    db,
+  );
+  await sql`CREATE TABLE IF NOT EXISTS decisions_v1_routine_authorizations (
+    authorization_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, decision_id TEXT,
+    expires_at TIMESTAMPTZ NOT NULL, outcome TEXT, failure_code TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(agent_id, user_id, request_id)
+  )`.execute(db);
 }
 
 /** Row shape returned by postgres. */
@@ -203,8 +226,34 @@ export interface DecisionRow {
   delivery_due_at: Date | null;
   delivery_req_id: string | null;
   delivered_at: Date | null;
+  approval_scope: string;
+  consent_expected_revision: string | null;
+  consent_delivery_state: string;
+  consent_granted: boolean | null;
+  consent_delivery_claimed_at: Date | null;
+  routine_release_at: Date | null;
+  routine_authorization_id: string | null;
+  routine_execution_fingerprint: string | null;
+  routine_outcome: string | null;
+  routine_failure_code: string | null;
+  routine_failure_field: string | null;
 }
 
 export interface DecisionsDatabase {
   decisions_v1_decisions: DecisionRow;
+  decisions_v1_routine_authorizations: RoutineAuthorizationRow;
+  decisions_v1_routine_retired_agents: { agent_id: string };
+}
+
+export interface RoutineAuthorizationRow {
+  authorization_id: string;
+  agent_id: string;
+  user_id: string;
+  request_id: string;
+  fingerprint: string;
+  decision_id: string | null;
+  expires_at: Date;
+  outcome: string | null;
+  failure_code: string | null;
+  created_at: Date;
 }

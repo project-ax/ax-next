@@ -1,3 +1,4 @@
+import { routineToolKind } from '@ax/routines-contract';
 /**
  * The `tool:pre-call` gate.
  *
@@ -126,7 +127,6 @@ export type PreCallSubscriber = (
 ) => Promise<undefined | Rejection>;
 
 export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
-
   /**
    * The connector naming the hold's prose needs. Only looked up when the
    * prose will actually name the tool (no capability clause) and the tool is
@@ -171,13 +171,35 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // 1. A standing approval, if there is one. Consumed atomically; a failure
     //    here is NOT fatal — we simply have no approval to honour and fall
     //    through to policy, which holds again. Fails toward asking.
+    const routine = routineToolKind(call.name) === 'write';
+    const routineAnswer = routine ? await deps.evaluate(ctx, call) : null;
+    if (routineAnswer?.verdict === 'deny')
+      return reject({
+        reason: denialSentence({ capability: routineAnswer.capability, toolName: call.name }),
+        source: PLUGIN_NAME,
+      });
     try {
-      const approved = await deps.store.takeApproval(
-        ctx.agentId,
-        fingerprint,
-        deps.now().toISOString(),
-      );
+      const approved = routine
+        ? await deps.store.findRoutineApproval(
+            ctx.agentId,
+            ctx.userId,
+            fingerprint,
+            deps.now().toISOString(),
+          )
+        : await deps.store.takeApproval(ctx.agentId, fingerprint, deps.now().toISOString());
       if (approved !== null) {
+        if (
+          routine &&
+          (approved.routineReleaseAt === null ||
+            Date.parse(approved.routineReleaseAt) > deps.now().getTime() ||
+            ['pending', 'failed'].includes(approved.consentDeliveryState))
+        ) {
+          return hold({
+            decisionId: approved.id,
+            note: holdNote({ capability: routineAnswer?.capability ?? null, toolName: call.name }),
+            source: PLUGIN_NAME,
+          });
+        }
         ctx.logger.info('decision_authorisation_consumed', {
           plugin: PLUGIN_NAME,
           decisionId: approved.id,
@@ -194,7 +216,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     }
 
     // 2. Policy.
-    const answer = await deps.evaluate(ctx, call);
+    const answer = routineAnswer ?? (await deps.evaluate(ctx, call));
     if (answer.verdict === 'allow') return undefined;
     if (answer.verdict !== 'hold') {
       // `deny`, or a verdict we do not recognise. Both mean "this does not
@@ -274,6 +296,17 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       replayError: null,
       deliveryDueAt: null,
       deliveredAt: null,
+      approvalScope: 'once',
+      consentExpectedRevision: null,
+      consentDeliveryState: 'none',
+      consentGranted: null,
+      consentDeliveryClaimedAt: null,
+      routineReleaseAt: null,
+      routineAuthorizationId: null,
+      routineExecutionFingerprint: null,
+      routineOutcome: null,
+      routineFailureCode: null,
+      routineFailureField: null,
     };
 
     // ONE QUESTION PER CALL (TASK-254). If this person already has an OPEN
