@@ -1128,3 +1128,20 @@ describe('HookBus — subscriber abort signal (TASK-552)', () => {
     ]);
   });
 });
+
+
+describe('subscriber priorities', () => {
+  it('orders by priority and preserves registration order within ties', async () => {
+    const bus = new HookBus();
+    const seen: string[] = [];
+    for (const [name, priority] of [['default-a', undefined], ['hold', 10], ['preflight-a', -10], ['default-b', undefined], ['preflight-b', -10]] as const) {
+      bus.subscribe('ordered', name, async () => { seen.push(name); }, priority === undefined ? {} : { priority });
+    }
+    await bus.fire('ordered', silentCtx(), {});
+    expect(seen).toEqual(['preflight-a', 'preflight-b', 'default-a', 'default-b', 'hold']);
+  });
+  it.each([NaN, Infinity, -Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1])('rejects unsafe priority %s before registration', (priority) => {
+    const bus = new HookBus();
+    expect(() => bus.subscribe('event', 'bad', async () => {}, { priority })).toThrow('subscriber priority must be a safe integer');
+  });
+});

@@ -125,6 +125,7 @@ interface RegisteredService {
 interface RegisteredSubscriber {
   plugin: string;
   handler: SubscriberHandler;
+  priority: number;
 }
 
 /** Per-call options for `HookBus.fire`. */
@@ -411,9 +412,13 @@ export class HookBus {
     }
   }
 
-  subscribe<P>(hookName: string, plugin: string, handler: SubscriberHandler<P>): void {
+  subscribe<P>(hookName: string, plugin: string, handler: SubscriberHandler<P>,
+    options: { priority?: number } = {}): void {
+    const priority = options.priority ?? 0;
+    if (!Number.isSafeInteger(priority)) throw new Error('subscriber priority must be a safe integer');
     const list = this.subscribers.get(hookName) ?? [];
-    list.push({ plugin, handler: handler as SubscriberHandler });
+    list.push({ plugin, handler: handler as SubscriberHandler, priority });
+    list.sort((left, right) => left.priority - right.priority);
     this.subscribers.set(hookName, list);
   }
 
@@ -554,7 +559,7 @@ export class HookBus {
   }
 
   /**
-   * Run every subscriber on `hookName`, in registration order.
+   * Run every subscriber on `hookName`, in priority order (registration order within ties).
    *
    * `opts.subscriberTimeoutMs` (TASK-514) bounds EACH subscriber. It is
    * opt-in, and the caller — the owner of the hook's latency contract — picks
@@ -603,7 +608,7 @@ export class HookBus {
         // fail the thing it is observing — which makes subscribers the one
         // place on the bus where a hang can burn a caller's budget in silence.
         // The stall watch names such a hang while it is happening. Subscribers
-        // keep the bus-wide stall threshold: `subscribe` has no options bag to
+        // keep the bus-wide stall threshold: `subscribe` has no stall-threshold option to
         // carry an override, and 15s is right for them.
         const settleStallWatch = this.watchStall(
           ctx,

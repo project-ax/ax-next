@@ -1047,3 +1047,35 @@ describe('workspace.commit-notify handler — reason caps (TASK-781)', () => {
     expect(result.status).toBe(400);
   });
 });
+
+
+describe('retired routine paths at runner commit', () => {
+  it.each(['.ax/routines/a.md', '.ax\\routines\\a.md', './.ax/routines/a.md', '.ax/./routines/a.md', '.ax/routines/../a.md', '.ax//routines/a.md'])('refuses %s before subscribers or apply-bundle', async (path) => {
+    prepareScratchRepoMock.mockResolvedValueOnce(DEFAULT_SCRATCH);
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([{ path, kind: 'put', content: new Uint8Array([1]) }]);
+    const { plugin, applyBundle } = makeSpyingPhase3Probe('@ax/retired-probe');
+    const { bus, ctx } = await makeEnv([plugin]);
+    const permissive = vi.fn(async () => undefined);
+    const throwing = vi.fn(async () => { throw new Error('bad subscriber'); });
+    bus.subscribe('workspace:pre-apply', 'earlier-permissive', permissive);
+    bus.subscribe('workspace:pre-apply', 'throwing', throwing);
+    const result = await workspaceCommitNotifyHandler({ bundleBytes: 'UEFDSwAAAAA=', parentVersion: null, reason: 'turn' }, ctx, bus);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ accepted: false, recoverable: false, code: path === '.ax/routines/a.md' ? 'routine-files-retired' : 'invalid-path' });
+    if (path === '.ax/routines/a.md') expect(result.body).toMatchObject({ reason: 'Routine files are no longer supported. Use the routine tools.' });
+    expect(permissive).not.toHaveBeenCalled();
+    expect(throwing).not.toHaveBeenCalled();
+    expect(applyBundle).not.toHaveBeenCalled();
+  });
+  it('allows deleting retired files', async () => {
+    prepareScratchRepoMock.mockResolvedValueOnce(DEFAULT_SCRATCH);
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([{ path: '.ax/routines/a.md', kind: 'delete' }]);
+    const { plugin, applyBundle } = makeSpyingPhase3Probe('@ax/retired-delete-probe');
+    const { bus, ctx } = await makeEnv([plugin]);
+    const result = await workspaceCommitNotifyHandler({ bundleBytes: 'UEFDSwAAAAA=', parentVersion: null, reason: 'turn' }, ctx, bus);
+    expect(result.body).toMatchObject({ accepted: true });
+    expect(applyBundle).toHaveBeenCalledTimes(1);
+  });
+});

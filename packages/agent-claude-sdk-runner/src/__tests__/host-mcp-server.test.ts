@@ -1,3 +1,4 @@
+import { IpcRequestError } from '@ax/ipc-protocol';
 import type { IpcClient, ToolDescriptor } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -450,4 +451,12 @@ describe('createHostMcpServer', () => {
     expect(props.when).toBeDefined();
     expect(props.when.description).toBeUndefined();
   });
+});
+
+it('returns an actionable routine IPC refusal as an MCP error', async () => {
+  const message = 'The routine changed. Read it with routine_get and submit a fresh edit. Field: expectedRevision';
+  const { client } = mkClient(async () => { throw new IpcRequestError('HOOK_REJECTED', 409, message); });
+  const entries = buildHostToolEntries(client, [{ ...HOST_TOOL_A, name: 'routine_update' }]);
+  const result = await (entries[0] as ToolEntry).handler({}, {});
+  expect(result).toEqual({ content: [{ type: 'text', text: message }], isError: true });
 });

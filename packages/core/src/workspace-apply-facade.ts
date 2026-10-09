@@ -1,4 +1,5 @@
 import { PluginError } from './errors.js';
+import { assertNoRetiredRoutinePuts } from './retired-routine-path.js';
 import type { HookBus } from './hook-bus.js';
 import { filterToPolicy } from './workspace-policy.js';
 import { WorkspaceApplyOutputSchema } from './workspace.js';
@@ -96,6 +97,7 @@ export function registerWorkspaceApplyFacade(
     'workspace:apply',
     plugin,
     async (ctx, input) => {
+      assertNoRetiredRoutinePuts(input.changes);
       // 1. pre-apply (veto-only). Subscribers see only policy-visible paths;
       //    a transformed payload is ignored — we apply the FULL set below.
       //    `sizeBytes` counts the FULL set, not the filtered subset: a size

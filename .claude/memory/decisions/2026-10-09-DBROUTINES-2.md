@@ -1,0 +1,6 @@
+# DB-backed routines Task 2 — host failure and write boundaries
+
+- `SafeToolError` in core is a thrown `PluginError` subtype with closed routine code/field vocabularies. Any wire or receipt consumer must recompute `safeToolMessage(error.toolCode, error.field)`, never forward `.message`: plugin code can mutate Error instances. Ordinary PluginError stays generically redacted. Task 6 owns the routine approval receipt consumer.
+- The canonical workspace validator previously lived privately in workspace-git-core. Core now exports `validateWorkspacePath`; git-core delegates with its original plugin/hook error attribution. Preserve its strict relative POSIX discipline: reject backslashes, NUL, absolute paths, empty/dot/parent segments, and `.git`; never normalize aliases into accepted input.
+- `assertNoRetiredRoutinePuts` validates every path before matching `.ax/routines/`. Public apply and runner commit invoke it before subscribers or persistence; retired deletes remain allowed. Backend-internal apply remains the authenticated host capability. Legacy producers are removed by later cutover tasks, not this boundary commit.
+- `HookBus.subscribe` accepts optional safe-integer priority, defaults to zero, and sorts stably at registration. Lower priority runs earlier, equal priorities retain registration order; subscriber isolation/timeout semantics are unchanged.

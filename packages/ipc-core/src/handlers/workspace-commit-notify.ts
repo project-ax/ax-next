@@ -1,5 +1,6 @@
 import {
   PluginError,
+  assertNoRetiredRoutinePuts,
   clampCodeUnits,
   findRunnerImmutableViolations,
   type AgentContext,
@@ -383,6 +384,25 @@ async function commitBundleCore(
     } catch (err) {
       logInternalError(ctx.logger, 'workspace.commit-notify', err);
       return internalError();
+    }
+
+    // Hard policy runs before any subscriber or workspace persistence. The
+    // shared guard validates canonical paths before matching the retired prefix.
+    try {
+      assertNoRetiredRoutinePuts(allChanges);
+    } catch (err) {
+      if (err instanceof PluginError && (err.reasonCode === 'routine-files-retired' || err.code === 'invalid-path')) {
+        const body = {
+          accepted: false as const,
+          recoverable: false as const,
+          code: err.reasonCode ?? 'invalid-path',
+          reason: err.reasonCode === 'routine-files-retired'
+            ? 'Routine files are no longer supported. Use the routine tools.'
+            : 'Workspace paths must be canonical relative POSIX paths.',
+        };
+        return { status: 200, body: WorkspaceCommitNotifyResponseSchema.parse(body) };
+      }
+      throw err;
     }
 
     // ---- runner-immutable guard (TASK-486): refuse before anything else
