@@ -281,7 +281,7 @@ export interface AgentDetail {
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
   /**
-   * The Memory tab's rules tier, carrying how its read went.
+   * The Instructions section's rules tier, carrying how its read went.
    *
    * Not a bare `MemoryDoc[]` any more (TASK-417): that shape could not tell
    * "this deployment keeps no memory" from "the read broke" from "there is

@@ -12,7 +12,7 @@
  * one mounting on that agent's URL.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { workspaceApi } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
@@ -40,6 +40,7 @@ vi.mock('@/lib/workspace-api', async () => {
       grants: vi.fn(async () => ({ grants: [] })),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
+      saveRules: vi.fn(),
     },
   };
 });
@@ -48,6 +49,7 @@ const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
+const saveRulesMock = vi.mocked(workspaceApi.saveRules);
 
 const user = {
   id: 'u1',
@@ -235,5 +237,130 @@ describe('navigating', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/workspace'));
     expect(window.history.length).toBe(before);
+  });
+});
+
+describe('agent settings page (TASK-888)', () => {
+  /** The detail read, with a thread and a readable rules file. */
+  function withRules(body = '- cc Priya') {
+    agentMock.mockResolvedValue({
+      agent: AGENTS[0]!,
+      conversationId: 'c-now',
+      thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
+      decisions: { status: 'ok' },
+      past: [],
+      memory: {
+        rules: { status: 'ok', doc: { name: 'Your rules', scope: 'rules', body } },
+      },
+    });
+  }
+
+  function navItem(name: string) {
+    return within(screen.getByRole('navigation', { name: 'Settings sections' })).getByRole(
+      'button',
+      { name },
+    );
+  }
+
+  it('opens the section a deep link names, and that section is selected', async () => {
+    renderAt('/workspace/agents/a-quill/settings/model');
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
+    expect(navItem('Model')).toHaveAttribute('aria-current', 'page');
+    expect(navItem('Instructions')).not.toHaveAttribute('aria-current');
+    expect(screen.getByText('Using the workspace default')).toBeTruthy();
+    // It replaces the chat and the rail rather than sitting beside them.
+    expect(screen.queryByRole('complementary', { name: 'Agent details' })).toBeNull();
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/model');
+  });
+
+  it('rewrites a bare /settings to the Instructions address without adding history', async () => {
+    const before = window.history.length;
+    renderAt('/workspace/agents/a-quill/settings');
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Instructions' })).toBeTruthy();
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions');
+    expect(window.history.length).toBe(before);
+  });
+
+  it('gives each section its own address as you move through the nav', async () => {
+    renderAt('/workspace/agents/a-quill/settings/instructions');
+    await screen.findByRole('heading', { level: 1, name: 'Quill settings' });
+
+    fireEvent.click(navItem('Routines'));
+
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/routines'),
+    );
+    expect(screen.getByText('Nothing scheduled yet')).toBeTruthy();
+    expect(navItem('Routines')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('opens from the rail Settings button and comes back to the same conversation', async () => {
+    withRules();
+    renderAt('/workspace/agents/a-quill');
+    expect(await screen.findByText('what is on today')).toBeTruthy();
+    const reads = agentMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
+    );
+    expect(screen.getByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
+    expect(screen.queryByText('what is on today')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill'));
+    expect(screen.getByText('what is on today')).toBeTruthy();
+    // The SAME mounted view came back — a remount would have re-read the agent
+    // and opened its newest conversation, not the one that was on screen.
+    expect(agentMock.mock.calls.length).toBe(reads);
+  });
+
+  it('opens Agent settings from the current conversation options menu', async () => {
+    withRules();
+    renderAt('/workspace/agents/a-quill');
+    const options = await screen.findByRole('button', { name: 'Options for Current conversation' });
+    fireEvent.pointerDown(options, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Agent settings' }));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
+    );
+    expect(screen.getByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
+  });
+
+  it('loads, edits and saves the rules from Instructions', async () => {
+    withRules('- cc Priya');
+    saveRulesMock.mockResolvedValue({ body: '- cc Priya\n- no weekends\n' } as never);
+    renderAt('/workspace/agents/a-quill/settings/instructions');
+
+    const box = await screen.findByRole('textbox', { name: 'Instructions for Quill' });
+    expect(box).toHaveValue('- cc Priya');
+    expect(screen.getByText('Kept word for word. Quill reads them before every run.')).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: '- cc Priya\n- no weekends' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(saveRulesMock).toHaveBeenCalledWith('a-quill', '- cc Priya\n- no weekends'),
+    );
+    expect(await screen.findByText('Saved.')).toBeTruthy();
+  });
+
+  it('keeps the rules editor out of the rail Memory tab', async () => {
+    withRules('- cc Priya');
+    renderAt('/workspace/agents/a-quill/memory');
+
+    const panel = await screen.findByRole('tabpanel', { name: 'Memory' });
+    expect(within(panel).queryByRole('textbox', { name: /Instructions/u })).toBeNull();
+    expect(within(panel).queryByText('- cc Priya')).toBeNull();
+
+    // It says where the rules went, and the link goes there.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Settings' }));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
+    );
   });
 });

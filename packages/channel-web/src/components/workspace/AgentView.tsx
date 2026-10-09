@@ -83,6 +83,8 @@ import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
+import { AgentInstructions } from './AgentInstructions';
+import { AgentSettings } from './AgentSettings';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
@@ -96,7 +98,11 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
-import { type AgentTab } from '@/lib/workspace-route';
+import {
+  DEFAULT_SETTINGS_SECTION,
+  type AgentSettingsSection,
+  type AgentTab,
+} from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
 // list, so a tab cannot exist that no link can reach.
@@ -118,6 +124,15 @@ interface Props {
   agentId: string;
   tab: AgentTab;
   onTab: (t: AgentTab) => void;
+  /**
+   * TASK-888 — the settings section on screen, or `null` for the chat. When
+   * set, this view draws the agent's settings page in place of the
+   * conversation and the rail, and STAYS MOUNTED doing it, so the
+   * conversation (and any reply in flight) is untouched on the way back.
+   */
+  settingsSection?: AgentSettingsSection | null;
+  /** Open a settings section. Absent, no entry point to the page is drawn. */
+  onSettingsSection?: (section: AgentSettingsSection) => void;
   decisions: Decision[];
   /**
    * Open capability grants presence routed to THIS thread (TASK-351).
@@ -334,6 +349,8 @@ export function AgentView({
   agentId,
   tab,
   onTab,
+  settingsSection = null,
+  onSettingsSection,
   decisions,
   threadGrants,
   onGrantResolved,
@@ -1600,13 +1617,56 @@ export function AgentView({
         {...(activityError !== undefined ? { error: activityError } : {})} />,
       files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
       memory: <MemorySurface agentId={agent.id} memory={detail.memory} agentName={agent.name}
-        onCount={setMemoryCount}
-        onRetry={onChanged} onSaveRules={async (body: string) => {
-          const saved = await workspaceApi.saveRules(agent.id, body);
-          onChanged(); return saved.body;
-        }} />,
+        onCount={setMemoryCount} />,
     },
+    ...(onSettingsSection
+      ? {
+          onOpenSettings: (section: AgentSettingsSection = DEFAULT_SETTINGS_SECTION) => {
+            // The phone's rail is a sheet over the page; shut it on the way.
+            setRailOpen(false);
+            onSettingsSection(section);
+          },
+        }
+      : {}),
   };
+
+  if (settingsSection !== null && onSettingsSection) {
+    return (
+      <MemoryFixesContext.Provider value={learnedFixes}>
+        <AgentSettings
+          agent={agent}
+          section={settingsSection}
+          onSection={onSettingsSection}
+          onBack={() => onTab('chat')}
+          compact={compact}
+          busy={streaming || rereading}
+          instructions={
+            <AgentInstructions
+              memory={detail.memory}
+              agentName={agent.name}
+              onRetry={onChanged}
+              onSaveRules={async (body: string) => {
+                const saved = await workspaceApi.saveRules(agent.id, body);
+                onChanged();
+                return saved.body;
+              }}
+            />
+          }
+          memory={
+            detail.memory.factsAvailable === true ? (
+              <MemorySurface
+                agentId={agent.id}
+                memory={detail.memory}
+                agentName={agent.name}
+                onCount={setMemoryCount}
+              />
+            ) : null
+          }
+        />
+        <LearnedAnnouncer announcement={learned.announcement} />
+      </MemoryFixesContext.Provider>
+    );
+  }
   return (
     <MemoryFixesContext.Provider value={learnedFixes}>
       <div className="flex min-h-0 flex-1">

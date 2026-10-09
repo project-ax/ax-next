@@ -1,6 +1,5 @@
 /**
- * The rules-only Memory tab (AW-13 / TASK-234) — what a deployment without
- * facts memory shows. These tests pin that the human's rules are kept word for
+ * The Instructions section (TASK-888), moved from the rules-only Memory tab. These tests pin that the human's rules are kept word for
  * word and editable here, and that each read state gets a sentence that is
  * true of it (TASK-417).
  */
@@ -8,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AgentMemoryRead } from '@/lib/workspace-api';
 import { StorageFullError } from '@/lib/storage-full';
-import { AgentMemory } from '../AgentMemory';
+import { AgentInstructions } from '../AgentInstructions';
 
 /**
  * A read that WORKED, with whatever the rules happen to hold.
@@ -34,31 +33,32 @@ const unavailable = (): AgentMemoryRead => ({
   rules: { status: 'unavailable', doc: null },
 });
 
-describe('AgentMemory', () => {
-  it('draws only the rules tier — the agent-notes section went with TASK-608', () => {
-    render(<AgentMemory agentName="Quill" memory={read('- cc Priya')} onSaveRules={vi.fn()} />);
-    expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
+describe('AgentInstructions', () => {
+  it('draws only the rules editor — the agent-notes section went with TASK-608', () => {
+    render(<AgentInstructions agentName="Quill" memory={read('- cc Priya')} onSaveRules={vi.fn()} />);
+    expect(screen.getByLabelText('Instructions for Quill')).toHaveValue('- cc Priya');
     expect(screen.queryByText('What it worked out')).toBeNull();
   });
 
-  it('promises the rules are kept verbatim and never rewritten', () => {
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
-    expect(
-      screen.getByText(/Kept word for word\. Quill reads them before every run/u),
-    ).toBeInTheDocument();
+  it('leaves the heading and the verbatim promise to the settings page that hosts it (TASK-888)', () => {
+    // The page heads this section "Instructions" and says "Kept word for
+    // word" once; the editor saying it again would be the same line twice.
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
+    expect(screen.queryByText('Instructions for Quill')).toBeNull();
+    expect(screen.queryByText(/Kept word for word/u)).toBeNull();
   });
 
   it('shows the editor even when nothing has been written yet', () => {
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
-    const box = screen.getByLabelText('Rules you gave me');
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
+    const box = screen.getByLabelText('Instructions for Quill');
     expect(box).toHaveValue('');
     // Save is off until there is something to save.
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('placeholders the empty editor with two example rules, not a bare example', () => {
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
-    const box = screen.getByLabelText('Rules you gave me');
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={vi.fn()} />);
+    const box = screen.getByLabelText('Instructions for Quill');
     expect(box).toHaveAttribute(
       'placeholder',
       'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.',
@@ -67,9 +67,9 @@ describe('AgentMemory', () => {
 
   it('saves what the user typed, through the caller\'s write path', async () => {
     const onSaveRules = vi.fn().mockImplementation(async (b: string) => `${b}\n`);
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
 
-    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+    fireEvent.change(screen.getByLabelText('Instructions for Quill'), {
       target: { value: '- cc Priya' },
     });
     const save = screen.getByRole('button', { name: 'Save' });
@@ -91,10 +91,10 @@ describe('AgentMemory', () => {
     */
     const onSaveRules = vi.fn().mockImplementation(async (b: string) => `${b}\n`);
     const { rerender } = render(
-      <AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />,
+      <AgentInstructions agentName="Quill" memory={read()} onSaveRules={onSaveRules} />,
     );
 
-    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+    fireEvent.change(screen.getByLabelText('Instructions for Quill'), {
       target: { value: '- cc Priya' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -106,7 +106,7 @@ describe('AgentMemory', () => {
     // ...and the re-read that follows the save delivers the normalized body.
     // It must not knock the editor back into "Unsaved changes."
     rerender(
-      <AgentMemory
+      <AgentInstructions
         agentName="Quill"
         memory={read('- cc Priya\n')}
         onSaveRules={onSaveRules}
@@ -119,9 +119,9 @@ describe('AgentMemory', () => {
 
   it('says so when the save fails instead of implying it stuck', async () => {
     const onSaveRules = vi.fn().mockRejectedValue(new Error('workspace /rules → 503'));
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
 
-    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+    fireEvent.change(screen.getByLabelText('Instructions for Quill'), {
       target: { value: '- cc Priya' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -133,7 +133,7 @@ describe('AgentMemory', () => {
     });
     // And what the user typed is still in the box — losing it would be the
     // second betrayal in a row.
-    expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
+    expect(screen.getByLabelText('Instructions for Quill')).toHaveValue('- cc Priya');
   });
 
   /*
@@ -152,9 +152,9 @@ describe('AgentMemory', () => {
     const onSaveRules = vi
       .fn()
       .mockRejectedValue(new StorageFullError('/api/workspace/agents/a1/memory/rules', sentence));
-    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
+    render(<AgentInstructions agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
 
-    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+    fireEvent.change(screen.getByLabelText('Instructions for Quill'), {
       target: { value: '- cc Priya' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -166,16 +166,15 @@ describe('AgentMemory', () => {
     expect(screen.queryByText(/We could not save that/u)).toBeNull();
     expect(screen.queryByText(/server ran into a problem/iu)).toBeNull();
     // The draft is still there, and Save is on again for when there is room.
-    expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
+    expect(screen.getByLabelText('Instructions for Quill')).toHaveValue('- cc Priya');
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
 
   it('refuses to show an empty editor when no rules row came back', () => {
     // The dangerous case: an unreadable rules file must NOT render as a
     // blank box, or the next Save overwrites rules the user still has.
-    render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
-    expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Rules you gave me')).toBeNull();
+    render(<AgentInstructions agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
+    expect(screen.queryByLabelText('Instructions for Quill')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     expect(
       screen.getByText(/We could not read your rules just now/u),
@@ -201,13 +200,13 @@ describe('AgentMemory', () => {
     number until TASK-417 moved it; symbols survive edits, line numbers do not.)
   */
   it('does not dress a withheld editor up as something having gone wrong', () => {
-    render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
+    render(<AgentInstructions agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
     expect(screen.getByRole('alert').className).not.toContain('destructive');
   });
 
   it('renders read-only when the caller has no write path', () => {
-    render(<AgentMemory agentName="Quill" memory={read('- cc Priya')} />);
-    expect(screen.getByLabelText('Rules you gave me')).toBeDisabled();
+    render(<AgentInstructions agentName="Quill" memory={read('- cc Priya')} />);
+    expect(screen.getByLabelText('Instructions for Quill')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
@@ -227,7 +226,7 @@ describe('AgentMemory', () => {
   describe('with no memory backend on this deployment', () => {
     it('offers NO retry for the rules tier — there is nothing to come back', () => {
       render(
-        <AgentMemory
+        <AgentInstructions
           agentName="Quill"
           memory={unavailable()}
           onSaveRules={vi.fn()}
@@ -244,7 +243,7 @@ describe('AgentMemory', () => {
     });
 
     it('does not make the reader feel they broke something', () => {
-      render(<AgentMemory agentName="Quill" memory={unavailable()} />);
+      render(<AgentInstructions agentName="Quill" memory={unavailable()} />);
       expect(
         screen.getByText(/Ask your workspace administrator about enabling them/u),
       ).toBeInTheDocument();
@@ -257,7 +256,7 @@ describe('AgentMemory', () => {
     it('offers a retry that actually re-runs the read', () => {
       const onRetry = vi.fn();
       render(
-        <AgentMemory
+        <AgentInstructions
           agentName="Quill"
           memory={failed()}
           onSaveRules={vi.fn()}
@@ -270,7 +269,7 @@ describe('AgentMemory', () => {
 
     it('withholds the retry when the caller gave us nothing to run', () => {
       // A button with no handler is the same lie in a different costume.
-      render(<AgentMemory agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
+      render(<AgentInstructions agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
       expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     });
   });
@@ -284,7 +283,7 @@ describe('AgentMemory', () => {
     */
     const sentences = (memory: AgentMemoryRead): string => {
       const { container, unmount } = render(
-        <AgentMemory agentName="Quill" memory={memory} onSaveRules={vi.fn()} />,
+        <AgentInstructions agentName="Quill" memory={memory} onSaveRules={vi.fn()} />,
       );
       const text = container.textContent ?? '';
       unmount();

@@ -359,7 +359,7 @@ describe('memory-copy — no correction string stays inline', () => {
 
   /**
    * Button words that are not about memory (`Save`, `Cancel`, `Try again`) also label the
-   * rules editor in `AgentMemory`, so they are checked only where a memory is
+   * rules editor in `AgentInstructions`, so they are checked only where a memory is
    * being corrected.
    */
   const GENERIC = new Set(['Save', 'Cancel', 'Try again']);
@@ -396,7 +396,7 @@ describe('memory-copy — no correction string stays inline', () => {
 
   for (const file of [
     'FactsMemory.tsx',
-    'AgentMemory.tsx',
+    'AgentInstructions.tsx',
     'MemoryCorrection.tsx',
     'MemoryUsedChip.tsx',
     'LearnedInChat.tsx',
@@ -404,7 +404,7 @@ describe('memory-copy — no correction string stays inline', () => {
     it(`${file} imports its memory-correction words`, () => {
       const src = code(file);
       const offenders = [...constants, ...badges]
-        .filter(({ value }) => !(file === 'AgentMemory.tsx' && GENERIC.has(value)))
+        .filter(({ value }) => !(file === 'AgentInstructions.tsx' && GENERIC.has(value)))
         .filter(({ value }) => inlineUses(src, value))
         .map(({ name }) => name);
       expect(offenders).toEqual([]);

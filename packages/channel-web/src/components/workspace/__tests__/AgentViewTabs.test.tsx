@@ -30,7 +30,7 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import { WORKSPACE_AGENT_TABS } from '@/lib/workspace-route';
 import { AgentView } from '../AgentView';
@@ -320,7 +320,9 @@ describe('AgentView tab set — the accessibility tree', () => {
       expect(tab).not.toBeDisabled();
       const panel = screen.getByRole('tabpanel', { name: 'Memory' });
       expect(panel).not.toHaveAttribute('hidden');
-      expect(panel).toHaveTextContent('Rules you gave me');
+      // TASK-888 — the rules editor lives on the settings page now.
+      expect(panel).not.toHaveTextContent('Rules you gave me');
+      expect(within(panel).queryByRole('textbox', { name: /Instructions/u })).toBeNull();
     },
   );
 });
