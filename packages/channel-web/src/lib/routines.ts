@@ -34,6 +34,7 @@ export interface ActiveHours {
 }
 
 export interface Routine {
+  enabled?: boolean;
   agentId: string;
   path: string;
   name: string;

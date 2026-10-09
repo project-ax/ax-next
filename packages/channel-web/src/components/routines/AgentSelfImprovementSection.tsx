@@ -26,6 +26,8 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import { PaneStatus } from '../PaneStatus';
 import { useAgentStore } from '@/lib/agent-store';
@@ -46,7 +48,7 @@ interface RowState {
   error: string | null;
 }
 
-function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: string }) {
+function AgentToggleRow({ agentId, agentName, focused = false }: { agentId: string; agentName: string; focused?: boolean }) {
   const [state, setState] = useState<RowState>({
     enabled: undefined,
     saving: false,
@@ -55,6 +57,7 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
 
   useEffect(() => {
     let cancelled = false;
+    setState({ enabled: undefined, saving: false, error: null });
     void (async () => {
       try {
         const defaults = await routines.listAgentDefaults(agentId);
@@ -108,14 +111,15 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
   if (state.enabled === null) return null;
 
   return (
-    <div className="flex flex-col gap-1.5 py-3 border-b border-rule-soft last:border-b-0">
+    <div className={`flex flex-col gap-1.5 py-3 ${focused ? '' : 'border-b border-rule-soft last:border-b-0'}`}>
       <div className="flex items-center gap-3">
         <label
           htmlFor={switchId}
           className="flex-1 min-w-0 text-[14px] font-medium tracking-[-0.01em] text-foreground truncate cursor-pointer"
         >
-          {agentName}
+          {focused ? 'Skill self-improvement' : agentName}
         </label>
+        {focused && <span className="text-xs text-muted-foreground">{state.enabled === undefined ? 'Loading…' : state.enabled ? 'On' : 'Off'}</span>}
         <Switch
           id={switchId}
           aria-label={`Skill self-improvement for ${agentName}`}
@@ -124,6 +128,10 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
           onCheckedChange={(v) => void onToggle(v)}
         />
       </div>
+      {focused && <>
+        <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{agentName} reviews what it has learned and writes skills from procedures it keeps repeating.</p>
+        {state.enabled !== undefined && <p className="text-xs text-muted-foreground">{state.enabled ? 'Turn this off to stop new self-improvement runs.' : `Off. ${agentName}’s existing skills stay installed.`}</p>}
+      </>}
       {state.error !== null && (
         <PaneStatus variant="error">Couldn't save: {state.error}</PaneStatus>
       )}
@@ -131,9 +139,18 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
   );
 }
 
-export function AgentSelfImprovementSection() {
+export function AgentSelfImprovementSection({ agentId, agentName, onViewSkills }: { agentId?: string; agentName?: string | undefined; onViewSkills?: (() => void) | undefined } = {}) {
   const { agents, agentsStatus } = useAgentStore();
 
+  if (agentId) return <div className="flex flex-col gap-5">
+    <AgentToggleRow key={agentId} agentId={agentId} agentName={agentName ?? 'This agent'} focused />
+    <Separator />
+    <div className="flex flex-col items-start gap-2">
+      <p className="text-sm">Skills {agentName ?? 'this agent'} writes</p>
+      <p className="text-sm text-muted-foreground">Find {agentName ?? 'this agent'}’s authored skills in Skills → Installed.</p>
+      <Button variant="outline" onClick={onViewSkills}>View skills</Button>
+    </div>
+  </div>;
   return (
     <Card>
       <CardHeader>

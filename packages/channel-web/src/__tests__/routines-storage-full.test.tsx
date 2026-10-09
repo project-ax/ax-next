@@ -67,7 +67,7 @@ async function openEditor(): Promise<void> {
   render(<RoutinesList onFired={() => {}} />);
   await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
   fireEvent.click(screen.getByRole('button', { name: 'Edit heartbeat' }));
-  await screen.findByRole('button', { name: 'Update' });
+  await screen.findByRole('button', { name: 'Save changes' });
 }
 
 function putCalls(): unknown[][] {
@@ -80,28 +80,28 @@ describe('RoutinesList and RoutineEditor when a save is turned away', () => {
   it('shows the storage-full sentence under Update, and keeps the editor open', async () => {
     await openEditor();
     reply(413, { error: 'storage-full', message: SAVE_FULL });
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(await screen.findByText(SAVE_FULL)).toBeTruthy();
     // Nothing else is said: no status, no code, no path.
     expect(screen.queryByText(/HTTP 4\d\d/)).toBeNull();
     expect(screen.queryByText(/storage-full/)).toBeNull();
     // The editor is still there, so they keep what they typed and can try again.
-    expect(screen.getByRole('button', { name: 'Update' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
     expect(putCalls()).toHaveLength(1);
   });
 
   it('says the same sentence from our own words when the server sent none', async () => {
     await openEditor();
     reply(413, { error: 'storage-full' });
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(SAVE_FULL)).toBeTruthy();
   });
 
   it("shows a validator's reason under Update, not a bare status (the older bug)", async () => {
     await openEditor();
     reply(400, { error: '.ax/routines/heartbeat.md: interval.every: minimum is 60s' });
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(
       await screen.findByText('.ax/routines/heartbeat.md: interval.every: minimum is 60s'),

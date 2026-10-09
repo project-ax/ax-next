@@ -18,6 +18,8 @@ import {
 import { headingOutline } from '@/test-utils/heading-outline';
 import { AgentSettings } from '../AgentSettings';
 
+vi.mock('@/lib/routines', () => ({ routines: { list: vi.fn(async () => []), listAgentDefaults: vi.fn(async () => []) } }));
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
@@ -127,8 +129,6 @@ describe('AgentSettings — desktop', () => {
       'Using the workspace default',
       "Picking a model just for Quill isn't here yet. Until it is, Quill uses whatever model your admin set for the whole workspace.",
     ],
-    ['skills', 'Nothing installed yet', null],
-    ['routines', 'Nothing scheduled yet', null],
   ] as const)('says the %s section is empty, honestly, with no controls', (section, title, body) => {
     render(<Harness initial={section} />);
     const empty = document.querySelector('[data-slot="empty"]');
@@ -140,6 +140,12 @@ describe('AgentSettings — desktop', () => {
     expect(within(empty as HTMLElement).queryAllByRole('textbox')).toHaveLength(0);
     expect(within(empty as HTMLElement).queryAllByRole('switch')).toHaveLength(0);
     expect(within(empty as HTMLElement).queryAllByRole('combobox')).toHaveLength(0);
+  });
+
+  it.each([['skills', 'Installed'], ['routines', 'My routines']] as const)('wires the %s section to its agent-specific controls', async (initial, tab) => {
+    render(<Harness initial={initial} />);
+    expect(screen.getByRole('tab', { name: tab })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: initial === 'skills' ? 'Create' : 'New routine' })).toBeTruthy();
   });
 
   it('draws the memories list it is given under Memory', () => {
@@ -173,7 +179,7 @@ describe('AgentSettings — phone', () => {
     const list = screen.getByRole('list', { name: 'Settings sections' });
     const rows = within(list).getAllByRole('button');
     expect(rows).toHaveLength(AGENT_SETTINGS_SECTIONS.length);
-    expect(within(list).getByRole('button', { name: /Skills\s*Nothing installed yet/u })).toBeTruthy();
+    expect(within(list).getByRole('button', { name: /Skills\s*Instructions this agent can reuse/u })).toBeTruthy();
     expect(headingOutline()).toEqual(['h1: Quill settings']);
 
     fireEvent.click(within(list).getByRole('button', { name: /^Model/u }));

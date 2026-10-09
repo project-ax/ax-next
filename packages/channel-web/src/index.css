@@ -308,3 +308,10 @@ input, textarea { caret-color: hsl(var(--primary)); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Agent settings forms share the workspace typography and semantic surfaces. */
+.settings-dialog { width: calc(100vw - 2rem); max-height: calc(100dvh - 2rem); overflow-y: auto; border-radius: 1rem; }
+.settings-form [data-slot="field"] { gap: 6px; }
+.settings-form label { font-size: 14px; color: hsl(var(--foreground)); line-height: 22px; }
+.settings-form input:not([type="checkbox"]), .settings-form textarea { font-family: inherit; font-size: 14px; }
+.settings-form [data-slot="field-description"] { font-size: 12px; line-height: 18px; }
