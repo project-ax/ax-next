@@ -175,7 +175,7 @@ describe('the agent bubble renders markdown', () => {
       }),
     );
 
-    expect(container.querySelectorAll('img')).toHaveLength(0);
+    expect(screen.getByRole('region', { name: `Conversation with ${quill.name}` }).querySelectorAll('img')).toHaveLength(0);
     expect(container.textContent).toContain('a chart');
     // …and it got there by being PARSED. Without this line the test passes
     // against the unfixed renderer too, which prints the whole `![a chart](…)`
@@ -201,7 +201,7 @@ describe('the agent bubble renders markdown', () => {
       }),
     );
 
-    expect(container.querySelectorAll('img')).toHaveLength(0);
+    expect(screen.getByRole('region', { name: `Conversation with ${quill.name}` }).querySelectorAll('img')).toHaveLength(0);
     expect(container.querySelectorAll('script')).toHaveLength(0);
     expect(container.textContent).toContain('alert(1)');
   });

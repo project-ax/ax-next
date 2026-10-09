@@ -113,7 +113,7 @@ export function AdminShell({
   }, []);
 
   return (
-    <div className="flex flex-1 min-w-0 h-full bg-background">
+    <div className="ax-settings-frame flex flex-1 min-w-0 h-full bg-canvas">
       {compact ? (
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
           <SheetContent side="left" aria-describedby={undefined} className="flex w-[280px] flex-col gap-0 p-0">

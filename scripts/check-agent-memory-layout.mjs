@@ -35,6 +35,7 @@ try {
       });
       await page.goto(`${origin}/workspace/agents/layout-agent/memory`);
       await page.getByLabel('Search memories', { exact: true }).waitFor();
+      await page.getByRole('region', { name: 'Memories', exact: true }).getByText('Denver', { exact: true }).waitFor();
       assert(page.url().endsWith('/settings/memory'), 'Legacy Memory URL did not canonicalize');
       const tables = await page.getByRole('table').count();
       assert.equal(tables, width < 768 ? 0 : 1, `${width}px: wrong memory table/card shape`);
@@ -42,6 +43,8 @@ try {
         assert.deepEqual(await page.getByRole('columnheader').allTextContents(), ['Kind', 'What Quill remembers', 'Noted', 'Actions']);
         const statementWidth = await page.getByRole('row').nth(1).getByRole('cell').nth(1).evaluate((el) => el.getBoundingClientRect().width);
         assert(statementWidth >= 140, `${width}px: memory statement column is unreadable (${statementWidth}px)`);
+        const textWidth = await page.getByRole('row').nth(1).getByRole('cell').nth(1).locator('div').evaluate((el) => el.getBoundingClientRect().width);
+        assert(textWidth >= 110, `${width}px: statement text is squeezed by cell padding (${textWidth}px)`);
       }
       const searchWidth = await page.getByLabel('Search memories', { exact: true }).evaluate((el) => el.getBoundingClientRect().width);
       assert(searchWidth >= 120, `${width}px: search field collapsed (${searchWidth}px)`);
@@ -58,6 +61,7 @@ try {
       } else {
         await page.getByRole('button', { name: 'Back to chat', exact: true }).click();
       }
+      if (width >= 768 && width < 1024) await page.getByRole('button', { name: /Agent details/ }).click();
       const tabs = page.getByRole('tab');
       assert.deepEqual(await tabs.allTextContents(), ['Chats', 'Files', 'Activity']);
       await page.getByText('Learned in this chat', { exact: true }).waitFor();

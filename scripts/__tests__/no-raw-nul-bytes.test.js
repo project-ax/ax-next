@@ -43,6 +43,7 @@ const BINARY_EXTENSIONS = new Set([
   '.ico',
   '.woff',
   '.woff2',
+  '.ttf', // Self-hosted TrueType font assets contain binary table data.
   '.pdf',
 ]);
 
@@ -62,6 +63,10 @@ function hasRawNulByte(buf) {
   return buf.includes(0);
 }
 
+function containsForbiddenNul(relPath, buf) {
+  return !BINARY_EXTENSIONS.has(extname(relPath).toLowerCase()) && hasRawNulByte(buf);
+}
+
 describe('no tracked non-binary file contains a raw NUL byte', () => {
   const files = trackedFiles();
 
@@ -71,10 +76,25 @@ describe('no tracked non-binary file contains a raw NUL byte', () => {
     expect(files.length).toBeGreaterThan(100);
   });
 
+  it('recognizes the self-hosted Inter assets as binary TrueType fonts', () => {
+    for (const weight of ['regular', 'medium', 'semibold']) {
+      const font = readFileSync(join(REPO_ROOT, 'packages/channel-web/public/fonts', `inter-${weight}.ttf`));
+      expect(font.subarray(0, 4).toString('hex')).toBe('00010000');
+      expect(hasRawNulByte(font)).toBe(true);
+      expect(containsForbiddenNul(`inter-${weight}.ttf`, font)).toBe(false);
+    }
+  });
+
+  it('still rejects raw NUL in text and source files', () => {
+    const source = Buffer.from('export const value = "\0";', 'utf8');
+    for (const path of ['source.ts', 'notes.md', 'font-LICENSE.txt', 'inter.ttf.ts']) {
+      expect(containsForbiddenNul(path, source)).toBe(true);
+    }
+  });
+
   it('never contains a raw NUL byte in a non-binary tracked file', () => {
     const offenders = [];
     for (const relPath of files) {
-      if (BINARY_EXTENSIONS.has(extname(relPath).toLowerCase())) continue;
       const full = join(REPO_ROOT, relPath);
       let buf;
       try {
@@ -84,7 +104,7 @@ describe('no tracked non-binary file contains a raw NUL byte', () => {
         // this guard's concern.
         continue;
       }
-      if (hasRawNulByte(buf)) offenders.push(relPath);
+      if (containsForbiddenNul(relPath, buf)) offenders.push(relPath);
     }
 
     expect(

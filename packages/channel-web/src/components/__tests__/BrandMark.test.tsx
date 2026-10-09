@@ -27,12 +27,12 @@ const base: Branding = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('BrandMark — no logo', () => {
-  it('shows the default "ax" wordmark when nothing is branded', () => {
+  it('shows the Figma mark and default "ax" wordmark when nothing is branded', () => {
     mockBranding(base);
     mockTheme('light');
     const { container } = render(<BrandMark />);
     expect(container.textContent).toContain('ax');
-    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('img')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('shows the configured name (no logo) as text beside the dot', () => {
@@ -43,11 +43,12 @@ describe('BrandMark — no logo', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
-  it('renders no logo while branding is still loading', () => {
+  it('shows the default mark while the configured logo is still loading', () => {
     mockBranding({ ...base, light: true, version: 'V1' }, false);
     mockTheme('light');
     const { container } = render(<BrandMark />);
-    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('img')).toHaveAttribute('aria-hidden', 'true');
+    expect(container.querySelector('img')?.getAttribute('src')).not.toContain('/api/branding/');
   });
 });
 

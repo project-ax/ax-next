@@ -32,6 +32,7 @@
  * a broken hook. Spelled out, the two have to agree with each other.
  */
 const COMPACT_QUERY = 'not all and (min-width: 768px)';
+const DETAILS_QUERY = 'not all and (min-width: 1024px)';
 
 /**
  * Install a `matchMedia` that reports a phone (`compact`) or a desktop.
@@ -39,10 +40,11 @@ const COMPACT_QUERY = 'not all and (min-width: 768px)';
  * Pair it with {@link clearViewport} in an `afterEach`, or the next file in the
  * same worker inherits a viewport it never asked for.
  */
-export function setViewport(compact: boolean): void {
+export function setViewport(compact: boolean | number): void {
+  const width = typeof compact === 'number' ? compact : compact ? 390 : 1440;
   window.matchMedia = ((query: string) => ({
     media: query,
-    matches: query === COMPACT_QUERY ? compact : false,
+    matches: query === COMPACT_QUERY ? width < 768 : query === DETAILS_QUERY ? width < 1024 : false,
     onchange: null,
     addEventListener: () => {},
     removeEventListener: () => {},

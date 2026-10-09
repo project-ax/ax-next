@@ -449,7 +449,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
           </ul>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            <Table className="table-fixed">
+            <Table className="min-w-[30rem] table-fixed">
               <TableHeader className="bg-muted/50">
                 <TableRow>
                   <TableHead className="w-36">Kind</TableHead>

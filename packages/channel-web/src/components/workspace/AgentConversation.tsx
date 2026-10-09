@@ -23,7 +23,6 @@ import {
   Hand,
   Layers,
   ListChecks,
-  MessageSquare,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -97,6 +96,7 @@ import {
 } from './ThreadFind';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
+import pearlOrb from '@/assets/design/pearl-orb.svg';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { GeneratedFileChip } from './GeneratedFileChip';
 import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
@@ -603,8 +603,10 @@ export function AgentConversation({
     conversationKey,
   });
 
+  const welcome = thread.length === 0 && !readOnly && !settling && !failureStripShown && grants.length === 0;
+
   return (
-    <div className="group/thread relative flex min-h-0 flex-1 flex-col">
+    <div className={cn("group/thread relative flex min-h-0 flex-1 flex-col", welcome && "overflow-y-auto [justify-content:safe_center]")}>
       {/*
         `|| findOpen` so an open bar survives the thread going empty underneath
         it — a failed excerpt read renders `[]`, and a control that vanishes
@@ -663,7 +665,7 @@ export function AgentConversation({
         // Where a finished create lands focus (TASK-533) — see
         // `lib/new-agent-return-focus.ts`.
         {...{ [AGENT_CONVERSATION_ATTR]: agent.id }}
-        className="flex-1 overflow-y-auto py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className={cn("overflow-y-auto py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", welcome ? "shrink-0" : "flex-1")}
       >
         <div ref={contentRef} className={cn(CHAT_CONTENT_CLASS, "flex flex-col gap-[26px]")}>
           {thread.map((m, i) => {
@@ -748,17 +750,13 @@ export function AgentConversation({
             can do. It names where the reader is and what the box below is
             for, and stops there.
           */}
-          {thread.length === 0 &&
-            !readOnly &&
-            !settling &&
-            !failureStripShown &&
-            grants.length === 0 && (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <MessageSquare />
+          {welcome && (
+            <Empty className="border-0 py-6">
+              <EmptyHeader className="max-w-lg gap-4">
+                <EmptyMedia>
+                  <span className="ax-pearl" aria-hidden="true"><img src={pearlOrb} width={138} height={138} alt="" /></span>
                 </EmptyMedia>
-                <EmptyTitle>Nothing here yet</EmptyTitle>
+                <EmptyTitle className="text-[30px] font-semibold leading-[1.35] tracking-[-0.02em]">Nothing here yet</EmptyTitle>
                 <EmptyDescription>
                   This is where you and {agent.name} talk. Send something below
                   — {agent.name} picks it up from there.
@@ -956,6 +954,7 @@ export function AgentConversation({
                 : (attachBlock ?? (stoppedShown ? 'Stopped.' : ''))}
           </span>
           <ChatComposer
+            spacious={welcome}
             label={`Message ${agent.name}`}
             inputRef={fieldRef}
             input={{

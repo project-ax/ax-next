@@ -70,7 +70,7 @@ const oneAgent: WorkspaceAgent[] = [agent()];
 it('shares composer layout and chat width, with agent selection only on Today', () => {
   render(<HomeComposer agents={oneAgent} onSend={vi.fn()} />);
   const todayInput = screen.getByRole('textbox');
-  const todayFrame = todayInput.parentElement!;
+  const todayFrame = todayInput.closest<HTMLElement>('[data-slot="input-group"]')!;
   const agentView = render(
     <AgentConversation
       agent={oneAgent[0]!}
@@ -90,17 +90,16 @@ it('shares composer layout and chat width, with agent selection only on Today', 
     />,
   );
   const agentFrame = within(agentView.container).getByRole('group', { name: 'Message Scheduler' });
-  const radiusClass = (frame: HTMLElement) =>
-    [...frame.classList].find(token => token.startsWith('rounded-'));
-  expect(radiusClass(agentFrame)).toBe(radiusClass(todayFrame));
-  expect(radiusClass(todayFrame)).toBe('rounded-xl');
+  expect(agentFrame).toHaveClass('ax-composer');
+  expect(todayFrame).toHaveClass('ax-composer');
   const agentInput = within(agentFrame).getByRole('textbox');
   expect(agentInput.className).toBe(todayInput.className);
   for (const frame of [todayFrame, agentFrame]) {
     const input = within(frame).getByRole('textbox');
     const attach = within(frame).getByRole('button', { name: 'Attach a file' });
     expect(input.compareDocumentPosition(attach) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(frame.parentElement).toHaveClass('max-w-[900px]', 'mx-auto', 'px-6');
+    expect(frame.parentElement).toHaveClass('ax-composer-well');
+    expect(frame.parentElement?.parentElement).toHaveClass('max-w-[900px]', 'mx-auto', 'px-6');
   }
   expect(within(todayFrame).getByText('Scheduler')).toBeInTheDocument();
   expect(within(agentFrame).queryByText('Scheduler')).not.toBeInTheDocument();

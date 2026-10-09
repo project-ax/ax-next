@@ -154,7 +154,7 @@ describe('AgentConversation — Stop the control', () => {
     expect(stop.parentElement).toBe(row);
     expect(Array.from(row.children).indexOf(stop)).toBe(slot);
     // Same desktop square and 44px phone target, both.
-    for (const cls of ['size-8', 'max-md:size-11']) {
+    for (const cls of ['size-9', 'max-md:size-11']) {
       expect(sendClasses).toContain(cls);
       expect(stop.className).toContain(cls);
     }

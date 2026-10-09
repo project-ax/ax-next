@@ -62,12 +62,9 @@ export function WorkspaceSidebarNav({
     act();
     onNavigate?.();
   };
-  const row = (active: boolean) =>
+  const row = () =>
     cn(
-      'h-9 w-full justify-start gap-2.5 rounded-sm px-2.5 text-[13px] font-normal max-md:min-h-11',
-      active
-        ? 'bg-primary-soft font-medium text-primary'
-        : 'text-muted-foreground',
+      'h-10 w-full gap-2.5 px-2 max-md:min-h-11',
     );
   const iconRow = (
     label: string,
@@ -101,7 +98,7 @@ export function WorkspaceSidebarNav({
     <>
       <div
         className={cn(
-          'flex h-14 shrink-0 items-center gap-2 px-4',
+          'flex h-20 shrink-0 items-center gap-2 px-5',
           collapsed && 'justify-center px-0',
         )}
       >
@@ -166,12 +163,13 @@ export function WorkspaceSidebarNav({
       ) : (
         <nav
           aria-label="Workspace"
-          className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2"
+          className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-5 py-2"
         >
           <Button
-            variant="ghost"
+            variant="navigation"
             onClick={go(onToday)}
-            className={row(route === 'today')}
+            className={row()}
+            data-active={route === 'today'}
           >
             <Inbox data-icon="inline-start" aria-hidden="true" />
             Today
@@ -185,9 +183,10 @@ export function WorkspaceSidebarNav({
             )}
           </Button>
           <Button
-            variant="ghost"
+            variant="navigation"
             onClick={go(onActivity)}
-            className={row(route === 'activity')}
+            className={row()}
+            data-active={route === 'activity'}
           >
             <Activity data-icon="inline-start" aria-hidden="true" />
             Activity
@@ -198,7 +197,7 @@ export function WorkspaceSidebarNav({
             onOpenChange={onRoster}
           >
             <CollapsibleTrigger asChild>
-              <Button variant="ghost" className={row(false)}>
+              <Button variant="navigation" className={row()}>
                 <Bot data-icon="inline-start" aria-hidden="true" />
                 Agents
                 <span className="ml-auto text-[12px] text-muted-foreground">
@@ -217,14 +216,10 @@ export function WorkspaceSidebarNav({
               {agents.map((a) => (
                 <Button
                   key={a.id}
-                  variant="ghost"
+                  variant="navigation"
+                  data-active={route === 'agent' && activeAgentId === a.id}
                   onClick={go(() => onAgent(a.id))}
-                  className={cn(
-                    'h-8 w-full justify-start gap-2.5 rounded-sm pl-8 pr-2.5 text-[13px] font-normal max-md:min-h-11',
-                    route === 'agent' && activeAgentId === a.id
-                      ? 'bg-primary-soft font-medium text-primary'
-                      : 'text-muted-foreground',
-                  )}
+                  className="h-10 w-full gap-2.5 pl-8 pr-2 max-md:min-h-11"
                 >
                   <StateDotSlot>
                     <StateDot state={a.state} />
@@ -246,9 +241,9 @@ export function WorkspaceSidebarNav({
           </Collapsible>
           {onCreateAgent && (
             <Button
-              variant="ghost"
+              variant="navigation"
               onClick={go(onCreateAgent)}
-              className={row(false)}
+              className={row()}
               {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
             >
               <Plus data-icon="inline-start" aria-hidden="true" />
@@ -271,8 +266,8 @@ export function WorkspaceSidebar(props: Props) {
     <aside
       aria-label="Sidebar"
       className={cn(
-        'flex shrink-0 flex-col border-r border-border bg-sidebar',
-        collapsed ? 'w-14' : 'w-[236px]',
+        'ax-panel flex shrink-0 flex-col bg-sidebar',
+        collapsed ? 'w-14' : 'w-[258px]',
       )}
     >
       <WorkspaceSidebarNav

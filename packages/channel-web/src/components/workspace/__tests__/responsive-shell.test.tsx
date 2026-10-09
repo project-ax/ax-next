@@ -224,6 +224,18 @@ describe('the workspace shell below md', () => {
 });
 
 describe('the agent pane below md', () => {
+  it('keeps tablet details off-canvas without moving the navigation sidebar', async () => {
+    setViewport(768);
+    renderShell();
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Quill/ }));
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: 'Chats' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
+    expect(await screen.findByRole('tab', { name: 'Chats' })).toBeTruthy();
+  });
+
   it('moves the 296px rail off-canvas and keeps it reachable', async () => {
     setViewport(true);
     renderAgentView();

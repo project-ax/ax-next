@@ -196,7 +196,7 @@ function lastToast(): { title: string; detail?: string; kind?: string } {
 /** The person's own card: everything between its title and the next card. */
 function myCard(): HTMLElement {
   const title = screen.getByRole('heading', { name: 'Your storage' });
-  const card = title.closest('.rounded-lg');
+  const card = title.closest('[data-slot="card"]');
   if (!(card instanceof HTMLElement)) throw new Error('no card around "Your storage"');
   return card;
 }
@@ -480,7 +480,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
     /** The "Everyone's storage" card: its title up to the next card. */
     function everyoneCard(): HTMLElement {
       const title = screen.getByRole('heading', { name: "Everyone's storage" });
-      const card = title.closest('.rounded-lg');
+      const card = title.closest('[data-slot="card"]');
       if (!(card instanceof HTMLElement)) throw new Error('no card around "Everyone\'s storage"');
       return card;
     }

@@ -392,13 +392,16 @@ export function AgentView({
   */
   const [loadError, setLoadError] = useState<ReadOutcome | null>(null);
   /**
-   * Below `md` the rail is an off-canvas panel rather than a column, and this
+   * Below `lg` the rail is an off-canvas panel rather than a column, and this
    * is whether it is open (TASK-404). It is not reset when the viewport widens
-   * — above `md` the `Sheet` is not mounted at all, so the flag is inert, and a
+   * — above `lg` the `Sheet` is not mounted at all, so the flag is inert, and a
    * rotation back to portrait reopening the panel the person last had open is
    * the behaviour they would expect rather than a bug.
    */
   const compact = useIsCompact();
+  // The floating frame cannot fit both expanded rails plus a usable chat on tablets.
+  const tablet = useIsCompact('lg');
+  const compactRail = compact || tablet;
   const [railOpen, setRailOpen] = useState(false);
   const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [railCollapsed, setRailCollapsed] = useRailPreference('details');
@@ -425,7 +428,7 @@ export function AgentView({
 
   /*
     "What I learned in this chat" (TASK-627). The state lives HERE, not in the
-    rail: below `md` the rail is a `Sheet` whose content is unmounted while it
+    rail: below `lg` the rail is a `Sheet` whose content is unmounted while it
     is shut, and the "N new" count on its toggle and the batch announcement
     both have to keep working exactly then. It follows the conversation ON
     SCREEN — a past one when the rail opened one — because a row's source link
@@ -451,10 +454,10 @@ export function AgentView({
     () => ({ fixes: learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget }),
     [learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget],
   );
-  // Below `md`, opening the rail is what counts as having seen the block.
+  // Below `lg`, opening the rail is what counts as having seen the block.
   useEffect(() => {
-    if (compact && railOpen && learnedUnseen > 0) markLearnedSeen();
-  }, [compact, railOpen, learnedUnseen, markLearnedSeen]);
+    if (compactRail && railOpen && learnedUnseen > 0) markLearnedSeen();
+  }, [compactRail, railOpen, learnedUnseen, markLearnedSeen]);
   const isAdmin = useUser()?.role === 'admin';
 
   /**
@@ -1357,7 +1360,7 @@ export function AgentView({
   const sources = turnSources(past !== null ? (pastDetail?.thread ?? []) : detail.thread);
 
   /*
-    One block element for both rail shapes. Below `md`, the source link closes
+    One block element for both rail shapes. Below `lg`, the source link closes
     the sheet first — it covers the very thread it is pointing into.
   */
   const learnedBlock = (
@@ -1379,7 +1382,7 @@ export function AgentView({
         gets rendered (the thread is not virtualised).
       */
       onJumpToSource={(turnId) => {
-        if (compact) {
+        if (compactRail) {
           setRailOpen(false);
           setTimeout(() => jumpToSource(turnId), 0);
           return;
@@ -1387,7 +1390,7 @@ export function AgentView({
         jumpToSource(turnId);
       }}
       onSeeAll={() => {
-        if (compact) setRailOpen(false);
+        if (compactRail) setRailOpen(false);
         openSettings('memory');
       }}
     />
@@ -1671,15 +1674,15 @@ export function AgentView({
       {/* Keep the composer mounted: it owns draft files and pending uploads. */}
       <div hidden={settingsPage !== null} className={cn('flex min-h-0 flex-1', settingsPage !== null && 'hidden')}>
         <div className="flex min-w-0 flex-1 flex-col">
-          {(compact || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+          {(compactRail || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
             {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}
             <AgentTile agent={agent} size={28} />
             <h1 className="min-w-0 truncate font-brand text-[15px] font-semibold" title={agent.name}>{agent.name}</h1>
-            {compact && <Button variant="outline" size="sm" onClick={() => setRailOpen(true)} aria-label={learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'} className="ml-auto min-h-11 px-2">
+            {compactRail && <Button variant="outline" size="sm" onClick={() => setRailOpen(true)} aria-label={learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'} className="ml-auto min-h-11 px-2">
               Details{learnedUnseen > 0 && <Badge>{learnedUnseen}</Badge>}
             </Button>}
           </header>}
-          {!compact && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
+          {!compactRail && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
           <h2 className="sr-only">Conversation</h2>
 
               {past && (
@@ -1931,7 +1934,7 @@ export function AgentView({
 
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
-        {compact ? <Sheet open={railOpen} onOpenChange={setRailOpen}>
+        {compactRail ? <Sheet open={railOpen} onOpenChange={setRailOpen}>
           <SheetContent side="right" aria-describedby={undefined} className="flex w-[320px] max-w-[calc(100vw-24px)] flex-col gap-0 p-0">
             <SheetTitle className="sr-only">Agent details</SheetTitle>
             <AgentRailContent {...railProps} mobile onOpenPast={id => { setPastId(id); setRailOpen(false); }} />

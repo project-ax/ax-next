@@ -168,6 +168,8 @@ const THEMES: ReadonlyArray<readonly [string, string]> = [
 /** Accent backgrounds and the foreground each one is always paired with. */
 const ACCENT_PAIRS = [
   ['--primary', '--primary-foreground'],
+  ['--action', '--action-foreground'],
+  ['--send', '--send-foreground'],
   ['--destructive', '--destructive-foreground'],
   ['--warning', '--warning-foreground'],
   // The Download button on the Files tab is `variant="secondary"` (TASK-355),
@@ -265,7 +267,7 @@ const ACCENT_SOFT_PAIRS = [
  * muted-foreground read 4.83 when this note was written; TASK-380 darkened the
  * token to 44% and lifted it, which is the whole point of measuring here.)
  */
-const PLAIN_SURFACES = ['--background', '--card'] as const;
+const PLAIN_SURFACES = ['--background', '--card', '--canvas'] as const;
 
 /**
  * Body copy that is deliberately quiet. It is still text a person has to read
@@ -337,7 +339,7 @@ const QUIET_TEXT = '--muted-foreground';
  * formula; the slightly higher figures this note used to carry came from an
  * unrounded pass.)
  */
-const QUIET_TEXT_SURFACES = ['--background', '--card', '--popover', '--muted'] as const;
+const QUIET_TEXT_SURFACES = ['--background', '--card', '--popover', '--muted', '--canvas'] as const;
 
 /**
  * One entry per `it` the quiet-text loop registers, appended at COLLECTION
@@ -1620,6 +1622,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
 const HOVER_SITES = [
   ['components/ui/button.tsx', 'default'],
   ['components/ui/button.tsx', 'destructive'],
+  ['components/ui/button.tsx', 'send'],
   ['components/ui/badge.tsx', 'default'],
   ['components/ui/badge.tsx', 'destructive'],
 ] as const;
@@ -1911,7 +1914,7 @@ describe('controlPaint', () => {
  */
 const STATUS_CHIP_FILE = 'components/routines/StatusChip.tsx';
 const ROUTINES_LIST_FILE = 'components/routines/RoutinesList.tsx';
-const ADMIN_SHELL_FILE = 'components/admin/AdminShell.tsx';
+const ADMIN_PANE_FILE = 'components/admin/AdminPane.tsx';
 const BUTTON_FILE = 'components/ui/button.tsx';
 
 /** One arm of StatusChip's `styles` record, comments stripped. */
@@ -1941,7 +1944,13 @@ function ghostPaint(cls: string): { hover: { token: string; alpha: number; cls: 
 const routinesCasesRegistered: string[] = [];
 
 describe("Routines' error chip and banner clear AA in every state", () => {
-  const surface = bgFill(classNameOf(readSource(ADMIN_SHELL_FILE), 'flex flex-1 min-w-0 h-full'));
+  const paneSource = readSource(ADMIN_PANE_FILE);
+  expect(paneSource).toContain('ax-panel');
+  // The shared ax-panel class owns the actual content surface.
+  const panelRule = CSS.match(/\.ax-panel\s*\{([^}]+)\}/)?.[1] ?? '';
+  const panelToken = panelRule.match(/background:\s*hsl\(var\((--[\w-]+)\)\)/)?.[1];
+  if (!panelToken) throw new Error('ax-panel must paint an opaque semantic background');
+  const surface = { token: panelToken, alpha: 1, cls: 'ax-panel' };
   const listSrc = readSource(ROUTINES_LIST_FILE);
   const dismiss = ghostPaint(variantClasses(readSource(BUTTON_FILE), 'ghost'));
   const chip = controlPaint(statusChipArm(readSource(STATUS_CHIP_FILE), 'error'));
@@ -1994,7 +2003,7 @@ describe("Routines' error chip and banner clear AA in every state", () => {
   }
 
   it('sits on an opaque page, and each error fill is one solid per-theme tint', () => {
-    expect(surface).toEqual({ token: '--background', alpha: 1, cls: 'bg-background' });
+    expect(surface).toEqual({ token: '--panel', alpha: 1, cls: 'ax-panel' });
     for (const [label, paint] of sites) {
       expect(paint.text, label).toBe('--destructive');
       expect(paint.hoverText, `${label} swaps no ink`).toBeUndefined();

@@ -428,7 +428,7 @@ describe('a message the person attached a file to', () => {
       <AgentConversation {...conversationProps(withAgentAttachment)} />,
     );
     expect(container.textContent).not.toContain(bus);
-    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('[role="region"] img')).toBeNull();
     unmount();
     // Sanity: the same fixture on a USER turn does draw — so the negative
     // above is about WHOSE turn it is, not about the assertion being unreachable.
