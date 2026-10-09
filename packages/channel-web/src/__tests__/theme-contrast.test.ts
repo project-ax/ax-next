@@ -707,7 +707,7 @@ describe('--state-quiet is a fill, never ink', () => {
    */
   it('does not let a stray slash-star in code swallow a real usage', () => {
     const caseA = [
-      '      <code>.ax/routines/*.md</code>',
+      '      <code>routine_create</code>',
       '      <span className="text-state-quiet">{row.source}</span>',
       '      {/* a later block comment, whose close pairs with the text above */}',
     ].join('\n');

@@ -829,7 +829,7 @@ async function createAgent(
   if (input.tx !== undefined) createArgs.tx = input.tx;
   const agent = await store.create(createArgs);
   // Fire subscriber event so callers (e.g., @ax/routines) can seed
-  // per-agent workspace state (e.g., heartbeat.md). Payload is intentionally
+  // per-agent state (e.g., default routine materializations). Payload is intentionally
   // minimal and storage-agnostic (L4) — subscribers needing richer data
   // re-resolve via `agents:resolve`. Subscriber failures are isolated by
   // HookBus.fire (logged, not propagated), so agent creation succeeds even

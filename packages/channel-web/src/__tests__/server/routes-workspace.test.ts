@@ -147,7 +147,7 @@ function fire(o: {
   return {
     id: o.id,
     agentId: o.agentId ?? 'a1',
-    routineId: o.routineId ?? 'daily.md',
+    routineId: o.routineId ?? 'routine-daily',
     firedAt: o.firedAt,
     triggerSource: o.triggerSource ?? 'tick',
     conversationId: null,
@@ -2162,8 +2162,8 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     routinesByAgent.set('a1', [
-      { routineId: 'daily.md', name: 'Morning digest' },
-      { routineId: 'watch.md', name: 'Inbox watch' },
+      { routineId: 'routine-daily', name: 'Morning digest' },
+      { routineId: 'routine-watch', name: 'Inbox watch' },
     ]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'ok' }),
@@ -2173,7 +2173,7 @@ describe('channel-web agent-workspace BFF', () => {
         id: 2,
         firedAt: '2026-08-20T11:00:00.000Z',
         status: 'silenced',
-        routineId: 'watch.md',
+        routineId: 'routine-watch',
       }),
       fire({
         id: 3,
@@ -2195,7 +2195,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('renders an errored fire as a stopped row carrying the real error', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [
       fire({
         id: 1,
@@ -2209,7 +2209,7 @@ describe('channel-web agent-workspace BFF', () => {
       fire({
         id: 2,
         firedAt: '2026-08-20T09:00:00.000Z',
-        routineId: 'sweep.md',
+        routineId: 'routine-sweep',
         status: 'error',
         error: null,
       }),
@@ -2218,7 +2218,7 @@ describe('channel-web agent-workspace BFF', () => {
       fire({
         id: 3,
         firedAt: '2026-08-20T08:00:00.000Z',
-        routineId: 'sweep.md',
+        routineId: 'routine-sweep',
         status: 'error',
         error: '   ',
       }),
@@ -2246,7 +2246,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('carries an ISO instant and no server-computed day/time', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T16:12:00.000Z' })];
 
     const h = makeWorkspaceHandlers({ bus, initCtx });
@@ -2266,7 +2266,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('never puts the fire row id on the wire', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     // A distinctive id: if it leaks anywhere in the body, this finds it.
     fires = [fire({ id: 987654321, firedAt: '2026-08-20T10:00:00.000Z' })];
 
@@ -2278,21 +2278,21 @@ describe('channel-web agent-workspace BFF', () => {
     // reproduce. The cursor is the instant instead.
     expect(JSON.stringify(captured.body)).not.toContain('987654321');
     expect((captured.body as ActivityBody).events[0]!.id).toBe(
-      'a1|daily.md|2026-08-20T10:00:00.000Z',
+      'a1|routine-daily|2026-08-20T10:00:00.000Z',
     );
   });
 
   it('merges both agents\' fires into one time-ordered collection', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
-    routinesByAgent.set('a2', [{ routineId: 'scan.md', name: 'Paper scan' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ routineId: 'routine-scan', name: 'Paper scan' }]);
     fires = [
       fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
       fire({
         id: 2,
         agentId: 'a2',
-        routineId: 'scan.md',
+        routineId: 'routine-scan',
         firedAt: '2026-08-20T11:00:00.000Z',
       }),
       fire({ id: 3, agentId: 'a1', firedAt: '2026-08-20T13:00:00.000Z' }),
@@ -2316,14 +2316,14 @@ describe('channel-web agent-workspace BFF', () => {
   it('scopes the feed to one agent when agentid names one', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
-    routinesByAgent.set('a2', [{ routineId: 'scan.md', name: 'Paper scan' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ routineId: 'routine-scan', name: 'Paper scan' }]);
     fires = [
       fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
       fire({
         id: 2,
         agentId: 'a2',
-        routineId: 'scan.md',
+        routineId: 'routine-scan',
         firedAt: '2026-08-20T11:00:00.000Z',
       }),
     ];
@@ -2339,7 +2339,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('returns a nextBefore even when every fire on the page was silenced', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'silenced' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z', status: 'silenced' }),
@@ -2359,7 +2359,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('pages back through the cursor it handed out', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
@@ -2430,7 +2430,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('degrades one unreadable agent to nothing instead of 500ing the page', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
     firesReadFailure.set('a2', new Error('connection terminated unexpectedly'));
 
@@ -2490,7 +2490,7 @@ describe('channel-web agent-workspace BFF', () => {
   // --- the pure mapping ----------------------------------------------------
 
   it('labels the trigger in plain words, and says nothing for one it cannot name', () => {
-    const names = new Map([['daily.md', 'Morning digest']]);
+    const names = new Map([['routine-daily', 'Morning digest']]);
     const at = '2026-08-20T12:00:00.000Z';
     expect(
       fireToActivityEvent(fire({ id: 1, firedAt: at, triggerSource: 'tick' }), names)
@@ -2551,7 +2551,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
@@ -2585,7 +2585,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' })];
     receipts = [
       receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' }),
@@ -2643,7 +2643,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
     receiptsReadFailure.set('a1', new Error('connection terminated unexpectedly'));
 
@@ -2714,7 +2714,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('shows the fires when no decisions plugin is loaded at all', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'routine-daily', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' })];
     // No @ax/decisions in this deployment. There genuinely are no receipts —
     // that is not a fault, and it must not cost the routine history.
@@ -2929,9 +2929,8 @@ describe('channel-web agent-workspace BFF', () => {
 
   // --- the fence on agent-authored text ------------------------------------
   //
-  // A routine's `name` is authored in a file in the agent's own workspace and
-  // validated for non-emptiness and nothing else, and a fire's `error` is
-  // whatever the failure happened to say. Both land on a feed row that speaks
+  // Routine names and fire errors can carry model-authored or external text.
+  // Both land on a feed row that speaks
   // in OUR voice. React escapes markup, so this was never XSS — the failure is
   // a label that reorders or hides what the reader sees, and an unbounded
   // string on the wire. The fence lives here, at the trust boundary, not in
@@ -2948,7 +2947,7 @@ describe('channel-web agent-workspace BFF', () => {
     surrounding copy; `the "What it did" row` block below pins the sentence.
   */
   const labelFor = (name: string) =>
-    fireLabel(fire({ id: 1, firedAt: at }), new Map([['daily.md', name]]))!;
+    fireLabel(fire({ id: 1, firedAt: at }), new Map([['routine-daily', name]]))!;
   const rowFor = (name: string) => ({ text: labelFor(name) });
 
   it.each([
@@ -3070,7 +3069,7 @@ describe('channel-web agent-workspace BFF', () => {
     // itself: the headline never claims the run went well.
     const ev = fireToActivityEvent(
       fire({ id: 1, firedAt: at, status: 'error', error: 'gmail refused' }),
-      new Map([['daily.md', 'Morning digest']]),
+      new Map([['routine-daily', 'Morning digest']]),
     )!;
     expect(ev.kind).toBe('stopped');
     expect(ev.text).toBe(`Ran Morning digest. ${FIRE_NO_SUMMARY}`);

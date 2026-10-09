@@ -14,9 +14,8 @@ export const DEFAULT_PHRASE = 'Working on your request';
  * Hard ceiling on anything that reaches the line.
  *
  * `activityPhrase` is already capped at 40 by all three descriptor schemas, but
- * the T0 trigger label is not: a routine's `name` comes from a file in the
- * agent's own workspace, which means it is bounded by nobody and — since an
- * agent can author a routine — is not reliably a human's words either. A status
+ * trigger labels can carry model-authored routine names. Even a valid
+ * routine name can exceed this compact surface's limit. A status
  * line is one line, so anything landing on it is fenced the same way: single
  * line, plain text, bounded. Truncation is marked, because a sentence that got
  * cut and does not say so is a sentence that means something else.

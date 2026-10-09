@@ -25,6 +25,7 @@ import { createMemoryPlugins, type MemoryPresetConfig } from '../index.js';
 
 const ALICE = 'user-alice';
 const BOB = 'user-bob';
+const ROUTINES_ADMIN = 'routines-admin';
 const EVE = 'user-eve';
 
 // `sandbox:open-session` REQUIRES a proxyConfig (TASK-838) — the host refuses an
@@ -74,7 +75,7 @@ function authStub(): Plugin {
         'auth:get-user',
         name,
         async (_ctx, input) => ({
-          user: { id: input?.userId ?? 'unknown', isAdmin: false },
+          id: input?.userId ?? 'unknown', isAdmin: input?.userId === ROUTINES_ADMIN,
         }),
       );
       bus.registerService('auth:create-bootstrap-user', name, async () => ({
@@ -473,7 +474,7 @@ describe('@ax/preset-memory canary', () => {
   });
 
   it('skill-reflection runs the facts-memory prompt and can be turned on (TASK-611)', async () => {
-    const ctx = ctxFor('canary-routines', ALICE);
+    const ctx = ctxFor('canary-routines', ROUTINES_ADMIN);
     const def = await bus.call<
       { defaultRoutineId: string },
       { enabled: boolean; promptBody: string }
@@ -487,25 +488,14 @@ describe('@ax/preset-memory canary', () => {
     expect(def.promptBody).not.toContain('source_conversations');
     expect(bus.hasService('tool:execute:memory_recall')).toBe(true);
 
-    const sourceMd = [
-      '---',
-      'name: skill-reflection',
-      'description: reflection',
-      'trigger:',
-      '  kind: interval',
-      '  every: "24h"',
-      'conversation: per-fire',
-      '---',
-      'reflect',
-      '',
-    ].join('\n');
-    await bus.call('routines:upsert-default', ctx, { sourceMd, enabled: true });
+    const input = { name: 'skill-reflection', description: 'reflection', trigger: { kind: 'interval', every: '24h' }, promptBody: 'reflect', conversation: 'per-fire' };
+    await bus.call('routines:upsert-default', ctx, { ...input, enabled: true });
     const after = await bus.call<{ defaultRoutineId: string }, { enabled: boolean }>(
       'routines:get-default', ctx, { defaultRoutineId: 'skill-reflection' },
     );
     expect(after.enabled).toBe(true);
     // Back off, so no later case in this file races a reflection fire.
-    await bus.call('routines:upsert-default', ctx, { sourceMd, enabled: false });
+    await bus.call('routines:upsert-default', ctx, { ...input, enabled: false });
   });
 
   it('agent detail exposes the memory surface; rules save+read round-trip over HTTP', async () => {

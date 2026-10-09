@@ -639,9 +639,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     // The wire response is not a channel anyone watches: the runner writes the
     // reason to stderr (k8s: `kubectl logs` on an ephemeral pod) and, on this
     // branch, hard-resets the turn. Without a host-side log line an operator
-    // asking "why did that agent's work vanish?" has nowhere to look — two of
-    // the three pre-apply rejecters (@ax/validator-skill, @ax/validator-routine)
-    // log nothing of their own.
+    // asking "why did that agent's work vanish?" has nowhere to look.
+    // Pre-apply validators do not all log their own rejection.
     prepareScratchRepoMock.mockResolvedValueOnce({
       ...DEFAULT_SCRATCH,
       dispose: vi.fn().mockResolvedValue(undefined),
@@ -654,8 +653,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     await bootstrap({ bus, plugins: [probe], config: {} });
     bus.subscribe(
       'workspace:pre-apply',
-      '@ax/validator-routine',
-      async () => reject({ reason: '.ax/routines/nightly.md: schedule is not a valid cron expression' }),
+      '@ax/validator-skill',
+      async () => reject({ reason: 'skills/nightly/SKILL.md: invalid frontmatter' }),
     );
 
     const warn = vi.fn();
@@ -684,8 +683,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
       expect.objectContaining({
         action: 'workspace.commit-notify',
         // Which plugin refused, and in its own words why.
-        rejectedBy: '@ax/validator-routine',
-        reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+        rejectedBy: '@ax/validator-skill',
+        reason: 'skills/nightly/SKILL.md: invalid frontmatter',
       }),
     );
   });

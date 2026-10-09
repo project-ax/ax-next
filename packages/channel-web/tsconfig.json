@@ -32,7 +32,6 @@
     { "path": "../routines-contract" },
     { "path": "../sandbox-mount-protocol" },
     { "path": "../teams" },
-    { "path": "../tool-policy" },
-    { "path": "../validator-routine" }
+    { "path": "../tool-policy" }
   ]
 }

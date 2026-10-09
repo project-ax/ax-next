@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runRetireRoutineFilesCommand } from './retire-routine-files.js';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +18,6 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
-import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -253,21 +253,6 @@ export async function main(opts: MainOptions): Promise<number> {
   // shape failures production would.
   plugins.push(createValidatorSkillPlugin());
 
-  // Phase B (2026-05-14). validator-routine is a pure subscriber and works
-  // anywhere workspace:pre-apply fires — load in local CLI dev too so
-  // routine-file authors get the same veto feedback as production.
-  //
-  // @ax/routines itself is NOT loaded here: its init() calls
-  // `database:get-instance`, which only `@ax/database-postgres` registers.
-  // The local CLI uses `@ax/storage-sqlite` (different mechanism) and
-  // doesn't load the conversations / agents / chat-orchestrator plugins
-  // routines depends on. Loading it would crash bootstrap with
-  // "no plugin registered for service hook 'database:get-instance'."
-  // The k8s preset loads it (postgres is present there); see
-  // presets/k8s/src/index.ts and the Phase B canary describe block in
-  // preset.test.ts.
-  plugins.push(createValidatorRoutinePlugin());
-
   // Phase 3 (conversational-agent-identity): validator-identity subscribes to
   // workspace:pre-apply and gates the agent's writes to its own identity files
   // (.ax/IDENTITY.md / .ax/SOUL.md / .ax/AGENTS.md / .ax/BOOTSTRAP.md) under the
@@ -468,7 +453,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // the full LLM/sandbox/orchestrator plugin set for what's essentially a
   // "write a row to sqlite" operation — and so we don't race the chat path's
   // DB init.
-  if (argv[0] === 'credentials') {
+  if (argv[0] === 'retire-routine-files') {
+    runRetireRoutineFilesCommand({ argv: argv.slice(1) })
+      .then(code => process.exit(code))
+      .catch(() => { process.stderr.write('maintenance-failed\n'); process.exit(1); });
+  } else if (argv[0] === 'credentials') {
     runCredentialsCommand({
       argv: argv.slice(1),
       stdin: process.stdin,

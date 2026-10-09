@@ -478,7 +478,7 @@ async function commitBundleCore(
     // `CLAUDE.local.md`), which is the pair that catches the ordinary
     // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core.
     // Subscribers — @ax/validator-skill's SDK-config veto,
-    // @ax/validator-identity, and @ax/validator-routine — see ONLY
+    // @ax/validator-identity — see ONLY
     // agent-managed memory and SDK setting-source paths; user-code changes are
     // not policy-checked.
     const policyChanges = filterToPolicy(allChanges);
@@ -507,7 +507,7 @@ async function commitBundleCore(
     );
     if (pre.rejected) {
       // Three plugins reject on `workspace:pre-apply`: @ax/validator-skill's
-      // SDK-config veto, @ax/validator-identity, and @ax/validator-routine.
+      // SDK-config veto, @ax/validator-identity.
       //
       // validator-skill's SKILL.md *content* scan is NOT a fourth: TASK-74 took
       // it off `workspace:pre-apply` altogether and moved it to the

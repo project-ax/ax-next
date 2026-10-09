@@ -13,7 +13,7 @@
  * recurrence gate is the MANUAL-ACCEPTANCE walk (plan §"MANUAL-ACCEPTANCE walk").
  * This canary exercises the WIRING, with no over-mock:
  *
- *   1. wiring — the REAL `createFireRoutine` (from @ax/routines) drives a stub
+ *   1. wiring — the registered routine services (from @ax/routines) drive a stub
  *      `agent:invoke` that calls the REAL `skills:propose` (real @ax/skills +
  *      real Postgres) with an instruction-only authored manifest. We assert the
  *      proposal lands `status: 'active'`, `skills:proposed` fired, and the row is
@@ -72,18 +72,16 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import {
-  HookBus,
+  type HookBus,
   makeAgentContext,
   type AgentContext,
   type ServiceHandler,
 } from '@ax/core';
 import {
-  createFireRoutine,
+  createRoutinesPlugin,
   SKILL_REFLECTION_PROMPT,
-  type FireDeps,
-  type PendingFires,
 } from '@ax/routines';
-import type { RoutineRow } from '@ax/routines';
+import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '../plugin.js';
 import { blobStoreFakeServices } from './_blob-fake.js';
 import type {
@@ -141,91 +139,53 @@ async function makeSkillsHarness(
   return h;
 }
 
-/**
- * A minimal `skill-reflection` RoutineRow (per-fire, REFLECTION_DONE token,
- * the real meta-prompt body). The canary fires this through the REAL
- * createFireRoutine.
- */
-function reflectionRow(over: Partial<RoutineRow> = {}): RoutineRow {
-  return {
-    agentId: 'a1',
-    path: 'default:skill-reflection',
-    ownerUserId: 'u1',
-    name: 'skill-reflection',
-    description: 'crystallization',
-    specHash: 'h',
-    trigger: { kind: 'interval', every: '24h' },
-    activeHours: null,
-    silenceToken: 'REFLECTION_DONE',
-    silenceMaxChars: 4000,
-    conversation: 'per-fire',
-    promptBody: SKILL_REFLECTION_PROMPT,
-    nextRunAt: null,
-    lastRunAt: null,
-    lastStatus: null,
-    lastError: null,
-    lastWarning: null,
-    definitionId: 'skill-reflection',
-    definitionUpdatedAt: null,
-    ...over,
-  };
+/** Use the registered DB services and real agent ACL for the reflection turn. */
+async function makeFireBus(invoke: (ctx: AgentContext) => Promise<unknown>): Promise<{
+  bus: HookBus; agentId: string; owner: AgentContext;
+}> {
+  const unusedApproval = async () => { throw new Error('Human services must not call tool authorization'); };
+  const h = await createTestHarness({
+    services: {
+      'tool:register': async () => ({}),
+      'decisions:authorize-routine-call': unusedApproval,
+      'decisions:settle-routine-call': unusedApproval,
+      'http:register-route': httpRegisterRouteStub,
+      'auth:require-user': async ctx => ({ user: { id: ctx.userId, isAdmin: false } }),
+      'auth:get-user': async (_ctx, raw) => ({ id: (raw as { userId: string }).userId, isAdmin: false }),
+      'credentials:get': async () => null,
+      'credentials:set': async () => { throw new Error('No secret in reflection'); },
+      'credentials:delete': async () => undefined,
+      'conversations:find-or-create': async () => ({ conversation: { conversationId: 'cnv_reflection' }, created: true }),
+      'conversations:create': async () => ({ conversationId: 'cnv_reflection' }),
+      'conversations:drop-turn': async () => undefined,
+      'conversations:hide': async () => undefined,
+      'agent:invoke': async ctx => {
+        const result = await invoke(ctx);
+        await liveBus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, turnId: 'reflection-turn', contentBlocks: [{ type: 'text', text: 'REFLECTION_DONE' }] });
+        return result;
+      },
+    },
+    plugins: [createDatabasePostgresPlugin({ connectionString }), createAgentsPlugin(), createRoutinesPlugin({ tickIntervalMs: 3600000 })],
+  });
+  harnesses.push(h); const liveBus = h.bus;
+  const owner = makeAgentContext({ userId: 'u1', agentId: 'create', sessionId: 'reflection-test' });
+  const { agent } = await h.bus.call<unknown, { agent: { id: string } }>('agents:create', owner, {
+    actor: { userId: 'u1', isAdmin: false },
+    input: { displayName: 'Reflection', model: 'anthropic/claude-sonnet-4-6', allowedTools: [], mcpConfigIds: [], visibility: 'personal' },
+  });
+  return { bus: h.bus, agentId: agent.id, owner };
 }
 
-/**
- * Build a bus that wires the real skills:propose (from the skills harness) plus
- * the conversation + agents:resolve stubs the fire path needs, and a stub
- * `agent:invoke` standing in for the reflection turn. `invoke` is called with
- * the REAL fire ctx (source: 'routine' stamped by createFireRoutine), so it can
- * propose against the real owner — exactly what the runner would do over the
- * skill_propose tool → skill.propose IPC → skills:propose.
- */
-function makeFireBus(invoke: (ctx: AgentContext) => Promise<unknown>): {
-  bus: HookBus;
-  /** Resolves once the (fire-and-forget) agent:invoke handler has fully run. */
-  invokeDone: Promise<void>;
-} {
-  const bus = new HookBus();
-  let signalDone!: () => void;
-  const invokeDone = new Promise<void>((res) => {
-    signalDone = res;
+async function fireReflection(fire: Awaited<ReturnType<typeof makeFireBus>>): Promise<void> {
+  const row = await fire.bus.call<unknown, { routineId: string; revision: string }>('routines:create', fire.owner, {
+    agentId: fire.agentId, requestId: 'create-reflection',
+    definition: { name: 'skill-reflection', promptBody: SKILL_REFLECTION_PROMPT, trigger: { kind: 'interval', every: '24h' }, conversation: 'per-fire', silenceToken: 'REFLECTION_DONE', silenceMaxChars: 4000 },
   });
-  bus.registerService('agents:resolve', 'test', async (_ctx, input) => {
-    const i = input as { agentId: string; userId: string };
-    return { agent: { id: i.agentId, ownerId: i.userId, workspaceRef: null } };
+  await fire.bus.call('routines:fire-now', fire.owner, { agentId: fire.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'fire-reflection' });
+  await vi.waitFor(async () => {
+    const result = await fire.bus.call<unknown, { fires: Array<{ status: string }> }>('routines:recent-fires', fire.owner, { agentId: fire.agentId, routineId: row.routineId });
+    expect(result.fires[0]?.status).toBe('silenced');
   });
-  bus.registerService('conversations:create', 'test', async () => ({
-    conversationId: 'cnv_reflection',
-    userId: 'u1',
-    agentId: 'a1',
-  }));
-  // The reflection turn. createFireRoutine calls this fire-and-forget with the
-  // source-stamped ctx; we forward that ctx so the propose runs as the real
-  // owner. We resolve invokeDone AFTER the handler completes (or throws) so the
-  // test can deterministically await the real (Postgres-backed) propose round
-  // trip rather than racing microtask ticks.
-  bus.registerService('agent:invoke', 'test', async (ctx) => {
-    try {
-      return await invoke(ctx as AgentContext);
-    } finally {
-      signalDone();
-    }
-  });
-  return { bus, invokeDone };
-}
-
-/** Drive the real fire path and await the fire-and-forget agent:invoke chain. */
-async function fireReflection(
-  fire: {
-    bus: HookBus;
-    invokeDone: Promise<void>;
-  },
-  row: RoutineRow = reflectionRow(),
-): Promise<void> {
-  const pending: PendingFires = new Map();
-  const run = createFireRoutine({ bus: fire.bus, pending } as FireDeps);
-  await run(row, 'tick');
-  // agent:invoke is fire-and-forget; await its completion deterministically.
-  await fire.invokeDone;
 }
 
 beforeAll(async () => {
@@ -269,7 +229,7 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
 
     let proposeOut: SkillsProposeOutput | undefined;
     let invokeCtx: AgentContext | undefined;
-    const fire = makeFireBus(async (ctx) => {
+    const fire = await makeFireBus(async (ctx) => {
       invokeCtx = ctx;
       // The reflection turn authors an instruction-only skill and proposes it
       // through the REAL skills:propose with the REAL owner (ctx.userId), exactly
@@ -294,19 +254,19 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
 
     // The fire path produced a real ctx with a real owner.
     expect(invokeCtx?.userId).toBe('u1');
-    expect(invokeCtx?.agentId).toBe('a1');
+    expect(invokeCtx?.agentId).toBe(fire.agentId);
     // The real propose gate landed the instruction-only authored skill active.
     expect(proposeOut).toEqual({ skillId: 'commit-style', status: 'active' });
     // skills:proposed fired so the orchestrator re-spawns the session next turn.
     expect(proposed).toEqual([
-      { ownerUserId: 'u1', agentId: 'a1', skillId: 'commit-style', status: 'active' },
+      { ownerUserId: 'u1', agentId: fire.agentId, skillId: 'commit-style', status: 'active' },
     ]);
 
     // And it's visible to the agent's authored listing (the projection source).
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
       'skills:list-authored',
       h.ctx(),
-      { ownerUserId: 'u1', agentId: 'a1' },
+      { ownerUserId: 'u1', agentId: fire.agentId },
     );
     expect(listed.skills).toHaveLength(1);
     expect(listed.skills[0]).toMatchObject({ skillId: 'commit-style', status: 'active' });
@@ -321,7 +281,7 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // pending".) We drive the real propose through the real fire path.
     const h = await makeSkillsHarness();
     let proposeOut: SkillsProposeOutput | undefined;
-    const fire = makeFireBus(async (ctx) => {
+    const fire = await makeFireBus(async (ctx) => {
       proposeOut = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
         'skills:propose',
         ctx,
@@ -346,13 +306,13 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
       'skills:list-authored',
       h.ctx(),
-      { ownerUserId: 'u1', agentId: 'a1' },
+      { ownerUserId: 'u1', agentId: fire.agentId },
     );
     expect(listed.skills[0]?.status).toBe('pending');
   });
 
   it('no-self-reflection: the fire path stamps source=routine, so a memory-observer-shaped guard skips', async () => {
-    // The real createFireRoutine stamps source:'routine' on the fire ctx
+    // The registered routine fire stamps source:'routine' on the fire ctx
     // (PR-A/TASK-181, host-side, unforgeable by the runner). A chat:end
     // subscriber shaped like the memory observer's guard must skip it, so the
     // reflection turn never pollutes the agent's own memory. We assert the
@@ -372,7 +332,7 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     };
 
     let invokeCtx: AgentContext | undefined;
-    const fire = makeFireBus(async (ctx) => {
+    const fire = await makeFireBus(async (ctx) => {
       invokeCtx = ctx;
       // The turn ends; the host would fire chat:end with this ctx. Run the
       // observer-shaped guard against the SAME source-stamped ctx.

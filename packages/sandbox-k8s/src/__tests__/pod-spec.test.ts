@@ -143,16 +143,15 @@ describe('buildPodSpec', () => {
   });
 
   it('sanitizes the session-id label for k8s constraints (regression for #83)', () => {
-    // The routines plugin builds sessionIds like
-    // `routine-<agentId>-<routinePath>`. `/` is invalid in label values,
+    // Callers may supply session IDs containing paths. `/` is invalid in labels,
     // and these strings routinely blow the 63-byte cap. Before #83's
     // fix, pod create failed 422. The original sessionId must still
     // land in AX_SESSION_ID — only the label surface gets sanitized.
-    const longRoutineSessionId =
-      'routine-agt_RpigE1XjEzmgwGHB34QcHA-.ax/routines/fixed-1778930880.md';
+    const longSessionId =
+      'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/slashes';
     const spec = buildPodSpec(
       'pod-x',
-      { ...baseInput, sessionId: longRoutineSessionId },
+      { ...baseInput, sessionId: longSessionId },
       baseResolved(),
     );
     const label = spec.metadata.labels['ax.io/session-id'];
@@ -170,7 +169,7 @@ describe('buildPodSpec', () => {
       spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
     ).containers[0]!.env;
     const sid = env.find((e) => e.name === 'AX_SESSION_ID')?.value;
-    expect(sid).toBe(longRoutineSessionId);
+    expect(sid).toBe(longSessionId);
   });
 
   it('sanitization is deterministic and collision-resistant on long inputs', () => {
@@ -178,7 +177,7 @@ describe('buildPodSpec', () => {
     // get DIFFERENT labels. Without a hash suffix, naive truncation
     // would collide here and the same label would attach to pods from
     // distinct routines.
-    const prefix = 'routine-agt_RpigE1XjEzmgwGHB34QcHA-.ax/routines/very-long-routine-name';
+    const prefix = 'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/long-name';
     const a = buildPodSpec(
       'pa',
       { ...baseInput, sessionId: `${prefix}-A.md` },

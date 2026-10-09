@@ -1055,7 +1055,7 @@ export function registerWorkspaceGitHooks(
             // The freshly-read mirror head so a rebase-on-mismatch consumer
             // can recover — `@ax/memory`'s `memory:rules:write`,
             // `channel-web`'s workspace-cas (agent bootstrap + identity
-            // routes), `@ax/routines-admin-routes`, and ipc-core's
+            // routes), and ipc-core's
             // commit-notify, each of which reads `cause.actualParent` and
             // retries once with it. (NOT attachments:commit, which an earlier
             // version of this comment named — TASK-68 moved it to blob:put and

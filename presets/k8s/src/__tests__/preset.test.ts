@@ -275,7 +275,6 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/disk-quota',
         '@ax/blob-gc',
         '@ax/validator-identity',
-        '@ax/validator-routine',
         '@ax/validator-service',
         '@ax/validator-skill',
         '@ax/workspace-git',
@@ -333,7 +332,7 @@ describe('@ax/preset-k8s wiring', () => {
     ).toBe(true);
   });
 
-  it('loads @ax/tool-policy and registers its three hooks (TASK-224/TASK-330)', () => {
+  it('loads @ax/tool-policy with consent and policy hooks', () => {
     // Invariant 3, same PR: the plugin is registered in the preset the day it
     // lands, even though its two consumers (TASK-225's tool:pre-call
     // subscriber and TASK-235's permissions rail) are not built yet.
@@ -341,6 +340,9 @@ describe('@ax/preset-k8s wiring', () => {
     const tp = plugins.find((p) => p.manifest.name === '@ax/tool-policy');
     expect(tp).toBeDefined();
     expect(tp!.manifest.registers).toEqual([
+      'tool-policy:get-routine-consent',
+      'tool-policy:grant-routine-consent',
+      'tool-policy:revoke-routine-consent',
       'tool-policy:evaluate',
       'tool-policy:list-capabilities',
       // TASK-330. Its caller is @ax/web-tools' `web_extract` executor, which
@@ -466,7 +468,7 @@ describe('@ax/preset-k8s wiring', () => {
     ).toBeUndefined();
   });
 
-  it('loads @ax/decisions and registers its eight hooks (TASK-225/TASK-226/TASK-279/TASK-266)', () => {
+  it('loads @ax/decisions with routine authorization hooks', () => {
     const plugins = createK8sPlugins(stubConfig);
     const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
     expect(d).toBeDefined();
@@ -484,6 +486,8 @@ describe('@ax/preset-k8s wiring', () => {
       // hook in this list now has a caller in this preset.
       'decisions:recent-receipts-for-agent',
       'decisions:approve',
+      'decisions:authorize-routine-call',
+      'decisions:settle-routine-call',
       'decisions:dismiss',
       'decisions:undo',
       // TASK-226: expires what nobody answered, and runs an irreversible
@@ -511,6 +515,9 @@ describe('@ax/preset-k8s wiring', () => {
     // `call` would make @ax/decisions unloadable in a preset perfectly capable
     // of running it.
     expect(d!.manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+      'agents:can-manage-routines',
+      'tool-policy:get-routine-consent',
+      'tool-policy:grant-routine-consent',
       // TASK-744 — names a held connector tool's connector.
       'connectors:tool-labels',
       'conversations:get-metadata',
@@ -1449,17 +1456,15 @@ describe('@ax/preset-k8s — conversations Phase A routines hooks (half-wired wi
   });
 });
 
-// Phase B routines core (2026-05-14). Both new plugins (@ax/routines +
-// @ax/validator-routine) load in the production preset, register their
+// DB-backed routines load in the production preset and register their
 // service hooks, and have all their declared calls satisfied by other
 // plugins in the preset.
 describe('@ax/preset-k8s — routines Phase B core (half-wired window closes here)', () => {
-  it('@ax/routines and @ax/validator-routine are present in the default plugin set', () => {
+  it('@ax/routines and its admin routes are present in the default plugin set', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/routines');
     expect(names).toContain('@ax/routines-admin-routes');
-    expect(names).toContain('@ax/validator-routine');
   });
 
   it('@ax/routines registers routines:fire-now and routines:list', () => {
@@ -1482,17 +1487,18 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
     expect(unsatisfied, `@ax/routines calls with no registrant: ${unsatisfied.join(', ')}`).toEqual([]);
   });
 
-  it('@ax/validator-routine subscribes to workspace:pre-apply', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const v = plugins.find((p) => p.manifest.name === '@ax/validator-routine');
-    expect(v, '@ax/validator-routine plugin').toBeDefined();
-    expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
+  it('routines registers host tools and the static webhook router without workspace subscriptions', () => {
+    const routines = createK8sPlugins(stubConfig).find(p => p.manifest.name === '@ax/routines')!;
+    for (const tool of ['list', 'get', 'create', 'update', 'delete', 'fire_now']) {
+      expect(routines.manifest.registers).toContain(`tool:execute:routine_${tool}`);
+    }
+    expect(routines.manifest.calls).toContain('http:register-route');
+    expect(routines.manifest.subscribes).not.toContain('workspace:applied');
   });
 });
 
 // Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is
-// the THIRD workspace:pre-apply subscriber (after validator-skill +
-// validator-routine). It gates the agent's writes to its own /agent/.ax/
+// a workspace:pre-apply subscriber alongside validator-skill. It gates the agent's writes to its own /agent/.ax/
 // identity files under the bootstrap-window policy. No half-wired window: it
 // loads in the preset here AND is exercised end-to-end through the Phase-3
 // commit-notify canary (acceptance.test.ts boots the full k8s preset, so every

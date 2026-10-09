@@ -957,7 +957,7 @@ describe('rollbackToBaseline', () => {
     await commitTurnAndBundle({ root, reason: 'turn' });
 
     await expect(
-      rollbackToBaseline(root, 'mixed', ['.ax/routines/never-written.md']),
+      rollbackToBaseline(root, 'mixed', ['skills/never-written/SKILL.md']),
     ).resolves.toBeUndefined();
     expect(await fs.readFile(path.join(root, 'feature.ts'), 'utf8')).toBe(
       'export const x = 1;',

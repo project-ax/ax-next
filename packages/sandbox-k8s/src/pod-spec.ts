@@ -1036,9 +1036,8 @@ export function buildPodSpec(
         // sessionId surfaces as a label so a future operator can run
         // `kubectl get pod -l ax.io/session-id=...` to find a pod by
         // session. Labels are constrained to `[A-Za-z0-9._-]`, must start
-        // and end with `[A-Za-z0-9]`, and cap at 63 bytes. The routines
-        // plugin builds sessionIds like `routine-<agentId>-<routinePath>`
-        // — both `/` and over-length are guaranteed to hit. `sanitizeLabel`
+        // and end with `[A-Za-z0-9]`, and cap at 63 bytes. Callers may
+        // supply paths or long session IDs. `sanitizeLabel`
         // slugifies + truncates with a sha1 suffix so the label remains a
         // deterministic, collision-resistant function of the sessionId.
         // The original sessionId still rides in the `AX_SESSION_ID` env.
