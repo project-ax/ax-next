@@ -606,7 +606,7 @@ export function AgentConversation({
   const welcome = thread.length === 0 && !readOnly && !settling && !failureStripShown && grants.length === 0;
 
   return (
-    <div className={cn("group/thread relative flex min-h-0 flex-1 flex-col", welcome && "justify-center overflow-y-auto")}>
+    <div className={cn("group/thread relative flex min-h-0 flex-1 flex-col", welcome && "overflow-y-auto [justify-content:safe_center]")}>
       {/*
         `|| findOpen` so an open bar survives the thread going empty underneath
         it — a failed excerpt read renders `[]`, and a control that vanishes

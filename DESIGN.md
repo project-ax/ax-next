@@ -126,6 +126,8 @@ The reference composer is 820 × 220 inside an 840 × 240 well. AX uses a respon
 
 Below 768px, outer padding and panel gaps disappear, panels become full-screen, and navigation/details remain in their existing sheets. The welcome composer has a 164px minimum height and a 6px well inset. Interactive mobile controls retain at least 44px targets. These responsive choices adapt the desktop-only reference to AX's current mobile flows.
 
+On tablets below 1024px, agent details use the existing sheet while the navigation sidebar stays inline. This leaves room for the conversation and its composer when both desktop side columns would squeeze them. Agent settings keep their existing 768px breakpoint. The welcome group centers only when it fits; shorter windows keep its beginning reachable through normal scrolling.
+
 ## Elevation & Depth
 
 Depth combines tonal layering and diffuse shadows. Panels float slightly above the canvas; small action controls have a raised upper edge and short lower shadow. The composer has its own low-contrast violet well. Shadows are semantic tokens, with separate light/dark values.

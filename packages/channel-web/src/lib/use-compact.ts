@@ -2,8 +2,8 @@
  * Is the viewport narrower than the `md` breakpoint?
  *
  * The workspace shell has two side columns that do not shrink —
- * `WorkspaceSidebar`'s 236px and `AgentRail`'s 296px — which on a 390px phone
- * is 532px of chrome and leaves the conversation no width at all. Below `md`
+ * `WorkspaceSidebar`'s 258px and `AgentRail`'s 296px — which on a 390px phone
+ * is 554px of chrome and leaves the conversation no width at all. Below `md`
  * both move off-canvas into a `Sheet`, and this is the switch (TASK-404).
  *
  * WHY A HOOK AND NOT A `md:` CLASS. A `Sheet` and an inline `<aside>` are
@@ -32,7 +32,11 @@ import { createContext, useContext, useSyncExternalStore } from 'react';
  * The exact complement of Tailwind's `md` (`min-width: 768px`) — gap-free by
  * construction. If the `md` breakpoint ever moves, move this with it.
  */
-const COMPACT_QUERY = 'not all and (min-width: 768px)';
+const COMPACT_QUERIES = {
+  md: 'not all and (min-width: 768px)',
+  lg: 'not all and (min-width: 1024px)',
+} as const;
+type CompactBreakpoint = keyof typeof COMPACT_QUERIES;
 
 /**
  * Guarded for jsdom, which ships no `matchMedia` at all — the same guard
@@ -40,16 +44,16 @@ const COMPACT_QUERY = 'not all and (min-width: 768px)';
  * this reads `false`, so tests that do not opt in keep rendering the desktop
  * tree and nothing that exists today changes shape.
  */
-const isCompact = (): boolean =>
+const isCompact = (query: string): boolean =>
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
-  window.matchMedia(COMPACT_QUERY).matches;
+  window.matchMedia(query).matches;
 
-const subscribeCompact = (cb: () => void): (() => void) => {
+const subscribeCompact = (query: string, cb: () => void): (() => void) => {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return () => {};
   }
-  const mql = window.matchMedia(COMPACT_QUERY);
+  const mql = window.matchMedia(query);
   mql.addEventListener('change', cb);
   return () => mql.removeEventListener('change', cb);
 };
@@ -61,8 +65,14 @@ const subscribeCompact = (cb: () => void): (() => void) => {
  */
 export const CompactSurfaceContext = createContext<boolean | undefined>(undefined);
 
-export function useIsCompact(): boolean {
+const stores = Object.fromEntries(Object.entries(COMPACT_QUERIES).map(([key, query]) => [key, {
+  subscribe: (cb: () => void) => subscribeCompact(query, cb),
+  snapshot: () => isCompact(query),
+}])) as Record<CompactBreakpoint, { subscribe: (cb: () => void) => () => void; snapshot: () => boolean }>;
+
+/** The default follows md; agent details can move off-canvas below lg. */
+export function useIsCompact(breakpoint: CompactBreakpoint = 'md'): boolean {
   const surface = useContext(CompactSurfaceContext);
-  const viewport = useSyncExternalStore(subscribeCompact, isCompact, () => false);
+  const viewport = useSyncExternalStore(stores[breakpoint].subscribe, stores[breakpoint].snapshot, () => false);
   return surface ?? viewport;
 }

@@ -61,6 +61,7 @@ try {
       } else {
         await page.getByRole('button', { name: 'Back to chat', exact: true }).click();
       }
+      if (width >= 768 && width < 1024) await page.getByRole('button', { name: /Agent details/ }).click();
       const tabs = page.getByRole('tab');
       assert.deepEqual(await tabs.allTextContents(), ['Chats', 'Files', 'Activity']);
       await page.getByText('Learned in this chat', { exact: true }).waitFor();
