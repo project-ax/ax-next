@@ -39,7 +39,7 @@ describe('transactional authored store', () => {
     await expect(f.store.updateAuthored({ ...update(stopped, { enabled: false, name: 'sneak' }, 'bad-stop'), stopOnly: true })).rejects.toMatchObject({ toolCode: 'forbidden' });
     const enabled = await f.store.updateAuthored(update(stopped, { enabled: true, trigger: { kind: 'interval', every: '5m' } }, 'start'));
     expect(enabled.nextRunAt).toEqual(new Date(now.getTime() + 305000));
-    await f.store.advance({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, nextRunAt: null, lastRunAt: now, lastStatus: 'error', lastError: 'stale' });
+    await f.store.advance({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, nextRunAt: null, lastRunAt: now });
     expect(await f.store.findOne(row)).toEqual(enabled);
   });
   it('validates merged definitions before writing or committing a receipt', async () => {

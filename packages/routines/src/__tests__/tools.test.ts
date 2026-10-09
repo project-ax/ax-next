@@ -193,9 +193,7 @@ describe('unknown outcomes and exact recovery', () => {
     h = await h.restart();
     await expect(execute(call)).rejects.toMatchObject({ toolCode: 'unavailable' });
     expect(h.invokeCalls).toHaveLength(0);
-    expect((await sql<{outcome:unknown}>`SELECT outcome FROM decisions_v1_routine_authorizations WHERE request_id='interrupted'`.execute(h.db)).rows[0]?.outcome).toBeNull();
-    await createRoutinesStore(h.db).finishDispatch({ dispatchId: accepted!.accepted.dispatchId, outcome: { status: 'error', conversationId: null, error: 'private failure', renderedPrompt: null, warning: null } });
-    await expect(execute(call)).rejects.toMatchObject({ toolCode: 'unavailable' });
+    expect((await createRoutinesStore(h.db).getDispatchOutcome({ agentId: h.agentId, dispatchId: accepted!.accepted.dispatchId }))?.status).toBe('error');
     expect((await sql<{outcome:unknown}>`SELECT outcome FROM decisions_v1_routine_authorizations WHERE request_id='interrupted'`.execute(h.db)).rows[0]?.outcome).toBe('failed');
     expect(h.invokeCalls).toHaveLength(0);
   });

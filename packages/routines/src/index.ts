@@ -4,31 +4,4 @@ export { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_ROUTINE_NAME } from './reflec
 // REAL routine fire path (source: 'routine' stamped host-side) against the
 // real skills:propose, instead of re-implementing the fire flow in the test.
 export { createFireRoutine, type FireDeps, type PendingFires } from './fire.js';
-export type {
-  RoutineRow,
-  FireRow,
-  FireSource,
-  FireStatus,
-  FireNowInput,
-  FireNowOutput,
-  ListInput,
-  ListOutput,
-  RoutinesConfig,
-  TriggerSpec,
-  ActiveHours,
-  DefaultRoutineSummary,
-  DefaultRoutineDetail,
-  RoutinesListDefaultsInput,
-  RoutinesListDefaultsOutput,
-  RoutinesGetDefaultInput,
-  RoutinesGetDefaultOutput,
-  RoutinesUpsertDefaultInput,
-  RoutinesUpsertDefaultOutput,
-  RoutinesDeleteDefaultInput,
-  RoutinesDeleteDefaultOutput,
-  RoutinesSetAgentDefaultEnabledInput,
-  RoutinesSetAgentDefaultEnabledOutput,
-  AgentDefaultRoutineState,
-  RoutinesListAgentDefaultsInput,
-  RoutinesListAgentDefaultsOutput,
-} from './types.js';
+export type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource, FireStatus, RoutinesConfig, TriggerSpec, ActiveHours } from './types.js';

@@ -6,7 +6,7 @@ import {
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource, FireStatus } from './types.js';
+import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema } from './dispatch.js';
 
@@ -24,9 +24,10 @@ export interface RoutinesStore {
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
+  interruptAbandonedDispatches(): Promise<number>;
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
-  advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date; lastStatus: FireStatus; lastError: string | null }): Promise<void>;
+  advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
   recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
@@ -223,6 +224,16 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       }, () => { replayed = true; });
       return accepted === null ? null : { accepted, replayed };
     },
+    async interruptAbandonedDispatches() {
+      // Startup only, before any new dispatch accepts work in this single-host runtime.
+      const rows = await db.selectFrom('routines_v1_dispatches').select('dispatch_id').where('completed_at', 'is', null).execute();
+      let interrupted = 0;
+      for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, outcome: {
+        status: 'error', error: 'The routine run was interrupted by a host restart.',
+        conversationId: null, renderedPrompt: null, warning: null,
+      } })) interrupted++;
+      return interrupted;
+    },
     async getDispatchOutcome(input) {
       const row = await db.selectFrom('routines_v1_fires').selectAll()
         .where('agent_id', '=', input.agentId).where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
@@ -249,7 +260,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       });
     },
     async advance(input) {
-      await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt, last_status: input.lastStatus, last_error: input.lastError })
+      await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt })
         .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision).execute();
     },
     async withLockedWebhookSecret(input, effect) {
@@ -538,6 +549,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async setAgentDefaultEnabled(input) {
       await db.transaction().execute(async trx => {
         if (!await lockLiveAgent(trx, input.agentId)) throw new SafeToolError('not-found', 'routineId');
+        const source = await trx.selectFrom('default_routines_v1').select('default_routine_id').where('default_routine_id', '=', input.defaultRoutineId).forKeyShare().executeTakeFirst();
+        if (!source) throw new SafeToolError('not-found', 'routineId');
         if (input.enabled) {
           // Enabled is the default (absence = on) — drop any disable row.
           await trx.deleteFrom('agent_default_routine_overrides_v1')

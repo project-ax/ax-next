@@ -6,11 +6,13 @@ import { createAgentsPlugin } from '@ax/agents';
 import { makeAgentContext, type AgentContext, type HookBus, type ToolDescriptor, PluginError } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Kysely } from 'kysely';
+import type { HttpRegisterRouteInput } from '@ax/http-server';
 import { createRoutinesPlugin } from '../../plugin.js';
 import { createRoutinesStore } from '../../store.js';
 import type { RoutinesDatabase } from '../../migrations.js';
 import { drainRoutineCleanup } from '../../cleanup.js';
 export type RoutineHarness = {
+  routes: HttpRegisterRouteInput[];
   restart(): Promise<RoutineHarness>; setAttended(value: boolean): void; descriptors: ToolDescriptor[]; advance(ms: number): void; bus: HookBus; owner: AgentContext; teamAdmin: AgentContext; teamMember: AgentContext;
   agentId: string; teamAgentId: string; credentialCalls: Array<{ operation: string; ref: string }>;
   cleanupWarnings: Array<{ message: string; fields: Record<string, unknown> | undefined }>;
@@ -18,16 +20,19 @@ export type RoutineHarness = {
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 export async function createRoutineHarness(options: { credentialTimeoutMs?: number; dispatch?: boolean;
+  invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   let clock = options.reuse?.clock ?? Date.parse('2026-10-09T12:00:00Z');
   let attended = true;
   const descriptors: ToolDescriptor[] = [];
+  const routes: HttpRegisterRouteInput[] = [];
   const credentialCalls: RoutineHarness['credentialCalls'] = [];
   const cleanupWarnings: RoutineHarness['cleanupWarnings'] = [];
   let failDelete = false;
   let teamFailure: 'missing' | 'outage' | null = null;
   const invokeCalls: string[] = [];
+  const runningInvokes = new Set<Promise<unknown>>();
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
   const harness = await createTestHarness({
@@ -43,12 +48,17 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
       },
       'auth:require-user': async ctx => ({ user: { id: ctx.userId, email: `${ctx.userId}@example.test`, displayName: ctx.userId, isAdmin: ctx.userId === 'admin', createdAt: new Date() } }),
       'auth:get-user': async (_ctx, raw) => { const { userId } = raw as { userId: string }; return { id: userId, email: `${userId}@example.test`, displayName: userId, isAdmin: userId === 'admin' }; },
-      'http:register-route': async () => ({ unregister() {} }),
+      'http:register-route': async (_ctx, raw) => { routes.push(raw as HttpRegisterRouteInput); return { unregister() {} }; },
       'conversations:find-or-create': async () => ({ conversation: { conversationId: 'conversation' }, created: true }),
       'conversations:create': async () => ({ conversationId: 'conversation' }),
       'conversations:drop-turn': async () => undefined,
       'conversations:hide': async () => undefined,
-      'agent:invoke': async ctx => { invokeCalls.push(ctx.reqId); return { kind: 'complete', messages: [] }; },
+      'agent:invoke': async ctx => {
+        invokeCalls.push(ctx.reqId);
+        const run = options.invoke ? options.invoke(ctx, liveBus) : Promise.resolve({ kind: 'complete', messages: [] });
+        runningInvokes.add(run);
+        try { return await run; } finally { runningInvokes.delete(run); }
+      },
       'credentials:get': async () => 'test-secret',
       'credentials:delete': async (ctx, raw) => {
         credentialCalls.push({ operation: 'delete', ref: (raw as { ref: string }).ref });
@@ -93,10 +103,10 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
   const agentId = options.reuse?.agentId ?? await create(false), teamAgentId = options.reuse?.teamAgentId ?? await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { async restart() { await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { routes, async restart() { await Promise.allSettled([...runningInvokes]); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),
-    async close() { await harness.close(); await stopPostgresContainer(container); },
+    async close() { await Promise.allSettled([...runningInvokes]); await harness.close(); await stopPostgresContainer(container); },
   };
 }

@@ -1,8 +1,8 @@
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
-import type { RoutineRow, FireSource } from './types.js';
+import type { StoredRoutine, AcceptedDispatch, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
-import type { RecordFireInput } from './store.js';
+import type { RoutinesStore } from './store.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
 } from './skip-warning.js';
@@ -19,7 +19,8 @@ export interface SkippedConnector {
 }
 
 export interface PendingFire {
-  row: RoutineRow;
+  row: StoredRoutine;
+  dispatchId: string;
   conversationId: string;
   source: FireSource;
   renderedPrompt: string;
@@ -111,7 +112,8 @@ export interface FireDeps {
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
    * `Map#delete` returns true to exactly one of them.
    */
-  recordFire: (input: RecordFireInput) => Promise<unknown>;
+  store: Pick<RoutinesStore, 'finishDispatch'>;
+  purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
    * before giving up and recording the fire as an error. Default 60s. The
@@ -137,33 +139,16 @@ function refusedBeforeAssembly(reason: string): boolean {
   return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:');
 }
 
-let nextReqIdCounter = 0;
-function makeReqId(): string {
-  nextReqIdCounter += 1;
-  return `req-routine-${Date.now().toString(36)}-${nextReqIdCounter}`;
-}
-
 export function createFireRoutine(deps: FireDeps) {
-  return async (
-    row: RoutineRow,
-    source: FireSource,
-    payload?: unknown,
-  ): Promise<FireResult> => {
-    // sessionId must be unique per fire: session:create rejects duplicates
-    // (even when the prior session is terminated), so reusing a stable
-    // `routine-<agentId>-<path>` id makes every fire after the first fail
-    // downstream. Mint reqId first and fold it into sessionId — keeps the
-    // routine-scoped prefix for log readability while guaranteeing
-    // uniqueness. See #86.
-    // TASK-397 — the identity every step below runs as is `row.ownerUserId`:
-    // the routine's OWNER, derived from the agent, NOT the author of the last
-    // edit to `.ax/routines/<name>.md`. The bound is unchanged from when this
-    // read `row.authorUserId`: `agents:resolve` still gates the fire, so
-    // execution stays inside the set already authorised for this agent. What
-    // changed is which member of that set is used, and that it no longer
-    // moves when a different authorised person writes the file.
-    const reqId = makeReqId();
-    const sessionId = `routine-${row.agentId}-${row.path}-${reqId}`;
+  return async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
+    const { row, source, reqId, dispatchId } = accepted;
+    const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
+    const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
+      const error = err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
+      if (agentGone) await deps.purgeAgent(row.agentId);
+      else await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
+      return { status: 'error', error, conversationId: null, renderedPrompt: null, ...(agentGone ? { agentGone: true as const } : {}) };
+    };
     const baseCtx = makeAgentContext({
       reqId,
       sessionId,
@@ -181,26 +166,7 @@ export function createFireRoutine(deps: FireDeps) {
       const displayName = resolved?.agent?.displayName;
       if (typeof displayName === 'string') agentName = displayName;
     } catch (err) {
-      if (err instanceof PluginError) {
-        return {
-          status: 'error',
-          error: `${err.code}: ${err.message}`,
-          conversationId: null,
-          renderedPrompt: null,
-          // TASK-680 — `agents:resolve` answers `not-found` only when the
-          // agent row does not exist (a present-but-not-yours agent is
-          // `forbidden`). The tick treats this as terminal and prunes the
-          // agent's routines; every other failure stays retryable. The
-          // hookName check matters: a `not-found` raised by something the
-          // resolve calls on the way (a team-membership lookup, say) and
-          // propagated through it says nothing about the agent, and pruning
-          // a live agent's routines is not recoverable.
-          ...(err.code === 'not-found' && err.hookName === 'agents:resolve'
-            ? { agentGone: true }
-            : {}),
-        };
-      }
-      throw err;
+      return fail(err, err instanceof PluginError && err.code === 'not-found' && err.hookName === 'agents:resolve');
     }
 
     let conversationId: string;
@@ -212,7 +178,7 @@ export function createFireRoutine(deps: FireDeps) {
         >('conversations:find-or-create', baseCtx, {
           userId: row.ownerUserId,
           agentId: row.agentId,
-          externalKey: row.path,
+          externalKey: row.routineId,
           // AW-6: `origin: 'routine'` is what makes a tool call held inside a
           // scheduled fire resolve as UNATTENDED — the host replays the
           // approved call itself, because by the time anyone answers, the turn
@@ -235,17 +201,7 @@ export function createFireRoutine(deps: FireDeps) {
         });
         conversationId = conv.conversationId;
       }
-    } catch (err) {
-      if (err instanceof PluginError) {
-        return {
-          status: 'error',
-          error: `${err.code}: ${err.message}`,
-          conversationId: null,
-          renderedPrompt: null,
-        };
-      }
-      throw err;
-    }
+    } catch (err) { return fail(err); }
 
     const fireCtx = makeAgentContext({
       reqId,
@@ -276,7 +232,7 @@ export function createFireRoutine(deps: FireDeps) {
         : row.promptBody;
 
     deps.pending.set(reqId, {
-      row, conversationId, source,
+      row, dispatchId, conversationId, source,
       renderedPrompt: prompt,
       agentName, skips: [],
       onTurnEnd: async () => {},
@@ -306,24 +262,16 @@ export function createFireRoutine(deps: FireDeps) {
       const entry = deps.pending.get(reqId);
       if (entry === undefined || !deps.pending.delete(reqId)) return;
       process.stderr.write(
-        `[ax/routines] agent:invoke failed for ${row.agentId}/${row.path}: ${error}\n`,
+        `[ax/routines] agent:invoke failed for ${row.agentId}/${row.routineId}: ${error}\n`,
       );
       try {
-        await deps.recordFire({
-          agentId: row.agentId, path: row.path,
-          triggerSource: source,
-          conversationId,
-          status: 'error', error,
-          renderedPrompt: prompt,
-          // Slice 6 — a terminated run that skipped a connector says so too.
-          // Omitted (last_warning untouched) when the turn never got as far
-          // as choosing its connectors; see above. Stashed skips PROVE it got
-          // that far, whatever the outcome says afterwards.
-          ...(reachedAssembly || entry.skips.length > 0 ? { warning: warningFor(entry) } : {}),
-        });
+        await deps.store.finishDispatch({ dispatchId, outcome: {
+          conversationId, status: 'error', error, renderedPrompt: prompt,
+          warning: reachedAssembly || entry.skips.length > 0 ? warningFor(entry) : row.lastWarning,
+        } });
       } catch (err) {
         process.stderr.write(
-          `[ax/routines] recording failed fire for ${row.agentId}/${row.path} failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[ax/routines] recording failed fire for ${row.agentId}/${row.routineId} failed: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
     };

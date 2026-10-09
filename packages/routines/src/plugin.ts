@@ -13,6 +13,7 @@ import type { RoutinesConfig } from './types.js';
 import { registerRoutineServices, ROUTINE_SERVICES } from './services.js';
 import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 
+import { createWebhookRouter } from './webhook-handler.js';
 import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -24,6 +25,8 @@ export function createRoutinesPlugin(
 ): Plugin {
   let db: Kysely<RoutinesDatabase> | undefined;
   let store: RoutinesStore | undefined;
+  let unregisterWebhook: (() => void) | undefined;
+  let tickLoop: Promise<void> | undefined;
   let abortCtl: AbortController | undefined;
 
   return {
@@ -72,10 +75,12 @@ export function createRoutinesPlugin(
       store = createRoutinesStore(db);
       const localStore = store;
       const localDb = db;
+      await localStore.interruptAbandonedDispatches();
       const pending: PendingFires = new Map();
       const fireRoutine = createFireRoutine({
         bus, pending,
-        recordFire: (input) => localStore.recordFire(input),
+        store: localStore,
+        purgeAgent: agentId => purgeRoutineAgent({ store: localStore, bus, pending, agentId }),
       });
 
       // TASK-680 — a deleted agent's routines must stop with it. @ax/agents
@@ -182,23 +187,19 @@ export function createRoutinesPlugin(
                 });
               }
             }
-            await localStore.recordFire({
-              agentId: pf.row.agentId, path: pf.row.path,
-              triggerSource: pf.source,
+            await localStore.finishDispatch({ dispatchId: pf.dispatchId, outcome: {
               conversationId: pf.conversationId,
               status: 'silenced', error: null,
               renderedPrompt: pf.renderedPrompt,
               warning,
-            });
+            } });
           } else {
-            await localStore.recordFire({
-              agentId: pf.row.agentId, path: pf.row.path,
-              triggerSource: pf.source,
+            await localStore.finishDispatch({ dispatchId: pf.dispatchId, outcome: {
               conversationId: pf.conversationId,
               status: 'ok', error: null,
               renderedPrompt: pf.renderedPrompt,
               warning,
-            });
+            } });
           }
         } catch (err) {
           ctx.logger.warn('routines_turn_end_handler_failed', {
@@ -208,12 +209,15 @@ export function createRoutinesPlugin(
         return undefined;
       });
 
-      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), ...runtime });
+      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
       await registerRoutineTools({ bus, store: localStore, now: () => clock.now() });
       await drainRoutineCleanup({ bus, store: localStore });
 
-      // Static DB webhook routing and durable dispatch wiring land in Task 8.
-      // Do not start the retired file router against the new definition store.
+      const route = await bus.call<unknown, { unregister(): void }>('http:register-route', initCtx, {
+        method: 'POST', path: '/webhooks/:token/*', bypassCsrf: true,
+        handler: createWebhookRouter({ bus, store: localStore, fire: fireRoutine, now: () => clock.now() }),
+      });
+      unregisterWebhook = route.unregister;
 
       const tickIntervalMs = config.tickIntervalMs ?? 5_000;
       const tickConfig = {
@@ -244,8 +248,9 @@ export function createRoutinesPlugin(
       };
 
       abortCtl = new AbortController();
-      void runTickLoop({
+      tickLoop = runTickLoop({
         db: localDb, fire: fireRoutine, getAgents, clock,
+        cleanup: () => drainRoutineCleanup({ bus, store: localStore }),
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {
@@ -253,7 +258,11 @@ export function createRoutinesPlugin(
       });
     },
     async shutdown() {
+      unregisterWebhook?.();
+      unregisterWebhook = undefined;
       abortCtl?.abort();
+      await tickLoop;
+      tickLoop = undefined;
       abortCtl = undefined;
       db = undefined;
       store = undefined;
