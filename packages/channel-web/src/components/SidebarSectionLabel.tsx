@@ -1,5 +1,5 @@
 /**
- * SidebarSectionLabel — small uppercase label used as a section heading
+ * SidebarSectionLabel — quiet sentence-case label used as a section heading
  * inside the sidebars and in popover footers.
  *
  * One typography spec for a tiny label that previously appeared in 5+
@@ -10,7 +10,7 @@
  *   - "switch agent"     — chat agent menu header.
  *   - "AX V0.3"          — chat user menu footer.
  *
- * 10.5px, 0.12em tracking, uppercase, muted-foreground, font-medium. The
+ * 12px, normal tracking, muted-foreground, regular weight. The
  * `AdminPaneHeader` eyebrow uses a different scale (11px / 0.06em /
  * muted-foreground) and stays separate.
  */
@@ -29,7 +29,7 @@ export function SidebarSectionLabel({
   return (
     <div
       className={cn(
-        'text-[10.5px] tracking-[0.12em] uppercase font-medium text-muted-foreground',
+        'text-xs font-normal text-muted-foreground',
         className,
       )}
       {...props}

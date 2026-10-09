@@ -115,8 +115,8 @@ export function AdminSidebar({
   backLabel,
 }: AdminSidebarProps) {
   return (
-    <aside className="h-full w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
-      <div className="px-3 pt-3.5 pb-2 min-h-[48px] flex items-center justify-between gap-2">
+    <aside className="ax-panel h-full w-[258px] shrink-0 bg-sidebar flex flex-col font-sans">
+      <div className="px-5 pt-5 pb-3 min-h-[48px] flex items-center justify-between gap-2">
         <BrandMark />
         <button
           type="button"

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-08T22:00:13.891627+00:00",
+  "title": "Design System: AX",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "shadow-panel",
+        "value": "0 7px 18px hsl(222 18% 72% / 0.08)",
+        "purpose": "Light theme; dark counterpart in index.css."
+      },
+      {
+        "name": "shadow-key",
+        "value": "0 -1px 2px hsl(0 0% 100% / 0.85), 0 3px 7px hsl(220 18% 59% / 0.14)",
+        "purpose": "Light theme; dark counterpart in index.css."
+      },
+      {
+        "name": "shadow-action",
+        "value": "inset 0 1px 2px hsl(0 0% 100% / 0.23), 0 3px 7px hsl(200 12% 10% / 0.18)",
+        "purpose": "Light theme; dark counterpart in index.css."
+      },
+      {
+        "name": "shadow-composer",
+        "value": "0 15px 32px hsl(245 36% 72% / 0.09)",
+        "purpose": "Light theme; dark counterpart in index.css."
+      },
+      {
+        "name": "shadow-popover",
+        "value": "0 12px 40px -8px hsl(220 18% 40% / 0.18), 0 2px 6px hsl(220 18% 40% / 0.04)",
+        "purpose": "Light theme; dark counterpart in index.css."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "768px"
+      }
+    ],
+    "motion": [
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Respect reduced-motion preferences."
+      }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "AX \u2014 A different kind of workspace",
+    "overview": "Cool floating panels, Inter typography, restrained violet emphasis, and subtly raised controls from the supplied Figma study.",
+    "keyCharacteristics": [
+      "Layered cool surfaces",
+      "Violet selection and Send",
+      "Monochrome primary actions",
+      "Original AX mark and pearl orb"
+    ],
+    "rules": [],
+    "dos": [
+      "Compose shared shadcn primitives.",
+      "Use semantic tokens.",
+      "Preserve existing product behavior."
+    ],
+    "donts": [
+      "Do not substitute brand colors for operational states.",
+      "Do not add mock Figma navigation."
+    ]
+  }
+}

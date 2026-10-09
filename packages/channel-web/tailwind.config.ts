@@ -8,9 +8,9 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        brand: ['Poppins', 'sans-serif'],
+        brand: ['Inter', 'sans-serif'],
         sans: [
-          '"IBM Plex Sans"',
+          '"Inter"',
           'ui-sans-serif',
           'system-ui',
           '-apple-system',
@@ -25,6 +25,11 @@ const config: Config = {
         ],
       },
       colors: {
+        canvas: 'hsl(var(--canvas))',
+        panel: 'hsl(var(--panel))',
+        brand: 'hsl(var(--brand))',
+        action: { DEFAULT: 'hsl(var(--action))', foreground: 'hsl(var(--action-foreground))', hover: 'hsl(var(--action-hover))' },
+        send: { DEFAULT: 'hsl(var(--send))', foreground: 'hsl(var(--send-foreground))', hover: 'hsl(var(--send-hover))' },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
@@ -73,14 +78,19 @@ const config: Config = {
         'state-quiet': 'hsl(var(--state-quiet))',
       },
       borderRadius: {
+        panel: 'var(--radius-panel)',
+        well: 'var(--radius-well)',
         lg: 'calc(var(--radius) + 4px)',
         md: 'var(--radius)',
         sm: 'calc(var(--radius) - 2px)',
       },
       boxShadow: {
-        sm: '0 1px 2px hsl(223 41% 30% / 0.06)',
-        md: '0 8px 24px hsl(0 0% 0% / 0.06), 0 1px 2px hsl(0 0% 0% / 0.04)',
-        popover: '0 12px 40px -8px hsl(0 0% 0% / 0.18), 0 2px 6px hsl(0 0% 0% / 0.04)',
+        sm: 'var(--shadow-key)',
+        md: 'var(--shadow-panel)',
+        panel: 'var(--shadow-panel)',
+        key: 'var(--shadow-key)',
+        action: 'var(--shadow-action)',
+        popover: 'var(--shadow-popover)',
       },
       keyframes: {
         'form-in': {

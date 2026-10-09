@@ -39,7 +39,7 @@ interface Props {
 
 export function SetupShell({ title, description, step, children }: Props) {
   return (
-    <div className="flex items-center justify-center min-h-screen p-6 bg-background">
+    <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
       <Card className="w-full max-w-[460px]">
         <CardHeader className="items-center text-center gap-3 pb-4">
           <BrandMark size="xl" />

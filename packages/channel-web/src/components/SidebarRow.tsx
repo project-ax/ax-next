@@ -23,9 +23,9 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export const sidebarRowBaseClass =
-  'group relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-sm text-[13px] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1';
+  'group relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-sm cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1';
 
-export const sidebarRowActiveClass = 'bg-muted text-foreground';
+export const sidebarRowActiveClass = 'bg-primary-soft text-primary';
 export const sidebarRowInactiveClass =
   'text-foreground/75 hover:bg-muted hover:text-foreground';
 

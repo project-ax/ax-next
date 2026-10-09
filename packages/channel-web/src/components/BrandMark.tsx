@@ -3,14 +3,14 @@
  * card, and setup wizard. One source of truth, now driven by the operator's
  * branding config (`useBranding()`):
  *
- *   - No logo            → the 5px primary dot + the product name (default "ax").
+ *   - No logo            → the Figma AX mark + name, or a dot + custom name.
  *   - Logo, type "full"  → the logo alone (it carries its own wordmark).
  *   - Logo, type "icon"  → a small square logo + the name beside it.
  *
  * Light/dark: render the variant matching the resolved theme; if only a light
  * logo is set, CSS-invert it in dark mode (ideal for monochrome marks).
  *
- * The dot + name is also the loading/unbranded state — BrandMark mounts after
+ * The default AX mark + name is also the loading state — BrandMark mounts after
  * App's own loading gate, so a branded deploy lands straight on its logo
  * without flashing "ax", while an unbranded deploy shows "ax" immediately.
  *
@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 import { useBranding } from '@/lib/branding-context';
 import { logoUrl } from '@/lib/branding';
 import { useResolvedTheme } from '@/lib/theme';
+import { AxDesignMark } from './AxDesignMark';
 
 export type BrandMarkSize = 'md' | 'xl';
 
@@ -59,9 +60,9 @@ export function BrandMark({ size = 'md', className, workspace = false }: BrandMa
   const showLogo = loaded && branding.light;
   if (!showLogo) {
     return (
-      <span className={cn('flex items-center', className)}>
-        {workspace ? <span aria-hidden="true" className="mr-2 flex size-6 items-center justify-center rounded-sm bg-primary font-brand text-[13px] text-primary-foreground">{name[0]?.toUpperCase()}</span> : <span aria-hidden="true" className="mr-2 inline-block -translate-y-[3px] rounded-full bg-primary" style={cfg.dot} />}
-        <span className={cn(cfg.word, 'text-foreground', workspace && 'font-brand text-[15px] font-semibold tracking-normal')}>{name}</span>
+      <span className={cn('flex items-center gap-2.5', className)}>
+        {name === 'ax' ? <AxDesignMark /> : <span aria-hidden="true" className="inline-block rounded-full bg-primary" style={cfg.dot} />}
+        <span className={cn(cfg.word, 'ax-brand font-brand', workspace && 'text-[29px] font-semibold tracking-[-0.02em]')}>{name}</span>
       </span>
     );
   }
@@ -76,7 +77,7 @@ export function BrandMark({ size = 'md', className, workspace = false }: BrandMa
       ? { height: cfg.logoHeight, width: cfg.logoHeight, filter: INVERT_FILTER }
       : { height: cfg.logoHeight, width: cfg.logoHeight };
     return (
-      <span className={cn('flex items-center', className)}>
+      <span className={cn('flex items-center gap-2.5', className)}>
         <img
           src={src}
           alt=""
@@ -94,7 +95,7 @@ export function BrandMark({ size = 'md', className, workspace = false }: BrandMa
     ? { height: cfg.logoHeight, width: 'auto', filter: INVERT_FILTER }
     : { height: cfg.logoHeight, width: 'auto' };
   return (
-    <span className={cn('flex items-center', className)}>
+    <span className={cn('flex items-center gap-2.5', className)}>
       <img src={src} alt={name} className="object-contain" style={fullStyle} />
     </span>
   );

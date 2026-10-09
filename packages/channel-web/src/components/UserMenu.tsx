@@ -59,7 +59,7 @@ export function UserMenu({
   if (!user) return null;
 
   return (
-    <div className="user-row-wrap relative border-t border-border p-2">
+    <div className={`user-row-wrap relative ${collapsed ? 'p-1.5' : 'p-5'}`}>
       <DropdownMenu>
         <IconTooltip label={`${user.name}, account menu`} side="right" className="w-full">
         <DropdownMenuTrigger asChild>
@@ -82,7 +82,7 @@ export function UserMenu({
         // that goes nowhere.
         {...(onOpenAdminSettings ? { [SETTINGS_OPENER_ATTR]: '' } : {})}
         // Keep `user-row` as a structural test hook — no CSS targets it.
-        // The wrap (`user-row-wrap`) already has `p-2`, so the trigger
+        // The wrap (`user-row-wrap`) supplies the sidebar inset, so the trigger
         // takes `w-full` and fills the wrap's content area exactly —
         // earlier `w-[calc(100%-16px)]` left an extra 16px gap on the
         // right edge and pushed the avatar off-centre when collapsed.

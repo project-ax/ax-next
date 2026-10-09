@@ -20,6 +20,7 @@
 import { useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { HTTP_SESSION_ENDED } from '../lib/http';
 import { signInWithGoogle } from '../lib/auth';
 import { BrandMark } from './BrandMark';
@@ -43,8 +44,9 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="flex items-center justify-center min-h-screen p-6 bg-background">
-      <div className="w-full max-w-[360px] flex flex-col items-center gap-3.5 text-center px-8 pt-9 pb-7 rounded-[14px] bg-card border border-border shadow-md">
+    <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
+      <Card className="w-full max-w-[360px]">
+      <CardContent className="flex flex-col items-center gap-3.5 px-8 pb-7 pt-9 text-center">
         <BrandMark size="xl" />
         <p className="text-[13px] tracking-[-0.005em] leading-[1.4] text-muted-foreground mb-1.5">
           Sign in to start chatting
@@ -84,7 +86,8 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
             <AlertDescription>{SIGN_IN_FAILED}</AlertDescription>
           </Alert>
         )}
-      </div>
+      </CardContent>
+      </Card>
     </div>
   );
 }

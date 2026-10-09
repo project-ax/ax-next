@@ -849,8 +849,8 @@ function Inner({
   ) : null;
 
   return (
-    <div className="flex h-screen flex-col bg-background font-sans text-foreground">
-      <div className="flex min-h-0 flex-1">
+    <div className="ax-app-frame flex h-screen flex-col bg-canvas font-sans text-foreground">
+      <div className="ax-app-panels flex min-h-0 flex-1">
         {!compact && <WorkspaceSidebar {...navProps} />}
 
         {compact && (
@@ -882,7 +882,7 @@ function Inner({
           </Sheet>
         )}
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="ax-panel flex min-w-0 flex-1 flex-col overflow-hidden">
           {route.kind === 'today' && (
             <>
               <WorkspaceHeader title="Today" subtitle={today()} leading={navTrigger}>

@@ -2,109 +2,191 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/inter-regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/inter-medium.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/inter-semibold.ttf') format('truetype');
+}
+
 /* State marks use --state-quiet. Copy never uses text-state-quiet. */
+/* Figma: BeeBot-only AX study, 24:36 (light) / 31:9 (dark).
+   --canvas is the outer ground; --background is the floating panel.
+   Violet emphasis and monochrome primary actions have separate roles. */
 @layer base {
   :root {
-    --background: 202 100% 98%;
-    --foreground: 223 41% 30%;
-    --card: 0 0% 100%;
-    --popover: 0 0% 100%;
-    --primary: 223 41% 30%;
-    --primary-foreground: 202 100% 98%;
-    --primary-soft: 200 100% 92%;
-    --primary-hover: 223 41% 25%;
-    --secondary: 205 60% 94%;
-    --muted: 205 60% 94%;
-    --accent: 205 60% 94%;
-    --muted-foreground: 223 20% 38%;
-    --destructive: 0 60% 50%;
+    --canvas: 216.00 17.24% 94.31%;
+    --background: 220.00 42.86% 98.63%;
+    --panel: 220.00 42.86% 98.63%;
+    --foreground: 201.82 8.27% 26.08%;
+    --card: 0.00 0.00% 100.00%;
+    --popover: 0.00 0.00% 100.00%;
+    --primary: 242.71 63.03% 58.63%;
+    --primary-foreground: 0.00 0.00% 100.00%;
+    --primary-soft: 243.75 100.00% 96.86%;
+    --primary-hover: 243.26 53.09% 52.35%;
+    --action: 200.00 11.54% 10.20%;
+    --action-foreground: 0.00 0.00% 100.00%;
+    --action-hover: 204.00 9.43% 20.78%;
+    --brand: 244.09 57.14% 30.20%;
+    --secondary: 0.00 0.00% 100.00%;
+    --muted: 216.00 17.24% 94.31%;
+    --accent: 243.75 100.00% 96.86%;
+    --muted-foreground: 201.18 8% 41%;
+    --border: 220.00 18.37% 90.39%;
+    --input: 245.14 100.00% 93.14%;
+    --ring: 242.71 63.03% 58.63%;
+    --rule-soft: 222.86 18.92% 92.75%;
+    --state-quiet: 217.89 7.69% 51.57%;
+    --bubble: 243.75 100.00% 96.86%;
+    --sidebar-background: 220.00 42.86% 98.63%;
+    --card-foreground: 201.82 8.27% 26.08%;
+    --popover-foreground: 201.82 8.27% 26.08%;
+    --secondary-foreground: 201.82 8.27% 26.08%;
+    --accent-foreground: 201.82 8.27% 26.08%;
+    --composer-start: 240.00 80.00% 98.04%;
+    --composer-end: 233.33 90.00% 96.08%;
+    --send: 242.71 63.03% 58.63%;
+    --send-foreground: 0.00 0.00% 100.00%;
+    --send-hover: 243.26 53.09% 52.35%;
+    --destructive: 0 60% 49%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
     --destructive-hover: 0 60% 45%;
     --warning: 15 85% 36%;
     --warning-foreground: 0 0% 100%;
     --warning-soft: 15 100% 94%;
-    --border: 210 35% 88%;
-    --input: 210 30% 80%;
-    --ring: 222 69% 51%;
-    --rule-soft: 210 35% 92%;
-    --state-quiet: 220 15% 48%;
-    --bubble: 200 100% 90%;
-    --radius: 0.5rem;
-    --card-foreground: 223 41% 30%;
-    --popover-foreground: 223 41% 30%;
-    --secondary-foreground: 223 41% 30%;
-    --accent-foreground: 223 41% 30%;
+    --radius: 0.5625rem;
+    --radius-panel: 1rem;
+    --radius-well: 1.375rem;
+    --shadow-panel: 0 7px 18px hsl(222 18% 72% / 0.08);
+    --shadow-key: 0 -1px 2px hsl(0 0% 100% / 0.85), 0 3px 7px hsl(220 18% 59% / 0.14);
+    --shadow-action: inset 0 1px 2px hsl(0 0% 100% / 0.23), 0 3px 7px hsl(200 12% 10% / 0.18);
+    --shadow-composer: 0 15px 32px hsl(245 36% 72% / 0.09);
+    --shadow-popover: 0 12px 40px -8px hsl(220 18% 40% / 0.18), 0 2px 6px hsl(220 18% 40% / 0.04);
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme='light']) {
-      --background: 223 45% 12%;
-      --foreground: 202 100% 98%;
-      --card: 223 40% 17%;
-      --popover: 223 40% 17%;
-      --primary: 208 100% 69%;
-      --primary-foreground: 223 45% 12%;
-      --primary-soft: 223 41% 26%;
-      --primary-hover: 208 100% 75%;
-      --secondary: 223 40% 17%;
-      --muted: 223 40% 17%;
-      --accent: 223 40% 19%;
-      --muted-foreground: 220 25% 72%;
-      --destructive: 4 86% 62%;
+      --canvas: 230.00 15.00% 7.84%;
+      --background: 226.67 15.25% 11.57%;
+      --panel: 226.67 15.25% 11.57%;
+      --foreground: 220.00 13.04% 90.98%;
+      --card: 226.15 14.94% 17.06%;
+      --popover: 226.15 14.94% 17.06%;
+      --primary: 245.33 100.00% 82.35%;
+      --primary-foreground: 200.00 11.54% 10.20%;
+      --primary-soft: 246.92 25.49% 20.00%;
+      --primary-hover: 245.54 100.00% 87.25%;
+      --action: 228.00 17.24% 94.31%;
+      --action-foreground: 200.00 11.54% 10.20%;
+      --action-hover: 0.00 0.00% 100.00%;
+      --brand: 248.11 100.00% 92.75%;
+      --secondary: 226.15 14.94% 17.06%;
+      --muted: 226.15 14.94% 17.06%;
+      --accent: 246.92 25.49% 20.00%;
+      --muted-foreground: 219.00 11.90% 67.06%;
+      --border: 225.00 13.11% 23.92%;
+      --input: 250.00 18.99% 30.98%;
+      --ring: 245.33 100.00% 82.35%;
+      --rule-soft: 227.14 13.73% 20.00%;
+      --state-quiet: 221.74 10.31% 56.27%;
+      --bubble: 246.92 25.49% 20.00%;
+      --sidebar-background: 226.67 15.25% 11.57%;
+      --card-foreground: 220.00 13.04% 90.98%;
+      --popover-foreground: 220.00 13.04% 90.98%;
+      --secondary-foreground: 220.00 13.04% 90.98%;
+      --accent-foreground: 220.00 13.04% 90.98%;
+      --composer-start: 250.59 20.48% 16.27%;
+      --composer-end: 250.43 23.71% 19.02%;
+      --send: 250.86 50.00% 54.51%;
+      --send-foreground: 0.00 0.00% 100.00%;
+      --send-hover: 251.68 45.75% 48.43%;
+      --destructive: 4 86% 66%;
       --destructive-foreground: 223 45% 12%;
       --destructive-soft: 4 60% 16%;
       --destructive-hover: 4 86% 68%;
       --warning: 15 100% 70%;
       --warning-foreground: 223 45% 12%;
       --warning-soft: 15 50% 18%;
-      --border: 223 30% 26%;
-      --input: 223 30% 30%;
-      --ring: 208 100% 69%;
-      --rule-soft: 223 30% 20%;
-      --state-quiet: 220 20% 58%;
-      --bubble: 223 41% 26%;
-      --radius: 0.5rem;
-      --sidebar-background: 223 50% 8%;
-      --card-foreground: 202 100% 98%;
-      --popover-foreground: 202 100% 98%;
-      --secondary-foreground: 202 100% 98%;
-      --accent-foreground: 202 100% 98%;
+      --radius: 0.5625rem;
+      --radius-panel: 1rem;
+      --radius-well: 1.375rem;
+      --shadow-panel: 0 7px 18px hsl(0 0% 0% / 0.22);
+      --shadow-key: 0 -1px 1px hsl(0 0% 100% / 0.06), 0 3px 8px hsl(0 0% 0% / 0.42);
+      --shadow-action: inset 0 1px 2px hsl(0 0% 100% / 0.23), 0 3px 7px hsl(0 0% 0% / 0.18);
+      --shadow-composer: 0 15px 32px hsl(0 0% 0% / 0.25);
+      --shadow-popover: 0 12px 40px -8px hsl(0 0% 0% / 0.5), 0 2px 6px hsl(0 0% 0% / 0.22);
       color-scheme: dark;
     }
   }
   :root[data-theme='dark'] {
-    --background: 223 45% 12%;
-    --foreground: 202 100% 98%;
-    --card: 223 40% 17%;
-    --popover: 223 40% 17%;
-    --primary: 208 100% 69%;
-    --primary-foreground: 223 45% 12%;
-    --primary-soft: 223 41% 26%;
-    --primary-hover: 208 100% 75%;
-    --secondary: 223 40% 17%;
-    --muted: 223 40% 17%;
-    --accent: 223 40% 19%;
-    --muted-foreground: 220 25% 72%;
-    --destructive: 4 86% 62%;
+    --canvas: 230.00 15.00% 7.84%;
+    --background: 226.67 15.25% 11.57%;
+    --panel: 226.67 15.25% 11.57%;
+    --foreground: 220.00 13.04% 90.98%;
+    --card: 226.15 14.94% 17.06%;
+    --popover: 226.15 14.94% 17.06%;
+    --primary: 245.33 100.00% 82.35%;
+    --primary-foreground: 200.00 11.54% 10.20%;
+    --primary-soft: 246.92 25.49% 20.00%;
+    --primary-hover: 245.54 100.00% 87.25%;
+    --action: 228.00 17.24% 94.31%;
+    --action-foreground: 200.00 11.54% 10.20%;
+    --action-hover: 0.00 0.00% 100.00%;
+    --brand: 248.11 100.00% 92.75%;
+    --secondary: 226.15 14.94% 17.06%;
+    --muted: 226.15 14.94% 17.06%;
+    --accent: 246.92 25.49% 20.00%;
+    --muted-foreground: 219.00 11.90% 67.06%;
+    --border: 225.00 13.11% 23.92%;
+    --input: 250.00 18.99% 30.98%;
+    --ring: 245.33 100.00% 82.35%;
+    --rule-soft: 227.14 13.73% 20.00%;
+    --state-quiet: 221.74 10.31% 56.27%;
+    --bubble: 246.92 25.49% 20.00%;
+    --sidebar-background: 226.67 15.25% 11.57%;
+    --card-foreground: 220.00 13.04% 90.98%;
+    --popover-foreground: 220.00 13.04% 90.98%;
+    --secondary-foreground: 220.00 13.04% 90.98%;
+    --accent-foreground: 220.00 13.04% 90.98%;
+    --composer-start: 250.59 20.48% 16.27%;
+    --composer-end: 250.43 23.71% 19.02%;
+    --send: 250.86 50.00% 54.51%;
+    --send-foreground: 0.00 0.00% 100.00%;
+    --send-hover: 251.68 45.75% 48.43%;
+    --destructive: 4 86% 66%;
     --destructive-foreground: 223 45% 12%;
     --destructive-soft: 4 60% 16%;
     --destructive-hover: 4 86% 68%;
     --warning: 15 100% 70%;
     --warning-foreground: 223 45% 12%;
     --warning-soft: 15 50% 18%;
-    --border: 223 30% 26%;
-    --input: 223 30% 30%;
-    --ring: 208 100% 69%;
-    --rule-soft: 223 30% 20%;
-    --state-quiet: 220 20% 58%;
-    --bubble: 223 41% 26%;
-    --radius: 0.5rem;
-    --sidebar-background: 223 50% 8%;
-    --card-foreground: 202 100% 98%;
-    --popover-foreground: 202 100% 98%;
-    --secondary-foreground: 202 100% 98%;
-    --accent-foreground: 202 100% 98%;
+    --radius: 0.5625rem;
+    --radius-panel: 1rem;
+    --radius-well: 1.375rem;
+    --shadow-panel: 0 7px 18px hsl(0 0% 0% / 0.22);
+    --shadow-key: 0 -1px 1px hsl(0 0% 100% / 0.06), 0 3px 8px hsl(0 0% 0% / 0.42);
+    --shadow-action: inset 0 1px 2px hsl(0 0% 100% / 0.23), 0 3px 7px hsl(0 0% 0% / 0.18);
+    --shadow-composer: 0 15px 32px hsl(0 0% 0% / 0.25);
+    --shadow-popover: 0 12px 40px -8px hsl(0 0% 0% / 0.5), 0 2px 6px hsl(0 0% 0% / 0.22);
     color-scheme: dark;
   }
 }
@@ -120,11 +202,11 @@ html { font-size: 16px; }
 body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 15px;
-  line-height: 1.58;
+  line-height: 1.5;
   letter-spacing: -0.005em;
-  font-feature-settings: 'ss02', 'ss05';
+  font-feature-settings: 'cv11';
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -199,4 +281,30 @@ body {
 /* Conversation names fade within their column; the date/menu slot never moves. */
 .conversation-title-fade {
   mask-image: linear-gradient(to right, black calc(100% - 14px), transparent);
+}
+
+/* Shared application composition; mobile retains all available screen space. */
+.ax-app-frame { height: 100dvh; padding: 18px; }
+.ax-app-panels { gap: 16px; }
+.ax-panel { background: hsl(var(--panel)); border-radius: var(--radius-panel); box-shadow: var(--shadow-panel); }
+.ax-settings-frame { padding: 18px; gap: 16px; background: hsl(var(--canvas)); }
+.ax-composer-well { padding: 10px; border-radius: var(--radius-well); background: linear-gradient(to bottom, hsl(var(--composer-start)), hsl(var(--composer-end))); box-shadow: var(--shadow-composer); }
+.ax-composer { border-color: hsl(var(--input)); border-radius: var(--radius-panel); background: hsl(var(--card)); box-shadow: none; }
+.ax-composer-welcome { min-height: 220px; }
+.ax-composer-input { align-self: stretch; }
+.ax-brand { color: hsl(var(--brand)); }
+.ax-pearl { position: relative; width: 92px; height: 92px; }
+.ax-pearl img { position: absolute; left: -23px; top: -13px; max-width: none; }
+::selection { background: hsl(var(--primary-soft)); color: hsl(var(--foreground)); }
+input, textarea { caret-color: hsl(var(--primary)); }
+* { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+@media (max-width: 767px) {
+  .ax-app-frame, .ax-settings-frame { padding: 0; }
+  .ax-app-panels, .ax-settings-frame { gap: 0; }
+  .ax-panel { border-radius: 0; box-shadow: none; }
+  .ax-composer-well { padding: 6px; }
+  .ax-composer-welcome { min-height: 164px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
