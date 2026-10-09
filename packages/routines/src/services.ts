@@ -19,8 +19,8 @@ export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>
   return parsed.data;
 }
 export async function resolveRoutineAccess(bus: HookBus, store: RoutinesStore, ctx: AgentContext, agentId: string) {
-  const { agent } = await bus.call<{ agentId: string; userId: string }, { agent: Agent }>('agents:resolve', ctx, { agentId, userId: ctx.userId });
-  const { allowed } = await bus.call<{ agentId: string }, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId });
+  const { agent } = await bus.callJoined<{ agentId: string; userId: string }, { agent: Agent }>('agents:resolve', ctx, { agentId, userId: ctx.userId });
+  const { allowed } = await bus.callJoined<{ agentId: string }, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId });
   if (agent.ownerType === 'user') await store.reconcileOwners({ agents: [{ agentId, ownerUserId: agent.ownerId }] });
   return { agent, allowed };
 }
@@ -37,8 +37,9 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 function fireView({ id: _id, firedAt, ...row }: FireRow): C.RoutineFireView { return { ...row, firedAt: firedAt.toISOString() }; }
-export function registerRoutineServices({ bus, store, now, dispatch }: {
+export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;
+  admitDispatch?: <T>(effect: () => Promise<T>) => Promise<T>;
   dispatch?: (accepted: AcceptedDispatch) => Promise<C.RoutineFireNowOutput>;
 }): void {
   function register<I, O>(name: string, input: z.ZodType<I, z.ZodTypeDef, unknown>, returns: z.ZodType<O, z.ZodTypeDef, unknown>, handler: (ctx: AgentContext, input: I) => Promise<O>) {
@@ -86,7 +87,7 @@ export function registerRoutineServices({ bus, store, now, dispatch }: {
     const result = await store.deleteAuthored({ ...input, actorUserId: ctx.userId, now: now() });
     await drainRoutineCleanup({ bus, store }); return result;
   });
-  register('fire-now', C.RoutineFireNowInputSchema, C.RoutineFireNowOutputSchema, async (ctx, input) => {
+  register('fire-now', C.RoutineFireNowInputSchema, C.RoutineFireNowOutputSchema, (ctx, input) => admitDispatch(async () => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const row = await store.findOne(input);
     if (row) {
@@ -103,8 +104,8 @@ export function registerRoutineServices({ bus, store, now, dispatch }: {
     }
     requireAllowed(routinePermissions(result.accepted.row, ctx.userId, a.allowed).fire);
     // 'ok' acknowledges the durable dispatch; replay never claims the turn completed.
-    return result.replayed ? { status: 'ok' } : dispatch(result.accepted);
-  });
+    return result.replayed ? { status: 'ok' as const } : dispatch(result.accepted);
+  }));
   register('recent-fires', C.RoutineRecentFiresInputSchema, C.RoutineRecentFiresOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId); return { fires: (await store.recentFires({ agentId: input.agentId, routineId: input.routineId, ...(input.limit === undefined ? {} : { limit: input.limit }) })).map(fireView) };
   });

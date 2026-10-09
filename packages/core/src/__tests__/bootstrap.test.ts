@@ -254,12 +254,13 @@ describe('bootstrap shutdown', () => {
     expect(order).toEqual(['b']);
   });
 
-  it('a throwing shutdown does not block peer plugins; failure is reported', async () => {
+  it.each(['bounded', 'joined'] as const)('a throwing %s shutdown does not block peer plugins; failure is reported', async mode => {
     const order: string[] = [];
     const errors: { plugin: string; err: unknown }[] = [];
     const a = makePlugin({ name: 'a' });
     (a as Plugin).shutdown = () => { order.push('a'); };
     const b = makePlugin({ name: 'b' });
+    b.shutdownMode = mode;
     (b as Plugin).shutdown = async () => { throw new Error('boom'); };
     const c = makePlugin({ name: 'c' });
     (c as Plugin).shutdown = () => { order.push('c'); };
@@ -300,6 +301,30 @@ describe('bootstrap shutdown', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.plugin).toBe('b');
     expect(String(errors[0]!.err)).toMatch(/exceeded 50ms/);
+  });
+
+  it('joined shutdown reports its deadline once and waits before closing dependencies', async () => {
+    const order: string[] = [];
+    const errors: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const dependency = makePlugin({ name: 'dependency', registers: ['resource:get'] }, ({ bus }) => {
+      bus.registerService('resource:get', 'dependency', async () => ({}));
+    });
+    dependency.shutdown = () => { order.push('dependency'); };
+    const consumer = makePlugin({ name: 'consumer', calls: ['resource:get'] });
+    consumer.shutdownMode = 'joined';
+    consumer.shutdown = async () => { await gate; order.push('consumer'); };
+    const handle = await bootstrap({ bus: new HookBus(), plugins: [consumer, dependency], config: {},
+      shutdownTimeoutMs: 5, onShutdownError: (_name, error) => { errors.push(error); } });
+    const shuttingDown = handle.shutdown();
+    try {
+      await expect.poll(() => errors.length).toBe(1);
+      expect(String(errors[0])).toContain('exceeded 5ms');
+      expect(order).toEqual([]);
+    } finally { release(); await shuttingDown; }
+    expect(order).toEqual(['consumer', 'dependency']);
+    expect(errors).toHaveLength(1);
   });
 
   it('handle.shutdown is idempotent — second call resolves without re-running plugins', async () => {

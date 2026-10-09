@@ -13,6 +13,7 @@ import type { RoutinesConfig } from './types.js';
 import { registerRoutineServices, ROUTINE_SERVICES } from './services.js';
 import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 
+import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import { createWebhookRouter } from './webhook-handler.js';
 import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
 
@@ -26,10 +27,12 @@ export function createRoutinesPlugin(
   let db: Kysely<RoutinesDatabase> | undefined;
   let store: RoutinesStore | undefined;
   let unregisterWebhook: (() => void) | undefined;
+  let lifetime: RoutineLifetime | undefined;
   let tickLoop: Promise<void> | undefined;
   let abortCtl: AbortController | undefined;
 
   return {
+    shutdownMode: 'joined',
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
@@ -76,9 +79,11 @@ export function createRoutinesPlugin(
       const localStore = store;
       const localDb = db;
       await localStore.interruptAbandonedDispatches();
+      lifetime = createRoutineLifetime();
+      const effects = lifetime;
       const pending: PendingFires = new Map();
       const fireRoutine = createFireRoutine({
-        bus, pending,
+        bus, pending, lifetime: effects,
         store: localStore,
         purgeAgent: agentId => purgeRoutineAgent({ store: localStore, bus, pending, agentId }),
       });
@@ -90,7 +95,7 @@ export function createRoutinesPlugin(
       // `agentGone` in tick.ts).
       bus.subscribe<{ agentId: string }>(
         'agents:deleted', PLUGIN_NAME,
-        async (ctx, payload) => {
+        (ctx, payload) => effects.track(async () => {
           try {
             await purgeRoutineAgent({ store: localStore, bus, pending, agentId: payload.agentId });
           } catch (err) {
@@ -102,7 +107,7 @@ export function createRoutinesPlugin(
             });
           }
           return undefined;
-        },
+        }),
       );
 
       // Slice 6 — chat-orchestrator fires this (awaited, bounded) before the
@@ -130,7 +135,7 @@ export function createRoutinesPlugin(
         reqId?: string;
         contentBlocks?: unknown[];
         turnId?: string;
-      }>('chat:turn-end', PLUGIN_NAME, async (ctx, payload) => {
+      }>('chat:turn-end', PLUGIN_NAME, (ctx, payload) => effects.track(async () => {
         const reqId = payload.reqId ?? ctx.reqId;
         if (typeof reqId !== 'string' || reqId.length === 0) return undefined;
         const pf = pending.get(reqId);
@@ -154,7 +159,7 @@ export function createRoutinesPlugin(
             const turnId = payload.turnId;
             if (typeof turnId === 'string' && turnId.length > 0) {
               try {
-                await bus.call('conversations:drop-turn', ctx, {
+                await bus.callJoined('conversations:drop-turn', ctx, {
                   conversationId: pf.conversationId,
                   userId: pf.row.ownerUserId,
                   turnId,
@@ -176,7 +181,7 @@ export function createRoutinesPlugin(
             }
             if (pf.row.conversation === 'per-fire') {
               try {
-                await bus.call('conversations:hide', ctx, {
+                await bus.callJoined('conversations:hide', ctx, {
                   conversationId: pf.conversationId,
                   userId: pf.row.ownerUserId,
                 });
@@ -207,15 +212,16 @@ export function createRoutinesPlugin(
           });
         }
         return undefined;
-      });
+      }));
 
-      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
+      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), admitDispatch: effects.admit, dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
       await registerRoutineTools({ bus, store: localStore, now: () => clock.now() });
       await drainRoutineCleanup({ bus, store: localStore });
 
+      const handler = createWebhookRouter({ bus, store: localStore, fire: fireRoutine, now: () => clock.now() });
       const route = await bus.call<unknown, { unregister(): void }>('http:register-route', initCtx, {
         method: 'POST', path: '/webhooks/:token/*', bypassCsrf: true,
-        handler: createWebhookRouter({ bus, store: localStore, fire: fireRoutine, now: () => clock.now() }),
+        handler: (req: Parameters<typeof handler>[0], res: Parameters<typeof handler>[1]) => effects.admit(() => handler(req, res)),
       });
       unregisterWebhook = route.unregister;
 
@@ -240,7 +246,7 @@ export function createRoutinesPlugin(
       // I-R10 try/catch logs and continues (workspace claims still
       // fire).
       const getAgents = async (): Promise<Array<{ agentId: string; ownerUserId: string }>> => {
-        const r = await bus.call<
+        const r = await bus.callJoined<
           Record<string, never>,
           { agents: Array<{ agentId: string; ownerUserId: string }> }
         >('agents:list-personal-owners', initCtx, {});
@@ -258,10 +264,12 @@ export function createRoutinesPlugin(
       });
     },
     async shutdown() {
+      lifetime?.stopAdmission();
       unregisterWebhook?.();
       unregisterWebhook = undefined;
       abortCtl?.abort();
       await tickLoop;
+      await lifetime?.drain();
       tickLoop = undefined;
       abortCtl = undefined;
       db = undefined;

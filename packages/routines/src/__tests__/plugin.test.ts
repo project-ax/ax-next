@@ -19,7 +19,13 @@ describe('routines runtime registration', () => {
     expect(manifest.subscribes).not.toContain('agents:webhook-token-rotated');
   });
   it.each([true, false])('finishes once with silence, warning and turn-id safety (turnId=%s)', async (hasTurnId) => {
+    const warnings: string[] = [];
     h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+        const warn = ctx.logger.warn.bind(ctx.logger);
+        ctx.logger.warn = (message, fields) => {
+          if (!hasTurnId && message === 'routines_drop_turn_skipped_no_turn_id') warnings.push(message);
+          else warn(message, fields);
+        };
         await bus.fire('chat:connectors-skipped', ctx, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] });
         const result = { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'QUIET' }], ...(hasTurnId ? { turnId: 'turn' } : {}) };
         await bus.fire('chat:turn-end', ctx, result);
@@ -35,6 +41,7 @@ describe('routines runtime registration', () => {
     expect(calls.mock.calls.filter(([hook]) => hook === 'conversations:drop-turn')).toHaveLength(hasTurnId ? 1 : 0);
     expect(calls.mock.calls.filter(([hook]) => hook === 'conversations:hide')).toHaveLength(1);
     expect((await store.findOne(row))?.lastStatus).toBe('silenced');
+    expect(warnings).toHaveLength(hasTurnId ? 0 : 1);
   });
   it('does not recreate dispatch/history/status after deletion during a deferred invoke', async () => {
     let release!: () => void;

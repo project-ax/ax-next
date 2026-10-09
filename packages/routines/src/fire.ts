@@ -2,6 +2,7 @@ import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { StoredRoutine, AcceptedDispatch, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
+import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
@@ -104,6 +105,7 @@ export function warningFor(pf: PendingFire): string | null {
 
 export interface FireDeps {
   bus: HookBus;
+  lifetime?: RoutineLifetime;
   pending: PendingFires;
   /**
    * Writes the fire's one row when the invoke fails before its turn ends
@@ -140,7 +142,8 @@ function refusedBeforeAssembly(reason: string): boolean {
 }
 
 export function createFireRoutine(deps: FireDeps) {
-  return async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
+  const lifetime = deps.lifetime ?? createRoutineLifetime();
+  const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
     const { row, source, reqId, dispatchId } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
@@ -158,7 +161,7 @@ export function createFireRoutine(deps: FireDeps) {
 
     let agentName: string | null = null;
     try {
-      const resolved = await deps.bus.call<
+      const resolved = await deps.bus.callJoined<
         { agentId: string; userId: string },
         { agent: { id: string; ownerId?: string; workspaceRef?: string | null; displayName?: unknown } }
       >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.ownerUserId });
@@ -172,7 +175,7 @@ export function createFireRoutine(deps: FireDeps) {
     let conversationId: string;
     try {
       if (row.conversation === 'shared') {
-        const out = await deps.bus.call<
+        const out = await deps.bus.callJoined<
           unknown,
           { conversation: { conversationId: string }; created: boolean }
         >('conversations:find-or-create', baseCtx, {
@@ -188,7 +191,7 @@ export function createFireRoutine(deps: FireDeps) {
         });
         conversationId = out.conversation.conversationId;
       } else {
-        const conv = await deps.bus.call<
+        const conv = await deps.bus.callJoined<
           unknown,
           { conversationId: string }
         >('conversations:create', baseCtx, {
@@ -276,26 +279,20 @@ export function createFireRoutine(deps: FireDeps) {
       }
     };
 
-    void deps.bus.call<unknown, { kind?: string; reason?: unknown } | undefined>(
-      'agent:invoke', fireCtx, {
-        message: { role: 'user', content: prompt },
-      },
+    void lifetime.track(() => deps.bus.callJoined<unknown, { kind?: string; reason?: unknown } | undefined>(
+      'agent:invoke', fireCtx, { message: { role: 'user', content: prompt } },
     ).then(
-      (outcome) => {
+      async outcome => {
         if (outcome?.kind === 'terminated') {
           const reason = String(outcome.reason ?? 'unknown');
-          return settleWithoutTurn(`terminated: ${reason}`, !refusedBeforeAssembly(reason));
+          await settleWithoutTurn(`terminated: ${reason}`, !refusedBeforeAssembly(reason));
+        } else if (deps.pending.has(reqId)) {
+          await lifetime.defer(deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS,
+            () => settleWithoutTurn('the run finished without reporting a result', true));
         }
-        if (deps.pending.has(reqId)) {
-          const timer = setTimeout(() => {
-            void settleWithoutTurn('the run finished without reporting a result', true);
-          }, deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS);
-          timer.unref?.();
-        }
-        return undefined;
       },
       (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err), false),
-    );
+    ));
 
     // TASK-679: the row for this fire is written when the turn settles, not
     // here — see FireResult.recordedAtTurnEnd.
@@ -304,4 +301,8 @@ export function createFireRoutine(deps: FireDeps) {
       recordedAtTurnEnd: true,
     };
   };
+  // Setup and early failure writes belong to the same lifetime as the detached turn.
+  return Object.assign((accepted: AcceptedDispatch, payload?: unknown) => lifetime.track(() => fire(accepted, payload)), {
+    shutdown: () => lifetime.drain(),
+  });
 }

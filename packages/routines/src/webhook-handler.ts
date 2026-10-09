@@ -9,6 +9,7 @@ import type { RoutinesStore } from './store.js';
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
   readonly path: string;
+  readonly rawPath: string;
   readonly params: Record<string, string>;
   readonly headers: Record<string, string>;
   readonly body: Buffer;
@@ -32,10 +33,10 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     const path = '/' + (req.params['*'] ?? '');
     // Token params are decoded by the HTTP adapter; require the original spelling too.
     if (!token || !/^[A-Za-z0-9_-]+$/.test(token) || !validateWebhookPath(path)
-      || req.path !== `/webhooks/${token}${path}`) { res.status(404).end(); return; }
+      || req.rawPath !== `/webhooks/${token}${path}`) { res.status(404).end(); return; }
     if (req.body.byteLength > 1024 * 1024) { res.status(413).end(); return; }
     const requestCtx = makeAgentContext({ sessionId: 'routine-webhook-routing', agentId: '@ax/routines', userId: 'system' });
-    const resolved = await deps.bus.call<{ token: string }, { agent: { id: string } } | null>(
+    const resolved = await deps.bus.callJoined<{ token: string }, { agent: { id: string } } | null>(
       'agents:resolve-by-webhook-token', requestCtx, { token });
     if (!resolved?.agent) { res.status(404).end(); return; }
     const row = await deps.store.findWebhook({ agentId: resolved.agent.id, path });
@@ -46,7 +47,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     if (trigger.hmac !== undefined) {
       let secret: string;
       try {
-        secret = await deps.bus.call<{ ref: string; userId: string }, string>(
+        secret = await deps.bus.callJoined<{ ref: string; userId: string }, string>(
           'credentials:get', ctx,
           { ref: credentialRef(row), userId: row.ownerUserId },
         );

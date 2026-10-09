@@ -3,7 +3,7 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createToolPolicyPlugin } from '@ax/tool-policy';
 import { createDecisionsPlugin } from '@ax/decisions';
 import { createAgentsPlugin } from '@ax/agents';
-import { makeAgentContext, type AgentContext, type HookBus, type ToolDescriptor, PluginError } from '@ax/core';
+import { bootstrap, makeAgentContext, type AgentContext, type HookBus, type ToolDescriptor, PluginError } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Kysely } from 'kysely';
 import type { HttpRegisterRouteInput } from '@ax/http-server';
@@ -13,13 +13,15 @@ import type { RoutinesDatabase } from '../../migrations.js';
 import { drainRoutineCleanup } from '../../cleanup.js';
 export type RoutineHarness = {
   routes: HttpRegisterRouteInput[];
+  shutdownRoutines(): Promise<void>;
+  shutdownKernel(): Promise<void>;
   restart(): Promise<RoutineHarness>; setAttended(value: boolean): void; descriptors: ToolDescriptor[]; advance(ms: number): void; bus: HookBus; owner: AgentContext; teamAdmin: AgentContext; teamMember: AgentContext;
   agentId: string; teamAgentId: string; credentialCalls: Array<{ operation: string; ref: string }>;
   cleanupWarnings: Array<{ message: string; fields: Record<string, unknown> | undefined }>;
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
-export async function createRoutineHarness(options: { credentialTimeoutMs?: number; dispatch?: boolean;
+export async function createRoutineHarness(options: { shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
@@ -32,9 +34,16 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
   let failDelete = false;
   let teamFailure: 'missing' | 'outage' | null = null;
   const invokeCalls: string[] = [];
-  const runningInvokes = new Set<Promise<unknown>>();
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
+  const routinesPlugin = createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, undefined, options.dispatch ? {
+      dispatch: async accepted => {
+        const runCtx = makeAgentContext({ userId: accepted.row.ownerUserId, agentId: accepted.row.agentId, sessionId: 'routine', reqId: accepted.reqId });
+        await liveBus.call('agent:invoke', runCtx, {});
+        await liveStore.finishDispatch({ dispatchId: accepted.dispatchId, outcome: { status: 'ok', conversationId: null, error: null, renderedPrompt: accepted.row.promptBody, warning: null } });
+        return { status: 'ok' };
+      },
+    } : {});
   const harness = await createTestHarness({
     services: {
       'connectors:live-ids': async (_ctx, raw) => ({ live: (raw as { connectorIds: string[] }).connectorIds }),
@@ -53,12 +62,6 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
       'conversations:create': async () => ({ conversationId: 'conversation' }),
       'conversations:drop-turn': async () => undefined,
       'conversations:hide': async () => undefined,
-      'agent:invoke': async ctx => {
-        invokeCalls.push(ctx.reqId);
-        const run = options.invoke ? options.invoke(ctx, liveBus) : Promise.resolve({ kind: 'complete', messages: [] });
-        runningInvokes.add(run);
-        try { return await run; } finally { runningInvokes.delete(run); }
-      },
       'credentials:get': async () => 'test-secret',
       'credentials:delete': async (ctx, raw) => {
         credentialCalls.push({ operation: 'delete', ref: (raw as { ref: string }).ref });
@@ -76,22 +79,25 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
       },
       'workspace:apply': async () => { throw new Error('Workspace storage is unavailable'); },
     },
+  });
+  const kernel = await bootstrap({ bus: harness.bus, config: {},
+    ...(options.shutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs: options.shutdownTimeoutMs }),
+    ...(options.onShutdownError === undefined ? {} : { onShutdownError: options.onShutdownError }),
     plugins: [{
-      manifest: { name: '@test/credential-effects', version: '0.0.0', registers: ['credentials:set', 'test:credential-write'], calls: [], subscribes: [] },
+      manifest: { name: '@test/credential-effects', version: '0.0.0', registers: ['credentials:set', 'test:credential-write', 'agent:invoke'], calls: [], subscribes: [] },
       async init({ bus }) {
+        bus.registerService('agent:invoke', '@test/credential-effects', async ctx => {
+          invokeCalls.push(ctx.reqId);
+          if (options.invoke) return options.invoke(ctx, bus);
+          await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
+          return { kind: 'complete' };
+        }, { timeoutMs: options.invokeTimeoutMs ?? 120_000 });
         bus.registerService('credentials:set', '@test/credential-effects', (ctx, raw) => bus.call('test:credential-write', ctx, raw));
         bus.registerService('test:credential-write', '@test/credential-effects', async (_ctx, raw) => {
           started?.(); await gate; credentialCalls.push({ operation: 'set', ref: (raw as { ref: string }).ref });
         }, { timeoutMs: options.credentialTimeoutMs ?? 120_000 });
       },
-    }, createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, undefined, options.dispatch ? {
-      dispatch: async accepted => {
-        const runCtx = makeAgentContext({ userId: accepted.row.ownerUserId, agentId: accepted.row.agentId, sessionId: 'routine', reqId: accepted.reqId });
-        await liveBus.call('agent:invoke', runCtx, {});
-        await liveStore.finishDispatch({ dispatchId: accepted.dispatchId, outcome: { status: 'ok', conversationId: null, error: null, renderedPrompt: accepted.row.promptBody, warning: null } });
-        return { status: 'ok' };
-      },
-    } : {})],
+    }, createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), routinesPlugin],
   });
   const ctx = (userId: string) => makeAgentContext({ userId, agentId: 'test', sessionId: 'test' });
   const owner = ctx('owner'), teamAdmin = ctx('admin'), teamMember = ctx('member');
@@ -103,10 +109,10 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
   const agentId = options.reuse?.agentId ?? await create(false), teamAgentId = options.reuse?.teamAgentId ?? await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { routes, async restart() { await Promise.allSettled([...runningInvokes]); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),
-    async close() { await Promise.allSettled([...runningInvokes]); await harness.close(); await stopPostgresContainer(container); },
+    async close() { await kernel.shutdown(); await harness.close(); await stopPostgresContainer(container); },
   };
 }

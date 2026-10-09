@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { runTickOnce } from '../tick.js';
 import type { AcceptedDispatch } from '../types.js';
 const f = fixture();
+afterEach(() => vi.restoreAllMocks());
 const due = new Date(now.getTime() + 60000);
 const result = { status: 'ok' as const, error: null, renderedPrompt: 'done', recordedAtTurnEnd: true };
 function tick(over: Partial<Parameters<typeof runTickOnce>[0]> = {}) {
@@ -90,7 +92,9 @@ describe('DB scheduler', () => {
   it('still claims authored routines if owner enumeration fails', async () => {
     await f.store.createAuthored(createInput());
     const fire = vi.fn(async () => result);
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] materialize/refresh error: directory unavailable\n');
     await tick({ fire, getAgents: async () => { throw new Error('directory unavailable'); } });
     expect(fire).toHaveBeenCalledOnce();
+    expect(diagnostic.messages).toHaveLength(1);
   });
 });

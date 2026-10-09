@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
+import { request as httpRequest } from 'node:http';
+import { createTestHarness } from '@ax/test-harness';
+import { createHttpServerPlugin } from '@ax/http-server';
 import { createHmac } from 'node:crypto';
 import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 let h: RoutineHarness;
 afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
@@ -31,7 +35,7 @@ async function request(token: string, options: {
   expect(route.bypassCsrf).toBe(true);
   let code = 200;
   const splat = options.splat ?? 'hook';
-  await route.handler({ path: options.rawPath ?? `/webhooks/${token}/${splat}`, params: { token, '*': splat }, headers: { 'content-type': 'application/json', ...options.headers }, body: Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body ?? '{"title":"test"}') } as HttpRequest, { status(value: number) { code = value; return this; }, end() { }, json() { } } as HttpResponse);
+  await route.handler({ path: `/webhooks/${token}/${splat}`, rawPath: options.rawPath ?? `/webhooks/${token}/${splat}`, params: { token, '*': splat }, headers: { 'content-type': 'application/json', ...options.headers }, body: Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body ?? '{"title":"test"}') } as HttpRequest, { status(value: number) { code = value; return this; }, end() { }, json() { } } as HttpResponse);
   return code;
 }
 describe('single registered request-time DB webhook route', () => {
@@ -95,9 +99,20 @@ describe('single registered request-time DB webhook route', () => {
   it('fails closed on a missing configured HMAC secret and rejects encoded token spelling', async () => {
     const { token } = await setup({ header: 'sig', algorithm: 'sha256' });
     const call = h.bus.call.bind(h.bus);
-    vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => { if (name === 'credentials:get')
-      throw new Error('missing'); return call(name, ctx, input); });
+    const warnings: string[] = [];
+    vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => {
+      if (name === 'credentials:get') {
+        const warn = ctx.logger.warn.bind(ctx.logger);
+        ctx.logger.warn = (message, fields) => {
+          if (message === 'routines_webhook_secret_fetch_failed') warnings.push(message);
+          else warn(message, fields);
+        };
+        throw new Error('missing');
+      }
+      return call(name, ctx, input);
+    });
     expect(await request(token)).toBe(401);
+    expect(warnings).toEqual(['routines_webhook_secret_fetch_failed']);
     expect(h.invokeCalls).toHaveLength(0);
     expect(await request(token, { rawPath: `/webhooks/%${token.charCodeAt(0).toString(16)}${token.slice(1)}/hook` })).toBe(404);
   });
@@ -116,11 +131,41 @@ describe('single registered request-time DB webhook route', () => {
     const { token } = await h.bus.call<unknown, {
       token: string;
     }>('agents:ensure-webhook-token', h.owner, { agentId: h.teamAgentId, actor: { userId: h.owner.userId, isAdmin: false } });
+    const warnings: string[] = [];
+    const call = h.bus.call.bind(h.bus);
+    vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => {
+      if (name === 'agents:resolve') {
+        const warn = ctx.logger.warn.bind(ctx.logger);
+        ctx.logger.warn = (message, fields) => {
+          if (message === 'agents_acl_team_check_unavailable') warnings.push(message);
+          else warn(message, fields);
+        };
+      }
+      return call(name, ctx, input);
+    });
     h.setTeamFailure('missing');
     expect(await request(token)).toBe(202);
+    expect(warnings).toEqual(['agents_acl_team_check_unavailable']);
     expect(h.invokeCalls).toHaveLength(0);
     const store = createRoutinesStore(h.db);
     expect(await store.findOne(row)).not.toBeNull();
     expect((await store.recentFires(row))[0]?.status).toBe('error');
   });
+  it('rejects literal and encoded dot aliases through the actual HTTP socket adapter',async()=>{
+    const {token}=await setup({header:'sig',algorithm:'sha256'});
+    const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
+    const server=createHttpServerPlugin({host:'127.0.0.1',port:0,cookieKey:Buffer.alloc(32,1),allowedOrigins:['http://localhost']});
+    const serverHarness=await createTestHarness({plugins:[server]});
+    await serverHarness.bus.call('http:register-route',serverHarness.ctx(),h.routes.find(r=>r.path==='/webhooks/:token/*')!);
+    const body='{"title":"signed"}';const sig=createHmac('sha256','test-secret').update(body).digest('hex');
+    const post=(path:string)=>new Promise<number>((resolve,reject)=>{
+      const req=httpRequest({hostname:'127.0.0.1',port:server.boundPort(),method:'POST',path,headers:{'content-type':'application/json',sig,'x-original-url':`/webhooks/${token}/hook`}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode!));});req.on('error',reject);req.end(body);
+    });
+    try {
+      for(const alias of ['a/../hook','./hook','%2e/hook','a/%2e%2e/hook']) expect(await post(`/webhooks/${token}/${alias}`)).toBe(404);
+      expect(h.invokeCalls).toHaveLength(0);expect(await post(`/webhooks/${token}/hook`)).toBe(202);expect(h.invokeCalls).toHaveLength(1);
+      expect(listening.messages).toHaveLength(1);
+    } finally {await serverHarness.close(); listening.restore();}
+  });
+
 });

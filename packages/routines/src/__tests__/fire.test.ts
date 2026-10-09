@@ -1,12 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
 import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
 import type { StoredRoutine } from '../types.js';
 const f = fixture();
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
 function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null }; }
 async function setup(options: {
   resolveError?: PluginError;
@@ -28,6 +31,7 @@ async function setup(options: {
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
   const fire = createFireRoutine({ bus, pending, store: f.store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
+  cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
   return { bus, row, accepted, pending, invoked, conversation, shared, fire };
 }
 describe('accepted DB fire dispatch', () => {
@@ -69,16 +73,20 @@ describe('accepted DB fire dispatch', () => {
   it.each(['throw', 'terminated', 'missing-turn'])('records exactly one terminal error for %s', async (kind) => {
     const h = await setup({ grace: 0, invoke: async () => { if (kind === 'throw')
         throw new Error('failed'); return { kind: kind === 'terminated' ? 'terminated' : 'complete', reason: 'stopped' }; } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
     await h.fire(h.accepted);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
     expect((await f.store.recentFires(h.row))[0]?.status).toBe('error');
+    expect(diagnostic.messages).toHaveLength(1);
     expect(h.pending.size).toBe(0);
     expect(await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', error: null, conversationId: 'c', renderedPrompt: 'p', warning: null } })).toBe(false);
   });
   it('records a connector warning once when a dispatched invocation terminates', async () => {
     const h = await setup({ invoke: async (ctx) => { stashConnectorsSkipped(h.pending, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] }); return { kind: 'terminated', reason: 'runner' }; } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
     await h.fire(h.accepted);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect(diagnostic.messages).toHaveLength(1);
     expect((await f.store.recentFires(h.row))[0]?.warning).toContain("Gmail isn't signed in on Bob");
   });
   it('finishes an accepted dispatch after routine deletion without resurrecting the definition', async () => {
@@ -93,9 +101,11 @@ describe('accepted DB fire dispatch', () => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: terminated: ${reason}`));
     await h.fire(next);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', warning: 'Previous warning' });
+    expect(diagnostic.messages).toHaveLength(1);
   });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
     const h = await setup();
