@@ -11,12 +11,14 @@ import { drainRoutineCleanup } from '../../cleanup.js';
 export type RoutineHarness = {
   bus: HookBus; owner: AgentContext; teamAdmin: AgentContext; teamMember: AgentContext;
   agentId: string; teamAgentId: string; credentialCalls: Array<{ operation: string; ref: string }>;
+  cleanupWarnings: Array<{ message: string; fields: Record<string, unknown> | undefined }>;
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 export async function createRoutineHarness(options: { credentialTimeoutMs?: number; dispatch?: boolean } = {}): Promise<RoutineHarness> {
   const container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   const credentialCalls: RoutineHarness['credentialCalls'] = [];
+  const cleanupWarnings: RoutineHarness['cleanupWarnings'] = [];
   let failDelete = false;
   let teamFailure: 'missing' | 'outage' | null = null;
   const invokeCalls: string[] = [];
@@ -38,9 +40,19 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
       'conversations:hide': async () => undefined,
       'agent:invoke': async ctx => { invokeCalls.push(ctx.reqId); return { kind: 'complete', messages: [] }; },
       'credentials:get': async () => 'test-secret',
-      'credentials:delete': async (_ctx, raw) => {
+      'credentials:delete': async (ctx, raw) => {
         credentialCalls.push({ operation: 'delete', ref: (raw as { ref: string }).ref });
-        if (failDelete) { failDelete = false; throw new Error('unavailable'); }
+        if (failDelete) {
+          failDelete = false;
+          // Capture only this deliberately failed job's expected diagnostic.
+          // Unexpected warnings still use the production logger.
+          const warn = ctx.logger.warn.bind(ctx.logger);
+          ctx.logger.warn = (message, fields) => {
+            if (message === 'routines_credential_cleanup_pending') cleanupWarnings.push({ message, fields });
+            else warn(message, fields);
+          };
+          throw new Error('unavailable');
+        }
       },
       'workspace:apply': async () => { throw new Error('Workspace storage is unavailable'); },
     },
@@ -71,7 +83,7 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
   const agentId = await create(false), teamAgentId = await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),

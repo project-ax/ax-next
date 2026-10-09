@@ -24,6 +24,7 @@ describe('durable HMAC lifecycle through registered services', () => {
     await expect(store.runCredentialCleanup(oldJob!, async () => { throw new Error('Stale discovery performed an effect'); })).resolves.toBe(false);
     expect(h.credentialCalls).toHaveLength(count);
     expect(h.credentialCalls.every(c => c.ref === credentialRef(row))).toBe(true);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
   });
   it('holds deletion behind an in-flight secret and refuses stale forms afterward', async () => {
     h = await createRoutineHarness(); const row = await create();
@@ -59,20 +60,22 @@ describe('durable HMAC lifecycle through registered services', () => {
     expect(await createRoutinesStore(h.db).pendingCleanup({ limit: 10 })).toEqual([]);
   });
   it('uses canonical purge on the actual agents:deleted event', async () => {
-    h = await createRoutineHarness(); await create(); h.failNextCredentialDelete();
+    h = await createRoutineHarness(); const row = await create(); h.failNextCredentialDelete();
     await h.bus.call('agents:delete', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
     const store = createRoutinesStore(h.db);
     expect(await store.list({ agentId: h.agentId })).toEqual([]);
     expect(await store.pendingCleanup({ limit: 10 })).toHaveLength(1);
     await h.drainCleanup(); expect(await store.pendingCleanup({ limit: 10 })).toEqual([]);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
   });
   it('purges agent data and correlations while preserving failed cleanup for retry', async () => {
-    h = await createRoutineHarness(); await create();
+    h = await createRoutineHarness(); const row = await create();
     const pending = new Map([['gone', { row: { agentId: h.agentId } }], ['keep', { row: { agentId: h.teamAgentId } }]]);
     h.failNextCredentialDelete(); const store = createRoutinesStore(h.db);
     await purgeRoutineAgent({ bus: h.bus, store, pending, agentId: h.agentId });
     expect([...pending.keys()]).toEqual(['keep']); expect(await store.list({ agentId: h.agentId })).toEqual([]);
     expect(await store.pendingCleanup({ limit: 10 })).toHaveLength(1);
     await h.drainCleanup(); expect(await store.pendingCleanup({ limit: 10 })).toEqual([]);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
   });
 });

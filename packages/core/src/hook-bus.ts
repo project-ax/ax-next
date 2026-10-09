@@ -358,14 +358,22 @@ export class HookBus {
   async callJoined<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
     // Each explicit joined boundary owns its wait, even inside another one:
     // the inner caller may be holding a different lifecycle lock.
+    const parent = joinedEffects.getStore();
     const pending = new Set<Promise<unknown>>();
-    return joinedEffects.run(pending, async () => {
+    const joined = joinedEffects.run(pending, async () => {
       try { return await this.call<I, O>(hookName, ctx, input); }
       finally {
         // A live handler can start another nested call while we await it.
         while (pending.size) await Promise.allSettled([...pending]);
       }
     });
+    // A detached child can outlive its invoking handler. Enroll the complete
+    // child boundary in its parent, never in its own set (which would deadlock).
+    if (parent) {
+      parent.add(joined);
+      void joined.then(() => parent.delete(joined), () => parent.delete(joined));
+    }
+    return joined;
   }
 
   async call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {

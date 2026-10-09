@@ -36,4 +36,34 @@ describe('joined service settlement', () => {
     expect(innerSettled).toBe(true);
   });
 
+  it.each([false, true])('waits for detached joined descendants (spawned while waiting: %s)', async spawnWhileWaiting => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 10 });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let written = false;
+    let innerSettled = false;
+    let outerSettled = false;
+    let inner!: Promise<unknown>;
+    bus.registerService('write', 'test', async () => { await gate; written = true; });
+    bus.registerService('detach', 'test', async c => {
+      if (spawnWhileWaiting) await Promise.resolve();
+      inner = bus.callJoined('write', c, {}).catch(e => e).finally(() => { innerSettled = true; });
+      return 'detached';
+    });
+    bus.registerService('outer', 'test', async c => {
+      void bus.callJoined('detach', c, {}).catch(() => undefined);
+      return 'accepted';
+    });
+    const outer = bus.callJoined('outer', ctx, {}).finally(() => { outerSettled = true; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(outerSettled).toBe(false);
+      expect(innerSettled).toBe(false);
+      expect(written).toBe(false);
+    } finally { release(); }
+    expect(await outer).toBe('accepted');
+    expect(await inner).toMatchObject({ code: 'timeout' });
+    expect(written).toBe(true);
+  });
+
 });
