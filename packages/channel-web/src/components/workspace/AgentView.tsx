@@ -1717,7 +1717,7 @@ export function AgentView({
               */}
               <SkippedConnectorsNotice
                 agentId={agentId}
-                refreshKey={`${turnsEnded}:${tab}`}
+                refreshKey={`${turnsEnded}:${tab}:${settingsSection ?? 'chat'}`}
                 onOpenConnectors={() => onTab('connectors')}
                 suppressed={past !== null}
               />

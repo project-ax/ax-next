@@ -42,6 +42,8 @@ vi.mock('@/lib/workspace-api', async () => {
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       saveRules: vi.fn(),
+      connectors: vi.fn(async () => ({ connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true })),
+      abilities: vi.fn(async () => ({ abilities: {} })),
     },
   };
 });
@@ -89,6 +91,7 @@ function renderAt(path: string) {
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
   vi.mocked(uploadAttachment).mockReset();
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true });
   boardMock.mockReset();
   boardMock.mockResolvedValue({ agents: AGENTS });
   agentMock.mockReset();
@@ -362,6 +365,25 @@ describe('agent settings page (TASK-888)', () => {
     expect(screen.getByText('notes.txt')).toBeVisible();
     expect(screen.getByText('Ready to send')).toBeVisible();
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the skipped-connector warning after returning from Settings', async () => {
+    withRules();
+    const read = { connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true };
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      ...read,
+      connectors: [{ id: 'gmail', name: 'Gmail', source: 'attached', editable: false,
+        health: 'needs-sign-in', setup: 'sign-in', removable: true }],
+    });
+    renderAt('/workspace/agents/a-quill');
+    const sentence = 'Gmail isn’t signed in yet, so it’s off for this chat.';
+    await screen.findByText(sentence);
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Connectors' }));
+    // A sign-in or removal in Settings changes the next authoritative read.
+    vi.mocked(workspaceApi.connectors).mockResolvedValue(read);
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    await waitFor(() => expect(screen.queryByText(sentence)).toBeNull());
   });
 
   it('loads, edits and saves the rules from Instructions', async () => {
