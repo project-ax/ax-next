@@ -144,8 +144,8 @@ export type ParseBodyResult =
   | { ok: true; value: unknown }
   | { ok: false; status: 400 | 413; message: string };
 
-export function parseRequestBody(body: Buffer): ParseBodyResult {
-  if (body.length > ADMIN_BODY_MAX_BYTES) {
+export function parseRequestBody(body: Buffer, maxBytes = ADMIN_BODY_MAX_BYTES): ParseBodyResult {
+  if (body.length > maxBytes) {
     return { ok: false, status: 413, message: 'body-too-large' };
   }
   if (body.length === 0) return { ok: true, value: {} };

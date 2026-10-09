@@ -8,7 +8,9 @@ describe('CredentialSlotRow', () => {
       const url = String(input);
       if (url.includes('/credentials')) {
         // Status pill query — empty list = "Not set"
-        return new Response(JSON.stringify({ credentials: [] }), { status: 200 });
+        return new Response(JSON.stringify({ credentials: [] }), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 204 });
     });
@@ -18,29 +20,91 @@ describe('CredentialSlotRow', () => {
   it('renders a humanized slot label and an Add key button when not set', async () => {
     render(
       <CredentialSlotRow
-        destination={{ kind: 'skill-slot', skillId: 'linear-tracker', slot: 'LINEAR_TOKEN' }}
+        destination={{
+          kind: 'skill-slot',
+          skillId: 'linear-tracker',
+          slot: 'LINEAR_TOKEN',
+        }}
         slot={{ label: 'LINEAR_TOKEN', kind: 'api-key' }}
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
       />,
     );
     expect(await screen.findByText('Linear token')).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /add key/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: /add key/i }),
+    ).toBeInTheDocument();
   });
 
   it('opens the sheet on click', async () => {
     render(
       <CredentialSlotRow
-        destination={{ kind: 'skill-slot', skillId: 'linear-tracker', slot: 'LINEAR_TOKEN' }}
+        destination={{
+          kind: 'skill-slot',
+          skillId: 'linear-tracker',
+          slot: 'LINEAR_TOKEN',
+        }}
         slot={{ label: 'LINEAR_TOKEN', kind: 'api-key' }}
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
       />,
     );
     fireEvent.click(await screen.findByRole('button', { name: /add key/i }));
-    await waitFor(() =>
-      expect(screen.getByRole('dialog')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     // The dialog title carries the humanized label; multiple elements may match due to the row label
     expect(screen.getAllByText(/Linear token/i).length).toBeGreaterThan(0);
+  });
+
+  it('labels opaque routine destinations from an authorized lookup and sends its revision', async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockImplementation(async (input) => {
+      if (String(input).includes('/settings/routines/'))
+        return new Response(
+          JSON.stringify({
+            routine: {
+              name: 'Daily digest',
+              revision: 'rev7',
+              permissions: { manageSecret: true },
+            },
+          }),
+          { status: 200 },
+        );
+      if (String(input).includes('/admin/credentials'))
+        return new Response(JSON.stringify({ credentials: [] }), {
+          status: 200,
+        });
+      return new Response(null, { status: 204 });
+    });
+    render(
+      <CredentialSlotRow
+        destination={{
+          kind: 'routine-hmac',
+          agentId: 'a',
+          routineId: 'rtn_opaque',
+        }}
+        slot={{ label: 'HMAC secret', kind: 'api-key' }}
+        scope={{ scope: 'agent', ownerId: 'a' }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /add key/i })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /add key/i }));
+    expect((await screen.findByRole('dialog')).textContent).toContain(
+      'the Daily digest routine',
+    );
+    expect(screen.getByRole('dialog').textContent).not.toContain('rtn_opaque');
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(
+        fetch.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes('/destinations/routine-hmac/') &&
+            String(init?.body).includes('rev7'),
+        ),
+      ).toBe(true),
+    );
   });
 
   /**
@@ -78,7 +142,11 @@ describe('CredentialSlotRow', () => {
   it('keeps the "Used by" line when it names something the title does not', async () => {
     render(
       <CredentialSlotRow
-        destination={{ kind: 'skill-slot', skillId: 'linear-tracker', slot: 'LINEAR_TOKEN' }}
+        destination={{
+          kind: 'skill-slot',
+          skillId: 'linear-tracker',
+          slot: 'LINEAR_TOKEN',
+        }}
         slot={{ label: 'LINEAR_TOKEN', kind: 'api-key' }}
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
       />,

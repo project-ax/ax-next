@@ -2,6 +2,8 @@ import {
   makeAgentContext,
   PluginError,
   PROVIDER_ENDPOINTS,
+  SafeToolError,
+  safeToolMessage,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -77,8 +79,8 @@ export function refForDestination(dest: Destination): string {
       return `skill:${dest.skillId}:${dest.slot}`;
     case 'routine-hmac':
       assertNoColon('agentId', dest.agentId);
-      assertNoColon('routinePath', dest.routinePath);
-      return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+      assertNoColon('routineId', dest.routineId);
+      return `routine:${dest.agentId}:${dest.routineId}:hmac`;
     case 'account':
       assertNoColon('service', dest.service);
       // TASK-124 — adaptive per-slot ref (mirrors @ax/credentials/refs.ts). A
@@ -128,8 +130,8 @@ const DestinationSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('routine-hmac'),
-      agentId: z.string().min(1).max(64),
-      routinePath: z.string().min(1).max(256),
+      agentId: z.string().min(1).max(256).refine(value => !value.includes(':')),
+      routineId: z.string().min(1).max(256).refine(value => !value.includes(':')),
     })
     .strict(),
   // A connector key (`account:<service>[:<slot>]`), written on the admin route
@@ -166,23 +168,50 @@ const DestinationSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+/** A routine key has one host-derived destination, never an arbitrary vault scope. */
+function checkRoutineDestination(data: { destination: z.infer<typeof DestinationSchema>; scope: string; ownerId: string | null; expectedRevision?: string | undefined }, ctx: z.RefinementCtx) {
+  if (data.destination.kind === 'routine-hmac') {
+    if (data.scope !== 'agent' || data.ownerId !== data.destination.agentId || data.expectedRevision === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'Invalid routine credential destination.' });
+    }
+  } else {
+    if (data.expectedRevision !== undefined) ctx.addIssue({ code: 'custom', message: 'Revision applies only to routine credentials.' });
+    // Retain the other credential families' original owner-ID bound.
+    if (data.ownerId !== null && data.ownerId.length > 128) ctx.addIssue({ code: 'too_big', maximum: 128, type: 'string', inclusive: true, path: ['ownerId'] });
+  }
+}
+function writeRoutineError(res: RouteResponse, error: unknown): void {
+  if (error instanceof SafeToolError) {
+    const checked = new SafeToolError(error.toolCode,error.field);
+    const status = ['revision-conflict','webhook-path-conflict','request-conflict','cleanup-pending'].includes(checked.toolCode) ? 409
+      : ['not-found','forbidden'].includes(checked.toolCode) ? 404 : checked.toolCode === 'unavailable' ? 503 : 400;
+    res.status(status).json({ code: checked.toolCode, field: checked.field, error: safeToolMessage(checked.toolCode,checked.field) });
+  } else if (error instanceof PluginError && ['forbidden','not-found'].includes(error.code)) {
+    res.status(404).json({ code: 'not-found', error: 'The routine is unavailable.' });
+  } else res.status(503).json({ code: 'unavailable', error: 'Routine management is temporarily unavailable.' });
+}
+
 const CreateBodySchema = z
   .object({
     destination: DestinationSchema,
     scope: z.enum(['global', 'user', 'agent']),
-    ownerId: z.string().min(1).max(128).nullable(),
+    ownerId: z.string().min(1).max(256).nullable(),
     kind: z.literal('api-key'),
     payloadB64: z.string().min(1),
+    expectedRevision: z.string().min(1).max(256).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(checkRoutineDestination);
 
 const DeleteBodySchema = z
   .object({
     destination: DestinationSchema,
     scope: z.enum(['global', 'user', 'agent']),
-    ownerId: z.string().min(1).max(128).nullable(),
+    ownerId: z.string().min(1).max(256).nullable(),
+    expectedRevision: z.string().min(1).max(256).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(checkRoutineDestination);
 
 // ---------------------------------------------------------------------------
 // Handler factory
@@ -237,7 +266,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
    * a missing route, before auth or the body is read.
    */
   function settingsRouteGone(req: RouteRequest, res: RouteResponse): boolean {
-    if (req.params.destinationKind !== 'account') return false;
+    if (req.params.destinationKind !== 'account' && req.params.destinationKind !== 'routine-hmac') return false;
     res.status(404).json({ error: 'not-found' });
     return true;
   }
@@ -251,14 +280,19 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     req: RouteRequest,
     res: RouteResponse,
     forceUser: { id: string } | null,
+    actorId: string,
   ): Promise<void> {
-    const parsedBody = parseRequestBody(req.body);
+    const parsedBody = parseRequestBody(req.body, req.params.destinationKind === 'routine-hmac' ? 96 * 1024 : undefined);
     if (!parsedBody.ok) {
       res.status(parsedBody.status).json({ error: parsedBody.message });
       return;
     }
     const result = CreateBodySchema.safeParse(parsedBody.value);
     if (!result.success) {
+      if (req.params.destinationKind === 'routine-hmac') {
+        res.status(400).json({ code: 'validation', field: 'input', error: 'Invalid routine credential input.' });
+        return;
+      }
       const first = result.error.issues[0];
       res.status(400).json({
         error:
@@ -321,8 +355,20 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       res.status(400).json({ error: 'invalid-payload' });
       return;
     }
-    if (payload.length === 0) {
+    if (payload.length === 0 || (data.destination.kind === 'routine-hmac' && payload.length > 65536)) {
       res.status(400).json({ error: 'payload must decode to non-empty bytes' });
+      return;
+    }
+
+    if (data.destination.kind === 'routine-hmac') {
+      const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actorId, agentId: data.destination.agentId });
+      try {
+        await deps.bus.call('routines:set-webhook-secret', routineCtx, {
+          agentId: data.destination.agentId, routineId: data.destination.routineId,
+          expectedRevision: data.expectedRevision, operation: 'set', secret: payload,
+        });
+        res.status(204).end();
+      } catch (error) { writeRoutineError(res,error); }
       return;
     }
 
@@ -370,14 +416,19 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     req: RouteRequest,
     res: RouteResponse,
     forceUser: { id: string } | null,
+    actorId: string,
   ): Promise<void> {
-    const parsedBody = parseRequestBody(req.body);
+    const parsedBody = parseRequestBody(req.body, req.params.destinationKind === 'routine-hmac' ? 96 * 1024 : undefined);
     if (!parsedBody.ok) {
       res.status(parsedBody.status).json({ error: parsedBody.message });
       return;
     }
     const result = DeleteBodySchema.safeParse(parsedBody.value);
     if (!result.success) {
+      if (req.params.destinationKind === 'routine-hmac') {
+        res.status(400).json({ code: 'validation', field: 'input', error: 'Invalid routine credential input.' });
+        return;
+      }
       const first = result.error.issues[0];
       res.status(400).json({
         error:
@@ -420,6 +471,18 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       throw err;
     }
 
+    if (data.destination.kind === 'routine-hmac') {
+      const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actorId, agentId: data.destination.agentId });
+      try {
+        await deps.bus.call('routines:set-webhook-secret', routineCtx, {
+          agentId: data.destination.agentId, routineId: data.destination.routineId,
+          expectedRevision: data.expectedRevision, operation: 'delete',
+        });
+        res.status(204).end();
+      } catch (error) { writeRoutineError(res,error); }
+      return;
+    }
+
     try {
       await deps.bus.call('credentials:delete', ctx, { scope, ownerId, ref });
       res.status(204).end();
@@ -434,7 +497,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     async create(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doCreate(req, res, null);
+      await doCreate(req, res, null, actor.id);
     },
 
     /** POST /settings/destinations/:destinationKind/credential (not `account`) */
@@ -442,14 +505,14 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doCreate(req, res, { id: actor.id });
+      await doCreate(req, res, { id: actor.id }, actor.id);
     },
 
     /** DELETE /admin/destinations/:destinationKind/credential */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doDelete(req, res, null);
+      await doDelete(req, res, null, actor.id);
     },
 
     /** DELETE /settings/destinations/:destinationKind/credential (not `account`) */
@@ -457,7 +520,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doDelete(req, res, { id: actor.id });
+      await doDelete(req, res, { id: actor.id }, actor.id);
     },
   };
 }

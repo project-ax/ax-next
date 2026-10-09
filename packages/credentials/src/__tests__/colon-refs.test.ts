@@ -160,7 +160,7 @@ describe('colon-bearing credential refs', () => {
     });
   });
 
-  it('accepts routine-hmac refs that embed a /-bearing path', async () => {
+  it('accepts routine-hmac refs with opaque authored IDs', async () => {
     const bus = new HookBus();
     await bootstrap({
       bus,
@@ -171,7 +171,7 @@ describe('colon-bearing credential refs', () => {
       bus.call('credentials:set', ctx(), {
         scope: 'agent',
         ownerId: 'agt-1',
-        ref: 'routine:agt-1:.ax/routines/cron.md:hmac',
+        ref: 'routine:agt-1:rtn_opaque:hmac',
         kind: 'api-key',
         payload: bytes('s'),
       }),

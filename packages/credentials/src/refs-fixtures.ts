@@ -44,9 +44,9 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
     destination: {
       kind: 'routine-hmac',
       agentId: 'agt-1',
-      routinePath: '.ax/routines/cron.md',
+      routineId: 'rtn_opaque',
     },
-    expectedRef: 'routine:agt-1:.ax/routines/cron.md:hmac',
+    expectedRef: 'routine:agt-1:rtn_opaque:hmac',
   },
   {
     // Single-slot connector / standalone account key: the ref STAYS

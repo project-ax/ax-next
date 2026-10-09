@@ -25,6 +25,7 @@
     "@ax/agents": "workspace:*",
     "@ax/conversations": "workspace:*",
     "@ax/core": "workspace:*",
+    "@ax/routines-contract": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",

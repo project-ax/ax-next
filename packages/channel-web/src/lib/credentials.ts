@@ -1,4 +1,5 @@
 import { HttpError, httpFetch } from './http';
+import { readRoutineResponse, RoutineApiError } from './routines';
 import type { Destination } from '@ax/credentials';
 
 /**
@@ -127,15 +128,25 @@ export const adminCredentials = {
  * the hook bus; runtime cross-plugin imports are forbidden). This is a
  * pure string computation with no side effects.
  */
+function assertNoColon(field: string, value: string): void {
+  if (value.includes(':')) throw new Error(`${field} must not contain ':' (reserved as ref separator)`);
+}
 export function refForDestination(dest: Destination): string {
   switch (dest.kind) {
     case 'provider':
+      assertNoColon('provider', dest.provider);
       return `provider:${dest.provider}`;
     case 'skill-slot':
+      assertNoColon('skillId', dest.skillId);
+      assertNoColon('slot', dest.slot);
       return `skill:${dest.skillId}:${dest.slot}`;
     case 'routine-hmac':
-      return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+      assertNoColon('agentId', dest.agentId);
+      assertNoColon('routineId', dest.routineId);
+      return `routine:${dest.agentId}:${dest.routineId}:hmac`;
     case 'account':
+      assertNoColon('service', dest.service);
+      if (dest.slot !== undefined) assertNoColon('slot', dest.slot);
       // TASK-124 — adaptive per-slot ref (mirrors @ax/credentials/refs.ts). A
       // multi-slot connector supplies `slot` so each slot addresses a distinct
       // vault row; a single-slot / bare account key omits it and keeps the
@@ -191,18 +202,30 @@ async function keyValidationMessage(res: Response, destination: Destination): Pr
  */
 export const CONNECTOR_KEY_NOT_PER_PERSON = 'Connector credentials belong to agents now.';
 
-export async function setDestinationCredential(args: {
-  destination: Destination;
-  slot: { kind: 'api-key' };
+type RoutineDestination = Extract<Destination, {kind: 'routine-hmac'}>;
+export type DestinationCredentialTarget = {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+} & (
+  | { destination: RoutineDestination; expectedRevision: string }
+  | { destination: Exclude<Destination, RoutineDestination>; expectedRevision?: never }
+);
+function checkRoutineTarget(args: DestinationCredentialTarget): void {
+  if (args.destination.kind === 'routine-hmac' && (args.scope.scope !== 'agent' || args.scope.ownerId !== args.destination.agentId || !args.expectedRevision)) {
+    throw new RoutineApiError(400, 'validation', 'expectedRevision');
+  }
+}
+export async function setDestinationCredential(args: DestinationCredentialTarget & {
+  slot: { kind: 'api-key' };
   payload: string;
 }): Promise<void> {
+  checkRoutineTarget(args);
   if (args.destination.kind === 'account' && args.scope.scope === 'user')
     throw new Error(CONNECTOR_KEY_NOT_PER_PERSON);
   const base = args.scope.scope === 'user' ? '/settings' : '/admin';
   const url = `${base}/destinations/${args.destination.kind}/credential`;
   const body = {
     destination: args.destination,
+    ...(args.destination.kind === 'routine-hmac' ? {expectedRevision: args.expectedRevision} : {}),
     scope: args.scope.scope,
     ownerId: args.scope.ownerId,
     kind: args.slot.kind,
@@ -220,7 +243,12 @@ export async function setDestinationCredential(args: {
     });
   } catch {
     // A transport exception may carry request details, including the secret.
+    if (args.destination.kind === 'routine-hmac') throw new RoutineApiError(0);
     throw new HttpError(url, 0);
+  }
+  if (args.destination.kind === 'routine-hmac') {
+    await readRoutineResponse<void>(res);
+    return;
   }
   if (!res.ok) {
     console.warn(`[credentials] ${url} → ${res.status}`);
@@ -228,6 +256,20 @@ export async function setDestinationCredential(args: {
       ? await keyValidationMessage(res, args.destination)
       : undefined);
   }
+}
+
+/** Routine deletes carry the same lifecycle revision as writes. */
+export async function removeDestinationCredential(args: DestinationCredentialTarget): Promise<void> {
+  checkRoutineTarget(args);
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  const body = { destination: args.destination, scope: args.scope.scope, ownerId: args.scope.ownerId,
+    ...(args.destination.kind === 'routine-hmac' ? {expectedRevision: args.expectedRevision} : {}) };
+  let res: Response;
+  try { res = await httpFetch(url, {method: 'DELETE', headers: writeHeaders, body: JSON.stringify(body)}); }
+  catch { if(args.destination.kind === 'routine-hmac')throw new RoutineApiError(0);throw new HttpError(url,0); }
+  if(args.destination.kind === 'routine-hmac')await readRoutineResponse<void>(res);
+  else if(!res.ok)throw new HttpError(url,res.status);
 }
 
 /**

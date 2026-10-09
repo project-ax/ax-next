@@ -61,6 +61,7 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         // completeness; the actual calls live in those files.
         'credentials:set',
         'credentials:delete',
+        'routines:set-webhook-secret',
       ],
       subscribes: [],
     },

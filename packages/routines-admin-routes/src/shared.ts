@@ -1,6 +1,8 @@
 import {
   isRejection,
   PluginError,
+  SafeToolError,
+  safeToolMessage,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -12,8 +14,8 @@ import {
 // This module owns:
 //   - Duck-typed RouteRequest / RouteResponse (no @ax/http-server import,
 //     same posture as packages/agents/src/admin-routes.ts — Invariant I2).
-//   - 64 KiB body cap (ADMIN_BODY_MAX_BYTES) — routines fire payloads are
-//     small JSON blobs; 64 KiB matches the rest of the admin surface.
+//   - 72 KiB body cap (ADMIN_BODY_MAX_BYTES) — room for a canonical 64 KiB
+//     definition and its bounded request/revision envelope.
 //   - The write-error → HTTP-status mapping (PluginError code → status).
 //   - The auth helper. /settings/routines* needs an authed user; per-route
 //     owner ACL goes through agents:resolve afterwards.
@@ -22,7 +24,8 @@ import {
 /** Locked at handler entry. Smaller than http-server's 1 MiB to keep the
  *  admin/settings surface from accepting blobs the storage layer can't
  *  reasonably hold. */
-export const ADMIN_BODY_MAX_BYTES = 64 * 1024;
+// Canonical definition JSON is capped at 64 KiB; allow its request/revision envelope.
+export const ADMIN_BODY_MAX_BYTES = 72 * 1024;
 
 export interface RouteRequest {
   readonly headers: Record<string, string>;
@@ -104,43 +107,49 @@ export async function requireAdmin(
   return actor;
 }
 
-/**
- * Translate a service PluginError into an HTTP status. Returns true if the
- * response was written; false if the error wasn't recognized (caller should
- * re-throw so the http-server's 500 handler logs it).
- *
- * Extra 400-mapped codes cover the default-routine surface
- * (/admin/routines/defaults*): the routines plugin throws these on bad
- * source-md or unsupported trigger kinds, and we want them surfaced as a
- * 4xx with the original message rather than masked as a 500.
- */
-const DEFAULT_ROUTINE_BAD_REQUEST_CODES: ReadonlySet<string> = new Set([
-  'invalid-routine-md',
-  'default-trigger-webhook-not-supported',
-  'default-trigger-cron-not-supported',
-  'invalid-interval',
-]);
-
+/** Closed routine failures are rendered again here; provider exception text is never public. */
 export function writeServiceError(res: RouteResponse, err: unknown): boolean {
-  if (err instanceof PluginError) {
-    if (err.code === 'forbidden') {
-      res.status(403).json({ error: 'forbidden' });
-      return true;
-    }
-    if (err.code === 'not-found') {
-      res.status(404).json({ error: 'not-found' });
-      return true;
-    }
-    if (err.code === 'invalid-payload') {
-      res.status(400).json({ error: err.message });
-      return true;
-    }
-    if (DEFAULT_ROUTINE_BAD_REQUEST_CODES.has(err.code)) {
-      res.status(400).json({ error: err.message, code: err.code });
-      return true;
-    }
+  if (err instanceof SafeToolError) {
+    // Validate both closed fields again: plugin code can mutate Error objects.
+    const checked = new SafeToolError(err.toolCode, err.field);
+    const status =
+      checked.toolCode === 'not-found' || checked.toolCode === 'forbidden'
+        ? 404
+        : [
+              'revision-conflict',
+              'webhook-path-conflict',
+              'request-conflict',
+              'cleanup-pending',
+            ].includes(checked.toolCode)
+          ? 409
+          : checked.toolCode === 'unavailable'
+            ? 503
+            : 400;
+    res
+      .status(status)
+      .json({
+        code: checked.toolCode,
+        field: checked.field,
+        error: safeToolMessage(checked.toolCode, checked.field),
+      });
+    return true;
   }
-  return false;
+  if (
+    err instanceof PluginError &&
+    (err.code === 'forbidden' || err.code === 'not-found')
+  ) {
+    res
+      .status(404)
+      .json({ code: 'not-found', error: 'The routine is unavailable.' });
+    return true;
+  }
+  res
+    .status(503)
+    .json({
+      code: 'unavailable',
+      error: 'Routine management is temporarily unavailable.',
+    });
+  return true;
 }
 
 /**

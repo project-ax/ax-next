@@ -266,8 +266,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async withLockedWebhookSecret(input, effect) {
       return db.transaction().execute(async trx => {
         const row = await lockRoutine(trx, input);
-        if (!hasHmac(row)) throw new SafeToolError('validation', 'trigger.hmac');
         await assertNoCleanup(trx, row);
+        if (!hasHmac(row)) throw new SafeToolError('validation', 'trigger.hmac');
         await effect();
         return { saved: true as const };
       });

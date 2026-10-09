@@ -573,6 +573,9 @@ importers:
       '@ax/routines':
         specifier: workspace:*
         version: link:../routines
+      '@ax/routines-contract':
+        specifier: workspace:*
+        version: link:../routines-contract
       '@ax/sandbox-mount-protocol':
         specifier: workspace:*
         version: link:../sandbox-mount-protocol
@@ -1937,6 +1940,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/routines-contract':
+        specifier: workspace:*
+        version: link:../routines-contract
       zod:
         specifier: ^3.23.8
         version: 3.25.76

@@ -21,7 +21,7 @@ export type RoutineHarness = {
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
-export async function createRoutineHarness(options: { shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
+export async function createRoutineHarness(options: { authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
@@ -55,7 +55,7 @@ export async function createRoutineHarness(options: { shutdownTimeoutMs?: number
         const { userId, teamId } = raw as { userId: string; teamId: string };
         return { member: teamId === 'team-1' && ['owner', 'admin', 'member'].includes(userId), role: userId === 'member' ? 'member' : 'admin' };
       },
-      'auth:require-user': async ctx => ({ user: { id: ctx.userId, email: `${ctx.userId}@example.test`, displayName: ctx.userId, isAdmin: ctx.userId === 'admin', createdAt: new Date() } }),
+      'auth:require-user': async ctx => { const userId = options.authenticatedUserId ?? ctx.userId; return { user: { id: userId, email: `${userId}@example.test`, displayName: userId, isAdmin: userId === 'admin', createdAt: new Date() } }; },
       'auth:get-user': async (_ctx, raw) => { const { userId } = raw as { userId: string }; return { id: userId, email: `${userId}@example.test`, displayName: userId, isAdmin: userId === 'admin' }; },
       'http:register-route': async (_ctx, raw) => { routes.push(raw as HttpRegisterRouteInput); return { unregister() {} }; },
       'conversations:find-or-create': async () => ({ conversation: { conversationId: 'conversation' }, created: true }),
