@@ -416,7 +416,8 @@ export class HookBus {
     options: { priority?: number } = {}): void {
     const priority = options.priority ?? 0;
     if (!Number.isSafeInteger(priority)) throw new Error('subscriber priority must be a safe integer');
-    const list = this.subscribers.get(hookName) ?? [];
+    // An active fire owns its captured list; registration takes effect on the next fire.
+    const list = [...(this.subscribers.get(hookName) ?? [])];
     list.push({ plugin, handler: handler as SubscriberHandler, priority });
     list.sort((left, right) => left.priority - right.priority);
     this.subscribers.set(hookName, list);

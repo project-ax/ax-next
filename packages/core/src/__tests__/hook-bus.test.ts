@@ -1131,6 +1131,31 @@ describe('HookBus — subscriber abort signal (TASK-552)', () => {
 
 
 describe('subscriber priorities', () => {
+  it.each([undefined, 1000])('keeps an active fire stable when registering earlier priority (timeout %s)', async (subscriberTimeoutMs) => {
+    const bus = new HookBus();
+    const seen: string[] = [];
+    let registered = false;
+    bus.subscribe('ordered', 'first', async () => {
+      seen.push('first');
+      if (!registered) {
+        registered = true;
+        bus.subscribe('ordered', 'new-earlier', async () => {
+          seen.push('new-earlier');
+        }, { priority: -10 });
+      }
+    });
+    bus.subscribe('ordered', 'last', async () => {
+      seen.push('last');
+    });
+    const options = subscriberTimeoutMs === undefined ? {} : { subscriberTimeoutMs };
+
+    await bus.fire('ordered', silentCtx(), {}, options);
+    expect(seen).toEqual(['first', 'last']);
+
+    seen.length = 0;
+    await bus.fire('ordered', silentCtx(), {}, options);
+    expect(seen).toEqual(['new-earlier', 'first', 'last']);
+  });
   it('orders by priority and preserves registration order within ties', async () => {
     const bus = new HookBus();
     const seen: string[] = [];
