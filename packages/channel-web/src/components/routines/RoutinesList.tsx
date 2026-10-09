@@ -61,6 +61,12 @@ export function RoutinesList({
   const [busy, setBusy] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [deleting, setDeleting] = useState<Routine | null>(null);
+  const [fireProtected, setFireProtected] = useState(false);
+  const fireProtectedRef = useRef(false);
+  function protectFire(pending: boolean) {
+    fireProtectedRef.current = pending;
+    setFireProtected(pending);
+  }
   const flight = useRef(false);
   const operation = useRef<{
     key: string;
@@ -69,6 +75,9 @@ export function RoutinesList({
     kind: 'enabled' | 'delete';
   } | null>(null);
   useEffect(() => {
+    // Preserve the child and its exact retry identity. A changed refresh key is
+    // picked up when the operation is confirmed or explicitly refused.
+    if (fireProtectedRef.current) return;
     let active = true;
     setList(null);
     setError(null);
@@ -87,7 +96,7 @@ export function RoutinesList({
     return () => {
       active = false;
     };
-  }, [idKey, agentsStatus, version, refreshKey]);
+  }, [idKey, agentsStatus, version, refreshKey, fireProtected]);
   useEffect(() => {
     const row = list?.find((r) => r.routineId === expanded);
     if (!row) return;
@@ -121,7 +130,7 @@ export function RoutinesList({
     setVersion((n) => n + 1);
   }
   async function mutate(row: Routine, kind: 'enabled' | 'delete') {
-    if (flight.current) return;
+    if (flight.current || fireProtectedRef.current) return;
     const key = `${row.routineId}:${row.revision}:${kind}`;
     if (operation.current && operation.current.key !== key) {
       setError('Retry the unconfirmed change before making another change.');
@@ -172,7 +181,7 @@ export function RoutinesList({
         </p>
         {agentId ? (
           <Button
-            disabled={busy !== null || uncertain}
+            disabled={busy !== null || uncertain || fireProtected}
             onClick={() => setCreating(agentId)}
           >
             New routine
@@ -183,7 +192,7 @@ export function RoutinesList({
               <Button
                 key={a.id}
                 variant="outline"
-                disabled={busy !== null || uncertain}
+                disabled={busy !== null || uncertain || fireProtected}
                 onClick={() => setCreating(a.id)}
               >
                 New routine for {a.name}
@@ -200,7 +209,11 @@ export function RoutinesList({
         >
           <AlertDescription>
             {error}
-            <Button variant="ghost" onClick={() => setVersion((n) => n + 1)}>
+            <Button
+              variant="ghost"
+              disabled={fireProtected}
+              onClick={() => setVersion((n) => n + 1)}
+            >
               Refresh
             </Button>
           </AlertDescription>
@@ -242,11 +255,13 @@ export function RoutinesList({
                 variant="ghost"
                 aria-label={`Recent runs for ${row.name}`}
                 aria-expanded={expanded === row.routineId}
-                onClick={() =>
-                  setExpanded((v) =>
-                    v === row.routineId ? null : row.routineId,
-                  )
-                }
+                disabled={fireProtected}
+                onClick={() => {
+                  if (!fireProtectedRef.current)
+                    setExpanded((v) =>
+                      v === row.routineId ? null : row.routineId,
+                    );
+                }}
               >
                 <ChevronRight data-icon="inline-start" />
               </Button>
@@ -267,7 +282,9 @@ export function RoutinesList({
                   id={`routine-${row.routineId}`}
                   aria-label={`Enabled for ${row.name}`}
                   checked={row.enabled}
-                  disabled={busy !== null || uncertain || !row.permissions.stop}
+                  disabled={
+                    busy !== null || uncertain || fireProtected || !row.permissions.stop
+                  }
                   onCheckedChange={() => void mutate(row, 'enabled')}
                 />
               </Field>
@@ -275,7 +292,7 @@ export function RoutinesList({
                 <Button
                   variant="ghost"
                   aria-label={`Edit ${row.name}`}
-                  disabled={busy !== null || uncertain}
+                  disabled={busy !== null || uncertain || fireProtected}
                   onClick={() => setEditing(row)}
                 >
                   <Pencil data-icon="inline-start" />
@@ -291,13 +308,17 @@ export function RoutinesList({
                 )}
                 <div className="flex flex-wrap gap-2">
                   {row.permissions.fire && (
-                    <FireNowControl routine={row} onFired={onFired} />
+                    <FireNowControl
+                      routine={row}
+                      onFired={onFired}
+                      onPendingChange={protectFire}
+                    />
                   )}
                   {row.permissions.edit && (
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={busy !== null || uncertain}
+                      disabled={busy !== null || uncertain || fireProtected}
                       onClick={() => setDeleting(row)}
                     >
                       Delete routine
@@ -396,7 +417,7 @@ export function RoutinesList({
             <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
-                disabled={busy !== null || uncertain}
+                disabled={busy !== null || uncertain || fireProtected}
                 onClick={() => setDeleting(null)}
               >
                 Cancel

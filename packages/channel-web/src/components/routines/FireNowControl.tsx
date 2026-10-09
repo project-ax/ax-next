@@ -5,9 +5,11 @@ import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 export function FireNowControl({
   routine,
   onFired,
+  onPendingChange,
 }: {
   routine: Routine;
   onFired: () => void;
+  onPendingChange?: (pending: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -22,6 +24,7 @@ export function FireNowControl({
   async function fire() {
     if (flight.current || !routine.permissions.fire || !routine.enabled) return;
     flight.current = true;
+    onPendingChange?.(true);
     setBusy(true);
     setStatus(null);
     operation.current ??= {
@@ -52,6 +55,7 @@ export function FireNowControl({
     } finally {
       flight.current = false;
       setBusy(false);
+      onPendingChange?.(operation.current !== null);
     }
   }
   return (

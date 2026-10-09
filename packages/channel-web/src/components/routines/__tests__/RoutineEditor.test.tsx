@@ -208,6 +208,31 @@ describe('structured routine form', () => {
       ),
     );
   });
+  it('retains event separators during typing, deleting and editing before canonical submit', async () => {
+    render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fill('Name', 'Events');
+    fill('What should Caveman do?', 'Handle events');
+    fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
+    const input = screen.getByLabelText('Events (comma-separated)') as HTMLInputElement;
+    for (const character of 'push, update') {
+      fireEvent.change(input, { target: { value: input.value + character } });
+    }
+    expect(input).toHaveValue('push, update');
+    fireEvent.change(input, { target: { value: input.value.replace(',', '') } });
+    expect(input).toHaveValue('push update');
+    fireEvent.change(input, { target: { value: input.value.replace(' ', ', ') } });
+    expect(input).toHaveValue('push, update');
+    for (const character of ', ') {
+      fireEvent.change(input, { target: { value: input.value + character } });
+    }
+    expect(input).toHaveValue('push, update, ');
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
+    await waitFor(() => expect(routineApi.create).toHaveBeenCalledWith(
+      expect.objectContaining({ definition: expect.objectContaining({
+        trigger: { kind: 'webhook', path: '/project-updates', events: ['push', 'update'] },
+      }) }),
+    ));
+  });
   it('represents missing receiver permission explicitly', async () => {
     vi.mocked(routineApi.getReceiver).mockRejectedValue(
       new RoutineApiError(404),

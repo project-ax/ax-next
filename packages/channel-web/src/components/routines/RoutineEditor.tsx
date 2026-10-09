@@ -193,6 +193,11 @@ function RoutineForm({
 }) {
   const id = useId();
   const [form, setForm] = useState(initial);
+  const [eventsDraft, setEventsDraft] = useState(
+    initial.trigger.kind === 'webhook'
+      ? (initial.trigger.events ?? []).join(', ')
+      : '',
+  );
   const [error, setError] = useState<string | null>(null);
   const [invalidField, setInvalidField] = useState<string | undefined>();
   const [conflict, setConflict] = useState(false);
@@ -225,11 +230,21 @@ function RoutineForm({
       active = false;
     };
   }, [agentId, form.trigger.kind]);
+  // Keep separators in the input; normalize only the definition being validated/saved.
+  const draftDefinition = useMemo(() => {
+    if (form.trigger.kind !== 'webhook') return form;
+    const { events: _events, ...trigger } = form.trigger;
+    const events = eventsDraft
+      .split(',')
+      .map((event) => event.trim())
+      .filter(Boolean);
+    return { ...form, trigger: events.length ? { ...trigger, events } : trigger };
+  }, [form, eventsDraft]);
   const validation = useMemo(
-    () => RoutineDefinitionSchema.safeParse(form),
-    [form],
+    () => RoutineDefinitionSchema.safeParse(draftDefinition),
+    [draftDefinition],
   );
-  const dirty = Object.keys(changed(form, initial)).length > 0;
+  const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
   const disabled = busy || uncertain || !canEdit;
   useEffect(() => {
     onPendingChange?.(busy || uncertain);
@@ -283,7 +298,7 @@ function RoutineForm({
     setConflict(false);
     operation.current ??= {
       requestId: crypto.randomUUID(),
-      definition: validation.success ? validation.data : form,
+      definition: validation.success ? validation.data : draftDefinition,
     };
     try {
       await save(operation.current.definition, operation.current.requestId);
@@ -319,7 +334,7 @@ function RoutineForm({
   }
   const savedWebhook =
     initial.trigger.kind === 'webhook' &&
-    JSON.stringify(initial.trigger) === JSON.stringify(form.trigger) &&
+    JSON.stringify(initial.trigger) === JSON.stringify(draftDefinition.trigger) &&
     mode === 'edit';
   return (
     <form
@@ -375,12 +390,14 @@ function RoutineForm({
                   expr: '0 8 * * 1-5',
                   tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
                 });
-              if (v === 'webhook')
+              if (v === 'webhook') {
+                setEventsDraft('');
                 setForm((f) => ({
                   ...f,
                   activeHours: null,
                   trigger: { kind: 'webhook', path: '/project-updates' },
                 }));
+              }
             }}
             className="justify-start flex-wrap"
           >
@@ -438,20 +455,13 @@ function RoutineForm({
               )}
               {textField(
                 'Events (comma-separated)',
-                (form.trigger.events ?? []).join(', '),
+                eventsDraft,
                 'trigger.events',
                 (v) => {
-                  if (form.trigger.kind === 'webhook') {
-                    const { events: _events, ...rest } = form.trigger;
-                    const events = v
-                      .split(',')
-                      .map((s) => s.trim())
-                      .filter(Boolean);
-                    update(
-                      'trigger',
-                      events.length ? { ...rest, events } : rest,
-                    );
-                  }
+                  setEventsDraft(v);
+                  setError(null);
+                  setInvalidField(undefined);
+                  setCopyState('');
                 },
               )}
             </FieldGroup>

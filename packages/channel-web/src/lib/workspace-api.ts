@@ -801,7 +801,7 @@ export const workspaceApi = {
     );
   },
 
-  approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: JSON.stringify({ approvalScope }) }) }),
+  approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
 

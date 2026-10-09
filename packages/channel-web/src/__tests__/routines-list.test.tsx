@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { RoutinesList } from '../components/routines/RoutinesList';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { routineFixture as row } from '../components/routines/__tests__/routine-fixture';
@@ -11,6 +11,7 @@ vi.mock('@/lib/routines', async (original) => ({
     recentFires: vi.fn(),
     remove: vi.fn(),
     update: vi.fn(),
+    fireNow: vi.fn(),
   },
 }));
 beforeEach(() => {
@@ -121,6 +122,63 @@ describe('routine list', () => {
     expect(vi.mocked(routineApi.update).mock.calls[1]).toEqual(
       vi.mocked(routineApi.update).mock.calls[0],
     );
+  });
+  it('preserves a pending/lost fire across attempted collapse and deferred refresh until exact retry reconciles', async () => {
+    let lose!: (error: Error) => void;
+    let reconcile!: (value: { status: 'ok' }) => void;
+    vi.mocked(routineApi.fireNow)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        lose = reject;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        reconcile = resolve;
+      }));
+    const fired = vi.fn();
+    const view = render(
+      <RoutinesList agentId="a" agentName="Caveman" onFired={fired} />,
+    );
+    await screen.findByText(row.name);
+    const disclosure = () =>
+      screen.getByRole('button', { name: `Recent runs for ${row.name}` });
+    fireEvent.click(disclosure());
+    fireEvent.click(screen.getByRole('button', { name: 'Fire now' }));
+    fireEvent.click(disclosure());
+    fireEvent.click(disclosure());
+    expect(disclosure()).toBeDisabled();
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled();
+    expect(routineApi.fireNow).toHaveBeenCalledTimes(1);
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, revision: 'new-revision' }]);
+    view.rerender(<RoutinesList agentId="a" agentName="Caveman" refreshKey={1} onFired={fired} />);
+    expect(routineApi.list).toHaveBeenCalledTimes(1);
+    await act(async () => lose(new RoutineApiError(0)));
+    await screen.findByText('Routine management is temporarily unavailable.');
+    fireEvent.click(disclosure());
+    fireEvent.click(disclosure());
+    view.rerender(<RoutinesList agentId="a" agentName="Caveman" refreshKey={2} onFired={fired} />);
+    expect(routineApi.list).toHaveBeenCalledTimes(1);
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Fire now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Starting…' }));
+    expect(routineApi.fireNow).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(routineApi.fireNow).mock.calls[1]).toEqual(
+      vi.mocked(routineApi.fireNow).mock.calls[0],
+    );
+    expect(routineApi.fireNow).toHaveBeenLastCalledWith({
+      agentId: 'a',
+      routineId: row.routineId,
+      expectedRevision: row.revision,
+      requestId: expect.any(String),
+    });
+    await act(async () => reconcile({ status: 'ok' }));
+    await waitFor(() => expect(routineApi.list).toHaveBeenCalledTimes(2));
+    await screen.findByText(row.name);
+    expect(fired).toHaveBeenCalledTimes(1);
+    expect(disclosure()).toBeEnabled();
+    fireEvent.click(disclosure());
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(disclosure());
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
   });
   it('does not show failed list reads as an empty list', async () => {
     vi.mocked(routineApi.list).mockRejectedValue(new Error('private'));

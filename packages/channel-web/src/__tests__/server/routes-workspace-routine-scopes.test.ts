@@ -1,9 +1,10 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, makeAgentContext } from '@ax/core';
 // Use the producer's strict schema in this boundary regression.
 import { CanManageRoutinesInputSchema } from '../../../../agents/src/types.js';
 import { makeWorkspaceHandlers } from '../../server/routes-workspace';
+import { workspaceApi } from '../../lib/workspace-api';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat';
 const stored = {
   approvalScope: 'once' as 'once' | 'agent-routines',
@@ -119,7 +120,31 @@ function setup(over: Partial<typeof stored> = {}, allowed = true) {
     }),
   };
 }
+afterEach(() => vi.unstubAllGlobals());
 describe('server-authored routine approval scopes', () => {
+  it.each(['once', 'agent-routines'] as const)(
+    'serializes actual client scope %s into the strict approval route',
+    async (approvalScope) => {
+      const s = setup();
+      const transport = vi.fn(async (url, init) => {
+        expect(url).toBe('/api/workspace/decisions/d/approve');
+        expect(init.method).toBe('POST');
+        await s.handlers.approveDecision(s.req(init.body), s.res);
+        return new Response(JSON.stringify(s.result().data), {
+          status: s.result().status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      vi.stubGlobal('fetch', transport);
+      await workspaceApi.approveDecision('d', approvalScope);
+      expect(JSON.parse(transport.mock.calls[0]![1].body)).toEqual({ approvalScope });
+      expect(s.result().status).toBe(200);
+      expect(s.approve).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ approvalScope, userId: 'u' }),
+      );
+    },
+  );
   it('offers agent scope from eligible stored call/current real manager, and forwards strict choice', async () => {
     const s = setup();
     await s.handlers.decision(s.req(), s.res);

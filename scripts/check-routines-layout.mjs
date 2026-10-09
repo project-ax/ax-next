@@ -17,6 +17,16 @@ const browser = await chromium.launch({
     ? { executablePath: process.env.AX_BROWSER_EXECUTABLE_PATH }
     : {}),
 });
+// Wait for finite CSS animations/transitions, including dialog fade and tab paint.
+async function settle(page) {
+  await page.mouse.move(0, 0);
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations()
+      .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+      .map((animation) => animation.finished.catch(() => {})));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
 const agent = {
   id: 'routine-preview-agent',
   name: 'Caveman',
@@ -175,6 +185,7 @@ try {
         .getByText('Ask before creating or editing routines', { exact: true })
         .isVisible(),
     );
+    await settle(page);
     await page.screenshot({
       path: `${evidence}/${label}-${theme}-list-test-data.png`,
       fullPage: true,
@@ -193,6 +204,7 @@ try {
       .getByLabel('Description', { exact: true })
       .fill('A quick check on project progress.');
     await dialog.getByLabel('What should Caveman do?').fill(row.promptBody);
+    await settle(page);
     await page.screenshot({
       path: `${evidence}/${label}-${theme}-schedule-test-data.png`,
       fullPage: true,
@@ -211,8 +223,7 @@ try {
           .getAttribute('data-state'),
         'off',
       );
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(200);
+    await settle(page);
     await dialog
       .getByLabel('Webhook path', { exact: true })
       .fill('/project-updated');
@@ -227,14 +238,14 @@ try {
         .getByText('Preview only — inactive until Create routine.')
         .isVisible(),
     );
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(200);
+    await settle(page);
     await page.screenshot({
       path: `${evidence}/${label}-${theme}-webhook-test-data.png`,
       fullPage: true,
     });
     if (label === 'mobile') {
       await dialog.evaluate((el) => (el.scrollTop = 0));
+      await settle(page);
       await page.screenshot({
         path: `${evidence}/${label}-${theme}-webhook-top-test-data.png`,
         fullPage: true,
@@ -275,17 +286,18 @@ try {
       );
     }
     await submit.scrollIntoViewIfNeeded();
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(200);
+    await settle(page);
     await page.screenshot({
       path: `${evidence}/${label}-${theme}-optional-test-data.png`,
       fullPage: true,
     });
-    if (label === 'mobile')
+    if (label === 'mobile') {
+      await settle(page);
       await page.screenshot({
         path: `${evidence}/${label}-${theme}-footer-test-data.png`,
         fullPage: true,
       });
+    }
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page
       .getByRole('tab', { name: 'Self-improvement', exact: true })
@@ -296,6 +308,17 @@ try {
     await page
       .getByRole('switch', { name: 'Heartbeat', exact: true })
       .waitFor();
+    await page.waitForFunction(
+      (el) => el.getAttribute('aria-selected') === 'true',
+      await page.getByRole('tab', { name: 'Self-improvement', exact: true }).elementHandle(),
+    );
+    for (const name of ['Skill self-improvement for Caveman', 'Heartbeat']) {
+      await page.waitForFunction(
+        (el) => !el.disabled && el.getAttribute('aria-checked') === 'true',
+        await page.getByRole('switch', { name, exact: true }).elementHandle(),
+      );
+    }
+    await settle(page);
     await page.screenshot({
       path: `${evidence}/${label}-${theme}-self-improvement-test-data.png`,
       fullPage: true,
