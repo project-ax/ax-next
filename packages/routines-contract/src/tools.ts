@@ -91,8 +91,8 @@ export const RoutineToolJsonSchemas = {
 export const RoutineToolDescriptions = {
   routine_list: 'List this agent’s routines, revisions, current status and permissions, including defaults.',
   routine_get: 'Read a routine’s complete current definition and revision. Read before editing. IDs and revisions are opaque.',
-  routine_create: 'Create unattended interval, cron or webhook work. Creates require approval by default. Use a new logical requestId and reuse it only for retries. Report success only after confirmation.',
-  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Edits require approval by default. Reuse requestId for retries.',
-  routine_delete: 'Delete an authored routine using its current expectedRevision. Defaults use separate default controls. Reuse requestId for retries.',
-  routine_fire_now: 'Fire an enabled routine now using its current expectedRevision. Reuse requestId for retries. Final execution status appears in history.',
+  routine_create: 'Create unattended interval, cron or webhook work. Creates are held for approval unless Always Allow is enabled for this person and agent. Enabled controls scheduling. Use a new logical requestId and reuse it only for retries. Report success only after confirmation.',
+  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Edits are held for approval unless Always Allow is enabled for this person and agent. Set enabled false to stop scheduling. Reuse requestId for retries.',
+  routine_delete: 'Delete an authored routine using its current expectedRevision. Requires Allow once approval; Always Allow does not cover deletion. Defaults use separate default controls. Reuse requestId for retries.',
+  routine_fire_now: 'Fire an enabled routine now using its current expectedRevision. Reuse requestId for retries. Requires Allow once approval; Always Allow does not cover firing. Confirmation acknowledges dispatch acceptance; final execution status appears in history.',
 } as const;

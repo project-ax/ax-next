@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HookBus, SafeToolError, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { callFingerprint } from '../fingerprint.js';
 import { receiptFor } from '../receipts.js';
 import { replayContext, replayOnApprove, settleReplay } from '../replay.js';
 import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
@@ -414,3 +415,27 @@ it('checks mutated safe codes before returning a routine replay failure code', a
   expect(outcome.error).toContain('Field: input');
   expect(JSON.stringify(outcome)).not.toContain('SECRET');
 });
+
+ describe('routine pending-effect consumer', () => {
+  it.each(['exact', 'request', 'fingerprint', 'agent', 'user', 'authority', 'extra', 'binding'])(
+    'keeps only exact private markers pending (%s)', async variant => {
+      const call: ToolCall = { id: 'c', name: 'routine_create', input: { requestId: 'request' } };
+      const decision = base({ call, callFingerprint: callFingerprint(call) });
+      const ctx = replayContext(decision);
+      const binding = { authorizationId: 'authority', requestId: 'request', fingerprint: callFingerprint(call), outcome: null };
+      ctx.state.set('decisions:routine-execution', variant === 'binding' ? { ...binding, extra: true } : binding);
+      const marker = { authorizationId: 'authority', requestId: 'request', fingerprint: binding.fingerprint, agentId: ctx.agentId, userId: ctx.userId };
+      const fields = { request: 'requestId', fingerprint: 'fingerprint', agent: 'agentId', user: 'userId', authority: 'authorizationId', extra: 'extra' };
+      if (variant in fields) Object.assign(marker, { [fields[variant as keyof typeof fields]]: 'different' });
+      const bus = new HookBus();
+      bus.registerService('tool:execute:routine_create', 'test', async c => {
+        c.state.set('routines:pending-effect:authority', marker);
+        throw new Error('SECRET');
+      });
+      const result = await replayOnApprove({ bus, ctx, decision });
+      expect(result.pending === true).toBe(variant === 'exact');
+      expect(result.executed).toBe(false);
+      expect(result.error).not.toContain('SECRET');
+    },
+  );
+ });

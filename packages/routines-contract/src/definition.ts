@@ -131,3 +131,12 @@ export const RoutineViewSchema = z.object({
 });
 export type RoutinePermissions = z.output<typeof RoutinePermissionsSchema>;
 export type RoutineView = z.output<typeof RoutineViewSchema>;
+
+/** Project only editable fields; no runtime, authority or owner metadata. */
+export function editableDefinition(row: RoutineDefinition): RoutineDefinition {
+  return {
+    name: row.name, description: row.description, promptBody: row.promptBody, enabled: row.enabled,
+    trigger: row.trigger, activeHours: row.activeHours, silenceToken: row.silenceToken,
+    silenceMaxChars: row.silenceMaxChars, conversation: row.conversation
+  };
+}

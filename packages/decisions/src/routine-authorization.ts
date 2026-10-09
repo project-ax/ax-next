@@ -26,11 +26,12 @@ import {
 
 /** Invocation binding only. Durable authority is in DecisionStore. Use a fresh context per call. */
 export const ROUTINE_EXECUTION_CONTEXT = 'decisions:routine-execution';
-const bindingSchema = z
+export const routineExecutionBindingSchema = z
   .object({
     authorizationId: z.string().min(1),
     requestId: z.string().min(1),
     fingerprint: z.string().min(1),
+    outcome: z.literal('succeeded').nullable(),
   })
   .strict();
 const consentSchema = z.object({ enabled: z.boolean(), revision: z.string().min(1) });
@@ -166,7 +167,7 @@ export function registerRoutineAuthorization(
         consent,
       });
       ctx.state.set(ROUTINE_EXECUTION_CONTEXT, { ...authority, fingerprint });
-      return authority;
+      return { authorizationId: authority.authorizationId, requestId: authority.requestId };
     },
     { returns: AuthorizeRoutineCallOutputSchema },
   );
@@ -175,7 +176,7 @@ export function registerRoutineAuthorization(
     '@ax/decisions',
     async (ctx, raw) => {
       const input = SettleRoutineCallInputSchema.safeParse(raw);
-      const binding = bindingSchema.safeParse(ctx.state.get(ROUTINE_EXECUTION_CONTEXT));
+      const binding = routineExecutionBindingSchema.safeParse(ctx.state.get(ROUTINE_EXECUTION_CONTEXT));
       if (
         !input.success ||
         !binding.success ||

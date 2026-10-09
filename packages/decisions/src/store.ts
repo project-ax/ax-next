@@ -514,6 +514,7 @@ export interface DecisionStore {
     fingerprint: string,
     nowIso: string,
   ): Promise<Decision | null>;
+  hasRoutineAuthority(input: { agentId: string; userId: string; requestId: string; fingerprint: string; nowIso: string }): Promise<boolean>;
   claimRoutineAuthority(input: {
     agentId: string;
     userId: string;
@@ -523,7 +524,7 @@ export interface DecisionStore {
     nowIso: string;
     expiresAt: string;
     consent: boolean;
-  }): Promise<{ authorizationId: string; requestId: string }>;
+  }): Promise<{ authorizationId: string; requestId: string; outcome: null | 'succeeded' }>;
   settleRoutineAuthority(input: {
     agentId: string;
     userId: string;
@@ -1130,6 +1131,16 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .executeTakeFirst();
       return row ? toDecision(row) : null;
     },
+    async hasRoutineAuthority(input) {
+      const row = await db.selectFrom('decisions_v1_routine_authorizations')
+        .select('authorization_id')
+        .where('agent_id', '=', input.agentId).where('user_id', '=', input.userId)
+        .where('request_id', '=', input.requestId).where('fingerprint', '=', input.fingerprint)
+        .where('expires_at', '>', new Date(input.nowIso))
+        .where(eb => eb.or([eb('outcome', 'is', null), eb('outcome', '=', 'succeeded')]))
+        .executeTakeFirst();
+      return row !== undefined;
+    },
     async claimRoutineAuthority(input) {
       return db.transaction().execute(async (trx) => {
         await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${input.agentId},18427151))`.execute(
@@ -1161,7 +1172,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             );
           if (previous.expires_at <= new Date(input.nowIso))
             throw new SafeToolError('approval-required', 'input');
-          return { authorizationId: previous.authorization_id, requestId: previous.request_id };
+          return { authorizationId: previous.authorization_id, requestId: previous.request_id, outcome: previous.outcome === 'succeeded' ? 'succeeded' as const : null };
         }
         const decision = await trx
           .selectFrom(table)
@@ -1211,7 +1222,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             })
             .where('decision_id', '=', decision.decision_id)
             .execute();
-        return { authorizationId: input.authorizationId, requestId: input.requestId };
+        return { authorizationId: input.authorizationId, requestId: input.requestId, outcome: null };
       });
     },
     async settleRoutineAuthority(input) {

@@ -24,6 +24,7 @@ export interface RoutinesStore {
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
+  getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date; lastStatus: FireStatus; lastError: string | null }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
@@ -221,6 +222,12 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         return result;
       }, () => { replayed = true; });
       return accepted === null ? null : { accepted, replayed };
+    },
+    async getDispatchOutcome(input) {
+      const row = await db.selectFrom('routines_v1_fires').selectAll()
+        .where('agent_id', '=', input.agentId).where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
+      return row ? DispatchOutcomeSchema.parse({ status: row.status, conversationId: row.conversation_id,
+        error: row.error, renderedPrompt: row.rendered_prompt, warning: row.warning }) : null;
     },
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);

@@ -1,4 +1,5 @@
 import { routineToolKind } from '@ax/routines-contract';
+import { checkedRoutineCall } from './routine-authorization.js';
 /**
  * The `tool:pre-call` gate.
  *
@@ -178,6 +179,15 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
         reason: denialSentence({ capability: routineAnswer.capability, toolName: call.name }),
         source: PLUGIN_NAME,
       });
+    if (routine) {
+      checkedRoutineCall(call);
+      const access = await deps.bus?.call<unknown, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });
+      if (access?.allowed !== true) return reject({ reason: GATE_FAILURE_SENTENCE, source: PLUGIN_NAME });
+      // Read-only: a previously claimed exact operation still needs recovery
+      // after blanket consent is revoked. The executor rechecks and consumes.
+      if (await deps.store.hasRoutineAuthority({ agentId: ctx.agentId, userId: ctx.userId,
+        requestId: (call.input as { requestId: string }).requestId, fingerprint, nowIso: deps.now().toISOString() })) return undefined;
+    }
     try {
       const approved = routine
         ? await deps.store.findRoutineApproval(

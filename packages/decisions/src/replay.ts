@@ -1,4 +1,6 @@
-import { ROUTINE_EXECUTION_CONTEXT } from './routine-authorization.js';
+import { ROUTINE_EXECUTION_CONTEXT, routineExecutionBindingSchema } from './routine-authorization.js';
+import { z } from 'zod';
+import { callFingerprint } from './fingerprint.js';
 import { routineToolKind } from '@ax/routines-contract';
 /**
  * The host replay: doing the thing a human just approved.
@@ -48,7 +50,21 @@ export interface ReplayOutcome {
   error: string | null;
   /** Present only when the host cannot replay this tool at all. */
   status?: 'approved-pending-agent';
+  pending?: boolean;
   failureCode?: import('@ax/core').SafeToolCode;
+}
+
+const pendingEffectSchema = z.object({ authorizationId: z.string().min(1), requestId: z.string().min(1),
+  fingerprint: z.string().min(1), agentId: z.string().min(1), userId: z.string().min(1) }).strict();
+function pendingEffect(ctx: AgentContext, decision: Decision): boolean {
+  const checked = routineExecutionBindingSchema.safeParse(ctx.state.get(ROUTINE_EXECUTION_CONTEXT));
+  if (!checked.success) return false;
+  const binding = checked.data;
+  const parsed = pendingEffectSchema.safeParse(ctx.state.get(`routines:pending-effect:${binding.authorizationId}`));
+  return parsed.success && parsed.data.authorizationId === binding.authorizationId && parsed.data.requestId === binding.requestId &&
+    parsed.data.fingerprint === binding.fingerprint && parsed.data.agentId === ctx.agentId &&
+    parsed.data.userId === ctx.userId && parsed.data.agentId === decision.agentId && parsed.data.userId === decision.ownerUserId &&
+    parsed.data.requestId === (decision.call.input as { requestId?: unknown })?.requestId && parsed.data.fingerprint === callFingerprint(decision.call);
 }
 
 /**
@@ -139,6 +155,8 @@ export async function replayOnApprove(args: {
     });
     return { executed: true, path: 'host-replays', error: null };
   } catch (err) {
+    if (routineToolKind(decision.call.name) === 'write' && pendingEffect(ctx, decision))
+      return { executed: false, path: null, error: safeToolMessage('unavailable', 'input'), pending: true };
     const routineFailure =
       routineToolKind(decision.call.name) !== null
         ? err instanceof SafeToolError
@@ -234,6 +252,10 @@ export async function settleReplay(args: {
     }
   }
   let outcome = await replayOnApprove({ bus, ctx, decision });
+  // Keep the durable claim in flight: neither a failure receipt nor a success
+  // receipt is justified until the joined executor can recover its effect.
+  // The existing stranded-routine sweep retries only this recorded request.
+  if (outcome.pending) return outcome;
   if (routine) {
     // A joined executor may settle the durable effect before its response is lost.
     const stored = await store.get(decision.id, decision.ownerUserId);

@@ -1562,6 +1562,7 @@ async function runRunnerInner(
     // the ONLY augment content bootstrap mode admits. Optional on the wire —
     // a session frozen before TASK-524 carries none, which means none.
     agentConfig.systemPromptBootstrapAugment ?? '',
+    tools.some(tool => ['routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(tool.name)),
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based

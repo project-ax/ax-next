@@ -551,3 +551,37 @@ describe('routine host authorization', () => {
     expect(effects).toBe(1);
   });
 });
+
+ describe('durable routine retry gate and execution binding', () => {
+  it.each([null, 'succeeded'] as const)('passes exact %s consent authority after revoke through normal pre-call', async outcome => {
+    const h = await boot(true);
+    enabled = true;
+    const actor = ctx();
+    const authority = await authorize(h, call(), actor);
+    expect(actor.state.get('decisions:routine-execution')).toEqual({ ...authority, fingerprint: callFingerprint(call()), outcome: null });
+    if (outcome) await h.bus.call('decisions:settle-routine-call', actor, { authorizationId: authority.authorizationId, outcome });
+    const retry = ctx();
+    expect(await authorize(h, call(), retry)).toEqual(authority);
+    expect(retry.state.get('decisions:routine-execution')).toEqual({ ...authority, fingerprint: callFingerprint(call()), outcome });
+    enabled = false;
+    expect(await h.bus.fire('tool:pre-call', ctx(), call())).toEqual({ rejected: false, payload: call() });
+    expect((await h.bus.fire('tool:pre-call', ctx(), call('unrelated'))).rejected).toBe(true);
+    expect((await h.bus.fire('tool:pre-call', ctx('other'), call())).rejected).toBe(true);
+    expect((await h.bus.fire('tool:pre-call', ctx('u1', 'other'), call())).rejected).toBe(true);
+    verdict = 'deny';
+    expect((await h.bus.fire('tool:pre-call', ctx(), call())).rejected).toBe(true);
+    verdict = 'hold';
+    clock += 49 * 60 * 60_000;
+    expect((await h.bus.fire('tool:pre-call', ctx(), call())).rejected).toBe(true);
+    await expect(authorize(h)).rejects.toThrow();
+  });
+  it('failed authority cannot reopen the pre-call gate or mint an execution binding', async () => {
+    const h = await boot(true); enabled = true;
+    const actor = ctx(); const authority = await authorize(h, call(), actor);
+    await h.bus.call('decisions:settle-routine-call', actor, { authorizationId: authority.authorizationId, outcome: 'failed' });
+    enabled = false;
+    expect((await h.bus.fire('tool:pre-call', ctx(), call())).rejected).toBe(true);
+    const retry = ctx(); await expect(authorize(h, call(), retry)).rejects.toThrow();
+    expect(retry.state.has('decisions:routine-execution')).toBe(false);
+  });
+ });

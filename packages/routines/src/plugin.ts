@@ -13,6 +13,8 @@ import type { RoutinesConfig } from './types.js';
 import { registerRoutineServices, ROUTINE_SERVICES } from './services.js';
 import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 
+import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
+
 const PLUGIN_NAME = '@ax/routines';
 
 export function createRoutinesPlugin(
@@ -28,9 +30,12 @@ export function createRoutinesPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ROUTINE_SERVICES,
+      registers: [...ROUTINE_SERVICES, ...ROUTINE_TOOL_HOOKS],
       calls: [
         'database:get-instance',
+        'tool:register',
+        'decisions:authorize-routine-call',
+        'decisions:settle-routine-call',
         'agents:resolve',
         'agents:can-manage-routines',
         'auth:get-user',
@@ -48,6 +53,7 @@ export function createRoutinesPlugin(
         'http:register-route',
       ],
       subscribes: [
+        'tool:pre-call',
         'chat:turn-end',
         // Slice 6 — what a routine fire's turn went without (keyed by reqId).
         'chat:connectors-skipped',
@@ -203,6 +209,7 @@ export function createRoutinesPlugin(
       });
 
       registerRoutineServices({ bus, store: localStore, now: () => clock.now(), ...runtime });
+      await registerRoutineTools({ bus, store: localStore, now: () => clock.now() });
       await drainRoutineCleanup({ bus, store: localStore });
 
       // Static DB webhook routing and durable dispatch wiring land in Task 8.

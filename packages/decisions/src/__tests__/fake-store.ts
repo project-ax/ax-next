@@ -466,6 +466,7 @@ export function createFakeStore(): FakeStore {
         ) ?? null
       );
     },
+    async hasRoutineAuthority() { return false; },
     async claimRoutineAuthority() {
       throw new Error('Routine authority requires the real database test fixture');
     },

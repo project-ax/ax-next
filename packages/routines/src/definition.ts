@@ -6,13 +6,8 @@ import { SafeToolError } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
 export function opaqueId(prefix: string): string { return `${prefix}_${randomUUID().replaceAll('-', '')}`; }
-export function editableDefinition(row: RoutineDefinition): RoutineDefinition {
-  return {
-    name: row.name, description: row.description, promptBody: row.promptBody, enabled: row.enabled,
-    trigger: row.trigger, activeHours: row.activeHours, silenceToken: row.silenceToken,
-    silenceMaxChars: row.silenceMaxChars, conversation: row.conversation
-  };
-}
+export { editableDefinition } from '@ax/routines-contract';
+import { editableDefinition } from '@ax/routines-contract';
 /** Canonical key order makes semantically identical request objects share a receipt. */
 export function inputHash(input: unknown): string {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
