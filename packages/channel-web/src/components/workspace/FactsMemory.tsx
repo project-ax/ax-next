@@ -36,7 +36,6 @@ import {
   type FactMemoryPage,
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
-import { AgentMemory, RulesEditor, RulesWithoutEditor } from './AgentMemory';
 import {
   MemoryFixDialog,
   MemoryForgetDialog,
@@ -66,17 +65,22 @@ export interface MemorySurfaceProps {
   agentId: string;
   agentName: string;
   memory: AgentMemoryRead;
-  onSaveRules?: (body: string) => Promise<string>;
-  onRetry?: () => void;
   onCount?: (count: number | null) => void;
 }
 
+/**
+ * The memories list, or nothing at all on a deployment without facts memory.
+ *
+ * The rules editor used to sit on top of this — and was the WHOLE surface
+ * without facts memory. It moved to the settings page's Instructions section
+ * (TASK-888), so a deployment with no facts memory now has no list to draw
+ * here; callers say so in their own words rather than this drawing an empty
+ * frame.
+ */
 export function MemorySurface(props: MemorySurfaceProps) {
   return props.memory.factsAvailable === true ? (
     <FactsMemory key={props.agentId} {...props} />
-  ) : (
-    <AgentMemory {...props} />
-  );
+  ) : null;
 }
 
 type ReadState =
@@ -241,8 +245,7 @@ function ClosureNote({
   );
 }
 
-function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry, onCount }: MemorySurfaceProps) {
-  const { rules } = memory;
+function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps) {
   const visibility =
     memory.factsVisibility === 'team' || memory.factsVisibility === 'personal'
       ? memory.factsVisibility
@@ -267,19 +270,6 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry, onCount
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-6">
       {receipt.announcer}
       {extractionPaused && <ExtractionPausedNotice />}
-      {rules.status === 'ok' && rules.doc !== null ? (
-        <RulesEditor
-          agentName={agentName}
-          initial={rules.doc.body}
-          {...(onSaveRules ? { onSave: onSaveRules } : {})}
-        />
-      ) : (
-        <RulesWithoutEditor
-          agentName={agentName}
-          status={rules.status === 'ok' ? 'failed' : rules.status}
-          {...(onRetry ? { onRetry } : {})}
-        />
-      )}
       {visibility === 'team' && (
         <Alert>
           <AlertDescription>{MEMORY_TEAM_NOTICE}</AlertDescription>

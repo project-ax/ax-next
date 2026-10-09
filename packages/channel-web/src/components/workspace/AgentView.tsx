@@ -83,6 +83,9 @@ import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
+import { AgentInstructions } from './AgentInstructions';
+import { AgentSettings } from './AgentSettings';
+import { cn } from '@/lib/utils';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
@@ -96,7 +99,11 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
-import { type AgentTab } from '@/lib/workspace-route';
+import {
+  DEFAULT_SETTINGS_SECTION,
+  type AgentSettingsSection,
+  type AgentTab,
+} from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
 // list, so a tab cannot exist that no link can reach.
@@ -118,6 +125,15 @@ interface Props {
   agentId: string;
   tab: AgentTab;
   onTab: (t: AgentTab) => void;
+  /**
+   * TASK-888 — the settings section on screen, or `null` for the chat. When
+   * set, this view draws the agent's settings page in place of the
+   * conversation and the rail, and STAYS MOUNTED doing it, so the
+   * conversation (and any reply in flight) is untouched on the way back.
+   */
+  settingsSection?: AgentSettingsSection | null;
+  /** Open a settings section. Absent, no entry point to the page is drawn. */
+  onSettingsSection?: (section: AgentSettingsSection) => void;
   decisions: Decision[];
   /**
    * Open capability grants presence routed to THIS thread (TASK-351).
@@ -334,6 +350,8 @@ export function AgentView({
   agentId,
   tab,
   onTab,
+  settingsSection = null,
+  onSettingsSection,
   decisions,
   threadGrants,
   onGrantResolved,
@@ -382,6 +400,7 @@ export function AgentView({
    */
   const compact = useIsCompact();
   const [railOpen, setRailOpen] = useState(false);
+  const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [railCollapsed, setRailCollapsed] = useRailPreference('details');
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [fileCount, setFileCount] = useState<number | null>(null);
@@ -1600,16 +1619,58 @@ export function AgentView({
         {...(activityError !== undefined ? { error: activityError } : {})} />,
       files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
       memory: <MemorySurface agentId={agent.id} memory={detail.memory} agentName={agent.name}
-        onCount={setMemoryCount}
-        onRetry={onChanged} onSaveRules={async (body: string) => {
-          const saved = await workspaceApi.saveRules(agent.id, body);
-          onChanged(); return saved.body;
-        }} />,
+        onCount={setMemoryCount} />,
     },
+    ...(onSettingsSection
+      ? {
+          onOpenSettings: (section?: AgentSettingsSection) => {
+            // Generic Settings opens the phone index; explicit links drill in.
+            setSettingsListRequested(section === undefined);
+            setRailOpen(false);
+            onSettingsSection(section ?? DEFAULT_SETTINGS_SECTION);
+          },
+        }
+      : {}),
   };
+
+  const settingsPage = settingsSection !== null && onSettingsSection ? (
+        <AgentSettings
+          agent={agent}
+          section={settingsSection}
+          onSection={onSettingsSection}
+          onBack={() => onTab('chat')}
+          compact={compact}
+          startOnList={settingsListRequested}
+          busy={streaming || rereading}
+          instructions={
+            <AgentInstructions
+              memory={detail.memory}
+              agentName={agent.name}
+              onRetry={onChanged}
+              onSaveRules={async (body: string) => {
+                const saved = await workspaceApi.saveRules(agent.id, body);
+                onChanged();
+                return saved.body;
+              }}
+            />
+          }
+          memory={
+            detail.memory.factsAvailable === true ? (
+              <MemorySurface
+                agentId={agent.id}
+                memory={detail.memory}
+                agentName={agent.name}
+                onCount={setMemoryCount}
+              />
+            ) : null
+          }
+        />
+  ) : null;
   return (
     <MemoryFixesContext.Provider value={learnedFixes}>
-      <div className="flex min-h-0 flex-1">
+      {settingsPage}
+      {/* Keep the composer mounted: it owns draft files and pending uploads. */}
+      <div hidden={settingsPage !== null} className={cn('flex min-h-0 flex-1', settingsPage !== null && 'hidden')}>
         <div className="flex min-w-0 flex-1 flex-col">
           {(compact || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
             {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}
@@ -1656,7 +1717,7 @@ export function AgentView({
               */}
               <SkippedConnectorsNotice
                 agentId={agentId}
-                refreshKey={`${turnsEnded}:${tab}`}
+                refreshKey={`${turnsEnded}:${tab}:${settingsSection ?? 'chat'}`}
                 onOpenConnectors={() => onTab('connectors')}
                 suppressed={past !== null}
               />

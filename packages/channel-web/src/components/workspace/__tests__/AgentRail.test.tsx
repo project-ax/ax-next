@@ -8,7 +8,7 @@
  * opposite answers and a bare empty state renders as the second one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
 import { describedRow, mcpRow, rail, railActivity, siteGrant } from './rail-fixture';
@@ -1048,6 +1048,43 @@ describe('AgentRail — past conversations', () => {
     }
     // One description per row — two rows never share (and so never swap) one.
     expect(ids.size).toBe(2);
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+});
+
+describe('AgentRail — the way into agent settings (TASK-888)', () => {
+  it('opens the settings page from an outline Settings button in the header', async () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} onOpenSettings={onOpenSettings} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+
+  it('draws no Settings button when there is nowhere for it to go', async () => {
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull();
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+
+  it('points the Memory tab at Instructions, where the rules editor went', async () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <AgentRail
+        detail={detail()}
+        openPastId={null}
+        onOpenPast={vi.fn()}
+        tab="memory"
+        onTab={vi.fn()}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+    const panel = screen.getByRole('tabpanel', { name: 'Memory' });
+    expect(panel).toHaveTextContent('Instructions you gave Quill live in Settings.');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Settings' }));
+    expect(onOpenSettings).toHaveBeenCalledWith('instructions');
     await waitFor(() => expect(railMock).toHaveBeenCalled());
   });
 });

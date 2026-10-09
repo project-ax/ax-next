@@ -160,7 +160,6 @@ describe('AgentView heading outline', () => {
         'h2: Conversation',
         'h2: Memory',
         'h3: What I learned in this chat',
-        'h3: Rules you gave me',
       ]),
     );
   });

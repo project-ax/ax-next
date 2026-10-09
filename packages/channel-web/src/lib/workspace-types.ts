@@ -782,7 +782,7 @@ export interface MemoryDoc {
  * union in the middle of four flat siblings costs more in surprise than it
  * buys in precision. `readMemory` sets `doc` on every `ok`, so the impossible
  * pair is a contract the producer keeps rather than one the type enforces, and
- * `AgentMemory` still handles it defensively — see the comment at that call
+ * `AgentInstructions` still handles it defensively — see the comment at that call
  * site for which of the three it picks and why.
  *
  * So: `rules.doc` is non-null whenever `rules.status === 'ok'`, and the editor

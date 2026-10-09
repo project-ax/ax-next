@@ -8,6 +8,7 @@ import {
   PanelRight,
   Plug,
   Plus,
+  Settings,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -36,8 +37,12 @@ import { cn } from '@/lib/utils';
 import { conversationControls } from '@/lib/conversation-controls';
 import { conversationDate } from '@/lib/workspace-time';
 import { useAgentRail } from '@/lib/workspace-rail';
-import { WORKSPACE_AGENT_TABS, type AgentTab } from '@/lib/workspace-route';
-import type { AgentRailData, AgentDetail, GrantRow } from '@/lib/workspace-api';
+import {
+  WORKSPACE_AGENT_TABS,
+  type AgentSettingsSection,
+  type AgentTab,
+} from '@/lib/workspace-route';
+import type { AgentRailData, AgentDetail, GrantRow, GrantRef } from '@/lib/workspace-api';
 import {
   AgentTile,
   Elapsed,
@@ -71,6 +76,45 @@ interface Props {
   onNew?: () => Promise<void>;
   busy?: boolean;
   counts?: { memory: number | null; files: number | null };
+  /**
+   * Open this agent's full settings page (TASK-888). Absent, the rail draws
+   * no Settings button — a control that cannot go anywhere is worse than none.
+   */
+  onOpenSettings?: (section?: AgentSettingsSection) => void;
+}
+
+/**
+ * The revoke state for a connector list: which rows are mid-revoke, and the
+ * one sentence saying how the last one went.
+ *
+ * Owned by the PANEL that draws the list, never by a row — a successful
+ * revoke removes the row, and a row-owned notice would unmount with it
+ * (TASK-406). Shared by the rail's Connectors tab and the settings page's
+ * Connectors section, so the two say the same words.
+ */
+export function useGrantRevoke(
+  revoke: (ref: GrantRef) => Promise<'revoked' | 'already-gone' | 'failed'>,
+) {
+  const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
+  async function onRevoke(row: GrantRow) {
+    setNotice(null);
+    setRevoking((prev) => new Set(prev).add(row.source));
+    const outcome = await revoke(row.ref);
+    setRevoking((prev) => {
+      const next = new Set(prev);
+      next.delete(row.source);
+      return next;
+    });
+    if (outcome === 'revoked')
+      setNotice(
+        'Revoked. Anything already running may still have it until it finishes.',
+      );
+    if (outcome === 'already-gone') setNotice('That one was already gone.');
+    if (outcome === 'failed')
+      setNotice("We couldn't take that back just now. Nothing changed.");
+  }
+  return { revoking, notice, onRevoke };
 }
 
 export function AgentRail(props: Props) {
@@ -103,13 +147,13 @@ export function AgentRailContent({
   onNew,
   busy = false,
   counts,
+  onOpenSettings,
 }: Props) {
   const { agent, past } = detail;
   const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id, agent.state, busy);
   const [localTab, setLocalTab] = useState<AgentTab>(tab);
   const active = onTab ? tab : localTab;
-  const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
-  const [notice, setNotice] = useState<string | null>(null);
+  const { revoking, notice, onRevoke } = useGrantRevoke(revoke);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [editing, setEditing] = useState<{
@@ -120,23 +164,6 @@ export function AgentRailContent({
   const [title, setTitle] = useState('');
   const pastDateId = useId();
 
-  async function onRevoke(row: GrantRow) {
-    setNotice(null);
-    setRevoking((prev) => new Set(prev).add(row.source));
-    const outcome = await revoke(row.ref);
-    setRevoking((prev) => {
-      const next = new Set(prev);
-      next.delete(row.source);
-      return next;
-    });
-    if (outcome === 'revoked')
-      setNotice(
-        'Revoked. Anything already running may still have it until it finishes.',
-      );
-    if (outcome === 'already-gone') setNotice('That one was already gone.');
-    if (outcome === 'failed')
-      setNotice("We couldn't take that back just now. Nothing changed.");
-  }
   async function act(action: () => Promise<void>) {
     setActionBusy(true);
     setActionError(null);
@@ -173,6 +200,12 @@ export function AgentRailContent({
           className="shadow-popover"
         >
           <DropdownMenuGroup>
+            {id === detail.conversationId && onOpenSettings && (
+              <DropdownMenuItem onSelect={() => onOpenSettings()}>
+                <Settings aria-hidden="true" />
+                Agent settings
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onSelect={() => {
                 setEditing({ id, title: name, kind: 'rename' });
@@ -237,11 +270,22 @@ export function AgentRailContent({
             </span>
           </>
         )}
+        {!collapsed && onOpenSettings && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenSettings()}
+            className="ml-auto h-8 shrink-0 gap-1.5 px-2.5 text-[12.5px] max-md:min-h-11"
+          >
+            <Settings data-icon="inline-start" aria-hidden="true" />
+            Settings
+          </Button>
+        )}
         {!mobile && onCollapse && (
           <IconTooltip
             label={collapsed ? 'Show agent details' : 'Hide agent details'}
             side="left"
-            className={collapsed ? '' : 'ml-auto'}
+            className={collapsed || onOpenSettings ? '' : 'ml-auto'}
           >
             <Button
               variant="ghost"
@@ -252,7 +296,7 @@ export function AgentRailContent({
               }
               className={cn(
                 'size-7 rounded-sm text-muted-foreground',
-                !collapsed && 'ml-auto',
+                !collapsed && !onOpenSettings && 'ml-auto',
               )}
             >
               <PanelRight aria-hidden="true" />
@@ -428,6 +472,24 @@ export function AgentRailContent({
                     Notes it keeps from your conversations. Edit or remove any
                     of them.
                   </p>
+                  {/*
+                    TASK-888 — the rules editor moved to the settings page's
+                    Instructions section. Say where it went, once, rather than
+                    let someone hunt the tab it used to live in.
+                  */}
+                  {onOpenSettings && (
+                    <p className="mt-2 text-[12px] text-muted-foreground">
+                      Instructions you gave {agent.name} live in{' '}
+                      <Button
+                        variant="link"
+                        className="h-auto p-0 text-[12px]"
+                        onClick={() => onOpenSettings('instructions')}
+                      >
+                        Settings
+                      </Button>
+                      .
+                    </p>
+                  )}
                 </>
               )}
               {active === 'files' && panels?.files}

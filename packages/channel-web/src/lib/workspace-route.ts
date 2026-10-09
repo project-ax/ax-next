@@ -28,15 +28,55 @@ export type AgentTab = (typeof WORKSPACE_AGENT_TABS)[number];
  */
 const DEFAULT_TAB: AgentTab = 'chat';
 
+/**
+ * The sections of an agent's settings page, in the order its nav lists them
+ * (TASK-888). A full page rather than a dialog on purpose: connector sign-in
+ * round-trips need a real URL to come back to.
+ */
+export const AGENT_SETTINGS_SECTIONS = [
+  'instructions',
+  'model',
+  'connectors',
+  'memory',
+  'skills',
+  'routines',
+] as const;
+
+export type AgentSettingsSection = (typeof AGENT_SETTINGS_SECTIONS)[number];
+
+/**
+ * The section `/settings` means when it names none, or names one we do not
+ * know. Unlike the default TAB, serializing always spells it out: each section
+ * has exactly one address, so a bare `/settings` canonicalizes onto
+ * `/settings/instructions` rather than being a second spelling of it.
+ */
+export const DEFAULT_SETTINGS_SECTION: AgentSettingsSection = 'instructions';
+
 export type WorkspaceRoute =
   | { kind: 'today' }
   | { kind: 'activity' }
-  | { kind: 'agent'; id: string; tab: AgentTab };
+  | { kind: 'agent'; id: string; tab: AgentTab }
+  | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
+
+/**
+ * The agent a route is ABOUT, on either of its two pages, or `null`.
+ *
+ * The settings page and the chat are one mounted agent view (the shell keeps
+ * it mounted across the switch so a conversation in flight survives), so
+ * anything asking "which agent is open" asks this rather than `kind`.
+ */
+export function routeAgentId(route: WorkspaceRoute): string | null {
+  return route.kind === 'agent' || route.kind === 'agent-settings' ? route.id : null;
+}
 
 /** Where the workspace lives. `/` is an alias the shell canonicalizes away. */
 export const WORKSPACE_ROOT_PATH = '/workspace';
 
 const TODAY: WorkspaceRoute = { kind: 'today' };
+
+function isSettingsSection(segment: string): segment is AgentSettingsSection {
+  return (AGENT_SETTINGS_SECTIONS as readonly string[]).includes(segment);
+}
 
 function isAgentTab(segment: string): segment is AgentTab {
   return (WORKSPACE_AGENT_TABS as readonly string[]).includes(segment);
@@ -75,13 +115,19 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   if (segments.length === 0) return TODAY;
   if (segments[0] !== 'workspace') return TODAY;
 
-  const [, section, third, fourth] = segments;
+  const [, section, third, fourth, fifth] = segments;
   if (section === undefined) return TODAY;
   if (section === 'activity') return { kind: 'activity' };
   if (section !== 'agents' || third === undefined) return TODAY;
 
   const id = parseAgentId(third);
   if (id === null) return TODAY;
+
+  if (fourth === 'settings') {
+    const settingsSection =
+      fifth !== undefined && isSettingsSection(fifth) ? fifth : DEFAULT_SETTINGS_SECTION;
+    return { kind: 'agent-settings', id, section: settingsSection };
+  }
 
   // Preserve links to the two panels now combined into Activity, and to the
   // old "What it may do alone" tab, which the Connectors tab replaced
@@ -105,5 +151,7 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       const base = `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}`;
       return route.tab === DEFAULT_TAB ? base : `${base}/${route.tab}`;
     }
+    case 'agent-settings':
+      return `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}/settings/${route.section}`;
   }
 }

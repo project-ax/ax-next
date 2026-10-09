@@ -10,9 +10,10 @@
  * hook, on a person's Save. That is what earns us the right to say "nothing it does afterwards
  * rewrites them" here.
  *
- * This component is the Memory tab only on deployments WITHOUT facts memory
- * (`MemorySurface` in `FactsMemory.tsx` falls back to it when
- * `factsAvailable !== true`). It used to carry a second section, "What it
+ * This component is the Instructions section of an agent's settings page
+ * (TASK-888). It used to live at the top of the rail's Memory tab, on every
+ * deployment; it moved so the rail stays about what the agent DID and the
+ * page holds what you TOLD it. It used to carry a second section, "What it
  * worked out", over `memory:learned:read`; that hook's only provider,
  * @ax/memory-strata, was deleted in TASK-608 and the section went with it.
  *
@@ -26,14 +27,13 @@
  * retry appears only where retrying can work.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Lock } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Field, FieldGroup } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { userFacingMessage } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import type { AgentMemoryRead } from '@/lib/workspace-api';
-import { SectionLabel } from './bits';
 
 /** What a failed Save opens with, when the failure is a generic one. */
 const SAVE_FAILED_LEAD = 'We could not save that, so nothing changed.';
@@ -41,7 +41,7 @@ const SAVE_FAILED_LEAD = 'We could not save that, so nothing changed.';
 const RULES_PLACEHOLDER =
   'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
 
-export function AgentMemory({
+export function AgentInstructions({
   memory,
   agentName,
   onSaveRules,
@@ -146,12 +146,6 @@ export function RulesWithoutEditor({
 }) {
   return (
     <section className="flex flex-col gap-2.5">
-      <SectionLabel>
-        <span className="flex items-center gap-2">
-          <Lock size={12} aria-hidden="true" />
-          Rules you gave me
-        </span>
-      </SectionLabel>
       <Alert>
         <AlertDescription className="flex flex-col items-start gap-2">
           {status === 'unavailable' ? (
@@ -248,20 +242,14 @@ export function RulesEditor({
 
   return (
     <section className="flex flex-col gap-2.5">
-      <SectionLabel>
-        <span className="flex items-center gap-2">
-          <Lock size={12} aria-hidden="true" />
-          Rules you gave me
-        </span>
-      </SectionLabel>
-
-      <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-muted-foreground">
-        Kept word for word. {agentName} reads them before every run, and nothing
-        it does afterwards rewrites them.
-      </p>
-
-      <Textarea
-        aria-label="Rules you gave me"
+      {/*
+        No heading or helper line of its own: the settings page heads this
+        section ("Instructions") and says what the box is for, once.
+      */}
+      <FieldGroup>
+        <Field>
+          <Textarea
+        aria-label={`Instructions for ${agentName}`}
         value={text}
         placeholder={RULES_PLACEHOLDER}
         disabled={onSave === undefined || state === 'saving'}
@@ -271,6 +259,8 @@ export function RulesEditor({
         }}
         className="min-h-[180px] font-mono text-[12.5px] leading-relaxed"
       />
+        </Field>
+      </FieldGroup>
 
       {error !== null && (
         <Alert variant="destructive">

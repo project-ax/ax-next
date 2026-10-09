@@ -57,6 +57,7 @@ import { grantResumedTitle } from '@/lib/grant-copy';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
+  routeAgentId,
   workspaceRoutePath,
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
@@ -300,7 +301,7 @@ function Inner({
    * count, the Activity page, and a given agent's "What it did" tab all read
    * off this same fetch.
    */
-  const feedScope = route.kind === 'agent' ? route.id : undefined;
+  const feedScope = routeAgentId(route) ?? undefined;
   const feed = useActivityFeed(feedScope);
   /**
    * The feed is holding a DIFFERENT collection than the one this render is
@@ -608,7 +609,7 @@ function Inner({
         come back to `chat`; and a hidden browser tab is still a mounted panel.
         Both are cases where we WANT the stream and the presence rule says no.
       */
-      if (route.kind === 'agent' && route.id === grant.agentId) {
+      if (routeAgentId(route) === grant.agentId) {
         setPendingReply({
           agentId: grant.agentId,
           reqId: result.reqId,
@@ -800,8 +801,8 @@ function Inner({
   */
   const navProps = {
     agents: board.agents,
-    route: route.kind,
-    activeAgentId: route.kind === 'agent' ? route.id : null,
+    route: route.kind === 'agent-settings' ? 'agent' : route.kind,
+    activeAgentId: routeAgentId(route),
     pendingCount: pending,
     rosterOpen,
     onRoster: setRosterOpen,
@@ -968,7 +969,7 @@ function Inner({
             </>
           )}
 
-          {route.kind === 'agent' && (
+          {(route.kind === 'agent' || route.kind === 'agent-settings') && (
             <AgentView
               /*
                 TASK-393 — a switch mid-send used to reuse this instance: the
@@ -983,8 +984,19 @@ function Inner({
               */
               key={route.id}
               agentId={route.id}
-              tab={route.tab}
-              onTab={(t) => navigate({ ...route, tab: t })}
+              tab={route.kind === 'agent' ? route.tab : 'chat'}
+              onTab={(t) => navigate({ kind: 'agent', id: route.id, tab: t })}
+              /*
+                TASK-888 — the agent's settings page is drawn BY the same
+                mounted AgentView, never a sibling of it. Same element, same
+                position, same key: React keeps the instance across the switch,
+                so the conversation on screen (and a reply still streaming into
+                it) is exactly where "Back to chat" left it.
+              */
+              settingsSection={route.kind === 'agent-settings' ? route.section : null}
+              onSettingsSection={(section) =>
+                navigate({ kind: 'agent-settings', id: route.id, section })
+              }
               decisions={queue.decisions}
               threadGrants={grantsInThread}
               onGrantResolved={workspaceGrantActions.resolve}

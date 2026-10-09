@@ -8,7 +8,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AGENT_SETTINGS_SECTIONS,
   WORKSPACE_AGENT_TABS,
+  routeAgentId,
   parseWorkspaceRoute,
   workspaceRoutePath,
   type WorkspaceRoute,
@@ -173,5 +175,77 @@ describe('the two halves agree', () => {
 
   it.each(ROUTES)('round-trips %j', (route) => {
     expect(parseWorkspaceRoute(workspaceRoutePath(route))).toEqual(route);
+  });
+});
+
+describe('agent settings (TASK-888)', () => {
+  it.each(AGENT_SETTINGS_SECTIONS)('reads the %s section', (section) => {
+    expect(parseWorkspaceRoute(`/workspace/agents/a1/settings/${section}`)).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section,
+    });
+  });
+
+  it.each(AGENT_SETTINGS_SECTIONS)('writes the %s section and reads it back', (section) => {
+    const path = workspaceRoutePath({ kind: 'agent-settings', id: 'a1', section });
+    expect(path).toBe(`/workspace/agents/a1/settings/${section}`);
+    expect(parseWorkspaceRoute(path)).toEqual({ kind: 'agent-settings', id: 'a1', section });
+  });
+
+  it('reads a bare /settings as Instructions', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings')).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'instructions',
+    });
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings/')).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'instructions',
+    });
+  });
+
+  it('canonicalizes a bare /settings onto ONE address for Instructions', () => {
+    // One URL per section: serializing never omits the section, so the
+    // shell's mount-time replaceState rewrites `/settings` to this.
+    expect(
+      workspaceRoutePath(parseWorkspaceRoute('/workspace/agents/a1/settings')),
+    ).toBe('/workspace/agents/a1/settings/instructions');
+  });
+
+  it('keeps the settings page when the section is one we do not know', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings/bogus')).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'instructions',
+    });
+  });
+
+  it('drops trailing segments past the section', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/a1/settings/model/extra')).toEqual({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'model',
+    });
+  });
+
+  it('percent-encodes the agent id and decodes it back', () => {
+    const route: WorkspaceRoute = { kind: 'agent-settings', id: 'a/b c', section: 'memory' };
+    expect(workspaceRoutePath(route)).toBe('/workspace/agents/a%2Fb%20c/settings/memory');
+    expect(parseWorkspaceRoute(workspaceRoutePath(route))).toEqual(route);
+  });
+
+  it('refuses a dot-segment agent id on the settings path too', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/../settings/model')).toEqual({
+      kind: 'today',
+    });
+  });
+
+  it('names the open agent on both of its pages, and none elsewhere', () => {
+    expect(routeAgentId({ kind: 'agent', id: 'a1', tab: 'chat' })).toBe('a1');
+    expect(routeAgentId({ kind: 'agent-settings', id: 'a1', section: 'model' })).toBe('a1');
+    expect(routeAgentId({ kind: 'today' })).toBeNull();
+    expect(routeAgentId({ kind: 'activity' })).toBeNull();
   });
 });
