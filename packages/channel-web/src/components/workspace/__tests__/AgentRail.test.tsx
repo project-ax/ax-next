@@ -8,7 +8,7 @@
  * opposite answers and a bare empty state renders as the second one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
 import { AgentSettings } from '../AgentSettings';
@@ -96,6 +96,30 @@ beforeEach(() => {
 });
 
 describe('AgentRail — simplified tabs', () => {
+  it('renders three visible icon and text labels and pins learned facts outside the active panel', async () => {
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
+      learned={<p>Learned in this chat fixture</p>} />);
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Chats', 'Files', 'Activity']);
+    tabs.forEach((tab) => expect(tab.querySelector('svg')).toBeTruthy());
+    expect(screen.queryByRole('tab', { name: 'Memory' })).toBeNull();
+    const learned = screen.getByText('Learned in this chat fixture');
+    expect(learned.closest('[role="tabpanel"]')).toBeNull();
+    for (const label of ['Files', 'Activity', 'Chats']) {
+      fireEvent.mouseDown(screen.getByRole('tab', { name: label }), { button: 0, ctrlKey: false });
+      expect(learned).toBeVisible();
+    }
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+
+  it.each(['memory', 'connectors'])('falls back to Chats for a removed %s tab value', async (tab) => {
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
+      tab={tab as unknown as 'chat'} />);
+    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: /Current conversation/ })).toBeTruthy();
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+
   it('keeps Current conversation without an empty-history message', async () => {
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
     expect(screen.getByRole('button', { name: /Current conversation/ })).toBeTruthy();
@@ -109,7 +133,7 @@ describe('AgentRail — simplified tabs', () => {
     }));
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
       panels={{ activity: <p>Finished the inbox sweep</p> }} />);
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
     expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Right now' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'What it did' })).toBeNull();
@@ -861,12 +885,12 @@ describe('AgentRail icon tabs', () => {
     renderRail();
     const selected = screen.getByRole('tab', { name: 'Activity' });
     expect(selected).toHaveAttribute('data-state', 'active');
-    expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('data-state', 'inactive');
+    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('data-state', 'inactive');
   });
   it('expands even when the clicked icon is the already selected tab', () => {
     const expand = vi.fn();
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} collapsed onCollapse={expand} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Conversations' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Chats' }));
     expect(expand).toHaveBeenCalledTimes(1);
   });
 });
@@ -1077,22 +1101,5 @@ describe('AgentRail — the way into agent settings (TASK-888)', () => {
     await waitFor(() => expect(railMock).toHaveBeenCalled());
   });
 
-  it('points the Memory tab at Instructions, where the rules editor went', async () => {
-    const onOpenSettings = vi.fn();
-    render(
-      <AgentRail
-        detail={detail()}
-        openPastId={null}
-        onOpenPast={vi.fn()}
-        tab="memory"
-        onTab={vi.fn()}
-        onOpenSettings={onOpenSettings}
-      />,
-    );
-    const panel = screen.getByRole('tabpanel', { name: 'Memory' });
-    expect(panel).toHaveTextContent('Instructions you gave Quill live in Settings.');
-    fireEvent.click(within(panel).getByRole('button', { name: 'Settings' }));
-    expect(onOpenSettings).toHaveBeenCalledWith('instructions');
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
+
 });

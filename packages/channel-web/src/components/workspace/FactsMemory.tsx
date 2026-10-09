@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,12 +12,13 @@ import {
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import {
   Field,
-  FieldContent,
-  FieldDescription,
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { MoreHorizontal, Search } from 'lucide-react';
+import { MemoryFixesContext } from '@/lib/use-conversation-memory';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -47,8 +48,6 @@ import {
   MEMORY_CLOSURE_BADGE,
   MEMORY_FIX,
   MEMORY_FORGET,
-  MEMORY_HISTORY_TOGGLE,
-  MEMORY_HISTORY_TOGGLE_HELPER,
   MEMORY_OVERRIDDEN_NOTE,
   MEMORY_PERSONAL_NOTICE,
   MEMORY_REPLACED_BY_UNKNOWN,
@@ -56,9 +55,8 @@ import {
   memoryFixLabel,
   memoryForgetLabel,
   memoryReplacedBy,
-  memorySlotText,
   memorySubjectText,
-  memoryStatementText,
+  memorySlotText,
 } from './memory-copy';
 
 export interface MemorySurfaceProps {
@@ -125,10 +123,6 @@ function RowValue({ row, children }: { row: FactMemoryStatement; children: strin
   );
 }
 
-function sortOldestFirst(rows: readonly FactMemoryStatement[]): FactMemoryStatement[] {
-  return [...rows].sort((a, b) => a.when.localeCompare(b.when) || a.id.localeCompare(b.id));
-}
-
 function LoadingMemories() {
   return (
     <div role="status" aria-label="Loading memories" className="flex flex-col gap-2">
@@ -186,26 +180,6 @@ function EmptyMemories({ children }: { children: string }) {
   );
 }
 
-function HistoryToggle({
-  id,
-  checked,
-  onChange,
-}: {
-  id: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <Field orientation="horizontal">
-      <Switch id={id} checked={checked} onCheckedChange={onChange} />
-      <FieldContent>
-        <FieldLabel htmlFor={id}>{MEMORY_HISTORY_TOGGLE}</FieldLabel>
-        <FieldDescription>{MEMORY_HISTORY_TOGGLE_HELPER}</FieldDescription>
-      </FieldContent>
-    </Field>
-  );
-}
-
 function ClosureNote({
   row,
   page,
@@ -250,6 +224,8 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
     memory.factsVisibility === 'team' || memory.factsVisibility === 'personal'
       ? memory.factsVisibility
       : undefined;
+  const shared = useContext(MemoryFixesContext);
+  const forgottenRef = useRef<FactMemoryStatement | null>(null);
   const [refresh, setRefresh] = useState(0);
   const bump = () => setRefresh((n) => n + 1);
   const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
@@ -264,7 +240,11 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
     is drawn; a receipt that runs out lands on the row, or on the heading when
     the row was forgotten.
   */
-  const receipt = useMemoryReceipt(agentId, bump, { scope: rootRef });
+  const receipt = useMemoryReceipt(agentId, () => {
+    if (forgottenRef.current !== null) shared?.undoForget?.(forgottenRef.current);
+    forgottenRef.current = null;
+    bump();
+  }, { ...(shared ? { onFixUndone: shared.undoFix } : {}), scope: rootRef });
 
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-6">
@@ -280,7 +260,7 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
           <AlertDescription>{MEMORY_PERSONAL_NOTICE}</AlertDescription>
         </Alert>
       )}
-      <MemoriesCard
+      <MemoriesManager
         agentId={agentId}
         agentName={agentName}
         refresh={refresh}
@@ -289,7 +269,6 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
         onForget={setForgetTarget}
         {...(onCount ? { onCount } : {})}
       />
-      <SearchCard agentId={agentId} refresh={refresh} onForget={setForgetTarget} />
       {receipt.element}
       <MemoryFixDialog
         target={fixTarget}
@@ -297,8 +276,13 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
         visibility={visibility}
         outcomeScope={rootRef}
         onClose={() => setFixTarget(null)}
-        onSaved={(_reason, saved) => {
-          if (fixTarget !== null) receipt.updated({ row: fixTarget, ...saved });
+        onSaved={(reason, saved) => {
+          forgottenRef.current = null;
+          if (fixTarget !== null) {
+            const fix = { row: fixTarget, ...saved };
+            shared?.recordFix(fix, reason);
+            receipt.updated(fix);
+          }
           setFixTarget(null);
           bump();
         }}
@@ -311,6 +295,8 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
         onClose={() => setForgetTarget(null)}
         onForgotten={(row) => {
           setForgetTarget(null);
+          forgottenRef.current = row;
+          shared?.recordForget?.(row);
           receipt.forgotten(row);
           bump();
         }}
@@ -319,15 +305,50 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
   );
 }
 
-function MemoriesCard({
-  agentId,
-  agentName,
-  refresh,
-  extractionPaused = false,
-  onFix,
-  onForget,
-  onCount,
-}: {
+function NotedDate({ when }: { when: string }) {
+  const date = new Date(when);
+  if (Number.isNaN(date.getTime())) return <span>Unknown date</span>;
+  return (
+    <time dateTime={when}>
+      {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+    </time>
+  );
+}
+
+function MemoryActions({ row, onFix, onForget }: {
+  row: FactMemoryStatement;
+  onFix: (row: FactMemoryStatement) => void;
+  onForget: (row: FactMemoryStatement) => void;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const selection = useRef<((row: FactMemoryStatement) => void) | null>(null);
+  // Open the dialog after the menu's focus scope closes. Cancel can then
+  // return to the persistent trigger rather than an unmounted menu item.
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button ref={trigger} type="button" variant="ghost" size="icon" aria-label={`Memory actions: ${row.value}`}>
+          <MoreHorizontal aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => {
+        const action = selection.current;
+        selection.current = null;
+        if (action === null) return;
+        e.preventDefault();
+        trigger.current?.focus();
+        setTimeout(() => action(row), 0);
+      }}>
+        <DropdownMenuGroup>
+          <DropdownMenuItem aria-label={memoryFixLabel(row.value)} onSelect={() => { selection.current = onFix; }}>{MEMORY_FIX}</DropdownMenuItem>
+          <DropdownMenuItem aria-label={memoryForgetLabel(row.value)} onSelect={() => { selection.current = onForget; }}>{MEMORY_FORGET}</DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false, onFix, onForget, onCount }: {
   agentId: string;
   refresh: number;
   agentName: string;
@@ -337,16 +358,21 @@ function MemoriesCard({
   onCount?: (count: number | null) => void;
 }) {
   const compact = useIsCompact();
+  const shared = useContext(MemoryFixesContext);
+  const [draft, setDraft] = useState('');
+  const [query, setQuery] = useState('');
   const [history, setHistory] = useState(false);
   const [tick, setTick] = useState(0);
   const [state, setState] = useState<ReadState>({ status: 'loading' });
   const request = useRef(0);
+  const fixes = shared?.fixes;
+  const forgotten = shared?.forgotten;
 
   useEffect(() => {
     let cancelled = false;
     const sequence = ++request.current;
     setState({ status: 'loading' });
-    workspaceApi.recallMemory(agentId, { history }).then(
+    workspaceApi.recallMemory(agentId, { ...(query ? { query } : {}), history }).then(
       (data) => {
         if (!cancelled && sequence === request.current) setState({ status: 'ready', data });
       },
@@ -354,267 +380,96 @@ function MemoriesCard({
         if (!cancelled && sequence === request.current) setState({ status: 'failed' });
       },
     );
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId, history, refresh, tick]);
+    return () => { cancelled = true; };
+  }, [agentId, query, history, refresh, tick, fixes, forgotten]);
 
+  // Keep the engine's ordering, particularly its relevance ranking in search.
   const rows = state.status === 'ready' ? state.data.statements : [];
-  const active = rows.filter(isCurrent);
-  const closed = sortOldestFirst(rows.filter((r) => !isCurrent(r)));
-  const count = state.status === 'ready' ? active.length : null;
-  useEffect(() => { onCount?.(count); }, [count, onCount]);
+  const count = state.status === 'ready' && query === '' ? rows.filter(isCurrent).length : null;
+  useEffect(() => { if (query === '') onCount?.(count); }, [count, onCount, query]);
 
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle {...memoryHeadingLanding}>Memories</CardTitle>
-        <CardDescription>
-          Shared across conversations with {agentName}.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <HistoryToggle id="memories-history" checked={history} onChange={setHistory} />
-        {state.status === 'loading' && <LoadingMemories />}
-        {state.status === 'failed' && <FailedRead onRetry={() => setTick((t) => t + 1)} />}
-        {state.status === 'ready' && (
-          <>
-            {state.data.degraded.length > 0 && <DegradedNotice />}
-            {rows.length === 0 && extractionPaused ? (
-              // Paused: the notice above explains why; don't promise what won't happen.
-              <EmptyMemories>No memories yet.</EmptyMemories>
-            ) : rows.length === 0 ? (
-              <EmptyMemories>
-                No memories yet. Notes we remember from your conversations will
-                appear here.
-              </EmptyMemories>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {active.map((row) => (
-                  <li key={row.id} className={cn('flex items-start gap-3', compact ? 'flex-col' : 'justify-between')}>
-
-                    <div className="flex flex-col gap-0.5">
-                      <span {...memoryRowLanding(row.id, 'text-sm')}>
-                        <span className="text-muted-foreground">
-                          <span>{memorySubjectText(row)} — </span>{memorySlotText(row)}:
-                        </span>{' '}
-                        {row.value}
-                      </span>
-                      <span className="text-sm text-muted-foreground">
-                        Noted {row.whenText ?? row.when}
-                      </span>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={memoryFixLabel(row.value)}
-                        onClick={() => onFix(row)}
-                      >
-                        {MEMORY_FIX}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={memoryForgetLabel(row.value)}
-                        onClick={() => onForget(row)}
-                      >
-                        {MEMORY_FORGET}
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-                {closed.map((row) => (
-                  <li key={row.id} className="flex flex-col gap-0.5">
-                    <span className="text-sm">
-                      <span className="text-muted-foreground">
-                        <span>{memorySubjectText(row)} — </span>{memorySlotText(row)}:
-                      </span>{' '}
-                      <RowValue row={row}>{row.value}</RowValue>
-                    </span>
-                    <ClosureNote row={row} page={state.data} />
-                  </li>
-                ))}
-              </ul>
-            )}
-            {state.data.statements.length === 40 && (
-              <p className="text-sm text-muted-foreground">
-                Showing 40 memories. Use search to find more.
-              </p>
-            )}
-          </>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function SearchCard({
-  agentId,
-  refresh,
-  onForget,
-}: {
-  agentId: string;
-  refresh: number;
-  onForget: (row: FactMemoryStatement) => void;
-}) {
-  const compact = useIsCompact();
-  const [draft, setDraft] = useState('');
-  const [committed, setCommitted] = useState<string | null>(null);
-  const [history, setHistory] = useState(false);
-  const [tick, setTick] = useState(0);
-  const [state, setState] = useState<ReadState | { status: 'idle' }>({ status: 'idle' });
-  const request = useRef(0);
-
-  useEffect(() => {
-    if (committed === null) return;
-    let cancelled = false;
-    const sequence = ++request.current;
-    setState({ status: 'loading' });
-    workspaceApi.recallMemory(agentId, { query: committed, history }).then(
-      (data) => {
-        if (!cancelled && sequence === request.current) setState({ status: 'ready', data });
-      },
-      () => {
-        if (!cancelled && sequence === request.current) setState({ status: 'failed' });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId, committed, history, refresh, tick]);
-
-  // The ENGINE's own order — best match first. Re-sorting by date here was
-  // the bug (card item 5): it made a relevance-ranked list look unfiltered,
-  // as if it had simply dumped every match by age.
-  const rows = state.status === 'ready' ? state.data.statements : [];
-
-  function renderRow(row: FactMemoryStatement) {
-    const isClosed = !isCurrent(row);
-    const label = memoryStatementText(row);
-    // A row an Undo can give back is a place focus can land (TASK-651).
-    const landing = isClosed ? { className: undefined } : memoryRowLanding(row.id);
-    const actions = !isClosed && (
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        aria-label={memoryForgetLabel(label)}
-        onClick={() => onForget(row)}
-      >
-        {MEMORY_FORGET}
-      </Button>
-    );
-    if (compact) {
-      return (
-        <li key={row.id}>
-          <Card>
-            <CardContent className="flex flex-col gap-1 p-3">
-              <span {...landing} className={cn('text-sm', landing.className)}>
-                <RowValue row={row}>{label}</RowValue>
-              </span>
-              <span className="text-sm text-muted-foreground">
-                {kindLabel(row)} · {row.whenText ?? row.when}
-              </span>
-              {isClosed && state.status === 'ready' && (
-                <ClosureNote row={row} page={state.data} />
-              )}
-              {actions}
-            </CardContent>
-          </Card>
-        </li>
-      );
-    }
+  function statement(row: FactMemoryStatement) {
     return (
-      <TableRow key={row.id}>
-        <TableCell>{kindLabel(row)}</TableCell>
-        <TableCell>{row.whenText ?? row.when}</TableCell>
-        <TableCell>
-          <span {...landing}>
-            <RowValue row={row}>{label}</RowValue>
-          </span>
-          {isClosed && state.status === 'ready' && (
-            <ClosureNote row={row} page={state.data} />
-          )}
-        </TableCell>
-        <TableCell>{actions}</TableCell>
-      </TableRow>
+      <div className="flex min-w-0 flex-col gap-1">
+        <span {...(isCurrent(row) ? memoryRowLanding(row.id) : {})} className={cn('break-words [overflow-wrap:anywhere]', isCurrent(row) && memoryRowLanding(row.id).className)}>
+          <span className="text-muted-foreground"><span>{memorySubjectText(row)} — </span>{memorySlotText(row)}:</span>{' '}
+          <RowValue row={row}>{row.value}</RowValue>
+        </span>
+        {!isCurrent(row) && state.status === 'ready' && <ClosureNote row={row} page={state.data} />}
+      </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Search memories</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = draft.trim();
-            if (q !== '') {
-              setCommitted(q);
-              setTick((t) => t + 1);
-            }
-          }}
-        >
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="memory-search">Search memories</FieldLabel>
-              <div className="flex gap-2">
-                <Input
-                  id="memory-search"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                />
-                <Button type="submit" disabled={draft.trim() === ''}>
-                  Search
-                </Button>
-              </div>
-            </Field>
-          </FieldGroup>
-        </form>
-        <HistoryToggle id="search-history" checked={history} onChange={setHistory} />
-        {state.status === 'idle' && (
-          <EmptyMemories>Search memories from your conversations.</EmptyMemories>
+    <section {...memoryHeadingLanding} role="region" aria-label="Memories" className={cn(memoryHeadingLanding.className, 'flex min-w-0 flex-col gap-4')}>
+      <form onSubmit={(e) => {
+        e.preventDefault();
+        setQuery(draft.trim());
+        setTick((t) => t + 1);
+      }}>
+        <FieldGroup className="flex flex-col gap-3 md:flex-row md:items-center">
+          <Field className="min-w-0 md:flex-1">
+            <FieldLabel htmlFor="memory-search" className="sr-only">Search memories</FieldLabel>
+            <InputGroup>
+              <InputGroupInput id="memory-search" placeholder="Search memories…" value={draft} onChange={(e) => {
+                setDraft(e.target.value);
+                if (e.target.value.trim() === '') setQuery('');
+              }} />
+              <InputGroupAddon align="inline-end">
+                <InputGroupButton type="submit" size="icon-sm" aria-label="Search"><Search aria-hidden="true" /></InputGroupButton>
+              </InputGroupAddon>
+            </InputGroup>
+          </Field>
+          <Field orientation="horizontal" className="md:w-auto md:shrink-0">
+            <Switch id="memories-history" checked={history} onCheckedChange={setHistory} />
+            <FieldLabel htmlFor="memories-history">Show replaced memories</FieldLabel>
+          </Field>
+        </FieldGroup>
+      </form>
+      {state.status === 'loading' && <LoadingMemories />}
+      {state.status === 'failed' && <FailedRead onRetry={() => setTick((t) => t + 1)} />}
+      {state.status === 'ready' && <>
+        {state.data.degraded.length > 0 && <DegradedNotice />}
+        {rows.length === 0 ? (
+          <EmptyMemories>{query ? 'No memories match that. Try a different word or phrase.' : extractionPaused ? 'No memories yet.' : 'No memories yet. Notes we remember from your conversations will appear here.'}</EmptyMemories>
+        ) : compact ? (
+          <ul aria-label="Memories" className="flex flex-col gap-3">
+            {rows.map((row) => <li key={row.id}>
+              <Card>
+                <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-2">
+                  <CardTitle><Badge variant="secondary">{kindLabel(row)}</Badge></CardTitle>
+                  {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2 p-4 pt-0">
+                  {statement(row)}
+                  <CardDescription>Noted <NotedDate when={row.when} /></CardDescription>
+                </CardContent>
+              </Card>
+            </li>)}
+          </ul>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-border">
+            <Table className="table-fixed">
+              <TableHeader className="bg-muted/50">
+                <TableRow>
+                  <TableHead className="w-36">Kind</TableHead>
+                  <TableHead>What {agentName} remembers</TableHead>
+                  <TableHead className="w-32">Noted</TableHead>
+                  <TableHead className="w-14"><span className="sr-only">Actions</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>{rows.map((row) => <TableRow key={row.id}>
+                <TableCell className="align-top"><Badge variant="secondary">{kindLabel(row)}</Badge></TableCell>
+                <TableCell className="align-top">{statement(row)}</TableCell>
+                <TableCell className="align-top text-muted-foreground"><NotedDate when={row.when} /></TableCell>
+                <TableCell className="align-top">{isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}</TableCell>
+              </TableRow>)}</TableBody>
+            </Table>
+          </div>
         )}
-        {state.status === 'loading' && <LoadingMemories />}
-        {state.status === 'failed' && <FailedRead onRetry={() => setTick((t) => t + 1)} />}
-        {state.status === 'ready' && (
-          <>
-            {state.data.degraded.length > 0 && <DegradedNotice />}
-            {state.data.statements.length === 0 ? (
-              <EmptyMemories>
-                No memories match that. Try a different word or phrase.
-              </EmptyMemories>
-            ) : compact ? (
-              <ul className="flex flex-col gap-2">{rows.map(renderRow)}</ul>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Type</TableHead>
-                    <TableHead>When (UTC)</TableHead>
-                    <TableHead>Statement</TableHead>
-                    <TableHead />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>{rows.map(renderRow)}</TableBody>
-              </Table>
-            )}
-            {state.data.statements.length > 0 && (
-              <p className="text-sm text-muted-foreground">Best matches first.</p>
-            )}
-            {state.data.statements.length === 40 && (
-              <p className="text-sm text-muted-foreground">
-                Showing up to 40 matches. There may be more.
-              </p>
-            )}
-          </>
-        )}
-      </CardContent>
-    </Card>
+        {query && rows.length > 0 && <p className="text-sm text-muted-foreground">Best matches first.</p>}
+        {rows.length === 40 && <p className="text-sm text-muted-foreground">Showing 40 memories. Use search to find more.</p>}
+      </>}
+    </section>
   );
 }

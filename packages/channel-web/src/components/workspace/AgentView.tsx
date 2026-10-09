@@ -402,7 +402,6 @@ export function AgentView({
   const [railOpen, setRailOpen] = useState(false);
   const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [railCollapsed, setRailCollapsed] = useRailPreference('details');
-  const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [fileCount, setFileCount] = useState<number | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
@@ -447,10 +446,10 @@ export function AgentView({
   const { markSeen: markLearnedSeen, unseen: learnedUnseen } = learned;
   // The chip's view of the same ledger (TASK-643): only the fixes, as a value
   // that changes when they do rather than with every stream frame.
-  const { fixes: learnedFixMap, recordFix, undoFix } = learned;
+  const { fixes: learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget } = learned;
   const learnedFixes = useMemo<MemoryFixes>(
-    () => ({ fixes: learnedFixMap, recordFix, undoFix }),
-    [learnedFixMap, recordFix, undoFix],
+    () => ({ fixes: learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget }),
+    [learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget],
   );
   // Below `md`, opening the rail is what counts as having seen the block.
   useEffect(() => {
@@ -1365,6 +1364,7 @@ export function AgentView({
     <LearnedInChat
       memory={learned}
       agentId={agentId}
+      agentName={agent.name}
       visibility={
         detail.memory.factsVisibility === 'team' || detail.memory.factsVisibility === 'personal'
           ? detail.memory.factsVisibility
@@ -1388,7 +1388,7 @@ export function AgentView({
       }}
       onSeeAll={() => {
         if (compact) setRailOpen(false);
-        onTab('memory');
+        openSettings('memory');
       }}
     />
   );
@@ -1604,8 +1604,8 @@ export function AgentView({
   }
 
   const railProps = {
-    detail, learned: learnedBlock, openPastId: pastId, tab, onTab,
-    counts: { memory: memoryCount, files: fileCount },
+    detail, learned: learned.rows.length > 0 ? learnedBlock : null, openPastId: pastId, tab, onTab,
+    counts: { files: fileCount },
     onChanged,
     busy: streaming || rereading,
     onNew: async () => {
@@ -1625,8 +1625,6 @@ export function AgentView({
         {...(activityLoading !== undefined ? { loading: activityLoading } : {})}
         {...(activityError !== undefined ? { error: activityError } : {})} />,
       files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
-      memory: <MemorySurface agentId={agent.id} memory={detail.memory} agentName={agent.name}
-        onCount={setMemoryCount} />,
     },
     ...(onSettingsSection
       ? {
@@ -1662,7 +1660,6 @@ export function AgentView({
                 agentId={agent.id}
                 memory={detail.memory}
                 agentName={agent.name}
-                onCount={setMemoryCount}
               />
             ) : null
           }

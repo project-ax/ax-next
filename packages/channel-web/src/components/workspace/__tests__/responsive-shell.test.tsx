@@ -238,7 +238,7 @@ describe('the agent pane below md', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
 
-    expect(await screen.findByRole('heading', { name: 'Conversations' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Chats' })).toBeTruthy();
   });
 
   it('closes the rail when you open a past conversation from it', async () => {
@@ -257,7 +257,7 @@ describe('the agent pane below md', () => {
     fireEvent.click(
       await screen.findByRole('button', { name: 'Agent details' }),
     );
-    const panel = await screen.findByRole('heading', { name: 'Conversations' });
+    const panel = await screen.findByRole('heading', { name: 'Chats' });
 
     fireEvent.click(screen.getByRole('button', { name: 'March' }));
 
@@ -287,9 +287,9 @@ describe('the agent pane below md', () => {
     renderAgentView({ onOpenNav: () => {} });
 
     expect(
-      await screen.findByRole('tab', { name: 'Conversations' }),
+      await screen.findByRole('tab', { name: 'Chats' }),
     ).toBeTruthy();
-    expect(await screen.findByRole('heading', { name: 'Conversations' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Chats' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Agent details' })).toBeNull();
     /*
       Even handed `onOpenNav`, the nav trigger stays off above `md` — the

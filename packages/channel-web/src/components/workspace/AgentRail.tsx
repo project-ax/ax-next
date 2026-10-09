@@ -2,7 +2,6 @@ import { useId, useState } from 'react';
 import {
   Activity,
   Folder,
-  Lightbulb,
   MessageSquare,
   MoreHorizontal,
   PanelRight,
@@ -53,8 +52,7 @@ import { IconTooltip } from './IconTooltip';
 
 export const RAIL_TABS = {
   activity: { label: 'Activity', Icon: Activity },
-  chat: { label: 'Conversations', Icon: MessageSquare },
-  memory: { label: 'Memory', Icon: Lightbulb },
+  chat: { label: 'Chats', Icon: MessageSquare },
   files: { label: 'Files', Icon: Folder },
 } satisfies Record<AgentTab, { label: string; Icon: typeof Activity }>;
 
@@ -72,7 +70,7 @@ interface Props {
   onChanged?: () => void;
   onNew?: () => Promise<void>;
   busy?: boolean;
-  counts?: { memory: number | null; files: number | null };
+  counts?: { files: number | null };
   /**
    * Open this agent's full settings page (TASK-888). Absent, the rail draws
    * no Settings button — a control that cannot go anywhere is worse than none.
@@ -148,7 +146,9 @@ export function AgentRailContent({
   const { agent, past } = detail;
   const { rail, loading, error } = useAgentRail(agent.id, agent.state, busy);
   const [localTab, setLocalTab] = useState<AgentTab>(tab);
-  const active = onTab ? tab : localTab;
+  const requested = onTab ? tab : localTab;
+  // Older callers/preferences may retain a removed Memory or Connectors tab.
+  const active = WORKSPACE_AGENT_TABS.includes(requested) ? requested : 'chat';
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [editing, setEditing] = useState<{
@@ -235,9 +235,7 @@ export function AgentRailContent({
     );
   }
   const count =
-    active === 'memory' && counts?.memory != null
-        ? `${counts.memory} ${counts.memory === 1 ? 'note' : 'notes'}`
-        : active === 'files' && counts?.files != null
+    active === 'files' && counts?.files != null
           ? `${counts.files} ${counts.files === 1 ? 'file' : 'files'}`
           : null;
   return (
@@ -320,9 +318,13 @@ export function AgentRailContent({
                 onClick={() => {
                   if (collapsed && value === active) onCollapse?.();
                 }}
-                className="relative size-10 shrink-0 rounded-sm p-0 text-muted-foreground hover:bg-accent data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none max-md:size-11"
+                className={cn(
+                  'relative h-10 min-w-0 flex-1 gap-1.5 rounded-sm px-2 text-[12px] text-muted-foreground hover:bg-accent data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none max-md:h-11',
+                  collapsed && 'size-10 flex-none p-0 max-md:size-11',
+                )}
               >
-                <Icon aria-hidden="true" className="size-4" />
+                <Icon aria-hidden="true" className="size-4 shrink-0" />
+                {!collapsed && <span>{label}</span>}
                 {value === 'activity' && agent.state === 'working' && (
                   <span
                     aria-hidden="true"
@@ -442,38 +444,15 @@ export function AgentRailContent({
 
                 </div>
               )}
-              {active === 'memory' && (
-                <>
-                  {learned}
-                  {panels?.memory}
-                  <p className="mt-4 text-[12px] text-muted-foreground">
-                    Notes it keeps from your conversations. Edit or remove any
-                    of them.
-                  </p>
-                  {/*
-                    TASK-888 — the rules editor moved to the settings page's
-                    Instructions section. Say where it went, once, rather than
-                    let someone hunt the tab it used to live in.
-                  */}
-                  {onOpenSettings && (
-                    <p className="mt-2 text-[12px] text-muted-foreground">
-                      Instructions you gave {agent.name} live in{' '}
-                      <Button
-                        variant="link"
-                        className="h-auto p-0 text-[12px]"
-                        onClick={() => onOpenSettings('instructions')}
-                      >
-                        Settings
-                      </Button>
-                      .
-                    </p>
-                  )}
-                </>
-              )}
               {active === 'files' && panels?.files}
             </div>
           </CompactSurfaceContext.Provider>
         </TabsContent>
+      )}
+      {!collapsed && learned && (
+        <div className="max-h-[45%] shrink-0 overflow-y-auto px-3 pb-4">
+          {learned}
+        </div>
       )}
       {WORKSPACE_AGENT_TABS.filter((v) => collapsed || v !== active).map(
         (v) => (

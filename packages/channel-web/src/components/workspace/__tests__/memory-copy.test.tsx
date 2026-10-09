@@ -101,22 +101,28 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** The profile row's own action buttons — the row, not the whole page. */
+/** The settings row's menu keeps the correction vocabulary unchanged. */
 async function rowActions(): Promise<HTMLElement[]> {
-  const value = await screen.findByText('Boston');
-  const li = value.closest('li');
-  if (li === null) throw new Error('profile row not found');
-  return within(li).getAllByRole('button');
+  const trigger = await screen.findByRole('button', { name: 'Memory actions: Boston' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const menu = await screen.findByRole('menu');
+  return within(menu).getAllByRole('menuitem');
+}
+
+async function rowAction(label: string): Promise<HTMLElement> {
+  await rowActions();
+  return screen.getByRole('menuitem', { name: label });
 }
 
 async function forgetBoston(): Promise<void> {
-  fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel('Boston') }));
+  fireEvent.click(await rowAction(memoryForgetLabel('Boston')));
   const dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
   await waitFor(() => expect(forgetMock).toHaveBeenCalledWith('a1', ['m1']));
 }
 
-describe('memory-copy — the Memory tab says what the module says', () => {
+describe('memory-copy — the Memory manager says what the module says', () => {
   it('row actions are exactly Fix and Forget, labelled by the memory they act on', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
     const buttons = await rowActions();
@@ -131,7 +137,7 @@ describe('memory-copy — the Memory tab says what the module says', () => {
 
   it('the Fix dialog draws its title, label and helper from the module', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
-    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    fireEvent.click(await rowAction(memoryFixLabel('Boston')));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByRole('heading').textContent).toBe(MEMORY_FIX_TITLE);
     expect(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL)).toBeInTheDocument();
@@ -140,7 +146,7 @@ describe('memory-copy — the Memory tab says what the module says', () => {
 
   it('the Fix question draws its legend, options and helpers from the module', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
-    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    fireEvent.click(await rowAction(memoryFixLabel('Boston')));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText(copy.MEMORY_FIX_REASON_LEGEND)).toBeInTheDocument();
     expect(within(dialog).getAllByRole('radio')).toHaveLength(2);
@@ -161,14 +167,14 @@ describe('memory-copy — the Memory tab says what the module says', () => {
 
   it('a shared agent gets the team helper on Fix', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read('team')} />);
-    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    fireEvent.click(await rowAction(memoryFixLabel('Boston')));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText(MEMORY_FIX_HELPER_TEAM)).toBeInTheDocument();
   });
 
   it('says Updated. once a fix is saved', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read()} />);
-    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+    fireEvent.click(await rowAction(memoryFixLabel('Boston')));
     fireEvent.change(await screen.findByLabelText(MEMORY_FIX_FIELD_LABEL), {
       target: { value: 'Cambridge' },
     });
@@ -241,7 +247,7 @@ describe('memory-copy — the Forgotten receipt', () => {
 });
 
 async function fixBostonToCambridge(): Promise<void> {
-  fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel('Boston') }));
+  fireEvent.click(await rowAction(memoryFixLabel('Boston')));
   fireEvent.change(await screen.findByLabelText(MEMORY_FIX_FIELD_LABEL), {
     target: { value: 'Cambridge' },
   });

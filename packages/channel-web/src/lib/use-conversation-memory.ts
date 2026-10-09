@@ -74,6 +74,10 @@ export interface FixEntry {
 export interface MemoryFixes {
   /** Every row a Fix closed, by that row's id. */
   fixes: ReadonlyMap<string, FixEntry>;
+  /** Settings Forget/Undo shares the same overlay without restarting the feed. */
+  forgotten?: ReadonlySet<string> | undefined;
+  recordForget?: ((row: FactMemoryStatement) => void) | undefined;
+  undoForget?: ((row: FactMemoryStatement) => void) | undefined;
   recordFix: (fix: SavedFix, reason: 'changed' | 'never-right') => void;
   /** After a Fix's Undo worked: the closed row is back in effect. */
   undoFix: (fix: SavedFix) => void;
@@ -92,7 +96,21 @@ export const MemoryFixesContext = createContext<MemoryFixes | null>(null);
  */
 export function useFixLedger(resetKey: string): MemoryFixes {
   const [fixes, setFixes] = useState<ReadonlyMap<string, FixEntry>>(() => new Map());
-  useEffect(() => setFixes(new Map()), [resetKey]);
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    setFixes(new Map());
+    setForgotten(new Set());
+  }, [resetKey]);
+  const recordForget = useCallback((row: FactMemoryStatement) => {
+    setForgotten((ids) => new Set(ids).add(row.id));
+  }, []);
+  const undoForget = useCallback((row: FactMemoryStatement) => {
+    setForgotten((ids) => {
+      const next = new Set(ids);
+      next.delete(row.id);
+      return next;
+    });
+  }, []);
   const recordFix = useCallback((fix: SavedFix, reason: 'changed' | 'never-right') => {
     setFixes((m) =>
       new Map(m).set(fix.row.id, {
@@ -110,7 +128,7 @@ export function useFixLedger(resetKey: string): MemoryFixes {
       return next;
     });
   }, []);
-  return { fixes, recordFix, undoFix };
+  return { fixes, recordFix, undoFix, forgotten, recordForget, undoForget };
 }
 
 export interface ConversationMemory extends MemoryFixes {
@@ -399,10 +417,13 @@ export function useConversationMemory({
 
   return {
     fixes: ledger.fixes,
+    forgotten: ledger.forgotten,
+    recordForget: ledger.recordForget,
+    undoForget: ledger.undoForget,
     recordFix,
     undoFix,
     status,
-    rows,
+    rows: rows.filter((r) => !ledger.forgotten?.has(r.row.id)),
     extraction,
     pass,
     unseen,

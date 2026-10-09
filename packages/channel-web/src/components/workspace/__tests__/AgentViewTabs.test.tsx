@@ -30,7 +30,7 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import { WORKSPACE_AGENT_TABS } from '@/lib/workspace-route';
 import { AgentView } from '../AgentView';
@@ -163,7 +163,7 @@ describe('AgentView tab set — the accessibility tree', () => {
     same `baseId`, so this also catches a panel wired to the wrong tab.
   */
   it('labels each panel by its own tab', async () => {
-    renderView({ tab: 'memory' });
+    renderView({ tab: 'chat' });
 
     await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
 
@@ -302,27 +302,4 @@ describe('AgentView tab set — the accessibility tree', () => {
     expect(document.activeElement).toBe(open);
   });
 
-  const memoryStates = ['ok', 'failed', 'unavailable'] as const;
-  it.each(memoryStates.map((rules) => ({ rules })))(
-    'keeps Memory reachable with rules=$rules',
-    async ({ rules }) => {
-      const data = detail();
-      data.memory = {
-        rules: {
-          status: rules,
-          doc: rules === 'ok' ? { name: 'Your rules', scope: 'rules', body: '' } : null,
-        },
-      };
-      agentMock.mockResolvedValue(data);
-      renderView({ tab: 'memory' });
-      const tab = await screen.findByRole('tab', { name: 'Memory' });
-      expect(tab).toHaveAttribute('aria-selected', 'true');
-      expect(tab).not.toBeDisabled();
-      const panel = screen.getByRole('tabpanel', { name: 'Memory' });
-      expect(panel).not.toHaveAttribute('hidden');
-      // TASK-888 — the rules editor lives on the settings page now.
-      expect(panel).not.toHaveTextContent('Rules you gave me');
-      expect(within(panel).queryByRole('textbox', { name: /Instructions/u })).toBeNull();
-    },
-  );
 });

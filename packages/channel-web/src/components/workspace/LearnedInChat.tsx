@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react';
 /**
  * "What I learned in this chat" — the rail block under "Right now" (TASK-627).
  *
@@ -51,6 +52,7 @@ import {
   MEMORY_FORGET,
   MEMORY_RESTORED,
   learnedAgo,
+  learnedHelper,
   learnedMore,
   learnedNewBadge,
   learnedSourceLabel,
@@ -70,6 +72,7 @@ const AGO_TICK_MS = 30_000;
 interface Props {
   memory: ConversationMemory;
   agentId: string;
+  agentName?: string;
   visibility: MemoryVisibility;
   /** Present only for an admin: opens Settings on AI model keys. */
   onOpenModelKeys?: (() => void) | undefined;
@@ -81,7 +84,7 @@ interface Props {
    * because there would be nothing to jump to.
    */
   sourceOf: (turnId: string) => TurnSource | undefined;
-  /** Open the Memory tab. */
+  /** Open the settings Memory section. */
   onSeeAll: () => void;
 }
 
@@ -93,6 +96,7 @@ function Note({ children }: { children: React.ReactNode }) {
 export function LearnedInChat({
   memory,
   agentId,
+  agentName = 'this agent',
   visibility,
   onOpenModelKeys,
   onJumpToSource,
@@ -192,6 +196,7 @@ export function LearnedInChat({
       </SectionLabel>
       <Card className="shadow-sm">
         <CardContent className="flex flex-col gap-2 p-3.5">
+          <p className="text-[12px] text-muted-foreground">{learnedHelper(agentName)}</p>
           <Body
             memory={memory}
             expanded={expanded}
@@ -263,7 +268,7 @@ export function LearnedInChat({
                 className="h-auto p-0 text-[11.5px]"
                 onClick={onSeeAll}
               >
-                {LEARNED_SEE_ALL}
+                {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
               </Button>
             </div>
           )}

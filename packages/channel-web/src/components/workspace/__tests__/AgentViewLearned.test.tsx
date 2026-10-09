@@ -100,13 +100,15 @@ function renderView({
   role = 'user' as 'user' | 'admin',
   onTab = vi.fn<(t: AgentTab) => void>(),
   onOpenModelKeys = vi.fn(),
+  onSettingsSection = vi.fn(),
 } = {}) {
   render(
     <UserProvider value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role }}>
       <AgentView
         agentId="a-quill"
-        tab="memory"
+        tab="chat"
         onTab={onTab}
+        onSettingsSection={onSettingsSection}
         decisions={[]}
         threadGrants={[]}
         onGrantResolved={() => {}}
@@ -129,7 +131,7 @@ function renderView({
       />
     </UserProvider>,
   );
-  return { onTab, onOpenModelKeys };
+  return { onTab, onOpenModelKeys, onSettingsSection };
 }
 
 async function streamOpen() {
@@ -154,10 +156,12 @@ beforeEach(() => {
 afterEach(() => clearViewport());
 
 describe('AgentView — "What I learned in this chat"', () => {
-  it('shows the learned block in Memory and follows this conversation', async () => {
+  it('pins learned facts below Chats and follows this conversation', async () => {
+    recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     renderView();
     await screen.findByText(LEARNED_TITLE);
-    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText(LEARNED_TITLE).closest('[role=tabpanel]')).toBeNull();
     await streamOpen();
     expect(recall).toHaveBeenCalledWith('a-quill', { conversationId: 'c-now' });
     expect(events.mock.calls[0]?.[0]).toBe('c-now');
@@ -168,18 +172,30 @@ describe('AgentView — "What I learned in this chat"', () => {
       detail({ memory: { rules: { status: 'unavailable', doc: null } } }),
     );
     renderView();
-    await screen.findByText(LEARNED_TITLE);
+    await screen.findByRole('tab', { name: 'Chats' });
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
     expect(recall).not.toHaveBeenCalled();
     expect(events).not.toHaveBeenCalled();
   });
 
-  it('See all memory opens the Memory tab', async () => {
-    const { onTab } = renderView();
-    fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
-    expect(onTab).toHaveBeenCalledWith('memory');
+  it('hides the pinned card until the open conversation has learned facts', async () => {
+    renderView();
+    await streamOpen();
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    await batch([st('new')]);
+    expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
+    expect(screen.getByText("What Quill picked up in this chat. Fix or forget anything that's off.")).toBeTruthy();
   });
 
-  it('offers "Fix this" on paused memory to an admin only', async () => {
+  it('See all memory opens settings Memory directly', async () => {
+    recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
+    const { onSettingsSection } = renderView();
+    fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
+    expect(onSettingsSection).toHaveBeenCalledWith('memory');
+  });
+
+  it('offers "Fix this" on paused memory with learned facts to an admin only', async () => {
+    recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     const { onOpenModelKeys } = renderView({ role: 'admin' });
     await streamOpen();
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
@@ -188,6 +204,7 @@ describe('AgentView — "What I learned in this chat"', () => {
   });
 
   it('does not offer "Fix this" to someone who cannot', async () => {
+    recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     renderView({ role: 'user' });
     await streamOpen();
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
