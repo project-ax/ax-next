@@ -140,7 +140,12 @@ async function queueCleanup(db: DB, row: StoredRoutine): Promise<void> {
 function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: string; owner_user_id: string }): CleanupJob {
   return { agentId: r.agent_id, routineId: r.routine_id, credentialRef: r.credential_ref, ownerUserId: r.owner_user_id };
 }
-/** Effects must be bounded by the hook bus timeout; no transaction handle crosses that boundary. */
+/**
+ * Credential callbacks must confirm actual effect settlement or cancellation before
+ * resolving or rejecting, so their locks remain held while side effects can occur.
+ * HookBus.call timeouts do not cancel handlers and cannot provide this guarantee.
+ * No transaction handle crosses the callback boundary.
+ */
 export function createRoutinesStore(db: DB): RoutinesStore {
   return {
     async createAuthored(input) {
