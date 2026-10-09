@@ -65,6 +65,8 @@ describe('consumeOAuthFullPageReturn', () => {
     });
   });
 
+  // Defensive coverage: these remain unchanged from the old generic return.
+  // The valid-agent cases above and encoded-id assertion below prove the migration.
   it.each(['', '.', '..'])('rejects an unusable agent id %j', (agentId) => {
     expect(consumeOAuthFullPageReturn({
       pathname: '/oauth/connected',

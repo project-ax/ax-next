@@ -309,7 +309,7 @@ export function AgentConnectors({
           {connectors.map((row, i) => (
             <Fragment key={row.id}>
               {i > 0 && <Separator />}
-              <div className="flex items-center gap-2 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-end gap-2 px-3 py-2">
                 <AccountTooltip account={row.signedIn?.account ?? null}>
                 <Button
                   variant="ghost"
@@ -318,7 +318,12 @@ export function AgentConnectors({
                   aria-describedby={row.signedIn?.account ? `connector-account-${row.id}` : undefined}
                   onClick={() => onView?.(row.id)}
                   disabled={onView === undefined}
-                  className="h-auto min-h-11 min-w-0 flex-1 justify-start gap-3 whitespace-normal px-1 py-2 text-left"
+                  className={cn(
+                    'h-auto min-h-11 min-w-0 flex-1 justify-start gap-3 whitespace-normal px-1 py-2 text-left',
+                    // At phone/tablet widths, the longer sign-in action gets
+                    // its own line so it cannot consume the identity column.
+                    canSetAccount && needsSignIn(row) && 'basis-full lg:basis-0',
+                  )}
                 >
                   <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
                     <Plug aria-hidden="true" />
