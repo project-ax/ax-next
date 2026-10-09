@@ -327,6 +327,9 @@ describe('memory-copy — the Updated receipt (TASK-634)', () => {
 });
 
 describe('memory-copy — the module itself', () => {
+  it.each([0, 1, 5])('owns the list footer and pluralization for %s memories', (count) => {
+    expect(copy.memoryListFooter(count)).toBe(`${count} ${count === 1 ? 'memory' : 'memories'} · Fix and Forget live in each row's menu.`);
+  });
   it('counts whole seconds and never goes negative', () => {
     expect(memoryUndoSecondsLeft(1000, 1000)).toBe(UNDO_WINDOW_MS / 1000);
     expect(memoryUndoSecondsLeft(1000, 1001)).toBe(UNDO_WINDOW_MS / 1000);

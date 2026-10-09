@@ -340,3 +340,12 @@ export const LEARNED_READ_FAILED =
 export const LEARNED_READ_FAILED_ACTION = 'Try again';
 export const LEARNED_NOT_ENABLED =
   "This workspace doesn't keep memory yet. Ask your workspace admin about switching it on.";
+// Memory settings list (TASK-892).
+export const MEMORY_KIND_PREFERENCE = 'Preference';
+export const MEMORY_KIND_FACT = 'Fact';
+export const MEMORY_NOTED_TODAY = 'Today';
+export const MEMORY_NOTED_YESTERDAY = 'Yesterday';
+
+export function memoryListFooter(count: number): string {
+  return `${count} ${count === 1 ? 'memory' : 'memories'} · Fix and Forget live in each row's menu.`;
+}
