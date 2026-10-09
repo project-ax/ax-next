@@ -1,97 +1,41 @@
-import type { Plugin, WorkspaceDelta } from '@ax/core';
-import { makeAgentContext, PluginError } from '@ax/core';
+import type { Plugin } from '@ax/core';
+import { makeAgentContext } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
-import {
-  handleAgentDeleted,
-  handleWorkspaceApplied,
-  mountAllWebhookRoutesOnStartup,
-  rebindWebhooksForAgent,
-} from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import {
   createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFires,
 } from './fire.js';
 import { applySilenceLogic } from './silence.js';
-import { parseRoutineRow } from './parse-routine.js';
-import { durationToSeconds } from '@ax/validator-routine';
-import {
-  FireNowOutputSchema,
-  ListOutputSchema,
-  RecentFiresOutputSchema,
-  RecentFiresForAgentOutputSchema,
-  RoutinesDeleteDefaultOutputSchema,
-  RoutinesGetDefaultOutputSchema,
-  RoutinesListDefaultsOutputSchema,
-  RoutinesUpsertDefaultOutputSchema,
-  RoutinesSetAgentDefaultEnabledOutputSchema,
-  RoutinesListAgentDefaultsOutputSchema,
-} from './types.js';
-import type {
-  RoutinesConfig,
-  FireNowInput,
-  FireNowOutput,
-  ListInput,
-  ListOutput,
-  RecentFiresInput,
-  RecentFiresOutput,
-  RecentFiresForAgentInput,
-  RecentFiresForAgentOutput,
-  RoutinesListDefaultsInput,
-  RoutinesListDefaultsOutput,
-  RoutinesGetDefaultInput,
-  RoutinesGetDefaultOutput,
-  RoutinesUpsertDefaultInput,
-  RoutinesUpsertDefaultOutput,
-  RoutinesDeleteDefaultInput,
-  RoutinesDeleteDefaultOutput,
-  RoutinesSetAgentDefaultEnabledInput,
-  RoutinesSetAgentDefaultEnabledOutput,
-  RoutinesListAgentDefaultsInput,
-  RoutinesListAgentDefaultsOutput,
-} from './types.js';
+import type { RoutinesConfig } from './types.js';
+import { registerRoutineServices, ROUTINE_SERVICES } from './services.js';
+import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
-/**
- * Single-replica only at v1: `workspace:applied` is a local in-process
- * hook (no LISTEN/NOTIFY broadcast), so webhook route registrations
- * are local to the replica that received the apply. Multi-replica
- * fan-out lands when the rest of the preset lifts out of
- * single-replica (presets/k8s/src/index.ts:51,650-723 — multiple
- * plugins already declare this). See K3 in
- * docs/plans/2026-05-15-routines-phase-c-design.md.
- */
 export function createRoutinesPlugin(
   config: RoutinesConfig = {},
   clock: Clock = systemClock,
+  runtime: Pick<Parameters<typeof registerRoutineServices>[0], 'dispatch'> = {},
 ): Plugin {
   let db: Kysely<RoutinesDatabase> | undefined;
   let store: RoutinesStore | undefined;
   let abortCtl: AbortController | undefined;
-  const webhookRoutes = new Map<string, () => void>();
 
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [
-        'routines:fire-now',
-        'routines:list',
-        'routines:recent-fires',
-        'routines:recent-fires-for-agent',
-        'routines:list-defaults',
-        'routines:get-default',
-        'routines:upsert-default',
-        'routines:delete-default',
-        'routines:set-agent-default-enabled',
-        'routines:list-agent-defaults',
-      ],
+      registers: ROUTINE_SERVICES,
       calls: [
         'database:get-instance',
         'agents:resolve',
+        'agents:can-manage-routines',
+        'auth:get-user',
+        'credentials:set',
+        'credentials:delete',
         'agents:ensure-webhook-token',
         'agents:resolve-by-webhook-token',
         'agents:list-personal-owners',
@@ -102,14 +46,11 @@ export function createRoutinesPlugin(
         'agent:invoke',
         'credentials:get',
         'http:register-route',
-        'workspace:apply',
       ],
       subscribes: [
-        'workspace:applied',
         'chat:turn-end',
         // Slice 6 — what a routine fire's turn went without (keyed by reqId).
         'chat:connectors-skipped',
-        'agents:webhook-token-rotated',
         'agents:deleted',
       ],
     },
@@ -131,36 +72,6 @@ export function createRoutinesPlugin(
         recordFire: (input) => localStore.recordFire(input),
       });
 
-      bus.subscribe<WorkspaceDelta>(
-        'workspace:applied', PLUGIN_NAME,
-        async (ctx, delta) => {
-          await handleWorkspaceApplied(
-            { store: localStore, bus, webhookRoutes, fireRoutine },
-            ctx, delta, clock.now(),
-          );
-          return undefined;
-        },
-      );
-
-      bus.subscribe<{ agentId: string }>(
-        'agents:webhook-token-rotated', PLUGIN_NAME,
-        async (ctx, payload) => {
-          try {
-            await rebindWebhooksForAgent(
-              { store: localStore, bus, webhookRoutes, fireRoutine },
-              ctx, payload.agentId,
-            );
-          } catch (err) {
-            // K10: subscriber must not propagate — log and swallow.
-            ctx.logger.warn('routines_rebind_after_rotation_failed', {
-              agentId: payload.agentId,
-              err: err instanceof Error ? err.message : String(err),
-            });
-          }
-          return undefined;
-        },
-      );
-
       // TASK-680 — a deleted agent's routines must stop with it. @ax/agents
       // fires this AFTER the agent row is gone; payload is `{ agentId,
       // ownerId, ownerType }` and only `agentId` is needed here. Rows orphaned
@@ -170,10 +81,7 @@ export function createRoutinesPlugin(
         'agents:deleted', PLUGIN_NAME,
         async (ctx, payload) => {
           try {
-            await handleAgentDeleted(
-              { store: localStore, bus, webhookRoutes, fireRoutine },
-              ctx, payload.agentId,
-            );
+            await purgeRoutineAgent({ store: localStore, bus, pending, agentId: payload.agentId });
           } catch (err) {
             // K10: subscriber must not propagate — log and swallow. The tick's
             // `agentGone` path removes the rows on the agent's next due fire.
@@ -294,299 +202,11 @@ export function createRoutinesPlugin(
         return undefined;
       });
 
-      bus.registerService<ListInput, ListOutput>(
-        'routines:list', PLUGIN_NAME,
-        async (_ctx, input) => {
-          const filter: { agentId?: string } = {};
-          if (input.agentId !== undefined) filter.agentId = input.agentId;
-          const routines = await localStore.list(filter);
-          return { routines };
-        },
-        { returns: ListOutputSchema },
-      );
+      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), ...runtime });
+      await drainRoutineCleanup({ bus, store: localStore });
 
-      bus.registerService<RecentFiresInput, RecentFiresOutput>(
-        'routines:recent-fires', PLUGIN_NAME,
-        async (_ctx, input) => {
-          // Same narrowing as the for-agent hook below: the store's row still
-          // carries the `BIGSERIAL` `id`, and `RecentFiresOutputSchema` strips
-          // it at the bus edge — see `WireFireRow` in types.ts.
-          const fires = await localStore.recentFires(input);
-          return { fires };
-        },
-        { returns: RecentFiresOutputSchema },
-      );
-
-      bus.registerService<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
-        'routines:recent-fires-for-agent', PLUGIN_NAME,
-        async (_ctx, input) => {
-          // The store hands back its own wider row (with the `BIGSERIAL` `id`);
-          // `RecentFiresForAgentOutputSchema` is `WireFireRowSchema`, so the
-          // bus strips `id` before any subscriber sees it. Declared narrow on
-          // purpose — see `WireFireRow` in types.ts.
-          const fires = await localStore.recentFiresForAgent(input);
-          return { fires };
-        },
-        { returns: RecentFiresForAgentOutputSchema },
-      );
-
-      bus.registerService<FireNowInput, FireNowOutput>(
-        'routines:fire-now', PLUGIN_NAME,
-        async (_ctx, input) => {
-          const all = await localStore.list({ agentId: input.agentId });
-          const row = all.find((r) => r.path === input.path);
-          if (row === undefined) {
-            throw new PluginError({
-              code: 'not-found', plugin: PLUGIN_NAME,
-              hookName: 'routines:fire-now',
-              message: `routine ${input.agentId}/${input.path} not found`,
-            });
-          }
-          const source = input.source ?? 'manual';
-          // Normalize once so the executor and the audit row see the
-          // same value. A caller passing source='webhook' runs as
-          // manual; persisting raw `source` here would leave the
-          // fires_v1 audit trail saying "webhook" for a fire that the
-          // template engine actually ran as a manual.
-          const effectiveSource: 'tick' | 'manual' =
-            source === 'tick' ? 'tick' : 'manual';
-          const result = await fireRoutine(row, effectiveSource, input.payload);
-          // `recordFire` hands back the new row's `BIGSERIAL` id. Nothing
-          // above the bus wants it — it is storage vocabulary, and it used to
-          // reach users as "Fired (#7, ok)" (TASK-313) — so it is dropped
-          // here rather than returned and stripped by the schema.
-          //
-          // TASK-679: only when nothing downstream will. A dispatched fire's
-          // one row is written when its turn settles (the chat:turn-end
-          // subscriber above, or fire.ts on a failed invoke); writing `ok`
-          // here too gave every fire a twin.
-          if (result.recordedAtTurnEnd !== true) {
-            await localStore.recordFire({
-              agentId: row.agentId, path: row.path,
-              triggerSource: effectiveSource,
-              conversationId: result.conversationId ?? null,
-              status: result.status,
-              error: result.error,
-              renderedPrompt: result.renderedPrompt,
-            });
-          }
-          // The conversation id stays ON THE FIRE ROW above, where the
-          // Routines UI reads it from `routines:recent-fires`. It is not
-          // returned here: the caller has no surface to show it on.
-          return { status: result.status };
-        },
-        { returns: FireNowOutputSchema },
-      );
-
-      bus.registerService<RoutinesListDefaultsInput, RoutinesListDefaultsOutput>(
-        'routines:list-defaults', PLUGIN_NAME,
-        async () => {
-          const rows = await localStore.listDefaults();
-          return {
-            defaults: rows.map((r) => ({
-              defaultRoutineId: r.defaultRoutineId,
-              name: r.name,
-              description: r.description,
-              trigger: r.trigger,
-              enabled: r.enabled,
-              updatedAt: r.updatedAt.toISOString(),
-            })),
-          };
-        },
-        { returns: RoutinesListDefaultsOutputSchema },
-      );
-
-      bus.registerService<RoutinesGetDefaultInput, RoutinesGetDefaultOutput>(
-        'routines:get-default', PLUGIN_NAME,
-        async (_ctx, input) => {
-          const row = await localStore.getDefault(input.defaultRoutineId);
-          if (row === null) {
-            throw new PluginError({
-              code: 'not-found', plugin: PLUGIN_NAME,
-              hookName: 'routines:get-default',
-              message: `default routine '${input.defaultRoutineId}' not found`,
-            });
-          }
-          return {
-            defaultRoutineId: row.defaultRoutineId,
-            name: row.name,
-            description: row.description,
-            trigger: row.trigger,
-            enabled: row.enabled,
-            updatedAt: row.updatedAt.toISOString(),
-            sourceMd: row.sourceMd,
-            silenceToken: row.silenceToken,
-            silenceMax: row.silenceMax,
-            conversation: row.conversation,
-            activeHours: row.activeHours,
-            promptBody: row.promptBody,
-          };
-        },
-        { returns: RoutinesGetDefaultOutputSchema },
-      );
-
-      bus.registerService<RoutinesUpsertDefaultInput, RoutinesUpsertDefaultOutput>(
-        'routines:upsert-default', PLUGIN_NAME,
-        async (_ctx, input) => {
-          const parsed = parseRoutineRow(new TextEncoder().encode(input.sourceMd));
-          if (!parsed.ok) {
-            throw new PluginError({
-              code: 'invalid-routine-md', plugin: PLUGIN_NAME,
-              hookName: 'routines:upsert-default',
-              message: parsed.reason,
-            });
-          }
-          if (parsed.fields.trigger.kind === 'webhook') {
-            throw new PluginError({
-              code: 'default-trigger-webhook-not-supported', plugin: PLUGIN_NAME,
-              hookName: 'routines:upsert-default',
-              message: 'default routines do not support webhook triggers in v1',
-            });
-          }
-          if (parsed.fields.trigger.kind === 'cron') {
-            throw new PluginError({
-              code: 'default-trigger-cron-not-supported', plugin: PLUGIN_NAME,
-              hookName: 'routines:upsert-default',
-              message: 'default routines support interval triggers only in v1',
-            });
-          }
-          // trigger.kind is now narrowed to 'interval'
-          const intervalSeconds = durationToSeconds(parsed.fields.trigger.every) ?? 0;
-          if (intervalSeconds <= 0) {
-            throw new PluginError({
-              code: 'invalid-interval', plugin: PLUGIN_NAME,
-              hookName: 'routines:upsert-default',
-              message: 'interval must resolve to a positive duration',
-            });
-          }
-          return localStore.upsertDefault({
-            name: parsed.fields.name,
-            description: parsed.fields.description,
-            specHash: parsed.specHash,
-            trigger: parsed.fields.trigger,
-            intervalSeconds,
-            activeHours: parsed.fields.activeHours ?? null,
-            silenceToken: parsed.fields.silenceToken ?? null,
-            silenceMax: parsed.fields.silenceMaxChars,
-            conversation: parsed.fields.conversation,
-            promptBody: parsed.fields.promptBody,
-            sourceMd: input.sourceMd,
-            // Operator-only global kill-switch. Out-of-band from the routine
-            // markdown: when the caller passes `enabled`, flip the default's
-            // global on/off (e.g. flipping the seeded skill-reflection default
-            // ON after the cluster walk validates it). When omitted, a plain
-            // spec re-upsert leaves the existing flag untouched (store.ts).
-            ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-          });
-        },
-        { returns: RoutinesUpsertDefaultOutputSchema },
-      );
-
-      bus.registerService<RoutinesDeleteDefaultInput, RoutinesDeleteDefaultOutput>(
-        'routines:delete-default', PLUGIN_NAME,
-        async (_ctx, input) => {
-          await localStore.deleteDefault(input.defaultRoutineId);
-          return {};
-        },
-        { returns: RoutinesDeleteDefaultOutputSchema },
-      );
-
-      // TASK-177: per-agent on/off for any default routine. Default-ENABLED
-      // (absence of an override = enabled), so this never disturbs the
-      // heartbeat default unless an owner explicitly opts an agent out.
-      bus.registerService<
-        RoutinesSetAgentDefaultEnabledInput,
-        RoutinesSetAgentDefaultEnabledOutput
-      >(
-        'routines:set-agent-default-enabled', PLUGIN_NAME,
-        async (ctx, input) => {
-          // AUTH: caller must own the agent. agents:resolve is the J1 tenant
-          // ACL gate — it throws 'forbidden'/'not-found' for a non-owner, so
-          // there's no separate authz path to maintain here. It also yields
-          // the owner id we stamp on the re-materialized row.
-          const { agent } = await bus.call<
-            { agentId: string; userId: string },
-            { agent: { id: string; ownerId: string } }
-          >('agents:resolve', ctx, { agentId: input.agentId, userId: ctx.userId });
-
-          // Validate the default exists before mutating — a typo'd id would
-          // otherwise write a dangling disable row the FK still accepts only
-          // for real ids (FK guards us), but resolving gives a clean
-          // not-found instead of an opaque FK violation.
-          const def = await localStore.getDefault(input.defaultRoutineId);
-          if (def === null) {
-            throw new PluginError({
-              code: 'not-found', plugin: PLUGIN_NAME,
-              hookName: 'routines:set-agent-default-enabled',
-              message: `default routine '${input.defaultRoutineId}' not found`,
-            });
-          }
-
-          await localStore.setAgentDefaultEnabled({
-            agentId: input.agentId,
-            defaultRoutineId: input.defaultRoutineId,
-            ownerUserId: agent.ownerId,
-            enabled: input.enabled,
-          });
-
-          if (input.enabled) {
-            // Re-materialize this one (agent, default) so the agent picks it
-            // back up on the next tick — matches first-materialize semantics
-            // (next_run_at NULL ⇒ due on the next interval window).
-            await localStore.materializeMissing({
-              agents: [{ agentId: input.agentId, ownerUserId: agent.ownerId }],
-              now: clock.now(),
-            });
-          } else {
-            // De-materialize: drop the per-agent row so the tick stops
-            // claiming it. Fire history (routines_v1_fires) is preserved —
-            // no FK from fires to definitions.
-            await localStore.removeMaterializedDefault({
-              agentId: input.agentId,
-              defaultRoutineId: input.defaultRoutineId,
-            });
-          }
-          return {};
-        },
-        { returns: RoutinesSetAgentDefaultEnabledOutputSchema },
-      );
-
-      bus.registerService<RoutinesListAgentDefaultsInput, RoutinesListAgentDefaultsOutput>(
-        'routines:list-agent-defaults', PLUGIN_NAME,
-        async (ctx, input) => {
-          // AUTH: owner-scoped — per-agent config is tenant-private, so gate
-          // the read the same way as the write. Non-owner ⇒ forbidden.
-          await bus.call<
-            { agentId: string; userId: string },
-            { agent: { id: string } }
-          >('agents:resolve', ctx, { agentId: input.agentId, userId: ctx.userId });
-
-          const [defaults, disabled] = await Promise.all([
-            localStore.listDefaults(),
-            localStore.disabledDefaultIdsForAgent(input.agentId),
-          ]);
-          const disabledSet = new Set(disabled);
-          return {
-            defaults: defaults.map((d) => ({
-              defaultRoutineId: d.defaultRoutineId,
-              name: d.name,
-              // Absence from the disabled set = enabled (default-ON).
-              enabled: !disabledSet.has(d.defaultRoutineId),
-            })),
-          };
-        },
-        { returns: RoutinesListAgentDefaultsOutputSchema },
-      );
-
-      // Re-mount webhook routes from DB before opening for traffic. After a
-      // host pod restart the in-memory `webhookRoutes` Map is empty, but
-      // `routines_v1_definitions` is not — without this, webhook URLs 403
-      // until something else nudges `workspace:applied`. Per-row failures
-      // are caught + logged inside the helper (K10).
-      await mountAllWebhookRoutesOnStartup(
-        { store: localStore, bus, webhookRoutes, fireRoutine },
-        initCtx,
-      );
+      // Static DB webhook routing and durable dispatch wiring land in Task 8.
+      // Do not start the retired file router against the new definition store.
 
       const tickIntervalMs = config.tickIntervalMs ?? 5_000;
       const tickConfig = {
@@ -626,10 +246,6 @@ export function createRoutinesPlugin(
       });
     },
     async shutdown() {
-      for (const unreg of webhookRoutes.values()) {
-        try { unreg(); } catch { /* idempotent */ }
-      }
-      webhookRoutes.clear();
       abortCtl?.abort();
       abortCtl = undefined;
       db = undefined;

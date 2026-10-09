@@ -29,6 +29,8 @@ import {
 } from './store.js';
 import { randomBytes } from 'node:crypto';
 import {
+  CanManageRoutinesInputSchema,
+  CanManageRoutinesOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   ResolveOutputSchema,
 } from './types.js';
@@ -135,6 +137,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:set-skill-attachments',
         'agents:attach-connector',
         'agents:detach-connector',
+        'agents:can-manage-routines',
         'agents:can-manage-connectors',
         'agents:can-set-shared-credential',
         'agents:list-ids',
@@ -294,10 +297,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               message: `agent '${input.agentId}' not found`,
             });
           }
-          // ACL: owner OR admin (mirrors agents:update access path).
+          // ACL: personal owner, team admin, or the existing explicit workspace admin.
           const isOwner = existing.ownerType === 'user'
             && existing.ownerId === input.actor.userId;
-          if (!isOwner && !input.actor.isAdmin) {
+          if (!isOwner && !input.actor.isAdmin && !(await connectorsManageAllowed(existing, bus, ctx, { userId: input.actor.userId, isAdmin: false }))) {
             throw new PluginError({
               code: 'forbidden',
               plugin: PLUGIN_NAME,
@@ -320,7 +323,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       bus.registerService<EnsureWebhookTokenInput, EnsureWebhookTokenOutput>(
         'agents:ensure-webhook-token',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const existing = await localStore.getById(input.agentId);
           if (existing === null) {
             throw new PluginError({
@@ -330,10 +333,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               message: `agent '${input.agentId}' not found`,
             });
           }
-          // ACL: owner OR admin (mirrors agents:rotate-webhook-token access path).
+          // Same owner/team-admin/workspace-admin authority as token rotation.
           const isOwner = existing.ownerType === 'user'
             && existing.ownerId === input.actor.userId;
-          if (!isOwner && !input.actor.isAdmin) {
+          if (!isOwner && !input.actor.isAdmin && !(await connectorsManageAllowed(existing, bus, ctx, { userId: input.actor.userId, isAdmin: false }))) {
             throw new PluginError({
               code: 'forbidden',
               plugin: PLUGIN_NAME,
@@ -485,6 +488,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           );
         },
       );
+
+      // Routine authority comes from the authenticated context. Workspace-admin
+      // status alone never grants another person's execution identity.
+      bus.registerService('agents:can-manage-routines', PLUGIN_NAME, async (ctx, raw) => {
+        const input = CanManageRoutinesInputSchema.parse(raw);
+        const agent = await getForConnectorEdit(localStore, input.agentId, 'agents:can-manage-routines');
+        return { allowed: await connectorsManageAllowed(agent, bus, ctx, { userId: ctx.userId, isAdmin: false }) };
+      }, { returns: CanManageRoutinesOutputSchema });
 
       // TASK-765 / TASK-798 — may this actor change this agent's connectors
       // (attach, detach, exclude)? Signing in ON the agent is a narrower

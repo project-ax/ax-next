@@ -23,7 +23,7 @@ export interface RoutinesStore {
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
-  acceptDispatch(input: AcceptDispatchInput): Promise<AcceptedDispatch | null>;
+  acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date; lastStatus: FireStatus; lastError: string | null }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
@@ -94,7 +94,7 @@ async function lockLiveAgent(db: DB, agentId: string): Promise<boolean> {
   await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${agentId}, 18427132))`.execute(db);
   return !await db.selectFrom('routines_v1_retired_agents').select('agent_id').where('agent_id', '=', agentId).executeTakeFirst();
 }
-async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>): Promise<T> {
+async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>, onReplay?: () => void): Promise<T> {
   try {
     return await db.transaction().execute(async trx => {
       if (!await lockLiveAgent(trx, key.agentId)) throw new SafeToolError('not-found', 'routineId');
@@ -104,7 +104,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
       }).onConflict(oc => oc.doNothing()).execute();
       const receipt = await receiptQuery(trx, key).forUpdate().executeTakeFirstOrThrow();
       if (receipt.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
-      if (receipt.result !== null) return parseReceipt(key.operation, receipt.result) as T;
+      if (receipt.result !== null) { onReplay?.(); return parseReceipt(key.operation, receipt.result) as T; }
       const result = await effect(trx);
       // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
       if (result === null) { await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', key.agentId).where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute(); return result; }
@@ -201,7 +201,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       return row ? rowToRoutine(row) : null;
     },
     async acceptDispatch(input) {
-      return receiptTransaction(db, operationKey(input, 'dispatch', dispatchRequestHash(input)), async trx => {
+      let replayed = false;
+      const accepted = await receiptTransaction(db, operationKey(input, 'dispatch', dispatchRequestHash(input)), async trx => {
         const raw = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
         if (!raw || raw.revision !== input.expectedRevision || !raw.enabled) return null;
         if (raw.definition_id !== null) {
@@ -218,7 +219,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source
         }).execute();
         return result;
-      });
+      }, () => { replayed = true; });
+      return accepted === null ? null : { accepted, replayed };
     },
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
@@ -515,7 +517,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const ownerIds = input.agents.map((a) => a.ownerUserId);
       const res = await sql`
         UPDATE routines_v1_definitions r
-           SET owner_user_id = a.owner_user_id
+           SET owner_user_id = a.owner_user_id,
+               revision = 'rev_' || replace(gen_random_uuid()::text, '-', ''),
+               updated_at = now()
           FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
             AS a(agent_id, owner_user_id)
          WHERE r.agent_id = a.agent_id

@@ -7,21 +7,21 @@ const accept = (row: { agentId: string; routineId: string; revision: string }, r
 describe('durable dispatch', () => {
   it('commits acceptance before invoke and returns the same dispatch for concurrent retries', async () => {
     const row = await f.store.createAuthored(createInput()); const [a, b] = await Promise.all([f.store.acceptDispatch(accept(row)), f.store.acceptDispatch(accept(row))]);
-    expect(a).toEqual(b); expect(a?.row.ownerUserId).toBe('owner');
+    expect(a?.accepted).toEqual(b?.accepted); expect([a?.replayed, b?.replayed].sort()).toEqual([false, true]); expect(a?.accepted.row.ownerUserId).toBe('owner');
     expect((await sql`SELECT * FROM routines_v1_dispatches`.execute(f.db)).rows).toHaveLength(1);
     expect(await f.store.recentFires(row)).toEqual([]);
     await expect(f.store.acceptDispatch({ ...accept(row), source: 'webhook' })).rejects.toMatchObject({ toolCode: 'request-conflict' });
   });
   it('records exactly one terminal row under competing finish callbacks', async () => {
-    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!;
+    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!.accepted;
     expect((await Promise.all([f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome }), f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome: { ...outcome, status: 'silenced' } })])).sort()).toEqual([false, true]);
     expect(await f.store.recentFires(row)).toHaveLength(1);
     expect((await f.store.findOne(row))?.lastStatus).toBe((await f.store.recentFires(row))[0]?.status);
   });
   it('caps rendered prompt bytes and prevents an older completion overwriting newer status', async () => {
     const row = await f.store.createAuthored(createInput());
-    const old = (await f.store.acceptDispatch(accept(row, 'older')))!;
-    const recent = (await f.store.acceptDispatch({ ...accept(row, 'newer'), now: new Date(now.getTime() + 1000) }))!;
+    const old = (await f.store.acceptDispatch(accept(row, 'older')))!.accepted;
+    const recent = (await f.store.acceptDispatch({ ...accept(row, 'newer'), now: new Date(now.getTime() + 1000) }))!.accepted;
     await f.store.finishDispatch({ dispatchId: recent.dispatchId, outcome: { ...outcome, status: 'silenced', warning: 'connector unavailable', renderedPrompt: '😀'.repeat(20000) } });
     await f.store.finishDispatch({ dispatchId: old.dispatchId, outcome });
     expect((await f.store.findOne(row))?.lastStatus).toBe('silenced');
@@ -31,18 +31,18 @@ describe('durable dispatch', () => {
     expect(latest.renderedPrompt).toMatch(/😀…$/u);
   });
   it('rechecks revision and enabled; old acceptance remains finishable after edit and delete', async () => {
-    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!;
+    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!.accepted;
     const disabled = await f.store.updateAuthored({ ...accept(row), patch: { enabled: false }, requestId: 'disable', stopOnly: true });
     expect(await f.store.acceptDispatch(accept(row, 'stale'))).toBeNull();
     expect(await f.store.acceptDispatch(accept(disabled, 'disabled'))).toBeNull();
-    expect(await f.store.acceptDispatch(accept(row))).toEqual(dispatch);
+    expect(await f.store.acceptDispatch(accept(row))).toEqual({ accepted: dispatch, replayed: true });
     await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome });
     expect((await f.store.findOne(row))?.lastStatus).toBeNull();
     await f.store.deleteAuthored({ ...accept(disabled), requestId: 'delete' });
     expect(await f.store.recentFires(row)).toHaveLength(1);
   });
   it('finishes after deletion without recreating a definition, and rejects finish after agent purge', async () => {
-    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!;
+    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!.accepted;
     await f.store.deleteAuthored({ ...accept(row), requestId: 'delete' });
     expect(await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome })).toBe(true);
     expect(await f.store.findOne(row)).toBeNull(); expect(await f.store.recentFires(row)).toHaveLength(1);
@@ -72,7 +72,7 @@ describe('agent retirement serialization', () => {
     expect((await sql`SELECT * FROM routines_v1_requests`.execute(f.db)).rows).toEqual([]);
   });
   it('serializes a finishing dispatch with purge without history resurrection', async () => {
-    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!;
+    const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!.accepted;
     let release!: () => void; let locked!: () => void;
     const ready = new Promise<void>(resolve => { locked = resolve; }); const wait = new Promise<void>(resolve => { release = resolve; });
     const blocker = f.db.transaction().execute(async trx => { await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', dispatch.dispatchId).forUpdate().execute(); locked(); await wait; });

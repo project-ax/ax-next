@@ -1,8 +1,12 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ZodType } from 'zod';
 import { createLogger, type AgentContext } from './context.js';
 import { isRejection, PluginError, type Rejection } from './errors.js';
 import type { FireResult } from './types.js';
 import { withTimeout } from './util/with-timeout.js';
+
+// Invocation lifetime only. No permission or durable domain state lives here.
+const joinedEffects = new AsyncLocalStorage<Set<Promise<unknown>>>();
 
 export type ServiceHandler<I = unknown, O = unknown> = (
   ctx: AgentContext,
@@ -347,6 +351,23 @@ export class HookBus {
     return [...this.services.keys()];
   }
 
+  /** Keep host lifecycle locks until every nested service handler settles.
+   * Deadlines still fail the call; they do not cancel an effect. A stuck provider
+   * therefore retains the caller's lock (and existing stall diagnostics).
+   */
+  async callJoined<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
+    // Each explicit joined boundary owns its wait, even inside another one:
+    // the inner caller may be holding a different lifecycle lock.
+    const pending = new Set<Promise<unknown>>();
+    return joinedEffects.run(pending, async () => {
+      try { return await this.call<I, O>(hookName, ctx, input); }
+      finally {
+        // A live handler can start another nested call while we await it.
+        while (pending.size) await Promise.allSettled([...pending]);
+      }
+    });
+  }
+
   async call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
     const registered = this.services.get(hookName);
     if (registered === undefined) {
@@ -368,8 +389,14 @@ export class HookBus {
       registered.stallWarnMs ?? this.stallWarnMs,
     );
     try {
+      const handler = registered.handler(ctx, input);
+      const pending = joinedEffects.getStore();
+      if (pending) {
+        pending.add(handler);
+        void handler.then(() => pending.delete(handler), () => pending.delete(handler));
+      }
       const result = await withTimeout(
-        registered.handler(ctx, input),
+        handler,
         timeoutMs,
         () =>
           new PluginError({
