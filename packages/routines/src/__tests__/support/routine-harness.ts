@@ -32,6 +32,7 @@ export async function createRoutineHarness(options: { credentialTimeoutMs?: numb
   let started: (() => void) | undefined;
   const harness = await createTestHarness({
     services: {
+      'connectors:live-ids': async (_ctx, raw) => ({ live: (raw as { connectorIds: string[] }).connectorIds }),
       'tool:register': async (_ctx, raw) => { descriptors.push(raw as ToolDescriptor); return { ok: true }; },
       'conversations:get-metadata': async () => ({ activeSessionId: attended ? 'live' : null, origin: attended ? 'web' : 'routine' }),
       'session:queue-work': async () => ({}),

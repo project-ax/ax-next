@@ -284,3 +284,32 @@ it('fails closed before raising a hold when the validation receipt database is u
   await expect(execute(call)).rejects.toMatchObject({ toolCode: 'unavailable' });
   expect(await h.bus.call('decisions:list', actor(), { userId: 'owner' })).toMatchObject({ decisions: [] });
 });
+
+
+it('settles confirmed absent receipts failed after an ordinary joined pre-commit error', async () => {
+  h = await createRoutineHarness();
+  h.setAttended(false);
+  const call = createCall('pre-commit-failure');
+  const original = h.bus.callJoined.bind(h.bus);
+  let effectAttempts = 0;
+  const spy = vi.spyOn(h.bus, 'callJoined').mockImplementation(async (name, ctx, input) => {
+    if (name === 'routines:create') {
+      effectAttempts++;
+      throw new Error('SECRET database transaction could not start');
+    }
+    return original(name, ctx, input);
+  });
+  const id = await approve(call);
+  const authority = (await sql<{outcome: string; failure_code: string}>`SELECT outcome, failure_code FROM decisions_v1_routine_authorizations WHERE request_id='pre-commit-failure'`.execute(h.db)).rows[0];
+  expect(authority).toEqual({ outcome: 'failed', failure_code: 'unavailable' });
+  expect((await sql`SELECT request_id FROM routines_v1_requests WHERE request_id='pre-commit-failure'`.execute(h.db)).rows).toHaveLength(0);
+  const result = await h.bus.call<unknown, { decision: { status: string; routineOutcome: string; routineFailureCode: string; replayedAt: unknown } }>('decisions:get', actor(), { decisionId: id, userId: 'owner' });
+  expect(result.decision).toMatchObject({ status: 'failed', routineOutcome: 'failed', routineFailureCode: 'unavailable', replayedAt: null });
+  expect(JSON.stringify(result)).not.toContain('SECRET');
+  await expect(execute(call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
+  h.advance(16 * 60_000);
+  await h.bus.call('decisions:sweep', actor(), {});
+  expect(effectAttempts).toBe(1);
+  expect((await createRoutinesStore(h.db).list({ agentId: h.agentId })).filter(row => row.definitionId === null)).toHaveLength(0);
+  spy.mockRestore();
+});

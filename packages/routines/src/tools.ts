@@ -189,7 +189,9 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
         try { recovered = await recover(store, ctx, prepared.receiptKey, binding.outcome === 'succeeded'); }
         catch { return pending(); }
         if (recovered.kind === 'committed' && !knownFailure) output = recovered.output;
-        else if (knownFailure || recovered.kind === 'failed' || (recovered.kind === 'absent' && effectError instanceof SafeToolError)) {
+        else if (knownFailure || recovered.kind === 'failed' || recovered.kind === 'absent') {
+          // Joined effects have finished. A successful empty receipt lookup
+          // proves no durable effect, regardless of the provider's error class.
           await settle('failed', safe);
           throw safe;
         } else return pending();
