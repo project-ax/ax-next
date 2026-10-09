@@ -6139,7 +6139,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const continuationReqId = makeReqId();
       const out = await bus.call<DecisionsApproveInput, DecisionsApproveOutput>(
         'decisions:approve',
-        initCtx,
+        agentWorkspaceCtx(stored.agentId, userId),
         { decisionId: stored.id, userId, continuationReqId },
       );
       const decision = resolvedOrGone(out.decision, res);

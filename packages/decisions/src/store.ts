@@ -1347,7 +1347,18 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .where('routine_release_at', 'is not', null)
         .where('routine_outcome', 'is', null)
         .where('replayed_at', 'is', null)
-        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        .where((eb) =>
+          eb.or([
+            eb('replay_claimed_at', '<=', new Date(claimedBeforeIso)),
+            // Attended execution claims authority at the host boundary without a
+            // host replay stamp. Recover that same recorded request if its caller died.
+            eb.and([
+              eb('replay_claimed_at', 'is', null),
+              eb('routine_authorization_id', 'is not', null),
+              eb('consumed_at', '<=', new Date(claimedBeforeIso)),
+            ]),
+          ]),
+        )
         .execute();
     },
     async deleteAllForAgent(agentId) {

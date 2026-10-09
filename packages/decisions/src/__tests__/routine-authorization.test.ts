@@ -344,6 +344,13 @@ describe('routine host authorization', () => {
     expect(a.executed).toBe(false);
     expect(a.error).toContain('routine_get');
     expect(a.error).not.toContain('SECRET');
+    expect(a.decision?.routineFailureCode).toBe('revision-conflict');
+    const reread = await h.bus.call<unknown, { decision: Decision }>('decisions:get', ctx(), {
+      decisionId: d.id,
+      userId: 'u1',
+    });
+    expect(reread.decision.routineFailureCode).toBe('revision-conflict');
+    expect(receiptFor(reread.decision)?.error).toContain('routine_get');
     const corrupt = {
       ...a.decision!,
       replayError: 'SECRET',
@@ -514,5 +521,33 @@ describe('routine host authorization', () => {
     expect(grants).toBe(0);
     expect(effects).toBe(0);
     await expect(authorize(h)).rejects.toThrow();
+  });
+  it('recovers an attended authorization after a real claim then restart, without a manually stamped flight', async () => {
+    let h = await boot(true);
+    const d = await held(h);
+    await approve(h, d);
+    clock += 11_000;
+    const claimed = await authorize(h);
+    const before = await h.bus.call<unknown, { decision: Decision }>('decisions:get', ctx(), {
+      decisionId: d.id,
+      userId: 'u1',
+    });
+    expect(before.decision.consumedAt).not.toBeNull();
+    expect(before.decision.routineOutcome).toBeNull();
+    await h.close();
+    harnesses.splice(harnesses.indexOf(h), 1);
+    clock += 16 * 60_000;
+    h = await boot();
+    await sweep(h);
+    expect(effects).toBe(1);
+    const after = await h.bus.call<unknown, { decision: Decision }>('decisions:get', ctx(), {
+      decisionId: d.id,
+      userId: 'u1',
+    });
+    expect(after.decision.routineAuthorizationId).toBe(claimed.authorizationId);
+    expect(after.decision.call).toEqual(call());
+    expect(after.decision.routineOutcome).toBe('succeeded');
+    await sweep(h);
+    expect(effects).toBe(1);
   });
 });

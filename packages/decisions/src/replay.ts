@@ -139,6 +139,12 @@ export async function replayOnApprove(args: {
     });
     return { executed: true, path: 'host-replays', error: null };
   } catch (err) {
+    const routineFailure =
+      routineToolKind(decision.call.name) !== null
+        ? err instanceof SafeToolError
+          ? new SafeToolError(err.toolCode, err.field)
+          : new SafeToolError('unavailable', 'input')
+        : null;
     // H1: an action that did not happen must never leave a trace saying it
     // did. We record the failure and return it; the caller writes the AUTHORED
     // failure line as the receipt and never `approvedText`.
@@ -160,6 +166,7 @@ export async function replayOnApprove(args: {
     return {
       executed: false,
       path: null,
+      ...(routineFailure !== null ? { failureCode: routineFailure.toolCode } : {}),
       // `HookBus.call` already wraps whatever a host executor throws in a
       // `PluginError`, so in practice this is always the Error branch. The
       // `String(err)` fallback covers anything thrown around the call rather

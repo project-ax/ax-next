@@ -634,6 +634,9 @@ importers:
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
+      '@ax/decisions':
+        specifier: workspace:*
+        version: link:../decisions
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness

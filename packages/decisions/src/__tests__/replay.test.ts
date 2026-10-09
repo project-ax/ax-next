@@ -400,3 +400,17 @@ describe('settleReplay — a completed replay stops being a standing authorisati
     expect(outcome.error).toContain('temporarily unavailable');
   });
 });
+
+it('checks mutated safe codes before returning a routine replay failure code', async () => {
+  const decision = base({ call: { id: 'mutated', name: 'routine_update', input: {} } });
+  const bus = new HookBus();
+  bus.registerService('tool:execute:routine_update', 'test', async () => {
+    const error = new SafeToolError('revision-conflict', 'expectedRevision');
+    Object.assign(error, { toolCode: 'SECRET', field: 'SECRET', message: 'SECRET' });
+    throw error;
+  });
+  const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+  expect(outcome.failureCode).toBe('unavailable');
+  expect(outcome.error).toContain('Field: input');
+  expect(JSON.stringify(outcome)).not.toContain('SECRET');
+});
