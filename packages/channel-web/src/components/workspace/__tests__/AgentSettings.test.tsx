@@ -44,11 +44,13 @@ const quill: WorkspaceAgent = {
 function Harness({
   initial = 'instructions',
   compact = false,
+  startOnList = true,
   memory = null,
   onBack = vi.fn(),
 }: {
   initial?: AgentSettingsSection;
   compact?: boolean;
+  startOnList?: boolean;
   memory?: React.ReactNode;
   onBack?: () => void;
 }) {
@@ -60,6 +62,7 @@ function Harness({
       onSection={setSection}
       onBack={onBack}
       compact={compact}
+      startOnList={startOnList}
       busy={false}
       instructions={<textarea aria-label="Instructions for Quill" />}
       memory={memory}
@@ -200,4 +203,10 @@ describe('AgentSettings — phone', () => {
       expect(row.className).toContain('min-h-11');
     }
   });
+});
+
+it('opens the named section on a mobile direct link or reload', () => {
+  render(<Harness compact initial="model" startOnList={false} />);
+  expect(screen.getByRole('heading', { level: 1, name: 'Model' })).toBeTruthy();
+  expect(screen.getByText('Using the workspace default')).toBeTruthy();
 });

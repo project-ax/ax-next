@@ -85,6 +85,7 @@ import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
 import { AgentInstructions } from './AgentInstructions';
 import { AgentSettings } from './AgentSettings';
+import { cn } from '@/lib/utils';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
@@ -399,6 +400,7 @@ export function AgentView({
    */
   const compact = useIsCompact();
   const [railOpen, setRailOpen] = useState(false);
+  const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [railCollapsed, setRailCollapsed] = useRailPreference('details');
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [fileCount, setFileCount] = useState<number | null>(null);
@@ -1621,24 +1623,24 @@ export function AgentView({
     },
     ...(onSettingsSection
       ? {
-          onOpenSettings: (section: AgentSettingsSection = DEFAULT_SETTINGS_SECTION) => {
-            // The phone's rail is a sheet over the page; shut it on the way.
+          onOpenSettings: (section?: AgentSettingsSection) => {
+            // Generic Settings opens the phone index; explicit links drill in.
+            setSettingsListRequested(section === undefined);
             setRailOpen(false);
-            onSettingsSection(section);
+            onSettingsSection(section ?? DEFAULT_SETTINGS_SECTION);
           },
         }
       : {}),
   };
 
-  if (settingsSection !== null && onSettingsSection) {
-    return (
-      <MemoryFixesContext.Provider value={learnedFixes}>
+  const settingsPage = settingsSection !== null && onSettingsSection ? (
         <AgentSettings
           agent={agent}
           section={settingsSection}
           onSection={onSettingsSection}
           onBack={() => onTab('chat')}
           compact={compact}
+          startOnList={settingsListRequested}
           busy={streaming || rereading}
           instructions={
             <AgentInstructions
@@ -1663,13 +1665,12 @@ export function AgentView({
             ) : null
           }
         />
-        <LearnedAnnouncer announcement={learned.announcement} />
-      </MemoryFixesContext.Provider>
-    );
-  }
+  ) : null;
   return (
     <MemoryFixesContext.Provider value={learnedFixes}>
-      <div className="flex min-h-0 flex-1">
+      {settingsPage}
+      {/* Keep the composer mounted: it owns draft files and pending uploads. */}
+      <div hidden={settingsPage !== null} className={cn('flex min-h-0 flex-1', settingsPage !== null && 'hidden')}>
         <div className="flex min-w-0 flex-1 flex-col">
           {(compact || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
             {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}

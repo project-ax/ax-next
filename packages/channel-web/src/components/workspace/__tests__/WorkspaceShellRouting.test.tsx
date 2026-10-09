@@ -14,6 +14,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
+import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
 import { workspaceApi } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
 import { UserProvider } from '@/lib/user-context';
@@ -43,6 +44,11 @@ vi.mock('@/lib/workspace-api', async () => {
       saveRules: vi.fn(),
     },
   };
+});
+
+vi.mock('@/lib/attachment-upload', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/attachment-upload')>();
+  return { ...actual, uploadAttachment: vi.fn() };
 });
 
 const boardMock = vi.mocked(workspaceApi.board);
@@ -82,6 +88,7 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
+  vi.mocked(uploadAttachment).mockReset();
   boardMock.mockReset();
   boardMock.mockResolvedValue({ agents: AGENTS });
   agentMock.mockReset();
@@ -308,7 +315,7 @@ describe('agent settings page (TASK-888)', () => {
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
-    expect(screen.queryByText('what is on today')).toBeNull();
+    expect(screen.getByText('what is on today')).not.toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
 
@@ -329,6 +336,32 @@ describe('agent settings page (TASK-888)', () => {
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
+  });
+
+  it.each(['uploaded', 'pending'] as const)('preserves a %s attachment draft through Settings', async (state) => {
+    withRules();
+    const result: AttachmentUploadResult = {
+      attachmentId: 'att-settings', displayName: 'notes.txt', mediaType: 'text/plain',
+      sizeBytes: 5, expiresAt: '2026-10-09T00:00:00.000Z',
+    };
+    let finishUpload: (value: AttachmentUploadResult) => void = () => {};
+    const pendingUpload = new Promise<AttachmentUploadResult>((resolve) => { finishUpload = resolve; });
+    vi.mocked(uploadAttachment).mockReturnValue(state === 'uploaded' ? Promise.resolve(result) : pendingUpload);
+    const { container } = renderAt('/workspace/agents/a-quill');
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Please read this file' } });
+    const picker = container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(picker).not.toBeNull();
+    fireEvent.change(picker!, { target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] } });
+    if (state === 'uploaded') await screen.findByText('Ready to send');
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await screen.findByRole('button', { name: 'Back to chat' });
+    if (state === 'pending') await act(async () => { finishUpload(result); });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    expect(screen.getByPlaceholderText('Message Quill')).toHaveValue('Please read this file');
+    expect(screen.getByText('notes.txt')).toBeVisible();
+    expect(screen.getByText('Ready to send')).toBeVisible();
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });
 
   it('loads, edits and saves the rules from Instructions', async () => {

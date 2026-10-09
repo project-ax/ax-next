@@ -122,6 +122,8 @@ export interface AgentSettingsProps {
   onBack: () => void;
   /** Below `md`: the section list first, then one section at a time. */
   compact: boolean;
+  /** Generic Settings entry opens the phone index; direct section links drill in. */
+  startOnList?: boolean;
   /** A turn is streaming or settling — the connectors read re-reads on its edges. */
   busy: boolean;
   /** The rules editor, built by `AgentView`, which owns the save path. */
@@ -132,13 +134,9 @@ export interface AgentSettingsProps {
 
 export function AgentSettings(props: AgentSettingsProps) {
   const { agent, section, onSection, onBack, compact } = props;
-  /*
-    Phone only: whether a section is open or the list is showing. Local, not
-    in the URL — the URL still names the section (so a desktop reload, or a
-    link, opens it), and the phone always starts on the list, which is where
-    "Settings" in the rail promises to take you.
-  */
-  const [drilled, setDrilled] = useState(false);
+  // A URL names a section on reload/auth return. Only a generic Settings
+  // entry asks for the phone index first; its local back button returns there.
+  const [drilled, setDrilled] = useState(!props.startOnList);
   const copy = SETTINGS_SECTIONS[section];
   const subtitle = `These only change ${agent.name}. Connectors your whole team shares live in Admin.`;
 
