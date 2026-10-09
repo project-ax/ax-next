@@ -261,7 +261,11 @@ export const MEMORY_USED_SINCE: Readonly<Record<MemoryUsedSinceKind, string>> = 
 
 // ── "What I learned in this chat" — the rail block (TASK-627) ───────────────
 
-export const LEARNED_TITLE = 'What I learned in this chat';
+export function learnedHelper(agentName: string): string {
+  return `What ${agentName} picked up in this chat. Fix or forget anything that's off.`;
+}
+
+export const LEARNED_TITLE = 'Learned in this chat';
 
 /** The header badge while rows the person has not seen are listed. */
 export function learnedNewBadge(count: number): string {
@@ -313,7 +317,7 @@ export function learnedAgo(ms: number): string {
 export function learnedMore(count: number): string {
   return `+${count} more from this chat`;
 }
-export const LEARNED_SEE_ALL = 'See all memory →';
+export const LEARNED_SEE_ALL = 'See all memory';
 
 /** Before the first read lands. Not one of the six: it is gone in a moment. */
 export const LEARNED_LOADING = 'Checking what I’ve picked up from this chat…';

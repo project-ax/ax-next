@@ -97,7 +97,7 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
   memory: {
     label: 'Memory',
     Icon: Brain,
-    description: (name) => `What ${name} remembers from your conversations.`,
+    description: (name) => `What ${name} remembers across all your conversations. If something's wrong or out of date, fix it or forget it.`,
     summary: (name) => `What ${name} remembers`,
   },
   skills: {
@@ -242,9 +242,9 @@ export function AgentSettings(props: AgentSettingsProps) {
           <h1 className="font-brand text-[24px] font-semibold">{agent.name} settings</h1>
           <p className="mt-1 text-[13.5px] text-muted-foreground">{subtitle}</p>
         </div>
-        <div className="mt-6 flex gap-8">
-          <nav aria-label="Settings sections" className="w-[200px] shrink-0">
-            <ul className="m-0 flex list-none flex-col gap-px p-0">
+        <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:gap-8">
+          <nav aria-label="Settings sections" className="w-full shrink-0 lg:w-[200px]">
+            <ul className="m-0 flex list-none flex-wrap gap-px p-0 lg:flex-col">
               {AGENT_SETTINGS_SECTIONS.map((id) => {
                 const { label, Icon } = SETTINGS_SECTIONS[id];
                 const active = id === section;

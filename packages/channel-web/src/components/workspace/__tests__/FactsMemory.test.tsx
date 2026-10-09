@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   workspaceApi,
   type AgentMemoryRead,
@@ -7,7 +7,9 @@ import {
 } from '@/lib/workspace-api';
 import type { FactMemoryPage } from '@/lib/workspace-types';
 import { MemorySurface } from '../FactsMemory';
-import { memoryForgetLabel, memoryStatementText } from '../memory-copy';
+import { CompactSurfaceContext } from '@/lib/use-compact';
+import { MemoryFixesContext, useFixLedger } from '@/lib/use-conversation-memory';
+import { memoryForgetLabel } from '../memory-copy';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -59,6 +61,15 @@ beforeEach(() => {
   forgetMock.mockResolvedValue({ forgotten: true });
 });
 
+/** Open the real row menu before choosing its correction action. */
+async function memoryAction(label: string): Promise<HTMLElement> {
+  const value = label.slice(label.indexOf(': ') + 2);
+  const trigger = await screen.findByRole('button', { name: `Memory actions: ${value}` });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  return screen.findByRole('menuitem', { name: label });
+}
+
 describe('MemorySurface', () => {
   it('lists memories from earlier chats without a profile or conversation filter', async () => {
     const earlierNote = fact({ id: 'from-earlier-chat', about: 'project:canopy',
@@ -74,7 +85,7 @@ describe('MemorySurface', () => {
     // Starting a new chat re-renders the same agent's memory surface.
     rerender(<MemorySurface agentId="a1" agentName="Quill" memory={{ ...read(true) }} />);
     expect(screen.getByText('October 15')).toBeInTheDocument();
-    expect(screen.getByText(/Shared across conversations with Quill/)).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'What Quill remembers' })).toBeInTheDocument();
   });
 
   it('draws nothing when facts are unavailable — the rules editor moved to Instructions (TASK-888)', () => {
@@ -87,11 +98,11 @@ describe('MemorySurface', () => {
     expect(recallMock).not.toHaveBeenCalled();
   });
 
-  it('renders the two facts cards and no rules editor when available (TASK-888)', async () => {
+  it('renders one memory manager and no rules editor when available (TASK-890)', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(screen.queryByText('Rules you gave me')).toBeNull();
     expect(screen.queryByRole('textbox', { name: /Instructions/u })).toBeNull();
-    expect(screen.getByText('Memories')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Memories' })).toBeInTheDocument();
     expect(screen.getAllByText('Search memories')).not.toHaveLength(0);
     await waitFor(() =>
       expect(recallMock).toHaveBeenCalledWith('a1', { history: false }),
@@ -110,7 +121,7 @@ describe('MemorySurface', () => {
     expect(await screen.findByText('Boston')).toBeInTheDocument();
     expect(screen.getByText('UTC-5')).toBeInTheDocument();
     expect(screen.getByText('lives in:')).toBeInTheDocument();
-    expect(screen.getByText('Noted 2026-09-01 (Tue)')).toBeInTheDocument();
+    expect(screen.getAllByText(new Date('2026-09-01T00:00:00.000Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })).length).toBeGreaterThan(0);
   });
 
   it('says the profile is empty only when the read worked', async () => {
@@ -172,7 +183,7 @@ describe('MemorySurface', () => {
       degraded: [],
     });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -193,7 +204,7 @@ describe('MemorySurface', () => {
   it('asks what happened, defaulting to "It changed"', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     const group = await screen.findByRole('radiogroup');
     expect(group).toBeInTheDocument();
     expect(screen.getByText('What happened?')).toBeInTheDocument();
@@ -212,7 +223,7 @@ describe('MemorySurface', () => {
   ] as const)('choosing "%s" sends reason %s', async (label, reason) => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     fireEvent.change(await screen.findByLabelText('What should I remember?'), {
       target: { value: 'Denver' },
     });
@@ -244,13 +255,13 @@ describe('MemorySurface', () => {
       degraded: [],
     });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     fireEvent.click(await screen.findByRole('radio', { name: 'It was never right' }));
     expect(screen.getByRole('radio', { name: 'It was never right' })).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByText('Fix this memory')).toBeNull());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fix: Acme' }));
+    fireEvent.click(await memoryAction('Fix: Acme'));
     expect(await screen.findByRole('radio', { name: 'It changed' })).toBeChecked();
   });
 
@@ -258,7 +269,7 @@ describe('MemorySurface', () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     correctMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -273,7 +284,7 @@ describe('MemorySurface', () => {
   it('forgets only after confirmation, then refreshes', async () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     expect(await screen.findByText('Forget this memory?')).toBeInTheDocument();
     expect(forgetMock).not.toHaveBeenCalled();
 
@@ -281,7 +292,7 @@ describe('MemorySurface', () => {
     await waitFor(() => expect(screen.queryByText('Forget this memory?')).toBeNull());
     expect(forgetMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     fireEvent.click(await screen.findByRole('button', { name: 'Forget' }));
     await waitFor(() => expect(forgetMock).toHaveBeenCalledWith('a1', ['m1']));
     await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(2));
@@ -291,7 +302,7 @@ describe('MemorySurface', () => {
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     forgetMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     fireEvent.click(await screen.findByRole('button', { name: 'Forget' }));
     expect(
       await screen.findByText('We could not forget this memory. Try again.'),
@@ -328,7 +339,7 @@ describe('MemorySurface', () => {
     expect(await screen.findByText('Cambridge')).toBeInTheDocument();
     expect(screen.queryByText('Boston')).toBeNull();
 
-    fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Show replaced memories' })[0]!);
     await waitFor(() =>
       expect(recallMock).toHaveBeenCalledWith('a1', { history: true }),
     );
@@ -336,8 +347,8 @@ describe('MemorySurface', () => {
     expect(screen.getByText('Replaced')).toBeInTheDocument();
     expect(screen.getByText(/Replaced by: Cambridge/)).toBeInTheDocument();
     expect(screen.getByText('Forgotten')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Fix: Worcester' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Forget: Worcester' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Worcester' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Worcester' })).toBeNull();
   });
 
   it('strikes through a retracted value and badges it Retracted; a replaced row stays Replaced', async () => {
@@ -367,19 +378,19 @@ describe('MemorySurface', () => {
     });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(await screen.findByText('Denver')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Show replaced memories' })[0]!);
 
     const seattle = await screen.findByText('Seattle');
     expect(seattle).toHaveClass('line-through');
-    const seattleRow = seattle.closest('li')!;
+    const seattleRow = seattle.closest('tr, li')!;
     expect(seattleRow.textContent).toContain('Retracted');
     expect(seattleRow.textContent).toContain('2026-09-27');
     expect(seattleRow.textContent).not.toContain('Replaced');
-    expect(screen.queryByRole('button', { name: 'Fix: Seattle' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Seattle' })).toBeNull();
 
     const boston = screen.getByText('Boston');
     expect(boston).not.toHaveClass('line-through');
-    expect(boston.closest('li')!.textContent).toContain('Replaced by: Denver');
+    expect(boston.closest('tr, li')!.textContent).toContain('Replaced by: Denver');
     expect(screen.getByText('Denver')).not.toHaveClass('line-through');
   });
 
@@ -400,17 +411,17 @@ describe('MemorySurface', () => {
     expect(await screen.findByText('Cambridge')).toBeInTheDocument();
     expect(screen.queryByText('Outranked')).toBeNull();
 
-    fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Show replaced memories' })[0]!);
     expect(await screen.findByText('Outranked')).toBeInTheDocument();
     expect(screen.getByText('Overridden')).toBeInTheDocument();
     expect(screen.getByText(/another memory is used instead/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Fix: Outranked' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Forget: Outranked' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Outranked' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Outranked' })).toBeNull();
   });
 
   it('never shows Forget on an overridden row in search results', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    await screen.findByText('Search memories from your conversations.');
+    await screen.findByText(/No memories yet/);
     recallMock.mockResolvedValue({
       statements: [fact({ id: 'm1', value: 'Outranked', closure: 'overridden' })],
       degraded: [],
@@ -419,13 +430,13 @@ describe('MemorySurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     expect(await screen.findByText(/Outranked/)).toBeInTheDocument();
     expect(screen.getByText('Overridden')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Forget:/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Memory actions:/ })).toBeNull();
   });
 
   it('searches on submit and maps kinds to friendly type labels', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(
-      await screen.findByText('Search memories from your conversations.'),
+      await screen.findByText(/No memories yet/),
     ).toBeInTheDocument();
 
     recallMock.mockResolvedValue({
@@ -449,12 +460,12 @@ describe('MemorySurface', () => {
     // No kind, no savedBy: the honest gap is "Older memory", not "Unclassified"
     // (which read as a claim about the row rather than about our own metadata).
     expect(screen.getByText('Older memory')).toBeInTheDocument();
-    expect(screen.getByText('When (UTC)')).toBeInTheDocument();
+    expect(screen.getByText('Noted')).toBeInTheDocument();
   });
 
   it('labels a kindless row by who saved it, not by a raw provenance token', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    await screen.findByText('Search memories from your conversations.');
+    await screen.findByText(/No memories yet/);
     recallMock.mockResolvedValue({
       statements: [
         fact({ id: 'm1', value: 'Human-saved', savedBy: 'person' }),
@@ -482,7 +493,7 @@ describe('MemorySurface', () => {
       resolve: (v: { statements: FactMemoryStatement[]; degraded: string[] }) => void;
     }[] = [];
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    await screen.findByText('Search memories from your conversations.');
+    await screen.findByText(/No memories yet/);
 
     recallMock.mockImplementation(
       () =>
@@ -531,7 +542,8 @@ describe('MemorySurface', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(await screen.findByText(/You — lives in: Boston/)).toBeInTheDocument();
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+    expect(screen.getByText('Boston').closest('[data-memory-row]')?.textContent).toBe('You — lives in: Boston');
     expect(screen.queryByText(/user:alice|alice lives/)).toBeNull();
   });
 
@@ -543,13 +555,14 @@ describe('MemorySurface', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(await screen.findByText(/Priya — likes: tea/)).toBeInTheDocument();
+    expect(await screen.findByText('tea')).toBeInTheDocument();
+    expect(screen.getByText('tea').closest('[data-memory-row]')?.textContent).toBe('Priya — likes: tea');
     expect(screen.queryByText(/You — likes/)).toBeNull();
   });
 
   it('renders the engine\'s own order — best match first, never re-sorted by date', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    await screen.findByText('Search memories from your conversations.');
+    await screen.findByText(/No memories yet/);
     recallMock.mockResolvedValue({
       statements: [
         // Deliberately NOT date order: the engine's rank puts the oldest row
@@ -563,7 +576,7 @@ describe('MemorySurface', () => {
     });
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(await screen.findByText(/Jan/)).toBeInTheDocument();
+    expect(await screen.findByText('Jan')).toBeInTheDocument();
     const cells = screen.getAllByRole('cell').map((c) => c.textContent ?? '');
     const flat = cells.join('');
     expect(flat.indexOf('Jan')).toBeLessThan(flat.indexOf('Mar'));
@@ -573,7 +586,7 @@ describe('MemorySurface', () => {
 
   it('submitting the same query twice makes a second request', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    await screen.findByText('Search memories from your conversations.');
+    await screen.findByText(/No memories yet/);
     const input = screen.getByLabelText('Search memories');
     fireEvent.change(input, { target: { value: 'tea' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
@@ -600,7 +613,7 @@ describe('MemorySurface', () => {
       () => new Promise<{ id: string }>((resolve) => { release = () => resolve({ id: 'x' }); }),
     );
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     const input = await screen.findByLabelText('What should I remember?');
     fireEvent.change(input, { target: { value: 'Cambridge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -624,7 +637,7 @@ describe('MemorySurface', () => {
       () => new Promise<{ forgotten: true }>((resolve) => { release = () => resolve({ forgotten: true }); }),
     );
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     fireEvent.click(await screen.findByRole('button', { name: 'Forget' }));
     await waitFor(() => expect(forgetMock).toHaveBeenCalledTimes(1));
 
@@ -652,10 +665,10 @@ describe('MemorySurface', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Shared across conversations with Quill.'),
+      await screen.findByRole('columnheader', { name: 'What Quill remembers' }),
     ).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    fireEvent.click(await memoryAction('Fix: Boston'));
     expect(
       await screen.findByText(
         'Saving replaces it for the team. The earlier version stays in History.',
@@ -663,7 +676,7 @@ describe('MemorySurface', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     expect(
       await screen.findByText(
         'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.',
@@ -687,7 +700,7 @@ describe('MemorySurface', () => {
       screen.queryByText(/visible to its team|visible to the team/),
     ).toBeNull();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     expect(
       await screen.findByText(
         /This memory will be removed from active results\. It stays in History, and past conversations do not change\./,
@@ -703,7 +716,7 @@ describe('MemorySurface', () => {
     expect(
       screen.queryByText(/private to you|visible to its team/),
     ).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Forget: Boston' }));
+    fireEvent.click(await memoryAction('Forget: Boston'));
     expect(
       await screen.findByText(
         /This memory will be removed from active results\. It stays in History, and past conversations do not change\./,
@@ -764,7 +777,7 @@ describe('MemorySurface — where focus goes when a dialog closes (TASK-644)', (
 
   it('Fix → Save lands on the receipt\'s "Updated." line, with Undo the next stop', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    press(await memoryAction('Fix: Boston'));
     fireEvent.change(await screen.findByLabelText('What should I remember?'), {
       target: { value: 'Cambridge' },
     });
@@ -779,7 +792,7 @@ describe('MemorySurface — where focus goes when a dialog closes (TASK-644)', (
 
   it('Forget lands on the receipt\'s "Forgotten" line, with Undo the next stop', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    press(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    press(await memoryAction('Forget: Boston'));
     press(await screen.findByRole('button', { name: 'Forget' }));
 
     const outcome = await screen.findByText('Forgotten');
@@ -791,14 +804,14 @@ describe('MemorySurface — where focus goes when a dialog closes (TASK-644)', (
 
   it('Cancel returns focus to the button that opened the dialog', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    const fix = await screen.findByRole('button', { name: 'Fix: Boston' });
-    press(fix);
+    const fix = await screen.findByRole('button', { name: 'Memory actions: Boston' });
+    press(await memoryAction('Fix: Boston'));
     press(await screen.findByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(fix));
 
-    const forgetBtn = screen.getByRole('button', { name: 'Forget: Boston' });
-    press(forgetBtn);
+    const forgetBtn = screen.getByRole('button', { name: 'Memory actions: Boston' });
+    press(await memoryAction('Forget: Boston'));
     press(await screen.findByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(forgetBtn));
@@ -827,15 +840,14 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
 
   /** The row's own line — what focus should land on — inside the row that has `fixLabel`. */
   function rowLine(fixLabel: string): Element {
-    const li = screen.getByRole('button', { name: fixLabel }).closest('li');
-    expect(li).not.toBeNull();
-    const line = li!.firstElementChild?.firstElementChild;
-    expect(line).toBeTruthy();
+    const value = fixLabel.slice('Fix: '.length);
+    const line = screen.getByText(value).closest('[data-memory-row]');
+    expect(line).not.toBeNull();
     return line!;
   }
 
   async function forgetBoston(): Promise<void> {
-    press(await screen.findByRole('button', { name: 'Forget: Boston' }));
+    press(await memoryAction('Forget: Boston'));
     press(await screen.findByRole('button', { name: 'Forget' }));
     const outcome = await screen.findByText('Forgotten');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -845,7 +857,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
   it('Forget → Undo waits on the Memories heading while the list re-reads, then lands on the row', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     await forgetBoston();
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull());
 
     /*
       The re-read is held open by a promise built HERE, not inside the mock
@@ -871,7 +883,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     const readsBeforeUndo = recallMock.mock.calls.length;
     press(screen.getByRole('button', { name: /^Undo/ }));
 
-    const heading = screen.getByText('Memories');
+    const heading = screen.getByRole('region', { name: 'Memories' });
     await waitFor(() => expect(document.activeElement).toBe(heading));
     await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(readsBeforeUndo + 1));
     expect(screen.getByRole('status', { name: 'Loading memories' })).toBeInTheDocument();
@@ -879,7 +891,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await act(async () => {
       finish();
     });
-    await screen.findByRole('button', { name: 'Fix: Boston' });
+    await screen.findByRole('button', { name: 'Memory actions: Boston' });
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
     expect(document.activeElement?.textContent).toBe('You — lives in: Boston');
   });
@@ -887,7 +899,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
   it('Fix → Undo lands on the row the Undo put back', async () => {
     const uncorrectMock = vi.mocked(workspaceApi.uncorrectMemory);
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    press(await memoryAction('Fix: Boston'));
     fireEvent.change(await screen.findByLabelText('What should I remember?'), {
       target: { value: 'Cambridge' },
     });
@@ -900,12 +912,12 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
       return Promise.resolve({ undone: true });
     });
     press(screen.getByRole('button', { name: /^Undo/ }));
-    await screen.findByRole('button', { name: 'Fix: Boston' });
+    await screen.findByRole('button', { name: 'Memory actions: Boston' });
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
   });
 
   it('a Forgotten receipt from Search that runs out with focus hands focus to the Memories heading', async () => {
-    const SEARCH_FORGET = memoryForgetLabel(memoryStatementText(fact({ id: 'm1' })));
+    const SEARCH_FORGET = memoryForgetLabel('Boston');
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(await screen.findByLabelText('Search memories'), {
@@ -913,9 +925,9 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     });
     press(screen.getByRole('button', { name: 'Search' }));
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: SEARCH_FORGET }).length).toBe(1),
+      expect(screen.getAllByRole('button', { name: 'Memory actions: Boston' }).length).toBe(1),
     );
-    press(screen.getByRole('button', { name: SEARCH_FORGET }));
+    press(await memoryAction(SEARCH_FORGET));
     press(await screen.findByRole('button', { name: 'Forget' }));
     const outcome = await screen.findByText('Forgotten');
     await waitFor(() => expect(document.activeElement).toBe(outcome));
@@ -923,7 +935,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Memories')));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Memories' })));
   });
 
   it('a Forgotten receipt that runs out while it has focus hands focus to the Memories heading', async () => {
@@ -934,20 +946,20 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Memories')));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Memories' })));
   });
 
   it('an Updated receipt that runs out while it has focus hands focus to the fixed row', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    press(await screen.findByRole('button', { name: 'Fix: Boston' }));
+    press(await memoryAction('Fix: Boston'));
     fireEvent.change(await screen.findByLabelText('What should I remember?'), {
       target: { value: 'Cambridge' },
     });
     press(screen.getByRole('button', { name: 'Save' }));
     const outcome = await screen.findByText('Updated.');
     await waitFor(() => expect(document.activeElement).toBe(outcome));
-    await screen.findByRole('button', { name: 'Fix: Cambridge' });
+    await screen.findByRole('button', { name: 'Memory actions: Cambridge' });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(11_000);
@@ -955,4 +967,104 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await waitFor(() => expect(screen.queryByText('Updated.')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Cambridge')));
   });
+});
+
+
+function SharedMemoryManager() {
+  const ledger = useFixLedger('a1');
+  return <MemoryFixesContext.Provider value={ledger}>
+    <output aria-label="Shared corrections">{Array.from(ledger.fixes).map(([id, fix]) => `${id}: ${fix.value}`).join(', ')}</output>
+    <output aria-label="Shared forgotten memories">{Array.from(ledger.forgotten ?? []).join(', ')}</output>
+    <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+  </MemoryFixesContext.Provider>;
+}
+
+describe('MemorySurface — settings manager (TASK-890)', () => {
+  it('uses one toolbar and a desktop table with Kind, agent memory, and local Noted date', async () => {
+    const when = '2026-09-01T00:30:00.000Z';
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1', kind: 'world', when, whenText: 'UTC engine date' })], degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Kind', 'What Quill remembers', 'Noted', 'Actions',
+    ]);
+    expect(screen.getAllByRole('textbox', { name: 'Search memories' })).toHaveLength(1);
+    expect(screen.getAllByRole('switch', { name: 'Show replaced memories' })).toHaveLength(1);
+    const date = table.querySelector('time')!;
+    expect(date.dateTime).toBe(when);
+    expect(date.textContent).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }));
+    expect(screen.queryByText('UTC engine date')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Memory actions: Boston' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull();
+  });
+
+  it('renders mobile memories as cards with the same correction menu', async () => {
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'm1', kind: 'opinion' })], degraded: [] });
+    render(<CompactSurfaceContext.Provider value={true}><MemorySurface agentId="a1" agentName="Quill" memory={read(true)} /></CompactSurfaceContext.Provider>);
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getByRole('list', { name: 'Memories' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Memory actions: Boston' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Fix: Boston' }));
+    expect(await screen.findByRole('dialog', { name: 'Fix this memory' })).toBeInTheDocument();
+  });
+
+  it('shares history with search and restores the full list when search is cleared', async () => {
+    recallMock.mockImplementation(async (_agentId, options) => ({ statements: [fact({ id: 'm1', value: options.query ? 'Tea' : 'Boston' })], degraded: [] }));
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    await screen.findByText('Boston');
+    fireEvent.click(screen.getByRole('switch', { name: 'Show replaced memories' }));
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'tea' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(recallMock).toHaveBeenCalledWith('a1', { query: 'tea', history: true }));
+    expect(await screen.findByText(/Tea/)).toBeInTheDocument();
+    expect(screen.queryByText('Boston')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: '' } });
+    await waitFor(() => expect(recallMock).toHaveBeenLastCalledWith('a1', { history: true }));
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+  });
+
+  it('publishes a settings Fix and its Undo through the shared ledger', async () => {
+    let current = fact({ id: 'm1' });
+    recallMock.mockImplementation(async () => ({ statements: [current], degraded: [] }));
+    correctMock.mockImplementation(async () => {
+      current = fact({ id: 'm2', value: 'Cambridge' });
+      return { id: 'm2' };
+    });
+    vi.mocked(workspaceApi.uncorrectMemory).mockImplementation(async () => {
+      current = fact({ id: 'm1' });
+      return { undone: true };
+    });
+    render(<SharedMemoryManager />);
+    fireEvent.click(await memoryAction('Fix: Boston'));
+    fireEvent.change(await screen.findByLabelText('What should I remember?'), { target: { value: 'Cambridge' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByLabelText('Shared corrections')).toHaveTextContent('m1: Cambridge'));
+    expect(await screen.findByText('Cambridge')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Undo fix/ }));
+    await waitFor(() => expect(screen.getByLabelText('Shared corrections')).toBeEmptyDOMElement());
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+  });
+
+  it('publishes a settings Forget and its Undo through the shared ledger', async () => {
+    let statements = [fact({ id: 'm1' })];
+    recallMock.mockImplementation(async () => ({ statements, degraded: [] }));
+    forgetMock.mockImplementation(async () => {
+      statements = [];
+      return { forgotten: true };
+    });
+    unforgetMock.mockImplementation(async () => {
+      statements = [fact({ id: 'm1' })];
+      return { restored: ['m1'] };
+    });
+    render(<SharedMemoryManager />);
+    fireEvent.click(await memoryAction('Forget: Boston'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }));
+    await waitFor(() => expect(screen.getByLabelText('Shared forgotten memories')).toHaveTextContent('m1'));
+    expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Undo forgetting/ }));
+    await waitFor(() => expect(screen.getByLabelText('Shared forgotten memories')).toBeEmptyDOMElement());
+    expect(await screen.findByText('Boston')).toBeInTheDocument();
+  });
+
 });

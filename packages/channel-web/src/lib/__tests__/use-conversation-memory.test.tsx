@@ -282,6 +282,39 @@ describe('useConversationMemory — the fix ledger', () => {
     expect(result.current.rows.map((r) => r.row)).toEqual([listed]);
   });
 
+  it('shares settings Forget and Undo without losing a corrected conversation row or restarting its feed', async () => {
+    recall.mockResolvedValue({ statements: [st('a', { value: 'Boston' })], degraded: [] });
+    const { result } = renderHook(() => useConversationMemory({
+      agentId: 'a1', conversationId: 'c1', enabled: true, announce,
+    }));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    act(() => result.current.recordFix({ row: st('a'), id: 'a2', value: 'Denver' }, 'changed'));
+    const corrected = result.current.rows[0]!;
+    const subscriptions = events.mock.calls.length;
+    act(() => result.current.recordForget?.(corrected.row));
+    expect(result.current.rows).toEqual([]);
+    act(() => result.current.undoForget?.(corrected.row));
+    expect(result.current.rows).toEqual([corrected]);
+    expect(events.mock.calls).toHaveLength(subscriptions);
+  });
+
+  it('restores a settings-forgotten original after a recorded feed refresh before Undo', async () => {
+    const stream = controllableStream();
+    const original = st('a', { value: 'Boston', sourceTurnId: 't1' });
+    recall.mockResolvedValue(page(original));
+    const { result } = mount();
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    const originalLearned = result.current.rows[0]!;
+    act(() => result.current.recordForget?.(original));
+    expect(result.current.rows).toEqual([]);
+    recall.mockResolvedValue(page(st('new')));
+    stream.push({ kind: 'activity', state: 'recorded', statementIds: ['new'] });
+    await waitFor(() => expect(result.current.rows.map((r) => r.row.id)).toEqual(['new']));
+    act(() => result.current.undoForget?.(original));
+    expect(result.current.rows).toContainEqual(originalLearned);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the ledger through a retry, and starts over for another conversation', async () => {
     controllableStream();
     recall.mockResolvedValue(page(st('a')));

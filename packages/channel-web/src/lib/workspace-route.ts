@@ -18,7 +18,7 @@
  */
 
 /** The tabs an agent view offers, in the order they appear. */
-export const WORKSPACE_AGENT_TABS = ['activity', 'chat', 'memory', 'files'] as const;
+export const WORKSPACE_AGENT_TABS = ['chat', 'files', 'activity'] as const;
 
 export type AgentTab = (typeof WORKSPACE_AGENT_TABS)[number];
 
@@ -133,6 +133,10 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   // rail both land on the full settings section (TASK-889).
   if (fourth === 'connectors' || fourth === 'rules') {
     return { kind: 'agent-settings', id, section: 'connectors' };
+  }
+
+  if (fourth === 'memory') {
+    return { kind: 'agent-settings', id, section: 'memory' };
   }
 
   // Preserve links to the two panels now combined into Activity.

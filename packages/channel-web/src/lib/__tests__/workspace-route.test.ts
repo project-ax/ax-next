@@ -83,6 +83,16 @@ describe('parseWorkspaceRoute', () => {
     expect(workspaceRoutePath(route)).toBe('/workspace/agents/a1/settings/connectors');
   });
 
+  it('redirects the legacy Memory address to settings Memory', () => {
+    const route = parseWorkspaceRoute('/workspace/agents/a1/memory');
+    expect(route).toEqual({ kind: 'agent-settings', id: 'a1', section: 'memory' });
+    expect(workspaceRoutePath(route)).toBe('/workspace/agents/a1/settings/memory');
+  });
+
+  it('offers exactly Chats, Files and Activity in order', () => {
+    expect(WORKSPACE_AGENT_TABS).toEqual(['chat', 'files', 'activity']);
+  });
+
   it('drops trailing segments it has no meaning for', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1/files/extra')).toEqual({
       kind: 'agent',
@@ -162,7 +172,7 @@ describe('the two halves agree', () => {
     { kind: 'agent', id: 'a1', tab: 'chat' },
     { kind: 'agent', id: 'a1', tab: 'activity' },
     { kind: 'agent', id: 'a1', tab: 'files' },
-    { kind: 'agent', id: 'a1', tab: 'memory' },
+    { kind: 'agent-settings', id: 'a1', section: 'memory' },
     { kind: 'agent', id: 'agent with spaces/and-slash', tab: 'files' },
   ];
 

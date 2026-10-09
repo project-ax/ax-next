@@ -15,12 +15,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
-import { workspaceApi } from '@/lib/workspace-api';
+import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
 import { clearViewport, setViewport } from './viewport';
+
+import { LEARNED_SEE_ALL, LEARNED_TITLE, MEMORY_FIX_FIELD_LABEL, MEMORY_FIX_SAVE, MEMORY_FORGET, memoryFixLabel, memoryForgetLabel, memoryStatementText, memoryUndoLabel } from '../memory-copy';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -43,6 +45,11 @@ vi.mock('@/lib/workspace-api', async () => {
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       saveRules: vi.fn(),
+      recallMemory: vi.fn(),
+      memoryEvents: vi.fn(() => new Promise(() => {})),
+      correctMemory: vi.fn(),
+      forgetMemory: vi.fn(),
+      unforgetMemory: vi.fn(),
       connectors: vi.fn(async () => ({ connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true })),
       abilities: vi.fn(async () => ({ abilities: {} })),
     },
@@ -407,19 +414,13 @@ describe('agent settings page (TASK-888)', () => {
     expect(await screen.findByText('Saved.')).toBeTruthy();
   });
 
-  it('keeps the rules editor out of the rail Memory tab', async () => {
+  it('canonicalizes a legacy Memory link into settings without a rail Memory tab', async () => {
     withRules('- cc Priya');
     renderAt('/workspace/agents/a-quill/memory');
-
-    const panel = await screen.findByRole('tabpanel', { name: 'Memory' });
-    expect(within(panel).queryByRole('textbox', { name: /Instructions/u })).toBeNull();
-    expect(within(panel).queryByText('- cc Priya')).toBeNull();
-
-    // It says where the rules went, and the link goes there.
-    fireEvent.click(within(panel).getByRole('button', { name: 'Settings' }));
-    await waitFor(() =>
-      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
-    );
+    await screen.findByRole('heading', { level: 2, name: 'Memory' });
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/memory');
+    expect(screen.queryByRole('tab', { name: 'Memory' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: /Instructions/u })).toBeNull();
   });
 });
 
@@ -459,5 +460,88 @@ describe('Connectors settings migration (TASK-889)', () => {
     expect(screen.queryByRole('dialog', { name: 'Agent details' })).toBeNull();
     // The mobile generic-settings index is not the destination of a named link.
     expect(screen.getByRole('heading', { level: 1, name: compact ? 'Connectors' : 'Quill settings' })).toBeVisible();
+  });
+});
+
+
+describe('Memory settings and the pinned learned card (TASK-890)', () => {
+  const original: FactMemoryStatement = { id: 'm1', about: 'user', relation: 'lives_in', value: 'Boston', when: '2026-10-08T00:30:00Z', sourceTurnId: 't1' };
+  let rows: FactMemoryStatement[];
+  beforeEach(() => {
+    setViewport(false);
+    rows = [original];
+    agentMock.mockResolvedValue({ agent: AGENTS[0]!, conversationId: 'c1',
+      thread: [{ kind: 'user', id: 't1', text: 'I live in Boston' }],
+      decisions: { status: 'ok' }, past: [],
+      memory: { rules: { status: 'unavailable', doc: null }, factsAvailable: true } });
+    vi.mocked(workspaceApi.recallMemory).mockImplementation(async () => ({ statements: rows, degraded: [] }));
+    vi.mocked(workspaceApi.correctMemory).mockImplementation(async (_agent, change) => {
+      rows = [{ ...original, id: 'm2', value: change.value }];
+      return { id: 'm2' };
+    });
+    vi.mocked(workspaceApi.forgetMemory).mockImplementation(async () => { rows = []; return { forgotten: true }; });
+    vi.mocked(workspaceApi.unforgetMemory).mockImplementation(async () => { rows = [original]; return { restored: ['m1'] }; });
+  });
+  async function openSettings() {
+    fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
+    await screen.findByRole('table');
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/memory');
+  }
+  async function selectMenu(action: string) {
+    const trigger = await screen.findByRole('button', { name: 'Memory actions: Boston' });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: action }));
+  }
+  async function saveFix() {
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), { target: { value: 'Denver' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  }
+  it('fixes in settings update the mounted learned card when returning to chat', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByText(LEARNED_TITLE);
+    await openSettings();
+    await selectMenu(memoryFixLabel('Boston'));
+    await saveFix();
+    expect(await screen.findByRole('button', { name: 'Memory actions: Denver' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    const card = (await screen.findByText(LEARNED_TITLE)).closest('section')!;
+    expect(within(card).getByText(memoryStatementText({ ...original, value: 'Denver' }))).toBeTruthy();
+    expect(within(card).queryByText(memoryStatementText(original))).toBeNull();
+  });
+  it('fixes in the pinned card appear in the settings manager', async () => {
+    renderAt('/workspace/agents/a-quill');
+    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }));
+    await saveFix();
+    await openSettings();
+    expect(await screen.findByRole('button', { name: 'Memory actions: Denver' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
+  });
+  it('settings Forget hides the pinned card and its Undo restores it', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByText(LEARNED_TITLE);
+    await openSettings();
+    await selectMenu(memoryForgetLabel('Boston'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // It remains mounted while Settings is shown, so inspect the hidden tree.
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
+    await screen.findByRole('button', { name: 'Memory actions: Boston' });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
+    expect(screen.getByRole('button', { name: memoryFixLabel(memoryStatementText(original)) })).toBeTruthy();
+  });
+  it('rail Forget updates the settings manager while the Undo receipt is still available', async () => {
+    renderAt('/workspace/agents/a-quill');
+    fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel(memoryStatementText(original)) }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: LEARNED_SEE_ALL }));
+    expect(await screen.findByText(/No memories yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
   });
 });

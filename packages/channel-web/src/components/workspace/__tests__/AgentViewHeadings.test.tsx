@@ -131,7 +131,7 @@ describe('AgentView heading outline', () => {
     THE CARD'S HEADLINE DEFECT, on every tab. Before the fix this array was
     empty on all four — the assertion that fails first, and loudest.
   */
-  for (const tab of ['activity', 'chat', 'files', 'memory'] as const) {
+  for (const tab of ['activity', 'chat', 'files'] as const) {
     it(`gives the ${tab} tab an outline with no skipped levels and exactly one h1`, async () => {
       renderView({ tab });
 
@@ -153,14 +153,13 @@ describe('AgentView heading outline', () => {
     so nothing else is competing for the `h1`.
   */
   it('makes the agent name the h1, and the open tab the h2 under it', async () => {
-    renderView({ tab: 'memory' });
+    renderView({ tab: 'chat' });
 
     await waitFor(() =>
       expect(headingOutline()).toEqual([
         'h1: Quill',
         'h2: Conversation',
-        'h2: Memory',
-        'h3: What I learned in this chat',
+        'h2: Chats',
       ]),
     );
   });
@@ -228,7 +227,7 @@ describe('AgentView heading outline', () => {
 
     // The compact rail lives behind a trigger; open it so its tree exists.
     fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
-    await screen.findByRole('heading', { name: 'Conversations' });
+    await screen.findByRole('heading', { name: 'Chats' });
 
     const named = screen
       .getAllByRole('heading')
@@ -251,7 +250,7 @@ describe('AgentView heading outline', () => {
   screen when the assertion runs.
 */
 describe('AgentView loading pane name', () => {
-  for (const tab of ['chat', 'activity', 'files', 'memory'] as const) {
+  for (const tab of ['chat', 'activity', 'files'] as const) {
     it(`names the ${tab} tab's loading pane "Loading agent"`, () => {
       agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
       renderView({ tab });
