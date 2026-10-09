@@ -1876,6 +1876,9 @@ importers:
       '@ax/http-server':
         specifier: workspace:*
         version: link:../http-server
+      '@ax/routines-contract':
+        specifier: workspace:*
+        version: link:../routines-contract
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine

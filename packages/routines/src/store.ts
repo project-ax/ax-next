@@ -1,390 +1,288 @@
-import { sql, type Kysely } from 'kysely';
-import type { RoutinesDatabase } from './migrations.js';
-import type { TriggerSpec, ActiveHours } from '@ax/validator-routine';
-import type { FireRow, FireSource, FireStatus, RoutineRow } from './types.js';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
+import { SafeToolError } from '@ax/core';
+import {
+  applyRoutinePatch, durationToSeconds, RoutineDeleteOutputSchema,
+  type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
+  type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
+} from '@ax/routines-contract';
+import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
+import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource, FireStatus } from './types.js';
+import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition } from './definition.js';
+import { AcceptedDispatchSchema, DispatchOutcomeSchema } from './dispatch.js';
 
-export interface UpsertInput {
-  agentId: string;
-  path: string;
-  ownerUserId: string;
-  name: string;
-  description: string;
-  specHash: string;
-  trigger: TriggerSpec;
-  activeHours: ActiveHours | null;
-  silenceToken: string | null;
-  silenceMax: number;
-  conversation: 'per-fire' | 'shared';
-  promptBody: string;
-  nextRunAt: Date | null;
-}
-
-export interface AdvanceInput {
-  agentId: string;
-  path: string;
-  nextRunAt: Date | null;
-  lastRunAt: Date;
-  lastStatus: FireStatus;
-  lastError: string | null;
-}
-
-export interface ClaimInput {
-  now: Date;
-  limit: number;
-  claimWindowMinutes: number;
-}
-
-export interface RecordFireInput {
-  agentId: string;
-  path: string;
-  triggerSource: FireSource;
-  conversationId: string | null;
-  status: FireStatus;
-  error: string | null;
-  renderedPrompt?: string | null;
-  /**
-   * Slice 6 — "Gmail isn't signed in on Bob, so this run went without it."
-   * A string or null is written to the fire row AND to the routine's
-   * `last_warning`: null means the run reached turn assembly and went
-   * without nothing, so it clears the previous run's warning. Omitted
-   * (`undefined`) means the fire failed before turn assembly (agent resolve
-   * refused, chat:start veto, dispatch error): the fire row's warning is
-   * null and the routine's `last_warning` is left UNCHANGED — such a fire
-   * says nothing about which connectors a run would go without.
-   */
-  warning?: string | null;
-}
-
-export interface UpsertDefaultInput {
-  defaultRoutineId?: string;
-  name: string;
-  description: string;
-  specHash: string;
-  trigger: TriggerSpec;
-  intervalSeconds: number | null;
-  activeHours: ActiveHours | null;
-  silenceToken: string | null;
-  silenceMax: number;
-  conversation: 'per-fire' | 'shared';
-  promptBody: string;
-  sourceMd: string;
-  /**
-   * Operator-only global kill-switch for the default routine. Out-of-band from
-   * the routine markdown (NOT a frontmatter field) — it gates whether the
-   * default materializes/fires for ANY agent. When provided, it is applied on
-   * both INSERT and the ON CONFLICT UPDATE path, so an operator can flip a
-   * seeded default's global `enabled` true↔false. When omitted, INSERT defaults
-   * to `true` and the UPDATE path leaves the existing flag untouched — a routine
-   * spec re-upsert (which carries no `enabled`) must never silently flip the
-   * kill-switch.
-   */
-  enabled?: boolean;
-}
-
-export interface DefaultRoutineDetailRow {
-  defaultRoutineId: string;
-  name: string;
-  description: string;
-  specHash: string;
-  trigger: TriggerSpec;
-  intervalSeconds: number | null;
-  activeHours: ActiveHours | null;
-  silenceToken: string | null;
-  silenceMax: number;
-  conversation: 'per-fire' | 'shared';
-  promptBody: string;
-  enabled: boolean;
-  sourceMd: string;
-  updatedAt: Date;
-}
-
+type DB = Kysely<RoutinesDatabase>;
+type Actor = { actorUserId: string };
+export type CleanupJob = { agentId: string; routineId: string; credentialRef: string; ownerUserId: string };
+export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
+export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string };
+export type DefaultRoutineDetailRow = RoutineDefinition & { defaultRoutineId: string; updatedAt: Date };
 export interface RoutinesStore {
-  upsert(input: UpsertInput): Promise<{ changed: boolean }>;
-  delete(input: { agentId: string; path: string }): Promise<void>;
-  claimDue(input: ClaimInput): Promise<RoutineRow[]>;
-  advance(input: AdvanceInput): Promise<void>;
-  recordFire(input: RecordFireInput): Promise<number>;
-  recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
+  createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
+  updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
+  deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
+  list(input: { agentId: string }): Promise<StoredRoutine[]>;
+  findOne(input: RoutineKey): Promise<StoredRoutine | null>;
+  findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
+  acceptDispatch(input: AcceptDispatchInput): Promise<AcceptedDispatch | null>;
+  finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
+  advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date; lastStatus: FireStatus; lastError: string | null }): Promise<void>;
+  claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
+  recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
   recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
-  list(input: { agentId?: string }): Promise<RoutineRow[]>;
-  findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
-  upsertDefault(input: UpsertDefaultInput): Promise<{ defaultRoutineId: string; created: boolean }>;
+  findOperationReceipt(input: OperationKey): Promise<unknown | null>;
+  withLockedWebhookSecret(input: RoutineSecretInput, effect: () => Promise<void>): Promise<{ saved: true }>;
+  pendingCleanup(input: { limit: number }): Promise<CleanupJob[]>;
+  runCredentialCleanup(key: { agentId: string; credentialRef: string }, effect: (job: CleanupJob) => Promise<void>): Promise<boolean>;
+  purgeAgent(agentId: string): Promise<void>;
+  upsertDefault(input: RoutineUpsertDefaultInput): Promise<{ defaultRoutineId: string; created: boolean }>;
   getDefault(defaultRoutineId: string): Promise<DefaultRoutineDetailRow | null>;
   listDefaults(): Promise<DefaultRoutineDetailRow[]>;
   deleteDefault(defaultRoutineId: string): Promise<void>;
-  /**
-   * Materialize one row per (agent, enabled default) pair, stamping
-   * `owner_user_id = ownerUserId` per agent. The owner id is the
-   * identity that `fire.ts` passes to `agents:resolve`'s ACL gate —
-   * the gate has no concept of a system actor, so a synthetic
-   * '@ax/routines/defaults' string here would fail every fire as
-   * forbidden. Team agents are excluded upstream (see
-   * `agents:list-personal-owners`); routing a default fire under a
-   * team is a separate policy decision.
-   */
-  materializeMissing(input: {
-    agents: ReadonlyArray<{ agentId: string; ownerUserId: string }>;
-    now: Date;
-  }): Promise<void>;
+  materializeMissing(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }>; now: Date }): Promise<void>;
   refreshStale(input: { now: Date }): Promise<void>;
-  /**
-   * TASK-397 — re-assert that every routine of a USER-OWNED agent is owned by
-   * that agent's owner, whatever is currently stored.
-   *
-   * This is the half of "routines are agent-owned" that the INSERT path
-   * cannot do by itself. `handleWorkspaceApplied` stamps the writer at
-   * creation (the only identity it has) and never rewrites the column
-   * afterwards, so a row created before this change — or created by a
-   * teammate — would otherwise keep firing as whoever happened to write the
-   * file. Running this on the tick makes the agent the source of truth
-   * continuously, so an ownership transfer on the agent moves its routines
-   * with it and a stale row heals itself within one tick instead of needing a
-   * data migration.
-   *
-   * Reach only ever NARROWS: `agents` comes from
-   * `agents:list-personal-owners`, so every row this touches belongs to a
-   * user-owned agent, whose owner is the ONLY identity `agents:resolve`
-   * authorises for it. Team-owned agents are absent from that list and their
-   * rows are left exactly as they are — a team id is not a user, and
-   * inventing a user for it is the thing this card forbids.
-   *
-   * Returns the number of rows corrected (0 on the steady-state tick).
-   */
-  reconcileOwners(input: {
-    agents: ReadonlyArray<{ agentId: string; ownerUserId: string }>;
-  }): Promise<number>;
-  /**
-   * Set whether `defaultRoutineId` is enabled for `agentId`. The override
-   * table stores only explicit DISABLES — `enabled=true` DELETEs any disable
-   * row (restoring the default-ON state), `enabled=false` upserts a disable
-   * row. De/re-materialization is the caller's job (the hook), because it
-   * needs an owner identity for re-materialize; this method only records the
-   * intent.
-   */
-  setAgentDefaultEnabled(input: {
-    agentId: string;
-    defaultRoutineId: string;
-    ownerUserId: string;
-    enabled: boolean;
-  }): Promise<void>;
-  /** True unless an explicit disable override exists (absence = enabled). */
+  reconcileOwners(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }> }): Promise<number>;
+  setAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string; ownerUserId: string; enabled: boolean }): Promise<void>;
   isAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string }): Promise<boolean>;
-  /** The default-routine ids explicitly disabled for `agentId`. */
   disabledDefaultIdsForAgent(agentId: string): Promise<string[]>;
-  /**
-   * Drop the materialized per-agent row for `(agentId, defaultRoutineId)`.
-   * The materialized row carries no enabled/active flag (schema check: rows
-   * are present-or-absent), so this is a DELETE. Fire history in
-   * routines_v1_fires has no FK to definitions, so it is preserved.
-   */
   removeMaterializedDefault(input: { agentId: string; defaultRoutineId: string }): Promise<void>;
-  /**
-   * TASK-680 — forget every routine of an agent that no longer exists: its
-   * workspace-authored rows, its materialized default rows, and its per-agent
-   * default overrides. Returns the routine rows removed (their `path`s), so the
-   * caller can unmount any webhook route it holds for them.
-   *
-   * Fire history (routines_v1_fires) is kept, as everywhere else in this
-   * store: it has no FK to definitions. Nothing re-creates the rows afterwards
-   * — `materializeMissing` only materializes agents that
-   * `agents:list-personal-owners` still returns.
-   */
-  deleteAllForAgent(agentId: string): Promise<{ paths: string[] }>;
 }
-
-/**
- * Truncate `value` to at most `maxBytes` UTF-8 bytes (including a
- * trailing ellipsis). Uses TextEncoder.encode() length so multibyte
- * content (CJK, emoji) doesn't sneak past the cap. Binary-searches the
- * code-unit cut point; correct for surrogate pairs because slice() on
- * a string never splits a pair when called at a non-low-surrogate
- * position — and the binary search converges on a value where the
- * encoded length is <= maxBytes, so any split that would have produced
- * an unpaired surrogate is naturally rejected.
- *
- * Edge case: if maxBytes < 3 (smaller than the UTF-8 ellipsis itself),
- * return empty string. In practice MAX is 64 KiB so this never triggers,
- * but the guard keeps the function robust.
+function definitionColumns(d: RoutineDefinition) {
+  return {
+    name: d.name, description: d.description, prompt_body: d.promptBody, enabled: d.enabled,
+    trigger_kind: d.trigger.kind, trigger_spec: d.trigger as unknown, active_hours: d.activeHours as unknown,
+    silence_token: d.silenceToken, silence_max: d.silenceMaxChars, conversation: d.conversation, spec_hash: inputHash(d)
+  };
+}
+function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
+  return parseStoredRoutine({
+    agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
+    name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
+    activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
+    definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
+    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning
+  });
+}
+function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
+  return {
+    id: Number(r.id), agentId: r.agent_id, routineId: r.routine_id, firedAt: r.fired_at, triggerSource: r.trigger_source,
+    conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning
+  };
+}
+function defaultRowToDetail(row: Selectable<DefaultRoutinesRow>): DefaultRoutineDetailRow {
+  return {
+    ...validateDefinition({
+      name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled,
+      trigger: row.trigger_spec, activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation
+    }),
+    defaultRoutineId: row.default_routine_id, updatedAt: row.updated_at
+  };
+}
+function parseReceipt(operation: string, value: unknown): unknown {
+  if (operation === 'create' || operation === 'update') return parseStoredRoutine(value);
+  if (operation === 'delete') return RoutineDeleteOutputSchema.parse(value);
+  if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
+  throw new Error('Unknown routine receipt operation');
+}
+function receiptQuery(db: DB, key: OperationKey) {
+  return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
+    .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
+}
+/** Shared lifecycle fence allows routine concurrency; purge uses the same key exclusively.
+ * The durable tombstone prevents a request authorized before deletion from recreating data.
  */
-function truncateUtf8(value: string, maxBytes: number): string {
-  const enc = new TextEncoder();
-  if (enc.encode(value).length <= maxBytes) return value;
-  if (maxBytes < 3) return '';
-  let lo = 0;
-  let hi = value.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (enc.encode(`${value.slice(0, mid)}…`).length <= maxBytes) lo = mid;
-    else hi = mid - 1;
+async function lockLiveAgent(db: DB, agentId: string): Promise<boolean> {
+  await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${agentId}, 18427132))`.execute(db);
+  return !await db.selectFrom('routines_v1_retired_agents').select('agent_id').where('agent_id', '=', agentId).executeTakeFirst();
+}
+async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>): Promise<T> {
+  try {
+    return await db.transaction().execute(async trx => {
+      if (!await lockLiveAgent(trx, key.agentId)) throw new SafeToolError('not-found', 'routineId');
+      await trx.insertInto('routines_v1_requests').values({
+        agent_id: key.agentId, owner_user_id: key.actorUserId, operation: key.operation,
+        request_id: key.requestId, input_hash: key.inputHash, result: null, routine_id: null
+      }).onConflict(oc => oc.doNothing()).execute();
+      const receipt = await receiptQuery(trx, key).forUpdate().executeTakeFirstOrThrow();
+      if (receipt.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
+      if (receipt.result !== null) return parseReceipt(key.operation, receipt.result) as T;
+      const result = await effect(trx);
+      // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
+      if (result === null) { await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', key.agentId).where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute(); return result; }
+      await trx.updateTable('routines_v1_requests').set({ result: JSON.stringify(result) }).where('agent_id', '=', key.agentId)
+        .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute();
+      return parseReceipt(key.operation, result) as T;
+    });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505' && 'constraint' in error && error.constraint === 'routines_v1_webhook_path_unique') throw new SafeToolError('webhook-path-conflict', 'trigger.path');
+    throw error;
   }
-  return `${value.slice(0, lo)}…`;
 }
-
-function rowToRoutine(row: {
-  agent_id: string; path: string; owner_user_id: string;
-  name: string; description: string; spec_hash: string;
-  trigger_kind: string; trigger_spec: unknown;
-  active_hours: unknown | null;
-  silence_token: string | null; silence_max: number;
-  conversation: string; prompt_body: string;
-  next_run_at: Date | null; last_run_at: Date | null;
-  last_status: string | null; last_error: string | null;
-  last_warning: string | null;
-  definition_id: string | null;
-  definition_updated_at: Date | null;
-}): RoutineRow {
-  return {
-    agentId: row.agent_id,
-    path: row.path,
-    ownerUserId: row.owner_user_id,
-    name: row.name,
-    description: row.description,
-    specHash: row.spec_hash,
-    trigger: row.trigger_spec as TriggerSpec,
-    activeHours: row.active_hours as ActiveHours | null,
-    silenceToken: row.silence_token,
-    silenceMaxChars: row.silence_max,
-    conversation: row.conversation as 'per-fire' | 'shared',
-    promptBody: row.prompt_body,
-    nextRunAt: row.next_run_at,
-    lastRunAt: row.last_run_at,
-    lastStatus: row.last_status as FireStatus | null,
-    lastError: row.last_error,
-    lastWarning: row.last_warning,
-    definitionId: row.definition_id,
-    definitionUpdatedAt: row.definition_updated_at,
-  };
+function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string): OperationKey {
+  return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hash };
 }
-
-function rowToFire(r: {
-  id: number | string | bigint;
-  agent_id: string; path: string; fired_at: Date;
-  trigger_source: string; conversation_id: string | null;
-  status: string; error: string | null; rendered_prompt: string | null;
-  warning: string | null;
-}): FireRow {
-  return {
-    id: Number(r.id),
-    agentId: r.agent_id,
-    path: r.path,
-    firedAt: r.fired_at,
-    triggerSource: r.trigger_source as FireSource,
-    conversationId: r.conversation_id,
-    status: r.status as FireStatus,
-    error: r.error,
-    renderedPrompt: r.rendered_prompt,
-    warning: r.warning,
-  };
+async function lockRoutine(db: DB, input: RoutineKey & { expectedRevision: string }): Promise<StoredRoutine> {
+  const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+  if (!row) throw new SafeToolError('not-found', 'routineId');
+  if (row.revision !== input.expectedRevision) throw new SafeToolError('revision-conflict', 'expectedRevision');
+  return rowToRoutine(row);
 }
-
-export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore {
+async function assertNoCleanup(db: DB, key: RoutineKey): Promise<void> {
+  const job = await db.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', key.agentId).where('credential_ref', '=', credentialRef(key)).forUpdate().executeTakeFirst();
+  if (job) throw new SafeToolError('cleanup-pending', 'trigger.hmac');
+}
+async function queueCleanup(db: DB, row: StoredRoutine): Promise<void> {
+  if (!hasHmac(row)) return;
+  await db.insertInto('routines_v1_credential_cleanup').values({
+    agent_id: row.agentId, routine_id: row.routineId,
+    credential_ref: credentialRef(row), owner_user_id: row.ownerUserId
+  }).onConflict(oc => oc.doNothing()).execute();
+}
+function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: string; owner_user_id: string }): CleanupJob {
+  return { agentId: r.agent_id, routineId: r.routine_id, credentialRef: r.credential_ref, ownerUserId: r.owner_user_id };
+}
+/** Effects must be bounded by the hook bus timeout; no transaction handle crosses that boundary. */
+export function createRoutinesStore(db: DB): RoutinesStore {
   return {
-    async upsert(input) {
-      return db.transaction().execute(async (trx) => {
-        const prior = await trx
-          .selectFrom('routines_v1_definitions')
-          .select(['spec_hash'])
-          .where('agent_id', '=', input.agentId)
-          .where('path', '=', input.path)
-          .executeTakeFirst();
-
-        await trx.insertInto('routines_v1_definitions').values({
-          agent_id: input.agentId,
-          path: input.path,
-          owner_user_id: input.ownerUserId,
-          name: input.name,
-          description: input.description,
-          spec_hash: input.specHash,
-          trigger_kind: input.trigger.kind,
-          trigger_spec: input.trigger as unknown,
-          active_hours: input.activeHours as unknown,
-          silence_token: input.silenceToken,
-          silence_max: input.silenceMax,
-          conversation: input.conversation,
-          prompt_body: input.promptBody,
-          next_run_at: input.nextRunAt,
-        }).onConflict((oc) => oc
-          .columns(['agent_id', 'path'])
-          .doUpdateSet((eb) => ({
-            // TASK-397: `owner_user_id` is DELIBERATELY absent from this SET.
-            //
-            // It used to be here, taking `excluded.owner_user_id` — i.e. the
-            // author of whatever `workspace:applied` delta carried this edit.
-            // On a shared (team) agent workspace that meant the second
-            // authorised person to touch `.ax/routines/<name>.md` silently
-            // became the identity every subsequent fire ran as, inheriting
-            // their credential scope. Nothing in the UI showed it.
-            //
-            // Ownership is a property of the routine, not of an edit, so an
-            // apply carries the routine's CONTENT and nothing else. The
-            // column is written once at INSERT and thereafter only by
-            // `reconcileOwners`, which derives it from the agent.
-            name: eb.ref('excluded.name'),
-            description: eb.ref('excluded.description'),
-            trigger_kind: eb.ref('excluded.trigger_kind'),
-            trigger_spec: eb.ref('excluded.trigger_spec'),
-            active_hours: eb.ref('excluded.active_hours'),
-            silence_token: eb.ref('excluded.silence_token'),
-            silence_max: eb.ref('excluded.silence_max'),
-            conversation: eb.ref('excluded.conversation'),
-            prompt_body: eb.ref('excluded.prompt_body'),
-            next_run_at: sql`CASE
-              WHEN routines_v1_definitions.spec_hash IS DISTINCT FROM excluded.spec_hash
-              THEN excluded.next_run_at
-              ELSE routines_v1_definitions.next_run_at
-            END`,
-            spec_hash: eb.ref('excluded.spec_hash'),
-            updated_at: sql`now()`,
-          }))
-        ).execute();
-
-        const changed = prior === undefined || prior.spec_hash !== input.specHash;
-        return { changed };
+    async createAuthored(input) {
+      const definition = validateDefinition(input.definition);
+      return receiptTransaction(db, {
+        agentId: input.agentId, actorUserId: input.actorUserId, operation: 'create', requestId: input.requestId,
+        inputHash: createRequestHash(input)
+      }, async trx => {
+        const row = await trx.insertInto('routines_v1_definitions').values({
+          ...definitionColumns(definition), agent_id: input.agentId,
+          routine_id: opaqueId('routine'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
+          last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null, created_at: input.now, updated_at: input.now
+        }).returningAll().executeTakeFirstOrThrow();
+        return rowToRoutine(row);
       });
     },
-
-    async delete(input) {
-      await db.deleteFrom('routines_v1_definitions')
-        .where('agent_id', '=', input.agentId)
-        .where('path', '=', input.path)
-        .execute();
+    async updateAuthored(input) {
+      if (input.stopOnly && (Object.keys(input.patch).length !== 1 || input.patch.enabled !== false)) throw new SafeToolError('forbidden', 'input');
+      return receiptTransaction(db, operationKey(input, 'update', updateRequestHash(input)), async trx => {
+        const current = await lockRoutine(trx, input);
+        if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
+        let next: RoutineDefinition;
+        try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch { throw new SafeToolError('validation', 'input'); }
+        if (hasHmac(next)) await assertNoCleanup(trx, current);
+        if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
+        const row = await trx.updateTable('routines_v1_definitions').set({
+          ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
+          next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt
+        })
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
+        return rowToRoutine(row);
+      });
     },
-
+    async deleteAuthored(input) {
+      return receiptTransaction(db, operationKey(input, 'delete', deleteRequestHash(input)), async trx => {
+        const current = await lockRoutine(trx, input);
+        if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
+        await queueCleanup(trx, current);
+        const pending = await trx.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).executeTakeFirst();
+        await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        return { deleted: true as const, cleanupPending: pending !== undefined };
+      });
+    },
+    async findOperationReceipt(key) {
+      const row = await receiptQuery(db, key).executeTakeFirst();
+      if (!row) return null;
+      if (row.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
+      return row.result === null ? null : parseReceipt(key.operation, row.result);
+    },
+    async findWebhook(input) {
+      const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('trigger_kind', '=', 'webhook')
+        .where(sql<string>`trigger_spec->>'path'`, '=', input.path).executeTakeFirst();
+      return row ? rowToRoutine(row) : null;
+    },
+    async acceptDispatch(input) {
+      return receiptTransaction(db, operationKey(input, 'dispatch', dispatchRequestHash(input)), async trx => {
+        const raw = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        if (!raw || raw.revision !== input.expectedRevision || !raw.enabled) return null;
+        if (raw.definition_id !== null) {
+          const source = await trx.selectFrom('default_routines_v1').selectAll().where('default_routine_id', '=', raw.definition_id).executeTakeFirst();
+          if (!source?.enabled || !raw.definition_updated_at || raw.definition_updated_at < source.updated_at) return null;
+          const shadow = await trx.selectFrom('routines_v1_definitions').select('routine_id').where('agent_id', '=', input.agentId).where('definition_id', 'is', null).where('name', '=', raw.name).executeTakeFirst();
+          if (shadow) return null;
+          const override = await trx.selectFrom('agent_default_routine_overrides_v1').select('enabled').where('agent_id', '=', input.agentId).where('default_routine_id', '=', raw.definition_id).executeTakeFirst();
+          if (override?.enabled === false) return null;
+        }
+        const result: AcceptedDispatch = { dispatchId: opaqueId('dispatch'), reqId: opaqueId('routine_run'), row: rowToRoutine(raw), source: input.source, acceptedAt: input.now };
+        await trx.insertInto('routines_v1_dispatches').values({
+          dispatch_id: result.dispatchId, agent_id: input.agentId, routine_id: input.routineId,
+          revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source
+        }).execute();
+        return result;
+      });
+    },
+    async finishDispatch(input) {
+      const outcome = DispatchOutcomeSchema.parse(input.outcome);
+      return db.transaction().execute(async trx => {
+        const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
+        if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
+        const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
+        if (!dispatch || dispatch.completed_at) return false;
+        await trx.insertInto('routines_v1_fires').values({
+          agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
+          fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
+          error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning
+        }).execute();
+        await trx.updateTable('routines_v1_dispatches').set({ completed_at: new Date() }).where('dispatch_id', '=', input.dispatchId).execute();
+        await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
+          .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
+          .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
+        return true;
+      });
+    },
+    async advance(input) {
+      await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt, last_status: input.lastStatus, last_error: input.lastError })
+        .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision).execute();
+    },
+    async withLockedWebhookSecret(input, effect) {
+      return db.transaction().execute(async trx => {
+        const row = await lockRoutine(trx, input);
+        if (!hasHmac(row)) throw new SafeToolError('validation', 'trigger.hmac');
+        await assertNoCleanup(trx, row);
+        await effect();
+        return { saved: true as const };
+      });
+    },
+    async pendingCleanup(input) {
+      return (await db.selectFrom('routines_v1_credential_cleanup').selectAll().orderBy('created_at').limit(Math.max(1, Math.min(input.limit, 200))).execute()).map(jobFromRow);
+    },
+    async runCredentialCleanup(key, effect) {
+      return db.transaction().execute(async trx => {
+        // Discovery is not authority. Lock the definition first, then re-read the current job.
+        const candidate = await trx.selectFrom('routines_v1_credential_cleanup').select('routine_id').where('agent_id', '=', key.agentId).where('credential_ref', '=', key.credentialRef).executeTakeFirst();
+        if (!candidate) return false;
+        await trx.selectFrom('routines_v1_definitions').select('routine_id').where('agent_id', '=', key.agentId).where('routine_id', '=', candidate.routine_id).forUpdate().execute();
+        const job = await trx.selectFrom('routines_v1_credential_cleanup').selectAll().where('agent_id', '=', key.agentId).where('credential_ref', '=', key.credentialRef).forUpdate().executeTakeFirst();
+        if (!job) return false;
+        await effect(jobFromRow(job));
+        await trx.deleteFrom('routines_v1_credential_cleanup').where('agent_id', '=', key.agentId).where('credential_ref', '=', key.credentialRef).execute();
+        return true;
+      });
+    },
+    async purgeAgent(agentId) {
+      await db.transaction().execute(async trx => {
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended(${agentId}, 18427132))`.execute(trx);
+        await trx.insertInto('routines_v1_retired_agents').values({ agent_id: agentId }).onConflict(oc => oc.doNothing()).execute();
+        // Dispatch first matches finishDispatch's order and prevents late history resurrection.
+        await trx.deleteFrom('routines_v1_dispatches').where('agent_id', '=', agentId).execute();
+        const rows = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', agentId).forUpdate().execute();
+        for (const row of rows) await queueCleanup(trx, rowToRoutine(row));
+        await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', agentId).execute();
+        await trx.deleteFrom('agent_default_routine_overrides_v1').where('agent_id', '=', agentId).execute();
+        await trx.deleteFrom('routines_v1_fires').where('agent_id', '=', agentId).execute();
+        await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', agentId).execute();
+      });
+    },
     async claimDue(input) {
-      // Two-branch claim:
-      //
-      // Branch 1 — workspace rows: definition_id IS NULL, claim by
-      //   next_run_at <= now, supports interval and cron.
-      //
-      // Branch 2 — default-sourced rows: definition_id IS NOT NULL,
-      //   claim by COALESCE(last_run_at, created_at) + interval <= now.
-      //   v1 supports interval only (default_routines_v1 CHECK enforces).
-      //   Excluded if:
-      //     - the source default has been edited but per-agent copy is
-      //       not yet refreshed (definition_updated_at < d.updated_at)
-      //     - a same-name workspace row exists for the same agent
-      //       (override). Workspace wins.
-      //
-      // The UPDATE keeps next_run_at NULL on default-sourced rows (CASE
-      // branch); only workspace rows advance their next_run_at by the
-      // claim window.
-      const rows = await sql<{
-        agent_id: string; path: string; owner_user_id: string;
-        name: string; description: string; spec_hash: string;
-        trigger_kind: string; trigger_spec: unknown;
-        active_hours: unknown | null;
-        silence_token: string | null; silence_max: number;
-        conversation: string; prompt_body: string;
-        next_run_at: Date | null; last_run_at: Date | null;
-        last_status: string | null; last_error: string | null;
-        last_warning: string | null;
-        definition_id: string | null;
-        definition_updated_at: Date | null;
-      }>`
+      const rows = await sql<Selectable<RoutinesDefinitionsRow>>`
         WITH workspace_due AS (
-          SELECT agent_id, path
+          SELECT agent_id, routine_id
             FROM routines_v1_definitions
-           WHERE definition_id IS NULL
+           WHERE definition_id IS NULL AND enabled
              AND next_run_at IS NOT NULL
              AND next_run_at <= ${input.now}
              AND trigger_kind IN ('interval', 'cron')
@@ -393,11 +291,12 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            FOR UPDATE SKIP LOCKED
         ),
         default_due AS (
-          SELECT r.agent_id, r.path
+          SELECT r.agent_id, r.routine_id
             FROM routines_v1_definitions r
             JOIN default_routines_v1 d ON d.default_routine_id = r.definition_id
            WHERE r.definition_id IS NOT NULL
-             AND d.enabled
+             AND d.enabled AND r.enabled
+             AND NOT EXISTS (SELECT 1 FROM agent_default_routine_overrides_v1 o WHERE o.agent_id=r.agent_id AND o.default_routine_id=r.definition_id AND NOT o.enabled)
              AND d.trigger_kind = 'interval'
              AND r.definition_updated_at IS NOT NULL
              AND r.definition_updated_at >= d.updated_at
@@ -414,9 +313,9 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            FOR UPDATE OF r SKIP LOCKED
         ),
         due AS (
-          SELECT agent_id, path FROM workspace_due
+          SELECT agent_id, routine_id FROM workspace_due
           UNION ALL
-          SELECT agent_id, path FROM default_due
+          SELECT agent_id, routine_id FROM default_due
           -- total cap across both branches; per-branch LIMITs bound lock acquisition
           LIMIT ${input.limit}
         )
@@ -427,84 +326,19 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
              ELSE r.next_run_at
            END
           FROM due
-         WHERE r.agent_id = due.agent_id AND r.path = due.path
+         WHERE r.agent_id = due.agent_id AND r.routine_id = due.routine_id
         RETURNING r.*
       `.execute(db);
       return rows.rows.map(rowToRoutine);
     },
 
-    async advance(input) {
-      await db.updateTable('routines_v1_definitions')
-        .set({
-          next_run_at: input.nextRunAt,
-          last_run_at: input.lastRunAt,
-          last_status: input.lastStatus,
-          last_error: input.lastError,
-          updated_at: sql`now()`,
-        })
-        .where('agent_id', '=', input.agentId)
-        .where('path', '=', input.path)
-        .execute();
-    },
-
-    async recordFire(input) {
-      // L5: rendered prompt is post-substitution model-template output —
-      // cap at 64 KiB defense-in-depth at the write boundary. The cap is
-      // BYTES, not chars: code-unit-based truncation lets UTF-8 multibyte
-      // content (CJK, emoji) sneak past the limit since one JS char can
-      // be 3-4 bytes after encoding.
-      const MAX = 64 * 1024;
-      const raw = input.renderedPrompt ?? null;
-      const renderedPrompt = raw !== null ? truncateUtf8(raw, MAX) : null;
-      // Slice 6 — omitted: a fire that never reached turn assembly. Its row
-      // carries no warning and the routine's `last_warning` is not touched.
-      if (input.warning === undefined) {
-        const row = await db.insertInto('routines_v1_fires').values({
-          agent_id: input.agentId,
-          path: input.path,
-          trigger_source: input.triggerSource,
-          conversation_id: input.conversationId,
-          status: input.status,
-          error: input.error,
-          rendered_prompt: renderedPrompt,
-        }).returning('id').executeTakeFirstOrThrow();
-        return Number(row.id);
-      }
-      const warning = input.warning;
-      // Slice 6 — the fire row and the routine's `last_warning` in ONE
-      // statement, so every path that records a fire that reached turn
-      // assembly (turn end, a terminated invoke) sets or clears the
-      // routine's warning, and neither write can land without the other.
-      // The UPDATE matches nothing when the routine has since been deleted;
-      // the fire row is still written, as before. `advance` never touches
-      // `last_warning`.
-      const res = await sql<{ id: number | string }>`
-        WITH warn AS (
-          UPDATE routines_v1_definitions
-             SET last_warning = ${warning}
-           WHERE agent_id = ${input.agentId} AND path = ${input.path}
-        )
-        INSERT INTO routines_v1_fires
-          (agent_id, path, trigger_source, conversation_id, status, error,
-           rendered_prompt, warning)
-        VALUES
-          (${input.agentId}, ${input.path}, ${input.triggerSource},
-           ${input.conversationId}, ${input.status}, ${input.error},
-           ${renderedPrompt}, ${warning})
-        RETURNING id
-      `.execute(db);
-      const row = res.rows[0];
-      if (row === undefined) throw new Error('recordFire: INSERT … RETURNING returned no row');
-      return Number(row.id);
-    },
-
     async recentFires(input) {
-      const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+      const limit = Math.min(200, Math.max(1, input.limit ?? 20));
       const rows = await db
         .selectFrom('routines_v1_fires')
         .selectAll()
         .where('agent_id', '=', input.agentId)
-        .where('path', '=', input.path)
+        .where('routine_id', '=', input.routineId)
         .orderBy('fired_at', 'desc')
         .limit(limit)
         .execute();
@@ -512,7 +346,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async recentFiresForAgent(input) {
-      const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+      const limit = Math.min(200, Math.max(1, input.limit ?? 20));
       let q = db
         .selectFrom('routines_v1_fires')
         .selectAll()
@@ -526,9 +360,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async list(input) {
-      let q = db.selectFrom('routines_v1_definitions').selectAll();
-      if (input.agentId !== undefined) q = q.where('agent_id', '=', input.agentId);
-      const rows = await q.orderBy('agent_id').orderBy('path').execute();
+      const q = db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId);
+      const rows = await q.orderBy('agent_id').orderBy('routine_id').execute();
       return rows.map(rowToRoutine);
     },
 
@@ -537,23 +370,14 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .selectFrom('routines_v1_definitions')
         .selectAll()
         .where('agent_id', '=', input.agentId)
-        .where('path', '=', input.path)
+        .where('routine_id', '=', input.routineId)
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
     },
 
     async upsertDefault(input) {
-      // Single atomic INSERT … ON CONFLICT DO UPDATE to avoid TOCTOU race
-      // between SELECT and INSERT/UPDATE in concurrent callers.
-      // (xmax = 0) is true for freshly INSERTed rows and false for UPDATEd rows —
-      // that's how we report `created` without a separate SELECT.
-      const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
-      // The global `enabled` flag is an operator-only kill-switch, not part of
-      // the routine spec. On INSERT we default to `true` unless the caller is
-      // explicitly setting it. On the ON CONFLICT UPDATE path we ONLY touch
-      // `enabled` when the caller passed it — a plain routine-spec re-upsert
-      // (no `enabled`) must leave a seeded default's kill-switch alone (else
-      // every spec edit would silently re-enable a deliberately-off default).
+      const id = opaqueId('default');
+      const definition = validateDefinition({ ...input, enabled: input.enabled ?? true });
       const insertEnabled = input.enabled ?? true;
       const enabledUpdateFragment =
         input.enabled === undefined ? sql`` : sql`enabled = EXCLUDED.enabled,`;
@@ -561,13 +385,13 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         INSERT INTO default_routines_v1
           (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
            interval_seconds, active_hours, silence_token, silence_max, conversation,
-           prompt_body, enabled, source_md)
+           prompt_body, enabled)
         VALUES
-          (${id}, ${input.name}, ${input.description}, ${input.specHash},
+          (${id}, ${input.name}, ${input.description}, ${inputHash(definition)},
            ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
-           ${input.intervalSeconds}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
-           ${input.silenceToken}, ${input.silenceMax}, ${input.conversation},
-           ${input.promptBody}, ${insertEnabled}, ${input.sourceMd})
+           ${durationToSeconds(input.trigger.every)}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
+           ${input.silenceToken}, ${input.silenceMaxChars}, ${input.conversation},
+           ${input.promptBody}, ${insertEnabled})
         ON CONFLICT (name) DO UPDATE SET
           description = EXCLUDED.description,
           spec_hash = EXCLUDED.spec_hash,
@@ -580,7 +404,6 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           conversation = EXCLUDED.conversation,
           prompt_body = EXCLUDED.prompt_body,
           ${enabledUpdateFragment}
-          source_md = EXCLUDED.source_md,
           updated_at = now()
         RETURNING default_routine_id, (xmax = 0) AS created
       `.execute(db);
@@ -608,8 +431,6 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async deleteDefault(defaultRoutineId) {
-      // FK ON DELETE CASCADE on routines_v1_definitions.definition_id
-      // drops dependent per-agent rows.
       await db.deleteFrom('default_routines_v1')
         .where('default_routine_id', '=', defaultRoutineId)
         .execute();
@@ -617,40 +438,33 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
 
     async materializeMissing(input) {
       if (input.agents.length === 0) return;
-      // INSERT … SELECT cross-joins agents with all enabled defaults,
-      // filtering out (agent, default) pairs that already have a
-      // materialized row. ON CONFLICT (agent_id, path) DO NOTHING makes
-      // this safe under concurrent materializers — the path encodes the
-      // default id, so two materializers racing on the same agent will
-      // not duplicate.
-      //
-      // owner_user_id is the owner user id (a.owner_user_id), not a
-      // synthetic system actor: fire.ts:51 passes this through to
-      // agents:resolve, whose ACL gate requires a real user id. See
-      // bug write-up in 2026-05-19 MANUAL-ACCEPTANCE walk.
-      //
-      // next_run_at is NULL for default-sourced rows: the claim SQL
-      // computes due-ness from last_run_at + interval, and the CHECK
-      // constraint routines_v1_default_next_run_at_chk forbids a non-null
-      // next_run_at for default_id IS NOT NULL.
-      const agentIds = input.agents.map((a) => a.agentId);
-      const ownerIds = input.agents.map((a) => a.ownerUserId);
-      await sql`
+      await db.transaction().execute(async trx => {
+        const liveAgents = [];
+        for (const agent of [...input.agents].sort((a, b) => a.agentId.localeCompare(b.agentId))) {
+          if (await lockLiveAgent(trx, agent.agentId)) liveAgents.push(agent);
+        }
+        const defaults = await trx.selectFrom('default_routines_v1').select('default_routine_id').execute();
+        const pairs = liveAgents.flatMap(a => defaults.map(d => ({ ...a, defaultId: d.default_routine_id, revision: opaqueId('rev') })));
+        const agentIds = pairs.map(a => a.agentId);
+        const ownerIds = pairs.map(a => a.ownerUserId);
+        const defaultIds = pairs.map(a => a.defaultId);
+        const revisions = pairs.map(a => a.revision);
+        await sql`
         INSERT INTO routines_v1_definitions
-          (agent_id, path, owner_user_id, name, description, spec_hash,
+          (agent_id, routine_id, owner_user_id, name, description, spec_hash,
            trigger_kind, trigger_spec, active_hours, silence_token, silence_max,
            conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
-           created_at, updated_at)
+           created_at, updated_at, revision, enabled)
         SELECT
           a.agent_id, 'default:' || d.default_routine_id, a.owner_user_id,
           d.name, d.description, d.spec_hash,
           d.trigger_kind, d.trigger_spec, d.active_hours, d.silence_token, d.silence_max,
           d.conversation, d.prompt_body, NULL,
           d.default_routine_id, d.updated_at,
-          ${input.now}, ${input.now}
-        FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
-          AS a(agent_id, owner_user_id)
-        CROSS JOIN default_routines_v1 d
+          ${input.now}, ${input.now}, a.revision, d.enabled
+        FROM unnest(${agentIds}::text[], ${ownerIds}::text[], ${defaultIds}::text[], ${revisions}::text[])
+          AS a(agent_id, owner_user_id, default_id, revision)
+        JOIN default_routines_v1 d ON d.default_routine_id=a.default_id
         WHERE d.enabled
           AND NOT EXISTS (
             SELECT 1 FROM routines_v1_definitions r
@@ -667,43 +481,31 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
                AND o.default_routine_id = d.default_routine_id
                AND o.enabled = false
           )
-        ON CONFLICT (agent_id, path) DO NOTHING
-      `.execute(db);
+        ON CONFLICT (agent_id, routine_id) DO NOTHING
+      `.execute(trx);
+      });
     },
 
     async refreshStale(input) {
-      // Refresh denormalized fields on all default-sourced per-agent rows
-      // whose copy is older than the source default. Runs unconditionally
-      // before each tick — the WHERE clause makes it a no-op when nothing
-      // is stale.
-      await sql`
-        UPDATE routines_v1_definitions r
-           SET name = d.name,
-               description = d.description,
-               spec_hash = d.spec_hash,
-               trigger_kind = d.trigger_kind,
-               trigger_spec = d.trigger_spec,
-               active_hours = d.active_hours,
-               silence_token = d.silence_token,
-               silence_max = d.silence_max,
-               conversation = d.conversation,
-               prompt_body = d.prompt_body,
-               definition_updated_at = d.updated_at,
-               updated_at = ${input.now}
-          FROM default_routines_v1 d
-         WHERE r.definition_id = d.default_routine_id
-           AND (r.definition_updated_at IS NULL
-                OR r.definition_updated_at < d.updated_at)
-      `.execute(db);
+      await db.transaction().execute(async trx => {
+        const rows = await trx.selectFrom('routines_v1_definitions as r').innerJoin('default_routines_v1 as d', 'd.default_routine_id', 'r.definition_id')
+          .selectAll('r').select(['d.updated_at as source_updated_at']).where(eb => eb.or([eb('r.definition_updated_at', 'is', null), eb('r.definition_updated_at', '<', eb.ref('d.updated_at'))])).forUpdate('r').execute();
+        for (const row of rows) {
+          const source = await trx.selectFrom('default_routines_v1').selectAll().where('default_routine_id', '=', row.definition_id!).executeTakeFirstOrThrow();
+          await trx.updateTable('routines_v1_definitions').set({
+            name: source.name, description: source.description, spec_hash: source.spec_hash,
+            trigger_kind: source.trigger_kind, trigger_spec: source.trigger_spec, active_hours: source.active_hours,
+            silence_token: source.silence_token, silence_max: source.silence_max, conversation: source.conversation,
+            prompt_body: source.prompt_body, enabled: source.enabled, revision: opaqueId('rev'),
+            definition_updated_at: source.updated_at, updated_at: input.now
+          })
+            .where('agent_id', '=', row.agent_id).where('routine_id', '=', row.routine_id).execute();
+        }
+      });
     },
 
     async reconcileOwners(input) {
       if (input.agents.length === 0) return 0;
-      // `IS DISTINCT FROM` rather than `<>` so the predicate is still a
-      // no-op-filter if the column ever becomes nullable. `updated_at` is
-      // left alone on purpose: this corrects an identity, it does not edit
-      // the routine, and bumping it would make an untouched routine look
-      // freshly edited in the admin list.
       const agentIds = input.agents.map((a) => a.agentId);
       const ownerIds = input.agents.map((a) => a.ownerUserId);
       const res = await sql`
@@ -718,17 +520,17 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async setAgentDefaultEnabled(input) {
-      if (input.enabled) {
-        // Enabled is the default (absence = on) — drop any disable row.
-        await db.deleteFrom('agent_default_routine_overrides_v1')
-          .where('agent_id', '=', input.agentId)
-          .where('default_routine_id', '=', input.defaultRoutineId)
-          .execute();
-        return;
-      }
-      // Disable: upsert an explicit override row. Atomic INSERT … ON CONFLICT
-      // avoids a TOCTOU race between a SELECT and the write.
-      await sql`
+      await db.transaction().execute(async trx => {
+        if (!await lockLiveAgent(trx, input.agentId)) throw new SafeToolError('not-found', 'routineId');
+        if (input.enabled) {
+          // Enabled is the default (absence = on) — drop any disable row.
+          await trx.deleteFrom('agent_default_routine_overrides_v1')
+            .where('agent_id', '=', input.agentId)
+            .where('default_routine_id', '=', input.defaultRoutineId)
+            .execute();
+          return;
+        }
+        await sql`
         INSERT INTO agent_default_routine_overrides_v1
           (agent_id, default_routine_id, owner_user_id, enabled, updated_at)
         VALUES
@@ -737,7 +539,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           owner_user_id = EXCLUDED.owner_user_id,
           enabled = EXCLUDED.enabled,
           updated_at = now()
-      `.execute(db);
+      `.execute(trx);
+      });
     },
 
     async isAgentDefaultEnabled(input) {
@@ -747,8 +550,6 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .where('agent_id', '=', input.agentId)
         .where('default_routine_id', '=', input.defaultRoutineId)
         .executeTakeFirst();
-      // Absence = enabled. A present row reports its own flag (only `false`
-      // is ever written today, but honor the stored value either way).
       return row === undefined ? true : row.enabled;
     },
 
@@ -769,54 +570,12 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .execute();
     },
 
-    async deleteAllForAgent(agentId) {
-      // No transaction: the tick calls this on its pinned advisory-lock
-      // connection. Overrides go FIRST so a failure between the two deletes
-      // leaves the routine rows in place — the next fire that finds the
-      // agent gone retries both — instead of stranding override rows that
-      // nothing would ever look for again.
-      await db.deleteFrom('agent_default_routine_overrides_v1')
-        .where('agent_id', '=', agentId)
-        .execute();
-      const removed = await db.deleteFrom('routines_v1_definitions')
-        .where('agent_id', '=', agentId)
-        .returning(['path'])
-        .execute();
-      return { paths: removed.map((r) => r.path) };
-    },
   };
 }
-
-function defaultRowToDetail(row: {
-  default_routine_id: string;
-  name: string;
-  description: string;
-  spec_hash: string;
-  trigger_spec: unknown;
-  interval_seconds: number | null;
-  active_hours: unknown | null;
-  silence_token: string | null;
-  silence_max: number;
-  conversation: string;
-  prompt_body: string;
-  enabled: boolean;
-  source_md: string;
-  updated_at: Date;
-}): DefaultRoutineDetailRow {
-  return {
-    defaultRoutineId: row.default_routine_id,
-    name: row.name,
-    description: row.description,
-    specHash: row.spec_hash,
-    trigger: row.trigger_spec as TriggerSpec,
-    intervalSeconds: row.interval_seconds,
-    activeHours: row.active_hours as ActiveHours | null,
-    silenceToken: row.silence_token,
-    silenceMax: row.silence_max,
-    conversation: row.conversation as 'per-fire' | 'shared',
-    promptBody: row.prompt_body,
-    enabled: row.enabled,
-    sourceMd: row.source_md,
-    updatedAt: row.updated_at,
-  };
+function truncateUtf8(value: string, maxBytes: number): string {
+  const enc = new TextEncoder();
+  if (enc.encode(value).length <= maxBytes) return value;
+  let out = ''; let bytes = 3;
+  for (const point of value) { const size = enc.encode(point).length; if (bytes + size > maxBytes) break; out += point; bytes += size; }
+  return `${out}…`;
 }

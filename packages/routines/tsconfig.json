@@ -10,6 +10,7 @@
     { "path": "../core" },
     { "path": "../credentials" },
     { "path": "../http-server" },
-    { "path": "../validator-routine" }
+    { "path": "../validator-routine" },
+    { "path": "../routines-contract" }
   ]
 }
