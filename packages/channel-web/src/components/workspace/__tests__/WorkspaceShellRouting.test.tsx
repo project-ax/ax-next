@@ -11,7 +11,7 @@
  * FILE: without the reset, a test that drills into an agent leaves the next
  * one mounting on that agent's URL.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
@@ -20,6 +20,7 @@ import { HttpError } from '@/lib/http';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
+import { clearViewport, setViewport } from './viewport';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -108,6 +109,8 @@ beforeEach(() => {
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
 });
+
+afterEach(clearViewport);
 
 describe('landing on a URL', () => {
   it('opens the agent a deep link names, on the tab it names', async () => {
@@ -417,5 +420,44 @@ describe('agent settings page (TASK-888)', () => {
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
     );
+  });
+});
+
+
+describe('Connectors settings migration (TASK-889)', () => {
+  it.each(['connectors', 'rules'])('replaces a legacy %s URL with the settings section', async (tab) => {
+    window.history.replaceState(null, '', `/workspace/agents/a-quill/${tab}`);
+    const before = window.history.length;
+    renderAt(`/workspace/agents/a-quill/${tab}`);
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quill settings' })).toBeVisible();
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/connectors');
+    expect(window.history.length).toBe(before);
+    expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
+  });
+
+  it.each([false, true])('Open Connectors opens its settings content with compact=%s', async (compact) => {
+    if (compact) setViewport(true);
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      connectors: [{ id: 'gmail', name: 'Gmail', source: 'attached', editable: false,
+        health: 'needs-sign-in', setup: 'sign-in', removable: true }],
+      shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true,
+    });
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('button', { name: 'Open Connectors' });
+    if (compact) {
+      fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+      expect(await screen.findByRole('heading', { level: 1, name: 'Quill settings' })).toBeVisible();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/connectors'));
+    expect(await screen.findByRole('button', { name: 'Add connector' })).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: 'Agent details' })).toBeNull();
+    // The mobile generic-settings index is not the destination of a named link.
+    expect(screen.getByRole('heading', { level: 1, name: compact ? 'Connectors' : 'Quill settings' })).toBeVisible();
   });
 });

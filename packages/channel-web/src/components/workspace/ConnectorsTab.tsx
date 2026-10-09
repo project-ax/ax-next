@@ -1,29 +1,4 @@
-/**
- * The Connectors tab (TASK-738, connectors-rail slice 5).
- *
- * Replaces "What it may do alone". This slice draws the tab shell and the
- * part that is fully wired today:
- *
- *   - **Other abilities** — three switches (Web search, Read web pages, Run
- *     code). Each one writes a tighten-only per-agent override through
- *     `PUT /api/workspace/agents/:id/abilities`: off = deny, on = cleared back
- *     to the deployment's own rules. Never optimistic (see `agent-abilities`).
- *   - **"See everything it can do"** — the old permissions list, moved into a
- *     Dialog rather than dropped. It is still the honest answer to "what can
- *     this agent reach", including the unrestricted-tools warning.
- *   - **Granted by you** — the grants a person made, with Revoke. Access
- *     approved FOR a connector moved into that connector's details view
- *     ("Access you approved", TASK-742) — but only once the list confirms the
- *     connector is there to open. Until then, or for a connector no longer on
- *     this agent, the row stays here: this must never become the place a
- *     grant can no longer be taken back from.
- *
- * The connector list (slice 6, TASK-739) sits above "Other abilities" — see
- * `AgentConnectors`. Its "+ Add" swaps the whole tab for the Add subview
- * (`AddConnector`, slice 7) until the person goes back or a connector is
- * attached. Its "View details" (slice 9, TASK-742) likewise swaps the whole
- * tab for that connector's details; which one is open is state held here.
- */
+/** The agent settings Connectors section, including its built-in ability controls. */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
@@ -34,7 +9,8 @@ import {
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
 import {
   Collapsible,
   CollapsibleContent,
@@ -48,7 +24,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
@@ -57,7 +32,7 @@ import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
 import type { AgentAbility } from '@/lib/workspace-types';
 import { AddConnector } from './AddConnector';
 import { AgentConnectors } from './AgentConnectors';
-import { GrantLine, PermissionLine, ReadFailure, SectionLabel } from './bits';
+import { GrantLine, PermissionLine, ReadFailure } from './bits';
 
 function Note({ children }: { children: React.ReactNode }) {
   return (
@@ -194,8 +169,15 @@ export function ConnectorsTab({
   return (
     <>
       {connectors}
-      <SectionLabel>Other abilities</SectionLabel>
-      <OtherAbilities agentId={agentId} name={name} />
+      <FieldSet className="mt-8" aria-labelledby="agent-abilities-heading">
+        <div>
+          <h3 id="agent-abilities-heading" className="text-[15px] font-semibold">What {name} can do</h3>
+          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+            Built-in abilities. Turn off anything {name} doesn't need. Fewer abilities means less that can go wrong.
+          </p>
+        </div>
+        <OtherAbilities agentId={agentId} name={name} />
+      </FieldSet>
       <p className="mt-3 text-[12px] text-muted-foreground">
         Changes apply to {name} only.{' '}
         <Button
@@ -301,7 +283,9 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   }
   return (
     <>
-      <Card className="shadow-none">
+      <Card className="overflow-hidden p-0 shadow-none">
+        <CardContent className="p-0">
+        <FieldGroup className="gap-0">
         {ABILITY_ROWS.map(({ ability, label, Icon, note }, i) => {
           const id = `ability-${ability}`;
           const on = abilities[ability];
@@ -313,12 +297,12 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
           return (
             <Fragment key={ability}>
               {i > 0 && <Separator />}
-              <div className="flex h-11 items-center gap-2.5 px-3">
+              <Field orientation="horizontal" data-disabled={pending.has(ability)} className="min-h-14 gap-2.5 px-4 py-3">
                 <Icon
                   aria-hidden="true"
                   className="size-4 shrink-0 text-muted-foreground"
                 />
-                <Label
+                <FieldLabel
                   htmlFor={id}
                   className="flex-1 text-[13px] font-normal"
                 >
@@ -331,7 +315,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                       {shownHint}
                     </span>
                   )}
-                </Label>
+                </FieldLabel>
                 <Switch
                   id={id}
                   checked={on}
@@ -354,10 +338,12 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                     {description}
                   </span>
                 )}
-              </div>
+              </Field>
             </Fragment>
           );
         })}
+        </FieldGroup>
+        </CardContent>
       </Card>
       {failed && (
         <Alert variant="destructive" className="mt-3">

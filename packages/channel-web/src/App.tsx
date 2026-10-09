@@ -91,7 +91,7 @@ export const App = () => {
   // case is already handled by the bridge in main.tsx before React mounts, so
   // this only fires when there is no opener (the provider redirected the main
   // window directly). Strip the params + push a toast so the user knows what
-  // happened — then they're on the workspace.
+  // happened — then return to the originating agent's connectors settings.
   const handledOAuthReturn = useRef(false);
   useEffect(() => {
     if (handledOAuthReturn.current) return;
@@ -105,8 +105,9 @@ export const App = () => {
         window.opener !== window,
     });
     if (result === null) return;
-    // Strip /oauth/connected?... so the back-button and reload land on /.
-    window.history.replaceState({}, '', '/');
+    // Remove callback params and restore the originating agent's settings so
+    // reload and Back preserve the connector workflow. Old callbacks use /.
+    window.history.replaceState({}, '', result.returnPath ?? '/');
     if (result.toast === 'success') {
       toastActions.show({ title: "Connected. You're all set.", kind: 'info' });
     } else {

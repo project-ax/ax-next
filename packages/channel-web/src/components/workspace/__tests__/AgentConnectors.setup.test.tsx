@@ -19,7 +19,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail } from '@/lib/workspace-api';
 import type { AgentConnectorRow, AgentConnectorToolsRead } from '@/lib/workspace-types';
-import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -133,7 +133,7 @@ function toolsRead(id: string, name: string): AgentConnectorToolsRead {
 
 function renderTab() {
   return render(
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />,
+    <AgentSettings agent={detail().agent} section="connectors" onSection={vi.fn()} onBack={vi.fn()} compact startOnList={false} busy={false} instructions={null} memory={null} />,
   );
 }
 
@@ -174,12 +174,12 @@ describe('the row icon', () => {
   ])('%s wears a neutral icon named “%s”, right after its name', async (name, reason) => {
     renderTab();
     const icon = await screen.findByRole('button', { name: reason });
-    expect(icon.previousElementSibling?.textContent).toBe(name);
+    expect(icon.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe(name);
     expect(icon.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     // Nothing is broken — it just isn't set up yet. Not the red error icon.
     expect(icon.className).toContain('text-muted-foreground');
     expect(icon.className).not.toContain('text-destructive');
-    expect(screen.queryByText(reason)).toBeNull();
+    expect(screen.getByText(reason)).toBeVisible();
   });
 
   it('keeps the red icon for a real error beside it', async () => {
@@ -400,15 +400,15 @@ describe('which account the agent uses (slice 4)', () => {
     );
     expect(shown.map((n) => n.textContent).join('')).toBe('Gmail');
     expect(name.querySelector('.sr-only')?.textContent).toBe(', signed in as bob@x.com');
-    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    fireEvent.pointerMove(name.closest('button') ?? name, { pointerType: 'mouse' });
     expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
   });
 
   it('the account tooltip opens on keyboard focus too', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
     renderTab();
-    const name = await screen.findByTestId('connector-name-gmail');
-    expect(name.getAttribute('tabindex')).toBe('0');
+    const name = await screen.findByRole('button', { name: 'Edit Gmail' });
+    expect(name).toBeEnabled();
     name.focus();
     expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
   });
@@ -419,7 +419,7 @@ describe('which account the agent uses (slice 4)', () => {
     const name = await screen.findByTestId('connector-name-gmail');
     expect(name.textContent).toBe('Gmail');
     expect(name.getAttribute('tabindex')).toBeNull();
-    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    fireEvent.pointerMove(name.closest('button') ?? name, { pointerType: 'mouse' });
     await new Promise((r) => setTimeout(r, 300));
     expect(screen.queryByRole('tooltip')).toBeNull();
   });

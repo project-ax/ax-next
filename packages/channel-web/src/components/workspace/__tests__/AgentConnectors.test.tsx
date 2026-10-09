@@ -21,7 +21,7 @@ import { BeginOAuthError, beginOAuth, getOAuthStatus } from '@/lib/connectors-oa
 import type { AgentConnectorRow, AgentConnectorToolsRead } from '@/lib/workspace-types';
 import type { AuthUser } from '@/lib/auth';
 import { UserProvider } from '@/lib/user-context';
-import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -83,7 +83,7 @@ const ADMIN: AuthUser = { id: 'u-admin', email: 'admin@example.com', name: 'Ada'
 /** Rendered with no signed-in user unless one is given (useUser() → null). */
 function renderTab(user?: AuthUser) {
   const tab = (
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />
+    <AgentSettings agent={detail().agent} section="connectors" onSection={vi.fn()} onBack={vi.fn()} compact startOnList={false} busy={false} instructions={null} memory={null} />
   );
   return render(user ? <UserProvider value={user}>{tab}</UserProvider> : tab);
 }
@@ -104,21 +104,22 @@ beforeEach(() => {
 });
 
 describe('connector list', () => {
-  it('shows "Connectors <n>" and one row per connector, by name only', async () => {
+  it('shows full-width connector rows with a status and a details action', async () => {
     renderTab();
     expect(await screen.findByText('Linear')).toBeTruthy();
     expect(screen.getByText('Gmail')).toBeTruthy();
-    const heading = screen.getByRole('heading', { level: 3, name: /^Connectors/ });
-    expect(heading.textContent).toBe('Connectors2');
-    // Name only: no tool counts, no two-letter tiles.
-    expect(screen.queryByText(/tools ·|ask first/i)).toBeNull();
+    const heading = screen.getByRole('heading', { level: 1, name: 'Connectors' });
+    expect(heading.textContent).toBe('Connectors');
+    expect(screen.getAllByText('Ready to use')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Edit Linear' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Edit Gmail' })).toBeTruthy();
     expect(connectorsMock).toHaveBeenCalledWith('a-quill');
   });
 
   it('draws "+ Add" beside the heading, and it opens the Add subview (TASK-740)', async () => {
     renderTab();
     await screen.findByText('Linear');
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     expect(await screen.findByRole('heading', { name: 'Add a connector' })).toBeTruthy();
   });
 
@@ -228,6 +229,19 @@ describe('row menu (slice 3: Edit and Remove, plus a fix when needed)', () => {
   });
 
   // Ruling: never signed in → "Sign in"; only an expired row says "again".
+  it('the row Sign in action opens the existing agent sign-in dialog', async () => {
+    connectorsMock.mockResolvedValue({
+      connectors: [{ ...ROWS[1]!, health: 'needs-sign-in', setup: 'sign-in' }],
+      shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false,
+    });
+    vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Sign in to Gmail' })).toBeTruthy();
+    expect(within(dialog).getByText('Sign in and Quill can use Gmail.')).toBeTruthy();
+  });
+
   it('a row never signed in leads with Sign in', async () => {
     connectorsMock.mockResolvedValue({
       connectors: [{ ...ROWS[1]!, health: 'needs-sign-in', setup: 'sign-in' }],
@@ -470,7 +484,7 @@ describe('a member on a team agent', () => {
     asMember();
     renderTab();
     await screen.findByText('Linear');
-    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add connector' })).toBeNull();
   });
 
   it('offers no "Add connector" in the empty state, and does not tell them to add one', async () => {
@@ -497,7 +511,7 @@ describe('a member on a team agent', () => {
     asMember();
     renderTab();
     const icon = await screen.findByRole('button', { name: ASK_OWNER });
-    expect(icon.previousElementSibling?.textContent).toBe('Gmail');
+    expect(icon.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Gmail');
     expect(icon.className).toContain('text-muted-foreground');
     expect(icon.className).not.toContain('text-destructive');
     act(() => icon.focus());
@@ -508,7 +522,7 @@ describe('a member on a team agent', () => {
     asMember();
     renderTab();
     const icons = await screen.findAllByRole('button', { name: EXPIRED_ASK_OWNER });
-    expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Notion', 'Jira']);
+    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Notion', 'Jira']);
   });
 
   it('Edit opens the details view, with no setup button', async () => {
@@ -546,7 +560,7 @@ describe('a member on a team agent', () => {
     });
     renderTab();
     await screen.findByText('Linear');
-    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
     expect(await menuItems('Gmail')).toEqual(['Sign in', 'Edit', 'Remove from Quill']);
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
@@ -567,9 +581,9 @@ describe('empty state', () => {
     expect(empty?.querySelector('svg.lucide-plug')).not.toBeNull();
     // The empty state's own button, not a second "+ Add" in the header.
     expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Add connector' })).toHaveLength(1);
     // No count when there is nothing to count.
-    expect(screen.getByRole('heading', { level: 3, name: /^Connectors/ }).textContent).toBe(
+    expect(screen.getByRole('heading', { level: 1, name: 'Connectors' }).textContent).toBe(
       'Connectors',
     );
   });
@@ -586,19 +600,19 @@ describe('connector health (TASK-741)', () => {
     connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
   });
 
-  it('puts ONE icon after an errored name, named by its reason, with no inline error text', async () => {
+  it('puts ONE icon after an errored name, named by its reason, and a visible status', async () => {
     renderTab();
     const expired = await screen.findByRole('button', { name: 'Sign-in expired' });
     const unreachable = screen.getByRole('button', { name: 'Can’t reach it' });
     // Right after the name, inside the same row.
-    expect(expired.previousElementSibling?.textContent).toBe('Gmail');
-    expect(unreachable.previousElementSibling?.textContent).toBe('Slack');
+    expect(expired.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Gmail');
+    expect(unreachable.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Slack');
     expect(expired.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     expect(expired.className).toContain('text-destructive');
-    // The healthy row has no icon, and nothing spells the reason out inline.
+    // The healthy row has no icon, and the reason appears in the row status.
     expect(screen.getAllByRole('button', { name: /^Sign-in expired$|Can’t reach it/ })).toHaveLength(2);
-    expect(screen.queryByText('Sign-in expired')).toBeNull();
-    expect(screen.queryByText('Can’t reach it')).toBeNull();
+    expect(screen.getByText('Sign-in expired')).toBeVisible();
+    expect(screen.getByText('Can’t reach it')).toBeVisible();
   });
 
   it('shows the reason in a tooltip when the icon gets keyboard focus', async () => {
@@ -642,7 +656,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   it('wears the error icon after its name; someone who isn’t an admin is told to ask one — even for a connector they may edit', async () => {
     renderTab();
     const icons = await screen.findAllByRole('button', { name: ASK_ADMIN });
-    expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Linear', 'Gmail']);
     expect(icons[0]!.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     // The old advice pointed at a menu item the rail no longer has.
     expect(screen.queryByRole('button', { name: /Edit connector/ })).toBeNull();
@@ -653,7 +667,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   it('a workspace admin is pointed at Admin › Connectors, whether or not the row is editable', async () => {
     renderTab(ADMIN);
     const icons = await screen.findAllByRole('button', { name: FIX_IN_SETTINGS });
-    expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Linear', 'Gmail']);
     expect(screen.queryByRole('button', { name: ASK_ADMIN })).toBeNull();
   });
 
@@ -690,7 +704,7 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
     renderTab();
     expect(await screen.findByText(NOTICE)).toBeTruthy();
     expect(screen.getByText('Linear')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add connector' })).toBeNull();
   });
 
   it('replaces the empty state (and its "Add connector") with the same notice', async () => {
@@ -705,6 +719,6 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
     renderTab();
     await screen.findByText('Linear');
     expect(screen.queryByText(NOTICE)).toBeNull();
-    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
   });
 });

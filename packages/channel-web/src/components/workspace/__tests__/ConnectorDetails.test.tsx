@@ -18,7 +18,7 @@ import type {
   AgentConnectorTool,
   AgentConnectorToolsRead,
 } from '@/lib/workspace-types';
-import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { rail, siteGrant } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -96,7 +96,7 @@ function detail(): AgentDetail {
 
 function renderTab() {
   return render(
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />,
+    <AgentSettings agent={detail().agent} section="connectors" onSection={vi.fn()} onBack={vi.fn()} compact startOnList={false} busy={false} instructions={null} memory={null} />,
   );
 }
 
@@ -149,12 +149,20 @@ describe('opening and closing', () => {
     const heading = screen.getByRole('heading', { name: /What Quill may do/ });
     expect(heading.textContent).toBe('What Quill may do3 tools');
     // The subview IS the tab: Other abilities is not drawn under it.
-    expect(screen.queryByText('Other abilities')).toBeNull();
+    expect(screen.queryByText('What Quill can do')).toBeNull();
     expect(toolsMock).toHaveBeenCalledWith('a-quill', 'linear', false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Connectors' }));
-    expect(await screen.findByText('Other abilities')).toBeTruthy();
+    expect(await screen.findByText('What Quill can do')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /What Quill may do/ })).toBeNull();
+  });
+
+  it('opens details directly from the full-width connector row', async () => {
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Linear' }));
+    expect(await screen.findByRole('heading', { level: 3, name: 'Linear' })).toBeTruthy();
+    expect(toolsMock).toHaveBeenCalledWith('a-quill', 'linear', false);
+    expect(screen.queryByText('What Quill can do')).toBeNull();
   });
 
   it('says a workspace connector uses the workspace account, not "you"', async () => {
@@ -727,24 +735,15 @@ describe('access you approved', () => {
   });
 });
 
-describe('pinned footer (TASK-761)', () => {
-  it("sits on the rail's bottom edge, over the rows, not 20px above it with rows showing underneath", async () => {
+describe('settings details footer', () => {
+  it('keeps removal in the content flow without rail offsets', async () => {
     toolsMock.mockResolvedValue(read());
     renderTab();
     await openDetails();
     const footer = await screen.findByTestId('connector-details-footer');
-    const cls = footer.className.split(/\s+/);
-    // Sticky, offset by the rail scroller's bottom padding, and layered over
-    // the rows' segmented controls.
-    expect(cls).toEqual(expect.arrayContaining(['sticky', '-bottom-5', '-mb-5', 'z-10', 'bg-background']));
-    expect(cls).not.toContain('bottom-0');
-    // The offset is only right while the rail's scroller keeps `pb-5`: find
-    // the real scroller this footer sticks inside and pin that pairing.
-    let scroller: HTMLElement | null = footer.parentElement;
-    while (scroller !== null && !scroller.className.includes('overflow-y-auto')) {
-      scroller = scroller.parentElement;
-    }
-    expect(scroller?.className.split(/\s+/)).toContain('pb-5');
+    expect(footer.className.split(/\s+/)).not.toEqual(expect.arrayContaining(['sticky', '-bottom-5']));
+    expect(footer.className).not.toMatch(/-m[bxy]-|z-10/);
+    expect(within(footer).getByRole('button', { name: 'Remove' })).toBeEnabled();
   });
 });
 

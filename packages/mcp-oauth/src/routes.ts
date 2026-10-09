@@ -739,10 +739,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   function returnUrl(
     connectorId: string,
     outcome: 'success' | 'error',
+    agentId: string,
     reason?: OAuthFailureReason,
   ): string {
     const url = `${config.publicOrigin}${config.connectorReturnPath}?connector=${encodeURIComponent(connectorId)}&oauth=${outcome}`;
-    return reason === undefined ? url : `${url}&reason=${reason}`;
+    const outcomeUrl = reason === undefined ? url : `${url}&reason=${reason}`;
+    // This is the agent bound to the consumed state, never a callback query
+    // redirect target. Popup returns still use the fixed bridge; the main
+    // window can derive its own same-origin settings route from this id.
+    return agentId ? `${outcomeUrl}&agentId=${encodeURIComponent(agentId)}` : outcomeUrl;
   }
 
   /**
@@ -839,7 +844,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const agentId = pending.agentId;
     /** Redirect the popup with a failure. Nothing has been written, or it was undone. */
     const fail = (reason: OAuthFailureReason): void => {
-      res.redirect(returnUrl(connectorId, 'error', reason));
+      res.redirect(returnUrl(connectorId, 'error', agentId, reason));
     };
 
     // A denied grant ends this authorization too. Return the trusted connector
@@ -1170,7 +1175,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       });
     }
 
-    res.redirect(returnUrl(connectorId, 'success'));
+    res.redirect(returnUrl(connectorId, 'success', agentId));
   }
 
   async function status(req: RouteRequest, res: RouteResponse): Promise<void> {

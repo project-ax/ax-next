@@ -1,5 +1,5 @@
 /**
- * The rail is the security surface, so these tests are mostly about what it is
+ * The rail and settings are security surfaces, so these tests are mostly about what it is
  * NOT allowed to say.
  *
  * The rule underneath all of them: an empty list is a CLAIM. A block that has
@@ -11,6 +11,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { describedRow, mcpRow, rail, railActivity, siteGrant } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -19,6 +20,7 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       rail: vi.fn(),
+      connectors: vi.fn(async () => ({ connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true })),
       revokeGrant: vi.fn(),
       abilities: vi.fn(),
       setAbility: vi.fn(),
@@ -56,13 +58,22 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   };
 }
 
-let initialTab: 'activity' | 'connectors' = 'connectors';
+let initialTab = 'activity' as const;
 /**
  * `container` is the whole document: the permissions list now lives in a
  * Dialog (TASK-738), which portals out of the render root.
  */
 function renderRail(d: AgentDetail = detail()) {
   const r = render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} />);
+  return { ...r, container: document.body };
+}
+
+/** Permissions and grants moved intact into the settings section (TASK-889). */
+function renderConnectorsSettings() {
+  const r = render(
+    <AgentSettings agent={agent()} section="connectors" onSection={vi.fn()}
+      onBack={vi.fn()} compact={false} busy={false} instructions={null} memory={null} />,
+  );
   return { ...r, container: document.body };
 }
 
@@ -79,7 +90,7 @@ async function openGrants(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  initialTab = 'connectors';
+  initialTab = 'activity';
   railMock.mockResolvedValue(rail());
   abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
 });
@@ -98,7 +109,8 @@ describe('AgentRail — simplified tabs', () => {
     }));
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
       panels={{ activity: <p>Finished the inbox sweep</p> }} />);
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Right now' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'What it did' })).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Activity' }), { button: 0, ctrlKey: false });
@@ -238,8 +250,7 @@ describe('AgentRail — "Right now"', () => {
   });
 });
 
-describe('AgentRail — "See everything it can do"', () => {
-  beforeEach(() => { initialTab = 'connectors'; });
+describe('AgentSettings — "See everything it can do"', () => {
   it('groups allow first, then hold, then deny', async () => {
     railMock.mockResolvedValue(
       rail({
@@ -267,7 +278,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await screen.findByText(/search the web/);
@@ -296,7 +307,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await screen.findByText(/never delete anything/);
@@ -329,7 +340,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await screen.findByText(/delete a folder and everything in it/);
@@ -349,7 +360,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await screen.findByText('mcp.linear.create_issue');
@@ -401,7 +412,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     expect(await screen.findByText('some_unmapped_tool')).toBeTruthy();
@@ -438,7 +449,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await screen.findByText(/rule:mystery/);
@@ -459,7 +470,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       await screen.findByText(/search the web/);
@@ -480,7 +491,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       await screen.findByText(/search the web/);
@@ -530,7 +541,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       expect(await screen.findByText(/We haven't described this one/)).toBeTruthy();
@@ -559,7 +570,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       // The row itself must render — otherwise this test would pass whether
@@ -612,7 +623,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       await screen.findByText(/read files in its own workspace/);
@@ -634,7 +645,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       const trigger = await screen.findByText('Costs money');
@@ -666,7 +677,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      renderRail();
+      renderConnectorsSettings();
       await openPermissions();
 
       expect(await screen.findByText('Costs money')).toBeTruthy();
@@ -706,7 +717,7 @@ describe('AgentRail — "See everything it can do"', () => {
           },
         }),
       );
-      const { container } = renderRail();
+      const { container } = renderConnectorsSettings();
       await openPermissions();
 
       await screen.findByText(/read a web page/);
@@ -736,7 +747,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
 
     // The tab's rule count must not read as a limit on tool reach.
     await openPermissions();
@@ -761,7 +772,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
 
     // A short list still explains that one of its sources did not answer.
     await openPermissions();
@@ -781,7 +792,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    const first = renderRail();
+    const first = renderConnectorsSettings();
     await openPermissions();
     expect(
       await screen.findByText(/doesn’t publish the rules that govern Quill/),
@@ -798,7 +809,7 @@ describe('AgentRail — "See everything it can do"', () => {
         },
       }),
     );
-    renderRail();
+    renderConnectorsSettings();
     await openPermissions();
     expect(
       await screen.findByText(/couldn’t read the rules that govern Quill/),
@@ -806,7 +817,7 @@ describe('AgentRail — "See everything it can do"', () => {
   });
 
   it('never makes a claim about the agent’s reach from an empty list', async () => {
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await screen.findByText(/Granted by you/);
     const text = container.textContent ?? '';
 
@@ -818,7 +829,7 @@ describe('AgentRail — "See everything it can do"', () => {
   });
 });
 
-describe('AgentRail — rules are disclosed behind "See everything it can do"', () => {
+describe('AgentSettings — rules are disclosed behind "See everything it can do"', () => {
   const rows = [describedRow(), mcpRow()];
   beforeEach(() => {
     railMock.mockResolvedValue(rail({ permissions: {
@@ -826,13 +837,10 @@ describe('AgentRail — rules are disclosed behind "See everything it can do"', 
     } }));
   });
 
-  it('starts on Conversations and reveals every rule only once the dialog opens', async () => {
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
-    expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('aria-selected', 'true');
-    expect(document.body.textContent).not.toContain(rows[0]!.source);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Connectors' }), { button: 0, ctrlKey: false });
-    // The tab itself does not list rules — the list moved, it was not dropped.
-    await screen.findByText('Other abilities');
+  it('reveals every rule only once the permissions dialog opens in settings', async () => {
+    renderConnectorsSettings();
+    await screen.findByText('What Quill can do');
+    expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
     expect(document.body.textContent).not.toContain(rows[0]!.source);
     await openPermissions();
     for (const row of rows) expect(document.body.textContent).toContain(row.source);
@@ -842,7 +850,7 @@ describe('AgentRail — rules are disclosed behind "See everything it can do"', 
     railMock.mockResolvedValue(rail({ permissions: {
       status: 'ok', incomplete: false, unrestrictedTools: false, rows: [],
     } }));
-    renderRail();
+    renderConnectorsSettings();
     await openPermissions();
     expect(await screen.findByText(/Nothing here describes Quill/)).toBeTruthy();
   });
@@ -851,7 +859,7 @@ describe('AgentRail — rules are disclosed behind "See everything it can do"', 
 describe('AgentRail icon tabs', () => {
   it('preserves Radix active styling while each tab has a tooltip', () => {
     renderRail();
-    const selected = screen.getByRole('tab', { name: 'Connectors' });
+    const selected = screen.getByRole('tab', { name: 'Activity' });
     expect(selected).toHaveAttribute('data-state', 'active');
     expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('data-state', 'inactive');
   });
@@ -863,12 +871,12 @@ describe('AgentRail icon tabs', () => {
   });
 });
 
-describe('AgentRail — "Granted by you"', () => {
+describe('AgentSettings — "Granted by you"', () => {
   it('is a separate group, sourced from the grant record, with revoke', async () => {
     railMock.mockResolvedValue(
       rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
     );
-    renderRail();
+    renderConnectorsSettings();
     await openGrants();
 
     expect(await screen.findByText('api.linear.app')).toBeTruthy();
@@ -880,7 +888,7 @@ describe('AgentRail — "Granted by you"', () => {
       rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: true });
-    renderRail();
+    renderConnectorsSettings();
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
@@ -910,7 +918,7 @@ describe('AgentRail — "Granted by you"', () => {
       rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: false });
-    renderRail();
+    renderConnectorsSettings();
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
@@ -922,7 +930,7 @@ describe('AgentRail — "Granted by you"', () => {
       rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
     );
     revokeMock.mockRejectedValue(new Error('boom'));
-    renderRail();
+    renderConnectorsSettings();
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
@@ -939,7 +947,7 @@ describe('AgentRail — "Granted by you"', () => {
         },
       }),
     );
-    renderRail();
+    renderConnectorsSettings();
     await openGrants();
 
     await screen.findByText('api.linear.app');
@@ -990,10 +998,10 @@ describe('AgentRail — "This week"', () => {
   });
 });
 
-describe('AgentRail — a rail that would not load', () => {
+describe('AgentSettings — permissions that would not load', () => {
   it('drops the rail rather than showing stale claims beside an error', async () => {
     railMock.mockRejectedValue(new Error('workspace /rail → 500'));
-    const { container } = renderRail();
+    const { container } = renderConnectorsSettings();
     await openPermissions();
 
     await waitFor(() => {

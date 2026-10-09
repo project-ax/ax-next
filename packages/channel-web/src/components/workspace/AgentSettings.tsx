@@ -90,7 +90,7 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
   connectors: {
     label: 'Connectors',
     Icon: Plug,
-    // The Connectors list heads its own sections (TASK-738).
+    // Connectors supplies visible guidance alongside its Add action.
     description: () => null,
     summary: (name) => `Tools ${name} can work in`,
   },
@@ -351,11 +351,7 @@ function SettingsEmpty({
   );
 }
 
-/**
- * The rail's Connectors tab, unchanged, until its own card moves it here for
- * real. Mounted only while the section is open, so the rail read it rides on
- * is made only when someone is looking.
- */
+/** Mount the connector manager only while its settings section is open. */
 function ConnectorsSection({ agent, busy }: { agent: AgentDetail['agent']; busy: boolean }) {
   const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id, agent.state, busy);
   const { revoking, notice, onRevoke } = useGrantRevoke(revoke);
