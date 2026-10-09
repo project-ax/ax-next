@@ -63,6 +63,7 @@ vi.mock('@/lib/workspace-api', async () => {
       // agent's Connectors list. Each test that cares sets its own answer;
       // `beforeEach` resets it to "nothing is unsigned".
       connectors: vi.fn(),
+      abilities: vi.fn(async () => ({ abilities: { webSearch: true, readPages: true, runCode: true } })),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
@@ -1388,7 +1389,7 @@ describe('a first message whose committed turn is already in the re-read (TASK-6
 });
 
 describe('a reply that could not start because a connector sign-in expired (TASK-796)', () => {
-  it('offers Open Connectors, which routes to the Connectors tab', async () => {
+  it('offers Open Connectors, which routes to the Connectors settings section', async () => {
     agentMock.mockResolvedValue(detail());
     sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
     streamMock.mockImplementation(
@@ -1402,15 +1403,15 @@ describe('a reply that could not start because a connector sign-in expired (TASK
         );
       },
     );
-    const onTab = vi.fn();
-    renderView({ onTab });
+    const onSettingsSection = vi.fn();
+    renderView({ onSettingsSection });
     const box = await screen.findByPlaceholderText('Message Quill');
     fireEvent.change(box, { target: { value: 'check my inbox' } });
     fireEvent.keyDown(box, { key: 'Enter' });
 
     expect(await screen.findByText(/needs you to sign in again/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
-    expect(onTab).toHaveBeenCalledWith('connectors');
+    expect(onSettingsSection).toHaveBeenCalledWith('connectors');
     // The strip stays, so Resend is still there once they are signed in.
     expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
   });
@@ -1462,7 +1463,7 @@ describe('an SSE error frame, through to the Open Connectors action (TASK-802)',
   }
 
   /** Send a message and let the stream answer with the frames given. */
-  async function sendWithStreamedFrames(frames: unknown[], onTab = vi.fn()) {
+  async function sendWithStreamedFrames(frames: unknown[], onSettingsSection = vi.fn()) {
     const real = await vi.importActual<typeof import('@/lib/workspace-api')>(
       '@/lib/workspace-api',
     );
@@ -1476,15 +1477,15 @@ describe('an SSE error frame, through to the Open Connectors action (TASK-802)',
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    renderView({ onTab });
+    renderView({ onSettingsSection });
     const box = await screen.findByPlaceholderText('Message Quill');
     fireEvent.change(box, { target: { value: 'check my inbox' } });
     fireEvent.keyDown(box, { key: 'Enter' });
-    return { fetchMock, onTab };
+    return { fetchMock, onSettingsSection };
   }
 
-  it('connector-needs-reconnect: the sentence renders and Open Connectors routes to the tab', async () => {
-    const { fetchMock, onTab } = await sendWithStreamedFrames([
+  it('connector-needs-reconnect: the sentence renders and Open Connectors routes to settings', async () => {
+    const { fetchMock, onSettingsSection } = await sendWithStreamedFrames([
       { reqId: 'r1', error: 'connector-needs-reconnect' },
     ]);
 
@@ -1494,7 +1495,7 @@ describe('an SSE error frame, through to the Open Connectors action (TASK-802)',
     expect(screen.queryByText(/connector-needs-reconnect/)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
-    expect(onTab).toHaveBeenCalledWith('connectors');
+    expect(onSettingsSection).toHaveBeenCalledWith('connectors');
   });
 
   /*
@@ -1572,15 +1573,15 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
     expect(screen.queryByText(/didn’t finish/)).toBeNull();
   });
 
-  it('Open Connectors routes to the Connectors tab', async () => {
+  it('Open Connectors routes to the Connectors settings section', async () => {
     agentMock.mockResolvedValue(detail());
     connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
-    const onTab = vi.fn();
-    renderView({ onTab });
+    const onSettingsSection = vi.fn();
+    renderView({ onSettingsSection });
 
     await screen.findByText(SENTENCE);
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
-    expect(onTab).toHaveBeenCalledWith('connectors');
+    expect(onSettingsSection).toHaveBeenCalledWith('connectors');
   });
 
   it('Dismiss hides it', async () => {
@@ -1705,7 +1706,7 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
     expect(await screen.findByText(SENTENCE)).toBeTruthy();
   });
 
-  it('reads the list again when the person comes back from another tab', async () => {
+  it('reads the list again when the person comes back from Connectors settings', async () => {
     agentMock.mockResolvedValue(detail());
     connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
     const props = {
@@ -1725,10 +1726,10 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
       version: 0,
       onChanged: vi.fn(),
     };
-    const view = render(<AgentView {...props} tab="connectors" />);
-    await screen.findByText(SENTENCE);
+    const view = render(<AgentView {...props} tab="chat" settingsSection="connectors" onSettingsSection={vi.fn()} />);
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalled());
 
-    // They sign in on the Connectors tab, then go back to the chat.
+    // They sign in in Connectors settings, then go back to the chat.
     connectorsMock.mockResolvedValue(connectorsRead([]));
     view.rerender(<AgentView {...props} tab="chat" />);
 

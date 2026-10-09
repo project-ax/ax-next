@@ -1,73 +1,7 @@
-/**
- * The agent's connector list (TASK-739, connectors-rail slice 6; menu reworked
- * in slice 3 of agent-owned sign-ins).
- *
- * "Connectors <n>", then one card of rows. A row is the connector's name and a
- * `⋯` menu — nothing else (product owner's call: no icon tiles, no tool-count
- * subtitle).
- *
- * THE MENU. Since slice 3 the account a connector acts as belongs to the
- * agent, and whoever may choose it — a personal agent's owner, a team agent's
- * team admin (`canSetAccount`) — gets:
- *
- *   - **Sign in again**, first, only on a row that needs it: its sign-in
- *     expired (`needs-reconnect`) — or **Sign in** when it was never signed
- *     in (`setup: 'sign-in'`). A dialog
- *     around the OAuth widget, which opens the popup as a `sign-in-again` on
- *     THIS agent: it replaces the agent's sign-in and leaves the connector,
- *     and what this agent may do with its tools, as they are. On a team agent
- *     the widget asks first — everyone using the agent acts as the signer.
- *   - **Add key**, only on a row whose agent key is missing
- *     (`setup: 'add-key'`) — a personal agent's too, and an OAuth connector's
- *     header key after its sign-in. The key form (`AgentKeyDialog`), saved
- *     with `PUT …/key`. Replacing a key that works is Remove, then Add.
- *   - **Edit** — the in-rail details view (`ConnectorDetails`): per-tool
- *     Allow / Ask first / Deny for THIS agent. Never the connector's own
- *     settings: those are a workspace admin's, in Admin › Connectors.
- *   - **Remove from <agent>** — destructive, behind a confirmation. It takes
- *     the connector off THIS agent and deletes this agent's sign-in and keys
- *     for it; the connector, and every other agent using it, stay as they are.
- *
- * Remove follows the server's `removable` (TASK-798: a team agent's owner, or
- * a workspace admin; the agent's owner on a personal agent) — so a workspace
- * admin who is not the team's admin may remove a connector but not sign the
- * team in. Everyone else is a member, who sees who the agent acts as and has
- * no actions: no Sign in again, no Add key, no Remove — only **Edit**, the
- * same view (editable within the TASK-809 ceiling, so not "View details").
- * Every write asks the server again.
- *
- * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
- * whose server could not be reached gets ONE red `CircleAlert` right after its
- * name — no inline error text (product owner's call). The reason ("Your
- * sign-in expired" / "Team sign-in expired" / "Can’t reach it") is the icon's
- * accessible name and its tooltip, which opens on hover AND keyboard focus;
- * someone who can't sign in again is told who can. Health is read from stored
- * state; drawing the list never probes anything. An unreachable row offers no
- * fix: the next check (a session, or the details view) tries again.
- *
- * A connector nobody has set up yet (TASK-795, health `needs-sign-in`) is not
- * broken, so its icon is the same `CircleAlert` in muted grey, never red. The
- * row's `setup` picks the reason ("Not signed in yet" / "No key added yet" /
- * "Needs a key from a workspace admin" / "Ask the agent’s owner to set it
- * up") and the fix; the details view offers the same button beside the same
- * word.
- *
- * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
- * share a name) wears the same icon, reason "Couldn’t load it". Signing in
- * again cannot fix that, so it isn't offered; the tooltip points at the fix:
- * Admin › Connectors for a workspace admin, else asking one.
- *
- * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
- * subview (`AddConnector`); the Connectors tab swaps it in for this list.
- *
- * Which connector's details are open is the tab's state (`viewing`), because
- * the subview replaces the whole tab, "Other abilities" included. The
- * subview's `⋯` is this same menu minus Edit (the subview IS it), and the
- * dialogs stay mounted across the switch, so a sign-in started from either
- * view is never cut off.
- */
+/** Agent connector management in Settings: list, details, sign-in, keys and removal. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
+  ChevronRight,
   CircleAlert,
   KeyRound,
   LogIn,
@@ -79,7 +13,7 @@ import {
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -351,7 +285,7 @@ export function AgentConnectors({
         />
       ) : (
       <>
-      <ConnectorsHeader count={count} onAdd={addable} />
+      <ConnectorsHeader name={name} count={count} onAdd={addable} />
       {status === 'ok' && !connectorsSupported && <ConnectorsUnsupported name={name} />}
       {status === 'loading' && (
         <div className="flex flex-col gap-3" aria-busy="true">
@@ -370,24 +304,50 @@ export function AgentConnectors({
         <NoConnectors name={name} onAdd={addable} manageable={manageable} />
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
-        <Card className="shadow-none">
+        <Card className="overflow-hidden p-0 shadow-none">
+          <CardContent className="p-0">
           {connectors.map((row, i) => (
             <Fragment key={row.id}>
               {i > 0 && <Separator />}
-              <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
-                <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <ConnectorName id={row.id} name={row.name} account={row.signedIn?.account ?? null} />
-                  {row.health !== 'ok' && (
-                    <HealthIcon
-                      reason={healthReason(row, canSetAccount, isAdmin)}
-                      tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
-                    />
-                  )}
-                </div>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <AccountTooltip account={row.signedIn?.account ?? null}>
+                <Button
+                  variant="ghost"
+                  type="button"
+                  aria-label={`Edit ${row.name}`}
+                  aria-describedby={row.signedIn?.account ? `connector-account-${row.id}` : undefined}
+                  onClick={() => onView?.(row.id)}
+                  disabled={onView === undefined}
+                  className="h-auto min-h-11 min-w-0 flex-1 justify-start gap-3 whitespace-normal px-1 py-2 text-left"
+                >
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
+                    <Plug aria-hidden="true" />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <ConnectorName id={row.id} name={row.name} account={row.signedIn?.account ?? null} />
+                    <span className="truncate text-[12px] text-muted-foreground">
+                      {row.health === 'ok' ? 'Ready to use' : healthReason(row, canSetAccount, isAdmin)}
+                    </span>
+                  </span>
+                  <ChevronRight data-icon="inline-end" aria-hidden="true" />
+                </Button>
+                </AccountTooltip>
+                {row.health !== 'ok' && (
+                  <HealthIcon
+                    reason={healthReason(row, canSetAccount, isAdmin)}
+                    tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
+                  />
+                )}
+                {canSetAccount && needsSignIn(row) && (
+                  <Button variant="outline" size="sm" onClick={() => onSignInAgain(row)} className="min-h-11 shrink-0">
+                    {signInLabelFor(row)}
+                  </Button>
+                )}
                 {menuFor(row, true)}
               </div>
             </Fragment>
           ))}
+          </CardContent>
         </Card>
       )}
       </>
@@ -525,32 +485,25 @@ function accountChanged(was: string | null, now: string | null): ReactNode {
   );
 }
 
-/** "Connectors <n>" and "+ Add" (TASK-740). */
+/** Visible section guidance and its primary action. The page owns the heading. */
 function ConnectorsHeader({
+  name,
   count,
   onAdd,
 }: {
+  name: string;
   count: number | null;
   onAdd: (() => void) | undefined;
 }) {
   return (
-    <div className="mb-2.5 flex items-center gap-1.5">
-      <h3 className="flex flex-1 items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
-        Connectors
-        {count !== null && count > 0 && (
-          <span className="tabular-nums">{count}</span>
-        )}
-      </h3>
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <p className="max-w-[65ch] flex-1 text-[13px] leading-relaxed text-muted-foreground">
+        Tools {name} can work in for you. Open one to choose which actions it can take on its own.
+      </p>
       {onAdd !== undefined && count !== null && count > 0 && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onAdd}
-          className="-my-1 h-7 gap-1 px-2 text-[12px]"
-        >
-          <Plus aria-hidden="true" />
-          Add
+        <Button type="button" size="sm" onClick={onAdd} className="min-h-11 shrink-0">
+          <Plus data-icon="inline-start" aria-hidden="true" />
+          Add connector
         </Button>
       )}
     </div>
@@ -603,40 +556,34 @@ function NoConnectors({
 /**
  * A row's name (slice 4). Which account the agent signed in as stays off the
  * row so the list is easy to scan: the bare account shows in a tooltip on
- * hover or keyboard focus (and atop the row menu), and screen readers hear
+ * hover or keyboard focus of the row button (and atop the row menu), and screen readers hear
  * ", signed in as …" with the name. A row with no recorded
- * account is plain text, with no tooltip and no tab stop.
+ * account is plain text with no tooltip; the details button remains keyboard reachable.
  * Provider text: text nodes only, never markup; `bdi` so a right-to-left
  * account can't reorder what's around it.
  */
-function ConnectorName({ id, name, account }: { id: string; name: string; account: string | null }) {
-  if (account === null) {
-    return (
-      <span data-testid={`connector-name-${id}`} className="min-w-0 truncate text-[13px]">
-        {name}
-      </span>
-    );
-  }
+function AccountTooltip({ account, children }: { account: string | null; children: React.ReactElement }) {
+  if (account === null) return children;
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            data-testid={`connector-name-${id}`}
-            tabIndex={0}
-            className="min-w-0 truncate rounded-sm text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {name}
-            <span className="sr-only">
-              , signed in as <bdi>{account}</bdi>
-            </span>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top">
-          <bdi>{account}</bdi>
-        </TooltipContent>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="top"><bdi>{account}</bdi></TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  );
+}
+
+function ConnectorName({ id, name, account }: { id: string; name: string; account: string | null }) {
+  return (
+    <span data-testid={`connector-name-${id}`} className="min-w-0 truncate text-[13px] font-medium">
+      {name}
+      {account !== null && (
+        <span id={`connector-account-${id}`} className="sr-only">
+          , signed in as <bdi>{account}</bdi>
+        </span>
+      )}
+    </span>
   );
 }
 

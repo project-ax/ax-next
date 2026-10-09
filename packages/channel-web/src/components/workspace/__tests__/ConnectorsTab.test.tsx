@@ -8,7 +8,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
-import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -53,7 +53,7 @@ function detail(): AgentDetail {
 
 function renderTab() {
   return render(
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />,
+    <AgentSettings agent={detail().agent} section="connectors" onSection={vi.fn()} onBack={vi.fn()} compact startOnList={false} busy={false} instructions={null} memory={null} />,
   );
 }
 
@@ -67,16 +67,12 @@ beforeEach(() => {
 });
 
 describe('Connectors tab shell', () => {
-  it('is the Plug tab named "Connectors", with no visible panel title', async () => {
+  it('shows Connectors in settings, with visible guidance and built-in abilities', async () => {
     renderTab();
-    const tab = screen.getByRole('tab', { name: 'Connectors' });
-    expect(tab).toHaveAttribute('data-state', 'active');
-    expect(tab.querySelector('svg.lucide-plug')).not.toBeNull();
-    // The old tab is gone, by name.
-    expect(screen.queryByRole('tab', { name: 'What it may do alone' })).toBeNull();
-    // The heading outline keeps an h2, but nobody sees it.
-    const h2 = screen.getByRole('heading', { level: 2, name: 'Connectors' });
-    expect(h2.className).toContain('sr-only');
+    expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'Connectors' })).not.toHaveClass('sr-only');
+    expect(await screen.findByText('Tools Quill can work in for you. Open one to choose which actions it can take on its own.')).not.toHaveClass('sr-only');
+    expect(screen.getByText("Built-in abilities. Turn off anything Quill doesn't need. Fewer abilities means less that can go wrong.")).toBeVisible();
     await sw('Web search');
   });
 
@@ -85,8 +81,8 @@ describe('Connectors tab shell', () => {
     await sw('Web search');
     expect(await screen.findByText(/No connectors yet/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
-    const connectors = screen.getByRole('heading', { level: 3, name: /^Connectors/ });
-    const abilities = screen.getByRole('heading', { level: 3, name: 'Other abilities' });
+    const connectors = screen.getByRole('heading', { level: 1, name: 'Connectors' });
+    const abilities = screen.getByRole('heading', { name: 'What Quill can do' });
     expect(
       connectors.compareDocumentPosition(abilities) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

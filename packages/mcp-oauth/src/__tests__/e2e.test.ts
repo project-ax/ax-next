@@ -698,7 +698,7 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
         .executeTakeFirstOrThrow();
       const { res: cbRes, rec: cbRec } = fakeRes();
       await callback.handler(fakeReq({ query: { code: `code-${agentId}`, state: row.state } }), cbRes);
-      expect(cbRec.redirectUrl).toBe('https://app.example.com/oauth/connected?connector=conn-1&oauth=success');
+      expect(cbRec.redirectUrl).toBe(`https://app.example.com/oauth/connected?connector=conn-1&oauth=success&agentId=${encodeURIComponent(agentId)}`);
     };
     await addOn('agent-A');
     await addOn('agent-B');

@@ -22,7 +22,7 @@ import { workspaceApi, AGENT_KEY_FORBIDDEN, type AgentDetail } from '@/lib/works
 import * as connectorsLib from '@/lib/connectors';
 import type { Connector } from '@/lib/connectors';
 import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
-import { AgentRail } from '../AgentRail';
+import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -136,7 +136,7 @@ function list(connectors: AgentConnectorRow[], over: Partial<AgentConnectorsRead
 
 function renderTab() {
   return render(
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />,
+    <AgentSettings agent={detail().agent} section="connectors" onSection={vi.fn()} onBack={vi.fn()} compact startOnList={false} busy={false} instructions={null} memory={null} />,
   );
 }
 

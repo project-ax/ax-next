@@ -6,12 +6,13 @@
  * opener and closes the popup before React ever mounts. But some providers and
  * some environments (popup blockers, email-link flows) redirect the MAIN window
  * instead. This module handles that case: strip the /oauth/connected params,
- * push a toast, and leave the user on the workspace.
+ * push a toast, and return to the originating agent's connectors settings.
  *
  * Exported as a pure function so it's trivially testable without mounting App.
  * App.tsx calls it once on mount (inside a one-shot useEffect).
  */
 
+import { parseWorkspaceRoute, workspaceRoutePath } from './workspace-route';
 import {
   oauthFailureMessage,
   parseOAuthFailureReason,
@@ -24,6 +25,8 @@ export interface OAuthFullPageResult {
   toast: OAuthFullPageOutcome;
   /** Slice 3 — only on an error, and only one of the four known reasons. */
   reason?: OAuthFailureReason;
+  /** The originating agent's connectors settings, when its id is usable. */
+  returnPath?: string;
 }
 
 export interface OAuthFullPageEnv {
@@ -54,10 +57,21 @@ export function consumeOAuthFullPageReturn(
   const p = new URLSearchParams(env.search);
   const oauth = p.get('oauth');
 
-  if (oauth === 'success') return { toast: 'success' };
+  // Build a fixed local route rather than accepting an arbitrary destination.
+  // Reject empty ids before the lenient parser can drop an empty segment;
+  // the workspace parser owns the remaining validation, including dot ids.
+  const agentId = p.get('agentId');
+  const route = agentId === null || agentId.length === 0 ? null : parseWorkspaceRoute(
+    `/workspace/agents/${encodeURIComponent(agentId)}/settings/connectors`,
+  );
+  const destination = route?.kind === 'agent-settings'
+    ? { returnPath: workspaceRoutePath(route) }
+    : {};
+
+  if (oauth === 'success') return { toast: 'success', ...destination };
   if (oauth === 'error') {
     const reason = parseOAuthFailureReason(p.get('reason'));
-    return reason !== undefined ? { toast: 'error', reason } : { toast: 'error' };
+    return { toast: 'error', ...(reason !== undefined ? { reason } : {}), ...destination };
   }
 
   // Unrecognized or missing oauth param — not a valid callback; don't toast.

@@ -1645,7 +1645,7 @@ describe('mcp-oauth callback route', () => {
     expect(blob.scope).toBe('read write');
 
     expect(state.redirectUrl).toBe(
-      'https://app.example.com/settings/connectors?connector=conn-1&oauth=success',
+      'https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1',
     );
   });
 
@@ -1707,7 +1707,7 @@ describe('mcp-oauth callback route', () => {
         tokens: { id_token: idToken({ email: 'alice@example.com', sub: '1' }) },
         userinfoEndpoint: 'https://auth.example.com/userinfo',
       });
-      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
       expect(out.setArgs).toHaveLength(1);
       expect(out.setArgs[0]!.metadata).toEqual({
         account: 'alice@example.com',
@@ -1746,7 +1746,7 @@ describe('mcp-oauth callback route', () => {
       const out = await runIdentity({});
       expect(out.userinfoIdentity).not.toHaveBeenCalled();
       expect(out.setArgs[0]!.metadata).toEqual({ account: null, signedInBy: 'user-1', signedInAt: SIGNED_AT });
-      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
       expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'none', reason: 'no_id_token' });
     });
 
@@ -1775,7 +1775,7 @@ describe('mcp-oauth callback route', () => {
     it('an identity lookup that THROWS never changes the outcome: success redirect, account null, no reason', async () => {
       const userinfoIdentity = vi.fn(async () => { throw new Error('boom at-123'); });
       const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoIdentity });
-      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
       expect((out.setArgs[0]!.metadata as { account: unknown }).account).toBeNull();
       // Nothing about the identity step (or the token) reaches the logs.
       expect(JSON.stringify([out.logger.warn.mock.calls, out.logger.error.mock.calls, out.logger.info.mock.calls])).not.toContain('at-123');
@@ -2189,7 +2189,7 @@ describe('mcp-oauth callback route', () => {
       res,
     );
     expect(state.redirectUrl).toBe(
-      `https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=${reason}`,
+      `https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=${reason}&agentId=agent-1`,
     );
     expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
     expect(attachSpy).not.toHaveBeenCalled();
@@ -2303,7 +2303,7 @@ describe('mcp-oauth callback route', () => {
       expect(store.markIdentityScopeRefused).toHaveBeenCalledTimes(1);
       expect(store.markIdentityScopeRefused).toHaveBeenCalledWith('agent-1', 'conn-1', 'https://auth.example.com');
       expect(state.redirectUrl).toBe(
-        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed',
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed&agentId=agent-1',
       );
     });
 
@@ -2604,6 +2604,33 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).not.toContain('/settings/connectors');
   });
 
+  it.each(['success', 'error'] as const)('returns the stored agent id on %s, ignoring request redirect input', async (outcome) => {
+    const agentId = 'agent/name #?';
+    const store = storeWithPending({ ...pending, agentId });
+    const { deps } = makeCbDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:set': () => {},
+    }, { store });
+    deps.config.connectorReturnPath = '/oauth/connected';
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(fakeReq({ query: {
+      state: 'STATE0',
+      ...(outcome === 'success' ? { code: 'auth-code' } : { error: 'access_denied' }),
+      agentId: 'attacker-agent',
+      returnUrl: 'https://evil.example/',
+      returnPath: '/admin',
+    } }), res);
+    const target = new URL(state.redirectUrl!);
+    expect(target.origin).toBe('https://app.example.com');
+    expect(target.pathname).toBe('/oauth/connected');
+    expect(target.searchParams.get('agentId')).toBe(agentId);
+    expect(target.searchParams.get('oauth')).toBe(outcome);
+    expect(target.searchParams.has('returnUrl')).toBe(false);
+    expect(target.searchParams.has('returnPath')).toBe(false);
+    if (outcome === 'error') expect(target.searchParams.get('reason')).toBe('cancelled');
+  });
+
   // --- Slice 3: an Add signs in and attaches together, or leaves nothing ---
 
   describe('Add: the callback attaches the connector, or deletes the token it just wrote', () => {
@@ -2666,7 +2693,7 @@ describe('mcp-oauth callback route', () => {
       });
       expect(out.store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'agent', agentId: 'agent-1' }, 'conn-1');
       expect(out.deleteSpy).not.toHaveBeenCalled();
-      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
     });
 
     it.each([
@@ -2679,7 +2706,7 @@ describe('mcp-oauth callback route', () => {
       expect(out.order).toEqual(['set', 'attach', 'delete']);
       expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
       expect(out.state.redirectUrl).toBe(
-        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed',
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed&agentId=agent-1',
       );
       expect(out.logger.warn).toHaveBeenCalledWith(
         'mcp_oauth_add_attach_failed',
@@ -2697,7 +2724,7 @@ describe('mcp-oauth callback route', () => {
       });
       expect(out.deleteSpy).toHaveBeenCalledTimes(1);
       expect(out.state.redirectUrl).toBe(
-        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed',
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed&agentId=agent-1',
       );
       expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
       expect(out.logger.error).toHaveBeenCalledWith(
@@ -2716,7 +2743,7 @@ describe('mcp-oauth callback route', () => {
       expect(out.attachSpy).not.toHaveBeenCalled();
       expect(out.calls.map((c) => c.hook)).not.toContain('agents:attach-connector');
       expect(out.order).toEqual(['set', 'clear']);
-      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
     });
 
     describe('re-check: the agent gate is asked again, as the signer, before anything else', () => {
@@ -2732,7 +2759,7 @@ describe('mcp-oauth callback route', () => {
       it('SECURITY: the agent was deleted (agents:resolve rejects) → reason=not-allowed; no connector read, no token exchange, no write, no attach', async () => {
         const out = await run({ stubs: { 'agents:resolve': () => rejectThrow('agent not found') } });
         expect(out.state.redirectUrl).toBe(
-          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed',
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed&agentId=agent-1',
         );
         expect(out.calls.map((c) => c.hook)).not.toContain('connectors:get');
         expect(out.flow.redeemCode).not.toHaveBeenCalled();
@@ -2757,7 +2784,7 @@ describe('mcp-oauth callback route', () => {
       ])('SECURITY: team agent, %s → reason=not-allowed; no token exchange, no write, no attach', async (_label, stubs) => {
         const out = await run({ stubs: { 'agents:resolve': () => TEAM_AGENT, ...stubs } });
         expect(out.state.redirectUrl).toBe(
-          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed',
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed&agentId=agent-1',
         );
         expect(out.flow.redeemCode).not.toHaveBeenCalled();
         expect(out.setSpy).not.toHaveBeenCalled();

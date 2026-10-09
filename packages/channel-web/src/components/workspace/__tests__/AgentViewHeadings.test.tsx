@@ -43,6 +43,7 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       agent: vi.fn(),
+      connectors: vi.fn(async () => ({ connectors: [], shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true })),
       // The rail reads its own route — without it the chat tab throws before
       // this file's subject renders at all.
       rail: vi.fn(async () => railFixture()),
@@ -130,7 +131,7 @@ describe('AgentView heading outline', () => {
     THE CARD'S HEADLINE DEFECT, on every tab. Before the fix this array was
     empty on all four — the assertion that fails first, and loudest.
   */
-  for (const tab of ['activity', 'chat', 'files', 'memory', 'connectors'] as const) {
+  for (const tab of ['activity', 'chat', 'files', 'memory'] as const) {
     it(`gives the ${tab} tab an outline with no skipped levels and exactly one h1`, async () => {
       renderView({ tab });
 
@@ -164,33 +165,18 @@ describe('AgentView heading outline', () => {
     );
   });
 
-  /*
-    The tab strip is the panel's visible label, so the panel heading is
-    `sr-only` — which is a STYLING decision and lives in `className`. The
-    element is a real `h2`: a `div` with `role="heading"` would be the same tree
-    with worse support, and leaving it out would leave the rail's `h3`s hanging
-    off the page title two levels up.
-  */
-  it('names the open panel and the rail, and hangs the rail sections off the rail', async () => {
-    renderView({ tab: 'connectors' });
-    // The rail arrives on its own read; wait for one of its sections by TEXT,
-    // which is there before the fix as well as after, so the wait itself never
-    // becomes the thing under test.
+  it('keeps the settings Connectors section and abilities in the heading outline', async () => {
+    renderView({ settingsSection: 'connectors', onSettingsSection: vi.fn() });
     await screen.findByText('Granted by you');
 
-    // "Connectors" has no VISIBLE title (TASK-738) — the h2 is still there.
-    expect(headingOutline().slice(0, 3)).toEqual([
-      'h1: Quill',
-      'h2: Conversation',
-      'h2: Connectors',
-    ]);
-    // The rail's own sections — `SectionLabel`, now an `h3`. At least one, so
-    // this cannot pass on a rail that rendered nothing.
-    const railSections = screen.getAllByRole('heading', { level: 3 });
-    expect(railSections.length).toBeGreaterThan(0);
-    const labels = railSections.map((h) => h.textContent ?? '');
-    expect(labels).toContain('Other abilities');
-    // The group's h3 wraps its disclosure button, which carries the count.
+    const page = screen.getByRole('heading', { level: 1, name: 'Quill settings' }).closest('div.overflow-y-auto')!;
+    // The conversation stays mounted and hidden to preserve its composer.
+    // Its headings are outside this page and outside the accessible tree.
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(headingOutline(page).slice(0, 2)).toEqual(['h1: Quill settings', 'h2: Connectors']);
+    expect(headingOutlineProblems(page)).toEqual([]);
+    const labels = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent ?? '');
+    expect(labels).toContain('What Quill can do');
     expect(labels.some((l) => l.startsWith('Granted by you'))).toBe(true);
   });
 

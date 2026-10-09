@@ -45,6 +45,47 @@ describe('consumeOAuthFullPageReturn', () => {
     ).toEqual({ toast: 'error' });
   });
 
+  it.each(['success', 'error'] as const)('returns to the originating agent connectors after %s', (oauth) => {
+    expect(consumeOAuthFullPageReturn({
+      pathname: '/oauth/connected',
+      search: `?oauth=${oauth}&agentId=agent-1`,
+      hasOpener: false,
+    })).toEqual({ toast: oauth, returnPath: '/workspace/agents/agent-1/settings/connectors' });
+  });
+
+  it('encodes the agent as one route segment and preserves known failure reasons', () => {
+    expect(consumeOAuthFullPageReturn({
+      pathname: '/oauth/connected',
+      search: '?oauth=error&reason=cancelled&agentId=agent%2Fname%20%23%3F',
+      hasOpener: false,
+    })).toEqual({
+      toast: 'error',
+      reason: 'cancelled',
+      returnPath: '/workspace/agents/agent%2Fname%20%23%3F/settings/connectors',
+    });
+  });
+
+  it.each(['', '.', '..'])('rejects an unusable agent id %j', (agentId) => {
+    expect(consumeOAuthFullPageReturn({
+      pathname: '/oauth/connected',
+      search: `?oauth=success&agentId=${encodeURIComponent(agentId)}`,
+      hasOpener: false,
+    })).toEqual({ toast: 'success' });
+  });
+
+  it('ignores arbitrary return targets and keeps malicious-looking ids in one segment', () => {
+    expect(consumeOAuthFullPageReturn({
+      pathname: '/oauth/connected',
+      search: '?oauth=success&returnUrl=https%3A%2F%2Fevil.example%2F&returnPath=%2Fadmin',
+      hasOpener: false,
+    })).toEqual({ toast: 'success' });
+    expect(consumeOAuthFullPageReturn({
+      pathname: '/oauth/connected',
+      search: '?oauth=success&agentId=..%2F..%2Fadmin',
+      hasOpener: false,
+    })).toEqual({ toast: 'success', returnPath: '/workspace/agents/..%2F..%2Fadmin/settings/connectors' });
+  });
+
   it('returns null for an unrecognized oauth param value', () => {
     expect(
       consumeOAuthFullPageReturn({

@@ -6,7 +6,6 @@ import {
   MessageSquare,
   MoreHorizontal,
   PanelRight,
-  Plug,
   Plus,
   Settings,
 } from 'lucide-react';
@@ -50,7 +49,6 @@ import {
   StateDot,
   stateWord,
 } from './bits';
-import { ConnectorsTab } from './ConnectorsTab';
 import { IconTooltip } from './IconTooltip';
 
 export const RAIL_TABS = {
@@ -58,7 +56,6 @@ export const RAIL_TABS = {
   chat: { label: 'Conversations', Icon: MessageSquare },
   memory: { label: 'Memory', Icon: Lightbulb },
   files: { label: 'Files', Icon: Folder },
-  connectors: { label: 'Connectors', Icon: Plug },
 } satisfies Record<AgentTab, { label: string; Icon: typeof Activity }>;
 
 interface Props {
@@ -89,8 +86,7 @@ interface Props {
  *
  * Owned by the PANEL that draws the list, never by a row — a successful
  * revoke removes the row, and a row-owned notice would unmount with it
- * (TASK-406). Shared by the rail's Connectors tab and the settings page's
- * Connectors section, so the two say the same words.
+ * (TASK-406). Used by the settings page's Connectors section.
  */
 export function useGrantRevoke(
   revoke: (ref: GrantRef) => Promise<'revoked' | 'already-gone' | 'failed'>,
@@ -150,10 +146,9 @@ export function AgentRailContent({
   onOpenSettings,
 }: Props) {
   const { agent, past } = detail;
-  const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id, agent.state, busy);
+  const { rail, loading, error } = useAgentRail(agent.id, agent.state, busy);
   const [localTab, setLocalTab] = useState<AgentTab>(tab);
   const active = onTab ? tab : localTab;
-  const { revoking, notice, onRevoke } = useGrantRevoke(revoke);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [editing, setEditing] = useState<{
@@ -345,25 +340,8 @@ export function AgentRailContent({
           forceMount
           className="mt-0 flex min-h-0 flex-1 flex-col"
         >
-          {/*
-            The Connectors tab has no visible title (product decision,
-            TASK-738): its sections say what they are. The h2 stays for the
-            heading outline, so the rail's h3s still hang off it.
-          */}
-          <div
-            className={cn(
-              'flex h-12 shrink-0 items-center gap-2 px-4',
-              active === 'connectors' && 'h-4',
-            )}
-          >
-            <h2
-              className={cn(
-                'text-[14px] font-semibold',
-                active === 'connectors' && 'sr-only',
-              )}
-            >
-              {RAIL_TABS[active].label}
-            </h2>
+          <div className="flex h-12 shrink-0 items-center gap-2 px-4">
+            <h2 className="text-[14px] font-semibold">{RAIL_TABS[active].label}</h2>
             {count && (
               <span className="text-[12px] text-muted-foreground">{count}</span>
             )}
@@ -493,19 +471,6 @@ export function AgentRailContent({
                 </>
               )}
               {active === 'files' && panels?.files}
-              {active === 'connectors' && (
-                <ConnectorsTab
-                  agentId={agent.id}
-                  name={agent.name}
-                  rail={rail}
-                  loading={loading}
-                  error={error}
-                  revoking={revoking}
-                  notice={notice}
-                  onRevoke={onRevoke}
-                  onConnectorsChanged={refresh}
-                />
-              )}
             </div>
           </CompactSurfaceContext.Provider>
         </TabsContent>

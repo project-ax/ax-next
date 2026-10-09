@@ -1,5 +1,5 @@
 /**
- * One connector, in the rail (TASK-742, connectors-rail slice 9; Figma frame 3).
+ * One connector in the agent settings content column.
  *
  * "‹ Connectors" back + `⋯`, the connector's name and whether it answered,
  * then "What <agent> may do · N tools": every tool with an Allow / Ask first /
@@ -182,7 +182,7 @@ export function ConnectorDetails({
     onHealthStale?.();
   }, [data, row.health, onHealthStale]);
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
         <Button
           type="button"
@@ -237,27 +237,11 @@ export function ConnectorDetails({
         )}
       </div>
 
-      {/*
-        Pinned: the tool list can be long, and these two should not scroll
-        away with it. Sticky inside the rail's own scroll area, on the page
-        background so rows passing under it don't show through.
-
-        TASK-761 — that scroll area has `pb-5`, and a sticky box stops at the
-        scroller's padding edge, so `bottom-0` pinned this 20px ABOVE the
-        rail's bottom and rows scrolled past underneath it (measured on the
-        TASK-743 walk). `-bottom-5` + `-mb-5` put its edge on the rail's edge
-        in both the scrolling and the short case; `pb-8` (py-3 + those 20px)
-        paints the strip; `z-10` keeps the segmented controls' focus layer
-        under it. Keep the 5s in step with the rail scroller's padding.
-
-        TASK-798 — with nothing to offer, there is no footer at all rather
-        than an empty strip. Remove is hidden, not drawn disabled, for anyone
-        who may not remove it (on a team agent: not its owner, not an admin).
-      */}
+      {/* The wider settings column keeps removal in the content flow. */}
       {row.removable && (
       <div
         data-testid="connector-details-footer"
-        className="sticky -bottom-5 z-10 -mx-1 -mb-5 mt-4 flex items-center justify-end gap-2 border-t border-border bg-background px-1 pb-8 pt-3"
+        className="mt-6 flex items-center justify-end gap-2 border-t border-border py-4"
       >
         {(
           <Button

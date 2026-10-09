@@ -1596,6 +1596,13 @@ export function AgentView({
         ? 'failed'
         : shownRead;
 
+  function openSettings(section?: AgentSettingsSection) {
+    // Generic Settings opens the phone index; named links drill in directly.
+    setSettingsListRequested(section === undefined);
+    setRailOpen(false);
+    onSettingsSection?.(section ?? DEFAULT_SETTINGS_SECTION);
+  }
+
   const railProps = {
     detail, learned: learnedBlock, openPastId: pastId, tab, onTab,
     counts: { memory: memoryCount, files: fileCount },
@@ -1623,12 +1630,7 @@ export function AgentView({
     },
     ...(onSettingsSection
       ? {
-          onOpenSettings: (section?: AgentSettingsSection) => {
-            // Generic Settings opens the phone index; explicit links drill in.
-            setSettingsListRequested(section === undefined);
-            setRailOpen(false);
-            onSettingsSection(section ?? DEFAULT_SETTINGS_SECTION);
-          },
+          onOpenSettings: openSettings,
         }
       : {}),
   };
@@ -1709,8 +1711,8 @@ export function AgentView({
                 chat." A connector never signed in to is skipped for the turn,
                 not a reason to refuse it; this says so, on every tab (the
                 thread is beside the rail), never blocks the composer, and
-                reads the SAME list the Connectors tab draws. It is about the
-                CURRENT chat, so it steps aside (staying mounted, so a
+                reads the same list the Connectors settings section draws.
+                It is about the CURRENT chat, so it steps aside (staying mounted, so a
                 dismissal survives) while a past conversation is open. It
                 re-reads when a turn ends and when the tab changes — signing in
                 on Connectors clears it on the way back.
@@ -1718,7 +1720,7 @@ export function AgentView({
               <SkippedConnectorsNotice
                 agentId={agentId}
                 refreshKey={`${turnsEnded}:${tab}:${settingsSection ?? 'chat'}`}
-                onOpenConnectors={() => onTab('connectors')}
+                onOpenConnectors={() => openSettings('connectors')}
                 suppressed={past !== null}
               />
               {turnError !== null && !past && (
@@ -1814,8 +1816,8 @@ export function AgentView({
                         )}
                         {/*
                           TASK-796 — the sentence says "Open Connectors", so
-                          the strip does it: the tab where the connector's row
-                          carries Sign in / Reconnect. The strip stays up, so
+                          the strip opens its settings section, where the
+                          connector's row carries Sign in / Reconnect. The strip stays up, so
                           Resend is still here after they come back signed in.
                         */}
                         {turnError.opensConnectors === true &&
@@ -1823,7 +1825,7 @@ export function AgentView({
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => onTab('connectors')}
+                            onClick={() => openSettings('connectors')}
                           >
                             Open Connectors
                           </Button>
