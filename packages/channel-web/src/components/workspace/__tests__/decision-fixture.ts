@@ -22,6 +22,7 @@ export function decisionFixture(over: Partial<Decision> = {}): Decision {
     kind: 'action',
     attendance: 'unattended',
     status: 'pending',
+    approvalScopes: ['once'],
     irreversible: false,
     freshness: {
       kind: 'slot-etag',

@@ -128,7 +128,6 @@ describe('AgentSettings — desktop', () => {
       "Picking a model just for Quill isn't here yet. Until it is, Quill uses whatever model your admin set for the whole workspace.",
     ],
     ['skills', 'Nothing installed yet', null],
-    ['routines', 'Nothing scheduled yet', null],
   ] as const)('says the %s section is empty, honestly, with no controls', (section, title, body) => {
     render(<Harness initial={section} />);
     const empty = document.querySelector('[data-slot="empty"]');
@@ -140,6 +139,14 @@ describe('AgentSettings — desktop', () => {
     expect(within(empty as HTMLElement).queryAllByRole('textbox')).toHaveLength(0);
     expect(within(empty as HTMLElement).queryAllByRole('switch')).toHaveLength(0);
     expect(within(empty as HTMLElement).queryAllByRole('combobox')).toHaveLength(0);
+  });
+
+  it('hosts structured routines and permission disclosure in the agent shell', () => {
+    render(<Harness initial="routines" />);
+    expect(screen.getByRole('tab', { name: 'My routines' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Self-improvement' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'New routine' })).toBeVisible();
+    expect(screen.getByLabelText('Loading routine permissions')).toBeVisible();
   });
 
   it('draws the memories list it is given under Memory', () => {

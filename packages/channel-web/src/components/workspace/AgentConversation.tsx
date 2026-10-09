@@ -263,7 +263,7 @@ interface Props {
    * buttons swallow the click is worse than no card, and a default no-op is
    * exactly how one gets added later without anyone noticing.
    */
-  onApprove: (id: string) => void;
+  onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
   onUndo: (id: string) => void;
   /** Rows with a POST in flight. Their controls go quiet, never absent. */
@@ -1037,7 +1037,7 @@ function Message({
   /** See `Props.conversationId` — what turns an attachment path into a URL. */
   conversationId: string | null;
   decisions: Decision[];
-  onApprove: (id: string) => void;
+  onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
   onEdit?: ((id: string, body: string) => Promise<void>) | undefined;
   onUndo: (id: string) => void;
@@ -1353,8 +1353,9 @@ function Message({
       <ThreadApproval>
         <AgentTile agent={agent} size={24} />
         <ApprovalCard
+          agentName={agent.name}
           decision={d}
-          onApprove={() => onApprove(d.id)}
+          onApprove={(scope) => onApprove(d.id, scope)}
           onDismiss={() => onDismiss(d.id)}
           onUndo={() => onUndo(d.id)}
           onEdit={onEdit ? body => onEdit(d.id, body) : undefined}

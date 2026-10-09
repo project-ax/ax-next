@@ -208,6 +208,7 @@ describe.each([
     render(
       <Harness
         resolved={resolvedFixture('executed', {
+          approvalScopes: ['once'],
           irreversible: true,
           pendingUntil: new Date(Date.now() + 10_000).toISOString(),
         })}

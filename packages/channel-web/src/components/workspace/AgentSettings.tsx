@@ -20,7 +20,7 @@
  *   - below `md`: the list of sections first, a tap drills in, and
  *     "Settings" comes back out. Every target is 44px tall.
  *
- * Model, Skills and Routines are honest empty states. There is nothing to
+ * Model and Skills are honest empty states; Routines hosts structured controls. There is nothing to
  * set there yet, so the page says so instead of drawing controls that do
  * nothing (decided 2026-10-08).
  */
@@ -60,6 +60,8 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
+import { useUser } from '@/lib/user-context';
+import { RoutinesTab } from '../routines/RoutinesTab';
 import { ConnectorsTab } from './ConnectorsTab';
 
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
@@ -110,7 +112,7 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
     label: 'Routines',
     Icon: Clock,
     description: (name) => `Work ${name} does on a schedule.`,
-    summary: () => 'Nothing scheduled yet',
+    summary: () => 'Triggers and scheduled work',
   },
 };
 
@@ -120,6 +122,7 @@ export interface AgentSettingsProps {
   onSection: (section: AgentSettingsSection) => void;
   /** Back to this agent's chat — the conversation that was open stays open. */
   onBack: () => void;
+  onViewSkills?: (() => void) | undefined;
   /** Below `md`: the section list first, then one section at a time. */
   compact: boolean;
   /** Generic Settings entry opens the phone index; direct section links drill in. */
@@ -286,7 +289,8 @@ export function AgentSettings(props: AgentSettingsProps) {
   );
 }
 
-function SectionBody({ agent, section, busy, instructions, memory }: AgentSettingsProps) {
+function SectionBody({ agent, section, busy, instructions, memory, onViewSkills }: AgentSettingsProps) {
+  const user = useUser();
   switch (section) {
     case 'instructions':
       return <>{instructions}</>;
@@ -319,13 +323,7 @@ function SectionBody({ agent, section, busy, instructions, memory }: AgentSettin
         />
       );
     case 'routines':
-      return (
-        <SettingsEmpty
-          Icon={Clock}
-          title="Nothing scheduled yet"
-          description={`Scheduling work just for ${agent.name} isn't here yet.`}
-        />
-      );
+      return <RoutinesTab isAdmin={user?.role === 'admin'} agentId={agent.id} agentName={agent.name} onViewSkills={onViewSkills} />;
   }
 }
 

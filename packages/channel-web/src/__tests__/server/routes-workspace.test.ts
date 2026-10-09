@@ -32,7 +32,6 @@ import {
   DECISION_RECEIPT_TAG,
   DECISION_UNRESOLVED_TAG,
   FIRE_NO_SUMMARY,
-  FIRE_UNNAMED_SENTENCE,
   fireLabel,
   fireToActivityEvent,
   makeWorkspaceHandlers,
@@ -127,8 +126,8 @@ function conv(over: Partial<ConvRow> & { conversationId: string }): ConvRow {
 interface FireRowLike {
   id: number;
   agentId: string;
-  path: string;
-  firedAt: Date;
+  routineId: string;
+  firedAt: string;
   triggerSource: 'tick' | 'webhook' | 'manual';
   conversationId: string | null;
   status: 'ok' | 'silenced' | 'error';
@@ -140,7 +139,7 @@ function fire(o: {
   id: number;
   firedAt: string;
   agentId?: string;
-  path?: string;
+  routineId?: string;
   status?: FireRowLike['status'];
   error?: string | null;
   triggerSource?: FireRowLike['triggerSource'];
@@ -148,8 +147,8 @@ function fire(o: {
   return {
     id: o.id,
     agentId: o.agentId ?? 'a1',
-    path: o.path ?? 'daily.md',
-    firedAt: new Date(o.firedAt),
+    routineId: o.routineId ?? 'daily.md',
+    firedAt: o.firedAt,
     triggerSource: o.triggerSource ?? 'tick',
     conversationId: null,
     status: o.status ?? 'ok',
@@ -215,7 +214,7 @@ describe('channel-web agent-workspace BFF', () => {
   /** TASK-498 — `conversations:get`'s host-only display events, per row. */
   let eventsByConversation: Map<string, unknown[]>;
   let fires: FireRowLike[];
-  let routinesByAgent: Map<string, Array<{ path: string; name: string }>>;
+  let routinesByAgent: Map<string, Array<{ routineId: string; name: string }>>;
   let firesReadFailure: Map<string, Error>;
   let receipts: ReceiptRowLike[];
   let receiptsReadFailure: Map<string, Error>;
@@ -260,16 +259,16 @@ describe('channel-web agent-workspace BFF', () => {
         const { agentId, limit, before } = i as {
           agentId: string;
           limit?: number;
-          before?: Date;
+          before?: string;
         };
         const boom = firesReadFailure.get(agentId);
         if (boom !== undefined) throw boom;
         const rows = fires
           .filter((f) => f.agentId === agentId)
           .filter(
-            (f) => before === undefined || f.firedAt.getTime() < before.getTime(),
+            (f) => before === undefined || Date.parse(f.firedAt) < Date.parse(before),
           )
-          .sort((a, b) => b.firedAt.getTime() - a.firedAt.getTime())
+          .sort((a, b) => Date.parse(b.firedAt) - Date.parse(a.firedAt))
           .slice(0, limit ?? 20);
         return { fires: rows };
       },
@@ -280,7 +279,7 @@ describe('channel-web agent-workspace BFF', () => {
       // EVERY agent's routines. A route that forgets to scope the call would
       // silently label one agent's fires with another agent's routine names,
       // so this mock makes that mistake fail here instead of in production.
-      const routines: Array<{ path: string; name: string }> = [];
+      const routines: Array<{ routineId: string; name: string }> = [];
       for (const [id, rows] of routinesByAgent.entries()) {
         if (agentId === undefined || id === agentId) routines.push(...rows);
       }
@@ -334,7 +333,7 @@ describe('channel-web agent-workspace BFF', () => {
     turnsByConversation = new Map<string, unknown[]>();
     eventsByConversation = new Map<string, unknown[]>();
     fires = [];
-    routinesByAgent = new Map<string, Array<{ path: string; name: string }>>();
+    routinesByAgent = new Map<string, Array<{ routineId: string; name: string }>>();
     firesReadFailure = new Map<string, Error>();
     receipts = [];
     receiptsReadFailure = new Map<string, Error>();
@@ -2163,8 +2162,8 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     routinesByAgent.set('a1', [
-      { path: 'daily.md', name: 'Morning digest' },
-      { path: 'watch.md', name: 'Inbox watch' },
+      { routineId: 'daily.md', name: 'Morning digest' },
+      { routineId: 'watch.md', name: 'Inbox watch' },
     ]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'ok' }),
@@ -2174,7 +2173,7 @@ describe('channel-web agent-workspace BFF', () => {
         id: 2,
         firedAt: '2026-08-20T11:00:00.000Z',
         status: 'silenced',
-        path: 'watch.md',
+        routineId: 'watch.md',
       }),
       fire({
         id: 3,
@@ -2196,7 +2195,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('renders an errored fire as a stopped row carrying the real error', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [
       fire({
         id: 1,
@@ -2210,7 +2209,7 @@ describe('channel-web agent-workspace BFF', () => {
       fire({
         id: 2,
         firedAt: '2026-08-20T09:00:00.000Z',
-        path: 'sweep.md',
+        routineId: 'sweep.md',
         status: 'error',
         error: null,
       }),
@@ -2219,7 +2218,7 @@ describe('channel-web agent-workspace BFF', () => {
       fire({
         id: 3,
         firedAt: '2026-08-20T08:00:00.000Z',
-        path: 'sweep.md',
+        routineId: 'sweep.md',
         status: 'error',
         error: '   ',
       }),
@@ -2238,7 +2237,7 @@ describe('channel-web agent-workspace BFF', () => {
     // identifier, so it stands in for the name rather than a guessed label.
     expect(body.events[1]).toMatchObject({
       kind: 'stopped',
-      text: `Ran sweep.md. ${FIRE_NO_SUMMARY}`,
+      text: `Ran Deleted routine. ${FIRE_NO_SUMMARY}`,
     });
     expect(body.events[1]!.detail).toBe('It failed, and no reason was recorded.');
     expect(body.events[2]!.detail).toBe('It failed, and no reason was recorded.');
@@ -2247,7 +2246,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('carries an ISO instant and no server-computed day/time', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T16:12:00.000Z' })];
 
     const h = makeWorkspaceHandlers({ bus, initCtx });
@@ -2267,7 +2266,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('never puts the fire row id on the wire', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     // A distinctive id: if it leaks anywhere in the body, this finds it.
     fires = [fire({ id: 987654321, firedAt: '2026-08-20T10:00:00.000Z' })];
 
@@ -2286,14 +2285,14 @@ describe('channel-web agent-workspace BFF', () => {
   it('merges both agents\' fires into one time-ordered collection', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
-    routinesByAgent.set('a2', [{ path: 'scan.md', name: 'Paper scan' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ routineId: 'scan.md', name: 'Paper scan' }]);
     fires = [
       fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
       fire({
         id: 2,
         agentId: 'a2',
-        path: 'scan.md',
+        routineId: 'scan.md',
         firedAt: '2026-08-20T11:00:00.000Z',
       }),
       fire({ id: 3, agentId: 'a1', firedAt: '2026-08-20T13:00:00.000Z' }),
@@ -2317,14 +2316,14 @@ describe('channel-web agent-workspace BFF', () => {
   it('scopes the feed to one agent when agentid names one', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
-    routinesByAgent.set('a2', [{ path: 'scan.md', name: 'Paper scan' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ routineId: 'scan.md', name: 'Paper scan' }]);
     fires = [
       fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
       fire({
         id: 2,
         agentId: 'a2',
-        path: 'scan.md',
+        routineId: 'scan.md',
         firedAt: '2026-08-20T11:00:00.000Z',
       }),
     ];
@@ -2340,7 +2339,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('returns a nextBefore even when every fire on the page was silenced', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'silenced' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z', status: 'silenced' }),
@@ -2360,7 +2359,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('pages back through the cursor it handed out', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
@@ -2431,7 +2430,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('degrades one unreadable agent to nothing instead of 500ing the page', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
     firesReadFailure.set('a2', new Error('connection terminated unexpectedly'));
 
@@ -2481,10 +2480,10 @@ describe('channel-web agent-workspace BFF', () => {
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     await h.activity(activityReq(), res);
-    // No authored name to be had — the path is the honest stand-in. Dropping
+    // An unavailable lookup cannot establish deletion. Dropping
     // the row would claim the agent did nothing, which is the bigger lie.
     expect((captured.body as ActivityBody).events[0]!.text).toBe(
-      `Ran daily.md. ${FIRE_NO_SUMMARY}`,
+      `Ran Routine unavailable. ${FIRE_NO_SUMMARY}`,
     );
   });
 
@@ -2552,7 +2551,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [
       fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' }),
       fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
@@ -2586,7 +2585,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' })];
     receipts = [
       receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' }),
@@ -2644,7 +2643,7 @@ describe('channel-web agent-workspace BFF', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
     registerDecisionReceipts();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
     receiptsReadFailure.set('a1', new Error('connection terminated unexpectedly'));
 
@@ -2715,7 +2714,7 @@ describe('channel-web agent-workspace BFF', () => {
   it('shows the fires when no decisions plugin is loaded at all', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerRoutines();
-    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a1', [{ routineId: 'daily.md', name: 'Morning digest' }]);
     fires = [fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' })];
     // No @ax/decisions in this deployment. There genuinely are no receipts —
     // that is not a fault, and it must not cost the routine history.
@@ -3020,10 +3019,9 @@ describe('channel-web agent-workspace BFF', () => {
     expect(ev.detail).toBe('It failed, and no reason was recorded.');
   });
 
-  it('falls through to the path when a name fences down to nothing', () => {
-    // Same fall-through an absent name gets: the path is the truest thing still
-    // known about the row, and the row is never dropped.
-    expect(rowFor('\u200B\u202E').text).toBe('daily.md');
+  it('keeps an unreadable existing name distinct from deletion', () => {
+    // The existing row is retained, without treating its unreadable name as deletion.
+    expect(rowFor('\u200B\u202E').text).toBe('Routine unavailable');
   });
 
   // --- the "What it did" row, TASK-419 -------------------------------------
@@ -3036,8 +3034,8 @@ describe('channel-web agent-workspace BFF', () => {
 
   it('does not present the routine name as the answer to "what it did"', () => {
     const ev = fireToActivityEvent(
-      fire({ id: 1, firedAt: at, path: 'heartbeat.md' }),
-      new Map([['heartbeat.md', 'heartbeat']]),
+      fire({ id: 1, firedAt: at, routineId: 'default:heartbeat' }),
+      new Map([['default:heartbeat', 'heartbeat']]),
     )!;
     // The regression, stated as the walk found it: the row WAS this string.
     expect(ev.text).not.toBe('heartbeat');
@@ -3058,9 +3056,9 @@ describe('channel-web agent-workspace BFF', () => {
   it('says both halves out loud when even the name is unreadable', () => {
     // Nothing legible anywhere: the name fences to nothing AND the path does.
     const nameless = fire({ id: 1, firedAt: at });
-    (nameless as { path: string }).path = '\u200B\u202E';
+    (nameless as { routineId: string }).routineId = '\u200B\u202E';
     const ev = fireToActivityEvent(nameless, new Map())!;
-    expect(ev.text).toBe(FIRE_UNNAMED_SENTENCE);
+    expect(ev.text).toBe(`Ran Deleted routine. ${FIRE_NO_SUMMARY}`);
     // The old copy stopped at "A routine with no readable name", which answers
     // a question nobody on this tab asked.
     expect(ev.text).toContain('summary');
@@ -3175,6 +3173,7 @@ describe('channel-web agent-workspace BFF', () => {
 
     /** Every key the browser is allowed to see, and no others. */
     const WIRE_KEYS = [
+      'approvalScopes', 'approvalScope', 'consentDeliveryState', 'consentGranted', 'routineOutcome',
       'id',
       'agentId',
       'conversationId',

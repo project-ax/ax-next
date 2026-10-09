@@ -18,7 +18,7 @@
  * the server (agents:resolve), so a forced render of a row for an agent
  * the user doesn't own would just surface a 403 — the gate isn't here.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Card,
   CardContent,
@@ -29,7 +29,7 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { PaneStatus } from '../PaneStatus';
 import { useAgentStore } from '@/lib/agent-store';
-import { routines } from '@/lib/routines';
+import { routineApi } from '@/lib/routines';
 
 const SKILL_REFLECTION_ID = 'skill-reflection';
 
@@ -46,7 +46,13 @@ interface RowState {
   error: string | null;
 }
 
-function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: string }) {
+function AgentToggleRow({
+  agentId,
+  agentName,
+}: {
+  agentId: string;
+  agentName: string;
+}) {
   const [state, setState] = useState<RowState>({
     enabled: undefined,
     saving: false,
@@ -57,7 +63,7 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
     let cancelled = false;
     void (async () => {
       try {
-        const defaults = await routines.listAgentDefaults(agentId);
+        const defaults = await routineApi.listAgentDefaults(agentId);
         const reflection = defaults.find(
           (d) => d.defaultRoutineId === SKILL_REFLECTION_ID,
         );
@@ -86,7 +92,7 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
     // Optimistic flip so the Switch feels instant; roll back on failure.
     setState((s) => ({ ...s, enabled: next, saving: true, error: null }));
     try {
-      await routines.setAgentDefaultEnabled({
+      await routineApi.setAgentDefaultEnabled({
         agentId,
         defaultRoutineId: SKILL_REFLECTION_ID,
         enabled: next,
@@ -131,7 +137,10 @@ function AgentToggleRow({ agentId, agentName }: { agentId: string; agentName: st
   );
 }
 
-export function AgentSelfImprovementSection() {
+export function AgentSelfImprovementSection({
+  agentId,
+  agentName,
+}: { agentId?: string | undefined; agentName?: string | undefined } = {}) {
   const { agents, agentsStatus } = useAgentStore();
 
   return (
@@ -141,23 +150,120 @@ export function AgentSelfImprovementSection() {
         <CardDescription>{HELP_COPY}</CardDescription>
       </CardHeader>
       <CardContent>
-        {agentsStatus === 'loading' ? (
+        {!agentId && agentsStatus === 'loading' ? (
           <PaneStatus variant="loading">Loading your agents…</PaneStatus>
-        ) : agentsStatus === 'error' ? (
+        ) : !agentId && agentsStatus === 'error' ? (
           <PaneStatus variant="error">
             Couldn't load your agents. Try reopening this panel.
           </PaneStatus>
-        ) : agents.length === 0 ? (
+        ) : !agentId && agents.length === 0 ? (
           <PaneStatus variant="empty">
             No agents yet — create one to manage its self-improvement.
           </PaneStatus>
         ) : (
           <div className="flex flex-col">
-            {agents.map((a) => (
+            {(agentId
+              ? [{ id: agentId, name: agentName ?? 'This agent' }]
+              : agents
+            ).map((a) => (
               <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} />
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Existing catalog overrides stay reachable, including heartbeat. */
+export function AgentDefaultControls({ agentId }: { agentId: string }) {
+  const [rows, setRows] = useState<
+    import('@/lib/routines').AgentDefaultState[] | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const flight = useRef(false);
+  useEffect(() => {
+    let active = true;
+    setRows(null);
+    setError(null);
+    void routineApi
+      .listAgentDefaults(agentId)
+      .then((defaults) => {
+        if (active)
+          setRows(
+            defaults.filter((d) => d.defaultRoutineId !== SKILL_REFLECTION_ID),
+          );
+      })
+      .catch(() => {
+        if (active) setError('Default routines are unavailable.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Default routines</CardTitle>
+        <CardDescription>
+          Existing routines provided by the workspace.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {error && <PaneStatus variant="error">{error}</PaneStatus>}
+        {rows === null && !error && (
+          <PaneStatus variant="loading">Loading default routines…</PaneStatus>
+        )}
+        {rows?.map((row) => (
+          <div
+            key={row.defaultRoutineId}
+            className="flex items-center justify-between gap-3 py-3"
+          >
+            <label
+              htmlFor={`default-${row.defaultRoutineId}`}
+              className="text-sm"
+            >
+              {row.name}
+            </label>
+            <Switch
+              id={`default-${row.defaultRoutineId}`}
+              checked={row.enabled}
+              disabled={busy !== null}
+              onCheckedChange={(enabled) => {
+                if (flight.current) return;
+                flight.current = true;
+                setBusy(row.defaultRoutineId);
+                setError(null);
+                void routineApi
+                  .setAgentDefaultEnabled({
+                    agentId,
+                    defaultRoutineId: row.defaultRoutineId,
+                    enabled,
+                  })
+                  .then(() =>
+                    setRows(
+                      (previous) =>
+                        previous?.map((d) =>
+                          d.defaultRoutineId === row.defaultRoutineId
+                            ? { ...d, enabled }
+                            : d,
+                        ) ?? null,
+                    ),
+                  )
+                  .catch(() =>
+                    setError(
+                      'We couldn’t change this default routine. Try again.',
+                    ),
+                  )
+                  .finally(() => {
+                    flight.current = false;
+                    setBusy(null);
+                  });
+              }}
+            />
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

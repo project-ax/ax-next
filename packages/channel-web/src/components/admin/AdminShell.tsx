@@ -46,6 +46,7 @@ export interface AdminShellProps {
    * else lands on the default, the same as the in-shell nav would allow.
    */
   initialTab?: AdminTabId | undefined;
+  initialAgentId?: string | undefined;
 }
 
 /** The tabs only an admin's nav shows. */
@@ -77,6 +78,7 @@ export function AdminShell({
   onClose,
   backLabel = 'chat',
   initialTab,
+  initialAgentId,
 }: AdminShellProps) {
   const [activeTab, setActiveTab] = useState<AdminTabId>(() =>
     initialTab !== undefined &&
@@ -138,7 +140,7 @@ export function AdminShell({
           />
         }
       >
-        {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
+        {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} initialAgentId={initialAgentId} />}
         {activeTab === 'sites' && <SitesTab />}
         {activeTab === 'connectors' && isAdmin && <ConnectorsTab />}
         {activeTab === 'providers' && <ProvidersPanel />}

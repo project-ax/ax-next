@@ -103,6 +103,20 @@ beforeEach(() => {
 });
 
 describe('SkillsAppStore', () => {
+  it('starts on the routine agent only when present in the authorized agent list for a personal owner', async () => {
+    mockListAgents.mockResolvedValue([
+      {agentId:'a1',displayName:'First',visibility:'personal'},
+      {agentId:'a2',displayName:'Routine agent',visibility:'personal'},
+    ]);
+    render(<SkillsAppStore isAdmin={false} initialAgentId="a2" />);
+    await waitFor(() => expect(mockGetConnections).toHaveBeenCalledWith('a2'));
+    expect(mockGetConnections).not.toHaveBeenCalledWith('a1');
+  });
+  it('does not request skills for an initial agent outside the authorized list', async () => {
+    render(<SkillsAppStore isAdmin={false} initialAgentId="other-owner-agent" />);
+    await waitFor(() => expect(mockGetConnections).toHaveBeenCalledWith('a1'));
+    expect(mockGetConnections).not.toHaveBeenCalledWith('other-owner-agent');
+  });
   /**
    * A walk on a fresh cluster found the page arguing with itself. With nothing
    * installed and nothing in the catalog it said, stacked on one screen:

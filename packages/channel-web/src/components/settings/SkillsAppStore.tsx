@@ -113,7 +113,7 @@ type EditorTarget =
   | { mode: 'create-admin' }
   | { mode: 'edit-admin'; skillId: string };
 
-export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
+export function SkillsAppStore({ isAdmin, initialAgentId }: { isAdmin: boolean; initialAgentId?: string | undefined }) {
   // Agent selector (the app-store is per-agent). `agentsLoaded` distinguishes
   // "still fetching the agent list" from "fetched, and there are none" so a
   // zero-agent account doesn't get stuck on a permanent INSTALLED spinner.
@@ -182,7 +182,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     }
   }, []);
 
-  // Load the agent list once; default to the first agent.
+  // Select the requested agent only from the current authorized roster.
   useEffect(() => {
     let cancelled = false;
     listChatAgents()
@@ -190,7 +190,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
         if (cancelled) return;
         setAgents(a);
         setAgentsLoaded(true);
-        if (a[0]) setAgentId(a[0].agentId);
+        const initial = a.find(agent => agent.agentId === initialAgentId) ?? a[0];
+        if (initial) setAgentId(initial.agentId);
       })
       .catch((e: unknown) => {
         if (!cancelled) {
@@ -203,7 +204,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshCatalog, refreshOwn]);
+  }, [refreshCatalog, refreshOwn, initialAgentId]);
 
   // (Re)load installed whenever the selected agent changes.
   useEffect(() => {

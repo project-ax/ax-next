@@ -1903,7 +1903,7 @@ describe('controlPaint', () => {
  * a solid per-theme token rather than a different alpha.
  *
  * The fix is the one #692/#705 made: solid `bg-destructive-soft` (4.57 light /
- * 4.63 dark with `text-destructive`). The banner also holds a ghost Dismiss
+ * 4.63 dark with `text-destructive`). The banner also holds a ghost Refresh
  * button. At rest it has no ink of its own and inherits the banner's red, so
  * it is measured on the banner fill; on hover it swaps to its own solid
  * `accent` / `accent-foreground` pair, measured on that.
@@ -1984,8 +1984,8 @@ describe("Routines' error chip and banner clear AA in every state", () => {
       });
     }
 
-    routinesCasesRegistered.push(`${themeName}:Dismiss`);
-    it(`${themeName}: the banner's ghost Dismiss, on the banner at rest and on its own hover pair`, () => {
+    routinesCasesRegistered.push(`${themeName}:Refresh`);
+    it(`${themeName}: the banner's ghost Refresh, on the banner at rest and on its own hover pair`, () => {
       const tokens = tokensAfter(selector);
       const rest = banner.fills.find((f) => f.state === 'rest');
       expect(rest, 'the banner paints a resting fill').toBeDefined();
@@ -2038,7 +2038,7 @@ describe("Routines' error chip and banner clear AA in every state", () => {
   it('registers one case per theme per site', () => {
     expect(routinesCasesRegistered).toEqual(
       THEMES.flatMap(([name]) =>
-        ['StatusChip error', 'RoutinesList error banner', 'Dismiss'].map((l) => `${name}:${l}`),
+        ['StatusChip error', 'RoutinesList error banner', 'Refresh'].map((l) => `${name}:${l}`),
       ),
     );
   });

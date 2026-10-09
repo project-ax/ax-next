@@ -165,7 +165,7 @@ export interface WorkspaceShellProps {
    * `tab` opens it on one tab — the rail's paused-memory "Fix this" opens AI
    * model keys (TASK-627). The menu passes none and gets the default.
    */
-  onOpenAdminSettings?: ((tab?: AdminTabId) => void) | undefined;
+  onOpenAdminSettings?: ((tab?: AdminTabId, agentId?: string) => void) | undefined;
   /**
    * Opens the create-an-agent flow. Threaded to `WorkspaceSidebar`'s
    * "New agent…" row, same shape and same reason as `onOpenAdminSettings`:
@@ -993,6 +993,7 @@ function Inner({
                 so the conversation on screen (and a reply still streaming into
                 it) is exactly where "Back to chat" left it.
               */
+              onViewSkills={onOpenAdminSettings ? () => onOpenAdminSettings('skills', route.id) : undefined}
               settingsSection={route.kind === 'agent-settings' ? route.section : null}
               onSettingsSection={(section) =>
                 navigate({ kind: 'agent-settings', id: route.id, section })

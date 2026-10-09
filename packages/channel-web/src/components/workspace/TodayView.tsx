@@ -92,7 +92,7 @@ interface Props {
    * a button that is not there, and an optional handler is how the no-op default
    * gets added later without anyone noticing.
    */
-  onApprove: (id: string) => void;
+  onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
   onUndo: (id: string) => void;
   /** Rows with a POST in flight. Their controls go quiet, not absent. */
@@ -264,7 +264,7 @@ export function TodayView({
           if (expandable) onExpand(expandedId === d.id ? null : d.id);
         }}
         onOpenAgent={() => onOpenAgent(d.agentId)}
-        onApprove={() => onApprove(d.id)}
+        onApprove={(scope) => onApprove(d.id, scope)}
         onDismiss={() => onDismiss(d.id)}
         onUndo={() => onUndo(d.id)}
         busy={busyIds?.has(d.id) === true}

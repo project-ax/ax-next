@@ -1,152 +1,79 @@
-/**
- * FireNowControl — per-row "Fire now" affordance.
- *
- *   - interval/cron: a single Button that fires immediately. Toast-style
- *     feedback is rendered inline below the row (no Sonner dependency).
- *   - webhook: clicking the Button reveals an inline JSON textarea + a
- *     Submit. This avoids a nested-Dialog which would create
- *     focus-trap / aria headaches when a modal is open over the Routines tab.
- *
- * Any response — success or failure — bumps the parent's refresh key. A fire
- * that failed to START has its fire row by then; one that started gets its row
- * only when the agent's turn ends, seconds later (TASK-679: the row used to be
- * written twice, once here at dispatch as `ok`), so the refetch right after a
- * successful click may not show it yet. The success copy says "running it
- * now" for exactly that reason. Manual fires never touch last_status /
- * last_run_at (only the tick advances those).
- *
- * The inline confirmation is driven by the returned `status` alone. It used to
- * interpolate a `fireId`, which was the store's `BIGSERIAL` row id; that is
- * storage vocabulary and no longer crosses the hook bus (TASK-313). There is
- * deliberately no conversation link here, for the reason spelled out in
- * `FireRowsTable`'s header.
- */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import { routines, type Routine } from '../../lib/routines';
-
-interface Props {
+import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
+export function FireNowControl({
+  routine,
+  onFired,
+}: {
   routine: Routine;
   onFired: () => void;
-}
-
-export function FireNowControl({ routine, onFired }: Props) {
-  const isWebhook = routine.trigger.kind === 'webhook';
-  const [open, setOpen] = useState(false);
-  const [payload, setPayload] = useState('{}');
+}) {
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-
-  async function doFire(parsedPayload: unknown): Promise<void> {
+  const [status, setStatus] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const flight = useRef(false);
+  const operation = useRef<{
+    agentId: string;
+    routineId: string;
+    expectedRevision: string;
+    requestId: string;
+  } | null>(null);
+  async function fire() {
+    if (flight.current || !routine.permissions.fire || !routine.enabled) return;
+    flight.current = true;
     setBusy(true);
     setStatus(null);
+    operation.current ??= {
+      agentId: routine.agentId,
+      routineId: routine.routineId,
+      expectedRevision: routine.revision,
+      requestId: crypto.randomUUID(),
+    };
     try {
-      const out = await routines.fireNow({
-        agentId: routine.agentId,
-        path: routine.path,
-        ...(parsedPayload !== undefined ? { payload: parsedPayload } : {}),
-      });
-      // A failure to start has already recorded its fire row by the time it
-      // returns, so the parent refetches — otherwise the recent-fires list
-      // stays stale on exactly the runs worth looking at. A started fire's
-      // row lands when its turn ends (TASK-679), after this refetch; see the
-      // header. A thrown failure (an unknown routine, a network error)
-      // writes no row and never reaches here, which is correct.
+      const result = await routineApi.fireNow(operation.current);
+      operation.current = null;
       onFired();
-      if (out.status === 'ok') {
-        setStatus({ kind: 'ok', text: 'Started — the agent is running it now.' });
-        // Auto-dismiss the success line so the row doesn't stay noisy.
-        setTimeout(() => setStatus(null), 2_500);
-        if (isWebhook) setOpen(false);
-      } else {
-        // A 200 whose body says `error` is still a failure, and it must look
-        // like one — this used to render muted grey as "Fired (#7, error)".
-        // `FireNowOutput` carries no reason, so we don't invent one. The
-        // recorded fire row does carry the error text, but only once the
-        // reader expands the routine (`RoutinesList` mounts `FireRowsTable`
-        // behind `isOpen`), so this line can't promise it's already on
-        // screen. It does not auto-dismiss, and the webhook form stays open
-        // for a retry.
-        setStatus({
-          kind: 'err',
-          text: "We couldn't start this run. Please try again.",
-        });
-      }
-    } catch (err) {
-      setStatus({
-        kind: 'err',
-        text: err instanceof Error ? err.message : String(err),
-      });
+      setFailed(result.status === 'error');
+      setStatus(
+        result.status === 'ok'
+          ? 'Run accepted. Check recent runs for the outcome.'
+          : 'We couldn’t start this run. Please try again.',
+      );
+    } catch (e) {
+      setFailed(true);
+      setStatus(
+        e instanceof RoutineApiError
+          ? e.message
+          : 'We couldn’t confirm this run. Retry sends the same request.',
+      );
+      if (e instanceof RoutineApiError && e.status > 0 && e.status < 500)
+        operation.current = null;
     } finally {
+      flight.current = false;
       setBusy(false);
     }
   }
-
-  function onClickFire(): void {
-    if (!isWebhook) {
-      void doFire(undefined);
-      return;
-    }
-    setOpen((v) => !v);
-  }
-
-  function onSubmitWebhook(): void {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(payload);
-    } catch (err) {
-      setStatus({
-        kind: 'err',
-        text: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      return;
-    }
-    void doFire(parsed);
-  }
-
   return (
-    <div className="flex flex-col items-end gap-1 shrink-0">
+    <div className="flex flex-col gap-2">
       <Button
         variant="outline"
         size="sm"
-        disabled={busy}
-        onClick={onClickFire}
-        aria-expanded={isWebhook ? open : undefined}
+        disabled={busy || !routine.permissions.fire || !routine.enabled}
+        onClick={() => void fire()}
       >
-        {busy ? 'Firing…' : 'Fire now'}
+        {busy ? 'Starting…' : 'Fire now'}
       </Button>
-      {isWebhook && open && (
-        <div className="w-[280px] flex flex-col gap-1.5 animate-in fade-in-0 slide-in-from-top-1 duration-150">
-          <Textarea
-            value={payload}
-            onChange={(e) => setPayload(e.target.value)}
-            placeholder='{"key": "value"}'
-            aria-label="JSON payload for webhook fire"
-            rows={3}
-            className="font-mono text-[11.5px]"
-          />
-          <div className="flex justify-end gap-1.5">
-            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={busy}>
-              Cancel
-            </Button>
-            <Button size="sm" onClick={onSubmitWebhook} disabled={busy}>
-              {busy ? 'Firing…' : 'Submit'}
-            </Button>
-          </div>
-        </div>
-      )}
-      {status !== null && (
-        <span
-          className={
-            status.kind === 'ok'
-              ? 'text-[11px] text-muted-foreground'
-              : 'text-[11px] text-destructive max-w-[280px] text-right'
-          }
-        >
-          {status.text}
-        </span>
-      )}
+      {status &&
+        (failed ? (
+          <Alert variant="destructive">
+            <AlertDescription>{status}</AlertDescription>
+          </Alert>
+        ) : (
+          <p role="status" className="text-xs text-muted-foreground">
+            {status}
+          </p>
+        ))}
     </div>
   );
 }

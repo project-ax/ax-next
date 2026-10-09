@@ -1037,6 +1037,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       verdict: 'allow',
       ruleId: null,
       capability: null,
+      approvalScopes: ['once'],
       irreversible: false,
       effect: [],
     }));
@@ -1172,6 +1173,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       verdict: 'allow',
       ruleId: null,
       capability: null,
+      approvalScopes: ['once'],
       irreversible: false,
     }));
     registerCatalog();

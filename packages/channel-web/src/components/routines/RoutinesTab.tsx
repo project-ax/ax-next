@@ -1,33 +1,65 @@
-/**
- * RoutinesTab — the Routines surface inside Settings (AdminShell).
- *
- * Every user sees their own routines (create / edit / delete + observability);
- * admins additionally get the Default Routines management section at the top,
- * mirroring how the Skills tab folds in admin curation. The server enforces the
- * same admin gate on every /admin/routines/defaults* route, so hiding the
- * section client-side is a UX nicety, not the boundary.
- *
- * Replaces the former top-of-sidebar "Routines" modal (RoutinesPanel).
- */
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RoutinesList } from './RoutinesList';
-import { AgentSelfImprovementSection } from './AgentSelfImprovementSection';
+import {
+  AgentSelfImprovementSection,
+  AgentDefaultControls,
+} from './AgentSelfImprovementSection';
+import { RoutineConsentSection } from './RoutineConsentSection';
 import { DefaultRoutinesSection } from '@/components/admin/DefaultRoutinesSection';
-
-export function RoutinesTab({ isAdmin }: { isAdmin: boolean }) {
-  // Bumped after a Fire now call so RoutinesList re-fetches. Same refresh-key
-  // idiom the modal used; create/edit/delete re-fetch on their own.
+export function RoutinesTab({
+  isAdmin,
+  agentId,
+  agentName,
+  onViewSkills,
+}: {
+  isAdmin: boolean;
+  agentId?: string | undefined;
+  agentName?: string | undefined;
+  onViewSkills?: (() => void) | undefined;
+}) {
   const [refreshKey, setRefreshKey] = useState(0);
-
   return (
-    <div className="flex flex-col gap-4">
-      <AgentSelfImprovementSection />
-      {isAdmin && <DefaultRoutinesSection />}
-      <RoutinesList
-        refreshKey={refreshKey}
-        isAdmin={isAdmin}
-        onFired={() => setRefreshKey((n) => n + 1)}
-      />
+    <div className="flex flex-col gap-5">
+      <Tabs defaultValue="mine">
+        <TabsList>
+          <TabsTrigger value="mine">My routines</TabsTrigger>
+          <TabsTrigger value="improvement">Self-improvement</TabsTrigger>
+        </TabsList>
+        <TabsContent value="mine" className="flex flex-col gap-5">
+          {agentId && (
+            <RoutineConsentSection
+              agentId={agentId}
+              agentName={agentName ?? 'This agent'}
+            />
+          )}
+          <RoutinesList
+            agentId={agentId}
+            agentName={agentName}
+            refreshKey={refreshKey}
+            isAdmin={isAdmin}
+            onFired={() => setRefreshKey((n) => n + 1)}
+          />
+        </TabsContent>
+        <TabsContent value="improvement" className="flex flex-col gap-4">
+          <AgentSelfImprovementSection
+            agentId={agentId}
+            agentName={agentName}
+          />
+          {agentId && <AgentDefaultControls agentId={agentId} />}
+          {agentId && onViewSkills && (
+            <Button
+              variant="link"
+              className="w-fit px-0"
+              onClick={onViewSkills}
+            >
+              View skills
+            </Button>
+          )}
+        </TabsContent>
+      </Tabs>
+      {!agentId && isAdmin && <DefaultRoutinesSection />}
     </div>
   );
 }

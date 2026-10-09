@@ -147,6 +147,10 @@ function toDecisionReadError(e: unknown): DecisionReadError {
  * applies normally, so an open row answered elsewhere is still dropped by the
  * next read, never kept indefinitely.
  */
+function needsRoutineRead(d: Decision): boolean {
+  return d.approvalScope === 'agent-routines' && (d.consentDeliveryState === 'pending' || (d.routineOutcome == null && (d.status === 'executed' || d.status === 'approved-pending-agent')));
+}
+
 function mergeReadWithReceipts(
   prev: readonly Decision[],
   fresh: readonly Decision[],
@@ -157,7 +161,7 @@ function mergeReadWithReceipts(
   const listed = new Set(fresh.map((d) => d.id));
   const merged = fresh.map((d) => ours.get(d.id) ?? d);
   const kept = prev.filter(
-    (d) => !listed.has(d.id) && (ours.has(d.id) || isJustResolved(d, now)),
+    (d) => !listed.has(d.id) && (ours.has(d.id) || isJustResolved(d, now) || needsRoutineRead(d)),
   );
   return [...merged, ...kept];
 }
@@ -218,7 +222,7 @@ export function keepAnsweredApprovals(
   const freshById = new Map(fresh.map((m) => [m.id, m]));
   const still = (decisionId: string): boolean => {
     const d = decisions.find((x) => x.id === decisionId);
-    return d !== undefined && (isOpenDecision(d) || isJustResolved(d, now));
+    return d !== undefined && (isOpenDecision(d) || isJustResolved(d, now) || needsRoutineRead(d));
   };
   /** Anchor message id (or `null` for "before everything") → pointers after it. */
   const after = new Map<string | null, ThreadMessage[]>();
@@ -261,7 +265,7 @@ export interface DecisionQueue {
   busyIds: ReadonlySet<string>;
   /** Per-row line from the last action that failed or was refused. */
   notices: ReadonlyMap<string, string>;
-  approve: (id: string) => void;
+  approve: (id: string, scope?: 'once' | 'agent-routines') => void;
   dismiss: (id: string) => void;
   undo: (id: string) => void;
   clearNotice: (id: string) => void;
@@ -402,7 +406,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
     setDecisions((prev) => {
       const at = prev.findIndex((d) => d.id === row.id);
       if (at === -1) return prev;
-      if (undoSecondsLeft(prev[at]!) <= 0) return prev;
+      if (undoSecondsLeft(prev[at]!) <= 0 && !needsRoutineRead(prev[at]!)) return prev;
       const next = [...prev];
       next[at] = row;
       return next;
@@ -482,10 +486,10 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
   );
 
   const approve = useCallback(
-    (id: string) =>
+    (id: string, scope?: 'once' | 'agent-routines') =>
       act(
         id,
-        () => workspaceApi.approveDecision(id),
+        () => scope === undefined ? workspaceApi.approveDecision(id) : workspaceApi.approveDecision(id, scope),
         (out) => ({ decision: out.decision, notice: null }),
         // TASK-278 — hand the continuation id to the thread surface. `??`
         // null: a host predating TASK-278 answers no `streamReqId` at all,
@@ -598,8 +602,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * below only re-runs when a row starts or stops being watchable, not on
    * every clock tick or every poll response.
    */
+
   const watchedKey = decisions
-    .filter((d) => undoSecondsLeft(d) > 0)
+    .filter((d) => undoSecondsLeft(d) > 0 || needsRoutineRead(d))
     .map((d) => d.id)
     .sort()
     .join(',');
@@ -607,7 +612,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
   useEffect(() => {
     if (watchedKey === '') return;
     const id = setInterval(() => {
-      const watched = decisionsRef.current.filter((d) => undoSecondsLeft(d) > 0);
+      const watched = decisionsRef.current.filter((d) => undoSecondsLeft(d) > 0 || needsRoutineRead(d));
       if (watched.length === 0) {
         clearInterval(id);
         pollFailures.current.clear();
@@ -629,6 +634,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           .then((out) => {
             pollFailures.current.delete(d.id);
             applyPolledRow(out.decision);
+            if (out.decision.approvalScope === 'agent-routines' && out.decision.consentDeliveryState !== d.consentDeliveryState) {
+              window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', { detail: { agentId: d.agentId } }));
+            }
           })
           // A FAILED poll changes nothing and sets no notice. The row keeps
           // saying what the server last told us: a transient network blip

@@ -285,6 +285,18 @@ export function decisionOutcome(
   d: Decision,
   now: number = Date.now(),
 ): DecisionOutcome | null {
+  if (d.approvalScope === 'agent-routines' && d.consentDeliveryState && d.consentDeliveryState !== 'none') {
+    const line = d.consentDeliveryState === 'pending' ? 'Routine permission is waiting to be delivered.'
+      : d.consentDeliveryState === 'failed' ? 'Routine permission could not be delivered.'
+      : d.consentGranted === true ? 'Routine permission delivered.'
+      : d.consentGranted === false ? 'Routine permission was not granted.'
+      : 'Routine permission delivery completed.';
+    const note = d.routineOutcome === 'succeeded' ? 'The original routine change completed.'
+      : d.routineOutcome === 'failed' ? 'The original routine change failed.'
+      : d.status === 'expired' ? 'The original request expired and was not run.'
+      : 'The original routine change has not completed.';
+    return { line, note, tone: d.routineOutcome === 'failed' || d.consentDeliveryState === 'failed' ? 'bad' : d.routineOutcome === 'succeeded' ? 'done' : 'quiet' };
+  }
   switch (d.status) {
     case 'pending':
     case 'stale':

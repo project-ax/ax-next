@@ -517,3 +517,20 @@ describe('useDecisionQueue — onDecisionUndone (TASK-574)', () => {
     expect(decision.pendingUntil).toBe(due);
   });
 });
+
+describe('routine scope after the grace window', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-08-22T12:00:00.000Z')); listDecisions.mockReset(); readDecision.mockReset(); approveDecision.mockReset(); });
+  afterEach(() => vi.useRealTimers());
+  it('keeps watching pending consent after Undo ends and applies delivered permission separately from expiry', async () => {
+    const pending = resolvedFixture('executed', { approvalScope: 'agent-routines', consentDeliveryState: 'pending', consentGranted: null, routineOutcome: null, undoable: false, resolvedAt: new Date(Date.now() - 11000).toISOString() });
+    const changed = vi.fn(); window.addEventListener('ax:routine-permissions-changed',changed);
+    const {result} = await mountWith([pending]);
+    readDecision.mockResolvedValue({ decision: {...pending, status: 'expired', consentDeliveryState: 'delivered', consentGranted: true} });
+    await tick(POLL_MS);
+    expect(readDecision).toHaveBeenCalledWith(pending.id);
+    expect(result.current.decisions[0]).toMatchObject({status:'expired',consentDeliveryState:'delivered',consentGranted:true,routineOutcome:null});
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect((changed.mock.calls[0]![0] as CustomEvent).detail).toEqual({agentId:pending.agentId});
+    window.removeEventListener('ax:routine-permissions-changed',changed);
+  });
+});

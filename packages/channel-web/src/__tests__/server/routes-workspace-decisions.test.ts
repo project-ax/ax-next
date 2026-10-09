@@ -55,6 +55,7 @@ const STORED = {
   },
   callFingerprint: 'sha256:abcdef',
   ruleId: 'rule-outward-email',
+  approvalScopes: ['once'],
   irreversible: false,
   freshness: null,
   summary: 'Send your reply to Priya',

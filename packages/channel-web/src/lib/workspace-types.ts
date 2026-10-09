@@ -149,6 +149,11 @@ export interface DecisionRequest {
 }
 
 export interface Decision {
+  approvalScopes: ('once' | 'agent-routines')[];
+  approvalScope?: 'once' | 'agent-routines';
+  consentDeliveryState?: 'none' | 'pending' | 'delivered' | 'failed';
+  consentGranted?: boolean | null;
+  routineOutcome?: 'succeeded' | 'failed' | null;
   id: string;
   agentId: string;
   conversationId: string;

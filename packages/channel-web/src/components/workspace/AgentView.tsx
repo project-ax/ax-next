@@ -134,6 +134,7 @@ interface Props {
   settingsSection?: AgentSettingsSection | null;
   /** Open a settings section. Absent, no entry point to the page is drawn. */
   onSettingsSection?: (section: AgentSettingsSection) => void;
+  onViewSkills?: (() => void) | undefined;
   decisions: Decision[];
   /**
    * Open capability grants presence routed to THIS thread (TASK-351).
@@ -186,7 +187,7 @@ interface Props {
    * The three ways out of a decision. REQUIRED — see `AgentConversation` for
    * why they are not optional-with-a-default.
    */
-  onApprove: (id: string) => void;
+  onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
   onUndo: (id: string) => void;
   /** Rows with a POST in flight, and any per-row notice from the last action. */
@@ -352,6 +353,7 @@ export function AgentView({
   onTab,
   settingsSection = null,
   onSettingsSection,
+  onViewSkills,
   decisions,
   threadGrants,
   onGrantResolved,
@@ -1641,6 +1643,7 @@ export function AgentView({
           agent={agent}
           section={settingsSection}
           onSection={onSettingsSection}
+          onViewSkills={onViewSkills}
           onBack={() => onTab('chat')}
           compact={compact}
           startOnList={settingsListRequested}
