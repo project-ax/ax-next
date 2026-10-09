@@ -415,11 +415,20 @@ export function useConversationMemory({
     [unrecord, replaceRow],
   );
 
+  const { recordForget: hide, undoForget } = ledger;
+  const recordForget = useCallback((row: FactMemoryStatement) => {
+    // A settings receipt lives outside this list. Keep its learned row even
+    // when a recorded batch/reconnect stops returning the forgotten memory,
+    // so Undo can reveal the same source/batch without restarting the feed.
+    if (rowsRef.current.some((r) => r.row.id === row.id)) pin(row.id);
+    hide?.(row);
+  }, [hide, pin]);
+
   return {
     fixes: ledger.fixes,
     forgotten: ledger.forgotten,
-    recordForget: ledger.recordForget,
-    undoForget: ledger.undoForget,
+    recordForget,
+    undoForget,
     recordFix,
     undoFix,
     status,
