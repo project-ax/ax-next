@@ -103,13 +103,14 @@ describe('structured routine client', () => {
       field: 'expectedRevision',
       status: 409,
     });
-    try {
-      await routineApi.get({ agentId: 'a', routineId: 'r' });
-    } catch (error) {
-      expect(error).toBeInstanceOf(RoutineApiError);
-      expect((error as Error).message).not.toContain('SECRET');
-      expect(error).toMatchObject({ code: 'unavailable', status: 500 });
-    }
+    const failure = routineApi.get({ agentId: 'a', routineId: 'r' });
+    await expect(failure).rejects.toBeInstanceOf(RoutineApiError);
+    await expect(failure).rejects.toMatchObject({
+      code: 'unavailable',
+      status: 500,
+      message: expect.not.stringContaining('SECRET'),
+    });
+    await expect(failure).rejects.toHaveProperty('field', undefined);
   });
   it('scopes list, history, consent and receiver calls, returning only receiver prefix', async () => {
     const fetch = vi

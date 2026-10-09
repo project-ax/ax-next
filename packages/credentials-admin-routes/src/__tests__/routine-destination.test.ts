@@ -49,7 +49,7 @@ function response() {
     },
   };
 }
-function setup(admin = true, failure?: Error) {
+function setup(admin = true, failure?: Error, acknowledgment?: { value: unknown }) {
   const bus = new HookBus();
   const calls: unknown[] = [];
   bus.registerService('auth:require-user', 'test', async () => ({
@@ -61,7 +61,7 @@ function setup(admin = true, failure?: Error) {
     async (ctx, input) => {
       calls.push({ ctx: { agentId: ctx.agentId, userId: ctx.userId }, input });
       if (failure) throw failure;
-      return { saved: true };
+      return acknowledgment ? acknowledgment.value : { saved: true };
     },
   );
   for (const hook of ['credentials:set', 'credentials:delete'])
@@ -104,6 +104,33 @@ describe('human routine secret destinations', () => {
       },
     ]);
   });
+  it.each(['set', 'delete'] as const)(
+    'rejects malformed %s acknowledgments without reflecting provider output',
+    async (operation) => {
+      for (const value of [
+        undefined,
+        {},
+        { saved: false },
+        { saved: 'SECRET' },
+        { saved: true, extra: 'SECRET' },
+        { saved: true, revision: 'SECRET' },
+      ]) {
+        const { h, calls } = setup(true, undefined, { value });
+        const r = response();
+        if (operation === 'set')
+          await h.create(req({ ...base, kind: 'api-key', payloadB64: 'YQ==' }), r.res);
+        else await h.destroy(req(base), r.res);
+        expect(calls).toHaveLength(1);
+        expect(r.status).toBe(503);
+        expect(r.body).toEqual({
+          code: 'unavailable',
+          error: 'Routine management is temporarily unavailable.',
+        });
+        expect(JSON.stringify(r.body)).not.toContain('SECRET');
+      }
+    },
+  );
+
   it('retains existing admin gate and has no per-person routine-secret route', async () => {
     const { h, calls } = setup(false);
     const r = response();

@@ -8,6 +8,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { Destination } from '@ax/credentials';
+import { RoutineSecretOutputSchema } from '@ax/routines-contract';
 import { z } from 'zod';
 import {
   parseRequestBody,
@@ -363,10 +364,11 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     if (data.destination.kind === 'routine-hmac') {
       const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actorId, agentId: data.destination.agentId });
       try {
-        await deps.bus.call('routines:set-webhook-secret', routineCtx, {
+        const acknowledgment = await deps.bus.call('routines:set-webhook-secret', routineCtx, {
           agentId: data.destination.agentId, routineId: data.destination.routineId,
           expectedRevision: data.expectedRevision, operation: 'set', secret: payload,
         });
+        RoutineSecretOutputSchema.parse(acknowledgment);
         res.status(204).end();
       } catch (error) { writeRoutineError(res,error); }
       return;
@@ -474,10 +476,11 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     if (data.destination.kind === 'routine-hmac') {
       const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actorId, agentId: data.destination.agentId });
       try {
-        await deps.bus.call('routines:set-webhook-secret', routineCtx, {
+        const acknowledgment = await deps.bus.call('routines:set-webhook-secret', routineCtx, {
           agentId: data.destination.agentId, routineId: data.destination.routineId,
           expectedRevision: data.expectedRevision, operation: 'delete',
         });
+        RoutineSecretOutputSchema.parse(acknowledgment);
         res.status(204).end();
       } catch (error) { writeRoutineError(res,error); }
       return;
