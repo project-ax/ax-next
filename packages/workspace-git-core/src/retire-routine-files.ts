@@ -1,6 +1,8 @@
 import fs from 'node:fs';
-import { lstat, readdir, realpath, readFile, open, rename, unlink } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { inflateSync } from 'node:zlib';
+import { lstat, readdir, realpath, readFile, open, rename, unlink, mkdir, link } from 'node:fs/promises';
+import { isAbsolute, join, resolve, dirname, relative } from 'node:path';
 import git from 'isomorphic-git';
 
 const REF = 'refs/heads/main';
@@ -18,6 +20,37 @@ async function exists(path: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+}
+
+/** Only isomorphic-git's loose-object writes use this adapter; refs stay separate. */
+function atomicObjectFs(gitdir: string) {
+  return { promises: { ...fs.promises, writeFile: async (path: string, data: Uint8Array): Promise<void> => {
+    if (!/^[0-9a-f]{2}\/[0-9a-f]{38}$/.test(relative(join(gitdir, 'objects'), path))) fail('unsafe-path');
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = join(dirname(path), `.retire-object-${randomUUID()}`);
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(data);
+      await file.sync();
+      await file.close();
+      // Hard-link publication is atomic and never overwrites an existing OID.
+      // A stopped/failed writer leaves only an unreferenced temporary file.
+      try { await link(temporary, path); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    } finally {
+      await file.close();
+      await unlink(temporary);
+    }
+  } } };
+}
+
+/** Validate reused objects too: the pinned writer skips existing OID paths. */
+async function validateWrittenObject(gitdir: string, oid: string): Promise<void> {
+  try {
+    const object = inflateSync(await readFile(join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2))));
+    if (createHash('sha1').update(object).digest('hex') !== oid) fail('invalid-object');
+  } catch { fail('invalid-object'); }
 }
 
 /**
@@ -53,6 +86,7 @@ export async function retireRoutineFiles({ repoRoot, dryRun, now }: {
         if (!await exists(join(gitdir, path))) fail('unexpected-layout');
       }
       const options = { fs, gitdir };
+      const objectFs = atomicObjectFs(gitdir);
       if (await readFile(join(gitdir, 'HEAD'), 'utf8') !== `ref: ${REF}\n`
         || await git.getConfig({ ...options, path: 'core.bare' }) !== true
         || await exists(join(gitdir, 'commondir'))
@@ -84,13 +118,17 @@ export async function retireRoutineFiles({ repoRoot, dryRun, now }: {
             next.push({ ...entry, oid: child });
           } else next.push(entry);
         }
-        return changed && !dryRun ? git.writeTree({ ...options, tree: next }) : oid;
+        if (!changed || dryRun) return oid;
+        const rewritten = await git.writeTree({ ...options, fs: objectFs, tree: next });
+        await validateWrittenObject(gitdir, rewritten);
+        return rewritten;
       }
       const tree = await rewrite(commit.tree);
       if (!count) continue;
       if (dryRun) { result.removed += count; continue; }
       const author = { name: 'AX offline maintenance', email: 'maintenance@ax.local', timestamp: Math.floor(now.getTime() / 1000), timezoneOffset: 0 };
-      const oid = await git.writeCommit({ ...options, commit: { tree, parent: [head], author, committer: author, message: 'Retire legacy routine files\n' } });
+      const oid = await git.writeCommit({ ...options, fs: objectFs, commit: { tree, parent: [head], author, committer: author, message: 'Retire legacy routine files\n' } });
+      await validateWrittenObject(gitdir, oid);
       // isomorphic-git writeRef has no expected-old-value option. Use Git's
       // exclusive loose-ref lock protocol, check under lock, then atomic rename.
       // Host and git-server MUST be stopped; no online writer bypass is added.

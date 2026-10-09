@@ -697,8 +697,8 @@ describe('--state-quiet is a fill, never ink', () => {
    *
    * The first version of `stripComments` did a file-wide
    * `replace(/\/\*[\s\S]*?\*\//g, '')`. A bare `/` + `*` in ordinary code —
-   * a route path like `'…/files/*'`, or `routines/*.md` rendered as JSX text,
-   * both of which are live in this tree — was read as an opening delimiter and
+   * a route path like `'…/files/*'`, or `documents/*.md` rendered as JSX text,
+   * both represented by the fixtures below — was read as an opening delimiter and
    * paired with the next real close far below, deleting a real class in
    * between. Green suite, unguarded token.
    *
@@ -707,7 +707,7 @@ describe('--state-quiet is a fill, never ink', () => {
    */
   it('does not let a stray slash-star in code swallow a real usage', () => {
     const caseA = [
-      '      <code>routine_create</code>',
+      '      <code>documents/*.md</code>',
       '      <span className="text-state-quiet">{row.source}</span>',
       '      {/* a later block comment, whose close pairs with the text above */}',
     ].join('\n');

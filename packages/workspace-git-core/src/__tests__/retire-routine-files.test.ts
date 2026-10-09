@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { mkdtemp, rm, mkdir, symlink, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,10 +9,16 @@ import { HookBus, makeAgentContext } from '@ax/core';
 import { registerWorkspaceGitHooks, workspaceIdForAgent } from '../impl.js';
 import { retireRoutineFiles } from '../retire-routine-files.js';
 
-const { afterRename } = vi.hoisted(() => ({ afterRename: { current: undefined as undefined | ((target: string) => Promise<void>) } }));
+const { afterRename, beforeLink } = vi.hoisted(() => ({
+  afterRename: { current: undefined as undefined | ((target: string) => Promise<void>) },
+  beforeLink: { current: undefined as undefined | ((temporary: string, target: string) => Promise<void>) },
+}));
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, rename: async (from: string, to: string) => {
+  return { ...actual, link: async (from: string, to: string) => {
+    await beforeLink.current?.(from, to);
+    await actual.link(from, to);
+  }, rename: async (from: string, to: string) => {
     await actual.rename(from, to);
     await afterRename.current?.(to);
   } };
@@ -20,7 +27,7 @@ vi.mock('node:fs/promises', async importOriginal => {
 const roots: string[] = [];
 const now = new Date('2026-10-09T00:00:00Z');
 const bytes = new TextEncoder().encode('opaque legacy content; not parsed');
-afterEach(async () => { vi.restoreAllMocks(); afterRename.current = undefined; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); afterRename.current = undefined; beforeLink.current = undefined; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function seed(agentId = 'a') {
   const repoRoot = await mkdtemp(join(tmpdir(), 'routine-retirement-'));
   roots.push(repoRoot);
@@ -108,6 +115,56 @@ describe('offline routine file retirement', () => {
     expect(await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now })).toEqual({ repositories: 1, removed: 0, failures: [{ repository: `${workspaceIdForAgent('a')}.git`, code: 'maintenance-failed' }] });
     expect(await git.resolveRef({ fs, gitdir: s.gitdir, ref: 'HEAD' })).toBe(s.head);
     expect((await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now })).removed).toBe(4);
+  });
+  it.each(['tree', 'commit'] as const)('refuses a truncated %s object left at its real OID by an interrupted write', async kind => {
+    const s = await seed();
+    const truncate = async (oid: string) => {
+      const path = join(s.gitdir, 'objects', oid.slice(0, 2), oid.slice(2));
+      const original = await readFile(path);
+      await writeFile(path, original.subarray(0, Math.max(1, Math.floor(original.length / 2))));
+      throw new Error('simulated interruption after partial publication');
+    };
+    if (kind === 'tree') {
+      const write = git.writeTree.bind(git);
+      vi.spyOn(git, 'writeTree').mockImplementationOnce(async args => truncate(await write(args)));
+    } else {
+      const write = git.writeCommit.bind(git);
+      vi.spyOn(git, 'writeCommit').mockImplementationOnce(async args => truncate(await write(args)));
+    }
+    expect((await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now })).failures[0]?.code).toBe('maintenance-failed');
+    expect(await git.resolveRef({ fs, gitdir: s.gitdir, ref: 'HEAD' })).toBe(s.head);
+    const retry = await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now });
+    expect(retry).toEqual({ repositories: 1, removed: 0, failures: [{ repository: `${workspaceIdForAgent('a')}.git`, code: 'invalid-object' }] });
+    expect(await git.resolveRef({ fs, gitdir: s.gitdir, ref: 'HEAD' })).toBe(s.head);
+    expect(await git.listFiles({ fs, gitdir: s.gitdir, ref: 'HEAD' })).toEqual(s.paths.slice().sort());
+    expect((await git.readBlob({ fs, gitdir: s.gitdir, oid: s.head, filepath: '.ax/IDENTITY.md' })).blob).toEqual(bytes);
+  });
+  it.each(['tree', 'commit'] as const)('keeps interrupted %s publication private and retries to a readable head', async kind => {
+    const s = await seed();
+    let interruptedPath: string | undefined;
+    let orphanPath: string | undefined;
+    beforeLink.current = async (temporary, target) => {
+      const compressed = await readFile(temporary);
+      if (!inflateSync(compressed).toString().startsWith(`${kind} `)) return;
+      // Simulate interruption after part of the staging file reaches disk.
+      await writeFile(temporary, compressed.subarray(0, Math.floor(compressed.length / 2)));
+      interruptedPath = target;
+      orphanPath = `${temporary}-orphan`;
+      // A hard-killed process cannot execute finally; leave its equivalent too.
+      await writeFile(orphanPath, compressed.subarray(0, 1));
+      throw new Error('simulated interrupted temporary object write');
+    };
+    expect((await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now })).failures[0]?.code).toBe('maintenance-failed');
+    expect(interruptedPath).toBeDefined();
+    await expect(readFile(interruptedPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await git.resolveRef({ fs, gitdir: s.gitdir, ref: 'HEAD' })).toBe(s.head);
+    beforeLink.current = undefined;
+    expect(await retireRoutineFiles({ repoRoot: s.repoRoot, dryRun: false, now })).toEqual({ repositories: 1, removed: 4, failures: [] });
+    const head = await git.resolveRef({ fs, gitdir: s.gitdir, ref: 'HEAD' });
+    expect((await git.readCommit({ fs, gitdir: s.gitdir, oid: head })).commit.parent).toEqual([s.head]);
+    expect(await git.listFiles({ fs, gitdir: s.gitdir, ref: head })).toEqual(s.paths.slice(4).sort());
+    for (const path of s.paths.slice(4)) expect((await git.readBlob({ fs, gitdir: s.gitdir, oid: head, filepath: path })).blob).toEqual(bytes);
+    expect((await readFile(orphanPath!)).length).toBe(1);
   });
   it('recognizes empty bare agent repositories without inventing a first commit', async () => {
     const s = await seed();

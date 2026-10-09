@@ -148,7 +148,8 @@ describe('buildPodSpec', () => {
     // fix, pod create failed 422. The original sessionId must still
     // land in AX_SESSION_ID — only the label surface gets sanitized.
     const longSessionId =
-      'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/slashes';
+      'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/slashes/and/a/longer/session-identity';
+    expect(Buffer.byteLength(longSessionId, 'utf8')).toBeGreaterThan(63);
     const spec = buildPodSpec(
       'pod-x',
       { ...baseInput, sessionId: longSessionId },
@@ -176,16 +177,22 @@ describe('buildPodSpec', () => {
     // Two sessionIds that share a long prefix but differ in the tail
     // get DIFFERENT labels. Without a hash suffix, naive truncation
     // would collide here and the same label would attach to pods from
-    // distinct routines.
-    const prefix = 'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/long-name';
+    // distinct sessions.
+    const prefix = 'session-agt_RpigE1XjEzmgwGHB34QcHA-path/with/a/long/shared/session-identity-prefix';
+    const sessionA = `${prefix}-A`;
+    const sessionB = `${prefix}-B`;
+    expect(Buffer.byteLength(prefix, 'utf8')).toBeGreaterThan(63);
+    expect(Buffer.byteLength(sessionA, 'utf8')).toBeGreaterThan(63);
+    expect(Buffer.byteLength(sessionB, 'utf8')).toBeGreaterThan(63);
+    expect(sessionA.slice(0, 63)).toBe(sessionB.slice(0, 63));
     const a = buildPodSpec(
       'pa',
-      { ...baseInput, sessionId: `${prefix}-A.md` },
+      { ...baseInput, sessionId: sessionA },
       baseResolved(),
     );
     const b = buildPodSpec(
       'pb',
-      { ...baseInput, sessionId: `${prefix}-B.md` },
+      { ...baseInput, sessionId: sessionB },
       baseResolved(),
     );
     const labelA = a.metadata.labels['ax.io/session-id'];
@@ -194,7 +201,7 @@ describe('buildPodSpec', () => {
     // Deterministic: rebuilding the same sessionId gives the same label.
     const aAgain = buildPodSpec(
       'pa2',
-      { ...baseInput, sessionId: `${prefix}-A.md` },
+      { ...baseInput, sessionId: sessionA },
       baseResolved(),
     );
     expect(aAgain.metadata.labels['ax.io/session-id']).toBe(labelA);
