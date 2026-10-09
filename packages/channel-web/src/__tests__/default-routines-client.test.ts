@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { RoutineUpsertDefaultInputSchema } from '@ax/routines-contract';
 import {
   upsertDefaultRoutine,
   updateDefaultRoutine,
 } from '../lib/default-routines';
-const { enabled: _enabled, ...definition } = RoutineDefinitionSchema.parse({
+const definition = RoutineUpsertDefaultInputSchema.parse({
   name: 'Heartbeat',
   promptBody: 'Run',
   trigger: { kind: 'interval', every: '1h' },
