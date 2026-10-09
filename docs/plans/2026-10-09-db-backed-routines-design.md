@@ -1,6 +1,6 @@
 # DB-backed routines
 
-Date: 2026-10-09. Status: proposed for written-spec review; implementation has not started.
+Date: 2026-10-09. Status: approved by the user; implementation has not started. The implementation plan is awaiting its own review and execution-method selection.
 
 Worktree: `/Users/vpulim/dev/ai/ax-next-db-routines`; branch: `codex/db-backed-routines`, based on `origin/main` at `a730c4c6e`.
 
