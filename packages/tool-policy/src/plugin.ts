@@ -10,6 +10,7 @@ import {
 import { evaluate } from './evaluate.js';
 import { runToolPolicyMigration, type ToolPolicyDatabase } from './migrations.js';
 import { BUILTIN_RULES } from './rules.js';
+import { consentError, createDbRoutineConsentStore, requireGrantContext, type RoutineConsentStore } from './routine-consent.js';
 import {
   createDbVerdictStore,
   createMemoryVerdictStore,
@@ -29,6 +30,14 @@ import {
   CONNECTOR_TOOL_NAMESPACE_RE,
 } from './verdicts.js';
 import {
+  RoutineConsentInputSchema,
+  RoutineConsentSchema,
+  GrantRoutineConsentInputSchema,
+  GrantRoutineConsentOutputSchema,
+  type RoutineConsent,
+  type RoutineConsentInput,
+  type GrantRoutineConsentInput,
+  type GrantRoutineConsentOutput,
   EgressListOutputSchema,
   EgressRememberOutputSchema,
   EgressRevokeOutputSchema,
@@ -99,22 +108,26 @@ interface IndexedRow {
   assertsReach: boolean;
 }
 
-function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
+function consentRelaxes(rule: PolicyRule): boolean {
+  return rule.verdict === 'hold' && rule.routineConsent === 'create-update' &&
+    (rule.match.tool === 'routine_create' || rule.match.tool === 'routine_update');
+}
+function indexRules(rules: readonly PolicyRule[], consentAllowed = false): IndexedRow[] {
   return rules
-    .map((rule, index) => ({ rule, index }))
+    .map((rule, index) => ({ rule, index, verdict: consentAllowed && consentRelaxes(rule) ? 'allow' as const : rule.verdict }))
     .sort((a, b) => {
       const d =
-        VERDICT_ORDER.indexOf(a.rule.verdict) - VERDICT_ORDER.indexOf(b.rule.verdict);
+        VERDICT_ORDER.indexOf(a.verdict) - VERDICT_ORDER.indexOf(b.verdict);
       return d !== 0 ? d : a.index - b.index;
     })
-    .map(({ rule }) => ({
+    .map(({ rule, verdict }) => ({
       tool: rule.match.tool,
-      assertsReach: rule.verdict !== 'deny',
+      assertsReach: verdict !== 'deny',
       row: {
-        verdict: rule.verdict,
+        verdict,
         capability: rule.capability,
         source: `rule:${rule.id}`,
-        provenance: rule.provenance ?? 'rule',
+        provenance: verdict !== rule.verdict ? 'grant' : rule.provenance ?? 'rule',
         // Always true for a built-in rule: `capability` is authored in-repo and
         // CI-linted, so it IS our claim. A row we cannot describe in our own
         // words (an MCP tool, an unmapped grant) is `described: false`, and this
@@ -132,7 +145,7 @@ function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
         // every host you already allowed, promises a gate that is not always
         // there — and a reader who believes the gate is always there is the
         // person this row is supposed to protect.
-        conditional: rule.match.when !== undefined || rule.egress !== undefined,
+        conditional: rule.match.when !== undefined || rule.egress !== undefined || rule.routineConsent !== undefined,
         // Left ABSENT rather than set to `undefined` when the rule declares
         // nothing — the same shape `theirDescription` / `mechanicalLabel` use
         // on a built-in row. `exactOptionalPropertyTypes` is on for this
@@ -301,6 +314,7 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
   const indexed = indexRules(rules).map((r) => ({ ...r, row: Object.freeze(r.row) }));
   Object.freeze(indexed);
 
+  let consentStore: RoutineConsentStore | undefined;
   let egressStore: EgressAllowlistStore = opts?.egressStore ?? createMemoryEgressAllowlistStore();
   let verdictStore: VerdictStore = opts?.verdictStore ?? createMemoryVerdictStore();
   const cacheTtlMs = opts?.verdictCacheTtlMs ?? DEFAULT_VERDICT_CACHE_TTL_MS;
@@ -311,6 +325,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: [
+        'tool-policy:get-routine-consent',
+        'tool-policy:grant-routine-consent',
+        'tool-policy:revoke-routine-consent',
         'tool-policy:evaluate',
         'tool-policy:list-capabilities',
         'egress-allowlist:remember',
@@ -333,6 +350,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
       // deployment accumulates, which is a different thing from the reviewed
       // rules and is why it is a table rather than a constant.
+      // Runtime-only consent ACL calls agents:resolve and
+      // agents:can-manage-routines; missing providers/outages fail closed.
+      // Declaring these reverse edges closes agents -> tool-policy's connector
+      // snapshot -> agents at boot. No ACL service is invoked during init.
       calls: [],
       // OPTIONAL, not required, because a deployment without a database is
       // perfectly capable of enforcing this table — it just cannot remember
@@ -347,7 +368,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             'approval, never a silent grant. Per-tool verdicts (connector ' +
             'defaults, agent overrides, which namespaces each agent chooses ' +
             'for) are likewise in-process only: after a restart connector ' +
-            'tools fall back to Ask first and abilities to their static rule.',
+            'tools fall back to Ask first and abilities to their static rule. ' +
+            'Routine consent has no memory fallback: its services fail explicitly ' +
+            'and create/update remain held without durable storage.',
         },
       ],
       // Purges (TASK-736): an agent's overrides go with the agent; a
@@ -369,10 +392,7 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       // not a try/catch around the call: a MISSING database is a supported
       // configuration with a stated degradation, while a database that is
       // present and broken is a boot failure we want to hear about.
-      if (
-        (opts?.egressStore === undefined || opts?.verdictStore === undefined) &&
-        bus.hasService('database:get-instance')
-      ) {
+      if (bus.hasService('database:get-instance')) {
         const { db } = await bus.call<unknown, { db: Kysely<unknown> }>(
           'database:get-instance',
           initCtx,
@@ -380,9 +400,64 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         );
         const typed = db as Kysely<ToolPolicyDatabase>;
         await runToolPolicyMigration(typed);
+        consentStore = createDbRoutineConsentStore(typed);
         if (opts?.egressStore === undefined) egressStore = createDbEgressAllowlistStore(typed);
         if (opts?.verdictStore === undefined) verdictStore = createDbVerdictStore(typed);
       }
+
+      function durableConsent(): RoutineConsentStore {
+        if (!consentStore) throw consentError('consent-unavailable');
+        return consentStore;
+      }
+      async function consentAccess(ctx: AgentContext, agentId: string, manage: boolean): Promise<void> {
+        if (!isOwnerId(ctx.userId) || !isId(agentId)) throw consentError('forbidden');
+        if (!bus.hasService('agents:resolve') || (manage && !bus.hasService('agents:can-manage-routines'))) {
+          throw consentError('consent-unavailable');
+        }
+        await bus.call('agents:resolve', ctx, { agentId, userId: ctx.userId });
+        if (manage) {
+          const result = await bus.call<unknown, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId });
+          if (result.allowed !== true) throw consentError('forbidden');
+        }
+      }
+      async function consentAllowed(ctx: AgentContext, agentId: string): Promise<boolean> {
+        try {
+          const store = durableConsent();
+          await consentAccess(ctx, agentId, true);
+          return (await store.get(agentId, ctx.userId)).enabled;
+        } catch {
+          // No cache: revoke through any replica takes effect at the next check.
+          return false;
+        }
+      }
+      bus.registerService<RoutineConsentInput, RoutineConsent>(
+        'tool-policy:get-routine-consent', PLUGIN_NAME, async (ctx, raw) => {
+          const store = durableConsent();
+          const input = RoutineConsentInputSchema.safeParse(raw);
+          if (!input.success) throw consentError('invalid-payload');
+          await consentAccess(ctx, input.data.agentId, false);
+          return store.get(input.data.agentId, ctx.userId);
+        }, { returns: RoutineConsentSchema },
+      );
+      bus.registerService<RoutineConsentInput, RoutineConsent>(
+        'tool-policy:revoke-routine-consent', PLUGIN_NAME, async (ctx, raw) => {
+          const store = durableConsent();
+          const input = RoutineConsentInputSchema.safeParse(raw);
+          if (!input.success) throw consentError('invalid-payload');
+          await consentAccess(ctx, input.data.agentId, true);
+          return store.revoke(input.data.agentId, ctx.userId);
+        }, { returns: RoutineConsentSchema },
+      );
+      bus.registerService<GrantRoutineConsentInput, GrantRoutineConsentOutput>(
+        'tool-policy:grant-routine-consent', PLUGIN_NAME, async (ctx, raw) => {
+          const input = GrantRoutineConsentInputSchema.safeParse(raw);
+          if (!input.success) throw consentError('invalid-payload');
+          requireGrantContext(ctx, input.data);
+          const store = durableConsent();
+          await consentAccess(ctx, ctx.agentId, true);
+          return store.grant(ctx.agentId, ctx.userId, input.data);
+        }, { returns: GrantRoutineConsentOutputSchema },
+      );
 
       for (const raw of opts?.globalEgressHosts ?? []) {
         const host = normalizeHost(raw);
@@ -613,7 +688,16 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           const opts2 = egressTools.has(call.name)
             ? { allowedHosts: await allowedHosts(ctx) }
             : {};
-          const base = evaluate(rules, call, opts2);
+          // The matched rule must speak first: deny and unopted holds never
+          // consult or inherit consent. Actor/agent are host context only.
+          const staticResult = evaluate(rules, call, opts2);
+          const eligibleHold = staticResult.verdict === 'hold' &&
+            rules.some(rule => rule.id === staticResult.ruleId && consentRelaxes(rule));
+          const routineConsentAllowed = eligibleHold &&
+            (input.agentId === undefined || input.agentId === ctx.agentId) &&
+            await consentAllowed(ctx, ctx.agentId);
+          const base = routineConsentAllowed
+            ? evaluate(rules, call, { ...opts2, routineConsentAllowed: true }) : staticResult;
           // Only an overridable tool (an ability or `mcp.*`) pays for the
           // verdict-store read. Every other tool's answer is the table's —
           // EXCEPT an MCP-spelled name no store row can address (an unlifted
@@ -1105,6 +1189,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           return undefined;
         }
         try {
+          // Retire consent first: the durable fence blocks a pre-authorized
+          // in-flight grant/revoke from recreating rows after this purge.
+          if (consentStore) await consentStore.purgeAgent(agentId);
           const deleted = await verdictStore.purgeAgent(agentId);
           ctx.logger.info('tool_policy_purged_for_deleted_agent', { agentId, deleted });
         } catch (err) {
@@ -1197,10 +1284,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       bus.registerService<ListCapabilitiesInput, ListCapabilitiesOutput>(
         'tool-policy:list-capabilities',
         PLUGIN_NAME,
-        // The rule TABLE is global today, so `agentId` does not change the
-        // answer. It is in the payload because the per-tenant alternate impl
-        // (see the boundary review) needs it and adding it later would break
-        // every caller.
+        // The reviewed TABLE stays static. Durable create/update consent
+        // changes the displayed runtime verdict for this agent/person, while
+        // preserving the rule's capability, source and effects.
         //
         // The ROWS are not global, and that is the point of `outOfReach`: the
         // table says what the product enforces, an agent's wiring says what it
@@ -1218,8 +1304,8 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         // installed AT ALL, which the scope subtraction could never establish
         // because it only ever walked tools the catalog already held
         // (TASK-416).
-        async (_ctx, input) => ({
-          rows: applyReach(indexed, input?.outOfReach),
+        async (ctx, input) => ({
+          rows: applyReach(await consentAllowed(ctx, input.agentId) ? indexRules(rules, true) : indexed, input?.outOfReach),
           fullyDescribedTools: fullyDescribedTools(rules),
           hostProvidedTools: hostProvidedTools(rules),
         }),
