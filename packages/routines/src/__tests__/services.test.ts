@@ -1,17 +1,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
-import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Summarize', trigger: { kind: 'interval', every: '1h' } });
 let h: RoutineHarness;
 afterEach(async () => { await h?.close(); });
 async function create(agentId = h.agentId, requestId = 'create') { return h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId, requestId, definition }); }
 describe('registered routine services with real agents', () => {
   it('scopes reads and returns complete safe projections', async () => {
-    h = await createRoutineHarness(); const row = await create();
+    h = await createRoutineHarness(); await materializePersonalDefaults(h); const row = await create();
     expect(RoutineViewSchema.parse(row)).toEqual(row);
     expect(row).not.toHaveProperty('ownerUserId');
     expect(row.permissions).toEqual({ edit: true, stop: true, fire: true, manageSecret: true });
-    await expect(h.bus.call('routines:list', h.owner, { agentId: h.agentId })).resolves.toEqual({ routines: [row] });
+    const { routines } = await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId });
+    expect(routines.filter(r => r.origin === 'authored')).toEqual([row]);
+    expect(routines.filter(r => r.origin === 'default').map(r => r.name)).toEqual(['heartbeat']);
     await expect(h.bus.call('routines:get', h.owner, { agentId: h.teamAgentId, routineId: row.routineId })).rejects.toMatchObject({ toolCode: 'not-found' });
     await expect(h.bus.call('routines:list', h.teamAdmin, { agentId: h.agentId })).rejects.toMatchObject({ code: 'forbidden' });
   });

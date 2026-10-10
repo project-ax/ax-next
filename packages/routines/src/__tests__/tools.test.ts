@@ -3,7 +3,7 @@ import { makeAgentContext, SafeToolError, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
-import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
 
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Check outstanding work.', trigger: { kind: 'interval', every: '1h' } });
 let h: RoutineHarness;
@@ -36,9 +36,9 @@ describe('routine tools through real policy, decisions, agents and database', ()
     expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', actor(), { agentId: h.agentId })).routines.filter(r => r.origin === 'authored')).toHaveLength(0);
   });
   it('holds before writing and executes an exact approved retry once with safe projections', async () => {
-    h = await createRoutineHarness(); const call = createCall();
+    h = await createRoutineHarness(); await materializePersonalDefaults(h); const call = createCall();
     await approve(call);
-    expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', actor(), { agentId: h.agentId })).routines).toHaveLength(0);
+    expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', actor(), { agentId: h.agentId })).routines.filter(r => r.origin === 'authored')).toHaveLength(0);
     const row = await execute(call); expect(RoutineViewSchema.parse(row)).toEqual(row);
     expect(await execute(call)).toEqual(row);
     expect(row).not.toHaveProperty('ownerUserId');
@@ -110,7 +110,7 @@ describe('routine tool validation and durable execution', () => {
     expect(callSpy.mock.calls.some(([name]) => name.startsWith('workspace:'))).toBe(false);
   });
   it('isolates concurrent authorization contexts and recovers committed CRUD after lost response', async () => {
-    h = await createRoutineHarness(); const a = createCall('a'), b = createCall('b'); await approve(a); await approve(b);
+    h = await createRoutineHarness(); await materializePersonalDefaults(h); const a = createCall('a'), b = createCall('b'); await approve(a); await approve(b);
     const shared = actor(); const contexts: unknown[] = [];
     const original = h.bus.callJoined.bind(h.bus);
     const spy = vi.spyOn(h.bus, 'callJoined').mockImplementation(async (name, ctx, input) => {
@@ -122,7 +122,7 @@ describe('routine tool validation and durable execution', () => {
     const rows = await Promise.all([a,b].map(call => h.bus.call('tool:execute:routine_create', shared, call)));
     expect(rows).toHaveLength(2); expect(contexts[0]).not.toBe(contexts[1]);
     expect(shared.state.has('decisions:routine-execution')).toBe(false);
-    expect(await createRoutinesStore(h.db).list({ agentId: h.agentId })).toHaveLength(2);
+    expect((await createRoutinesStore(h.db).list({ agentId: h.agentId })).filter(r => r.definitionId === null)).toHaveLength(2);
     spy.mockRestore();
   });
   it('dispatches exact approved fire once and rejects explicit failed dispatch output', async () => {

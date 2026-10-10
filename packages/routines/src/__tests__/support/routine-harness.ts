@@ -22,6 +22,15 @@ export type RoutineHarness = {
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
+
+/** Make seeded-default coexistence independent of the bootstrap tick's timing. */
+export async function materializePersonalDefaults(harness: RoutineHarness): Promise<void> {
+  const { agents } = await harness.bus.call<unknown, { agents: Array<{ agentId: string; ownerUserId: string }> }>(
+    'agents:list-personal-owners', harness.owner, {},
+  );
+  await createRoutinesStore(harness.db).materializeMissing({ agents, now: new Date('2026-10-09T12:00:00Z') });
+}
+
 export async function createRoutineHarness(options: { clock?: Clock; strictCredentials?: boolean; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
