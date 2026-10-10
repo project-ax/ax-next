@@ -20,8 +20,9 @@
 // each host tool's own handler (we never re-implement JSON Schema → Zod).
 // Each property's authored `description` (when present and a non-empty
 // string) is carried over via `.describe()` so the model still sees it in
-// `tools/list` — that's free, doesn't add validation, and without it every
-// property is advertised as a bare `{}` with no hint of what it means.
+// `tools/list`. Structured properties also carry their complete authored
+// JSON Schema as description metadata; otherwise nested fields and trigger
+// variants disappear. This does not add SDK validation.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
@@ -82,9 +83,11 @@ export interface CreateHostMcpServerOptions {
  * description has been observed inferring the wrong shape for it (e.g. a
  * malformed `when`) and failing host-side validation on a call that a
  * one-line description would have prevented. We deliberately do NOT map
- * types or `required` here (that would add SDK-side validation to every
- * host tool); `description` is metadata only and changes no validation
- * behavior. Tools without declared properties fall back to an empty
+ * types or `required` into SDK validation. For structured properties we
+ * include the authored JSON Schema in description metadata so the model
+ * can see nested fields, required keys and alternatives while malformed
+ * input still reaches the host's safe validation errors. Tools without
+ * declared properties fall back to an empty
  * shape — they genuinely expect no input.
  */
 function shapeFromInputSchema(
@@ -105,12 +108,19 @@ function shapeFromInputSchema(
   for (const [key, value] of Object.entries(
     rawProps as Record<string, unknown>,
   )) {
-    const description =
+    const authoredDescription =
       value !== null && typeof value === 'object' && !Array.isArray(value)
         ? (value as { description?: unknown }).description
         : undefined;
-    shape[key] =
-      typeof description === 'string' && description.length > 0
+    let description = typeof authoredDescription === 'string' ? authoredDescription : '';
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const schema = value as Record<string, unknown>;
+      if (schema.type === 'object' || schema.type === 'array' ||
+          ['properties', 'items', 'oneOf', 'anyOf', 'allOf', '$ref'].some(field => Object.hasOwn(schema, field))) {
+        description = `${description ? `${description}\n` : ''}JSON schema: ${JSON.stringify(schema)}`;
+      }
+    }
+    shape[key] = description.length > 0
         ? z.unknown().describe(description)
         : z.unknown();
   }

@@ -409,6 +409,44 @@ describe('createHostMcpServer', () => {
     expect(server.name).toBe('ax-host-tools');
   });
 
+  it('advertises nested host input schemas as metadata without adding SDK validation', async () => {
+    const definition = {
+      type: 'object', additionalProperties: false,
+      required: ['name', 'promptBody', 'trigger'],
+      properties: {
+        name: { type: 'string' }, promptBody: { type: 'string' },
+        trigger: { oneOf: [
+          { type: 'object', required: ['kind', 'every'], properties: { kind: { const: 'interval' }, every: { type: 'string' } } },
+          { type: 'object', required: ['kind', 'expr', 'tz'], properties: { kind: { const: 'cron' }, expr: { type: 'string' }, tz: { type: 'string' } } },
+          { type: 'object', required: ['kind', 'path'], properties: { kind: { const: 'webhook' }, path: { type: 'string' }, events: { type: 'array', items: { type: 'string' } } } },
+        ] },
+      },
+    };
+    const patch = { ...definition, required: [], description: 'Only supplied fields change.' };
+    const { client } = mkClient(async () => ({ output: 'ok' }));
+    const server = createHostMcpServer({ client, tools: [{
+      name: 'routine_create', executesIn: 'host', inputSchema: {
+        type: 'object', required: ['requestId', 'definition'],
+        properties: { requestId: { type: 'string' }, definition, patch },
+      },
+    }] });
+    // Exercise the actual advertised MCP response, not an adapter helper.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handler = (server.instance as any).server._requestHandlers.get('tools/list');
+    const { tools } = await handler({ method: 'tools/list', params: {} }, {});
+    const properties = tools[0].inputSchema.properties;
+    expect(properties.definition.description).toContain('JSON schema: ');
+    expect(JSON.parse(properties.definition.description.split('JSON schema: ')[1])).toEqual(definition);
+    expect(properties.patch.description).toContain('Only supplied fields change.');
+    expect(JSON.parse(properties.patch.description.split('JSON schema: ')[1])).toEqual(patch);
+    expect(properties.requestId.description).toBeUndefined();
+    // Authority and strict validation stay on the host. The SDK preserves a
+    // malformed nested call so it can receive the host's safe field error.
+    const entries = buildHostToolEntries(client, [{ name: 'routine_create', executesIn: 'host', inputSchema: { type: 'object', properties: { definition } } }]);
+    const shape = (entries[0] as unknown as { inputSchema: Record<string, z.ZodTypeAny> }).inputSchema;
+    expect(z.object(shape).parse({ definition: { instructions: 'wrong field' } })).toEqual({ definition: { instructions: 'wrong field' } });
+  });
+
   it('advertises per-property descriptions from the JSON Schema in tools/list', async () => {
     const toolWithDescribedProps: ToolDescriptor = {
       name: 'memory.recall.described',
