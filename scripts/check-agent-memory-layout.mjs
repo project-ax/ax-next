@@ -75,6 +75,8 @@ try {
       }
       await page.getByRole('tab', { name: 'Activity', exact: true }).click();
       assert(await page.getByText('Learned in this chat', { exact: true }).isVisible(), 'Learned card disappeared on Activity');
+      const learnedToggle = page.getByRole('button', { name: /^Learned in this chat/ });
+      if (await learnedToggle.getAttribute('aria-expanded') === 'false') await learnedToggle.click();
       await page.getByRole('button', { name: /^from your message/i }).click();
       await page.locator('[data-memory-source="flash"]').waitFor({ state: 'attached' });
       await page.screenshot({ path: `/tmp/ax-autoship-restyle/TASK-890/rail-${width}.png` });

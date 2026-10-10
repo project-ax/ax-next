@@ -45,6 +45,7 @@ import {
   useMemoryReceipt,
 } from './MemoryCorrection';
 import {
+  LEARNED_STATUS_PAUSED,
   MEMORY_CLOSURE_BADGE,
   MEMORY_FIX,
   MEMORY_FORGET,
@@ -167,7 +168,7 @@ function DegradedNotice() {
 function ExtractionPausedNotice() {
   return (
     <Alert>
-      <AlertTitle>Memory is paused</AlertTitle>
+      <AlertTitle>{LEARNED_STATUS_PAUSED}</AlertTitle>
       <AlertDescription>
         We&apos;re not picking up anything new from your conversations right now, because
         this workspace doesn&apos;t have an OpenRouter key yet. An admin can add one under

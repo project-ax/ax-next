@@ -179,15 +179,88 @@ function scrollIntoView() {
   });
 }
 
-describe('LearnedInChat — the six states', () => {
-  it('nothing new: says so, rather than showing an empty card', async () => {
+describe('LearnedInChat — compact disclosure', () => {
+  it('hides a successful empty read and disabled memory', async () => {
+    const { unmount } = render(<Harness />);
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    expect(screen.queryByText(LEARNED_NOTHING_NEW)).toBeNull();
+    unmount();
+    render(<Harness enabled={false} />);
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+  });
+
+  it('starts collapsed, shows the total, and retains rows/actions across toggles', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a'), st('b')], degraded: [] });
     render(<Harness />);
-    expect(await screen.findByText(LEARNED_NOTHING_NEW)).toBeTruthy();
+    const toggle = await screen.findByRole('button', { name: /Learned in this chat · 2/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(memoryStatementText(st('a')))).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: memoryFixLabel(memoryStatementText(st('a'))) })).toBeTruthy();
     expect(screen.getByRole('button', { name: LEARNED_SEE_ALL })).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.queryByRole('button', { name: LEARNED_SEE_ALL })).toBeNull();
+    await recordBatch([st('a'), st('b'), st('c')], ['c']);
+    await screen.findByRole('button', { name: /Learned in this chat · 3/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByText(memoryStatementText(st('c')))).toBeTruthy();
+    expect(recall).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows compact paused and failed states without facts, with recovery behind the disclosure', async () => {
+    render(<Harness onOpenModelKeys={vi.fn()} />);
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    expect(screen.getByText('Memory is paused')).toBeTruthy();
+    expect(screen.queryByText(LEARNED_PAUSED)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Learned in this chat/ }));
+    expect(screen.getByRole('button', { name: LEARNED_PAUSED_ACTION })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Learned in this chat/ }));
+    act(() => push({ kind: 'status', extraction: 'ok', conversation: 'idle' }));
+    act(() => push({ kind: 'activity', state: 'failed', statementIds: [] }));
+    expect(screen.getByText("Couldn't save memory")).toBeTruthy();
+    expect(screen.queryByText(LEARNED_SAVE_FAILED)).toBeNull();
+  });
+
+  it('keeps an active Undo available after collapsing and reopening', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    unforget.mockResolvedValue({ restored: ['a'] });
+    render(<Harness />);
+    const toggle = await screen.findByRole('button', { name: /Learned in this chat · 1/ });
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: memoryForgetLabel(memoryStatementText(st('a'))) }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: MEMORY_FORGET }));
+    await screen.findByRole('button', { name: memoryUndoLabel(st('a').value) });
+    fireEvent.click(toggle);
+    expect(screen.queryByRole('button', { name: memoryUndoLabel(st('a').value) })).toBeNull();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: memoryUndoLabel(st('a').value) }));
+    expect(await screen.findByText(memoryStatementText(st('a')))).toBeTruthy();
+    expect(unforget).toHaveBeenCalledWith('a1', ['a']);
+  });
+});
+
+function renderExpanded(ui: Parameters<typeof render>[0]) {
+  const result = render(ui);
+  const toggle = screen.queryByRole('button', { name: /^Learned in this chat/ });
+  if (toggle) fireEvent.click(toggle);
+  return result;
+}
+
+describe('LearnedInChat — the six states', () => {
+  it('nothing new: hides the disclosure after a successful read', async () => {
+    renderExpanded(<Harness />);
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    expect(screen.queryByText(LEARNED_NOTHING_NEW)).toBeNull();
+    expect(screen.queryByRole('button', { name: LEARNED_SEE_ALL })).toBeNull();
   });
 
   it('extracting: a pulse and a sentence, no progress bar', async () => {
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await waitFor(() => expect(events).toHaveBeenCalled());
     act(() => push({ kind: 'activity', state: 'extracting', statementIds: [] }));
     expect(screen.getByText(LEARNED_EXTRACTING)).toBeTruthy();
@@ -197,7 +270,7 @@ describe('LearnedInChat — the six states', () => {
 
   it('paused: explains, and offers "Fix this" only to someone who can', async () => {
     const onOpenModelKeys = vi.fn();
-    const { unmount } = render(<Harness onOpenModelKeys={onOpenModelKeys} />);
+    const { unmount } = renderExpanded(<Harness onOpenModelKeys={onOpenModelKeys} />);
     await waitFor(() => expect(events).toHaveBeenCalled());
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
     expect(screen.getByText(LEARNED_PAUSED)).toBeTruthy();
@@ -205,7 +278,7 @@ describe('LearnedInChat — the six states', () => {
     expect(onOpenModelKeys).toHaveBeenCalledTimes(1);
     unmount();
 
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await waitFor(() => expect(events).toHaveBeenCalledTimes(2));
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
     expect(screen.getByText(LEARNED_PAUSED)).toBeTruthy();
@@ -213,7 +286,7 @@ describe('LearnedInChat — the six states', () => {
   });
 
   it('save failed: says nothing is lost, and offers no button nothing backs', async () => {
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await waitFor(() => expect(events).toHaveBeenCalled());
     act(() => push({ kind: 'activity', state: 'failed', statementIds: [] }));
     expect(screen.getByText(LEARNED_SAVE_FAILED)).toBeTruthy();
@@ -222,7 +295,7 @@ describe('LearnedInChat — the six states', () => {
 
   it('read failed: unknown, not empty — and Try again reads again', async () => {
     recall.mockRejectedValueOnce(new Error('down'));
-    render(<Harness />);
+    renderExpanded(<Harness />);
     expect(await screen.findByText(LEARNED_READ_FAILED)).toBeTruthy();
     expect(screen.queryByText(LEARNED_NOTHING_NEW)).toBeNull();
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
@@ -231,8 +304,8 @@ describe('LearnedInChat — the six states', () => {
   });
 
   it('not enabled: says the workspace has no memory, with no action and no link', () => {
-    render(<Harness enabled={false} />);
-    expect(screen.getByText(LEARNED_NOT_ENABLED)).toBeTruthy();
+    renderExpanded(<Harness enabled={false} />);
+    expect(screen.queryByText(LEARNED_NOT_ENABLED)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
     expect(recall).not.toHaveBeenCalled();
   });
@@ -241,7 +314,7 @@ describe('LearnedInChat — the six states', () => {
 describe('LearnedInChat — rows', () => {
   it('shows a live batch on top with its time, the first read under "Earlier in this chat"', async () => {
     recall.mockResolvedValueOnce({ statements: [st('old')], degraded: [] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await screen.findByText(memoryStatementText(st('old')));
     // Nothing to be earlier than yet.
     expect(screen.queryByText(LEARNED_EARLIER)).toBeNull();
@@ -266,7 +339,7 @@ describe('LearnedInChat — rows', () => {
       st(`r${i}`, { when: `2026-09-0${i + 1}T00:00:00.000Z` }),
     );
     recall.mockResolvedValueOnce({ statements: seven, degraded: [] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await screen.findByText(memoryStatementText(seven[6]!));
     expect(screen.getAllByRole('button', { name: /^Fix: / })).toHaveLength(LEARNED_ROW_CAP);
     fireEvent.click(screen.getByRole('button', { name: learnedMore(2) }));
@@ -276,7 +349,8 @@ describe('LearnedInChat — rows', () => {
 
   it('See all memory opens the Memory tab', async () => {
     const onSeeAll = vi.fn();
-    render(<Harness onSeeAll={onSeeAll} />);
+    recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
+    renderExpanded(<Harness onSeeAll={onSeeAll} />);
     fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
     expect(onSeeAll).toHaveBeenCalledTimes(1);
   });
@@ -284,7 +358,7 @@ describe('LearnedInChat — rows', () => {
 
 describe('LearnedInChat — "N new"', () => {
   it('counts a batch as new, and clears only once the block has been on screen', async () => {
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await waitFor(() => expect(events).toHaveBeenCalled());
     await recordBatch([st('a'), st('b')], ['a', 'b']);
     expect(await screen.findByText(learnedNewBadge(2))).toBeTruthy();
@@ -297,7 +371,7 @@ describe('LearnedInChat — "N new"', () => {
   });
 
   it('announces each batch once, politely', async () => {
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await waitFor(() => expect(events).toHaveBeenCalled());
     const region = document.querySelector('[data-learned-announcer]') as HTMLElement;
     expect(region.getAttribute('role')).toBe('status');
@@ -321,7 +395,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
   it('Fix uses the shared dialog, keeps the row in its fixed form and says "Updated."', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a', { value: 'Boston' })], degraded: [] });
     correct.mockResolvedValue({ id: 'a2' });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const text = memoryStatementText(st('a', { value: 'Boston' }));
     fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel(text) }));
     const dialog = await screen.findByRole('dialog');
@@ -351,7 +425,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     recall.mockResolvedValueOnce({ statements: [original], degraded: [] });
     correct.mockResolvedValue({ id: 'a2' });
     uncorrect.mockResolvedValue({ undone: true });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     fireEvent.click(
       await screen.findByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }),
     );
@@ -384,7 +458,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
     unforget.mockResolvedValue({ restored: ['a'] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const text = memoryStatementText(st('a'));
     const forgetBtn = await screen.findByRole('button', { name: memoryForgetLabel(text) });
     forgetBtn.focus();
@@ -416,7 +490,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
   it('a forgotten row stays gone when a second Forget replaces its receipt', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a'), st('b'), st('c')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const forgetRow = async (id: string) => {
       fireEvent.click(
         await screen.findByRole('button', {
@@ -439,7 +513,7 @@ describe('LearnedInChat — Fix, Forget, Undo', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     recall.mockResolvedValueOnce({ statements: [st('a'), st('b')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     fireEvent.click(
       await screen.findByRole('button', { name: memoryForgetLabel(memoryStatementText(st('a'))) }),
     );
@@ -464,7 +538,7 @@ describe('LearnedInChat — "from your message"', () => {
       degraded: [],
     });
     const sources = new Map([['t-7', { speaker: 'person' as const, excerpt: 'Moving to Denver' }]]);
-    render(<Harness onJump={onJump} sources={sources} />);
+    renderExpanded(<Harness onJump={onJump} sources={sources} />);
     const links = await screen.findAllByRole('button', {
       name: learnedSourceLabel('person', 'Moving to Denver'),
     });
@@ -495,7 +569,7 @@ describe('LearnedInChat — "from your message"', () => {
       ['t-user', { speaker: 'person', excerpt: 'Our go-live moved to Oct 14' }],
       ['t-agent', { speaker: 'agent', excerpt: 'Got it — Oct 14 for the go-live' }],
     ]);
-    render(<Harness sources={sources} />);
+    renderExpanded(<Harness sources={sources} />);
     const yours = await screen.findByRole('button', {
       name: learnedSourceLabel('person', 'Our go-live moved to Oct 14'),
     });
@@ -513,7 +587,7 @@ describe('LearnedInChat — "from your message"', () => {
       statements: [st('a', { sourceTurnId: 't-gone' })],
       degraded: [],
     });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await screen.findByText(memoryStatementText(st('a')));
     expect(screen.queryByText(LEARNED_FROM_YOUR_MESSAGE)).toBeNull();
     expect(screen.queryByText(LEARNED_FROM_MY_REPLY)).toBeNull();
@@ -548,7 +622,7 @@ describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', (
   it('Fix → Save lands on the "Updated." line under the fixed row, with Undo the next stop', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a', { value: 'Boston' })], degraded: [] });
     correct.mockResolvedValue({ id: 'a2' });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const text = memoryStatementText(st('a', { value: 'Boston' }));
     press(await screen.findByRole('button', { name: memoryFixLabel(text) }));
     const dialog = await screen.findByRole('dialog');
@@ -567,7 +641,7 @@ describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', (
 
   it('Fix → Cancel returns focus to the Fix button', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const fix = await screen.findByRole('button', {
       name: memoryFixLabel(memoryStatementText(st('a'))),
     });
@@ -579,7 +653,7 @@ describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', (
 
   it('Forget → Cancel returns focus to the Forget button', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const btn = await screen.findByRole('button', {
       name: memoryForgetLabel(memoryStatementText(st('a'))),
     });
@@ -618,7 +692,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     recall.mockResolvedValueOnce({ statements: [boston, st('b')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
     unforget.mockResolvedValue({ restored: ['a'] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await forgetBoston();
     press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
 
@@ -632,7 +706,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
     correct.mockResolvedValue({ id: 'a2' });
     uncorrect.mockResolvedValue({ undone: true });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await fixBoston();
     press(screen.getByRole('button', { name: memoryUndoFixLabel('Denver') }));
 
@@ -644,7 +718,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
     unforget.mockRejectedValue(new Error('down'));
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await forgetBoston();
     press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
     const retry = await screen.findByRole('button', { name: 'Try again' });
@@ -655,7 +729,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     vi.useFakeTimers({ shouldAdvanceTime: true });
     recall.mockResolvedValueOnce({ statements: [boston, st('b')], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await forgetBoston();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(11_000);
@@ -663,14 +737,28 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     await waitFor(() => expect(screen.queryByText(MEMORY_FORGOTTEN)).toBeNull());
     // The row is gone for good, so the block's own heading is where focus waits.
     expect(screen.queryByText(text)).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(LEARNED_TITLE)));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(LEARNED_TITLE).closest('button')));
+  });
+
+  it('keeps the disclosure as a focus landing after the final Forget, then hides on close', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    renderExpanded(<Harness />);
+    await forgetBoston();
+    await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+    const toggle = await screen.findByRole('button', { name: /^Learned in this chat · 0/ });
+    await waitFor(() => expect(document.activeElement).toBe(toggle));
+    expect(screen.getByText(LEARNED_NOTHING_NEW)).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
   });
 
   it('an Updated receipt that runs out while it has focus hands focus to the fixed row', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
     correct.mockResolvedValue({ id: 'a2' });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     await fixBoston();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(11_000);
@@ -684,7 +772,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     recall.mockResolvedValueOnce({ statements: [boston], degraded: [] });
     forget.mockResolvedValue({ forgotten: true });
     unforget.mockResolvedValue({ restored: ['a'] });
-    render(<Harness />);
+    renderExpanded(<Harness />);
     const outcome = await forgetBoston();
     expect(outcome.closest('[role="status"],[role="alert"],[aria-live]')).toBeNull();
     const said = document.querySelector('[data-memory-said]');

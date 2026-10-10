@@ -1607,7 +1607,7 @@ export function AgentView({
   }
 
   const railProps = {
-    detail, learned: learned.rows.length > 0 ? learnedBlock : null, openPastId: pastId, tab, onTab,
+    detail, learned: learnedBlock, openPastId: pastId, tab, onTab,
     counts: { files: fileCount },
     onChanged,
     busy: streaming || rereading,

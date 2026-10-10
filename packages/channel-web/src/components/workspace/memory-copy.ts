@@ -349,3 +349,10 @@ export const MEMORY_NOTED_YESTERDAY = 'Yesterday';
 export function memoryListFooter(count: number): string {
   return `${count} ${count === 1 ? 'memory' : 'memories'} · Fix and Forget live in each row's menu.`;
 }
+
+// Compact rail summaries; full explanations and recovery actions stay inside.
+export const LEARNED_STATUS_LOADING = 'Checking memory…';
+export const LEARNED_STATUS_READING = 'Reading this chat…';
+export const LEARNED_STATUS_PAUSED = 'Memory is paused';
+export const LEARNED_STATUS_SAVE_FAILED = "Couldn't save memory";
+export const LEARNED_STATUS_READ_FAILED = "Couldn't read memory";
