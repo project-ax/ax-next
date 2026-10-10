@@ -1,6 +1,6 @@
 # DB-backed routines
 
-Date: 2026-10-09. Status: design and implementation plan approved; Tasks 1–11 implemented on `codex/db-backed-routines`. Task 12 validation and kind acceptance are in progress; this is not a deployment-completion claim.
+Date: 2026-10-09. Status: design and implementation plan approved; Tasks 1–11 implemented on `codex/db-backed-routines`. Task 12 validation and kind acceptance are complete; final independent task/branch review is pending. This is not a production deployment claim.
 
 Worktree: `/Users/vpulim/dev/ai/ax-next-db-routines`; branch: `codex/db-backed-routines`, based on `origin/main` at `a730c4c6e`.
 

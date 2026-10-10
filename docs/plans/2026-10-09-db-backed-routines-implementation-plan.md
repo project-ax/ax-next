@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node >=24, pnpm 10.33.2, TypeScript project references, Zod 3.25.76, Croner 8.1.2, Kysely/PostgreSQL, Vitest/Testcontainers, React and existing shadcn components. Reuse isomorphic-git 1.37.5 for offline workspace maintenance.
 
-**Spec:** [Approved design](2026-10-09-db-backed-routines-design.md), approved by the user after commit `b10579304`. The user approved this plan and selected subagent-driven execution. Tasks 1–11 are implemented and reviewed; Task 12 validation and kind acceptance are in progress.
+**Spec:** [Approved design](2026-10-09-db-backed-routines-design.md), approved by the user after commit `b10579304`. The user approved this plan and selected subagent-driven execution. Tasks 1–11 are implemented and reviewed; Task 12 validation and kind acceptance are complete; final independent task/branch review is pending.
 
 ## Global Constraints
 
@@ -748,7 +748,7 @@ Every match is either removed or explained as narrowly necessary legacy cleanup/
 
 **Interfaces:** No new product surface. Canary loads actual registered tool/approval/routine/router services and real agents ACL. Use existing Testcontainers readiness wrapper and explicit daemon selection; no Docker context discovery in test execution.
 
-- [ ] Add canary tests with a deterministic clock: call routine_create through tool:pre-call (hold), assert no definition, approve stored decision as real human, release existing grace window, execute/replay, advance interval clock, tick, emit correlated turn-end, and assert one fire. Edit through Settings service, get through routine_get, then signed webhook via actual static HTTP route and assert another recorded fire. Delete and assert no next webhook/tick/secret. Load default heartbeat/reflection and assert unchanged materialization/silence. Tests must spy that workspace:apply never ran.
+- [x] Add canary tests with a deterministic clock: call routine_create through tool:pre-call (hold), assert no definition, approve stored decision as real human, release existing grace window, execute/replay, advance interval clock, tick, emit correlated turn-end, and assert one fire. Edit through Settings service, get through routine_get, then signed webhook via actual static HTTP route and assert another recorded fire. Delete and assert no next webhook/tick/secret. Load default heartbeat/reflection and assert unchanged materialization/silence. Tests must spy that workspace:apply never ran.
 
 Use Task 7's harness with its real decisions/policy plugins and unattended attendance fixture for an immediate reversible create approval:
 
@@ -771,8 +771,8 @@ it('creates through the registered tool after a real approval', async () => {
 ```
 
 Extend that same canary's captured real invoke/turn-end/tick loop to assert the fire record, and its captured static HTTP router to test the signed webhook. Reuse the existing canary controlled Clock/invoke capture rather than add a public tick hook. Both are mandatory assertions, not separate future work.
-- [ ] Cover each motivating bug class from the spec and the five Review Focus cases by pointing to concrete test names in the validation document. Verify the tool and route are loaded in both CLI and k8s preset; dependency graph has no cycle, all registers/calls/return schemas are consistent, and the removed package is absent. No canary that stubs agents:resolve to always pass counts as owner enforcement.
-- [ ] Run targeted canaries first, fix actual failures, then execute all gates once the branch is coherent. Name the intended Docker endpoint explicitly (local unix socket or verified TLS endpoint) before container suites; verify it is reachable and do not edit daemon configuration. Commands:
+- [x] Cover each motivating bug class from the spec and the five Review Focus cases by pointing to concrete test names in the validation document. Verify the tool and route are loaded in both CLI and k8s preset; dependency graph has no cycle, all registers/calls/return schemas are consistent, and the removed package is absent. No canary that stubs agents:resolve to always pass counts as owner enforcement.
+- [x] Run targeted canaries first, fix actual failures, then execute all gates once the branch is coherent. Name the intended Docker endpoint explicitly (local unix socket or verified TLS endpoint) before container suites; verify it is reachable and do not edit daemon configuration. Commands:
 
 ```bash
 pnpm build && pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts
@@ -782,7 +782,7 @@ pnpm lint
 ```
 
 If recursive tests fail, still run eslint-rules and scripts separately so results for all three suites are known. Record assertion/teardown failures separately and fix rather than assume a stopped suite passed. Do not broaden/repeat passed tests without a new change or unresolved concern.
-- [ ] Read the browser skill, build and deploy this branch to the explicitly authorized kind dev target using `make image KIND_CLUSTER=ax-next-dev` after tests. The Makefile pins kubectl to the kind context; manually issued commands must also do so. Preserve existing configured provider/auth settings. Inspect reachability with:
+- [x] Read the browser skill, build and deploy this branch to the explicitly authorized kind dev target using `make image KIND_CLUSTER=ax-next-dev` after tests. The Makefile pins kubectl to the kind context; manually issued commands must also do so. Preserve existing configured provider/auth settings. Inspect reachability with:
 
 ```bash
 kubectl --context kind-ax-next-dev -n ax-next get pods
@@ -790,8 +790,8 @@ kubectl --context kind-ax-next-dev -n ax-next get svc
 ```
 
 Use the browser's existing kind dev endpoint or a context-pinned port-forward to the service discovered above. Do not read tokens or credentials into tool output. Perform the host-stopped offline cleanup/migration sequence in the runbook for the kind store, then finish the walkthrough.
-- [ ] In chat ask for a one-minute interval routine; see approval and no routine before approval; choose Allow; see it in Agent Settings; edit instructions there; ask agent routine_get and verify exact edit; wait for a real fire and inspect Activity/history; delete and verify no later dispatch. Create a signed webhook routine with a test-only HMAC via the human credential UI, POST signed payload locally without logging its key/token, and verify recorded fire. Choose Always Allow on another proposed create; future create/update for this agent skip hold; a second agent still holds; revoke and verify the next create holds. Confirm Enabled/URL preview/revision conflict behavior in the UI. Remove acceptance-created test routines/secrets/grants afterward.
-- [ ] Review final diff against every boundary table row, run security-checklist with actual dependency/install-script results, and inspect lockfile/preset removal. Record all gate commands/results, Figma/browser checks, kind evidence, and material limits. Commit `test: verify DB routine cutover end to end`. Do not claim completion while any required suite/walk is incomplete.
+- [x] In chat ask for a one-minute interval routine; see approval and no routine before approval; choose Allow; see it in Agent Settings; edit instructions there; ask agent routine_get and verify exact edit; wait for a real fire and inspect Activity/history; delete and verify no later dispatch. Create a signed webhook routine with a test-only HMAC via the human credential UI, POST signed payload locally without logging its key/token, and verify recorded fire. Choose Always Allow on another proposed create; future create/update for this agent skip hold; a second agent still holds; revoke and verify the next create holds. Confirm Enabled/URL preview/revision conflict behavior in the UI. Remove acceptance-created test routines/secrets/grants afterward.
+- [x] Review final diff against every boundary table row, run security-checklist with actual dependency/install-script results, and inspect lockfile/preset removal. Record all gate commands/results, Figma/browser checks, kind evidence, and material limits. Commit `test: verify DB routine cutover end to end`. Do not claim completion while any required suite/walk is incomplete.
 
 ## Final contract refinements and consistency checks
 
