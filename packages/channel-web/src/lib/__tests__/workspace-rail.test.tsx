@@ -49,6 +49,18 @@ beforeEach(() => {
 });
 
 describe('useAgentRail', () => {
+  it('invalidates only the current agent on routine permission changes and removes its listener', async () => {
+    railMock.mockResolvedValue(rail());
+    const mounted = renderHook(() => useAgentRail('a1'));
+    await waitFor(() => expect(railMock).toHaveBeenCalledTimes(1));
+    act(() => window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', {detail:{agentId:'a2'}})));
+    expect(railMock).toHaveBeenCalledTimes(1);
+    act(() => window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', {detail:{agentId:'a1'}})));
+    await waitFor(() => expect(railMock).toHaveBeenCalledTimes(2));
+    mounted.unmount();
+    act(() => window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', {detail:{agentId:'a1'}})));
+    expect(railMock).toHaveBeenCalledTimes(2);
+  });
   it("re-reads the rail when the roster's word for its agent changes", async () => {
     boardMock.mockResolvedValueOnce({ agents: [agent('working')] });
     railMock.mockResolvedValue(

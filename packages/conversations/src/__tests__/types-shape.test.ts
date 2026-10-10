@@ -34,8 +34,8 @@ describe('rowToConversation Phase A fields', () => {
 
   it('maps external_key string and null', () => {
     expect(
-      rowToConversation({ ...base, hidden: false, external_key: 'routine:.ax/routines/heartbeat.md' }).externalKey,
-    ).toBe('routine:.ax/routines/heartbeat.md');
+      rowToConversation({ ...base, hidden: false, external_key: 'routine:019c8e8d-abc0-7000-8000-000000000001' }).externalKey,
+    ).toBe('routine:019c8e8d-abc0-7000-8000-000000000001');
     expect(rowToConversation({ ...base, hidden: false, external_key: null }).externalKey).toBeNull();
   });
 });

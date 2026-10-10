@@ -87,11 +87,11 @@ const AGENTS = [
 ];
 
 /** Mount at `path`, as a browser landing there would. */
-function renderAt(path: string) {
+function renderAt(path: string, onOpenAdminSettings?: (tab?: import('../../admin/AdminSidebar').AdminTabId) => void) {
   window.history.replaceState(null, '', path);
   return render(
     <UserProvider value={user}>
-      <WorkspaceShell />
+      <WorkspaceShell onOpenAdminSettings={onOpenAdminSettings} />
     </UserProvider>,
   );
 }
@@ -314,6 +314,15 @@ describe('agent settings page (TASK-888)', () => {
     );
     expect(screen.getByRole('tab', { name: 'My routines' })).toBeTruthy();
     expect(navItem('Routines')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('opens this agent\'s Skills section from routine self-improvement', async () => {
+    const open = vi.fn();
+    renderAt('/workspace/agents/a-quill/settings/routines', open);
+    fireEvent.keyDown(await screen.findByRole('tab', {name:'Self-improvement'}), {key:'Enter'});
+    fireEvent.click(await screen.findByRole('button', {name:'View skills'}));
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/skills'));
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('opens from the rail Settings button and comes back to the same conversation', async () => {

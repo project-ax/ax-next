@@ -1,245 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import {
-  FireNowOutputSchema,
-  ListOutputSchema,
-  RecentFiresOutputSchema,
-  RecentFiresForAgentOutputSchema,
-  RoutinesDeleteDefaultOutputSchema,
-  RoutinesGetDefaultOutputSchema,
-  RoutinesListDefaultsOutputSchema,
-  RoutinesUpsertDefaultOutputSchema,
-  RoutinesSetAgentDefaultEnabledOutputSchema,
-  RoutinesListAgentDefaultsOutputSchema,
-  type DefaultRoutineDetail,
-  type DefaultRoutineSummary,
-  type FireNowOutput,
-  type FireRow,
-  type ListOutput,
-  type RecentFiresOutput,
-  type RecentFiresForAgentOutput,
-  type RoutineRow,
-  type RoutinesDeleteDefaultOutput,
-  type RoutinesListDefaultsOutput,
-  type RoutinesUpsertDefaultOutput,
-  type RoutinesSetAgentDefaultEnabledOutput,
-  type RoutinesListAgentDefaultsOutput,
-} from '../types.js';
-
-// ARCH-13 drift guard for the `routines:*` returns schemas. A fully-populated
-// interface-typed value must round-trip through `.parse` without losing a
-// field. RoutineRow/FireRow carry real Date instances (z.date()); the default
-// summaries project updatedAt to an ISO string (z.string()).
-
-const routineRow: RoutineRow = {
-  agentId: 'ag1',
-  path: 'notify',
-  ownerUserId: 'u1',
-  name: 'Notify',
-  description: 'pings on event',
-  specHash: 'abc123',
-  trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'UTC' },
-  activeHours: { start: '09:00', end: '17:00', tz: 'UTC' },
-  silenceToken: 'tok',
-  silenceMaxChars: 500,
-  conversation: 'shared',
-  promptBody: 'do the thing',
-  nextRunAt: new Date('2026-02-01T09:00:00.000Z'),
-  lastRunAt: new Date('2026-01-31T09:00:00.000Z'),
-  lastStatus: 'ok',
-  lastError: null,
-  lastWarning: "Gmail isn't signed in on Bob, so this run went without it.",
-  definitionId: 'def1',
-  definitionUpdatedAt: new Date('2026-01-30T00:00:00.000Z'),
+import * as C from '@ax/routines-contract';
+import { routineView, ROUTINE_SERVICES } from '../services.js';
+import type { StoredRoutine } from '../types.js';
+const row: StoredRoutine = {
+  ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
+  agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
+  definitionId: null, definitionUpdatedAt: null, nextRunAt: new Date('2030-01-01T00:00:00Z'), lastRunAt: null,
+  lastStatus: null, lastError: null, lastWarning: null,
 };
-
-const fireRow: FireRow = {
-  id: 42,
-  agentId: 'ag1',
-  path: 'notify',
-  firedAt: new Date('2026-01-31T09:00:00.000Z'),
-  triggerSource: 'webhook',
-  conversationId: 'c1',
-  status: 'ok',
-  error: null,
-  renderedPrompt: 'rendered',
-  warning: 'Gmail needs to be signed in again on Bob, so this run went without it.',
-};
-
-const defaultSummary: DefaultRoutineSummary = {
-  defaultRoutineId: 'dr1',
-  name: 'Daily digest',
-  description: 'sends a digest',
-  trigger: { kind: 'interval', every: '1d' },
-  enabled: true,
-  updatedAt: '2026-01-01T00:00:00.000Z',
-};
-
-const defaultDetail: DefaultRoutineDetail = {
-  ...defaultSummary,
-  sourceMd: '# digest',
-  silenceToken: null,
-  silenceMax: 1000,
-  conversation: 'per-fire',
-  activeHours: null,
-  promptBody: 'summarize',
-};
-
-describe('routines return schemas', () => {
-  it('routines:list round-trips a fully-populated RoutineRow minus the owner (Dates intact)', () => {
-    // Deliberately fed the wider domain row — same posture as the two
-    // recent-fires cases below: the store hands the handler a `RoutineRow`
-    // and the `returns` schema is what narrows at the bus edge.
-    const out: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
-    const { ownerUserId: _owner, ...withoutOwner } = routineRow;
-    expect(out).toEqual({ routines: [withoutOwner] });
+describe('canonical routine return schemas', () => {
+  it('projects every editable/status field without private owner or storage state', () => {
+    const projected = routineView(row, 'owner', true);
+    expect(C.RoutineViewSchema.parse(projected)).toEqual(projected);
+    expect(projected).not.toHaveProperty('ownerUserId');
+    expect(projected).not.toHaveProperty('definitionUpdatedAt');
+    expect(projected.nextRunAt).toBe('2030-01-01T00:00:00.000Z');
+    for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
+    expect(() => C.RoutineViewSchema.parse({ ...projected, token: 'secret' })).toThrow();
   });
-
-  // TASK-397. Same shape of guarantee as the `id` pair below, for the same
-  // reason: nothing in tsc catches a re-widened wire row, because the HTTP hop
-  // that carries it is an untyped `get<T>` plus a cast.
-  //
-  // `ownerUserId` is the identity a routine FIRES AS. It is real state the
-  // store needs, but it is not the browser's business — it was rendered
-  // nowhere in `channel-web`, and `routines-admin-routes` only forwards the
-  // array it receives. Shipping it anyway is reach nobody asked for
-  // (invariant 5), and it is also the field most likely to be stale, since it
-  // is re-derived from the agent on every tick.
-  // Slice 6 — a zod object strips undeclared keys, so a warning missing from
-  // the schema would vanish at the bus edge without a sound.
-  it('routines:list carries lastWarning, and both fires hooks carry warning', () => {
-    const list: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
-    expect(list.routines[0]!.lastWarning).toBe(routineRow.lastWarning);
-    expect(ListOutputSchema.parse({ routines: [{ ...routineRow, lastWarning: null }] }).routines[0]!.lastWarning)
-      .toBeNull();
-    const fires: RecentFiresOutput = RecentFiresOutputSchema.parse({ fires: [fireRow] });
-    expect(fires.fires[0]!.warning).toBe(fireRow.warning);
-    const forAgent: RecentFiresForAgentOutput = RecentFiresForAgentOutputSchema.parse({ fires: [fireRow] });
-    expect(forAgent.fires[0]!.warning).toBe(fireRow.warning);
-  });
-
-  it('routines:list DROPS ownerUserId (the identity a routine fires as)', () => {
-    const out: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
-    expect('ownerUserId' in out.routines[0]!).toBe(false);
-  });
-
-  // This pair is load-bearing and must stay a pair (TASK-251, then TASK-312).
-  // `FireRowSchema` is the store's own row type and still carries the
-  // `BIGSERIAL` `id`; both fires hooks narrow it away via a DERIVED
-  // `omit` (`WireFireRowSchema`), because `HookBus.call` returns
-  // `returns.safeParse(...).data` and a zod object STRIPS undeclared keys.
-  // Both halves matter: neither hook may leak `id` (invariant 1), and nothing
-  // in tsc would catch a regression either way, since the HTTP hop that
-  // carries these rows is an untyped `get<T>` plus a cast. TASK-251 narrowed
-  // the for-agent hook while the admin table still keyed off `id`; TASK-312
-  // moved that key and narrowed this one, so the pair now asserts the same
-  // thing about two different hooks — keep it a pair.
-  it('routines:recent-fires DROPS the row id (storage vocabulary)', () => {
-    // Deliberately fed the wider domain row: the store hands the handler a
-    // `FireRow`, and the `returns` schema is what strips `id` at the bus edge.
-    const out: RecentFiresOutput = RecentFiresOutputSchema.parse({ fires: [fireRow] });
-    expect('id' in out.fires[0]!).toBe(false);
-    // Everything else still round-trips.
-    const { id: _id, ...withoutId } = fireRow;
-    expect(out).toEqual({ fires: [withoutId] });
-  });
-
-  it('routines:recent-fires-for-agent DROPS the row id (storage vocabulary)', () => {
-    const out: RecentFiresForAgentOutput = RecentFiresForAgentOutputSchema.parse({
-      fires: [fireRow],
-    });
-    expect('id' in out.fires[0]!).toBe(false);
-    const { id: _id, ...withoutId } = fireRow;
-    expect(out).toEqual({ fires: [withoutId] });
-  });
-
-  it('routines:fire-now round-trips both of the shapes it can actually return', () => {
-    // Only two: `'silenced'` is written to the fire row later, by the
-    // chat:turn-end subscriber, and never travels on this hook.
-    const ok: FireNowOutput = { status: 'ok' };
-    expect(FireNowOutputSchema.parse(ok)).toEqual(ok);
-    const failed: FireNowOutput = { status: 'error' };
-    expect(FireNowOutputSchema.parse(failed)).toEqual(failed);
-  });
-
-  it('routines:fire-now DROPS both the fire-row id and the conversation id', () => {
-    // The handler returns neither, but the schema is the boundary that makes
-    // that a guarantee rather than a convention. `fireId` was the store's
-    // BIGSERIAL, which reached users as "Fired (#7, ok)". `conversationId`
-    // was dropped separately: nothing above the bus could show it, because
-    // routine-fired conversations are hidden and have no per-fire transcript
-    // to link to (TASK-313).
-    //
-    // This is the load-bearing case in this file. A field re-added to the
-    // handler but not to the schema is stripped silently by `z.object`, and
-    // one re-added to BOTH would sail past every other assertion here.
-    const parsed = FireNowOutputSchema.parse({
-      fireId: 7,
-      status: 'ok',
-      conversationId: 'cnv_1',
-    }) as Record<string, unknown>;
-    expect('fireId' in parsed).toBe(false);
-    expect('conversationId' in parsed).toBe(false);
-    expect(parsed).toEqual({ status: 'ok' });
-  });
-
-  it('routines:list-defaults round-trips a fully-populated summary', () => {
-    const full: RoutinesListDefaultsOutput = { defaults: [defaultSummary] };
-    expect(RoutinesListDefaultsOutputSchema.parse(full)).toEqual(full);
-  });
-
-  it('routines:get-default round-trips a fully-populated detail (webhook trigger)', () => {
-    const full: DefaultRoutineDetail = {
-      ...defaultDetail,
-      trigger: {
-        kind: 'webhook',
-        path: '/wh/abc',
-        events: ['push'],
-        hmac: { secretRef: 'ref', header: 'X-Sig', algorithm: 'sha256', prefix: 'sha256=' },
-      },
-    };
-    expect(RoutinesGetDefaultOutputSchema.parse(full)).toEqual(full);
-  });
-
-  it('routines:upsert-default round-trips', () => {
-    const full: RoutinesUpsertDefaultOutput = { defaultRoutineId: 'dr1', created: false };
-    expect(RoutinesUpsertDefaultOutputSchema.parse(full)).toEqual(full);
-  });
-
-  it('routines:delete-default round-trips the empty output (strict)', () => {
-    const full: RoutinesDeleteDefaultOutput = {};
-    expect(RoutinesDeleteDefaultOutputSchema.parse(full)).toEqual(full);
-    expect(RoutinesDeleteDefaultOutputSchema.safeParse({ extra: 1 }).success).toBe(false);
-  });
-
-  it('routines:set-agent-default-enabled round-trips the empty output (strict)', () => {
-    const full: RoutinesSetAgentDefaultEnabledOutput = {};
-    expect(RoutinesSetAgentDefaultEnabledOutputSchema.parse(full)).toEqual(full);
-    expect(RoutinesSetAgentDefaultEnabledOutputSchema.safeParse({ extra: 1 }).success).toBe(false);
-  });
-
-  it('routines:list-agent-defaults round-trips per-agent state', () => {
-    const full: RoutinesListAgentDefaultsOutput = {
-      defaults: [
-        { defaultRoutineId: 'dr1', name: 'heartbeat', enabled: true },
-        { defaultRoutineId: 'dr2', name: 'reflection', enabled: false },
-      ],
-    };
-    expect(RoutinesListAgentDefaultsOutputSchema.parse(full)).toEqual(full);
-  });
-
-  it('rejects a string firedAt (handler returns a Date)', () => {
-    expect(
-      RecentFiresOutputSchema.safeParse({
-        fires: [{ ...fireRow, firedAt: '2026-01-31' }],
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects an unknown trigger kind', () => {
-    expect(
-      ListOutputSchema.safeParse({
-        routines: [{ ...routineRow, trigger: { kind: 'sometime', every: '1h' } }],
-      }).success,
-    ).toBe(false);
+  it('declares every canonical service, including the host-only secret lifecycle', () => {
+    expect(ROUTINE_SERVICES).toHaveLength(15);
+    expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
+    expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
   });
 });

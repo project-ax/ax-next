@@ -31,36 +31,26 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: [],
-      // Hard deps. http:register-route comes from @ax/http-server,
-      // auth:require-user from @ax/auth-better, routines:* from @ax/routines,
-      // and agents:resolve from @ax/agents. The topo-sort in bootstrap()
-      // ensures these are wired before our init runs.
-      //
-      // The default-routines surface adds routines:*-default hooks; we don't
-      // need a separate auth:require-admin call because requireAdmin is just
-      // requireAuthenticated + an isAdmin check on the returned actor.
       calls: [
         'http:register-route',
         'auth:require-user',
+        'agents:resolve',
+        'agents:ensure-webhook-token',
         'routines:list',
+        'routines:get',
+        'routines:create',
+        'routines:update',
+        'routines:delete',
         'routines:recent-fires',
         'routines:fire-now',
         'routines:list-defaults',
         'routines:get-default',
         'routines:upsert-default',
         'routines:delete-default',
-        // Per-agent default-routine toggle (the "Skill self-improvement"
-        // switch). Both are themselves owner-scoped in @ax/routines.
         'routines:list-agent-defaults',
         'routines:set-agent-default-enabled',
-        'agents:resolve',
-        // Surfaces the agent's webhook receiver token so the UI can show the
-        // full /webhooks/<token><path> URL (owner-scoped ACL lives in the hook).
-        'agents:ensure-webhook-token',
-        // Per-user routine create/edit/delete writes the .ax/routines/<name>.md
-        // file into the agent workspace; the apply facade fires
-        // workspace:applied → @ax/routines syncs the row.
-        'workspace:apply',
+        'tool-policy:get-routine-consent',
+        'tool-policy:revoke-routine-consent',
       ],
       subscribes: [],
     },
@@ -78,10 +68,10 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
       // the FIRST batch in the catch below.
       try {
         unregisterRoutes.push(
-          ...(await registerRoutinesAdminRoutes(bus, initCtx)),
+          ...(await registerSettingsAgentDefaultsRoutes(bus, initCtx)),
         );
         unregisterRoutes.push(
-          ...(await registerSettingsAgentDefaultsRoutes(bus, initCtx)),
+          ...(await registerRoutinesAdminRoutes(bus, initCtx)),
         );
         unregisterRoutes.push(
           ...(await registerAdminDefaultRoutinesRoutes(bus, initCtx)),
@@ -99,7 +89,9 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
             // failure is what the operator chases first.
             console.warn(
               `[${PLUGIN_NAME}] failed to unregister route during init-unwind: ${
-                unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
+                unwindErr instanceof Error
+                  ? unwindErr.message
+                  : String(unwindErr)
               }`,
             );
           }

@@ -16,16 +16,16 @@ import { AgentSelfImprovementSection } from '../AgentSelfImprovementSection';
 import { agentStoreActions } from '@/lib/agent-store';
 
 vi.mock('@/lib/routines', () => ({
-  routines: {
+  routineApi: {
     listAgentDefaults: vi.fn(),
     setAgentDefaultEnabled: vi.fn(),
   },
 }));
 
-import { routines } from '@/lib/routines';
+import { routineApi } from '@/lib/routines';
 
-const listAgentDefaults = vi.mocked(routines.listAgentDefaults);
-const setAgentDefaultEnabled = vi.mocked(routines.setAgentDefaultEnabled);
+const listAgentDefaults = vi.mocked(routineApi.listAgentDefaults);
+const setAgentDefaultEnabled = vi.mocked(routineApi.setAgentDefaultEnabled);
 
 function seedAgents(
   agents: Array<{ id: string; name: string }>,

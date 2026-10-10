@@ -1,4 +1,4 @@
-import { PluginError } from '@ax/core';
+import { PluginError, SafeToolError, safeToolMessage } from '@ax/core';
 import {
   ToolExecuteHostRequestSchema,
   ToolExecuteHostResponseSchema,
@@ -45,6 +45,29 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
     output = await bus.call<typeof call, unknown>(hookName, ctx, call);
   } catch (err) {
     logInternalError(ctx.logger, 'tool.execute-host', err);
+    if (err instanceof SafeToolError) {
+      // Subtype identity allows only the CLOSED templates. Plugin code can
+      // mutate Error.message and even these fields: recheck at the wire boundary.
+      const message = safeToolMessage(err.toolCode, err.field);
+      switch (err.toolCode) {
+        case 'validation':
+          return validationError(message);
+        case 'not-found':
+          return notFound(message);
+        case 'forbidden':
+        case 'approval-required':
+          return { status: 403, body: { error: { code: 'HOOK_REJECTED', message } } };
+        case 'revision-conflict':
+        case 'webhook-path-conflict':
+        case 'request-conflict':
+        case 'disabled':
+        case 'cleanup-pending':
+          return { status: 409, body: { error: { code: 'HOOK_REJECTED', message } } };
+        case 'unavailable':
+        default:
+          return { status: 503, body: { error: { code: 'INTERNAL', message } } };
+      }
+    }
     if (err instanceof PluginError) {
       // Generic redaction: a PluginError thrown by a host tool buckets to a
       // safe wire status via mapPluginError — its message is never painted onto

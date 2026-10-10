@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Check } from 'lucide-react';
+import { FieldGroup } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ApiKeyField } from '@/components/credentials/ApiKeyField';
@@ -12,6 +13,7 @@ export interface CredentialSlotFormProps {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
   current: { set: boolean; rotatedAt?: string };
   onSaved: () => void;
+  expectedRevision?: string;
 }
 
 export function CredentialSlotForm({
@@ -20,6 +22,7 @@ export function CredentialSlotForm({
   scope,
   current,
   onSaved,
+  expectedRevision,
 }: CredentialSlotFormProps) {
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
@@ -31,7 +34,18 @@ export function CredentialSlotForm({
     setBusy(true);
     setError(null);
     try {
-      await setDestinationCredential({ destination, slot, scope, payload });
+      if (destination.kind === 'routine-hmac') {
+        if (!expectedRevision)
+          throw new Error('Refresh the routine before saving its secret.');
+        await setDestinationCredential({
+          destination,
+          slot,
+          scope,
+          payload,
+          expectedRevision,
+        });
+      } else
+        await setDestinationCredential({ destination, slot, scope, payload });
       setPayload('');
       onSaved();
     } catch (err) {
@@ -42,37 +56,39 @@ export function CredentialSlotForm({
   }
 
   return (
-    <form className="space-y-4" onSubmit={(e) => void submit(e)}>
-      {slot.description && (
-        <p className="text-xs text-muted-foreground">{slot.description}</p>
-      )}
-      {/* Saved-state cue. The secret never leaves the vault (the server returns
+    <form onSubmit={(e) => void submit(e)}>
+      <FieldGroup>
+        {slot.description && (
+          <p className="text-xs text-muted-foreground">{slot.description}</p>
+        )}
+        {/* Saved-state cue. The secret never leaves the vault (the server returns
           presence metadata only — never the value), so we can't show even a
           masked copy; but a blank "Replace" field reads like "no key here", so we
           make the saved state unmistakable. Replacing it is then a deliberate act. */}
-      {current.set && (
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Check className="size-3.5 text-foreground" />
-          A key is saved — enter a new one to replace it.
-        </p>
-      )}
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-      {/* The same field the rail's Add key form draws (ApiKeyField). */}
-      <ApiKeyField
-        label={current.set ? 'Replace API key' : 'API key'}
-        placeholder={current.set ? 'Enter a new key' : ''}
-        value={payload}
-        onChange={setPayload}
-      />
-      <div className="flex justify-end gap-2">
-        <Button type="submit" disabled={busy || payload.trim().length === 0}>
-          {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
-        </Button>
-      </div>
+        {current.set && (
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Check className="size-3.5 text-foreground" />A key is saved — enter
+            a new one to replace it.
+          </p>
+        )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        {/* The same field the rail's Add key form draws (ApiKeyField). */}
+        <ApiKeyField
+          label={current.set ? 'Replace API key' : 'API key'}
+          placeholder={current.set ? 'Enter a new key' : ''}
+          value={payload}
+          onChange={setPayload}
+        />
+        <div className="flex justify-end gap-2">
+          <Button type="submit" disabled={busy || payload.trim().length === 0}>
+            {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
+          </Button>
+        </div>
+      </FieldGroup>
     </form>
   );
 }

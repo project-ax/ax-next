@@ -1,376 +1,128 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, type AgentContext } from '@ax/core';
-// Contract test only (tests may cross packages; runtime code may not): the
-// producer's real payload builder, fed into this plugin's consumer.
+import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
-import {
-  createFireRoutine, stashConnectorsSkipped, warningFor,
-  type FireDeps, type PendingFire, type PendingFires,
-} from '../fire.js';
-import type { RoutineRow } from '../types.js';
-import type { RecordFireInput } from '../store.js';
-
-function row(over: Partial<RoutineRow> = {}): RoutineRow {
-  return {
-    agentId: 'agt_a', path: '.ax/routines/r.md', ownerUserId: 'u1',
-    name: 'r', description: 'd', specHash: 'h',
-    trigger: { kind: 'interval', every: '60s' },
-    activeHours: null, silenceToken: null, silenceMaxChars: 300,
-    conversation: 'per-fire', promptBody: 'do work',
-    nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null,
-    lastWarning: null, definitionId: null, definitionUpdatedAt: null,
-    ...over,
-  };
-}
-
-async function makeBus(opts: {
-  resolve?: (agentId: string, userId: string) => Promise<{ agent: unknown }>;
-  invoke?: (ctx: AgentContext, input: unknown) => Promise<unknown>;
-  findOrCreate?: (input: unknown) => Promise<unknown>;
-  create?: (input: unknown) => Promise<unknown>;
-}) {
+import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import { fixture, createInput, now } from './store-fixture.js';
+import { purgeRoutineAgent } from '../cleanup.js';
+import type { StoredRoutine } from '../types.js';
+const f = fixture();
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null }; }
+async function setup(options: {
+  resolveError?: PluginError;
+  invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
+  grace?: number;
+  definition?: object;
+} = {}) {
+  const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
+  const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
   const bus = new HookBus();
-  bus.registerService('agents:resolve', 'test', async (_ctx, input) => {
-    const i = input as { agentId: string; userId: string };
-    return opts.resolve
-      ? await opts.resolve(i.agentId, i.userId)
-      : { agent: { id: i.agentId, ownerId: i.userId, workspaceRef: null } };
-  });
-  bus.registerService('agent:invoke', 'test', async (ctx, input) => {
-    return opts.invoke
-      ? await opts.invoke(ctx, input)
-      : { kind: 'complete', messages: [] };
-  });
-  bus.registerService('conversations:find-or-create', 'test', async (_ctx, input) => {
-    return opts.findOrCreate
-      ? await opts.findOrCreate(input)
-      : { conversation: { conversationId: 'cnv_shared', userId: 'u1', agentId: 'agt_a' }, created: true };
-  });
-  bus.registerService('conversations:create', 'test', async (_ctx, input) => {
-    return opts.create
-      ? await opts.create(input)
-      : { conversationId: 'cnv_perfire', userId: 'u1', agentId: 'agt_a' };
-  });
-  return bus;
+  const pending: PendingFires = new Map();
+  const invoked = vi.fn(async (ctx: AgentContext) => options.invoke ? options.invoke(ctx, bus) : { kind: 'complete' });
+  const conversation = vi.fn(async () => ({ conversationId: 'c' }));
+  const shared = vi.fn(async () => ({ conversation: { conversationId: 'c' }, created: false }));
+  bus.registerService('agents:resolve', 'test', async () => { if (options.resolveError)
+    throw options.resolveError; return { agent: { id: 'a', displayName: 'Bob' } }; });
+  bus.registerService('agent:invoke', 'test', invoked);
+  bus.registerService('conversations:create', 'test', conversation);
+  bus.registerService('conversations:find-or-create', 'test', shared);
+  bus.registerService('credentials:delete', 'test', async () => undefined);
+  const fire = createFireRoutine({ bus, pending, store: f.store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
+  cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
+  return { bus, row, accepted, pending, invoked, conversation, shared, fire };
 }
-
-describe('fireRoutine', () => {
-  it('does not invoke a disabled routine, including manual fires', async () => {
-    const invoke = vi.fn();
-    const create = vi.fn();
-    const bus = await makeBus({ invoke, create });
-    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
-    const result = await fire(row({ enabled: false }), 'manual');
-    expect(result.status).toBe('error');
-    expect(invoke).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
+describe('accepted DB fire dispatch', () => {
+  it('uses durable request identity and real execution owner, with routine origin and label', async () => {
+    const h = await setup();
+    const result = await h.fire(h.accepted);
+    expect(result.recordedAtTurnEnd).toBe(true);
+    expect(h.invoked.mock.calls[0]![0]).toMatchObject({ reqId: h.accepted.reqId, userId: 'owner', agentId: 'a', source: 'routine', triggerLabel: h.row.name });
+    expect(h.pending.get(h.accepted.reqId)).toMatchObject({ dispatchId: h.accepted.dispatchId, agentName: 'Bob', skips: [] });
+    expect(await f.store.recentFires(h.row)).toEqual([]);
   });
-
-  it('per-fire: calls conversations:create and agent:invoke with the prompt body', async () => {
-    let createdWith: unknown;
-    let invokedWith: unknown;
-    const bus = await makeBus({
-      create: async (input) => { createdWith = input; return { conversationId: 'cnv_x', userId: 'u1', agentId: 'agt_a' }; },
-      invoke: async (_ctx, input) => { invokedWith = input; return { kind: 'complete', messages: [] }; },
-    });
-    const pending: PendingFires = new Map();
-    const fire = createFireRoutine({ bus, pending } as FireDeps);
-    const result = await fire(row(), 'tick');
-    expect((createdWith as { agentId: string }).agentId).toBe('agt_a');
-    expect((invokedWith as { message: { content: string } }).message.content).toBe('do work');
-    expect(result.conversationId).toBe('cnv_x');
-    expect(pending.size).toBe(1);
+  it('preserves shared conversation externalKey as the opaque routine identity', async () => {
+    const h = await setup({ definition: { conversation: 'shared' } });
+    await h.fire(h.accepted);
+    expect(h.shared.mock.calls[0]).toBeDefined();
+    expect(h.shared).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ externalKey: h.row.routineId }));
   });
-
-  it('shared: calls conversations:find-or-create with externalKey = row.path', async () => {
-    let foundOrCreatedWith: unknown;
-    const bus = await makeBus({
-      findOrCreate: async (input) => {
-        foundOrCreatedWith = input;
-        return { conversation: { conversationId: 'cnv_s', userId: 'u1', agentId: 'agt_a' }, created: false };
-      },
-    });
-    const pending: PendingFires = new Map();
-    const fire = createFireRoutine({ bus, pending } as FireDeps);
-    await fire(row({ conversation: 'shared' }), 'tick');
-    expect((foundOrCreatedWith as { externalKey: string }).externalKey).toBe('.ax/routines/r.md');
+  it('renders webhook payload once into the user prompt', async () => {
+    const h = await setup({ definition: { promptBody: 'Review {{payload.title}}' } });
+    await h.fire(h.accepted, { title: 'literal {{payload.title}}' });
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Review literal {{payload.title}}');
   });
-
-  it('reports agentGone when agents:resolve says the agent does not exist (TASK-680)', async () => {
-    const bus = await makeBus({
-      resolve: async (agentId) => { throw new PluginError({ code: 'not-found', plugin: '@ax/agents', hookName: 'agents:resolve', message: `agent '${agentId}' not found` }); },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
-    const result = await fire(row(), 'tick');
-    expect(result.status).toBe('error');
-    expect(result.agentGone).toBe(true);
+  it.each(['forbidden', 'not-found'])('records %s from another provider without purging a live agent', async (code) => {
+    const h = await setup({ resolveError: new PluginError({ code, plugin: 'teams', hookName: 'teams:is-member', message: 'denied' }) });
+    expect((await h.fire(h.accepted)).status).toBe('error');
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect(await f.store.findOne(h.row)).not.toBeNull();
+    expect((await f.store.recentFires(h.row))[0]?.status).toBe('error');
   });
-
-  it('does not report agentGone for a forbidden resolve — the agent still exists (TASK-680)', async () => {
-    const bus = await makeBus({
-      resolve: async () => { throw new PluginError({ code: 'forbidden', plugin: '@ax/agents', hookName: 'agents:resolve', message: 'denied' }); },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
-    const result = await fire(row(), 'tick');
-    expect(result.agentGone).not.toBe(true);
+  it('purges only exact agents:resolve not-found, including pending correlations and HMAC cleanup', async () => {
+    const h = await setup({ definition: { trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'sig' } } }, resolveError: new PluginError({ code: 'not-found', plugin: 'agents', hookName: 'agents:resolve', message: 'gone' }) });
+    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], onTurnEnd: async () => { } });
+    expect((await h.fire(h.accepted)).agentGone).toBe(true);
+    expect(h.pending.size).toBe(0);
+    expect(await f.store.findOne(h.row)).toBeNull();
+    expect(await f.store.recentFires(h.row)).toEqual([]);
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([]);
   });
-
-  it('does not report agentGone for a not-found raised by a different hook and propagated through resolve (TASK-680)', async () => {
-    const bus = await makeBus({
-      resolve: async () => { throw new PluginError({ code: 'not-found', plugin: '@ax/teams', hookName: 'teams:is-member', message: "team 't1' not found" }); },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
-    const result = await fire(row(), 'tick');
-    expect(result.status).toBe('error');
-    expect(result.agentGone).not.toBe(true);
+  it.each(['throw', 'terminated', 'missing-turn'])('records exactly one terminal error for %s', async (kind) => {
+    const h = await setup({ grace: 0, invoke: async () => { if (kind === 'throw')
+        throw new Error('failed'); return { kind: kind === 'terminated' ? 'terminated' : 'complete', reason: 'stopped' }; } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(h.accepted);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect((await f.store.recentFires(h.row))[0]?.status).toBe('error');
+    expect(diagnostic.messages).toHaveLength(1);
+    expect(h.pending.size).toBe(0);
+    expect(await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', error: null, conversationId: 'c', renderedPrompt: 'p', warning: null } })).toBe(false);
   });
-
-  it('propagates an agents:resolve forbidden as error status', async () => {
-    const bus = await makeBus({
-      resolve: async () => { throw new PluginError({ code: 'forbidden', plugin: 'agents', hookName: 'agents:resolve', message: 'denied' }); },
-    });
-    const pending: PendingFires = new Map();
-    const fire = createFireRoutine({ bus, pending } as FireDeps);
-    const result = await fire(row(), 'tick');
-    expect(result.status).toBe('error');
-    expect(result.error).toMatch(/forbidden|denied/i);
-    expect(pending.size).toBe(0);
+  it('records a connector warning once when a dispatched invocation terminates', async () => {
+    const h = await setup({ invoke: async (ctx) => { stashConnectorsSkipped(h.pending, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] }); return { kind: 'terminated', reason: 'runner' }; } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(h.accepted);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect(diagnostic.messages).toHaveLength(1);
+    expect((await f.store.recentFires(h.row))[0]?.warning).toContain("Gmail isn't signed in on Bob");
   });
-
-  it('stamps source: "routine" on the fire ctx passed to agent:invoke', async () => {
-    let invokedCtx: AgentContext | undefined;
-    const bus = await makeBus({
-      invoke: async (ctx) => { invokedCtx = ctx; return { kind: 'complete', messages: [] }; },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    await fire(row(), 'tick');
-    // agent:invoke is fire-and-forget; let the microtask run.
-    await new Promise((r) => setImmediate(r));
-    expect(invokedCtx).toBeDefined();
-    expect(invokedCtx!.source).toBe('routine');
+  it('finishes an accepted dispatch after routine deletion without resurrecting the definition', async () => {
+    const h = await setup();
+    await h.fire(h.accepted);
+    await f.store.deleteAuthored({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'delete', now });
+    expect(await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', error: null, conversationId: 'c', renderedPrompt: 'p', warning: null } })).toBe(true);
+    expect(await f.store.findOne(h.row)).toBeNull();
+    expect(await f.store.recentFires(h.row)).toHaveLength(1);
   });
-
-  it('stamps triggerLabel with the routine name on the fire ctx passed to agent:invoke', async () => {
-    let invokedCtx: AgentContext | undefined;
-    const bus = await makeBus({
-      invoke: async (ctx) => { invokedCtx = ctx; return { kind: 'complete', messages: [] }; },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    await fire(row({ name: 'Morning email pass' }), 'tick');
-    // agent:invoke is fire-and-forget; let the microtask run.
-    await new Promise((r) => setImmediate(r));
-    expect(invokedCtx).toBeDefined();
-    expect(invokedCtx!.triggerLabel).toBe('Morning email pass');
+  it.each(['chat:start:denied', 'agent-resolve:forbidden'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
+    const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
+    await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
+    const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: terminated: ${reason}`));
+    await h.fire(next);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', warning: 'Previous warning' });
+    expect(diagnostic.messages).toHaveLength(1);
   });
-
-  it('agent:invoke is fire-and-forget — does not block on completion', async () => {
-    let resolveInvoke!: () => void;
-    const invokePromise = new Promise<unknown>((res) => { resolveInvoke = () => res({ kind: 'complete', messages: [] }); });
-    const bus = await makeBus({
-      invoke: async () => invokePromise,
-    });
-    const pending: PendingFires = new Map();
-    const fire = createFireRoutine({ bus, pending } as FireDeps);
-    const t0 = Date.now();
-    const result = await Promise.race([
-      fire(row(), 'tick'),
-      new Promise<{ blocked: true }>((res) => setTimeout(() => res({ blocked: true } as never), 200)),
-    ]);
-    expect((result as { blocked?: true }).blocked).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(200);
-    resolveInvoke();
-    await invokePromise;
+  it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
+    const h = await setup();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    expect(await f.store.interruptAbandonedDispatches()).toBe(0);
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: expect.stringContaining('interrupted') });
   });
 });
-
-describe('createFireRoutine — webhook payload templating (Phase C)', () => {
-  it('substitutes {{payload.x}} into the agent:invoke content when source=webhook', async () => {
-    const captured: Array<{ content: string }> = [];
-    const bus = await makeBus({
-      invoke: async (_ctx, input) => {
-        captured.push((input as { message: { content: string } }).message);
-        return { kind: 'complete', messages: [] };
-      },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    const r = row({
-      trigger: { kind: 'webhook', path: '/r' },
-      promptBody: 'PR {{payload.pr.title}}',
-    });
-    await fire(r, 'webhook', { pr: { title: 'fix bug' } });
-    await new Promise(r => setImmediate(r));
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.content).toBe('PR fix bug');
-  });
-
-  it('passes promptBody verbatim when source=tick (no templating)', async () => {
-    const captured: Array<{ content: string }> = [];
-    const bus = await makeBus({
-      invoke: async (_ctx, input) => {
-        captured.push((input as { message: { content: string } }).message);
-        return { kind: 'complete', messages: [] };
-      },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    const r = row({ promptBody: 'literal {{payload.x}}' });
-    await fire(r, 'tick');
-    await new Promise(r => setImmediate(r));
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.content).toBe('literal {{payload.x}}');
-  });
-
-  it('passes promptBody verbatim when source=webhook but payload is undefined', async () => {
-    const captured: Array<{ content: string }> = [];
-    const bus = await makeBus({
-      invoke: async (_ctx, input) => {
-        captured.push((input as { message: { content: string } }).message);
-        return { kind: 'complete', messages: [] };
-      },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    const r = row({
-      trigger: { kind: 'webhook', path: '/r' },
-      promptBody: 'no payload {{payload.x}}',
-    });
-    await fire(r, 'webhook'); // 3rd arg omitted
-    await new Promise(r => setImmediate(r));
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.content).toBe('no payload {{payload.x}}');
-  });
-
-  it('templating handles missing field by substituting empty string', async () => {
-    const captured: Array<{ content: string }> = [];
-    const bus = await makeBus({
-      invoke: async (_ctx, input) => {
-        captured.push((input as { message: { content: string } }).message);
-        return { kind: 'complete', messages: [] };
-      },
-    });
-    const fire = createFireRoutine({ bus, pending: new Map() });
-    const r = row({
-      trigger: { kind: 'webhook', path: '/r' },
-      promptBody: 'event=[{{payload.missing}}]',
-    });
-    await fire(r, 'webhook', { other: 'value' });
-    await new Promise(r => setImmediate(r));
-    expect(captured[0]!.content).toBe('event=[]');
-  });
-
-  // TASK-679: a dispatched fire's ONE row is written by whoever takes its
-  // pending entry. On the ordinary path that is the chat:turn-end subscriber;
-  // when the invoke fails before any turn ends, it is fire.ts, as an error.
-  describe('one row per fire when the invoke settles without a turn (TASK-679)', () => {
-    it('reports the fire as dispatched — the caller must not write a row of its own', async () => {
-      const bus = await makeBus({});
-      const recorded: RecordFireInput[] = [];
-      const fire = createFireRoutine({
-        bus, pending: new Map(), recordFire: async (i) => { recorded.push(i); },
-      });
-      const result = await fire(row(), 'tick');
-      expect(result).toMatchObject({ status: 'ok', recordedAtTurnEnd: true });
-    });
-
-    it('a rejected invoke records exactly one error row and drops the pending entry', async () => {
-      const bus = await makeBus({ invoke: async () => { throw new Error('sandbox died'); } });
-      const pending: PendingFires = new Map();
-      const recorded: RecordFireInput[] = [];
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
-        await fire(row(), 'manual');
-        await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(recorded[0]).toMatchObject({
-        agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'manual',
-        conversationId: 'cnv_perfire', status: 'error', renderedPrompt: 'do work',
-      });
-      expect(recorded[0]!.error).toContain('sandbox died');
-      expect(pending.size).toBe(0);
-    });
-
-    it('a terminated outcome with no turn end records exactly one error row', async () => {
-      const bus = await makeBus({ invoke: async () => ({ kind: 'terminated', reason: 'chat-timeout' }) });
-      const pending: PendingFires = new Map();
-      const recorded: RecordFireInput[] = [];
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
-        await fire(row(), 'tick');
-        await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(recorded[0]).toMatchObject({ status: 'error', triggerSource: 'tick' });
-      expect(recorded[0]!.error).toContain('chat-timeout');
-      expect(pending.size).toBe(0);
-    });
-
-    it('records NOTHING when the turn end already took the pending entry', async () => {
-      const pending: PendingFires = new Map();
-      const bus = await makeBus({
-        invoke: async (ctx) => {
-          // Stands in for the chat:turn-end subscriber, which removes the
-          // entry and writes the fire's row before the invoke settles.
-          pending.delete(ctx.reqId);
-          return { kind: 'terminated', reason: 'cancelled after turn' };
-        },
-      });
-      const recorded: RecordFireInput[] = [];
-      const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
-      await fire(row(), 'tick');
-      // Let the invoke's settle handlers run.
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
-      expect(recorded).toEqual([]);
-    });
-
-    it('a complete outcome with no turn end records one error row once the grace runs out', async () => {
-      const pending: PendingFires = new Map();
-      const bus = await makeBus({});
-      const recorded: RecordFireInput[] = [];
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        const fire = createFireRoutine({
-          bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 0,
-        });
-        await fire(row(), 'tick');
-        await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(recorded[0]).toMatchObject({ status: 'error', triggerSource: 'tick' });
-      expect(pending.size).toBe(0);
-    });
-
-    it('a complete outcome leaves the row to the turn end', async () => {
-      const pending: PendingFires = new Map();
-      const bus = await makeBus({});
-      const recorded: RecordFireInput[] = [];
-      const fire = createFireRoutine({
-        bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 60_000,
-      });
-      await fire(row(), 'tick');
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
-      expect(recorded).toEqual([]);
-      expect(pending.size).toBe(1);
-    });
-  });
-});
-
-// Slice 6 — chat:connectors-skipped is keyed to the in-flight fire by reqId;
-// whoever records the fire turns the stashed skips into its warning.
 describe('connector skips per fire (slice 6)', () => {
   function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {
     return {
-      row: row(), conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
-      agentName: 'Bob', skips: [], onTurnEnd: async () => {},
+      row: sampleRow(), dispatchId: 'dispatch', conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
+      agentName: 'Bob', skips: [], onTurnEnd: async () => { },
       ...over,
     };
   }
-
   it('an event for an unknown reqId is ignored', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
     stashConnectorsSkipped(pending, {
@@ -381,7 +133,6 @@ describe('connector skips per fire (slice 6)', () => {
     expect(pending.get('req-1')!.skips).toEqual([]);
     expect(pending.has('req-other')).toBe(false);
   });
-
   it('stashes valid skips, drops malformed entries, keeps an unknown reason as unavailable, and merges a repeat', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
     stashConnectorsSkipped(pending, {
@@ -408,7 +159,6 @@ describe('connector skips per fire (slice 6)', () => {
       { connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' },
     ]);
   });
-
   // Final review — an unknown reason is worded generically, not dropped.
   it('an unknown reason is recorded as "wasn\'t available"', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
@@ -416,16 +166,16 @@ describe('connector skips per fire (slice 6)', () => {
       reqId: 'req-1',
       connectors: [{ connectorId: 'drive', name: 'Drive', reason: 'quota-exceeded' }],
     });
-    expect(warningFor(pending.get('req-1')!)).toBe(
-      "Drive wasn't available on Bob, so this run went without it.",
-    );
+    expect(warningFor(pending.get('req-1')!)).toBe("Drive wasn't available on Bob, so this run went without it.");
   });
-
   // Final review — dropped entries for a REAL in-flight fire are logged
   // (counts only); an unknown reqId's payload is not.
   it('logs counts (never names) when a payload for an in-flight fire loses entries', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
-    const warns: Array<[string, Record<string, unknown>]> = [];
+    const warns: Array<[
+      string,
+      Record<string, unknown>
+    ]> = [];
     const logger = { warn: (msg: string, fields: Record<string, unknown>) => { warns.push([msg, fields]); } };
     stashConnectorsSkipped(pending, {
       reqId: 'req-1',
@@ -439,7 +189,6 @@ describe('connector skips per fire (slice 6)', () => {
       ['routines_connectors_skipped_entries_dropped', { received: 3, malformed: 2, overCap: 0 }],
     ]);
     expect(JSON.stringify(warns)).not.toMatch(/Seven|Gmail/);
-
     warns.length = 0;
     stashConnectorsSkipped(pending, { reqId: 'req-other', connectors: [null] }, logger);
     stashConnectorsSkipped(pending, {
@@ -447,7 +196,6 @@ describe('connector skips per fire (slice 6)', () => {
     }, logger); // a repeat is a merge, not a drop
     expect(warns).toEqual([]);
   });
-
   // Final review — contract: the producer's REAL payload (chat-orchestrator's
   // connectorsSkippedPayload) is accepted whole by this consumer.
   it('contract: connectorsSkippedPayload() output is stashed with every skip kept', () => {
@@ -466,12 +214,9 @@ describe('connector skips per fire (slice 6)', () => {
       { connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' },
       { connectorId: 'notion', name: 'notion', reason: 'not-signed-in' },
     ]);
-    expect(warningFor(pending.get('req-c')!)).toBe(
-      "Gmail and notion aren't signed in on Bob, so this run went without them. "
-      + 'Linear needs to be signed in again on Bob, so this run went without it.',
-    );
+    expect(warningFor(pending.get('req-c')!)).toBe("Gmail and notion aren't signed in on Bob, so this run went without them. "
+      + 'Linear needs to be signed in again on Bob, so this run went without it.');
   });
-
   it('a payload that is not the expected shape is ignored without throwing', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
     for (const bad of [undefined, null, 'x', { reqId: 'req-1' }, { reqId: 'req-1', connectors: 'x' }, { reqId: 5, connectors: [] }]) {
@@ -479,7 +224,6 @@ describe('connector skips per fire (slice 6)', () => {
     }
     expect(pending.get('req-1')!.skips).toEqual([]);
   });
-
   it('holds at most 50 skips per fire', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
     stashConnectorsSkipped(pending, {
@@ -488,190 +232,15 @@ describe('connector skips per fire (slice 6)', () => {
     });
     expect(pending.get('req-1')!.skips).toHaveLength(50);
   });
-
   it('a nameless skip falls back to its connector id', () => {
     const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
     stashConnectorsSkipped(pending, {
       reqId: 'req-1',
       connectors: [{ connectorId: 'gmail', name: ' ‮ ', reason: 'not-signed-in' }],
     });
-    expect(warningFor(pending.get('req-1')!)).toBe(
-      "gmail isn't signed in on Bob, so this run went without it.",
-    );
+    expect(warningFor(pending.get('req-1')!)).toBe("gmail isn't signed in on Bob, so this run went without it.");
   });
-
   it('warningFor: null when nothing was skipped', () => {
     expect(warningFor(pendingEntry())).toBeNull();
-  });
-
-  it('carries the agent display name from agents:resolve into the pending entry', async () => {
-    const bus = await makeBus({
-      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
-    });
-    const pending: PendingFires = new Map();
-    await createFireRoutine({ bus, pending } as FireDeps)(row(), 'tick');
-    const [entry] = [...pending.values()];
-    expect(entry!.agentName).toBe('Bob');
-    expect(entry!.skips).toEqual([]);
-  });
-
-  it('an agent with no display name leaves agentName null ("this agent")', async () => {
-    const bus = await makeBus({});
-    const pending: PendingFires = new Map();
-    await createFireRoutine({ bus, pending } as FireDeps)(row(), 'tick');
-    const [entry] = [...pending.values()];
-    expect(entry!.agentName).toBeNull();
-    expect(warningFor({ ...entry!, skips: [{ connectorId: 'g', name: 'Gmail', reason: 'not-signed-in' }] }))
-      .toBe("Gmail isn't signed in on this agent, so this run went without it.");
-  });
-
-  it('a terminated fire that skipped a connector records the warning on its row', async () => {
-    const pending: PendingFires = new Map();
-    const bus = await makeBus({
-      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
-      invoke: async (ctx) => {
-        stashConnectorsSkipped(pending, {
-          reqId: ctx.reqId,
-          connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }],
-        });
-        return { kind: 'terminated', reason: 'chat-timeout' };
-      },
-    });
-    const recorded: RecordFireInput[] = [];
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      await createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
-      await vi.waitFor(() => expect(recorded).toHaveLength(1));
-    } finally {
-      stderr.mockRestore();
-    }
-    expect(recorded[0]).toMatchObject({
-      status: 'error',
-      warning: 'Gmail needs to be signed in again on Bob, so this run went without it.',
-    });
-  });
-
-  it('a terminated fire with nothing skipped records warning: null (clears the last one)', async () => {
-    const bus = await makeBus({ invoke: async () => ({ kind: 'terminated', reason: 'x' }) });
-    const recorded: RecordFireInput[] = [];
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      await createFireRoutine({ bus, pending: new Map(), recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
-      await vi.waitFor(() => expect(recorded).toHaveLength(1));
-    } finally {
-      stderr.mockRestore();
-    }
-    expect(recorded[0]!.warning).toBeNull();
-  });
-
-  it('two concurrent fires each get their own warning, keyed by reqId', async () => {
-    const pending: PendingFires = new Map();
-    const release: Array<() => void> = [];
-    const bus = await makeBus({
-      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
-      invoke: async (ctx) => {
-        const name = ctx.triggerLabel === 'one' ? 'Gmail' : 'Linear';
-        stashConnectorsSkipped(pending, {
-          reqId: ctx.reqId,
-          connectors: [{ connectorId: name.toLowerCase(), name, reason: 'not-signed-in' }],
-        });
-        await new Promise<void>((r) => release.push(r));
-        return { kind: 'terminated', reason: 'x' };
-      },
-    });
-    const recorded: RecordFireInput[] = [];
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
-      await fire(row({ name: 'one', path: 'one.md' }), 'tick');
-      await fire(row({ name: 'two', path: 'two.md' }), 'tick');
-      await vi.waitFor(() => expect(release).toHaveLength(2));
-      for (const r of release) r();
-      await vi.waitFor(() => expect(recorded).toHaveLength(2));
-    } finally {
-      stderr.mockRestore();
-    }
-    const byPath = Object.fromEntries(recorded.map((r) => [r.path, r.warning]));
-    expect(byPath).toEqual({
-      'one.md': "Gmail isn't signed in on Bob, so this run went without it.",
-      'two.md': "Linear isn't signed in on Bob, so this run went without it.",
-    });
-  });
-});
-
-// Final review ruling — a fire that fails BEFORE turn assembly leaves the
-// routine's last_warning unchanged (`warning` omitted); one that may have
-// reached assembly writes it (a sentence or null).
-describe('which settled fires touch last_warning (slice 6)', () => {
-  async function settle(invoke: (ctx: AgentContext) => Promise<unknown>): Promise<RecordFireInput> {
-    const bus = await makeBus({ invoke });
-    const recorded: RecordFireInput[] = [];
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      await createFireRoutine({
-        bus, pending: new Map(), recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 5,
-      })(row(), 'tick');
-      await vi.waitFor(() => expect(recorded).toHaveLength(1));
-    } finally {
-      stderr.mockRestore();
-    }
-    return recorded[0]!;
-  }
-
-  it('a chat:start veto → warning omitted', async () => {
-    const r = await settle(async () => ({ kind: 'terminated', reason: 'chat:start:quota' }));
-    expect(r.status).toBe('error');
-    expect('warning' in r).toBe(false);
-  });
-
-  it('an agents:resolve refusal inside the invoke → warning omitted', async () => {
-    const r = await settle(async () => ({ kind: 'terminated', reason: 'agent-resolve:forbidden' }));
-    expect('warning' in r).toBe(false);
-  });
-
-  it('a dispatch error (the invoke threw) → warning omitted', async () => {
-    const r = await settle(async () => { throw new Error('no agent:invoke'); });
-    expect(r.status).toBe('error');
-    expect('warning' in r).toBe(false);
-  });
-
-  // Residual review — skips stashed for this fire prove it reached assembly,
-  // whatever the outcome says afterwards.
-  it('a fire that stashed skips and then threw (or was refused) still records its warning', async () => {
-    for (const end of [
-      async () => { throw new Error('transport blip'); },
-      async () => ({ kind: 'terminated', reason: 'agent-resolve:internal' }),
-    ]) {
-      const pending: PendingFires = new Map();
-      const bus = await makeBus({
-        resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
-        invoke: async (ctx) => {
-          stashConnectorsSkipped(pending, {
-            reqId: ctx.reqId,
-            connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }],
-          });
-          return end();
-        },
-      });
-      const recorded: RecordFireInput[] = [];
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        await createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
-        await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(recorded[0]!.warning).toBe("Gmail isn't signed in on Bob, so this run went without it.");
-    }
-  });
-
-  it('any other terminated run → warning written (null when nothing was skipped)', async () => {
-    const r = await settle(async () => ({ kind: 'terminated', reason: 'connector-needs-reconnect' }));
-    expect(r.warning).toBeNull();
-  });
-
-  it('complete without a turn end (grace backstop) → warning written', async () => {
-    const r = await settle(async () => ({ kind: 'complete', messages: [] }));
-    expect(r.warning).toBeNull();
   });
 });

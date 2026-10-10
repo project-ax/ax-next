@@ -120,3 +120,6 @@ export type {
   FreshnessPredicate,
   ToolCall,
 } from './types.js';
+
+export type { AuthorizeRoutineCallInput, AuthorizeRoutineCallOutput, SettleRoutineCallInput } from './types.js';
+export { AuthorizeRoutineCallInputSchema, AuthorizeRoutineCallOutputSchema, SettleRoutineCallInputSchema } from './types.js';

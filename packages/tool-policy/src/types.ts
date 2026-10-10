@@ -142,6 +142,8 @@ export interface PolicyRule {
    * yet there is no outward action to withdraw.
    */
   irreversible?: boolean;
+  /** Reviewed create/update hold exception; never a general agent override. */
+  routineConsent?: 'create-update';
   /**
    * See `ToolEffect`. OMITTED means unclassified, not harmless.
    *
@@ -1023,3 +1025,17 @@ export const ListAgentOverridesOutputSchema = z.object({
 export const SnapshotConnectorForAgentOutputSchema = z.object({
   copied: z.number().int().min(0),
 });
+
+
+/** Opaque revision; absence is '0'. Consent binds one agent and real person. */
+export interface RoutineConsent { enabled: boolean; revision: string }
+export interface RoutineConsentInput { agentId: string }
+export interface GrantRoutineConsentInput { decisionId: string; expectedRevision: string }
+export type GrantRoutineConsentOutput = RoutineConsent & { delivered: true };
+const ConsentIdSchema = z.string().min(1).max(256);
+export const RoutineConsentInputSchema = z.object({ agentId: ConsentIdSchema }).strict();
+export const GrantRoutineConsentInputSchema = z.object({
+  decisionId: ConsentIdSchema, expectedRevision: ConsentIdSchema,
+}).strict();
+export const RoutineConsentSchema = z.object({ enabled: z.boolean(), revision: ConsentIdSchema });
+export const GrantRoutineConsentOutputSchema = RoutineConsentSchema.extend({ delivered: z.literal(true) });

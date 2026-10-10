@@ -23,7 +23,7 @@
  * AW-11 (TASK-234) replaces the mock with these types outright and reconciles
  * the renderers in the same change. Until then this comment is the record.
  */
-import type { ToolCall } from '@ax/core';
+import type { SafeToolCode, SafeToolField, ToolCall } from '@ax/core';
 import { z } from 'zod';
 
 export type { ToolCall };
@@ -323,6 +323,20 @@ export interface Decision {
    * success would be followed by the agent acting on the yes anyway.
    */
   deliveredAt: string | null;
+  /** Chosen by the authenticated approver; model input never selects scope. */
+  approvalScope: 'once' | 'agent-routines';
+  consentExpectedRevision: string | null;
+  consentDeliveryState: 'none' | 'pending' | 'delivered' | 'failed';
+  consentGranted: boolean | null;
+  /** First release-due delivery claim. Accepted intent can reconcile a lost ack after expiry. */
+  consentDeliveryClaimedAt: string | null;
+  routineReleaseAt: string | null;
+  routineAuthorizationId: string | null;
+  routineExecutionFingerprint: string | null;
+  /** Only settlement of a proved effect may produce a successful routine receipt. */
+  routineOutcome: 'succeeded' | 'failed' | null;
+  routineFailureCode: SafeToolCode | null;
+  routineFailureField: SafeToolField | null;
 }
 
 export type ActivityKind =
@@ -426,6 +440,7 @@ export interface DecisionsGetOutput {
 }
 
 export interface DecisionsApproveInput {
+  approvalScope?: 'once' | 'agent-routines';
   decisionId: string;
   userId: string;
   /**
@@ -742,6 +757,17 @@ export const DecisionSchema = z.object({
   replayError: z.string().nullable(),
   deliveryDueAt: z.string().nullable(),
   deliveredAt: z.string().nullable(),
+  approvalScope: z.enum(['once', 'agent-routines']),
+  consentExpectedRevision: z.string().nullable(),
+  consentDeliveryState: z.enum(['none', 'pending', 'delivered', 'failed']),
+  consentGranted: z.boolean().nullable(),
+  consentDeliveryClaimedAt: z.string().nullable(),
+  routineReleaseAt: z.string().nullable(),
+  routineAuthorizationId: z.string().nullable(),
+  routineExecutionFingerprint: z.string().nullable(),
+  routineOutcome: z.enum(['succeeded', 'failed']).nullable(),
+  routineFailureCode: z.string().nullable(),
+  routineFailureField: z.string().nullable(),
 }) as unknown as z.ZodType<Decision>;
 
 export const DecisionsListOutputSchema = z.object({
@@ -801,3 +827,27 @@ export const DecisionsUndoOutputSchema = z.object({
   decision: DecisionSchema.nullable(),
   undone: z.boolean(),
 }) as unknown as z.ZodType<DecisionsUndoOutput>;
+
+export interface AuthorizeRoutineCallInput {
+  call: ToolCall;
+}
+export interface AuthorizeRoutineCallOutput {
+  authorizationId: string;
+  requestId: string;
+}
+export interface SettleRoutineCallInput {
+  authorizationId: string;
+  outcome: 'succeeded' | 'failed';
+  failureCode?: SafeToolCode;
+}
+export const AuthorizeRoutineCallInputSchema = z.object({ call: ToolCallSchema }).strict();
+export const AuthorizeRoutineCallOutputSchema = z
+  .object({ authorizationId: z.string().min(1), requestId: z.string().min(1) })
+  .strict();
+export const SettleRoutineCallInputSchema = z
+  .object({
+    authorizationId: z.string().min(1),
+    outcome: z.enum(['succeeded', 'failed']),
+    failureCode: z.string().optional(),
+  })
+  .strict();

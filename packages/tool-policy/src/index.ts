@@ -32,6 +32,10 @@ export {
   strictest,
 } from './verdicts.js';
 export {
+  RoutineConsentInputSchema,
+  RoutineConsentSchema,
+  GrantRoutineConsentInputSchema,
+  GrantRoutineConsentOutputSchema,
   CapabilityProvenanceSchema,
   CapabilityRowSchema,
   EgressAllowlistSiteSchema,
@@ -53,6 +57,10 @@ export {
   SnapshotConnectorForAgentOutputSchema,
 } from './types.js';
 export type {
+  RoutineConsent,
+  RoutineConsentInput,
+  GrantRoutineConsentInput,
+  GrantRoutineConsentOutput,
   CapabilityProvenance,
   CapabilityRow,
   EgressAllowlistEntry,

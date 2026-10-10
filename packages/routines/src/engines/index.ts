@@ -1,4 +1,4 @@
-import type { TriggerSpec } from '@ax/validator-routine';
+import type { RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 import { intervalEngine, type TriggerEngine } from './interval.js';
 import { cronEngine } from './cron.js';
 

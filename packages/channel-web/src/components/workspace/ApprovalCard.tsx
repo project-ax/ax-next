@@ -59,7 +59,8 @@ import { FindHighlight, type FindView } from './ThreadFind';
 
 interface Props {
   decision: Decision;
-  onApprove: () => void;
+  agentName?: string;
+  onApprove: (scope?: 'once' | 'agent-routines') => void;
   onDismiss: () => void;
   onUndo: () => void;
   onEdit?: ((body: string) => Promise<void>) | undefined;
@@ -84,6 +85,7 @@ interface Props {
 
 export function ApprovalCard({
   decision: d,
+  agentName = 'This agent',
   onApprove,
   onDismiss,
   onUndo,
@@ -335,6 +337,10 @@ export function ApprovalCard({
             >
               {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
             </Button>
+            {d.approvalScopes?.includes('agent-routines') && <>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => { armForResolution(); onApprove('agent-routines'); }}>Always Allow</Button>
+              <p className="text-xs text-muted-foreground">Allow {agentName} to create and edit routines for you. Delete and Fire now still ask.</p>
+            </>}
             {onEdit && d.preview && !stale && <Button size="sm" className="h-8 max-md:h-11" variant="outline" disabled={busy}
               onClick={() => { setDraft(d.preview?.body ?? ''); setEditError(null); setEditing(true); }}>Edit first</Button>}
             <Button

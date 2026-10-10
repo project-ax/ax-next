@@ -37,6 +37,7 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
+import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
 import { readStorageFull } from './storage-full';
@@ -395,6 +396,11 @@ function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
+/** Older receipts may omit the marker; present markers use the closed domain. */
+function isDecisionRecord(value: unknown): boolean {
+  return isRecord(value) && (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation));
+}
+
 
 export interface FactRecallQuery {
   query?: string;
@@ -797,11 +803,11 @@ export const workspaceApi = {
     return checkedRead<DecisionsPage>(
       '/decisions',
       body,
-      (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isRecord),
+      (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isDecisionRecord),
     );
   },
 
-  approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
+  approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
 
@@ -879,7 +885,7 @@ export const workspaceApi = {
     return checkedRead<DecisionRead>(
       path,
       body,
-      (b) => isRecord(b) && isRecord(b.decision),
+      (b) => isRecord(b) && isDecisionRecord(b.decision),
     );
   },
 

@@ -18,7 +18,7 @@
  * the server (agents:resolve), so a forced render of a row for an agent
  * the user doesn't own would just surface a 403 — the gate isn't here.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Card,
   CardContent,
@@ -31,7 +31,7 @@ import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import { PaneStatus } from '../PaneStatus';
 import { useAgentStore } from '@/lib/agent-store';
-import { routines } from '@/lib/routines';
+import { routineApi } from '@/lib/routines';
 
 const SKILL_REFLECTION_ID = 'skill-reflection';
 
@@ -48,7 +48,17 @@ interface RowState {
   error: string | null;
 }
 
-function AgentToggleRow({ agentId, agentName, focused = false }: { agentId: string; agentName: string; focused?: boolean }) {
+function AgentToggleRow({
+  agentId,
+  agentName,
+  onChanged,
+  focused = false,
+}: {
+  onChanged?: (() => void) | undefined;
+  agentId: string;
+  agentName: string;
+  focused?: boolean;
+}) {
   const [state, setState] = useState<RowState>({
     enabled: undefined,
     saving: false,
@@ -60,7 +70,7 @@ function AgentToggleRow({ agentId, agentName, focused = false }: { agentId: stri
     setState({ enabled: undefined, saving: false, error: null });
     void (async () => {
       try {
-        const defaults = await routines.listAgentDefaults(agentId);
+        const defaults = await routineApi.listAgentDefaults(agentId);
         const reflection = defaults.find(
           (d) => d.defaultRoutineId === SKILL_REFLECTION_ID,
         );
@@ -89,12 +99,13 @@ function AgentToggleRow({ agentId, agentName, focused = false }: { agentId: stri
     // Optimistic flip so the Switch feels instant; roll back on failure.
     setState((s) => ({ ...s, enabled: next, saving: true, error: null }));
     try {
-      await routines.setAgentDefaultEnabled({
+      await routineApi.setAgentDefaultEnabled({
         agentId,
         defaultRoutineId: SKILL_REFLECTION_ID,
         enabled: next,
       });
       setState((s) => ({ ...s, saving: false }));
+      onChanged?.();
     } catch (err) {
       setState((s) => ({
         ...s,
@@ -139,18 +150,29 @@ function AgentToggleRow({ agentId, agentName, focused = false }: { agentId: stri
   );
 }
 
-export function AgentSelfImprovementSection({ agentId, agentName, onViewSkills }: { agentId?: string; agentName?: string | undefined; onViewSkills?: (() => void) | undefined } = {}) {
+export function AgentSelfImprovementSection({
+  agentId,
+  agentName,
+  onChanged,
+  onViewSkills,
+}: {
+  agentId?: string | undefined;
+  agentName?: string | undefined;
+  onChanged?: (() => void) | undefined;
+  onViewSkills?: (() => void) | undefined;
+} = {}) {
   const { agents, agentsStatus } = useAgentStore();
 
   if (agentId) return <div className="flex flex-col gap-5">
-    <AgentToggleRow key={agentId} agentId={agentId} agentName={agentName ?? 'This agent'} focused />
+    <AgentToggleRow key={agentId} agentId={agentId} agentName={agentName ?? 'This agent'} onChanged={onChanged} focused />
     <Separator />
     <div className="flex flex-col items-start gap-2">
       <p className="text-sm">Skills {agentName ?? 'this agent'} writes</p>
       <p className="text-sm text-muted-foreground">Find {agentName ?? 'this agent'}’s authored skills in Skills → Installed.</p>
-      <Button variant="outline" onClick={onViewSkills}>View skills</Button>
+      {onViewSkills && <Button variant="outline" onClick={onViewSkills}>View skills</Button>}
     </div>
   </div>;
+
   return (
     <Card>
       <CardHeader>
@@ -171,10 +193,105 @@ export function AgentSelfImprovementSection({ agentId, agentName, onViewSkills }
         ) : (
           <div className="flex flex-col">
             {agents.map((a) => (
-              <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} />
+              <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} onChanged={onChanged} />
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Existing catalog overrides stay reachable, including heartbeat. */
+export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; onChanged?: (() => void) | undefined }) {
+  const [rows, setRows] = useState<
+    import('@/lib/routines').AgentDefaultState[] | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const flight = useRef(false);
+  useEffect(() => {
+    let active = true;
+    setRows(null);
+    setError(null);
+    void routineApi
+      .listAgentDefaults(agentId)
+      .then((defaults) => {
+        if (active)
+          setRows(
+            defaults.filter((d) => d.defaultRoutineId !== SKILL_REFLECTION_ID),
+          );
+      })
+      .catch(() => {
+        if (active) setError('Default routines are unavailable.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Default routines</CardTitle>
+        <CardDescription>
+          Existing routines provided by the workspace.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {error && <PaneStatus variant="error">{error}</PaneStatus>}
+        {rows === null && !error && (
+          <PaneStatus variant="loading">Loading default routines…</PaneStatus>
+        )}
+        {rows?.map((row) => (
+          <div
+            key={row.defaultRoutineId}
+            className="flex items-center justify-between gap-3 py-3"
+          >
+            <label
+              htmlFor={`default-${row.defaultRoutineId}`}
+              className="text-sm"
+            >
+              {row.name}
+            </label>
+            <Switch
+              id={`default-${row.defaultRoutineId}`}
+              checked={row.enabled}
+              disabled={busy !== null}
+              onCheckedChange={(enabled) => {
+                if (flight.current) return;
+                flight.current = true;
+                setBusy(row.defaultRoutineId);
+                setError(null);
+                void routineApi
+                  .setAgentDefaultEnabled({
+                    agentId,
+                    defaultRoutineId: row.defaultRoutineId,
+                    enabled,
+                  })
+                  .then(() =>
+                    setRows(
+                      (previous) =>
+                        previous?.map((d) =>
+                          d.defaultRoutineId === row.defaultRoutineId
+                            ? { ...d, enabled }
+                            : d,
+                        ) ?? null,
+                    ),
+                  )
+                  .then(() => onChanged?.())
+                  .catch(() =>
+                    setError(
+                      'We couldn’t change this default routine. Try again.',
+                    ),
+                  )
+                  .finally(() => {
+                    flight.current = false;
+                    setBusy(null);
+                  });
+              }}
+            />
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

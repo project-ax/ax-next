@@ -1,108 +1,53 @@
-/**
- * Default-routines wire client — typed wrappers around `/admin/routines/defaults*`.
- *
- * Mirrors `lib/skills.ts` shape:
- *
- *   - `credentials: 'include'` on every call so the auth-better session
- *     cookie flows.
- *   - `x-requested-with: ax-admin` on writes so requests pass the
- *     http-server's CSRF guard.
- *   - Throws on non-2xx with status + body excerpt.
- *   - Returns undefined on 204 (DELETE); returns parsed JSON otherwise.
- *
- * SECURITY NOTE — every endpoint is admin-gated server-side (requireAdmin
- * in `@ax/routines-admin-routes`). UI hiding is convenience; the gate is
- * on the server.
- */
-
-import type { DefaultRoutineDetail, DefaultRoutineSummary } from '@ax/routines';
-
-const writeHeaders = {
-  'content-type': 'application/json',
-  'x-requested-with': 'ax-admin',
-} as const;
-
-const csrfHeader = { 'x-requested-with': 'ax-admin' } as const;
-
-async function handleResponse(res: Response): Promise<unknown> {
-  if (res.status === 204) return undefined;
-  if (!res.ok) {
-    const excerpt = await res.text().catch(() => '');
-    throw new Error(`default-routines API ${res.status}: ${excerpt.slice(0, 200)}`);
+import { httpFetch } from './http';
+import type {
+  RoutineDefaultSummary,
+  RoutineGetDefaultOutput,
+  RoutineUpsertDefaultInput,
+  RoutineUpsertDefaultOutput,
+} from '@ax/routines-contract';
+import { readRoutineResponse, RoutineApiError } from './routines';
+export type DefaultRoutineSummary = RoutineDefaultSummary;
+export type DefaultRoutineDetail = RoutineGetDefaultOutput;
+async function request<T>(
+  path: string,
+  method = 'GET',
+  body?: unknown,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await httpFetch(path, {
+      method,
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch {
+    throw new RoutineApiError(0);
   }
-  return res.json();
+  return readRoutineResponse<T>(res);
 }
-
+const base = '/admin/routines/defaults';
 export async function listDefaultRoutines(): Promise<DefaultRoutineSummary[]> {
-  const res = await fetch('/admin/routines/defaults', { credentials: 'include' });
-  const body = (await handleResponse(res)) as { defaults: DefaultRoutineSummary[] };
-  return body.defaults;
+  return (await request<{ defaults: DefaultRoutineSummary[] }>(base)).defaults;
 }
-
-export async function getDefaultRoutine(
-  defaultRoutineId: string,
-): Promise<DefaultRoutineDetail> {
-  const res = await fetch(
-    `/admin/routines/defaults/${encodeURIComponent(defaultRoutineId)}`,
-    { credentials: 'include' },
-  );
-  return (await handleResponse(res)) as DefaultRoutineDetail;
+export function getDefaultRoutine(id: string): Promise<DefaultRoutineDetail> {
+  return request(`${base}/${encodeURIComponent(id)}`);
 }
-
-/**
- * Create a default routine from a full routine .md (frontmatter fence + body).
- * The server parses the frontmatter and rejects webhook/cron triggers (those
- * have no agent owner to anchor them to).
- */
-export async function upsertDefaultRoutine(
-  sourceMd: string,
-): Promise<{ defaultRoutineId: string; created: boolean }> {
-  const res = await fetch('/admin/routines/defaults', {
-    method: 'POST',
-    headers: writeHeaders,
-    credentials: 'include',
-    body: JSON.stringify({ sourceMd }),
-  });
-  return (await handleResponse(res)) as {
-    defaultRoutineId: string;
-    created: boolean;
-  };
+/** Editable canonical interval fields only; omitted enabled preserves the catalog setting. */
+export function upsertDefaultRoutine(
+  definition: RoutineUpsertDefaultInput,
+): Promise<RoutineUpsertDefaultOutput> {
+  return request(base, 'POST', definition);
 }
-
-/**
- * Update an existing default routine identified by `defaultRoutineId`. The
- * frontmatter `name` field in `sourceMd` must match the path id; the server
- * enforces this.
- */
-export async function updateDefaultRoutine(
-  defaultRoutineId: string,
-  sourceMd: string,
-): Promise<{ defaultRoutineId: string; created: boolean }> {
-  const res = await fetch(
-    `/admin/routines/defaults/${encodeURIComponent(defaultRoutineId)}`,
-    {
-      method: 'PUT',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify({ sourceMd }),
-    },
-  );
-  return (await handleResponse(res)) as {
-    defaultRoutineId: string;
-    created: boolean;
-  };
+export function updateDefaultRoutine(
+  id: string,
+  definition: RoutineUpsertDefaultInput,
+): Promise<RoutineUpsertDefaultOutput> {
+  return request(`${base}/${encodeURIComponent(id)}`, 'PUT', definition);
 }
-
-export async function deleteDefaultRoutine(
-  defaultRoutineId: string,
-): Promise<void> {
-  const res = await fetch(
-    `/admin/routines/defaults/${encodeURIComponent(defaultRoutineId)}`,
-    {
-      method: 'DELETE',
-      headers: csrfHeader,
-      credentials: 'include',
-    },
-  );
-  await handleResponse(res);
+export function deleteDefaultRoutine(id: string): Promise<void> {
+  return request(`${base}/${encodeURIComponent(id)}`, 'DELETE');
 }

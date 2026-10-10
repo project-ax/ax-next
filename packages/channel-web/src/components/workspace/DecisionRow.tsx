@@ -87,7 +87,7 @@ interface Props {
   expanded: boolean;
   onToggle: () => void;
   onOpenAgent: () => void;
-  onApprove: () => void;
+  onApprove: (scope?: 'once' | 'agent-routines') => void;
   onDismiss: () => void;
   onUndo: () => void;
   /** A POST is in flight for this row: the controls go quiet, never absent. */
@@ -413,6 +413,10 @@ export function DecisionRow({
               >
                 {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
               </Button>
+            {d.approvalScopes?.includes('agent-routines') && <>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => { armForResolution(); onApprove('agent-routines'); }}>Always Allow</Button>
+              <p className="text-xs text-muted-foreground">Allow {agent.name} to create and edit routines for you. Delete and Fire now still ask.</p>
+            </>}
               <Button
                 size="sm"
                 variant="secondary"

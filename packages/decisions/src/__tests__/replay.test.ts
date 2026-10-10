@@ -9,7 +9,8 @@
  * writes when things go wrong.
  */
 import { describe, expect, it } from 'vitest';
-import { HookBus, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { HookBus, SafeToolError, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { callFingerprint } from '../fingerprint.js';
 import { receiptFor } from '../receipts.js';
 import { replayContext, replayOnApprove, settleReplay } from '../replay.js';
 import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
@@ -66,6 +67,18 @@ function base(over: Partial<Decision> = {}): Decision {
     replayError: null,
     deliveryDueAt: null,
     deliveredAt: null,
+    approvalScope: 'once',
+    consentExpectedRevision: null,
+    consentDeliveryState: 'none',
+    consentGranted: null,
+    consentDeliveryClaimedAt: null,
+    routineReleaseAt: null,
+    routineAuthorizationId: null,
+    routineExecutionFingerprint: null,
+    routineOutcome: null,
+    routineFailureCode: null,
+    routineFailureField: null,
+
     ...over,
   };
 }
@@ -361,3 +374,68 @@ describe('settleReplay — a completed replay stops being a standing authorisati
     expect(await store.restore(decision.id)).toBeNull();
   });
 });
+
+ describe('routine safe failures', () => {
+  it('does not mark a stale routine edit as successfully replayed', async () => {
+    const decision = base({ call: { id: 'call1', name: 'routine_update', input: {
+      requestId: 'edit1', routineId: 'rtn_a', expectedRevision: 'old', patch: { name: 'New name' },
+    } } });
+    const bus = new HookBus();
+    bus.registerService('tool:execute:routine_update', '@ax/test-routine', async () => {
+      const error = new SafeToolError('revision-conflict', 'expectedRevision');
+      error.message = 'SECRET from a corrupt plugin';
+      throw error;
+    });
+    const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+    expect(outcome.executed).toBe(false);
+    expect(outcome.error).toContain('routine_get');
+    expect(outcome.error).not.toContain('SECRET');
+  });
+  it('does not expose unknown routine exceptions', async () => {
+    const decision = base({ call: { id: 'c', name: 'routine_update', input: {} } });
+    const bus = new HookBus();
+    bus.registerService('tool:execute:routine_update', 'test', async () => { throw new Error('SECRET'); });
+    const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+    expect(outcome.executed).toBe(false);
+    expect(outcome.error).not.toContain('SECRET');
+    expect(outcome.error).toContain('temporarily unavailable');
+  });
+});
+
+it('checks mutated safe codes before returning a routine replay failure code', async () => {
+  const decision = base({ call: { id: 'mutated', name: 'routine_update', input: {} } });
+  const bus = new HookBus();
+  bus.registerService('tool:execute:routine_update', 'test', async () => {
+    const error = new SafeToolError('revision-conflict', 'expectedRevision');
+    Object.assign(error, { toolCode: 'SECRET', field: 'SECRET', message: 'SECRET' });
+    throw error;
+  });
+  const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+  expect(outcome.failureCode).toBe('unavailable');
+  expect(outcome.error).toContain('Field: input');
+  expect(JSON.stringify(outcome)).not.toContain('SECRET');
+});
+
+ describe('routine pending-effect consumer', () => {
+  it.each(['exact', 'request', 'fingerprint', 'agent', 'user', 'authority', 'extra', 'binding'])(
+    'keeps only exact private markers pending (%s)', async variant => {
+      const call: ToolCall = { id: 'c', name: 'routine_create', input: { requestId: 'request' } };
+      const decision = base({ call, callFingerprint: callFingerprint(call) });
+      const ctx = replayContext(decision);
+      const binding = { authorizationId: 'authority', requestId: 'request', fingerprint: callFingerprint(call), outcome: null };
+      ctx.state.set('decisions:routine-execution', variant === 'binding' ? { ...binding, extra: true } : binding);
+      const marker = { authorizationId: 'authority', requestId: 'request', fingerprint: binding.fingerprint, agentId: ctx.agentId, userId: ctx.userId };
+      const fields = { request: 'requestId', fingerprint: 'fingerprint', agent: 'agentId', user: 'userId', authority: 'authorizationId', extra: 'extra' };
+      if (variant in fields) Object.assign(marker, { [fields[variant as keyof typeof fields]]: 'different' });
+      const bus = new HookBus();
+      bus.registerService('tool:execute:routine_create', 'test', async c => {
+        c.state.set('routines:pending-effect:authority', marker);
+        throw new Error('SECRET');
+      });
+      const result = await replayOnApprove({ bus, ctx, decision });
+      expect(result.pending === true).toBe(variant === 'exact');
+      expect(result.executed).toBe(false);
+      expect(result.error).not.toContain('SECRET');
+    },
+  );
+ });

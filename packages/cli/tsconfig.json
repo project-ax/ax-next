@@ -21,6 +21,7 @@
     { "path": "../onboarding" },
     { "path": "../sandbox-subprocess" },
     { "path": "../workspace-git" },
+    { "path": "../workspace-git-core" },
     { "path": "../workspace-localdir" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
@@ -35,7 +36,6 @@
     { "path": "../web-tools" },
     { "path": "../test-harness" },
     { "path": "../validator-identity" },
-    { "path": "../validator-routine" },
     { "path": "../validator-service" },
     { "path": "../validator-skill" },
     { "path": "../../presets/memory" }

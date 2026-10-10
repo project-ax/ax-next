@@ -18,7 +18,6 @@ import {
 import { headingOutline } from '@/test-utils/heading-outline';
 import { AgentSettings } from '../AgentSettings';
 
-vi.mock('@/lib/routines', () => ({ routines: { list: vi.fn(async () => []), listAgentDefaults: vi.fn(async () => []) } }));
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -146,6 +145,14 @@ describe('AgentSettings — desktop', () => {
     render(<Harness initial={initial} />);
     expect(screen.getByRole('tab', { name: tab })).toBeTruthy();
     expect(await screen.findByRole('button', { name: initial === 'skills' ? 'Create' : 'New routine' })).toBeTruthy();
+  });
+
+  it('hosts structured routines and permission disclosure in the agent shell', () => {
+    render(<Harness initial="routines" />);
+    expect(screen.getByRole('tab', { name: 'My routines' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Self-improvement' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'New routine' })).toBeVisible();
+    expect(screen.getByLabelText('Loading routine permissions')).toBeVisible();
   });
 
   it('draws the memories list it is given under Memory', () => {

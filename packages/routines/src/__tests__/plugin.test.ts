@@ -1,505 +1,80 @@
-import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { Kysely, PostgresDialect } from 'kysely';
-import pg from 'pg';
-import {
-  createTestHarness,
-  type TestHarness,
-  stopPostgresContainer,
-  startTestContainer,
-} from '@ax/test-harness';
-import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { sql } from 'kysely';
 import { createRoutinesPlugin } from '../plugin.js';
-import type { RoutinesDatabase } from '../migrations.js';
-import type { RoutinesConfig } from '../types.js';
 import { createRoutinesStore } from '../store.js';
-import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_ROUTINE_NAME } from '../index.js';
-import {
-  SKILL_REFLECTION_SEED_HASH,
-  SKILL_REFLECTION_STRATA_SEED_HASH,
-} from '../reflection-prompt.js';
-
-pg.types.setTypeParser(20, (v) => Number(v));
-
-let container: StartedPostgreSqlContainer;
-let connectionString: string;
-const harnesses: TestHarness[] = [];
-
-async function harness(config: RoutinesConfig = {}): Promise<TestHarness> {
-  const h = await createTestHarness({
-    services: {
-      'agents:resolve': async (_ctx, input: unknown) => {
-        const i = input as { agentId: string };
-        return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
-      },
-      'agents:ensure-webhook-token': async (_ctx, input: unknown) => {
-        const i = input as { agentId: string };
-        return { token: `tok-${i.agentId}` };
-      },
-      'agents:resolve-by-webhook-token': async () => ({ agent: null }),
-      'agents:list-personal-owners': async () => ({ agents: [] }),
-      'conversations:find-or-create': async () => ({
-        conversation: { conversationId: 'cnv_x' }, created: true,
-      }),
-      'conversations:create': async () => ({ conversationId: 'cnv_y' }),
-      'conversations:drop-turn': async () => undefined,
-      'conversations:hide': async () => undefined,
-      'agent:invoke': async () => ({ kind: 'complete', messages: [] }),
-      'credentials:get': async () => 'secret',
-      'http:register-route': async () => ({ unregister: () => {} }),
-      'workspace:apply': async () => ({
-        version: 'v1',
-        delta: { before: null, after: 'v1', changes: [] },
-      }),
-    },
-    plugins: [
-      createDatabasePostgresPlugin({ connectionString }),
-      createRoutinesPlugin({ tickIntervalMs: 60_000, ...config }),
-    ],
+import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+let h: RoutineHarness;
+afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
+const definition = RoutineDefinitionSchema.parse({ name: 'Check', promptBody: 'Check', silenceToken: 'QUIET', trigger: { kind: 'interval', every: '1h' } });
+async function create() { return h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create', definition }); }
+const fireInput = (r: RoutineView) => ({ agentId: r.agentId, routineId: r.routineId, expectedRevision: r.revision, requestId: 'fire' });
+describe('routines runtime registration', () => {
+  it('declares all runtime dependencies and subscriptions without file sync or token rebind', () => {
+    const { manifest } = createRoutinesPlugin();
+    expect(manifest.registers).toContain('routines:fire-now');
+    expect(manifest.calls).toContain('agents:resolve-by-webhook-token');
+    expect(manifest.subscribes).toEqual(expect.arrayContaining(['agents:deleted', 'chat:turn-end', 'chat:connectors-skipped']));
+    expect(manifest.subscribes).not.toContain('workspace:applied');
+    expect(manifest.subscribes).not.toContain('agents:webhook-token-rotated');
   });
-  harnesses.push(h);
-  return h;
-}
-
-beforeAll(async () => {
-  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
-  connectionString = container.getConnectionUri();
-}, 120_000);
-
-afterEach(async () => {
-  while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
-  const cleanup = new pg.Client({ connectionString });
-  await cleanup.connect();
-  try {
-    // Tests that don't boot a harness (e.g. pure manifest assertions)
-    // leave the tables un-created. Guard with to_regclass so the truncate
-    // is a no-op in that case instead of throwing "relation does not exist".
-    // agent_default_routine_overrides_v1 FK-references default_routines_v1,
-    // so it must be truncated in the same TRUNCATE statement (Postgres
-    // refuses to truncate a table referenced by an FK unless the referencing
-    // table is truncated together).
-    await cleanup.query(`
-      DO $$ BEGIN
-        IF to_regclass('public.routines_v1_definitions') IS NOT NULL
-           AND to_regclass('public.routines_v1_fires') IS NOT NULL
-           AND to_regclass('public.default_routines_v1') IS NOT NULL
-           AND to_regclass('public.agent_default_routine_overrides_v1') IS NOT NULL THEN
-          TRUNCATE routines_v1_definitions, routines_v1_fires, default_routines_v1, agent_default_routine_overrides_v1;
-        END IF;
-      END $$;
-    `);
-  } finally {
-    await cleanup.end();
-  }
-});
-
-afterAll(async () => { if (container) await stopPostgresContainer(container); }, 60_000);
-
-// Minimal valid interval-trigger routine markdown.
-function intervalMd(name: string, description: string, every = '60s'): string {
-  return [
-    '---',
-    `name: ${name}`,
-    `description: ${description}`,
-    'trigger:',
-    '  kind: interval',
-    `  every: "${every}"`,
-    'conversation: per-fire',
-    '---',
-    'do the thing',
-    '',
-  ].join('\n');
-}
-
-function webhookMd(): string {
-  return [
-    '---',
-    'name: hook',
-    'description: webhook routine',
-    'trigger:',
-    '  kind: webhook',
-    '  path: /api/hook',
-    'conversation: per-fire',
-    '---',
-    'on webhook',
-    '',
-  ].join('\n');
-}
-
-function cronMd(): string {
-  return [
-    '---',
-    'name: nightly',
-    'description: cron routine',
-    'trigger:',
-    '  kind: cron',
-    '  expr: "0 0 * * *"',
-    '  tz: UTC',
-    'conversation: per-fire',
-    '---',
-    'every midnight',
-    '',
-  ].join('\n');
-}
-
-describe('routines plugin manifest', () => {
-  it('manifest.registers includes the four default-routine hooks', () => {
-    const p = createRoutinesPlugin();
-    expect(p.manifest.registers).toContain('routines:list-defaults');
-    expect(p.manifest.registers).toContain('routines:get-default');
-    expect(p.manifest.registers).toContain('routines:upsert-default');
-    expect(p.manifest.registers).toContain('routines:delete-default');
+  it.each([true, false])('finishes once with silence, warning and turn-id safety (turnId=%s)', async (hasTurnId) => {
+    const warnings: string[] = [];
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+        const warn = ctx.logger.warn.bind(ctx.logger);
+        ctx.logger.warn = (message, fields) => {
+          if (!hasTurnId && message === 'routines_drop_turn_skipped_no_turn_id') warnings.push(message);
+          else warn(message, fields);
+        };
+        await bus.fire('chat:connectors-skipped', ctx, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] });
+        const result = { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'QUIET' }], ...(hasTurnId ? { turnId: 'turn' } : {}) };
+        await bus.fire('chat:turn-end', ctx, result);
+        await bus.fire('chat:turn-end', ctx, result);
+        return { kind: 'terminated', reason: 'late' };
+      } });
+    const row = await create();
+    const calls = vi.spyOn(h.bus, 'call');
+    await h.bus.call('routines:fire-now', h.owner, fireInput(row));
+    const store = createRoutinesStore(h.db);
+    await expect.poll(async () => (await store.recentFires(row)).length).toBe(1);
+    expect((await store.recentFires(row))[0]).toMatchObject({ status: 'silenced', warning: expect.stringContaining('Gmail') });
+    expect(calls.mock.calls.filter(([hook]) => hook === 'conversations:drop-turn')).toHaveLength(hasTurnId ? 1 : 0);
+    expect(calls.mock.calls.filter(([hook]) => hook === 'conversations:hide')).toHaveLength(1);
+    expect((await store.findOne(row))?.lastStatus).toBe('silenced');
+    expect(warnings).toHaveLength(hasTurnId ? 0 : 1);
   });
-
-  it('manifest.registers includes the per-agent default-override hooks (TASK-177)', () => {
-    const p = createRoutinesPlugin();
-    expect(p.manifest.registers).toContain('routines:set-agent-default-enabled');
-    expect(p.manifest.registers).toContain('routines:list-agent-defaults');
+  it('does not recreate dispatch/history/status after deletion during a deferred invoke', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let ended!: () => void;
+    const done = new Promise<void>(r => { ended = r; });
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => { await gate; await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); ended(); return { kind: 'complete' }; } });
+    const row = await create();
+    await h.bus.call('routines:fire-now', h.owner, fireInput(row));
+    expect(h.invokeCalls).toHaveLength(1);
+    await h.bus.call('agents:delete', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
+    release();
+    await done;
+    const store = createRoutinesStore(h.db);
+    expect(await store.findOne(row)).toBeNull();
+    expect(await store.recentFires(row)).toEqual([]);
+    expect((await sql `SELECT * FROM routines_v1_dispatches WHERE agent_id=${h.agentId}`.execute(h.db)).rows).toEqual([]);
   });
-
-  it('manifest.calls includes agents:resolve (owner ACL for the override hooks)', () => {
-    const p = createRoutinesPlugin();
-    expect(p.manifest.calls).toContain('agents:resolve');
+  it('restarts by interrupting abandoned acceptance without invoking it again', async () => {
+    h = await createRoutineHarness();
+    const row = await create();
+    const store = createRoutinesStore(h.db);
+    await store.acceptDispatch({ ...fireInput(row), actorUserId: h.owner.userId, source: 'manual', now: new Date() });
+    h = await h.restart();
+    expect(h.invokeCalls).toEqual([]);
+    expect((await createRoutinesStore(h.db).recentFires(row))[0]).toMatchObject({ status: 'error', error: expect.stringContaining('interrupted') });
   });
-
-  it('manifest.subscribes includes agents:deleted (TASK-680)', () => {
-    const p = createRoutinesPlugin();
-    expect(p.manifest.subscribes).toContain('agents:deleted');
-  });
-
-  it('manifest.subscribes includes chat:connectors-skipped (slice 6)', () => {
-    const p = createRoutinesPlugin();
-    expect(p.manifest.subscribes).toContain('chat:connectors-skipped');
-  });
-});
-
-// TASK-680 — deleting an agent stops its routines. @ax/agents fires
-// `agents:deleted` after the row is gone; the routines plugin must drop that
-// agent's routine rows so the tick never claims them again.
-describe('agents:deleted subscriber (TASK-680)', () => {
-  it('drops the deleted agent\'s materialized heartbeat and leaves other agents\' rows alone', async () => {
-    const h = await harness();
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    try {
-      const store = createRoutinesStore(k);
-      await store.materializeMissing({
-        agents: [
-          { agentId: 'agt_del', ownerUserId: 'u1' },
-          { agentId: 'agt_keep', ownerUserId: 'u1' },
-        ],
-        now: new Date(),
-      });
-      expect((await store.list({ agentId: 'agt_del' })).length).toBeGreaterThanOrEqual(1);
-
-      await h.bus.fire('agents:deleted', h.ctx({ userId: 'u1' }), {
-        agentId: 'agt_del', ownerId: 'u1', ownerType: 'user',
-      });
-
-      expect(await store.list({ agentId: 'agt_del' })).toEqual([]);
-      expect((await store.list({ agentId: 'agt_keep' })).length).toBeGreaterThanOrEqual(1);
-    } finally {
-      await k.destroy();
-    }
-  });
-});
-
-describe('routines:list-defaults', () => {
-  it('returns the seeded heartbeat default', async () => {
-    const h = await harness();
-    const out = await h.bus.call(
-      'routines:list-defaults', h.ctx({ userId: 'u1' }), {},
-    );
-    const defaults = (out as { defaults: Array<{ name: string }> }).defaults;
-    expect(defaults.length).toBeGreaterThan(0);
-    expect(defaults.find((d) => d.name === 'heartbeat')).toBeDefined();
-  });
-});
-
-describe('routines:upsert-default', () => {
-  it('with interval trigger persists and shows up in list', async () => {
-    const h = await harness();
-    const out = await h.bus.call(
-      'routines:upsert-default', h.ctx({ userId: 'u1' }),
-      { sourceMd: intervalMd('demo', 'demo routine', '5m') },
-    );
-    const r = out as { defaultRoutineId: string; created: boolean };
-    expect(r.created).toBe(true);
-    expect(r.defaultRoutineId).toMatch(/^default-demo-/);
-
-    const listed = await h.bus.call(
-      'routines:list-defaults', h.ctx({ userId: 'u1' }), {},
-    );
-    const defaults = (listed as { defaults: Array<{ name: string }> }).defaults;
-    expect(defaults.find((d) => d.name === 'demo')).toBeDefined();
-  });
-
-  it('flips the seeded skill-reflection global kill-switch on/off via the enabled flag (TASK-183)', async () => {
-    const h = await harness();
-
-    const enabledOf = async (name: string): Promise<boolean> => {
-      const listed = await h.bus.call(
-        'routines:list-defaults', h.ctx({ userId: 'u1' }), {},
-      );
-      const defaults = (listed as { defaults: Array<{ name: string; enabled: boolean }> }).defaults;
-      const row = defaults.find((d) => d.name === name);
-      expect(row).toBeDefined();
-      return row!.enabled;
-    };
-
-    // The migration seeds skill-reflection with the global kill-switch OFF.
-    expect(await enabledOf('skill-reflection')).toBe(false);
-
-    const md = intervalMd('skill-reflection', 'skill-reflection routine', '24h');
-
-    // 1) A plain spec re-upsert (no `enabled`) must NOT touch the global flag —
-    //    otherwise every spec edit would silently re-enable a default that an
-    //    operator deliberately left off.
-    const noFlag = await h.bus.call(
-      'routines:upsert-default', h.ctx({ userId: 'u1' }), { sourceMd: md },
-    );
-    // ON CONFLICT (name) → updates the seeded row, so created is false.
-    expect((noFlag as { created: boolean }).created).toBe(false);
-    expect(await enabledOf('skill-reflection')).toBe(false);
-
-    // 2) upsert-default with enabled:true flips the kill-switch ON.
-    await h.bus.call(
-      'routines:upsert-default', h.ctx({ userId: 'u1' }),
-      { sourceMd: md, enabled: true },
-    );
-    expect(await enabledOf('skill-reflection')).toBe(true);
-
-    // 3) upsert-default with enabled:false flips it back OFF (true↔false).
-    await h.bus.call(
-      'routines:upsert-default', h.ctx({ userId: 'u1' }),
-      { sourceMd: md, enabled: false },
-    );
-    expect(await enabledOf('skill-reflection')).toBe(false);
-  });
-
-  it('rejects webhook trigger with code default-trigger-webhook-not-supported', async () => {
-    const h = await harness();
-    await expect(
-      h.bus.call(
-        'routines:upsert-default', h.ctx({ userId: 'u1' }),
-        { sourceMd: webhookMd() },
-      ),
-    ).rejects.toMatchObject({ code: 'default-trigger-webhook-not-supported' });
-  });
-
-  it('rejects cron trigger with code default-trigger-cron-not-supported (v1 interval-only)', async () => {
-    const h = await harness();
-    await expect(
-      h.bus.call(
-        'routines:upsert-default', h.ctx({ userId: 'u1' }),
-        { sourceMd: cronMd() },
-      ),
-    ).rejects.toMatchObject({ code: 'default-trigger-cron-not-supported' });
-  });
-
-  it('rejects invalid md with code invalid-routine-md', async () => {
-    const h = await harness();
-    await expect(
-      h.bus.call(
-        'routines:upsert-default', h.ctx({ userId: 'u1' }),
-        { sourceMd: '# not a frontmatter file\n' },
-      ),
-    ).rejects.toMatchObject({ code: 'invalid-routine-md' });
-  });
-});
-
-describe('routines:get-default', () => {
-  it('returns the row when present', async () => {
-    const h = await harness();
-    // Find the seeded heartbeat to get a real defaultRoutineId.
-    const listed = await h.bus.call(
-      'routines:list-defaults', h.ctx({ userId: 'u1' }), {},
-    );
-    const defaults = (listed as { defaults: Array<{ name: string; defaultRoutineId: string }> }).defaults;
-    const hb = defaults.find((d) => d.name === 'heartbeat');
-    expect(hb).toBeDefined();
-    const out = await h.bus.call(
-      'routines:get-default', h.ctx({ userId: 'u1' }),
-      { defaultRoutineId: hb!.defaultRoutineId },
-    );
-    const detail = out as { name: string; sourceMd: string };
-    expect(detail.name).toBe('heartbeat');
-    expect(typeof detail.sourceMd).toBe('string');
-    expect(detail.sourceMd.length).toBeGreaterThan(0);
-  });
-
-  it('throws not-found for an unknown id', async () => {
-    const h = await harness();
-    await expect(
-      h.bus.call(
-        'routines:get-default', h.ctx({ userId: 'u1' }),
-        { defaultRoutineId: 'does-not-exist' },
-      ),
-    ).rejects.toMatchObject({ code: 'not-found' });
-  });
-});
-
-describe('routines:delete-default', () => {
-  it('cascades to per-agent rows', async () => {
-    const h = await harness();
-    // 1) upsert a default
-    const upserted = await h.bus.call(
-      'routines:upsert-default', h.ctx({ userId: 'u1' }),
-      { sourceMd: intervalMd('cascade', 'cascade target', '60s') },
-    );
-    const defaultRoutineId = (upserted as { defaultRoutineId: string }).defaultRoutineId;
-
-    // 2) materialize a per-agent row by inserting via SQL (cheaper than
-    //    waiting for the tick loop).
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    try {
-      await k.insertInto('routines_v1_definitions').values({
-        agent_id: 'agt_cascade', path: `default:${defaultRoutineId}`,
-        owner_user_id: '@ax/routines/defaults',
-        name: 'cascade', description: 'cascade target',
-        spec_hash: 'h', trigger_kind: 'interval',
-        trigger_spec: { kind: 'interval', every: '60s' },
-        active_hours: null, silence_token: null, silence_max: 300,
-        conversation: 'per-fire', prompt_body: 'do the thing',
-        next_run_at: null, definition_id: defaultRoutineId,
-        definition_updated_at: new Date(),
-      }).execute();
-
-      const before = await k.selectFrom('routines_v1_definitions')
-        .selectAll().where('definition_id', '=', defaultRoutineId).execute();
-      expect(before).toHaveLength(1);
-
-      // 3) delete the default → FK ON DELETE CASCADE drops the per-agent row.
-      await h.bus.call(
-        'routines:delete-default', h.ctx({ userId: 'u1' }),
-        { defaultRoutineId },
-      );
-
-      const after = await k.selectFrom('routines_v1_definitions')
-        .selectAll().where('definition_id', '=', defaultRoutineId).execute();
-      expect(after).toHaveLength(0);
-
-      const defaults = await k.selectFrom('default_routines_v1')
-        .selectAll().where('default_routine_id', '=', defaultRoutineId).execute();
-      expect(defaults).toHaveLength(0);
-    } finally {
-      await k.destroy();
-    }
-  });
-});
-
-// TASK-611: #763 (TASK-609) forced skill-reflection OFF under facts memory
-// with a boot step that set the GLOBAL flag false and dropped its materialized
-// rows. That option is gone; the next boot's migration turns reflection back
-// ON for a deployment whose fire history shows it had been running, swaps in
-// the facts-memory prompt, and leaves a person's per-agent opt-out alone.
-describe('skill-reflection comes back after TASK-609 (TASK-611)', () => {
-  function kysely(): Kysely<RoutinesDatabase> {
-    return new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-  }
-
-  async function reboot(): Promise<TestHarness> {
-    while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
-    return harness();
-  }
-
-  async function reflectionRow(k: Kysely<RoutinesDatabase>) {
-    return k.selectFrom('default_routines_v1')
-      .select(['enabled', 'spec_hash', 'prompt_body'])
-      .where('name', '=', SKILL_REFLECTION_ROUTINE_NAME)
-      .executeTakeFirstOrThrow();
-  }
-
-  async function agentsWith(k: Kysely<RoutinesDatabase>, name: string): Promise<string[]> {
-    const rows = await k.selectFrom('routines_v1_definitions')
-      .select(['agent_id'])
-      .where('definition_id', 'is not', null)
-      .where('name', '=', name)
-      .orderBy('agent_id')
-      .execute();
-    return rows.map((r) => r.agent_id);
-  }
-
-  /**
-   * The exact state #763's boot step left behind on a deployment that had
-   * reflection ON: the Strata-era seed row, GLOBAL flag false, no materialized
-   * rows, fire history kept — plus a person's own per-agent opt-out on agt_2.
-   */
-  async function seedDisabledBy763(k: Kysely<RoutinesDatabase>): Promise<void> {
-    await harness();
-    await k.updateTable('default_routines_v1')
-      .set({
-        enabled: false,
-        spec_hash: SKILL_REFLECTION_STRATA_SEED_HASH,
-        prompt_body: 'old strata prompt reading memory/docs source_conversations',
-      })
-      .where('name', '=', SKILL_REFLECTION_ROUTINE_NAME)
-      .execute();
-    await k.insertInto('routines_v1_fires').values({
-      agent_id: 'agt_1', path: `default:${SKILL_REFLECTION_ROUTINE_NAME}`,
-      trigger_source: 'tick', status: 'silenced',
-    }).execute();
-    await createRoutinesStore(k).setAgentDefaultEnabled({
-      agentId: 'agt_2', defaultRoutineId: SKILL_REFLECTION_ROUTINE_NAME,
-      ownerUserId: 'u2', enabled: false,
-    });
-    expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual([]);
-  }
-
-  it('re-enables reflection at boot with the facts prompt, keeps a per-agent opt-out, and is a no-op on re-boot', async () => {
-    const k = kysely();
-    try {
-      await seedDisabledBy763(k);
-
-      await reboot();
-      const after = await reflectionRow(k);
-      expect(after.enabled).toBe(true);
-      expect(after.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
-      expect(after.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
-
-      await createRoutinesStore(k).materializeMissing({
-        agents: [
-          { agentId: 'agt_1', ownerUserId: 'u1' },
-          { agentId: 'agt_2', ownerUserId: 'u2' },
-        ],
-        now: new Date(),
-      });
-      // agt_2's owner switched it off for that agent; that choice survives.
-      expect(await agentsWith(k, SKILL_REFLECTION_ROUTINE_NAME)).toEqual(['agt_1']);
-      expect(await agentsWith(k, 'heartbeat')).toEqual(['agt_1', 'agt_2']);
-
-      // An operator turns the GLOBAL flag off after the migration ran. A
-      // re-boot must not turn it back on: the step is one-shot.
-      const h = await reboot();
-      await h.bus.call('routines:upsert-default', h.ctx({ userId: 'u1' }), {
-        sourceMd: intervalMd(SKILL_REFLECTION_ROUTINE_NAME, 'skill-reflection routine', '24h'),
-        enabled: false,
-      });
-      const operatorOff = await reflectionRow(k);
-      expect(operatorOff.enabled).toBe(false);
-      await reboot();
-      expect(await reflectionRow(k)).toEqual(operatorOff);
-    } finally {
-      await k.destroy();
-    }
-  });
-
-  it('upsert-default can turn skill-reflection ON again (the TASK-609 refusal is gone)', async () => {
-    const h = await harness();
-    await h.bus.call('routines:upsert-default', h.ctx({ userId: 'u1' }), {
-      sourceMd: intervalMd(SKILL_REFLECTION_ROUTINE_NAME, 'skill-reflection routine', '24h'),
-      enabled: true,
-    });
-    const k = kysely();
-    try {
-      expect((await reflectionRow(k)).enabled).toBe(true);
-    } finally {
-      await k.destroy();
-    }
+  it('concurrent manual retries invoke the real runtime once and retain one completed result', async () => {
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' }; } });
+    const row = await create();
+    const input = fireInput(row);
+    expect(await Promise.all([h.bus.call('routines:fire-now', h.owner, input), h.bus.call('routines:fire-now', h.owner, input)])).toEqual([{ status: 'ok' }, { status: 'ok' }]);
+    expect(h.invokeCalls).toHaveLength(1);
+    await expect.poll(async () => (await createRoutinesStore(h.db).recentFires(row)).length).toBe(1);
   });
 });

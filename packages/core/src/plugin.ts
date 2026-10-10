@@ -63,14 +63,19 @@ export interface PluginInitContext {
 export interface Plugin {
   manifest: PluginManifest;
   init(ctx: PluginInitContext): Promise<void> | void;
+  /** Default bounded shutdown continues after its deadline. Joined shutdown reports
+   * the deadline but waits for actual settlement before tearing down dependencies.
+   * It must stop admission and join only work already owned by this plugin.
+   */
+  shutdownMode?: 'bounded' | 'joined';
   /**
    * Optional cleanup hook. The kernel calls this in reverse load order
    * (the reverse of `init()`'s topological order) when `KernelHandle.
    * shutdown()` is invoked, and on init failure for plugins that
    * already initialized. Each plugin's `shutdown()` runs under a
    * configurable per-plugin timeout (default 10 s); failures and
-   * timeouts are logged but never block peer plugins from shutting
-   * down.
+   * timeouts are logged. Bounded mode proceeds after the deadline; joined
+   * mode waits for settlement before closing dependencies.
    *
    * Plugins without long-lived resources (file handles, connection
    * pools, HTTP listeners, timers) don't need to implement this.
@@ -80,12 +85,11 @@ export interface Plugin {
    *   second call must be a no-op or a safe re-close. The kernel's
    *   handle is itself idempotent (see `KernelHandle.shutdown`), so
    *   this matters mainly for plugins called directly by tests.
-   * - **Resource release only.** No final writes, no flushes of
-   *   in-flight work, no audit emissions. A future `drain?()` phase
-   *   will own that if we ever need it. Keeping `shutdown()` strictly
-   *   about resources makes it safe to call from a SIGINT handler.
-   * - **Bounded in time.** A 10 s per-plugin ceiling is enforced by
-   *   the kernel; plan accordingly.
+   * - **Stop admission first.** Joined mode may settle previously accepted work,
+   *   including its terminal writes, before releasing resources. It starts no new work.
+   *   Bounded mode remains resource-release only.
+   * - **No implied cancellation.** Joined mode has no hard duration ceiling:
+   *   a noncancellable provider may delay shutdown beyond the reported deadline.
    */
   shutdown?(): Promise<void> | void;
 }

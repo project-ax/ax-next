@@ -1,0 +1,23 @@
+import type { RoutineView } from '@ax/routines-contract';
+export const routineFixture: RoutineView = {
+  agentId: 'a',
+  routineId: 'opaque-r1',
+  revision: 'opaque-v1',
+  origin: 'authored',
+  defaultRoutineId: null,
+  name: 'Project check-in',
+  description: 'Progress',
+  promptBody: 'Review updates.\nKeep the newlines.',
+  enabled: true,
+  trigger: { kind: 'interval', every: '1h' },
+  activeHours: null,
+  silenceToken: null,
+  silenceMaxChars: 300,
+  conversation: 'per-fire',
+  nextRunAt: null,
+  lastRunAt: null,
+  lastStatus: null,
+  lastError: null,
+  lastWarning: null,
+  permissions: { edit: true, stop: true, fire: true, manageSecret: true },
+};

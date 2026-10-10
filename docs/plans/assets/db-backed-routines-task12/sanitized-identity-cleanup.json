@@ -1,0 +1,171 @@
+{
+  "deleted": [
+    {
+      "table_name": "auth_better_v1_sessions",
+      "rows": 3
+    },
+    {
+      "table_name": "auth_better_v1_accounts",
+      "rows": 1
+    },
+    {
+      "table_name": "usage_limits_v1_buckets",
+      "rows": 26
+    },
+    {
+      "table_name": "usage_limits_v1_turns",
+      "rows": 28
+    },
+    {
+      "table_name": "auth_better_v1_users",
+      "rows": 1
+    }
+  ],
+  "preexistingAuthAndProvidersUnchanged": true,
+  "postcheck": {
+    "identityCount": 0,
+    "references": [
+      {
+        "table_name": "auth_better_v1_sessions",
+        "rows": 0
+      },
+      {
+        "table_name": "auth_better_v1_accounts",
+        "rows": 0
+      },
+      {
+        "table_name": "teams_v1_memberships",
+        "rows": 0
+      },
+      {
+        "table_name": "connectors_v1_connectors",
+        "rows": 0
+      },
+      {
+        "table_name": "session_postgres_v2_session_agent",
+        "rows": 0
+      },
+      {
+        "table_name": "connectors_v1_authored",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_skill_files",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_user_skills",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_user_attachments",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_quarantine",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_approved_caps",
+        "rows": 0
+      },
+      {
+        "table_name": "skills_v1_authored",
+        "rows": 0
+      },
+      {
+        "table_name": "conversations_v1_conversations",
+        "rows": 0
+      },
+      {
+        "table_name": "agents_v1_agents",
+        "rows": 0
+      },
+      {
+        "table_name": "agent_default_routine_overrides_v1",
+        "rows": 0
+      },
+      {
+        "table_name": "attachments_v1_temps",
+        "rows": 0
+      },
+      {
+        "table_name": "tool_policy_v1_egress_allowlist",
+        "rows": 0
+      },
+      {
+        "table_name": "attachments_v1_files",
+        "rows": 0
+      },
+      {
+        "table_name": "attachments_v1_artifacts",
+        "rows": 0
+      },
+      {
+        "table_name": "host_grants_v1_grants",
+        "rows": 0
+      },
+      {
+        "table_name": "memory_facts_v1",
+        "rows": 0
+      },
+      {
+        "table_name": "usage_limits_v1_suspensions",
+        "rows": 0
+      },
+      {
+        "table_name": "usage_limits_v1_buckets",
+        "rows": 0
+      },
+      {
+        "table_name": "disk_quota_v1_usage",
+        "rows": 0
+      },
+      {
+        "table_name": "mcp_oauth_v1_pending",
+        "rows": 0
+      },
+      {
+        "table_name": "usage_limits_v1_user_limits",
+        "rows": 0
+      },
+      {
+        "table_name": "usage_limits_v1_turns",
+        "rows": 0
+      },
+      {
+        "table_name": "mcp_client_v1_tool_inventory",
+        "rows": 0
+      },
+      {
+        "table_name": "tool_policy_v1_routine_consent",
+        "rows": 0
+      },
+      {
+        "table_name": "tool_policy_v1_routine_consent_deliveries",
+        "rows": 0
+      },
+      {
+        "table_name": "decisions_v1_routine_authorizations",
+        "rows": 0
+      },
+      {
+        "table_name": "decisions_v1_decisions",
+        "rows": 0
+      },
+      {
+        "table_name": "routines_v1_credential_cleanup",
+        "rows": 0
+      },
+      {
+        "table_name": "routines_v1_definitions",
+        "rows": 0
+      },
+      {
+        "table_name": "routines_v1_requests",
+        "rows": 0
+      }
+    ],
+    "verificationCount": 0
+  }
+}

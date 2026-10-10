@@ -1,10 +1,6 @@
-import {
-  makeAgentContext,
-  PluginError,
-  type AgentContext,
-  type HookBus,
-} from '@ax/core';
+import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
+import * as C from '@ax/routines-contract';
 import {
   parseRequestBody,
   requireAdmin,
@@ -13,1129 +9,493 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './shared.js';
-import {
-  isStorageFullRefusal,
-  STORAGE_FULL_ROUTINE_REMOVE,
-  STORAGE_FULL_ROUTINE_SAVE,
-} from './storage-full.js';
-
-// ---------------------------------------------------------------------------
-// /settings/routines* — owner-scoped HTTP surface for the Routines admin UI.
-//
-// Three routes:
-//
-//   GET  /settings/routines
-//   GET  /settings/routines/:agentId/fires?path=<routine-path>&limit=<n>
-//   POST /settings/routines/:agentId/fire   { path, payload? }
-//
-// Every route:
-//   1. Calls `auth:require-user` (401 if no session).
-//   2. ACL-gates by calling `agents:resolve({ agentId, userId: actor.id })` —
-//      if that throws (forbidden / not-found) the route returns 403. This is
-//      the L8 enforcement: every entry point validates the owner before
-//      reaching the routines facade.
-//   3. Delegates to the routines service hooks.
-//
-// No cross-plugin imports per Invariant L2 — RouteRequest/RouteResponse are
-// duck-typed in ./shared.js and the routines/agents shapes are inlined
-// locally as zod schemas / generic types.
-// ---------------------------------------------------------------------------
-
 const PLUGIN_NAME = '@ax/routines-admin-routes';
-
-/** POST /settings/routines/:agentId/fire body shape. Strict — extra fields
- *  reject so a confused client doesn't slip a `source` override past us. */
-const fireBodySchema = z
-  .object({
-    path: z.string().min(1).max(512),
-    payload: z.unknown().optional(),
-  })
-  .strict();
-
 export interface AdminDeps {
   bus: HookBus;
 }
-
-/** AgentContext for a request executing on behalf of `actorId`. The sessionId
- *  is fixed (`routines-admin`) — these handlers are stateless from the bus's
- *  perspective, the value just shows up in logs. */
-function ctxForActor(actorId: string): AgentContext {
-  return makeAgentContext({
-    sessionId: 'routines-admin',
-    agentId: PLUGIN_NAME,
-    userId: actorId,
-  });
-}
-
-/** True if `userId` can resolve `agentId`. `agents:resolve` does the
- *  visibility/ACL check (owner OR team-member OR admin); a 'forbidden' or
- *  'not-found' PluginError means "no, you can't see this agent" and we
- *  return false. Any OTHER error (e.g. 'unauthenticated', 'no-service',
- *  'init-failed') means the bus or agents plugin is broken — we rethrow so
- *  `writeServiceError` / the http-server's 500 handler can map it instead
- *  of pretending it's a 403 and masking the real bug. */
-async function isOwnedBy(
-  bus: HookBus,
-  ctx: AgentContext,
-  agentId: string,
-  userId: string,
-): Promise<boolean> {
-  try {
-    await bus.call<{ agentId: string; userId: string }, unknown>(
-      'agents:resolve',
-      ctx,
-      { agentId, userId },
-    );
-    return true;
-  } catch (err) {
-    if (
-      err instanceof PluginError &&
-      (err.code === 'forbidden' || err.code === 'not-found')
-    ) {
-      return false;
-    }
-    throw err;
-  }
-}
-
-// Routine files live flat under .ax/routines/<name>.md — the same path grammar
-// @ax/routines sync and @ax/validator-routine enforce. The route validates the
-// caller-supplied path against this BEFORE any workspace write, so a traversal
-// (`../`) or off-tree path (`.ax/skills/...`) is a 400, never a write.
-const ROUTINE_PATH_RE = /^\.ax\/routines\/[^/]+\.md$/;
-
-/** Body for PUT /settings/routines/:agentId. Strict — the caller sends the
- *  exact file path (the editor derives it from the routine name) and the full
- *  routine markdown. Validity of `sourceMd` is enforced server-side by
- *  @ax/validator-routine's workspace:pre-apply veto (rejected → 400), so the
- *  route stays a thin write-shim and never imports the validator (Invariant L2). */
-const saveBodySchema = z
-  .object({
-    path: z.string().min(1).max(512),
-    sourceMd: z.string().min(1).max(64 * 1024),
-  })
-  .strict();
-
-// Duck-typed workspace:apply wire shape — inlined per Invariant L2 rather than
-// imported from @ax/core's workspace module (mirrors routes-agent-identity.ts).
-interface WorkspaceApplyChange {
-  path: string;
-  kind: 'put' | 'delete';
-  content?: Uint8Array;
-}
-interface WorkspaceApplyInput {
-  changes: WorkspaceApplyChange[];
-  parent: string | null;
-  reason?: string;
-}
-
-// Pull the storage tier's actual head out of a parent-mismatch PluginError's
-// `cause.actualParent` (the workspace CAS contract). NO_ACTUAL_PARENT means the
-// error isn't a recoverable CAS miss — don't retry, rethrow.
-const NO_ACTUAL_PARENT = Symbol('no-actual-parent');
-function actualParentFromMismatch(
-  err: unknown,
-): string | null | typeof NO_ACTUAL_PARENT {
-  if (!(err instanceof PluginError) || err.code !== 'parent-mismatch') {
-    return NO_ACTUAL_PARENT;
-  }
-  const cause = err.cause as { actualParent?: string | null } | undefined;
-  if (cause === undefined || !('actualParent' in cause)) return NO_ACTUAL_PARENT;
-  return cause.actualParent ?? null;
-}
-
-/** Ctx so workspace:apply lands in the AGENT'S workspace, routed by
- *  ctx.agentId (TASK-257 — userId no longer selects the repo). ctx.userId
- *  must still be the agent's REAL owner (from agents:resolve), never the
- *  plugin name or a synthetic actor — it is the attribution recorded in
- *  `delta.author`, and passing the plugin's own ctx through would write to
- *  the wrong workspace regardless. */
-function ctxForWorkspace(ownerUserId: string, agentId: string): AgentContext {
-  return makeAgentContext({
-    sessionId: 'routines-editor',
-    agentId,
-    userId: ownerUserId,
-  });
-}
-
-/** Resolve `agentId` for `userId`, returning the agent's ownerId on success or
- *  null when the actor can't see it (forbidden/not-found → 403). Rethrows any
- *  other error (the bus/agents plugin is broken — let the 500 handler see it).
- *  The ownerId routes the subsequent workspace write. */
-async function resolveOwnedAgent(
-  bus: HookBus,
-  ctx: AgentContext,
-  agentId: string,
-  userId: string,
-): Promise<{ ownerId: string } | null> {
-  try {
-    const out = await bus.call<
-      { agentId: string; userId: string },
-      { agent: { ownerId: string } }
-    >('agents:resolve', ctx, { agentId, userId });
-    return { ownerId: out.agent.ownerId };
-  } catch (err) {
-    if (
-      err instanceof PluginError &&
-      (err.code === 'forbidden' || err.code === 'not-found')
-    ) {
-      return null;
-    }
-    throw err;
-  }
-}
-
-/** workspace:apply with the established parent:null → retry-on-CAS-miss dance.
- *  Mirrors routes-agent-identity.ts: start at null (correct for a never-written
- *  workspace), and on a parent-mismatch retry ONCE with the echoed actual head.
- *  The apply facade fires workspace:applied, so @ax/routines syncs the row and
- *  (re)binds any webhook route without extra fan-out here. */
-async function applyWithCasRetry(
-  bus: HookBus,
-  ctx: AgentContext,
-  changes: WorkspaceApplyChange[],
-  reason: string,
-): Promise<void> {
-  try {
-    await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
-      changes,
-      parent: null,
-      reason,
-    });
-  } catch (applyErr) {
-    const actual = actualParentFromMismatch(applyErr);
-    if (actual === NO_ACTUAL_PARENT) throw applyErr;
-    await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
-      changes,
-      parent: actual,
-      reason,
-    });
-  }
-}
-
-/** Inline (duck-typed) view of the routines list/recent-fires/fire-now
- *  service hook outputs — declared here rather than imported from @ax/routines
- *  per Invariant L2. Only the fields we relay to the client are typed; any
- *  extra fields on the wire pass through untouched. */
-interface RoutineListItem {
-  agentId: string;
-}
-interface RoutinesListOutput {
-  routines: RoutineListItem[];
-}
-interface RoutinesRecentFiresOutput {
-  fires: unknown[];
-}
-interface RoutinesFireNowOutput {
-  status: string;
-}
-
-export interface RoutinesAdminHandlers {
-  list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  fires: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  fire: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  save: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  webhookToken: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-}
-
-export function createRoutinesAdminHandlers(
-  deps: AdminDeps,
-): RoutinesAdminHandlers {
-  const initCtx = makeAgentContext({
-    sessionId: 'routines-admin-init',
+type Handler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
+const authContext = () =>
+  makeAgentContext({
+    sessionId: 'routines-auth',
     agentId: PLUGIN_NAME,
     userId: 'system',
   });
+const actorContext = (userId: string, agentId = PLUGIN_NAME) =>
+  makeAgentContext({ sessionId: 'routines-settings', agentId, userId });
+const consentSchema = z
+  .object({ enabled: z.boolean(), revision: C.RoutineOpaqueStringSchema })
+  .strict();
 
+function body<T>(
+  req: RouteRequest,
+  res: RouteResponse,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+): T | undefined {
+  const raw = parseRequestBody(req.body);
+  if (!raw.ok) {
+    res
+      .status(raw.status)
+      .json({ code: 'validation', field: 'input', error: raw.message });
+    return;
+  }
+  const parsed = schema.safeParse(raw.value);
+  if (!parsed.success) {
+    res.status(400).json({
+      code: 'validation',
+      field: 'input',
+      error: 'Routine input is invalid.',
+    });
+    return;
+  }
+  return parsed.data;
+}
+function key(req: RouteRequest, res: RouteResponse, item: boolean) {
+  const parsed = (
+    item ? C.RoutineKeySchema : C.RoutineListInputSchema
+  ).safeParse(
+    item
+      ? { agentId: req.params.agentId, routineId: req.params.routineId }
+      : { agentId: req.params.agentId },
+  );
+  if (!parsed.success) {
+    res.status(400).json({
+      code: 'validation',
+      field: 'input',
+      error: 'Routine input is invalid.',
+    });
+    return;
+  }
+  return parsed.data;
+}
+/** HTTP identity is always the authenticated person; a team ID is never an actor. */
+function scoped(
+  deps: AdminDeps,
+  effect: (
+    req: RouteRequest,
+    res: RouteResponse,
+    ctx: AgentContext,
+  ) => Promise<void>,
+): Handler {
+  return async (req, res) => {
+    const actor = await requireUser(deps.bus, authContext(), req, res);
+    if (!actor) return;
+    const input = key(req, res, false);
+    if (!input) return;
+    try {
+      await effect(req, res, actorContext(actor.id, input.agentId));
+    } catch (error) {
+      writeServiceError(res, error);
+    }
+  };
+}
+export function createRoutinesAdminHandlers(deps: AdminDeps) {
+  const call = async <T>(
+    hook: string,
+    ctx: AgentContext,
+    input: unknown,
+    schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  ) => schema.parse(await deps.bus.call(hook, ctx, input));
+  const item = (req: RouteRequest, res: RouteResponse) =>
+    key(req, res, true) as C.RoutineKey | undefined;
   return {
-    async list(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-      const ctx = ctxForActor(actor.id);
-      try {
-        const out = await deps.bus.call<unknown, RoutinesListOutput>(
-          'routines:list',
-          ctx,
-          {},
-        );
-        const visible: RoutineListItem[] = [];
-        for (const r of out.routines) {
-          if (await isOwnedBy(deps.bus, ctx, r.agentId, actor.id)) {
-            visible.push(r);
-          }
-        }
-        res.status(200).json({ routines: visible });
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async fires(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-      const agentId = req.params.agentId;
-      const path = req.query.path;
-      const rawLimit = req.query.limit;
-      // Validate `limit` BEFORE the bus call so a bad value (e.g.
-      // ?limit=abc, ?limit=Infinity) fails fast as a 400 instead of
-      // surfacing as a SQL `LIMIT NaN` runtime error inside the store's
-      // clamp. The store still clamps to [1, 100] for defense in depth.
-      let limit = 20;
-      if (rawLimit !== undefined) {
-        const parsed = Number(rawLimit);
-        if (!Number.isFinite(parsed) || parsed < 1) {
-          res
-            .status(400)
-            .json({ error: 'limit must be a positive integer' });
-          return;
-        }
-        limit = Math.min(100, Math.trunc(parsed));
-      }
-      if (
-        agentId === undefined ||
-        agentId.length === 0 ||
-        path === undefined ||
-        path.length === 0
-      ) {
-        res.status(400).json({ error: 'agentId and ?path are required' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        const out = await deps.bus.call<
-          { agentId: string; path: string; limit: number },
-          RoutinesRecentFiresOutput
-        >('routines:recent-fires', ctx, { agentId, path, limit });
-        res.status(200).json(out);
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async fire(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-      const parsedBody = parseRequestBody(req.body);
-      if (!parsedBody.ok) {
-        res.status(parsedBody.status).json({ error: parsedBody.message });
-        return;
-      }
-      const result = fireBodySchema.safeParse(parsedBody.value);
-      if (!result.success) {
-        const issue = result.error.issues[0];
+    list: scoped(deps, async (req, res, ctx) => {
+      const input = key(req, res, false);
+      if (input)
         res
-          .status(400)
-          .json({ error: issue?.message ?? 'invalid body' });
-        return;
-      }
-      const agentId = req.params.agentId;
-      if (agentId === undefined || agentId.length === 0) {
-        res.status(400).json({ error: 'agentId required' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        const input: {
-          agentId: string;
-          path: string;
-          source: 'manual';
-          payload?: unknown;
-        } = {
-          agentId,
-          path: result.data.path,
-          source: 'manual',
-        };
-        if (result.data.payload !== undefined) {
-          input.payload = result.data.payload;
-        }
-        const out = await deps.bus.call<typeof input, RoutinesFireNowOutput>(
-          'routines:fire-now',
-          ctx,
-          input,
-        );
-        res.status(200).json(out);
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    // PUT /settings/routines/:agentId — create or update a per-user routine by
-    // writing its `.ax/routines/<name>.md` file into the agent workspace. The
-    // workspace:applied notify (fired by the apply facade) drives @ax/routines
-    // to upsert the row and (re)bind any webhook route — this route only writes.
-    async save(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-
-      const parsedBody = parseRequestBody(req.body);
-      if (!parsedBody.ok) {
-        res.status(parsedBody.status).json({ error: parsedBody.message });
-        return;
-      }
-      const result = saveBodySchema.safeParse(parsedBody.value);
-      if (!result.success) {
-        res
-          .status(400)
-          .json({ error: result.error.issues[0]?.message ?? 'invalid body' });
-        return;
-      }
-      const agentId = req.params.agentId;
-      if (agentId === undefined || agentId.length === 0) {
-        res.status(400).json({ error: 'agentId required' });
-        return;
-      }
-      const { path, sourceMd } = result.data;
-      // Path-safety gate BEFORE any resolve/write — traversal / off-tree → 400.
-      if (!ROUTINE_PATH_RE.test(path)) {
-        res
-          .status(400)
-          .json({ error: 'path must be of the form .ax/routines/<name>.md' });
-        return;
-      }
-
-      const ctx = ctxForActor(actor.id);
-      try {
-        const owned = await resolveOwnedAgent(deps.bus, ctx, agentId, actor.id);
-        if (owned === null) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        const wctx = ctxForWorkspace(owned.ownerId, agentId);
-        await applyWithCasRetry(
-          deps.bus,
-          wctx,
-          [{ path, kind: 'put', content: new TextEncoder().encode(sourceMd) }],
-          'routine-edit',
-        );
-        res.status(200).json({ path });
-      } catch (err) {
-        // The storage limit said no (TASK-719). Checked BEFORE the general
-        // `rejected` branch, which would answer 400 with the veto's own message:
-        // worded for the agent, not for the person who pressed Save. One fixed
-        // sentence instead; the veto's message is never sent. Nothing was
-        // written, because the gate refuses before `workspace:apply-internal`.
-        if (isStorageFullRefusal(err)) {
-          res
-            .status(413)
-            .json({ error: 'storage-full', message: STORAGE_FULL_ROUTINE_SAVE });
-          return;
-        }
-        // A validator-routine pre-apply veto surfaces as PluginError 'rejected'
-        // whose message is the validator's reason → 400 with that reason.
-        if (err instanceof PluginError && err.code === 'rejected') {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    // DELETE /settings/routines/:agentId?path=… — delete a per-user routine
-    // file. The applied notify makes @ax/routines drop the row, unbind the
-    // webhook route, and purge any minted HMAC credential.
-    async destroy(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-
-      const agentId = req.params.agentId;
-      if (agentId === undefined || agentId.length === 0) {
-        res.status(400).json({ error: 'agentId required' });
-        return;
-      }
-      const path = req.query.path;
-      if (path === undefined || !ROUTINE_PATH_RE.test(path)) {
-        res
-          .status(400)
-          .json({ error: '?path must be of the form .ax/routines/<name>.md' });
-        return;
-      }
-
-      const ctx = ctxForActor(actor.id);
-      try {
-        const owned = await resolveOwnedAgent(deps.bus, ctx, agentId, actor.id);
-        if (owned === null) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        const wctx = ctxForWorkspace(owned.ownerId, agentId);
-        await applyWithCasRetry(
-          deps.bus,
-          wctx,
-          [{ path, kind: 'delete' }],
-          'routine-delete',
-        );
-        res.status(204).end();
-      } catch (err) {
-        // A delete adds no bytes, but the storage gate refuses any write from
-        // someone already over the limit, so a full person cannot remove a
-        // routine either (TASK-719). Same shape as `save`, its own sentence: the
-        // routine is still there.
-        if (isStorageFullRefusal(err)) {
-          res
-            .status(413)
-            .json({ error: 'storage-full', message: STORAGE_FULL_ROUTINE_REMOVE });
-          return;
-        }
-        if (err instanceof PluginError && err.code === 'rejected') {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    // GET /settings/routines/:agentId/webhook-token — the agent's webhook
-    // receiver token, so the UI can show the full /webhooks/<token><path> URL
-    // for a webhook routine. `agents:ensure-webhook-token` owns the ACL
-    // (owner-or-admin → forbidden/not-found) and idempotently returns/mints the
-    // token; we never log it.
-    //
-    // Mint-on-GET is intentional: `ensure-webhook-token` writes only when no
-    // token exists yet, and that's a deliberate, CSRF-safe side effect — the
-    // session cookie is SameSite=Lax so a cross-site GET doesn't carry it, the
-    // mint is idempotent, an existing token is never rotated, and a cross-origin
-    // caller can't read the response body. In practice the token already exists
-    // for any agent with a webhook routine (sync minted it when binding the
-    // receiver route), so the mint path is effectively unreachable here.
-    async webhookToken(req, res) {
-      const actor = await requireUser(deps.bus, initCtx, req, res);
-      if (actor === null) return;
-      const agentId = req.params.agentId;
-      if (agentId === undefined || agentId.length === 0) {
-        res.status(400).json({ error: 'agentId required' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        const out = await deps.bus.call<
-          { actor: { userId: string; isAdmin: boolean }; agentId: string },
-          { token: string }
-        >('agents:ensure-webhook-token', ctx, {
-          actor: { userId: actor.id, isAdmin: actor.isAdmin },
-          agentId,
+          .status(200)
+          .json(
+            await call('routines:list', ctx, input, C.RoutineListOutputSchema),
+          );
+    }),
+    get: scoped(deps, async (req, res, ctx) => {
+      const input = item(req, res);
+      if (input)
+        res.status(200).json({
+          routine: await call(
+            'routines:get',
+            ctx,
+            input,
+            C.RoutineGetOutputSchema,
+          ),
         });
-        res.status(200).json({ token: out.token });
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
+    }),
+    create: scoped(deps, async (req, res, ctx) => {
+      const input = body(
+        req,
+        res,
+        C.RoutineCreateInputSchema.omit({ agentId: true }),
+      );
+      if (input)
+        res.status(201).json({
+          routine: await call(
+            'routines:create',
+            ctx,
+            { ...input, agentId: ctx.agentId },
+            C.RoutineCreateOutputSchema,
+          ),
+        });
+    }),
+    update: scoped(deps, async (req, res, ctx) => {
+      const input = body(
+        req,
+        res,
+        C.RoutineUpdateInputSchema.omit({ agentId: true, routineId: true }),
+      );
+      if (!input) return;
+      const k = item(req, res);
+      if (k)
+        res.status(200).json({
+          routine: await call(
+            'routines:update',
+            ctx,
+            { ...input, ...k },
+            C.RoutineUpdateOutputSchema,
+          ),
+        });
+    }),
+    destroy: scoped(deps, async (req, res, ctx) => {
+      const input = body(
+        req,
+        res,
+        C.RoutineDeleteInputSchema.omit({ agentId: true, routineId: true }),
+      );
+      if (!input) return;
+      const k = item(req, res);
+      if (k)
+        res
+          .status(200)
+          .json(
+            await call(
+              'routines:delete',
+              ctx,
+              { ...input, ...k },
+              C.RoutineDeleteOutputSchema,
+            ),
+          );
+    }),
+    fire: scoped(deps, async (req, res, ctx) => {
+      const input = body(
+        req,
+        res,
+        C.RoutineFireNowInputSchema.omit({ agentId: true, routineId: true }),
+      );
+      if (!input) return;
+      const k = item(req, res);
+      if (k)
+        res
+          .status(200)
+          .json(
+            await call(
+              'routines:fire-now',
+              ctx,
+              { ...input, ...k },
+              C.RoutineFireNowOutputSchema,
+            ),
+          );
+    }),
+    fires: scoped(deps, async (req, res, ctx) => {
+      const k = item(req, res);
+      if (!k) return;
+      const limit =
+        req.query.limit === undefined ? 20 : Number(req.query.limit);
+      const parsed = C.RoutineRecentFiresInputSchema.safeParse({ ...k, limit });
+      if (!parsed.success) {
+        res.status(400).json({
+          code: 'validation',
+          field: 'input',
+          error: 'Invalid history limit.',
+        });
+        return;
+      }
+      res
+        .status(200)
+        .json(
+          await call(
+            'routines:recent-fires',
+            ctx,
+            parsed.data,
+            C.RoutineRecentFiresOutputSchema,
+          ),
+        );
+    }),
+    consent: scoped(deps, async (_req, res, ctx) =>
+      res
+        .status(200)
+        .json(
+          await call(
+            'tool-policy:get-routine-consent',
+            ctx,
+            { agentId: ctx.agentId },
+            consentSchema,
+          ),
+        ),
+    ),
+    revokeConsent: scoped(deps, async (req, res, ctx) => {
+      if (body(req, res, z.object({}).strict()))
+        res
+          .status(200)
+          .json(
+            await call(
+              'tool-policy:revoke-routine-consent',
+              ctx,
+              { agentId: ctx.agentId },
+              consentSchema,
+            ),
+          );
+    }),
+    receiver: async (req: RouteRequest, res: RouteResponse) => {
+      const actor = await requireUser(deps.bus, authContext(), req, res);
+      if (!actor) return;
+      const input = key(req, res, false);
+      if (!input) return;
+      const ctx = actorContext(actor.id, input.agentId);
+      try {
+        await deps.bus.call('agents:resolve', ctx, {
+          agentId: input.agentId,
+          userId: actor.id,
+        });
+        const out = await call(
+          'agents:ensure-webhook-token',
+          ctx,
+          {
+            agentId: input.agentId,
+            actor: { userId: actor.id, isAdmin: actor.isAdmin },
+          },
+          z.object({ token: z.string().min(1).max(256) }).strict(),
+        );
+        res
+          .status(200)
+          .json({ url: `/webhooks/${encodeURIComponent(out.token)}` });
+      } catch (error) {
+        writeServiceError(res, error);
       }
     },
   };
 }
-
-/**
- * Mount the three /settings/routines* routes via `http:register-route`.
- * Returns the list of unregister callbacks (one per route) in registration
- * order — the plugin's `init` collects them so `shutdown` can unwind. If any
- * single registration throws, we unwind everything we already registered and
- * rethrow, so the plugin never leaves a half-mounted route surface behind.
- */
-export async function registerRoutinesAdminRoutes(
+export type RoutinesAdminHandlers = ReturnType<
+  typeof createRoutinesAdminHandlers
+>;
+async function register(
   bus: HookBus,
-  initCtx: AgentContext,
-): Promise<Array<() => void>> {
-  const handlers = createRoutinesAdminHandlers({ bus });
-  const routes: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    path: string;
-    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  }> = [
-    { method: 'GET', path: '/settings/routines', handler: handlers.list },
-    {
-      method: 'GET',
-      path: '/settings/routines/:agentId/fires',
-      handler: handlers.fires,
-    },
-    {
-      method: 'POST',
-      path: '/settings/routines/:agentId/fire',
-      handler: handlers.fire,
-    },
-    {
-      method: 'PUT',
-      path: '/settings/routines/:agentId',
-      handler: handlers.save,
-    },
-    {
-      method: 'DELETE',
-      path: '/settings/routines/:agentId',
-      handler: handlers.destroy,
-    },
-    {
-      method: 'GET',
-      path: '/settings/routines/:agentId/webhook-token',
-      handler: handlers.webhookToken,
-    },
-  ];
+  ctx: AgentContext,
+  routes: Array<{ method: string; path: string; handler: Handler }>,
+) {
   const unregisters: Array<() => void> = [];
   try {
     for (const route of routes) {
-      const result = await bus.call<typeof route, { unregister: () => void }>(
+      const out = await bus.call<typeof route, { unregister: () => void }>(
         'http:register-route',
-        initCtx,
+        ctx,
         route,
       );
-      unregisters.push(result.unregister);
+      unregisters.push(out.unregister);
     }
-  } catch (err) {
-    while (unregisters.length > 0) {
-      const fn = unregisters.pop();
+  } catch (error) {
+    for (const unregister of unregisters.reverse()) {
       try {
-        fn?.();
-      } catch (unwindErr) {
-        // best-effort unwind — log so a transport error in the unwinder
-        // doesn't silently leave a dangling route handler behind. The
-        // parent `err` is rethrown below; this is the diagnostic for the
-        // unwind itself, which the operator may need to investigate.
-        console.warn(
-          `[${PLUGIN_NAME}] failed to unregister route during rollback: ${
-            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
-          }`,
-        );
+        unregister();
+      } catch {
+        console.warn('Routine route rollback failed.');
       }
     }
-    throw err;
+    throw error;
   }
   return unregisters;
 }
-
-// ---------------------------------------------------------------------------
-// /settings/routines/:agentId/defaults* — owner-scoped per-agent toggles for
-// the system default routines (e.g. `skill-reflection`). This is the HTTP
-// shim behind the channel-web "Skill self-improvement" switch.
-//
-// Two routes:
-//
-//   GET  /settings/routines/:agentId/defaults
-//        → { defaults: { defaultRoutineId, name, enabled }[] } for one agent
-//   POST /settings/routines/:agentId/defaults/:defaultRoutineId  { enabled }
-//        → flips that default on/off for that agent (de/re-materializes)
-//
-// Both gate the same way as the rest of /settings/routines*: an authed user,
-// then an `agents:resolve` owner ACL check. The routines plugin's
-// `routines:list-agent-defaults` / `routines:set-agent-default-enabled` are
-// THEMSELVES owner-scoped (they call agents:resolve internally), so the
-// isOwnedBy check here is a fast 403 before the bus hop, not the sole gate.
-// ---------------------------------------------------------------------------
-
-/** POST body for the per-agent default toggle. Strict — extra fields reject
- *  so a confused client can't smuggle e.g. a `defaultRoutineId` past the URL
- *  param it's bound to. */
-const setAgentDefaultBodySchema = z
-  .object({
-    enabled: z.boolean(),
-  })
-  .strict();
-
-interface AgentDefaultStateWire {
-  defaultRoutineId: string;
-  name: string;
-  enabled: boolean;
+export async function registerRoutinesAdminRoutes(
+  bus: HookBus,
+  ctx: AgentContext,
+) {
+  const h = createRoutinesAdminHandlers({ bus });
+  const base = '/settings/routines/:agentId';
+  return register(bus, ctx, [
+    { method: 'GET', path: `${base}/consent`, handler: h.consent },
+    { method: 'DELETE', path: `${base}/consent`, handler: h.revokeConsent },
+    { method: 'GET', path: `${base}/receiver`, handler: h.receiver },
+    { method: 'GET', path: base, handler: h.list },
+    { method: 'POST', path: base, handler: h.create },
+    { method: 'GET', path: `${base}/:routineId`, handler: h.get },
+    { method: 'PATCH', path: `${base}/:routineId`, handler: h.update },
+    { method: 'DELETE', path: `${base}/:routineId`, handler: h.destroy },
+    { method: 'POST', path: `${base}/:routineId/fire`, handler: h.fire },
+    { method: 'GET', path: `${base}/:routineId/fires`, handler: h.fires },
+  ]);
 }
-interface ListAgentDefaultsOutput {
-  defaults: AgentDefaultStateWire[];
-}
-
-export interface SettingsAgentDefaultsHandlers {
-  list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  set: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-}
-
-export function createSettingsAgentDefaultsHandlers(
-  deps: AdminDeps,
-): SettingsAgentDefaultsHandlers {
-  const settingsInitCtx = makeAgentContext({
-    sessionId: 'routines-agent-defaults-init',
-    agentId: PLUGIN_NAME,
-    userId: 'system',
-  });
-
+export function createSettingsAgentDefaultsHandlers(deps: AdminDeps) {
   return {
-    async list(req, res) {
-      const actor = await requireUser(deps.bus, settingsInitCtx, req, res);
-      if (actor === null) return;
-      const agentId = req.params.agentId;
-      if (agentId === undefined || agentId.length === 0) {
-        res.status(400).json({ error: 'agentId required' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        const out = await deps.bus.call<
-          { agentId: string },
-          ListAgentDefaultsOutput
-        >('routines:list-agent-defaults', ctx, { agentId });
-        res.status(200).json(out);
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async set(req, res) {
-      const actor = await requireUser(deps.bus, settingsInitCtx, req, res);
-      if (actor === null) return;
-      const agentId = req.params.agentId;
-      const defaultRoutineId = req.params.defaultRoutineId;
-      if (
-        agentId === undefined ||
-        agentId.length === 0 ||
-        defaultRoutineId === undefined ||
-        defaultRoutineId.length === 0
-      ) {
-        res
-          .status(400)
-          .json({ error: 'agentId and defaultRoutineId are required' });
-        return;
-      }
-      const parsedBody = parseRequestBody(req.body);
-      if (!parsedBody.ok) {
-        res.status(parsedBody.status).json({ error: parsedBody.message });
-        return;
-      }
-      const result = setAgentDefaultBodySchema.safeParse(parsedBody.value);
-      if (!result.success) {
-        const issue = result.error.issues[0];
-        res
-          .status(400)
-          .json({ error: issue?.message ?? 'invalid body' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        await deps.bus.call<
-          { agentId: string; defaultRoutineId: string; enabled: boolean },
-          Record<string, never>
-        >('routines:set-agent-default-enabled', ctx, {
-          agentId,
-          defaultRoutineId,
-          enabled: result.data.enabled,
+    list: scoped(deps, async (_req, res, ctx) =>
+      res.status(200).json(
+        C.RoutineListAgentDefaultsOutputSchema.parse(
+          await deps.bus.call('routines:list-agent-defaults', ctx, {
+            agentId: ctx.agentId,
+          }),
+        ),
+      ),
+    ),
+    set: scoped(deps, async (req, res, ctx) => {
+      const input = body(
+        req,
+        res,
+        C.RoutineSetAgentDefaultEnabledInputSchema.omit({
+          agentId: true,
+          defaultRoutineId: true,
+        }),
+      );
+      if (!input) return;
+      const parsed = C.RoutineSetAgentDefaultEnabledInputSchema.safeParse({
+        ...input,
+        agentId: ctx.agentId,
+        defaultRoutineId: req.params.defaultRoutineId,
+      });
+      if (!parsed.success) {
+        res.status(400).json({
+          code: 'validation',
+          field: 'input',
+          error: 'Invalid default routine.',
         });
-        res.status(200).json({ ok: true });
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
+        return;
       }
-    },
+      C.RoutineSetAgentDefaultEnabledOutputSchema.parse(
+        await deps.bus.call(
+          'routines:set-agent-default-enabled',
+          ctx,
+          parsed.data,
+        ),
+      );
+      res.status(200).json({ ok: true });
+    }),
   };
 }
-
-/**
- * Mount the two /settings/routines/:agentId/defaults* routes. Same
- * unwind-on-partial-failure shape as the other register* helpers — never
- * leaves a half-mounted route surface behind (Invariant: no half-wired
- * plugins).
- */
+export type SettingsAgentDefaultsHandlers = ReturnType<
+  typeof createSettingsAgentDefaultsHandlers
+>;
 export async function registerSettingsAgentDefaultsRoutes(
   bus: HookBus,
-  initCtx: AgentContext,
-): Promise<Array<() => void>> {
-  const handlers = createSettingsAgentDefaultsHandlers({ bus });
-  const routes: Array<{
-    method: 'GET' | 'POST';
-    path: string;
-    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  }> = [
+  ctx: AgentContext,
+) {
+  const h = createSettingsAgentDefaultsHandlers({ bus });
+  return register(bus, ctx, [
     {
       method: 'GET',
       path: '/settings/routines/:agentId/defaults',
-      handler: handlers.list,
+      handler: h.list,
     },
     {
       method: 'POST',
       path: '/settings/routines/:agentId/defaults/:defaultRoutineId',
-      handler: handlers.set,
+      handler: h.set,
     },
-  ];
-  const unregisters: Array<() => void> = [];
-  try {
-    for (const route of routes) {
-      const result = await bus.call<typeof route, { unregister: () => void }>(
-        'http:register-route',
-        initCtx,
-        route,
-      );
-      unregisters.push(result.unregister);
-    }
-  } catch (err) {
-    while (unregisters.length > 0) {
-      const fn = unregisters.pop();
-      try {
-        fn?.();
-      } catch (unwindErr) {
-        console.warn(
-          `[${PLUGIN_NAME}] failed to unregister agent-defaults route during rollback: ${
-            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
-          }`,
-        );
-      }
-    }
-    throw err;
-  }
-  return unregisters;
+  ]);
 }
-
-// ---------------------------------------------------------------------------
-// /admin/routines/defaults* — admin-only CRUD over the default_routines_v1
-// table (the "library of templates" that materialize per-agent on tick).
-//
-// Five routes:
-//
-//   GET    /admin/routines/defaults          → list (DefaultRoutineSummary[])
-//   GET    /admin/routines/defaults/:id      → detail (DefaultRoutineDetail)
-//   POST   /admin/routines/defaults          → upsert via { sourceMd }
-//   PUT    /admin/routines/defaults/:id      → upsert via { sourceMd }
-//   DELETE /admin/routines/defaults/:id      → drop (cascades to per-agent)
-//
-// Every route gates on `auth:require-admin` (via requireAdmin) — these are
-// fleet-wide changes, not per-user. There's no ACL check past "is this an
-// admin"; the default_routines_v1 row has no owner field.
-//
-// Body shape on POST/PUT: `{ sourceMd: string }`, capped at 64 KiB to match
-// the rest of the admin surface. The full SKILL.md-style frontmatter parse
-// happens inside `routines:upsert-default`; we just relay the raw text. The
-// routines plugin throws PluginError with codes
-// `invalid-routine-md` / `default-trigger-webhook-not-supported` /
-// `default-trigger-cron-not-supported` / `invalid-interval`, which
-// `writeServiceError` maps to 400.
-// ---------------------------------------------------------------------------
-
-/** POST/PUT /admin/routines/defaults body. Strict — extra fields reject so
- *  a confused client doesn't slip an `enabled` override past us until the
- *  upsert hook itself accepts one. */
-const upsertDefaultBodySchema = z
-  .object({
-    sourceMd: z.string().min(1).max(64 * 1024),
-  })
-  .strict();
-
-interface DefaultRoutineSummaryWire {
-  defaultRoutineId: string;
-  name: string;
-  description: string;
-  trigger: unknown;
-  enabled: boolean;
-  updatedAt: string;
-}
-
-interface DefaultRoutinesListOutput {
-  defaults: DefaultRoutineSummaryWire[];
-}
-
-interface DefaultRoutineDetailWire extends DefaultRoutineSummaryWire {
-  sourceMd: string;
-  silenceToken: string | null;
-  silenceMax: number;
-  conversation: 'per-fire' | 'shared';
-  activeHours: unknown | null;
-  promptBody: string;
-}
-
-interface UpsertDefaultOutput {
-  defaultRoutineId: string;
-  created: boolean;
-}
-
-export interface AdminDefaultRoutinesHandlers {
-  list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  get: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-}
-
-export function createAdminDefaultRoutinesHandlers(
+function admin(
   deps: AdminDeps,
-): AdminDefaultRoutinesHandlers {
-  // requireAdmin only calls auth:require-user — it doesn't read userId
-  // from the ctx — so the ctx we hand it can be a system-flavoured one.
-  // Per-handler we build a fresh ctxForActor(actor.id) AFTER requireAdmin
-  // returns, and THAT flows into routines:*-default so audit logs reflect
-  // the real admin who performed the change, not a static 'admin' literal.
-  const adminCtx = makeAgentContext({
-    sessionId: 'routines-admin',
-    agentId: PLUGIN_NAME,
-    userId: 'system',
-  });
-
-  return {
-    async list(req, res) {
-      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
-      if (actor === null) return;
-      const ctx = ctxForActor(actor.id);
-      try {
-        const out = await deps.bus.call<
-          Record<string, never>,
-          DefaultRoutinesListOutput
-        >('routines:list-defaults', ctx, {});
-        res.status(200).json(out);
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async get(req, res) {
-      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
-      if (actor === null) return;
-      const { id } = req.params;
-      if (id === undefined || id.length === 0) {
-        res.status(400).json({ error: 'missing default routine id' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        const detail = await deps.bus.call<
-          { defaultRoutineId: string },
-          DefaultRoutineDetailWire
-        >('routines:get-default', ctx, { defaultRoutineId: id });
-        res.status(200).json(detail);
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async create(req, res) {
-      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
-      if (actor === null) return;
-      const parsedBody = parseRequestBody(req.body);
-      if (!parsedBody.ok) {
-        res.status(parsedBody.status).json({ error: parsedBody.message });
-        return;
-      }
-      const zodResult = upsertDefaultBodySchema.safeParse(parsedBody.value);
-      if (!zodResult.success) {
-        const first = zodResult.error.issues[0];
-        res.status(400).json({
-          error:
-            first?.message !== undefined && first.message.length > 0
-              ? first.message
-              : 'invalid-payload',
-        });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        const out = await deps.bus.call<
-          { sourceMd: string },
-          UpsertDefaultOutput
-        >('routines:upsert-default', ctx, {
-          sourceMd: zodResult.data.sourceMd,
-        });
-        res
-          .status(201)
-          .json({ defaultRoutineId: out.defaultRoutineId, created: out.created });
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async update(req, res) {
-      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
-      if (actor === null) return;
-      const { id } = req.params;
-      if (id === undefined || id.length === 0) {
-        res.status(400).json({ error: 'missing default routine id' });
-        return;
-      }
-      const parsedBody = parseRequestBody(req.body);
-      if (!parsedBody.ok) {
-        res.status(parsedBody.status).json({ error: parsedBody.message });
-        return;
-      }
-      const zodResult = upsertDefaultBodySchema.safeParse(parsedBody.value);
-      if (!zodResult.success) {
-        const first = zodResult.error.issues[0];
-        res.status(400).json({
-          error:
-            first?.message !== undefined && first.message.length > 0
-              ? first.message
-              : 'invalid-payload',
-        });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      // PRE-WRITE id-vs-manifest consistency check. Pull `name:` out of
-      // the sourceMd frontmatter and look up the existing row by URL
-      // id. If the names disagree, reject 400 BEFORE the upsert ever
-      // fires — without this guard, the upsert would shadow-write the
-      // OTHER row (matched by name) and the post-call equality check
-      // would land too late to undo it. Mirrors @ax/skills admin path.
-      //
-      // Accepts unquoted / single-quoted / double-quoted YAML scalars
-      // with optional trailing comments — same surface yaml itself
-      // would accept.
-      const nameMatch =
-        /^\s*name\s*:\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s#\r\n]+))\s*(?:#.*)?$/m.exec(
-          zodResult.data.sourceMd,
-        );
-      const manifestName =
-        nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3];
-      if (manifestName !== undefined) {
-        try {
-          const existing = await deps.bus.call<
-            { defaultRoutineId: string },
-            DefaultRoutineDetailWire
-          >('routines:get-default', ctx, { defaultRoutineId: id });
-          if (existing.name !== manifestName) {
-            res.status(400).json({
-              error: 'default routine id in path does not match manifest name',
-            });
-            return;
-          }
-        } catch (err) {
-          // URL id doesn't exist — fall through; the post-call equality
-          // check below catches the case where the manifest name maps
-          // to a different existing row, and the upsert otherwise
-          // creates the new row with the URL-id-mismatched id (caught
-          // by the same post-call check).
-          if (
-            !(err instanceof PluginError && err.code === 'not-found')
-          ) {
-            if (writeServiceError(res, err)) return;
-            throw err;
-          }
-        }
-      }
-      try {
-        const out = await deps.bus.call<
-          { sourceMd: string },
-          UpsertDefaultOutput
-        >('routines:upsert-default', ctx, {
-          sourceMd: zodResult.data.sourceMd,
-        });
-        // Defense-in-depth: if our regex missed a name (e.g. multi-line
-        // YAML scalar), or the URL id was for a non-existent row whose
-        // manifest name collides with some other existing row, the
-        // upsert may have landed on a different id. Surface as 400.
-        if (out.defaultRoutineId !== id) {
-          res.status(400).json({
-            error: 'default routine id in path does not match manifest name',
-          });
-          return;
-        }
-        res
-          .status(200)
-          .json({ defaultRoutineId: out.defaultRoutineId, created: out.created });
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
-    async destroy(req, res) {
-      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
-      if (actor === null) return;
-      const { id } = req.params;
-      if (id === undefined || id.length === 0) {
-        res.status(400).json({ error: 'missing default routine id' });
-        return;
-      }
-      const ctx = ctxForActor(actor.id);
-      try {
-        await deps.bus.call<
-          { defaultRoutineId: string },
-          Record<string, never>
-        >('routines:delete-default', ctx, { defaultRoutineId: id });
-        res.status(204).end();
-      } catch (err) {
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
+  effect: (
+    req: RouteRequest,
+    res: RouteResponse,
+    ctx: AgentContext,
+  ) => Promise<void>,
+): Handler {
+  return async (req, res) => {
+    const actor = await requireAdmin(deps.bus, authContext(), req, res);
+    if (!actor) return;
+    try {
+      await effect(req, res, actorContext(actor.id));
+    } catch (error) {
+      writeServiceError(res, error);
+    }
   };
 }
-
-/**
- * Mount the five /admin/routines/defaults* routes via `http:register-route`.
- * Returns the list of unregister callbacks. Same unwind-on-partial-failure
- * shape as registerRoutinesAdminRoutes — never leaves a half-mounted route
- * surface behind (Invariant: no half-wired plugins).
- */
-export async function registerAdminDefaultRoutinesRoutes(
-  bus: HookBus,
-  initCtx: AgentContext,
-): Promise<Array<() => void>> {
-  const handlers = createAdminDefaultRoutinesHandlers({ bus });
-  const routes: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    path: string;
-    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  }> = [
-    {
-      method: 'GET',
-      path: '/admin/routines/defaults',
-      handler: handlers.list,
-    },
-    {
-      method: 'GET',
-      path: '/admin/routines/defaults/:id',
-      handler: handlers.get,
-    },
-    {
-      method: 'POST',
-      path: '/admin/routines/defaults',
-      handler: handlers.create,
-    },
-    {
-      method: 'PUT',
-      path: '/admin/routines/defaults/:id',
-      handler: handlers.update,
-    },
-    {
-      method: 'DELETE',
-      path: '/admin/routines/defaults/:id',
-      handler: handlers.destroy,
-    },
-  ];
-  const unregisters: Array<() => void> = [];
-  try {
-    for (const route of routes) {
-      const result = await bus.call<typeof route, { unregister: () => void }>(
-        'http:register-route',
-        initCtx,
-        route,
+function defaultKey(req: RouteRequest, res: RouteResponse) {
+  const parsed = C.RoutineGetDefaultInputSchema.safeParse({
+    defaultRoutineId: req.params.id,
+  });
+  if (!parsed.success) {
+    res.status(400).json({
+      code: 'validation',
+      field: 'routineId',
+      error: 'Invalid default routine.',
+    });
+    return;
+  }
+  return parsed.data;
+}
+export function createAdminDefaultRoutinesHandlers(deps: AdminDeps) {
+  const save = async (
+    req: RouteRequest,
+    res: RouteResponse,
+    ctx: AgentContext,
+    update: boolean,
+  ) => {
+    const input = body(req, res, C.RoutineUpsertDefaultInputSchema);
+    if (!input) return;
+    if (update) {
+      const k = defaultKey(req, res);
+      if (!k) return;
+      const existing = C.RoutineGetDefaultOutputSchema.parse(
+        await deps.bus.call('routines:get-default', ctx, k),
       );
-      unregisters.push(result.unregister);
-    }
-  } catch (err) {
-    while (unregisters.length > 0) {
-      const fn = unregisters.pop();
-      try {
-        fn?.();
-      } catch (unwindErr) {
-        console.warn(
-          `[${PLUGIN_NAME}] failed to unregister admin route during rollback: ${
-            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
-          }`,
-        );
+      if (existing.name !== input.name) {
+        res.status(400).json({
+          code: 'validation',
+          field: 'name',
+          error: 'The default routine name must stay unchanged.',
+        });
+        return;
       }
     }
-    throw err;
-  }
-  return unregisters;
+    const out = C.RoutineUpsertDefaultOutputSchema.parse(
+      await deps.bus.call('routines:upsert-default', ctx, input),
+    );
+    res.status(update ? 200 : 201).json(out);
+  };
+  return {
+    list: admin(deps, async (_req, res, ctx) =>
+      res
+        .status(200)
+        .json(
+          C.RoutineListDefaultsOutputSchema.parse(
+            await deps.bus.call('routines:list-defaults', ctx, {}),
+          ),
+        ),
+    ),
+    get: admin(deps, async (req, res, ctx) => {
+      const k = defaultKey(req, res);
+      if (k)
+        res
+          .status(200)
+          .json(
+            C.RoutineGetDefaultOutputSchema.parse(
+              await deps.bus.call('routines:get-default', ctx, k),
+            ),
+          );
+    }),
+    create: admin(deps, (req, res, ctx) => save(req, res, ctx, false)),
+    update: admin(deps, (req, res, ctx) => save(req, res, ctx, true)),
+    destroy: admin(deps, async (req, res, ctx) => {
+      const k = defaultKey(req, res);
+      if (k) {
+        C.RoutineDeleteDefaultOutputSchema.parse(
+          await deps.bus.call('routines:delete-default', ctx, k),
+        );
+        res.status(204).end();
+      }
+    }),
+  };
+}
+export type AdminDefaultRoutinesHandlers = ReturnType<
+  typeof createAdminDefaultRoutinesHandlers
+>;
+export async function registerAdminDefaultRoutinesRoutes(
+  bus: HookBus,
+  ctx: AgentContext,
+) {
+  const h = createAdminDefaultRoutinesHandlers({ bus });
+  const base = '/admin/routines/defaults';
+  return register(bus, ctx, [
+    { method: 'GET', path: base, handler: h.list },
+    { method: 'GET', path: `${base}/:id`, handler: h.get },
+    { method: 'POST', path: base, handler: h.create },
+    { method: 'PUT', path: `${base}/:id`, handler: h.update },
+    { method: 'DELETE', path: `${base}/:id`, handler: h.destroy },
+  ]);
 }

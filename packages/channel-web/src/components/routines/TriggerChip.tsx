@@ -3,14 +3,17 @@
  * way CredentialsList renders the kind subtitle: monospace, restrained,
  * just enough info to recognize the trigger at a glance.
  */
+import { describeCron } from '@/lib/cron-describe';
 import type { TriggerSpec } from '../../lib/routines';
 
 function summarize(t: TriggerSpec): string {
   switch (t.kind) {
     case 'interval':
       return `interval ${t.every}`;
-    case 'cron':
-      return `cron ${t.expr}`;
+    case 'cron': {
+      const summary = describeCron(t.expr);
+      return `${summary.kind === 'described' ? summary.text : t.expr} · ${t.tz}`;
+    }
     case 'webhook':
       return `webhook ${t.path}${t.hmac !== undefined ? ' (hmac)' : ''}`;
   }
@@ -19,7 +22,7 @@ function summarize(t: TriggerSpec): string {
 export function TriggerChip({ trigger }: { trigger: TriggerSpec }) {
   return (
     <span
-      className="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-muted text-[11px] font-mono tracking-[0.02em] text-muted-foreground shrink-0"
+      className="text-xs text-muted-foreground"
       title={`Trigger: ${trigger.kind}`}
     >
       {summarize(trigger)}

@@ -37,9 +37,10 @@ afterEach(async () => {
   }
 });
 
-async function makeHarness(): Promise<TestHarness> {
+async function makeHarness(teamRole?: 'admin' | 'member'): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
+      ...(teamRole ? { 'teams:is-member': async () => ({ member: true, role: teamRole }) } : {}),
       'http:register-route': async () => ({ unregister: () => {} }),
       'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
     },
@@ -318,5 +319,28 @@ describe('agents:resolve-by-webhook-token', () => {
     const out = await harness.bus.call<{ token: string }, { agent: { id: string } } | null>(
       'agents:resolve-by-webhook-token', harness.ctx({ userId: 'system' }), { token: '' });
     expect(out).toBeNull();
+  });
+});
+
+
+describe('routine management authority', () => {
+  it('uses the real context actor, refusing a forged workspace-admin payload', async () => {
+    const h = await makeHarness(); const agentId = await createAgent(h, 'owner');
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'owner' }), { agentId })).resolves.toEqual({ allowed: true });
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'outsider' }), { agentId })).resolves.toEqual({ allowed: false });
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'outsider' }), { agentId, isAdmin: true })).rejects.toThrow();
+  });
+  it('allows team admins to ensure/rotate tokens and manage routines, but denies members', async () => {
+    const h = await makeHarness('admin');
+    const { agent } = await h.bus.call<unknown, { agent: { id: string } }>('agents:create', h.ctx({ userId: 'owner' }), { actor: { userId: 'owner', isAdmin: false }, input: { displayName: 'team', allowedTools: [], mcpConfigIds: [], model: 'anthropic/claude-opus-4-7', visibility: 'team', teamId: 'team-1' } });
+    const actor = { userId: 'team-admin', isAdmin: false };
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: actor.userId }), { agentId: agent.id })).resolves.toEqual({ allowed: true });
+    for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) await expect(h.bus.call(hook, h.ctx({ userId: actor.userId }), { actor, agentId: agent.id })).resolves.toHaveProperty('token');
+    const member = await makeHarness('member');
+    await expect(member.bus.call('agents:can-manage-routines', member.ctx({ userId: 'member' }), { agentId: agent.id })).resolves.toEqual({ allowed: false });
+    for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) await expect(member.bus.call(hook, member.ctx({ userId: 'member' }), { actor: { userId: 'member', isAdmin: false }, agentId: agent.id })).rejects.toMatchObject({ code: 'forbidden' });
+    const noTeams = await makeHarness();
+    await expect(noTeams.bus.call('agents:can-manage-routines', noTeams.ctx({ userId: 'owner' }), { agentId: agent.id })).resolves.toEqual({ allowed: false });
+
   });
 });

@@ -78,57 +78,20 @@ describe('BUILTIN_RULES', () => {
     }
   });
 
-  it('declares the spend on exactly the two tools that bill an API call', () => {
-    // @ax/web-tools implements both by making a billed Anthropic Messages call
-    // per invocation. Nothing else in the table costs money: the memory tools,
-    // the sandbox six and the catalog reads are all local, and the three holds
-    // are consent flows. If a third tool starts spending, it belongs here — and
-    // if one of these two stops, this fails rather than leaving a stale claim
-    // that the agent's web search costs money when it no longer does.
-    //
-    // `.includes` and not `===` since TASK-330 made `effect` a SET: `web.extract`
-    // declares `['spends', 'outward']`, and a test that still asked for equality
-    // with the string would quietly answer "nothing spends money" — green, and
-    // wrong in the understating direction.
+  it('declares spend on web calls and a routine firing that invokes an agent', () => {
+    // A fire invokes an agent turn whose prompt may call outward tools.
+    // The rule must disclose both that spend and its possible outward effects.
     const spending = BUILTIN_RULES.filter((r) => r.effect?.includes('spends') === true).map(
       (r) => r.id,
     );
-    expect(spending.sort()).toEqual(['web.extract', 'web.search']);
+    expect(spending.sort()).toEqual(['routines.fire-now', 'web.extract', 'web.search']);
   });
 
-  it('declares outward on exactly web.extract, and never allows an outward rule', () => {
-    // THIS TEST USED TO READ "marks nothing outward yet", and it was a tripwire
-    // armed for the first outward tool. TASK-330 is that tool, so the tripwire
-    // fired and this is what it was fired at: the rule now DECLARES `outward`,
-    // and the assertion moved from "nobody does" to "exactly this one does, and
-    // it is not allowed".
-    //
-    // WHY IT IS NOT SIMPLY DELETED. The old version was also a prompt to check
-    // three things when the day came, and the answers belong here rather than
-    // in a commit message:
-    //
-    //   - THE RAIL. `web.extract`'s row now carries BOTH members and reads
-    //     `conditional` (the verdict depends on whether the person has allowed
-    //     that host). Pinned by the TASK-329 propagation test below and by
-    //     channel-web's rail tests.
-    //   - THE UNDO WINDOW. `irreversible` is NOT set, and the tests below pin
-    //     that. A page fetch genuinely cannot be unmade — but `irreversible` is
-    //     specifically the instruction that AW-5 defer an UNATTENDED replay by
-    //     the undo window, which is approval TIMING and not classification.
-    //     TASK-409 settled it: leave it unset (decision in
-    //     `.claude/memory/decisions/2026-09-28-TASK-409.md`).
-    //   - THE COPY. `permission-frames.ts`' `outward` detail spells out only
-    //     the "a third party sees it" half of what `outward` means. That half
-    //     IS the true half for `web_extract`, so nothing is misstated today —
-    //     but the copy is still narrower than the type, and TASK-384 owns
-    //     broadening it.
-    //
-    // `.includes` and not `===`: `effect` is a SET, and after TASK-330 the
-    // string comparison this test used to make is one an array silently passes.
-    // That is precisely how a guard becomes a check that cannot fail while
-    // still wearing the costume of one.
+  it('declares outward on web.extract and routine firing, and never allows an outward rule', () => {
+    // These outward effects require approval by default. Runtime consent
+    // applies only to reversible routine management, never to fire-now.
     const outward = BUILTIN_RULES.filter((r) => r.effect?.includes('outward') === true);
-    expect(outward.map((r) => r.id)).toEqual(['web.extract']);
+    expect(outward.map((r) => r.id)).toEqual(['web.extract', 'routines.fire-now']);
 
     // The lint's rule, asserted against the shipped table rather than against
     // fixtures. `capability-lint.test.ts` proves the function fires; this
@@ -154,18 +117,10 @@ describe('BUILTIN_RULES', () => {
     expect(rule!.verdict).toBe('hold');
   });
 
-  it('marks nothing irreversible — every seeded approval can be taken back', () => {
-    // A guard, not a preference. `irreversible: true` is what CREATES the
-    // unattended undo window: `@ax/decisions` claims the approval now and
-    // replays the call one window later (`deferred = !attended && hasExecutor
-    // && current.irreversible`). Unset means an unattended approval replays at
-    // once. Attended approvals get the window either way (TASK-574). The
-    // comment here used to say the reverse: that AW-5 offers undo unless a
-    // rule opts out. That inverted reading is how TASK-409 got filed
-    // backwards. If a rule here starts setting the flag, this test is the
-    // prompt to check that the deferred-replay sweep really runs its call.
+  it('defers routine fire-now because its agent prompt can cause outward effects', () => {
+    expect(BUILTIN_RULES.filter(rule => rule.irreversible === true).map(rule => rule.id)).toEqual(['routines.fire-now']);
     for (const rule of BUILTIN_RULES) {
-      expect(rule.irreversible, rule.id).toBeUndefined();
+      if (rule.id !== 'routines.fire-now') expect(rule.irreversible, rule.id).toBeUndefined();
     }
   });
 
@@ -240,26 +195,9 @@ describe('BUILTIN_RULES', () => {
       proves nothing is worse than no test, because it reads like coverage in a
       diff. Its replacement runs against real rules today.
 
-      WHAT THE NEW ASSERTION IS ARMED FOR: the SECOND outward rule. `web.extract`
-      does NOT set `irreversible`, and that is now a DECISION, not a deferral.
-      #574 and #580 left it open on scope. TASK-409 settled it, and the
-      reasoning and the reopen conditions are in
-      `.claude/memory/decisions/2026-09-28-TASK-409.md`. In short: the flag
-      only changes UNATTENDED approvals (`deferred = !attended && hasExecutor
-      && current.irreversible` in `packages/decisions/src/plugin.ts`). Attended
-      approvals already get the grace period regardless (TASK-574). On the path
-      it does touch, the flag is misclick insurance for a read-only page fetch, and it
-      would add an "approved, nothing happened" failure if the host dies
-      inside the window.
-
-      That decision is one rule wide, and it is spelled here as an allow-list
-      of one so the next `outward` rule cannot inherit it silently. An outward
-      call is normally irreversible (you cannot unsend a message), and for
-      those, `irreversible: true` is what gives an unattended approval a real
-      grace period BEFORE the action. Without it, the host sends at once. When
-      this reds, the question is whether THAT rule's action is cheap enough to
-      fire straight away on an unattended approval, not whether the allow-list
-      has room for one more.
+      routine_fire_now is the second outward rule: its agent turn can send or
+      spend. Unlike web.extract's reviewed exception,
+      it declares irreversible so unattended approval offers a real undo window.
     */
     const IRREVERSIBLE_DEFERRED = new Set(['web.extract']);
     const outward = BUILTIN_RULES.filter((r) => r.effect?.includes('outward') === true);
@@ -328,6 +266,12 @@ describe('BUILTIN_RULES', () => {
         'search_catalog',
         'skill_propose',
         'web_extract',
+        'routine_list',
+        'routine_get',
+        'routine_create',
+        'routine_update',
+        'routine_delete',
+        'routine_fire_now',
         'web_search',
       ].sort(),
     );

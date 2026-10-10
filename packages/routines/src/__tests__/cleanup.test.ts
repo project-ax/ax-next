@@ -1,0 +1,81 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutinesStore } from '../store.js';
+import { credentialRef } from '../definition.js';
+import { purgeRoutineAgent } from '../cleanup.js';
+const definition = RoutineDefinitionSchema.parse({ name: 'Project update', promptBody: 'Summarize', trigger: { kind: 'webhook', path: '/project-updated', hmac: { header: 'X-Hub-Signature-256', algorithm: 'sha256' } } });
+let h: RoutineHarness;
+afterEach(async () => { await h?.close(); });
+async function create() { return h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create', definition }); }
+describe('durable HMAC lifecycle through registered services', () => {
+  it('keeps failed removal retry away from a reconfigured secret and stale discovery', async () => {
+    h = await createRoutineHarness(); const row = await create();
+    h.failNextCredentialDelete();
+    const removed = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'remove', patch: { trigger: { kind: 'interval', every: '1h' } } });
+    const store = createRoutinesStore(h.db); const [oldJob] = await store.pendingCleanup({ limit: 10 });
+    const readd = { agentId: h.agentId, routineId: row.routineId, expectedRevision: removed.revision, requestId: 'readd', patch: { trigger: definition.trigger } };
+    await expect(h.bus.call('routines:update', h.owner, readd)).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
+    await h.drainCleanup();
+    const current = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, readd);
+    await h.bus.call('routines:set-webhook-secret', h.owner, { agentId: h.agentId, routineId: row.routineId, expectedRevision: current.revision, operation: 'set', secret: new TextEncoder().encode('secret') });
+    const count = h.credentialCalls.length;
+    await h.drainCleanup();
+    await expect(store.runCredentialCleanup(oldJob!, async () => { throw new Error('Stale discovery performed an effect'); })).resolves.toBe(false);
+    expect(h.credentialCalls).toHaveLength(count);
+    expect(h.credentialCalls.every(c => c.ref === credentialRef(row))).toBe(true);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
+  });
+  it('holds deletion behind an in-flight secret and refuses stale forms afterward', async () => {
+    h = await createRoutineHarness(); const row = await create();
+    const gate = h.holdCredentialSet();
+    const key = { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision };
+    const saving = h.bus.call('routines:set-webhook-secret', h.owner, { ...key, operation: 'set', secret: new Uint8Array([1]) });
+    await gate.started;
+    let deleted = false;
+    const deleting = h.bus.call('routines:delete', h.owner, { ...key, requestId: 'delete' }).then(result => { deleted = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(deleted).toBe(false); expect(h.credentialCalls).toHaveLength(0);
+    gate.release(); await saving; await deleting;
+    expect(h.credentialCalls.map(c => c.operation)).toEqual(['set', 'delete']);
+    await expect(h.bus.call('routines:set-webhook-secret', h.owner, { ...key, operation: 'set', secret: new Uint8Array([2]) })).rejects.toMatchObject({ toolCode: 'not-found' });
+    expect(h.credentialCalls).toHaveLength(2);
+  });
+  it('retains the row lock after a nested credential timeout until its actual write settles', async () => {
+    h = await createRoutineHarness({ credentialTimeoutMs: 10 }); const row = await create();
+    const gate = h.holdCredentialSet();
+    const key = { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision };
+    let savedSettled = false;
+    const saving = h.bus.call('routines:set-webhook-secret', h.owner, { ...key, operation: 'set', secret: new Uint8Array([1]) }).catch(e => e).finally(() => { savedSettled = true; });
+    await gate.started;
+    let deleteSettled = false;
+    const deleting = h.bus.call('routines:delete', h.owner, { ...key, requestId: 'delete' }).finally(() => { deleteSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(savedSettled).toBe(false); expect(deleteSettled).toBe(false);
+    expect(h.credentialCalls).toHaveLength(0);
+    gate.release();
+    expect(await saving).toMatchObject({ code: 'timeout' });
+    await deleting;
+    expect(h.credentialCalls.map(c => c.operation)).toEqual(['set', 'delete']);
+    expect(await createRoutinesStore(h.db).pendingCleanup({ limit: 10 })).toEqual([]);
+  });
+  it('uses canonical purge on the actual agents:deleted event', async () => {
+    h = await createRoutineHarness(); const row = await create(); h.failNextCredentialDelete();
+    await h.bus.call('agents:delete', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
+    const store = createRoutinesStore(h.db);
+    expect(await store.list({ agentId: h.agentId })).toEqual([]);
+    expect(await store.pendingCleanup({ limit: 10 })).toHaveLength(1);
+    await h.drainCleanup(); expect(await store.pendingCleanup({ limit: 10 })).toEqual([]);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
+  });
+  it('purges agent data and correlations while preserving failed cleanup for retry', async () => {
+    h = await createRoutineHarness(); const row = await create();
+    const pending = new Map([['gone', { row: { agentId: h.agentId } }], ['keep', { row: { agentId: h.teamAgentId } }]]);
+    h.failNextCredentialDelete(); const store = createRoutinesStore(h.db);
+    await purgeRoutineAgent({ bus: h.bus, store, pending, agentId: h.agentId });
+    expect([...pending.keys()]).toEqual(['keep']); expect(await store.list({ agentId: h.agentId })).toEqual([]);
+    expect(await store.pendingCleanup({ limit: 10 })).toHaveLength(1);
+    await h.drainCleanup(); expect(await store.pendingCleanup({ limit: 10 })).toEqual([]);
+    expect(h.cleanupWarnings).toEqual([{ message: 'routines_credential_cleanup_pending', fields: { agentId: h.agentId, routineId: row.routineId } }]);
+  });
+});

@@ -4,6 +4,8 @@
 // invariant 2: "plugins talk through the hook bus, not direct imports."
 //
 // Allowed @ax/* imports:
+//   @ax/routines-contract — browser-safe routine schemas and tool contracts;
+//                           no core, plugin, database or Node imports.
 //   @ax/core              — the kernel, every plugin depends on it
 //   @ax/test-harness      — test-only, not in plugin runtime paths
 //   @ax/ipc-protocol      — pure-types wire-schema package; both host-side
@@ -50,15 +52,6 @@
 //                           manifest, no hooks, no kernel dependency — same
 //                           library-not-plugin shape as the other allow-listed
 //                           packages above.
-//   @ax/validator-routine — pure-function routine frontmatter parser
-//                           (parseRoutineFrontmatter/Bytes + durationToSeconds)
-//                           shared between the validator plugin (workspace:
-//                           pre-apply veto) and the @ax/routines plugin
-//                           (spec_hash + initial next_run_at). The parser IS
-//                           the boundary contract; the validator's plugin
-//                           manifest is one consumer of that contract among
-//                           several. Routines imports only the parser; no
-//                           plugin runtime is reached.
 //   @ax/skills-parser     — pure-function SKILL.md parser (parseSkillManifest,
 //                           splitSkillMd) + the neutral capability shape
 //                           (Capabilities, plus CapabilitySlot, McpServerSpec,
@@ -145,14 +138,14 @@ group: [
   '!@ax/workspace-bundle-protocol',
   '!@ax/ipc-core',
   '!@ax/agent-claude-sdk-runner-host',
-  '!@ax/validator-routine',
+  '!@ax/routines-contract',
   '!@ax/skills-parser',
   '!@ax/agent-identity-templates',
   '!@ax/user-files-read',
 ],
 allowTypeImports: true,
 message:
-  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
+  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol + @ax/routines-contract (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one realpath-confined reader for an agent durable user-files subtree, shared by both sandbox providers)',
 };
 
 export default tseslint.config(

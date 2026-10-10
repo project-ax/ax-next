@@ -1,3 +1,5 @@
+import { routineToolKind } from '@ax/routines-contract';
+import { routineFailureText } from './routine-authorization.js';
 /**
  * The receipt, DERIVED from the decision row.
  *
@@ -123,7 +125,10 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
   const at = decision.resolvedAt;
   if (at === null) return null;
 
-  const made = decision.replayedAt !== null || decision.consumedAt !== null;
+  const routine = routineToolKind(decision.call.name) === 'write';
+  const made = routine
+    ? decision.routineOutcome === 'succeeded'
+    : decision.replayedAt !== null || decision.consumedAt !== null;
   const row = { decisionId: decision.id, agentId: decision.agentId, at };
 
   // EXHAUSTIVE over `DecisionStatus`, and that is the point. The status used to
@@ -166,7 +171,7 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
         // tool's failure text can quote model-authored input back at us, and
         // the sentence a person reads as our claim about what happened has to
         // be ours.
-        error: decision.replayError,
+        error: routine ? routineFailureText(decision) : decision.replayError,
       };
 
     // The call was MADE — `replayedAt` (the host performed it) or `consumedAt`

@@ -1,15 +1,24 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronsUpDown, ChevronRight } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronRight, Copy } from 'lucide-react';
+import {
+  RoutineDefinitionSchema,
+  editableDefinition,
+  validateWebhookPath,
+  type RoutineDefinition,
+  type RoutinePatch,
+  type RoutineView,
+  type RoutineUpsertDefaultInput,
+} from '@ax/routines-contract';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Field, FieldGroup } from '@/components/ui/field';
-import { Switch } from '@/components/ui/switch';
-import { Separator } from '@/components/ui/separator';
-import { WebhookUrlPreview } from './WebhookUrlPreview';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
@@ -17,838 +26,778 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
+import { routineApi, RoutineApiError } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
-import { cn } from '@/lib/utils';
-// `@ax/validator-routine/frontmatter` is the pure parser/builder pair (yaml +
-// shape validation) — the same single round-trip authority @ax/routines uses
-// server-side. The form edits typed fields; toggling to raw serializes via
-// buildRoutineMd; toggling back re-parses via parseRoutineFrontmatter. Imported
-// via the `/frontmatter` subpath so the plugin entry (kysely/node) stays out of
-// the SPA bundle — same shape as DefaultRoutineEditor and SkillEditor.
-import {
-  buildRoutineMd,
-  parseRoutineFrontmatter,
-  type RoutineFrontmatterFields,
-  type TriggerSpec,
-  type WebhookHmacSpec,
-  type ActiveHours,
-} from '@ax/validator-routine/frontmatter';
-import { listChatAgents } from '@/lib/agents';
 
-export type TriggerKind = 'interval' | 'cron' | 'webhook';
-
-export interface RoutineEditorConstraints {
-  /** Which trigger kinds the picker offers. Default routines pass
-   *  `['interval']` (cron/webhook have no per-agent owner to anchor to). */
-  allowedTriggers: readonly TriggerKind[];
-  /** Whether to show the create-mode agent picker (per-user create only). */
-  showAgentPicker: boolean;
-}
-
-export interface RoutineEditorProps {
-  agentId?: string;
-  agentName?: string | undefined;
-  /** Existing routine to edit (parsed fields). Omit for create. */
-  initial?: RoutineFrontmatterFields;
-  constraints: RoutineEditorConstraints;
-  /** Persist the assembled routine markdown. `agentId` is the picked agent
-   *  (create + showAgentPicker) or null; `name` is the routine slug (the
-   *  caller derives the file path from it on create). */
-  onSave: (
-    sourceMd: string,
-    opts: { agentId: string | null; name: string },
-  ) => Promise<void>;
+interface Props {
+  mode: 'create' | 'edit';
+  agentId: string;
+  agentName: string;
+  routine?: RoutineView | undefined;
   onSaved: () => void;
   onCancel: () => void;
+  onPendingChange?: ((pending: boolean) => void) | undefined;
 }
-
-// A routine name doubles as the .ax/routines/<name>.md filename stem, so it
-// must be a lowercase slug (mirrors the server's ROUTINE_PATH gate + the skill
-// name rule). The Save button stays disabled until the name matches.
-const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
-
-const TRIGGER_LABELS: Record<TriggerKind, string> = {
-  interval: 'Interval',
-  cron: 'Schedule',
-  webhook: 'Webhook',
-};
-
-const browserTz = (() => {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-})();
-
-/** Flat, all-fields-present form state — keeps per-kind trigger inputs from
- *  losing their value when the user flips the trigger toggle. `webhookHmac` is
- *  carried (not edited in the form — HMAC config lives in Advanced/raw) so it
- *  survives a form round-trip. */
-interface RoutineFormState {
-  name: string;
-  description: string;
-  enabled: boolean;
-  triggerKind: TriggerKind;
-  intervalEvery: string;
-  cronExpr: string;
-  cronTz: string;
-  webhookPath: string;
-  webhookEvents: string; // comma-separated raw input
-  webhookHmac: WebhookHmacSpec | null;
-  conversation: 'per-fire' | 'shared';
-  silenceToken: string;
-  silenceMaxChars: number;
-  activeHours: ActiveHours | null;
-  promptBody: string;
+interface DefaultProps {
+  initial?: RoutineDefinition;
+  onSave: (definition: RoutineUpsertDefaultInput) => Promise<unknown>;
+  onSaved: () => void;
+  onCancel: () => void;
+  onPendingChange?: ((pending: boolean) => void) | undefined;
 }
-
-function emptyForm(defaultKind: TriggerKind): RoutineFormState {
-  return {
-    name: '',
-    description: '',
-    enabled: true,
-    triggerKind: defaultKind,
-    intervalEvery: '',
-    cronExpr: '',
-    cronTz: browserTz,
-    webhookPath: '',
-    webhookEvents: '',
-    webhookHmac: null,
-    conversation: 'per-fire',
-    silenceToken: '',
-    silenceMaxChars: 300,
-    activeHours: null,
-    promptBody: '',
-  };
+const empty = (): RoutineDefinition => ({
+  name: '',
+  description: '',
+  promptBody: '',
+  enabled: true,
+  trigger: {
+    kind: 'cron',
+    expr: '0 8 * * 1-5',
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  },
+  activeHours: null,
+  silenceToken: null,
+  silenceMaxChars: 300,
+  conversation: 'per-fire',
+});
+const editableKeys = [
+  'name',
+  'description',
+  'promptBody',
+  'enabled',
+  'trigger',
+  'activeHours',
+  'silenceToken',
+  'silenceMaxChars',
+  'conversation',
+] as const;
+function changed(
+  form: RoutineDefinition,
+  loaded: RoutineDefinition,
+): RoutinePatch {
+  const patch: RoutinePatch = {};
+  for (const key of editableKeys)
+    if (JSON.stringify(form[key]) !== JSON.stringify(loaded[key]))
+      Object.assign(patch, { [key]: form[key] });
+  return patch;
 }
-
-function formFromFields(f: RoutineFrontmatterFields, defaultKind: TriggerKind): RoutineFormState {
-  const base = emptyForm(defaultKind);
-  base.enabled = f.enabled ?? true;
-  base.name = f.name;
-  base.description = f.description;
-  base.conversation = f.conversation;
-  base.silenceMaxChars = f.silenceMaxChars;
-  base.silenceToken = f.silenceToken ?? '';
-  base.activeHours = f.activeHours ?? null;
-  base.promptBody = f.promptBody;
-  base.triggerKind = f.trigger.kind;
-  if (f.trigger.kind === 'interval') {
-    base.intervalEvery = f.trigger.every;
-  } else if (f.trigger.kind === 'cron') {
-    base.cronExpr = f.trigger.expr;
-    base.cronTz = f.trigger.tz;
-  } else {
-    base.webhookPath = f.trigger.path;
-    base.webhookEvents = (f.trigger.events ?? []).join(', ');
-    base.webhookHmac = f.trigger.hmac ?? null;
-  }
-  return base;
-}
-
-function triggerFromForm(form: RoutineFormState): TriggerSpec {
-  if (form.triggerKind === 'interval') {
-    return { kind: 'interval', every: form.intervalEvery };
-  }
-  if (form.triggerKind === 'cron') {
-    return { kind: 'cron', expr: form.cronExpr, tz: form.cronTz };
-  }
-  const events = form.webhookEvents
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const webhook: Extract<TriggerSpec, { kind: 'webhook' }> = {
-    kind: 'webhook',
-    path: form.webhookPath,
-  };
-  if (events.length > 0) webhook.events = events;
-  if (form.webhookHmac !== null) webhook.hmac = form.webhookHmac;
-  return webhook;
-}
-
-function fieldsFromForm(form: RoutineFormState): RoutineFrontmatterFields {
-  const fields: RoutineFrontmatterFields = {
-    enabled: form.enabled,
-    name: form.name,
-    description: form.description,
-    trigger: triggerFromForm(form),
-    silenceMaxChars: form.silenceMaxChars,
-    conversation: form.conversation,
-    promptBody: form.promptBody,
-  };
-  if (form.activeHours !== null && form.triggerKind !== 'webhook') fields.activeHours = form.activeHours;
-  if (form.silenceToken.length > 0) fields.silenceToken = form.silenceToken;
-  return fields;
-}
-
-function assembleMd(form: RoutineFormState): string {
-  return buildRoutineMd(fieldsFromForm(form));
-}
-
-interface AgentOption {
-  agentId: string;
-  displayName: string;
-}
-
-export function RoutineEditor(props: RoutineEditorProps) {
-  return <RoutineForm key={`${props.agentId ?? 'picker'}:${JSON.stringify(props.initial ?? 'new')}`} {...props} />;
-}
-
-function RoutineForm({
-  agentId: fixedAgentId,
-  agentName,
-  initial,
-  constraints,
-  onSave,
-  onSaved,
-  onCancel,
-}: RoutineEditorProps) {
-  const defaultKind = constraints.allowedTriggers[0] ?? 'interval';
-  const [form, setForm] = useState<RoutineFormState>(() =>
-    initial ? formFromFields(initial, defaultKind) : emptyForm(defaultKind),
-  );
-  const [saving, setSaving] = useState(false);
-  const [serverError, setServerError] = useState<string | null>(null);
-
-  // Advanced raw-md escape hatch (mirrors SkillEditor): `advanced` flips the
-  // raw textarea; `rawText` is authoritative only while advanced is on.
-  const [advanced, setAdvanced] = useState(false);
-  const [rawText, setRawText] = useState('');
-
-  // Create-mode agent picker.
-  const [agents, setAgents] = useState<AgentOption[]>([]);
-  const [agentId, setAgentId] = useState<string | null>(fixedAgentId ?? null);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
-
+export function RoutineEditor(props: Props) {
+  const [loaded, setLoaded] = useState<RoutineView | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [generation, setGeneration] = useState(0);
   useEffect(() => {
-    if (!constraints.showAgentPicker) return;
-    let cancelled = false;
-    listChatAgents()
-      .then((list) => {
-        if (!cancelled) {
-          setAgents(list.map((a) => ({ agentId: a.agentId, displayName: a.displayName })));
-        }
+    if (props.mode !== 'edit' || !props.routine) return;
+    let active = true;
+    setLoaded(null);
+    setLoadError(false);
+    void routineApi
+      .get({ agentId: props.agentId, routineId: props.routine.routineId })
+      .then((r) => {
+        if (active) setLoaded(r);
       })
       .catch(() => {
-        if (!cancelled) setAgents([]);
+        if (active) setLoadError(true);
       });
     return () => {
-      cancelled = true;
+      active = false;
     };
-  }, [constraints.showAgentPicker]);
-
-  // Live parse of the active surface — the single validity authority for the
-  // Save gate (same recipe as SkillEditor).
-  const activeMd = advanced ? rawText : assembleMd(form);
-  const parsed = useMemo(() => parseRoutineFrontmatter(activeMd), [activeMd]);
-
-  const slugValid = SLUG_RE.test(form.name);
-  const agentOk = !constraints.showAgentPicker || agentId !== null;
-  // In raw mode the name comes from the parsed md; in form mode the slug gate
-  // applies (the filename is derived from it on create).
-  const saveDisabled =
-    saving || !parsed.ok || (!advanced && !slugValid) || !agentOk;
-
-  function enterAdvanced(): void {
-    setRawText(assembleMd(form));
-    setAdvanced(true);
-  }
-  function exitAdvanced(): void {
-    const reparsed = parseRoutineFrontmatter(rawText);
-    if (!reparsed.ok) return; // stay in raw; the error is already shown
-    setForm(formFromFields(reparsed.fields, defaultKind));
-    setAdvanced(false);
-  }
-
-  async function handleSave(): Promise<void> {
-    setSaving(true);
-    setServerError(null);
-    const effectiveName = advanced
-      ? parsed.ok
-        ? parsed.fields.name
-        : ''
-      : form.name;
-    try {
-      await onSave(activeMd, {
-        agentId: fixedAgentId ?? (constraints.showAgentPicker ? agentId : null),
-        name: effectiveName,
+  }, [props.agentId, props.mode, props.routine?.routineId, generation]);
+  if (props.mode === 'edit' && loaded === null)
+    return loadError ? (
+      <Alert variant="destructive">
+        <AlertDescription>
+          We couldn’t load this routine.{' '}
+          <Button variant="outline" onClick={() => setGeneration((v) => v + 1)}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
+    ) : (
+      <Skeleton aria-label="Loading routine" className="h-64 w-full" />
+    );
+  return (
+    <RoutineForm
+      key={loaded?.revision ?? 'create'}
+      agentId={props.agentId}
+      agentName={props.agentName}
+      initial={loaded ? editableDefinition(loaded) : empty()}
+      canEdit={loaded?.permissions.edit ?? true}
+      mode={props.mode}
+      onCancel={props.onCancel}
+      onSaved={props.onSaved}
+      onReload={() => setGeneration((v) => v + 1)}
+      onPendingChange={props.onPendingChange}
+      save={async (definition, requestId) =>
+        loaded
+          ? routineApi.update({
+              agentId: props.agentId,
+              routineId: loaded.routineId,
+              requestId,
+              expectedRevision: loaded.revision,
+              patch: changed(definition, editableDefinition(loaded)),
+            })
+          : routineApi.create({ agentId: props.agentId, requestId, definition })
+      }
+    />
+  );
+}
+/** Defaults share the fields; their existing catalog remains interval-only. */
+export function DefaultRoutineEditor(props: DefaultProps) {
+  return (
+    <RoutineForm
+      initial={
+        props.initial ?? {
+          ...empty(),
+          trigger: { kind: 'interval', every: '1h' },
+        }
+      }
+      agentName="The agent"
+      mode={props.initial ? 'edit' : 'create'}
+      defaults
+      onCancel={props.onCancel}
+      onSaved={props.onSaved}
+      onPendingChange={props.onPendingChange}
+      save={async (definition) => {
+        if (definition.trigger.kind !== 'interval') return;
+        await props.onSave({ ...definition, trigger: definition.trigger });
+      }}
+    />
+  );
+}
+function RoutineForm({
+  initial,
+  agentId,
+  agentName,
+  mode,
+  defaults = false,
+  canEdit = true,
+  save,
+  onSaved,
+  onCancel,
+  onReload,
+  onPendingChange,
+}: {
+  initial: RoutineDefinition;
+  agentId?: string | undefined;
+  agentName: string;
+  mode: 'create' | 'edit';
+  defaults?: boolean;
+  canEdit?: boolean;
+  save: (definition: RoutineDefinition, requestId: string) => Promise<unknown>;
+  onSaved: () => void;
+  onCancel: () => void;
+  onReload?: () => void;
+  onPendingChange?: ((pending: boolean) => void) | undefined;
+}) {
+  const id = useId();
+  const [form, setForm] = useState(initial);
+  const [eventsDraft, setEventsDraft] = useState(
+    initial.trigger.kind === 'webhook'
+      ? (initial.trigger.events ?? []).join(', ')
+      : '',
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [invalidField, setInvalidField] = useState<string | undefined>();
+  const [conflict, setConflict] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [optional, setOptional] = useState(false);
+  const [receiver, setReceiver] = useState<string | null>(null);
+  const [receiverError, setReceiverError] = useState(false);
+  const [copyState, setCopyState] = useState('');
+  const flight = useRef(false);
+  // Exact payload and request ID survive a response-loss retry. Draft controls freeze meanwhile.
+  const operation = useRef<{
+    requestId: string;
+    definition: RoutineDefinition;
+  } | null>(null);
+  useEffect(() => {
+    if (!agentId || form.trigger.kind !== 'webhook') return;
+    let active = true;
+    setReceiver(null);
+    setReceiverError(false);
+    void routineApi
+      .getReceiver(agentId)
+      .then((r) => {
+        if (active) setReceiver(r.url);
+      })
+      .catch(() => {
+        if (active) setReceiverError(true);
       });
+    return () => {
+      active = false;
+    };
+  }, [agentId, form.trigger.kind]);
+  // Keep separators in the input; normalize only the definition being validated/saved.
+  const draftDefinition = useMemo(() => {
+    if (form.trigger.kind !== 'webhook') return form;
+    const { events: _events, ...trigger } = form.trigger;
+    const events = eventsDraft
+      .split(',')
+      .map((event) => event.trim())
+      .filter(Boolean);
+    return { ...form, trigger: events.length ? { ...trigger, events } : trigger };
+  }, [form, eventsDraft]);
+  const validation = useMemo(
+    () => RoutineDefinitionSchema.safeParse(draftDefinition),
+    [draftDefinition],
+  );
+  const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
+  const disabled = busy || uncertain || !canEdit;
+  useEffect(() => {
+    onPendingChange?.(busy || uncertain);
+  }, [busy, uncertain, onPendingChange]);
+  function update<K extends keyof RoutineDefinition>(
+    key: K,
+    value: RoutineDefinition[K],
+  ) {
+    setForm((f) => ({ ...f, [key]: value }));
+    setError(null);
+    setInvalidField(undefined);
+    setCopyState('');
+  }
+  function textField(
+    label: string,
+    value: string | number,
+    field: string,
+    onChange: (value: string) => void,
+    options: { type?: string; maxLength?: number; disabled?: boolean } = {},
+  ) {
+    const invalid =
+      invalidField === field || invalidField?.startsWith(`${field}.`) === true;
+    return (
+      <Field
+        data-invalid={invalid || undefined}
+        data-disabled={disabled || options.disabled || undefined}
+      >
+        <FieldLabel htmlFor={`${id}-${field}`}>{label}</FieldLabel>
+        <Input
+          id={`${id}-${field}`}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={invalid || undefined}
+          {...options}
+          disabled={disabled || options.disabled}
+        />
+      </Field>
+    );
+  }
+  async function submit() {
+    if (
+      flight.current ||
+      !canEdit ||
+      (!operation.current &&
+        (!validation.success || (mode === 'edit' && !dirty)))
+    )
+      return;
+    flight.current = true;
+    setBusy(true);
+    setError(null);
+    setConflict(false);
+    operation.current ??= {
+      requestId: crypto.randomUUID(),
+      definition: validation.success ? validation.data : draftDefinition,
+    };
+    try {
+      await save(operation.current.definition, operation.current.requestId);
+      operation.current = null;
+      setUncertain(false);
       onSaved();
-    } catch (err) {
-      setServerError(err instanceof Error ? err.message : String(err));
+    } catch (e) {
+      const safe = e instanceof RoutineApiError;
+      setError(safe ? e.message : 'We couldn’t save this routine. Try again.');
+      setInvalidField(safe ? e.field : undefined);
+      setConflict(safe && e.code === 'revision-conflict');
+      if (!safe || e.status === 0 || e.status >= 500) setUncertain(true);
+      else {
+        operation.current = null;
+        setUncertain(false);
+      }
     } finally {
-      setSaving(false);
+      flight.current = false;
+      setBusy(false);
     }
   }
-
-  const saveLabel = saving ? 'Saving…' : initial ? 'Save changes' : 'Create routine';
-  const triggerOptions = constraints.allowedTriggers;
-  const liveError = !parsed.ok ? parsed.reason : null;
-  const selectedAgentLabel =
-    agents.find((a) => a.agentId === agentId)?.displayName ?? null;
-
-  const advancedControls = <>        {/* Advanced toggle — demotes the raw .md editor to an opt-in escape
-          hatch. Form is the default surface. */}
-      <div className="flex items-start gap-2">
-        <Checkbox
-          id="advanced-raw-routine"
-          checked={advanced}
-          onCheckedChange={(v) => (v === true ? enterAdvanced() : exitAdvanced())}
-        />
-        <div className="flex flex-col gap-0.5 leading-none">
-          <label htmlFor="advanced-raw-routine" className="text-sm font-medium">
-            Advanced — edit raw <code className="font-mono text-xs">.md</code>
-          </label>
-          <p className="text-xs text-muted-foreground">
-            Edit the underlying routine file directly. Changes stay in sync with
-            the form.
-          </p>
-        </div>
-      </div>
-
- </>;
-
+  let preview: string | null = null;
+  if (
+    receiver &&
+    form.trigger.kind === 'webhook' &&
+    validateWebhookPath(form.trigger.path)
+  ) {
+    try {
+      preview = `${new URL(receiver, window.location.origin).href.replace(/\/$/, '')}${form.trigger.path}`;
+    } catch {
+      /* Unavailable receiver is never an example token. */
+    }
+  }
+  const savedWebhook =
+    initial.trigger.kind === 'webhook' &&
+    JSON.stringify(initial.trigger) === JSON.stringify(draftDefinition.trigger) &&
+    mode === 'edit';
   return (
-    <div className="settings-form flex min-h-0 flex-col gap-4">
-      {advanced ? (
-        <>{advancedControls}<RawEditor value={rawText} onChange={setRawText} liveError={liveError} /></>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {constraints.showAgentPicker && (
-            <Field className="gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">Agent</Label>
-              <Popover open={agentPickerOpen} onOpenChange={setAgentPickerOpen}>
-                <PopoverTrigger asChild>
+    <form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <p className="text-sm text-muted-foreground">
+        {agentName} runs this work when its trigger fires.
+      </p>
+      <FieldGroup className="gap-4">
+        <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {textField('Name', form.name, 'name', (v) => update('name', v), {
+            maxLength: 128,
+            disabled: defaults && mode === 'edit',
+          })}
+          {textField(
+            'Description',
+            form.description,
+            'description',
+            (v) => update('description', v),
+            { maxLength: 2048 },
+          )}
+        </FieldGroup>
+        <Field data-invalid={invalidField === 'promptBody' || undefined}>
+          <FieldLabel htmlFor={`${id}-promptBody`}>
+            What should {agentName} do?
+          </FieldLabel>
+          <Textarea
+            id={`${id}-promptBody`}
+            rows={3}
+            value={form.promptBody}
+            onChange={(e) => update('promptBody', e.target.value)}
+            disabled={disabled}
+            aria-invalid={invalidField === 'promptBody' || undefined}
+          />
+        </Field>
+        <Field>
+          <FieldLabel>When to run</FieldLabel>
+          <ToggleGroup
+            type="single"
+            aria-label="When to run"
+            value={form.trigger.kind}
+            disabled={disabled}
+            onValueChange={(v) => {
+              if (v === 'interval')
+                update('trigger', { kind: 'interval', every: '1h' });
+              if (v === 'cron')
+                update('trigger', {
+                  kind: 'cron',
+                  expr: '0 8 * * 1-5',
+                  tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                });
+              if (v === 'webhook') {
+                setEventsDraft('');
+                setForm((f) => ({
+                  ...f,
+                  activeHours: null,
+                  trigger: { kind: 'webhook', path: '/project-updates' },
+                }));
+              }
+            }}
+            className="justify-start flex-wrap"
+          >
+            {!defaults && (
+              <ToggleGroupItem value="cron">Schedule</ToggleGroupItem>
+            )}
+            <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
+            {!defaults && (
+              <ToggleGroupItem value="webhook">Webhook</ToggleGroupItem>
+            )}
+          </ToggleGroup>
+        </Field>
+        {form.trigger.kind === 'interval' &&
+          textField('Interval', form.trigger.every, 'trigger.every', (v) =>
+            update('trigger', { kind: 'interval', every: v }),
+          )}
+        {form.trigger.kind === 'cron' && (
+          <>
+            <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {textField(
+                'Schedule',
+                form.trigger.expr,
+                'trigger.expr',
+                (v) => {
+                  if (form.trigger.kind === 'cron')
+                    update('trigger', { ...form.trigger, expr: v });
+                },
+                { maxLength: 256 },
+              )}
+              {textField('Time zone', form.trigger.tz, 'trigger.tz', (v) => {
+                if (form.trigger.kind === 'cron')
+                  update('trigger', { ...form.trigger, tz: v });
+              })}
+            </FieldGroup>
+            <p className="text-xs text-muted-foreground">
+              {describeCron(form.trigger.expr).kind === 'described'
+                ? (describeCron(form.trigger.expr) as { text: string }).text
+                : 'Custom schedule'}{' '}
+              · {form.trigger.tz}
+            </p>
+          </>
+        )}
+        {form.trigger.kind === 'webhook' && (
+          <>
+            <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {textField(
+                'Webhook path',
+                form.trigger.path,
+                'trigger.path',
+                (v) => {
+                  if (form.trigger.kind === 'webhook')
+                    update('trigger', { ...form.trigger, path: v });
+                },
+                { maxLength: 128 },
+              )}
+              {textField(
+                'Events (comma-separated)',
+                eventsDraft,
+                'trigger.events',
+                (v) => {
+                  setEventsDraft(v);
+                  setError(null);
+                  setInvalidField(undefined);
+                  setCopyState('');
+                },
+              )}
+            </FieldGroup>
+            {receiverError ? (
+              <Alert variant="destructive">
+                <AlertDescription>
+                  Webhook URL is unavailable. Receiver permission may be
+                  missing.
+                </AlertDescription>
+              </Alert>
+            ) : receiver === null ? (
+              <Skeleton
+                aria-label="Loading webhook URL"
+                className="h-10 w-full"
+              />
+            ) : preview ? (
+              <Field>
+                <FieldLabel>Webhook URL</FieldLabel>
+                <div className="flex min-w-0 gap-2">
+                  <Input aria-label="Webhook URL" readOnly value={preview} />
                   <Button
                     type="button"
                     variant="outline"
-                    role="combobox"
-                    aria-label="Agent"
-                    aria-expanded={agentPickerOpen}
-                    className="justify-between font-normal"
+                    aria-label="Copy webhook URL"
+                    onClick={() => {
+                      void navigator.clipboard
+                        ?.writeText(preview)
+                        .then(() => setCopyState('Copied webhook URL.'))
+                        .catch(() =>
+                          setCopyState(
+                            'Couldn’t copy. Select the URL to copy it.',
+                          ),
+                        );
+                    }}
                   >
-                    {selectedAgentLabel ?? 'Select an agent…'}
-                    <ChevronsUpDown className="ml-1 h-3.5 w-3.5 opacity-60" />
+                    <Copy data-icon="inline-start" />
                   </Button>
-                </PopoverTrigger>
-                <PopoverContent className="p-0 w-[280px]" align="start">
-                  <Command>
-                    <CommandInput placeholder="Search agents…" />
-                    <CommandList>
-                      <CommandEmpty>No agents found.</CommandEmpty>
-                      <CommandGroup>
-                        {agents.map((a) => (
-                          <CommandItem
-                            key={a.agentId}
-                            value={a.displayName}
-                            onSelect={() => {
-                              setAgentId(a.agentId);
-                              setAgentPickerOpen(false);
-                            }}
-                            className="text-sm"
-                          >
-                            <span className="flex-1">{a.displayName}</span>
-                            <Check
-                              className={cn(
-                                'h-3.5 w-3.5 text-primary',
-                                agentId === a.agentId ? 'opacity-100' : 'opacity-0',
-                              )}
-                            />
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-              <p className="text-xs text-muted-foreground">
-                The agent this routine belongs to.
-              </p>
-            </Field>
-          )}
-
-          <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field className="gap-1.5">
-            <Label htmlFor="routine-name" className="text-xs font-medium text-muted-foreground">
-              Name
-            </Label>
-            <Input
-              id="routine-name"
-              className="text-sm"
-              placeholder="daily-digest"
-              value={form.name}
-              aria-invalid={form.name.length > 0 && !slugValid}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            />
-            <p className="text-xs text-muted-foreground">
-              Lowercase letters, numbers, and dashes.
-            </p>
-          </Field>
-
-          <Field className="gap-1.5">
-            <Label htmlFor="routine-description" className="text-xs font-medium text-muted-foreground">
-              Description
-            </Label>
-            <Input
-              id="routine-description"
-              className="text-sm"
-              placeholder="What this routine does."
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            />
-          </Field>
-
-          </FieldGroup>
-          <Field className="gap-1.5">
-            <Label htmlFor="routine-prompt" className="text-xs font-medium text-muted-foreground">
-              {agentName ? `What should ${agentName} do?` : 'Prompt'}
-            </Label>
-            <Textarea
-              id="routine-prompt"
-              className="min-h-[88px]"
-              placeholder="The instruction the agent receives on every fire."
-              value={form.promptBody}
-              onChange={(e) => setForm((f) => ({ ...f, promptBody: e.target.value }))}
-            />
-          </Field>
-
-          {/* Trigger kind — hidden when only one kind is allowed (defaults). */}
-          {triggerOptions.length > 1 && (
-            <Field className="gap-1.5">
-              <Label id="routine-trigger-label" className="text-xs font-medium text-muted-foreground">When to run</Label>
-              <ToggleGroup
-                type="single"
-                aria-labelledby="routine-trigger-label"
-                value={form.triggerKind}
-                onValueChange={(v) => {
-                  if (v) setForm((f) => ({ ...f, triggerKind: v as TriggerKind }));
-                }}
-                className="justify-start [&_[data-state=on]]:bg-primary-soft [&_[data-state=on]]:text-primary"
-              >
-                {triggerOptions.map((k) => (
-                  <ToggleGroupItem key={k} value={k}>
-                    {TRIGGER_LABELS[k]}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </Field>
-          )}
-
-          <TriggerFields form={form} setForm={setForm} />
-          <WebhookUrlPreview agentId={fixedAgentId ?? agentId} path={form.webhookPath} editing={initial !== undefined} active={form.triggerKind === 'webhook'} />
-
-          <Field className="gap-1.5">
-            <Label id="routine-conversation-label" className="text-xs font-medium text-muted-foreground">Conversation</Label>
-            <ToggleGroup
-              type="single"
-              aria-labelledby="routine-conversation-label"
-              value={form.conversation}
-              onValueChange={(v) => {
-                if (v === 'per-fire' || v === 'shared') {
-                  setForm((f) => ({ ...f, conversation: v }));
-                }
-              }}
-              className="justify-start [&_[data-state=on]]:bg-primary-soft [&_[data-state=on]]:text-primary"
+                </div>
+                <FieldDescription>
+                  {savedWebhook
+                    ? 'Saved receiver URL.'
+                    : mode === 'create'
+                      ? 'Preview only — inactive until Create routine.'
+                      : 'Preview only — inactive until Save. Save to apply path changes.'}
+                </FieldDescription>
+                <span role="status" className="text-xs text-muted-foreground">
+                  {copyState}
+                </span>
+              </Field>
+            ) : (
+              <FieldDescription>
+                Enter a valid path to preview the webhook URL.
+              </FieldDescription>
+            )}
+          </>
+        )}
+        <Field>
+          <FieldLabel>Conversation</FieldLabel>
+          <ToggleGroup
+            type="single"
+            aria-label="Conversation"
+            value={form.conversation}
+            disabled={disabled}
+            onValueChange={(v) => {
+              if (v === 'per-fire' || v === 'shared') update('conversation', v);
+            }}
+            className="justify-start flex-wrap"
+          >
+            <ToggleGroupItem value="per-fire">New each run</ToggleGroupItem>
+            <ToggleGroupItem value="shared">One ongoing thread</ToggleGroupItem>
+          </ToggleGroup>
+          <FieldDescription>
+            {form.conversation === 'per-fire'
+              ? 'Each run starts in a fresh conversation.'
+              : 'Runs continue in one ongoing conversation.'}
+          </FieldDescription>
+        </Field>
+        <Collapsible open={optional} onOpenChange={setOptional}>
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full justify-between"
             >
-              <ToggleGroupItem value="per-fire">New each run</ToggleGroupItem>
-              <ToggleGroupItem value="shared">One ongoing thread</ToggleGroupItem>
-            </ToggleGroup>
-            <p className="text-xs text-muted-foreground">
-              {form.conversation === 'per-fire' ? 'Each run starts in a fresh conversation.' : 'Each run continues the same conversation.'}
-            </p>
-          </Field>
-
-          <OptionsSection form={form} setForm={setForm} advancedControls={advancedControls} />
-
-          {liveError !== null && (form.name.trim() || form.description.trim()) && (
-            <Alert variant="destructive">
-              <AlertDescription className="text-xs">{liveError}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-      )}
-
-      {serverError !== null && (
+              Optional settings
+              <ChevronRight data-icon="inline-end" />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-3">
+            <FieldGroup className="gap-4">
+              <Field orientation="horizontal">
+                <FieldLabel htmlFor={`${id}-hours`}>Active hours</FieldLabel>
+                <Switch
+                  id={`${id}-hours`}
+                  checked={form.activeHours !== null}
+                  disabled={disabled || form.trigger.kind === 'webhook'}
+                  onCheckedChange={(v) =>
+                    update(
+                      'activeHours',
+                      v
+                        ? {
+                            start: '09:00',
+                            end: '17:00',
+                            tz:
+                              Intl.DateTimeFormat().resolvedOptions()
+                                .timeZone || 'UTC',
+                          }
+                        : null,
+                    )
+                  }
+                />
+              </Field>
+              {form.trigger.kind === 'webhook' && (
+                <FieldDescription>
+                  Webhooks run when received; active hours is unavailable.
+                </FieldDescription>
+              )}
+              {form.activeHours && (
+                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {textField(
+                    'Start',
+                    form.activeHours.start,
+                    'activeHours.start',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', {
+                          ...form.activeHours,
+                          start: v,
+                        });
+                    },
+                  )}
+                  {textField(
+                    'End',
+                    form.activeHours.end,
+                    'activeHours.end',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', { ...form.activeHours, end: v });
+                    },
+                  )}
+                  {textField(
+                    'Active hours time zone',
+                    form.activeHours.tz,
+                    'activeHours.tz',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', { ...form.activeHours, tz: v });
+                    },
+                  )}
+                </FieldGroup>
+              )}
+              {textField(
+                'Silence token',
+                form.silenceToken ?? '',
+                'silenceToken',
+                (v) => update('silenceToken', v === '' ? null : v),
+                { maxLength: 128 },
+              )}
+              {textField(
+                'Maximum quiet response characters',
+                form.silenceMaxChars,
+                'silenceMaxChars',
+                (v) => update('silenceMaxChars', Number(v)),
+                { type: 'number' },
+              )}
+              {form.trigger.kind === 'webhook' && (
+                <>
+                  <Field orientation="horizontal">
+                    <FieldLabel htmlFor={`${id}-hmac`}>
+                      Verify HMAC signature
+                    </FieldLabel>
+                    <Switch
+                      id={`${id}-hmac`}
+                      checked={form.trigger.hmac !== undefined}
+                      disabled={disabled}
+                      onCheckedChange={(v) => {
+                        if (form.trigger.kind === 'webhook') {
+                          const { hmac: _hmac, ...rest } = form.trigger;
+                          update(
+                            'trigger',
+                            v
+                              ? {
+                                  ...rest,
+                                  hmac: {
+                                    header: 'X-Hub-Signature-256',
+                                    algorithm: 'sha256',
+                                  },
+                                }
+                              : rest,
+                          );
+                        }
+                      }}
+                    />
+                  </Field>
+                  {form.trigger.hmac && (
+                    <>
+                      {textField(
+                        'Signature header',
+                        form.trigger.hmac.header,
+                        'trigger.hmac.header',
+                        (v) => {
+                          if (
+                            form.trigger.kind === 'webhook' &&
+                            form.trigger.hmac
+                          )
+                            update('trigger', {
+                              ...form.trigger,
+                              hmac: { ...form.trigger.hmac, header: v },
+                            });
+                        },
+                        { maxLength: 128 },
+                      )}
+                      <Field>
+                        <FieldLabel>Signature algorithm</FieldLabel>
+                        <ToggleGroup
+                          type="single"
+                          aria-label="Signature algorithm"
+                          value={form.trigger.hmac.algorithm}
+                          disabled={disabled}
+                          onValueChange={(v) => {
+                            if (
+                              (v === 'sha256' || v === 'sha1') &&
+                              form.trigger.kind === 'webhook' &&
+                              form.trigger.hmac
+                            )
+                              update('trigger', {
+                                ...form.trigger,
+                                hmac: { ...form.trigger.hmac, algorithm: v },
+                              });
+                          }}
+                          className="justify-start"
+                        >
+                          <ToggleGroupItem value="sha256">
+                            SHA256
+                          </ToggleGroupItem>
+                          <ToggleGroupItem value="sha1">SHA1</ToggleGroupItem>
+                        </ToggleGroup>
+                      </Field>
+                      {textField(
+                        'Signature prefix',
+                        form.trigger.hmac.prefix ?? '',
+                        'trigger.hmac.prefix',
+                        (v) => {
+                          if (
+                            form.trigger.kind === 'webhook' &&
+                            form.trigger.hmac
+                          ) {
+                            const { prefix: _prefix, ...hmac } =
+                              form.trigger.hmac;
+                            update('trigger', {
+                              ...form.trigger,
+                              hmac: v ? { ...hmac, prefix: v } : hmac,
+                            });
+                          }
+                        },
+                        { maxLength: 128 },
+                      )}
+                      <FieldDescription>
+                        Only an administrator who owns this routine and has routine edit permission can manage its HMAC secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.
+                      </FieldDescription>
+                    </>
+                  )}
+                </>
+              )}
+            </FieldGroup>
+          </CollapsibleContent>
+        </Collapsible>
+      </FieldGroup>
+      {error && (
         <Alert variant="destructive">
-          <AlertDescription>{serverError}</AlertDescription>
+          <AlertDescription>
+            {error}
+            {conflict && onReload && (
+              <Button type="button" variant="outline" onClick={onReload}>
+                Reload and discard my changes
+              </Button>
+            )}
+            {uncertain && (
+              <p>
+                We couldn’t confirm the result. Retry sends the same change.
+              </p>
+            )}
+          </AlertDescription>
         </Alert>
       )}
-
-      <Separator />
-      <div className="flex flex-wrap items-center justify-end gap-2 bg-background pt-1">
-        <Field orientation="horizontal" className="mr-auto w-auto gap-2">
-          <Label htmlFor="routine-enabled">Enabled</Label>
-          <Switch id="routine-enabled" checked={advanced && parsed.ok ? parsed.fields.enabled ?? true : form.enabled} onCheckedChange={(enabled) => {
-            setForm((f) => ({ ...f, enabled }));
-            if (advanced && parsed.ok) setRawText(buildRoutineMd({ ...parsed.fields, enabled }));
-          }} />
-        </Field>
-        <Button variant="outline" onClick={onCancel} disabled={saving}>
-          Cancel
-        </Button>
-        <Button onClick={() => void handleSave()} disabled={saveDisabled}>
-          {saveLabel}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ── Trigger-specific fields ──────────────────────────────────────────────────
-
-/**
- * (TASK-345 / audit E5) What `0 2 * * *` actually means, as you type it.
- *
- * The field is exact and opaque at the same time. Someone unsure whether they
- * just asked for 2am or 2pm has no way to find out from this form, and finds
- * out when the routine runs.
- *
- * Three states, and the third is the point. When the expression is valid but
- * beyond our describer we show the raw expression and say nothing about when it
- * runs — a confident wrong description ("Runs at 2:00 AM, every day" over an
- * expression that does no such thing) is worse than no description at all,
- * because it will be believed.
- *
- * Deliberately not a day/time picker: that is an `[M]` the audit put out of
- * scope for this card.
- */
-/**
- * The one place that decides "this cron is wrong", so the field's `aria-invalid`
- * and the preview's warning can never disagree.
- *
- * An EMPTY field is not invalid — `CronPreview` teaches the format there rather
- * than scolding, and marking an untouched field invalid would be the same
- * scolding by another route. Neither is `unknown`: that is a legal expression we
- * merely cannot phrase in English, and flagging it would be a lie.
- */
-export function isCronInvalid(expr: string, tz: string): boolean {
-  const trimmed = expr.trim();
-  if (trimmed.length === 0) return false;
-  return describeCron(trimmed, tz).kind === 'invalid';
-}
-
-function CronPreview({ expr, tz }: { expr: string; tz: string }) {
-  const trimmed = expr.trim();
-  const result = describeCron(trimmed, tz);
-
-  // Nothing typed yet — teach the format instead of scolding an empty field.
-  if (trimmed.length === 0) {
-    return (
-      <p id="routine-cron-preview" className="text-xs text-muted-foreground">
-        A cron schedule, like <code className="font-mono">0 2 * * *</code> for
-        2am daily, plus the timezone it should follow (for example{' '}
-        <code className="font-mono">America/New_York</code>).
-      </p>
-    );
-  }
-
-  if (result.kind === 'invalid') {
-    return (
-      <p id="routine-cron-preview" className="text-xs text-warning">
-        That doesn't look like a cron schedule yet. Five parts, like{' '}
-        <code className="font-mono">0 2 * * *</code> — minute, hour, day of
-        month, month, day of week.
-      </p>
-    );
-  }
-
-  if (result.kind === 'unknown') {
-    return (
-      <p id="routine-cron-preview" className="text-xs text-muted-foreground">
-        Runs on the schedule <code className="font-mono">{trimmed}</code>
-        {tz.trim().length > 0 ? ` (${tz.trim()})` : ''}.
-      </p>
-    );
-  }
-
-  return (
-    <p id="routine-cron-preview" className="text-xs text-muted-foreground">
-      {result.text}
-    </p>
-  );
-}
-
-interface FieldProps {
-  form: RoutineFormState;
-  setForm: React.Dispatch<React.SetStateAction<RoutineFormState>>;
-}
-
-function TriggerFields({ form, setForm }: FieldProps) {
-  if (form.triggerKind === 'interval') {
-    return (
-      <Field className="gap-1.5">
-        <Label htmlFor="routine-interval" className="text-xs font-medium text-muted-foreground">
-          Interval
-        </Label>
-        <Input
-          id="routine-interval"
-          className="text-sm"
-          placeholder="1h"
-          value={form.intervalEvery}
-          onChange={(e) => setForm((f) => ({ ...f, intervalEvery: e.target.value }))}
-        />
-        <p className="text-xs text-muted-foreground">
-          How often to run: <code className="font-mono">30s</code>,{' '}
-          <code className="font-mono">5m</code>, <code className="font-mono">1h</code>,{' '}
-          <code className="font-mono">1d</code> (minimum 60s).
-        </p>
-      </Field>
-    );
-  }
-  if (form.triggerKind === 'cron') {
-    return (
-      <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field className="gap-1.5">
-            <Label htmlFor="routine-cron-expr" className="text-xs font-medium text-muted-foreground">
-              Cron expression
-            </Label>
-            {/*
-              `aria-invalid` mirrors the warning the preview below is already
-              showing. Without it the invalid state is carried by colour and
-              prose alone: a screen reader hears the preview as ordinary help
-              text, with nothing marking the field itself as wrong. Only the
-              INVALID branch counts — "valid but we can't describe it" is not an
-              error, and flagging it would be a lie.
-            */}
-            <Input
-              id="routine-cron-expr"
-              className="text-sm"
-              placeholder="0 2 * * *"
-              value={form.cronExpr}
-              onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
-              aria-describedby="routine-cron-preview"
-              aria-invalid={isCronInvalid(form.cronExpr, form.cronTz) || undefined}
-            />
-          </Field>
-          <Field className="gap-1.5">
-            <Label htmlFor="routine-cron-tz" className="text-xs font-medium text-muted-foreground">
-              Timezone
-            </Label>
-            <Input
-              id="routine-cron-tz"
-              className="text-sm"
-              placeholder="America/New_York"
-              value={form.cronTz}
-              onChange={(e) => setForm((f) => ({ ...f, cronTz: e.target.value }))}
-            />
-          </Field>
-        </div>
-        <CronPreview expr={form.cronExpr} tz={form.cronTz} />
-      </div>
-    );
-  }
-  // webhook
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <Field className="gap-1.5">
-        <Label htmlFor="routine-webhook-path" className="text-xs font-medium text-muted-foreground">
-          Webhook path
-        </Label>
-        <Input
-          id="routine-webhook-path"
-          className="text-sm"
-          placeholder="/gh/push"
-          value={form.webhookPath}
-          onChange={(e) => setForm((f) => ({ ...f, webhookPath: e.target.value }))}
-        />
-        <p className="text-xs text-muted-foreground">
-          Must start with <code className="font-mono">/</code>. Letters, numbers, dots, dashes, underscores, and slashes.
-        </p>
-      </Field>
-      <Field className="gap-1.5">
-        <Label htmlFor="routine-webhook-events" className="text-xs font-medium text-muted-foreground">
-          Events (comma-separated)
-        </Label>
-        <Input
-          id="routine-webhook-events"
-          className="text-sm"
-          placeholder="push, pull_request"
-          value={form.webhookEvents}
-          onChange={(e) => setForm((f) => ({ ...f, webhookEvents: e.target.value }))}
-        />
-        <p className="text-xs text-muted-foreground">
-          Optional event filter. Leave blank to accept all events.
-        </p>
-      </Field>
-      {form.webhookHmac !== null && (
-        <p className="text-xs text-muted-foreground">
-          HMAC verification is configured (
-          <code className="font-mono">{form.webhookHmac.header}</code>). Edit it in
-          Advanced mode.
+      {!validation.success && dirty && (
+        <p className="text-sm text-destructive" role="status">
+          {validation.error.issues[0]?.message}
         </p>
       )}
-    </div>
-  );
-}
-
-// ── Optional fields (silence + active hours) ─────────────────────────────────
-
-function OptionsSection({ form, setForm, advancedControls }: FieldProps & { advancedControls: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const activeHoursOn = form.activeHours !== null;
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="w-full justify-start gap-2 px-0">
-          Optional settings <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">Active hours · quiet responses</span><ChevronRight data-icon="inline-end" />
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="flex flex-col gap-3 pt-2">
-        {advancedControls}
-        <Field className="gap-1.5">
-          <Label htmlFor="routine-silence-token" className="text-xs font-medium text-muted-foreground">
-            Silence token
-          </Label>
-          <Input
-            id="routine-silence-token"
-            className="text-sm"
-            placeholder="NOTHING_TO_REPORT"
-            value={form.silenceToken}
-            onChange={(e) => setForm((f) => ({ ...f, silenceToken: e.target.value }))}
-          />
-          <p className="text-xs text-muted-foreground">
-            If the run outputs only this token (within the limit below), the fire
-            is silenced.
-          </p>
-        </Field>
-        <Field className="gap-1.5">
-          <Label htmlFor="routine-silence-max" className="text-xs font-medium text-muted-foreground">
-            Silence max chars
-          </Label>
-          <Input
-            id="routine-silence-max"
-            type="number"
-            className="font-mono text-sm w-32"
-            value={String(form.silenceMaxChars)}
-            onChange={(e) => {
-              const n = Number.parseInt(e.target.value, 10);
-              setForm((f) => ({ ...f, silenceMaxChars: Number.isNaN(n) ? 0 : n }));
-            }}
+      {!canEdit && (
+        <Alert>
+          <AlertDescription>
+            You don’t have permission to edit this routine.
+          </AlertDescription>
+        </Alert>
+      )}
+      <Separator />
+      <div className="flex flex-wrap items-center gap-2">
+        <Field orientation="horizontal" className="w-auto">
+          <FieldLabel htmlFor={`${id}-enabled`}>Enabled</FieldLabel>
+          <Switch
+            id={`${id}-enabled`}
+            checked={form.enabled}
+            disabled={disabled}
+            onCheckedChange={(v) => update('enabled', v)}
           />
         </Field>
-        <div className="flex items-start gap-2">
-          <Checkbox
-            disabled={form.triggerKind === 'webhook'}
-            id="routine-active-hours"
-            checked={activeHoursOn}
-            onCheckedChange={(v) =>
-              setForm((f) => ({
-                ...f,
-                activeHours: v === true ? { start: '09:00', end: '17:00', tz: browserTz } : null,
-              }))
+        <div className="ml-auto flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy || uncertain}
+            onClick={onCancel}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={
+              busy ||
+              !canEdit ||
+              (!uncertain &&
+                (!validation.success || (mode === 'edit' && !dirty)))
             }
-          />
-          <label htmlFor="routine-active-hours" className="text-sm font-medium leading-none">
-            Restrict to active hours
-          </label>
+          >
+            {busy
+              ? 'Saving…'
+              : uncertain
+                ? 'Retry save'
+                : mode === 'create'
+                  ? 'Create routine'
+                  : 'Save'}
+          </Button>
         </div>
-        {form.triggerKind === 'webhook' && <p className="text-xs text-muted-foreground">Active hours apply to schedules and intervals.</p>}
-        {form.triggerKind !== 'webhook' && activeHoursOn && form.activeHours !== null && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Field className="gap-1.5">
-              <Label htmlFor="routine-ah-start" className="text-xs font-medium text-muted-foreground">
-                Start
-              </Label>
-              <Input
-                id="routine-ah-start"
-                className="text-sm"
-                placeholder="09:00"
-                value={form.activeHours.start}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    activeHours: { ...f.activeHours!, start: e.target.value },
-                  }))
-                }
-              />
-            </Field>
-            <Field className="gap-1.5">
-              <Label htmlFor="routine-ah-end" className="text-xs font-medium text-muted-foreground">
-                End
-              </Label>
-              <Input
-                id="routine-ah-end"
-                className="text-sm"
-                placeholder="17:00"
-                value={form.activeHours.end}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    activeHours: { ...f.activeHours!, end: e.target.value },
-                  }))
-                }
-              />
-            </Field>
-            <Field className="gap-1.5">
-              <Label htmlFor="routine-ah-tz" className="text-xs font-medium text-muted-foreground">
-                Timezone
-              </Label>
-              <Input
-                id="routine-ah-tz"
-                className="text-sm"
-                value={form.activeHours.tz}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    activeHours: { ...f.activeHours!, tz: e.target.value },
-                  }))
-                }
-              />
-            </Field>
-          </div>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-// ── Raw editor surface (the opt-in escape hatch) ─────────────────────────────
-
-function RawEditor({
-  value,
-  onChange,
-  liveError,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  liveError: string | null;
-}) {
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs font-medium text-muted-foreground">Routine .md</Label>
-        <Textarea
-          aria-label="Raw routine .md"
-          className="font-mono text-xs min-h-[400px]"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-        />
       </div>
-      <div className="flex flex-col gap-2">
-        <Label className="text-xs font-medium text-muted-foreground">Status</Label>
-        {liveError === null ? (
-          <div className="rounded-md border border-border p-3 bg-muted/30">
-            <Badge variant="secondary" className="text-xs">
-              Parses ✓
-            </Badge>
-          </div>
-        ) : (
-          <Alert variant="destructive">
-            <AlertDescription className="text-xs">{liveError}</AlertDescription>
-          </Alert>
-        )}
-      </div>
-    </div>
+    </form>
   );
 }

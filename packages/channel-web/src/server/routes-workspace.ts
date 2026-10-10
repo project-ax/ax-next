@@ -112,6 +112,7 @@
  * so there is no flag to hide it behind (TASK-360 retired `agentWorkspace`).
  * Each handler is authenticated and owner-scoped on its own.
  */
+import { RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema } from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
@@ -159,7 +160,7 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
-import { AGENT_ABILITIES, isOpenDecision } from '../lib/workspace-types.js';
+import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
@@ -640,8 +641,8 @@ interface ConversationsGetOutput {
  */
 interface FireRow {
   agentId: string;
-  path: string;
-  firedAt: Date | string;
+  routineId: string;
+  firedAt: string;
   triggerSource: 'tick' | 'webhook' | 'manual';
   conversationId: string | null;
   status: 'ok' | 'silenced' | 'error';
@@ -650,7 +651,7 @@ interface FireRow {
 interface RecentFiresForAgentInput {
   agentId: string;
   limit?: number;
-  before?: Date;
+  before?: string;
 }
 interface RecentFiresForAgentOutput {
   fires: FireRow[];
@@ -658,7 +659,7 @@ interface RecentFiresForAgentOutput {
 
 /** Just enough of a routine to put its AUTHORED name on the row. */
 interface RoutineRow {
-  path: string;
+  routineId: string;
   name: string;
 }
 interface RoutinesListInput {
@@ -764,6 +765,12 @@ interface StoredDecision {
   // the sweep clears it as it delivers), `deliveredAt` is when it did. Both
   // OPTIONAL: the plugin is duck-typed across the bus and an older producer
   // sends neither, so every read here is `?? null`.
+  approvalScope?: 'once' | 'agent-routines';
+  consentDeliveryState?: 'none' | 'pending' | 'delivered' | 'failed';
+  consentGranted?: boolean | null;
+  routineOutcome?: 'succeeded' | 'failed' | null;
+  routineReleaseAt?: string | null;
+  consentDeliveryClaimedAt?: string | null;
   deliveryDueAt?: string | null;
   deliveredAt?: string | null;
 }
@@ -860,6 +867,7 @@ interface DecisionsResolveInput {
   userId: string;
 }
 interface DecisionsApproveInput extends DecisionsResolveInput {
+  approvalScope?: 'once' | 'agent-routines';
   /**
    * TASK-278 — the continuation turn's chat correlation, minted HERE (this
    * route owns chat-flow reqIds). Duck-typed like everything else in this
@@ -2527,7 +2535,7 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
   return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
 }
 
-export function toWireDecision(stored: StoredDecision): Decision {
+export function toWireDecision(stored: StoredDecision, eligible = false): Decision {
   const freshnessLabel = fenceLine(stored.freshness?.label, DECISION_LABEL_MAX_CHARS);
   const previewBody = fenceLine(stored.preview?.body, DECISION_PREVIEW_BODY_MAX_CHARS);
   return {
@@ -2541,6 +2549,12 @@ export function toWireDecision(stored: StoredDecision): Decision {
     attendance: stored.attendance,
     status: stored.status,
     irreversible: stored.irreversible,
+    approvalScopes: eligible ? ['once', 'agent-routines'] : ['once'],
+    approvalScope: stored.approvalScope ?? 'once',
+    consentDeliveryState: stored.consentDeliveryState ?? 'none',
+    consentGranted: stored.consentGranted ?? null,
+    routineOutcome: stored.routineOutcome ?? null,
+    routineOperation: ROUTINE_DECISION_OPERATIONS.find(name => name === stored.call?.name) ?? null,
     // A predicate with no readable label is not a claim we can put in front of
     // anyone, so the whole predicate goes rather than half of it. `kind` and
     // `value` are opaque tokens the UI never parses or prints — see
@@ -2603,7 +2617,7 @@ export function toWireDecision(stored: StoredDecision): Decision {
     // agent is TOLD — the plugin holds the continuation until the undo window
     // closes (`deliveryDueAt`). The two never overlap on one row; replay wins
     // if a producer ever sent both, since that is the call itself going out.
-    pendingUntil: stored.replayDueAt ?? stored.deliveryDueAt ?? null,
+    pendingUntil: stored.replayDueAt ?? stored.deliveryDueAt ?? (stored.consentDeliveryState === 'pending' ? stored.routineReleaseAt ?? null : null),
     /*
       Can this still be taken back?
 
@@ -2637,7 +2651,9 @@ export function toWireDecision(stored: StoredDecision): Decision {
       stored.consumedAt === null &&
       stored.replayedAt === null &&
       stored.replayClaimedAt === null &&
-      (stored.deliveredAt ?? null) === null,
+      (stored.deliveredAt ?? null) === null &&
+      (stored.consentDeliveryClaimedAt ?? null) === null &&
+      stored.consentDeliveryState !== 'delivered',
   };
 }
 
@@ -2905,28 +2921,13 @@ export const FIRE_NO_SUMMARY = "We don't have a summary of what it did.";
 export const FIRE_UNNAMED_SENTENCE =
   "A routine ran. We don't have a readable name for it, or a summary of what it did.";
 
-/**
- * The routine a fire belongs to, as a reader should see it named — or `null`
- * when nothing legible is left.
- *
- * Both the authored name and the path are the agent's own words, so both go
- * through the fence. A name fenced down to nothing falls through to the path
- * exactly as an absent one does, and a row whose every candidate label is
- * unprintable still gets a row — dropping it would claim the agent did
- * nothing, which is the bigger lie.
- *
- * `nameByPath` supplies the routine's AUTHORED name. When a routine has been
- * deleted its fires survive it, so the path is the fallback: it is the truest
- * thing still known about that row, and it is not a guess at what the routine
- * used to be called.
- */
+/** Authored labels are fenced; failed reads and genuinely missing IDs stay distinct. */
 export function fireLabel(
   fire: FireRow,
-  nameByPath: ReadonlyMap<string, string>,
+  nameByRoutineId: ReadonlyMap<string, string> | null,
 ): string | null {
   return (
-    fenceLine(nameByPath.get(fire.path), ACTIVITY_LABEL_MAX_CHARS) ??
-    fenceLine(fire.path, ACTIVITY_LABEL_MAX_CHARS)
+    nameByRoutineId === null ? 'Routine unavailable' : nameByRoutineId.has(fire.routineId) ? fenceLine(nameByRoutineId.get(fire.routineId), ACTIVITY_LABEL_MAX_CHARS) ?? 'Routine unavailable' : 'Deleted routine'
   );
 }
 
@@ -2945,20 +2946,19 @@ export function fireLabel(
  */
 export function fireToActivityEvent(
   fire: FireRow,
-  nameByPath: ReadonlyMap<string, string>,
+  nameByRoutineId: ReadonlyMap<string, string> | null,
 ): ActivityEvent | null {
   if (fire.status === 'silenced') return null;
   const stamp = fireStamp(fire.firedAt);
   if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
   const at = new Date(stamp).toISOString();
-  const label = fireLabel(fire, nameByPath);
+  const label = fireLabel(fire, nameByRoutineId);
   const text =
     label === null ? FIRE_UNNAMED_SENTENCE : `Ran ${label}. ${FIRE_NO_SUMMARY}`;
   return {
     // Composite, and stable across pages. Never the fire's BIGSERIAL id.
-    // Deliberately the RAW path: this is a key, not a label — it is never
-    // rendered, and fencing it could collapse two distinct paths onto one id.
-    id: `${fire.agentId}|${fire.path}|${at}`,
+    // Opaque identity is a key; fencing it could collapse distinct IDs.
+    id: `${fire.agentId}|${fire.routineId}|${at}`,
     agentId: fire.agentId,
     at,
     text,
@@ -3787,13 +3787,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     limit: number,
     before: Date | null,
     strict: boolean,
+    userId: string,
   ): Promise<FireRow[]> {
     if (!bus.hasService('routines:recent-fires-for-agent')) return [];
     try {
       const out = await bus.call<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
         'routines:recent-fires-for-agent',
-        initCtx,
-        { agentId, limit, ...(before !== null ? { before } : {}) },
+        agentWorkspaceCtx(agentId, userId),
+        { agentId, limit, ...(before !== null ? { before: before.toISOString() } : {}) },
       );
       return out.fires ?? [];
     } catch (err) {
@@ -3892,31 +3893,27 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * path → the routine's authored name, for one agent.
+   * Opaque routine ID → the authored name, for one agent.
    *
-   * ALWAYS scoped to one agent. `routines:list` with no `agentId` returns every
-   * routine in the deployment, including other people's; asking it broadly to
-   * save a round trip would hand one user another user's routine names.
-   *
-   * A failed read degrades to an empty map, which labels the rows with their
-   * paths. That is a worse label, not a wrong one — unlike dropping the rows,
-   * which would claim the agent did nothing.
+   * Reads one agent's authored names by opaque ID. Failed reads return null,
+   * so the UI never mistakes an unavailable name lookup for deletion.
    */
-  async function routineNames(agentId: string): Promise<Map<string, string>> {
+  async function routineNames(agentId: string, userId: string): Promise<Map<string, string> | null> {
     const names = new Map<string, string>();
-    if (!bus.hasService('routines:list')) return names;
+    if (!bus.hasService('routines:list')) return null;
     try {
       const out = await bus.call<RoutinesListInput, RoutinesListOutput>(
         'routines:list',
-        initCtx,
+        agentWorkspaceCtx(agentId, userId),
         { agentId },
       );
-      for (const r of out.routines ?? []) names.set(r.path, r.name);
+      for (const r of out.routines ?? []) names.set(r.routineId, r.name);
     } catch (err) {
       initCtx.logger.warn('workspace_activity_routine_names_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
+      return null;
     }
     return names;
   }
@@ -5062,15 +5059,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * 200 that says nothing still looks like an answer, and the client would
    * apply it over the row the person is looking at.
    */
-  function resolvedOrGone(
+  async function canManageStoredRoutine(stored: StoredDecision, userId: string): Promise<boolean> {
+    const schema = stored.call.name === 'routine_create' ? RoutineCreateToolInputSchema : stored.call.name === 'routine_update' ? RoutineUpdateToolInputSchema : null;
+    if (stored.ownerUserId !== userId || userId === 'system' || !schema?.safeParse(stored.call.input).success || !bus.hasService('agents:can-manage-routines')) return false;
+    try {
+      const access = await bus.call<unknown, { allowed: boolean }>('agents:can-manage-routines', agentWorkspaceCtx(stored.agentId, userId), { agentId: stored.agentId });
+      return access.allowed === true;
+    } catch { return false; }
+  }
+
+  async function projectDecision(stored: StoredDecision, userId: string): Promise<Decision> {
+    const open = (stored.status === 'pending' || stored.status === 'stale') && Date.parse(stored.expiresAt) > Date.now();
+    return toWireDecision(stored, open && await canManageStoredRoutine(stored, userId));
+  }
+
+  async function resolvedOrGone(
     decision: StoredDecision | null,
     res: RouteResponse,
-  ): Decision | null {
+    userId: string,
+  ): Promise<Decision | null> {
     if (decision === null) {
       res.status(404).json({ error: 'decision-not-found' });
       return null;
     }
-    return toWireDecision(decision);
+    return projectDecision(decision, userId);
   }
 
   /**
@@ -5967,9 +5979,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const reachable = new Map(verdicts);
 
       res.status(200).json({
-        decisions: rows
-          .filter((d) => reachable.get(d.agentId) === true)
-          .map(toWireDecision),
+        decisions: await Promise.all(rows.filter(d => reachable.get(d.agentId) === true).map(d => projectDecision(d, userId))),
       } satisfies DecisionsResponse);
     },
 
@@ -6113,7 +6123,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (userId === null) return;
       const stored = await loadOwnedDecision(req, res, userId);
       if (stored === null) return;
-      res.status(200).json({ decision: toWireDecision(stored) } satisfies DecisionResponse);
+      res.status(200).json({ decision: await projectDecision(stored, userId) } satisfies DecisionResponse);
     },
 
     /**
@@ -6132,6 +6142,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const stored = await loadOwnedDecision(req, res, userId);
       if (stored === null) return;
 
+      let approvalScope: 'once' | 'agent-routines' | undefined;
+      try {
+        const body = req.body.length === 0 ? {} : JSON.parse(req.body.toString('utf8'));
+        if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'approvalScope') || (body.approvalScope !== undefined && body.approvalScope !== 'once' && body.approvalScope !== 'agent-routines')) throw new Error('invalid');
+        approvalScope = body.approvalScope;
+      } catch { res.status(400).json({ error: 'invalid-approval-scope' }); return; }
+      // Display eligibility and transport retry differ: only the identical persisted
+      // choice may be retried after resolution. The decisions service owns the effect.
+      const standingRetry = approvalScope === 'agent-routines' && stored.approvalScope === 'agent-routines' && stored.status !== 'pending' && stored.status !== 'stale' && await canManageStoredRoutine(stored, userId);
+      if (approvalScope === 'agent-routines' && !standingRetry && !(await projectDecision(stored, userId)).approvalScopes.includes('agent-routines')) {
+        res.status(403).json({ error: 'approval-scope-unavailable' }); return;
+      }
+
       // TASK-278 — mint the continuation turn's correlation BEFORE the
       // approve runs, so the woken runner emits under an id this response
       // can hand the open thread. `makeReqId` mints chat-flow ids; this
@@ -6139,10 +6162,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const continuationReqId = makeReqId();
       const out = await bus.call<DecisionsApproveInput, DecisionsApproveOutput>(
         'decisions:approve',
-        initCtx,
-        { decisionId: stored.id, userId, continuationReqId },
+        agentWorkspaceCtx(stored.agentId, userId),
+        { decisionId: stored.id, userId, continuationReqId, ...(approvalScope === undefined ? {} : { approvalScope }) },
       );
-      const decision = resolvedOrGone(out.decision, res);
+      const decision = await resolvedOrGone(out.decision, res, userId);
       if (decision === null) return;
       // The plugin echoes the id only when the resolution is SCHEDULED for
       // delivery to a warm agent: since TASK-574 the attended path holds the
@@ -6189,7 +6212,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         initCtx,
         { decisionId: stored.id, userId },
       );
-      const decision = resolvedOrGone(out.decision, res);
+      const decision = await resolvedOrGone(out.decision, res, userId);
       if (decision === null) return;
       res.status(200).json({ decision } satisfies DismissResponse);
     },
@@ -6236,7 +6259,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         initCtx,
         { decisionId: stored.id, userId },
       );
-      const decision = resolvedOrGone(out.decision, res);
+      const decision = await resolvedOrGone(out.decision, res, userId);
       if (decision === null) return;
       res.status(200).json({
         decision: out.undone ? decision : { ...decision, undoable: false },
@@ -6308,13 +6331,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const slices = await Promise.all(
         targets.map(async (a) => {
           const [fires, receipts] = await Promise.all([
-            firesForAgent(a.id, limit, before, strict),
+            firesForAgent(a.id, limit, before, strict, userId),
             receiptsForAgent(a.id, userId, limit, before, strict),
           ]);
           if (fires.length === 0) {
             return { fires, receipts, names: new Map<string, string>() };
           }
-          return { fires, receipts, names: await routineNames(a.id) };
+          return { fires, receipts, names: await routineNames(a.id, userId) };
         }),
       );
 

@@ -186,10 +186,8 @@ describe('deriveActivity — what the counter may count', () => {
 });
 
 describe('deriveActivity — the line is one line', () => {
-  // A routine's `name` reaches T0 unbounded: it comes from a file in the
-  // agent's own workspace, `validator-routine` only checks it is a non-empty
-  // string, and an agent can author a routine — so it is neither length-capped
-  // nor reliably a human's words.
+  // Trigger labels may contain model-authored text. Flatten them here even
+  // when a producer already bounds the definition's name.
   it('flattens a multi-line trigger label into one line', () => {
     expect(
       deriveActivity(input({ trigger: 'Morning\nemail\r\n\tpass' })).phrase,
@@ -260,8 +258,8 @@ describe('deriveActivity — the line is one line', () => {
 });
 
 describe('deriveActivity — the things this surface must never say', () => {
-  // A routine's name is authored in a file in the agent's own workspace and
-  // reviewed by nobody. A reader cannot tell whose voice the line is in, so a
+  // A routine name can carry model-authored text. A reader cannot tell whose
+  // voice the line is in, so a
   // label carrying progress-bar vocabulary is declined, not rewritten.
   it.each([
     'Inbox — 40 left',

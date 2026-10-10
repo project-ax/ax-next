@@ -1,3 +1,5 @@
+import { createDecisionsPlugin } from '@ax/decisions';
+import { createToolPolicyPlugin } from '@ax/tool-policy';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
@@ -16,13 +18,11 @@ import {
   PluginError,
   bootstrap,
   makeAgentContext,
-  asWorkspaceVersion,
   type AgentContext,
   type AgentOutcome,
   type Plugin,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
-  type WorkspaceDelta,
 } from '@ax/core';
 import {
   buildBaselineBundle,
@@ -2929,18 +2929,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   //     Here we use credentials:delete directly for an `mcp:<id>:env:<name>`
   //     row so the final list assertion still holds.
   //
-  //   Task 16 (@ax/routines):
-  //     bus.fire('workspace:applied', ...) with a deleted .ax/routines/*.md
-  //     change triggers @ax/routines' workspace:applied subscriber →
-  //     handleWorkspaceApplied → credentials:list match → credentials:delete.
-  //     WIRING GAP (discovered by this canary):
-  //     REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$/ does not permit '/'
-  //     but routine-hmac refs embed the full path (e.g.
-  //     routine:agt:.ax/routines/r.md:hmac). credentials:set rejects such
-  //     refs — so a real HMAC credential cannot be stored through the facade.
-  //     The subscriber wiring IS exercised below (workspace:applied fires and
-  //     the subscriber runs) but the purge is a no-op because no matching
-  //     credential exists. FIX NEEDED: widen REF_RE to include '/'.
+  //   Task 16 (@ax/routines): structured create/secret/delete calls purge
+  //     the exact routine credential through the durable cleanup job.
   //
   //   Task 17 (@ax/agents):
   //     agents:delete → credentials:purge-by-owner({ scope:'agent',
@@ -2971,7 +2961,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       // Routines-specific stubs: services in @ax/routines' calls: that are
       // not provided by other real plugins loaded below. These are only
       // invoked when a routine fires or registers a webhook route, never by
-      // the workspace:applied delete path we exercise here.
+      // the routine deletion path exercised here.
       const noop = async () => ({});
 
       const sqlitePath = path.join(tmp, 'task21-lifecycle.sqlite');
@@ -2990,7 +2980,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           manifest: {
             name: '@ax/preset-k8s/test/task21-http-auth-stub',
             version: '0.0.0',
-            registers: ['http:register-route', 'auth:require-user'],
+            registers: ['http:register-route', 'auth:require-user', 'auth:get-user'],
             calls: [],
             subscribes: [],
           },
@@ -2998,6 +2988,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             const S = '@ax/preset-k8s/test/task21-http-auth-stub';
             b.registerService('http:register-route', S, httpStub);
             b.registerService('auth:require-user', S, authStub);
+            b.registerService('auth:get-user', S, async (_ctx, raw) => ({ id: (raw as { userId: string }).userId, isAdmin: false }));
           },
         } satisfies Plugin,
         // Real agents plugin: agents:create + agents:delete (Task 17 wiring).
@@ -3012,7 +3003,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createSkillsPlugin(),
         // Routines hard deps not yet provided by the plugins above.
         // These are only reachable during routine fires / webhook registration,
-        // never during the workspace:applied delete subscriber path.
+        // never during routine deletion.
         {
           manifest: {
             name: '@ax/preset-k8s/test/task21-routines-deps-stub',
@@ -3024,6 +3015,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               'conversations:hide',
               'agent:invoke',
               'workspace:apply',
+              'tool:register',
             ],
             calls: [],
             subscribes: [],
@@ -3036,10 +3028,12 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             b.registerService('conversations:hide', S, noop);
             b.registerService('agent:invoke', S, noop);
             b.registerService('workspace:apply', S, noop);
+            b.registerService('tool:register', S, noop);
           },
         } satisfies Plugin,
-        // Real routines plugin: registers workspace:applied subscriber that
-        // calls handleWorkspaceApplied → credential purge (Task 16 wiring).
+        createToolPolicyPlugin(),
+        createDecisionsPlugin({ sweepIntervalMs: 0 }),
+        // Real routines plugin: DB lifecycle and exact credential cleanup.
         createRoutinesPlugin(),
       ];
 
@@ -3095,7 +3089,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         //   A) global  provider:anthropic         — cleaned by credentials:delete directly
         //   C) global  mcp:srv:env:E              — cleaned by credentials:delete directly
         //   D) agent/<agentId>  provider:anthropic — purged by agents:delete (Task 17)
-        //   E) agent/<agentId>  routine:<id>:...:hmac — purged by workspace:applied (Task 16)
+        //   E) agent/<agentId>  routine:<id>:...:hmac — purged by routines:delete (Task 16)
         const credPayload = new TextEncoder().encode('test-value');
 
         // Row A: global provider
@@ -3116,13 +3110,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           ref: 'provider:anthropic',
           kind: 'api-key', payload: credPayload,
         });
-        // Row E: agent-scope routine-hmac — purged by workspace:applied subscriber
-        // when .ax/routines/task21-r.md is deleted (Task 16). The ref embeds '/'
-        // which requires the widened REF_RE (/^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/).
-        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
-          scope: 'agent', ownerId: createdAgentId,
-          ref: `routine:${createdAgentId}:.ax/routines/task21-r.md:hmac`,
-          kind: 'api-key', payload: credPayload,
+        const routine = await bus.call<unknown, { routineId: string; revision: string }>('routines:create', ctx, {
+          agentId: createdAgentId, requestId: 'task21-create',
+          definition: { name: 'Lifecycle canary', promptBody: 'Run', trigger: { kind: 'webhook', path: '/task21', hmac: { algorithm: 'sha256', header: 'x-signature' } } },
+        });
+        await bus.call('routines:set-webhook-secret', ctx, {
+          agentId: createdAgentId, routineId: routine.routineId, expectedRevision: routine.revision,
+          operation: 'set', secret: credPayload,
         });
 
         // All four stored.
@@ -3131,21 +3125,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         expect(listBefore.credentials).toHaveLength(4);
 
-        // ── Task 16: workspace:applied delete fires routines subscriber ───────
-        // The routines plugin's workspace:applied subscriber calls
-        // handleWorkspaceApplied. For a 'deleted' routine change it constructs
-        // `routine:${agentId}:${path}:hmac` and calls credentials:delete on
-        // the matching row. Row E (the routine-hmac credential seeded above)
-        // is purged — proving the Task 16 wiring works end-to-end.
-        const routineDelta: WorkspaceDelta = {
-          before: null,
-          after: asWorkspaceVersion('v1'),
-          author: { agentId: createdAgentId, userId },
-          changes: [{ path: '.ax/routines/task21-r.md', kind: 'deleted' }],
-        };
-        await bus.fire('workspace:applied', ctx, routineDelta);
+        // Task 16: DB deletion drains the exact credential cleanup job.
+        await bus.call('routines:delete', ctx, {
+          agentId: createdAgentId, routineId: routine.routineId, expectedRevision: routine.revision, requestId: 'task21-delete',
+        });
 
-        // Row E (routine-hmac) deleted by the subscriber; rows A, C, D remain.
         const listAfterRoutine = await bus.call<CredentialsListInput, CredentialsListOutput>(
           'credentials:list', ctx, {},
         );

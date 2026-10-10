@@ -7,7 +7,7 @@
 // in bootstrap mode) AND the host bootstrap route (`@ax/channel-web`, which
 // seeds `.ax/BOOTSTRAP.md` at agent create) can import the same constants
 // without a cross-plugin runtime import (Invariant #2). The pattern mirrors
-// `@ax/skills-parser` / `@ax/validator-routine`: a tiny shared, kernel-free
+// `@ax/skills-parser`: a tiny shared, kernel-free
 // library on the eslint `no-restricted-imports` allow-list.
 //
 // `BOOTSTRAP_TEMPLATE` is v2-adapted from the openclaw CANONICAL bootstrap

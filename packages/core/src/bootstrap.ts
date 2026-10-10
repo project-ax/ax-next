@@ -13,8 +13,8 @@ export interface BootstrapOptions {
    * Per-plugin shutdown timeout in milliseconds. Defaults to 10_000 to
    * match `IPC_TIMEOUTS_MS` and give slow drains (in-flight queries,
    * LISTEN client end, k8s informer cleanup) breathing room without
-   * unbounded waits. A misbehaving plugin can't hold the process
-   * hostage past this ceiling.
+   * unbounded waits by default. Joined plugins report this deadline but retain
+   * dependencies until actual cleanup settles; they opt out of a hard ceiling.
    */
   shutdownTimeoutMs?: number;
   /**
@@ -126,7 +126,8 @@ export async function bootstrap(opts: BootstrapOptions): Promise<KernelHandle> {
 // Walks `plugins` in REVERSE order, calling each plugin's optional
 // `shutdown()` under a per-plugin timeout. Per-plugin failures are reported
 // to `onError` but never rejected — the next plugin's shutdown still runs
-// (I2). The reverse of init-time topological order is shutdown order (I1):
+// (I2). Joined plugins wait for actual settlement even after reporting a timeout.
+// The reverse of init-time topological order is shutdown order (I1):
 // a plugin that consumed another's services during init must close before
 // the producer does.
 async function runShutdownLoop(
@@ -137,9 +138,10 @@ async function runShutdownLoop(
   for (let i = plugins.length - 1; i >= 0; i--) {
     const p = plugins[i]!;
     if (typeof p.shutdown !== 'function') continue;
+    const shutdown = Promise.resolve().then(() => p.shutdown!());
     try {
       await withTimeout(
-        Promise.resolve(p.shutdown()),
+        shutdown,
         timeoutMs,
         () => new Error(`plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`),
       );
@@ -154,6 +156,11 @@ async function runShutdownLoop(
       } catch {
         // Sink itself failed; swallow so peer plugins still shut down.
       }
+    } finally {
+      // The timeout is diagnostic for opt-in joined cleanup. It cannot cancel a
+      // provider or authorize tearing down resources that provider still uses.
+      // A failure was already reported above; consume a late rejection once.
+      if (p.shutdownMode === 'joined') await shutdown.catch(() => {});
     }
   }
 }

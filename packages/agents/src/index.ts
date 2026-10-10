@@ -25,6 +25,8 @@ export type {
   AgentsResolvedEvent,
   AttachConnectorInput,
   AttachConnectorOutput,
+  CanManageRoutinesInput,
+  CanManageRoutinesOutput,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
   CanSetSharedCredentialInput,

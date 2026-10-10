@@ -11,6 +11,7 @@ import {
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
 import { adminCredentials, refForDestination } from '@/lib/credentials';
+import { routineApi } from '@/lib/routines';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 
 export interface CredentialSlotRowProps {
@@ -20,14 +21,55 @@ export interface CredentialSlotRowProps {
   scope: { scope: 'global' | 'agent'; ownerId: string | null };
 }
 
-export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRowProps) {
+export function CredentialSlotRow({
+  destination,
+  slot,
+  scope,
+}: CredentialSlotRowProps) {
   const ref = refForDestination(destination);
   const [open, setOpen] = useState(false);
   const [isSet, setIsSet] = useState(false);
+  const [routineInfo, setRoutineInfo] = useState<{
+    ref: string;
+    name: string;
+    revision: string;
+    manageSecret: boolean;
+  } | null>(null);
+  const routineAgentId =
+    destination.kind === 'routine-hmac' ? destination.agentId : undefined;
+  const routineId =
+    destination.kind === 'routine-hmac' ? destination.routineId : undefined;
+  const authorizedRoutine = routineInfo?.ref === ref ? routineInfo : null;
+  useEffect(() => {
+    let active = true;
+    setRoutineInfo(null);
+    if (routineAgentId !== undefined && routineId !== undefined) {
+      void routineApi
+        .get({ agentId: routineAgentId, routineId })
+        .then((routine) => {
+          if (active)
+            setRoutineInfo({
+              ref,
+              name: routine.name,
+              revision: routine.revision,
+              manageSecret: routine.permissions.manageSecret,
+            });
+        })
+        .catch(() => {
+          if (active) setRoutineInfo(null);
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [ref, routineAgentId, routineId]);
   // Display only. `ref` above is what actually decides where the key is stored,
   // and nothing here feeds it — reusing TASK-334's shared helper (invariant 4:
   // one humanizer, not one per surface).
-  const humanLabel = humanizeSlotLabel(slot.label, destinationService(destination));
+  const humanLabel = humanizeSlotLabel(
+    slot.label,
+    destinationService(destination, authorizedRoutine?.name),
+  );
 
   /*
    * (TASK-344 / audit E1 left this open; a browser walk closed it.)
@@ -48,7 +90,10 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
    * is overlap, not destination kind — the same test `humanizeSlotLabel`
    * itself uses to avoid "Linear tracker Linear token".
    */
-  const destinationLabel = humanDestination(destination);
+  const destinationLabel = humanDestination(
+    destination,
+    authorizedRoutine?.name,
+  );
   const destinationAddsInfo =
     destinationLabel.length > 0 &&
     !humanLabel.toLowerCase().includes(destinationLabel.toLowerCase());
@@ -58,13 +103,19 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
       const list = await adminCredentials.list();
       setIsSet(
         list.some(
-          (c) => c.ref === ref && c.scope === scope.scope && c.ownerId === scope.ownerId,
+          (c) =>
+            c.ref === ref &&
+            c.scope === scope.scope &&
+            c.ownerId === scope.ownerId,
         ),
       );
     } catch (err) {
       // Treat list failure as "not set" so the UI doesn't show stale state.
       setIsSet(false);
-      console.warn('CredentialSlotRow: failed to refresh credential status', err);
+      console.warn(
+        'CredentialSlotRow: failed to refresh credential status',
+        err,
+      );
     }
   }, [ref, scope.scope, scope.ownerId]);
 
@@ -84,20 +135,32 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
           </Badge>
         </div>
         {/* (E1) "Set credential" is our noun, not the reader's. */}
-        <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={
+            destination.kind === 'routine-hmac' &&
+            !authorizedRoutine?.manageSecret
+          }
+          onClick={() => setOpen(true)}
+        >
           {isSet ? 'Replace key' : 'Add key'}
         </Button>
       </div>
       <Sheet open={open} onOpenChange={setOpen}>
         {/* Radix warns when a dialog has no description; tell it that is
             deliberate rather than leaving an empty one to satisfy it. */}
-        <SheetContent {...(destinationAddsInfo ? {} : { 'aria-describedby': undefined })}>
+        <SheetContent
+          {...(destinationAddsInfo ? {} : { 'aria-describedby': undefined })}
+        >
           <SheetHeader>
             {/* (E1) Was "Set credential for provider anthropic, slot
                 ANTHROPIC_API_KEY" — three machine identifiers in one sentence,
                 at the moment a person is deciding whether to trust us with a
                 secret. */}
-            <SheetTitle>{isSet ? `Replace your ${humanLabel}` : `Add your ${humanLabel}`}</SheetTitle>
+            <SheetTitle>
+              {isSet ? `Replace your ${humanLabel}` : `Add your ${humanLabel}`}
+            </SheetTitle>
             {/* Which thing this key is actually for. The row it was opened from
                 may be one of several, and "API key" alone does not say whose —
                 except when the title already said it. See above. */}
@@ -111,6 +174,9 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
               slot={slot}
               scope={scope}
               current={{ set: isSet }}
+              {...(destination.kind === 'routine-hmac' && authorizedRoutine
+                ? { expectedRevision: authorizedRoutine.revision }
+                : {})}
               onSaved={() => {
                 setOpen(false);
                 void refresh();
@@ -128,7 +194,10 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
  * only — never for routing. `refForDestination` remains the only thing that
  * decides where a key is stored.
  */
-function destinationService(d: Destination): string | undefined {
+function destinationService(
+  d: Destination,
+  routineName?: string,
+): string | undefined {
   switch (d.kind) {
     case 'provider':
       return d.provider;
@@ -137,10 +206,7 @@ function destinationService(d: Destination): string | undefined {
     case 'skill-slot':
       return d.skillId;
     case 'routine-hmac':
-      // A routine path is a file path, not a name; `humanizeId` on
-      // `.ax/routines/daily-digest.md` would produce "Ax routines daily digest
-      // md". Take the stem.
-      return d.routinePath.split('/').pop()?.replace(/\.md$/, '');
+      return routineName;
   }
 }
 
@@ -149,8 +215,8 @@ function destinationService(d: Destination): string | undefined {
  * wire's own vocabulary, lowercase, in a sentence shown to a person about to
  * hand over a secret.
  */
-function humanDestination(d: Destination): string {
-  const name = destinationService(d);
+function humanDestination(d: Destination, routineName?: string): string {
+  const name = destinationService(d, routineName);
   const label = name === undefined ? '' : humanizeId(name);
   switch (d.kind) {
     case 'provider':
@@ -159,6 +225,6 @@ function humanDestination(d: Destination): string {
     case 'skill-slot':
       return `the ${label} skill`;
     case 'routine-hmac':
-      return `the ${label} routine`;
+      return routineName ? `the ${routineName} routine` : 'the routine';
   }
 }

@@ -398,4 +398,33 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //   - Host / connector / approved-cap rows. Grant rows (§4.3.4), not rules.
   //   - MCP tools. Mechanical rows (§4.3.3); their only text is the vendor's,
   //     which is evidence, never our claim.
+  // Consent relaxes only these reviewed create/update holds at runtime.
+  // Deletion and firing always require a separate once-only approval.
+  {
+    id: 'routines.list', match: { tool: 'routine_list' }, providedBy: 'host',
+    verdict: 'allow', capability: 'list routines', subject: 'agent', provenance: 'rule',
+  },
+  {
+    id: 'routines.get', match: { tool: 'routine_get' }, providedBy: 'host',
+    verdict: 'allow', capability: 'read a routine', subject: 'agent', provenance: 'rule',
+  },
+  {
+    id: 'routines.create', match: { tool: 'routine_create' }, providedBy: 'host',
+    verdict: 'hold', capability: 'create routines', subject: 'agent', provenance: 'rule',
+    routineConsent: 'create-update',
+  },
+  {
+    id: 'routines.update', match: { tool: 'routine_update' }, providedBy: 'host',
+    verdict: 'hold', capability: 'edit routines', subject: 'agent', provenance: 'rule',
+    routineConsent: 'create-update',
+  },
+  {
+    id: 'routines.delete', match: { tool: 'routine_delete' }, providedBy: 'host',
+    verdict: 'hold', capability: 'delete routines', subject: 'agent', provenance: 'rule',
+  },
+  {
+    id: 'routines.fire-now', match: { tool: 'routine_fire_now' }, providedBy: 'host',
+    verdict: 'hold', capability: 'run a routine now', subject: 'agent', provenance: 'rule',
+    irreversible: true, effect: ['spends', 'outward'],
+  },
 ];

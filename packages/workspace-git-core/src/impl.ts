@@ -9,6 +9,7 @@ import git from 'isomorphic-git';
 import picomatch from 'picomatch';
 import {
   PluginError,
+  validateWorkspacePath,
   type AgentContext,
   asWorkspaceVersion,
   isOwnerlessId,
@@ -662,57 +663,7 @@ function bytesEqual(a: Bytes, b: Bytes): boolean {
 //   - no `.git` segments anywhere
 //   - no Windows-style `\` separators (the workspace contract is POSIX)
 function validatePath(path: string): void {
-  if (typeof path !== 'string' || path.length === 0) {
-    throw new PluginError({
-      code: 'invalid-path',
-      plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply-internal',
-      message: 'path must be a non-empty string',
-    });
-  }
-  if (path.includes('\0')) {
-    throw new PluginError({
-      code: 'invalid-path',
-      plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply-internal',
-      message: `path contains NUL byte: ${JSON.stringify(path)}`,
-    });
-  }
-  if (path.startsWith('/')) {
-    throw new PluginError({
-      code: 'invalid-path',
-      plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply-internal',
-      message: `path must be relative, got: ${JSON.stringify(path)}`,
-    });
-  }
-  if (path.includes('\\')) {
-    throw new PluginError({
-      code: 'invalid-path',
-      plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply-internal',
-      message: `path must use POSIX separators, got: ${JSON.stringify(path)}`,
-    });
-  }
-  const segments = path.split('/');
-  for (const seg of segments) {
-    if (seg === '' || seg === '.' || seg === '..') {
-      throw new PluginError({
-        code: 'invalid-path',
-        plugin: PLUGIN_NAME,
-        hookName: 'workspace:apply-internal',
-        message: `path contains forbidden segment: ${JSON.stringify(path)}`,
-      });
-    }
-    if (seg === '.git') {
-      throw new PluginError({
-        code: 'invalid-path',
-        plugin: PLUGIN_NAME,
-        hookName: 'workspace:apply-internal',
-        message: `path may not include a .git segment: ${JSON.stringify(path)}`,
-      });
-    }
-  }
+  validateWorkspacePath(path, { plugin: PLUGIN_NAME, hookName: 'workspace:apply-internal' });
 }
 
 async function ensureRepo(gitdir: string): Promise<void> {
@@ -1104,7 +1055,7 @@ export function registerWorkspaceGitHooks(
             // The freshly-read mirror head so a rebase-on-mismatch consumer
             // can recover — `@ax/memory`'s `memory:rules:write`,
             // `channel-web`'s workspace-cas (agent bootstrap + identity
-            // routes), `@ax/routines-admin-routes`, and ipc-core's
+            // routes), and ipc-core's
             // commit-notify, each of which reads `cause.actualParent` and
             // retries once with it. (NOT attachments:commit, which an earlier
             // version of this comment named — TASK-68 moved it to blob:put and

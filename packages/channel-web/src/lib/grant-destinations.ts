@@ -77,7 +77,7 @@ export function connectorServiceOf(s: CardSlot): string | undefined {
  * the collapsed account route; an untagged slot keeps the per-skill `skill-slot`
  * destination.
  */
-export function accountOrSkillDestination(s: CardSlot, skillId: string): Destination {
+export function accountOrSkillDestination(s: CardSlot, skillId: string): Extract<Destination, {kind: 'account' | 'skill-slot'}> {
   const service = tag(s.service);
   if (service !== undefined) {
     const slotTag = tag(s.slotTag);

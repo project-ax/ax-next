@@ -947,7 +947,7 @@ describe('flushWorkspaceToHost', () => {
     commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_MIDTURN'));
     const call = vi.fn().mockResolvedValue({
       accepted: false,
-      reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+      reason: 'skills/nightly/SKILL.md: invalid frontmatter',
       recoverable: false,
     });
     const result = await flushWorkspaceToHost({
@@ -963,7 +963,7 @@ describe('flushWorkspaceToHost', () => {
     expect(result).toEqual({
       parentVersion: 'v1',
       outcome: 'rolled-back',
-      rejectionReason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+      rejectionReason: 'skills/nightly/SKILL.md: invalid frontmatter',
     });
   });
 });

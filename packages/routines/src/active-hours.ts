@@ -1,4 +1,4 @@
-import type { ActiveHours } from '@ax/validator-routine';
+import type { ActiveHours } from '@ax/routines-contract';
 
 interface LocalHm {
   hour: number;

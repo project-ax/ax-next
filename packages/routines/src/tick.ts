@@ -1,51 +1,27 @@
+import { SafeToolError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import type { RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
-import type { RoutineRow, FireStatus } from './types.js';
+import type { StoredRoutine, AcceptedDispatch, FireStatus } from './types.js';
 import { engineFor } from './engines/index.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
-import { durationToSeconds } from '@ax/validator-routine';
+import { durationToSeconds } from '@ax/routines-contract';
 import type { Clock } from './clock.js';
 
 export interface FireResult {
   status: FireStatus;
   conversationId?: string | null;
   error: string | null;
-  /**
-   * The prompt that was actually rendered and sent to the agent.
-   * `null` when fireRoutine returned before reaching the render step
-   * (e.g., agents:resolve or conversations:create failed). Non-null on
-   * `'ok'` and `'silenced'`, and on `'error'` paths that errored after
-   * rendering.
-   */
+  /** The rendered user prompt, or null if execution authorization/setup failed. */
   renderedPrompt: string | null;
-  /**
-   * TASK-680 — true when the fire found that the agent itself no longer
-   * exists. Terminal: the tick prunes every routine of that agent instead of
-   * scheduling the next fire. Absent on every other outcome, errors included.
-   */
+  /** Exact agents:resolve not-found: the shared purge path has removed the agent's routines. */
   agentGone?: true;
-  /**
-   * TASK-679 — `true` when the fire was DISPATCHED and its one fire row
-   * belongs to whoever settles the turn: the `chat:turn-end` subscriber
-   * (`ok` / `silenced`), or `fire.ts` itself if the invoke fails first
-   * (`error`). The caller that started the fire (the tick, `fire-now`) must
-   * then write NO row of its own. It used to write `ok` here meaning only
-   * "agent:invoke was started", so every dispatched fire got two rows and a
-   * silent heartbeat showed up in Activity as "Ran heartbeat" every day.
-   *
-   * Absent / `false`: nothing else will record this fire (it failed before
-   * dispatch, or the fire function has no turn to wait on) — the caller
-   * records `status` itself.
-   */
+  /** Invocation started; the pending correlation owner records its terminal outcome. */
   recordedAtTurnEnd?: boolean;
 }
 
-export type FireRoutineFn = (
-  row: RoutineRow,
-  source: 'tick' | 'manual',
-) => Promise<FireResult>;
+export type FireRoutineFn = (accepted: AcceptedDispatch) => Promise<FireResult>;
 
 export interface TickOnceInput {
   store: RoutinesStore;
@@ -56,7 +32,7 @@ export interface TickOnceInput {
    *
    *   1. lazy materialization of default-sourced rows, and
    *   2. TASK-397 — `reconcileOwners`, which re-asserts the owner on EVERY
-   *      routine of a user-owned agent, workspace-authored ones included.
+   *      routine of a user-owned agent, authored ones included.
    *
    * The owner id is what `fire.ts` passes to `agents:resolve` (whose ACL gate
    * has no concept of a system actor), so it has to be a real user. Optional
@@ -65,21 +41,22 @@ export interface TickOnceInput {
    *
    * Plugin wiring is in plugin.ts — it adapts the
    * `agents:list-personal-owners` service hook into this callback
-   * shape so tick.ts stays free of HookBus imports. Team agents are
-   * excluded upstream pending a fire-under-team policy decision, which
-   * is also why `reconcileOwners` leaves their rows untouched.
+   * shape so tick.ts stays free of HookBus imports. Team agents retain their
+   * creator as execution owner and are excluded from
+   * personal-owner reconciliation.
    */
   getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
   now: Date;
   claimBatchSize: number;
   claimWindowMinutes: number;
+  cleanup?: () => Promise<void>;
 }
 
 export async function runTickOnce(input: TickOnceInput): Promise<void> {
   // Materialize + refresh BEFORE claim so newly-created agents and
   // edited defaults are visible in the same tick.
   //
-  // I-R10: a failure here MUST NOT crash the tick — workspace-row
+  // I-R10: a failure here MUST NOT crash the tick — authored-row
   // claims happen unconditionally below. We log to stderr and
   // continue; the next tick will retry.
   if (input.getAgents !== undefined) {
@@ -111,96 +88,49 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     claimWindowMinutes: input.claimWindowMinutes,
   });
 
-  // TASK-680 — agents found gone earlier in THIS batch. Their other claimed
-  // rows were already deleted by `deleteAllForAgent`; skip them rather than
-  // resolving the agent again and pruning nothing.
-  const goneAgents = new Set<string>();
-
   for (const row of claimed) {
-    if (goneAgents.has(row.agentId)) continue;
     if (row.activeHours !== null) {
       const adjusted = advanceToNextActiveWindow(input.now, row.activeHours);
       if (adjusted.getTime() > input.now.getTime()) {
-        // Default-sourced rows MUST keep next_run_at NULL (the
-        // routines_v1_default_next_run_at_chk CHECK constraint).
-        // Their next-due computation is COALESCE(last_run_at,
-        // created_at) + d.interval_seconds, so setting last_run_at
-        // to the next active-window boundary defers the next claim
-        // past the inactive period — the next active window's claim
-        // re-evaluates activeHours from scratch.
-        //
-        // Workspace rows keep the legacy behaviour: next_run_at is
-        // bumped explicitly and last_run_at stays at `now`.
-        const isDefaultSourced = row.definitionId !== null;
         await input.store.advance({
-          agentId: row.agentId, path: row.path,
-          nextRunAt: isDefaultSourced ? null : adjusted,
-          lastRunAt: isDefaultSourced ? adjusted : input.now,
-          lastStatus: row.lastStatus ?? 'ok',
-          lastError: row.lastError ?? null,
+          agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
+          nextRunAt: row.definitionId === null ? adjusted : null,
+          lastRunAt: row.definitionId === null ? input.now : adjusted,
         });
         continue;
       }
     }
-
-    let result: FireResult;
+    let dispatch;
     try {
-      result = await input.fire(row, 'tick');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      result = { status: 'error', error: msg, conversationId: null, renderedPrompt: null };
-    }
-
-    // TASK-680 — the agent was deleted. Nothing will ever make this fire
-    // succeed, and on its own the row would be claimed again every interval,
-    // forever (prod had deleted agents' heartbeats failing daily since June).
-    // Forget all of the agent's routines — this also heals rows orphaned
-    // before the `agents:deleted` subscriber existed, for which no event will
-    // ever fire again. No fire row and no advance: the rows are gone.
-    //
-    // Unlike the `agents:deleted` subscriber, this path cannot unmount a
-    // webhook route the agent may still have mounted (the tick holds no route
-    // table). That leftover is inert: the webhook handler re-reads the row and
-    // 404s once it is gone, and nothing re-mounts it after a restart.
-    if (result.agentGone === true) {
-      goneAgents.add(row.agentId);
-      const { paths } = await input.store.deleteAllForAgent(row.agentId);
-      process.stderr.write(
-        `[ax/routines] agent ${row.agentId} no longer exists; removed ${paths.length} routine(s)\n`,
-      );
-      continue;
-    }
-
-    // TASK-679: a dispatched fire's row is written when its turn settles.
-    if (result.recordedAtTurnEnd !== true) {
-      await input.store.recordFire({
-        agentId: row.agentId, path: row.path,
-        triggerSource: 'tick',
-        conversationId: result.conversationId ?? null,
-        status: result.status,
-        error: result.error,
-        renderedPrompt: result.renderedPrompt,
+      dispatch = await input.store.acceptDispatch({
+        agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
+        actorUserId: row.ownerUserId, source: 'tick', requestId: crypto.randomUUID(), now: input.now,
       });
+    } catch (err) {
+      // A previous row in this batch may have discovered and purged the same agent.
+      if (err instanceof SafeToolError && err.toolCode === 'not-found') continue;
+      throw err;
     }
-
-    // row.nextRunAt has been bumped by claimWindowMinutes by claimDue; recover the
-    // original scheduled time so drift control advances from the right baseline.
-    const claimOffsetMs = input.claimWindowMinutes * 60 * 1000;
-    const originalNextRunAt = row.nextRunAt != null
-      ? new Date(row.nextRunAt.getTime() - claimOffsetMs)
-      : null;
-    const nextAt = computeNextRunAt(row, originalNextRunAt, input.now);
+    if (!dispatch || dispatch.replayed) continue;
+    const originalNextRunAt = row.nextRunAt === null ? null
+      : new Date(row.nextRunAt.getTime() - input.claimWindowMinutes * 60_000);
+    // Advance scheduling independently of terminal status, and only for this revision.
     await input.store.advance({
-      agentId: row.agentId, path: row.path,
-      nextRunAt: nextAt,
-      lastRunAt: input.now,
-      lastStatus: result.status,
-      lastError: result.error,
+      agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
+      nextRunAt: computeNextRunAt(row, originalNextRunAt, input.now), lastRunAt: input.now,
     });
+    try { await input.fire(dispatch.accepted); }
+    catch (err) {
+      await input.store.finishDispatch({ dispatchId: dispatch.accepted.dispatchId, outcome: {
+        status: 'error', error: err instanceof Error ? err.message : String(err),
+        conversationId: null, renderedPrompt: null, warning: row.lastWarning,
+      } });
+    }
   }
+  await input.cleanup?.();
 }
 
-function computeNextRunAt(row: RoutineRow, originalNextRunAt: Date | null, now: Date): Date | null {
+function computeNextRunAt(row: StoredRoutine, originalNextRunAt: Date | null, now: Date): Date | null {
   // Default-sourced rows MUST keep next_run_at NULL — the claim SQL
   // computes due-ness from last_run_at + d.interval_seconds, and the
   // routines_v1_default_next_run_at_chk CHECK constraint forbids a
@@ -231,9 +161,10 @@ export interface TickLoopInput {
   /**
    * Threaded straight through to `runTickOnce`. Optional for the same
    * reason — existing tests can omit it and only exercise the
-   * workspace-row path.
+   * authored-row path.
    */
   getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
+  cleanup?: () => Promise<void>;
   clock: Clock;
   signal: AbortSignal;
   tickIntervalMs: number;
@@ -264,6 +195,7 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
           try {
             const tickInput: Parameters<typeof runTickOnce>[0] = {
               store: pinnedStore, fire: input.fire,
+              ...(input.cleanup ? { cleanup: input.cleanup } : {}),
               now: input.clock.now(),
               claimBatchSize: input.claimBatchSize,
               claimWindowMinutes: input.claimWindowMinutes,

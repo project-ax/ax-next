@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/routines-contract": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

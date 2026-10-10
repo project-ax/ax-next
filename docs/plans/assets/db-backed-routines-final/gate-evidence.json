@@ -1,0 +1,902 @@
+{
+  "date": "2026-10-10",
+  "base": "50e44d3253be45777f5e256fcf0befe5f314feab",
+  "productSourceUnchangedAfterBuild": true,
+  "testOnlyFollowup": "Added routineOperation to existing WIRE_KEYS expectations; full failed package rerun and current TS/lint pass.",
+  "gates": [
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm build",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-build.log",
+      "sha256": "08eacc0ae73b56f186a737e552c2d65b33da02052759ebdc8b47f8f191f3a333",
+      "summaries": []
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock VITEST_MAX_WORKERS=2 pnpm -r --no-bail run test",
+      "completedExit": 1,
+      "log": "/tmp/db-routines-final-recursive.log",
+      "sha256": "433935797ee7b51b3c71e156af7c0778a20899122af739937a2f8ebfe7c23b63",
+      "summaries": [
+        "Scope: 86 of 87 workspace projects",
+        "packages/agent-identity-templates test:  Test Files  1 passed (1)",
+        "packages/agent-identity-templates test:       Tests  3 passed (3)",
+        "packages/credential-proxy-bridge test:  Test Files  3 passed (3)",
+        "packages/credential-proxy-bridge test:       Tests  9 passed (9)",
+        "packages/routines-contract test:  Test Files  1 passed (1)",
+        "packages/routines-contract test:       Tests  95 passed (95)",
+        "packages/sandbox-protocol test:  Test Files  5 passed (5)",
+        "packages/sandbox-protocol test:       Tests  150 passed (150)",
+        "packages/skills-parser test:  Test Files  5 passed (5)",
+        "packages/skills-parser test:       Tests  70 passed (70)",
+        "packages/workspace-protocol test:  Test Files  2 passed (2)",
+        "packages/workspace-protocol test:       Tests  12 passed (12)",
+        "packages/core test:  Test Files  28 passed (28)",
+        "packages/core test:       Tests  478 passed (478)",
+        "deploy/charts/ax-next test:  Test Files  10 passed (10)",
+        "deploy/charts/ax-next test:       Tests  278 passed (278)",
+        "packages/admin-settings-routes test:  Test Files  1 passed (1)",
+        "packages/admin-settings-routes test:       Tests  19 passed (19)",
+        "packages/branding test:  Test Files  4 passed (4)",
+        "packages/branding test:       Tests  56 passed (56)",
+        "packages/embeddings test:  Test Files  9 passed (9)",
+        "packages/embeddings test:       Tests  191 passed (191)",
+        "packages/ipc-protocol test:  Test Files  9 passed (9)",
+        "packages/ipc-protocol test:       Tests  282 passed (282)",
+        "packages/llm-anthropic test:  Test Files  6 passed (6)",
+        "packages/llm-anthropic test:       Tests  69 passed (69)",
+        "packages/llm-openrouter test:  Test Files  6 passed (6)",
+        "packages/llm-openrouter test:       Tests  71 passed (71)",
+        "packages/memory-facts-contract test:  Test Files  1 passed (1)",
+        "packages/memory-facts-contract test:       Tests  9 passed (9)",
+        "packages/sandbox-mount-protocol test:  Test Files  1 passed (1)",
+        "packages/sandbox-mount-protocol test:       Tests  13 passed (13)",
+        "packages/model-policy test:  Test Files  5 passed (5)",
+        "packages/model-policy test:       Tests  94 passed (94)",
+        "packages/tool-connector-propose test:  Test Files  2 passed (2)",
+        "packages/tool-connector-propose test:       Tests  14 passed (14)",
+        "packages/tool-skill-propose test:  Test Files  2 passed (2)",
+        "packages/tool-skill-propose test:       Tests  25 passed (25)",
+        "packages/validator-identity test:  Test Files  2 passed (2)",
+        "packages/validator-identity test:       Tests  40 passed (40)",
+        "packages/workspace-bundle-protocol test:  Test Files  1 passed (1)",
+        "packages/workspace-bundle-protocol test:       Tests  5 passed (5)",
+        "packages/validator-service test:  Test Files  1 passed (1)",
+        "packages/validator-service test:       Tests  14 passed (14)",
+        "packages/validator-skill test:  Test Files  3 passed (3)",
+        "packages/validator-skill test:       Tests  64 passed (64)",
+        "packages/tool-artifact-publish test:  Test Files  3 passed (3)",
+        "packages/tool-artifact-publish test:       Tests  33 passed (33)",
+        "packages/conversation-titles test:  Test Files  3 passed (3)",
+        "packages/conversation-titles test:       Tests  55 passed (55)",
+        "packages/agent-claude-sdk-runner-host test:  Test Files  1 passed (1)",
+        "packages/agent-claude-sdk-runner-host test:       Tests  22 passed (22)",
+        "packages/user-files-read test:  Test Files  1 passed (1)",
+        "packages/user-files-read test:       Tests  40 passed (40)",
+        "packages/memory-facts-sqlite test:  Test Files  13 passed (13)",
+        "packages/memory-facts-sqlite test:       Tests  402 passed | 1 skipped (403)",
+        "packages/agent-runner-core test:  Test Files  33 passed (33)",
+        "packages/agent-runner-core test:       Tests  559 passed (559)",
+        "packages/agent-aisdk-runner test:  Test Files  22 passed (22)",
+        "packages/agent-aisdk-runner test:       Tests  451 passed (451)",
+        "packages/agent-claude-sdk-runner test:  Test Files  23 passed (23)",
+        "packages/agent-claude-sdk-runner test:       Tests  351 passed (351)",
+        "packages/chat-orchestrator test:  Test Files  16 passed (16)",
+        "packages/chat-orchestrator test:       Tests  393 passed (393)",
+        "packages/ipc-server test:  Test Files  6 passed (6)",
+        "packages/ipc-server test:       Tests  30 passed (30)",
+        "packages/ipc-core test:  Test Files  30 passed (30)",
+        "packages/ipc-core test:       Tests  280 passed (280)",
+        "packages/agents test:  Test Files  19 passed (19)",
+        "packages/agents test:       Tests  417 passed (417)",
+        "packages/test-harness test:  Test Files  12 passed (12)",
+        "packages/test-harness test:       Tests  177 passed (177)",
+        "packages/skills test:  Test Files  26 passed (26)",
+        "packages/skills test:       Tests  360 passed (360)",
+        "packages/connectors test:  Test Files  27 passed (27)",
+        "packages/connectors test:       Tests  576 passed (576)",
+        "packages/mcp-client test:  Test Files  13 passed (13)",
+        "packages/mcp-client test:       Tests  215 passed (215)",
+        "packages/routines test:  Test Files  26 passed (26)",
+        "packages/routines test:       Tests  203 passed (203)",
+        "packages/audit-log test:  Test Files  1 passed (1)",
+        "packages/audit-log test:       Tests  6 passed (6)",
+        "packages/agent-activity test:  Test Files  3 passed (3)",
+        "packages/agent-activity test:       Tests  80 passed (80)",
+        "packages/blob-store-s3 test:  Test Files  6 passed (6)",
+        "packages/blob-store-s3 test:       Tests  174 passed (174)",
+        "packages/eventbus-inprocess test:  Test Files  2 passed (2)",
+        "packages/eventbus-inprocess test:       Tests  5 passed (5)",
+        "packages/blob-store-fs test:  Test Files  4 passed (4)",
+        "packages/blob-store-fs test:       Tests  106 passed (106)",
+        "packages/database-postgres test:  Test Files  2 passed (2)",
+        "packages/database-postgres test:       Tests  4 passed (4)",
+        "packages/eventbus-postgres test:  Test Files  3 passed (3)",
+        "packages/eventbus-postgres test:       Tests  9 passed (9)",
+        "packages/session-inmemory test:  Test Files  4 passed (4)",
+        "packages/session-inmemory test:       Tests  67 passed (67)",
+        "packages/http-server test:  Test Files  6 passed (6)",
+        "packages/http-server test:       Tests  118 passed (118)",
+        "packages/storage-sqlite test:  Test Files  4 passed (4)",
+        "packages/storage-sqlite test:       Tests  33 passed (33)",
+        "packages/web-tools test:  Test Files  6 passed (6)",
+        "packages/web-tools test:       Tests  39 passed (39)",
+        "packages/credential-proxy test:  Test Files  33 passed (33)",
+        "packages/credential-proxy test:       Tests  666 passed (666)",
+        "packages/workspace-filestore test:  Test Files  1 passed (1)",
+        "packages/workspace-filestore test:       Tests  15 passed (15)",
+        "packages/workspace-git-core test:  Test Files  11 passed (11)",
+        "packages/workspace-git-core test:       Tests  111 passed (111)",
+        "packages/workspace-localdir test:  Test Files  1 passed (1)",
+        "packages/workspace-localdir test:       Tests  16 passed (16)",
+        "packages/routines-admin-routes test:  Test Files  2 passed (2)",
+        "packages/routines-admin-routes test:       Tests  16 passed (16)",
+        "packages/session-postgres test:  Test Files  8 passed (8)",
+        "packages/session-postgres test:       Tests  75 passed (75)",
+        "packages/workspace-git-server test:  Test Files  24 passed (24)",
+        "packages/workspace-git-server test:       Tests  528 passed (528)",
+        "packages/credentials-store-db test:  Test Files  3 passed (3)",
+        "packages/credentials-store-db test:       Tests  21 passed (21)",
+        "packages/ipc-http test:  Test Files  4 passed (4)",
+        "packages/ipc-http test:       Tests  24 passed (24)",
+        "packages/host-grants test:  Test Files  4 passed (4)",
+        "packages/host-grants test:       Tests  21 passed (21)",
+        "packages/blob-gc test:  Test Files  2 passed (2)",
+        "packages/blob-gc test:       Tests  65 passed (65)",
+        "packages/disk-quota test:  Test Files  6 passed (6)",
+        "packages/disk-quota test:       Tests  202 passed (202)",
+        "packages/sandbox-subprocess test:  Test Files  10 passed (10)",
+        "packages/sandbox-subprocess test:       Tests  111 passed (111)",
+        "packages/static-files test:  Test Files  1 passed (1)",
+        "packages/static-files test:       Tests  19 passed (19)",
+        "packages/sandbox-k8s test:  Test Files  16 passed (16)",
+        "packages/sandbox-k8s test:       Tests  365 passed | 1 skipped (366)",
+        "packages/storage-postgres test:  Test Files  3 passed (3)",
+        "packages/storage-postgres test:       Tests  24 passed (24)",
+        "packages/memory-facts-postgres test:  Test Files  6 passed (6)",
+        "packages/memory-facts-postgres test:       Tests  308 passed | 10 skipped (318)",
+        "packages/workspace-git test:  Test Files  4 passed (4)",
+        "packages/workspace-git test:       Tests  33 passed (33)",
+        "packages/tool-policy test:  Test Files  15 passed (15)",
+        "packages/tool-policy test:       Tests  347 passed (347)",
+        "packages/usage-limits test:  Test Files  7 passed (7)",
+        "packages/usage-limits test:       Tests  159 passed (159)",
+        "packages/credentials test:  Test Files  22 passed (22)",
+        "packages/credentials test:       Tests  207 passed (207)",
+        "packages/memory test:  Test Files  34 passed (34)",
+        "packages/memory test:       Tests  1046 passed (1046)",
+        "packages/decisions test:  Test Files  14 passed (14)",
+        "packages/decisions test:       Tests  439 passed (439)",
+        "packages/conversations test:  Test Files  27 passed (27)",
+        "packages/conversations test:       Tests  236 passed (236)",
+        "packages/credentials-admin-routes test:  Test Files  5 passed (5)",
+        "packages/credentials-admin-routes test:       Tests  73 passed (73)",
+        "packages/skill-broker test:  Test Files  4 passed (4)",
+        "packages/skill-broker test:       Tests  77 passed (77)",
+        "packages/mcp-oauth test:  Test Files  18 passed (18)",
+        "packages/mcp-oauth test:       Tests  563 passed (563)",
+        "packages/auth-better test:  Test Files  13 passed (13)",
+        "packages/auth-better test:       Tests  64 passed (64)",
+        "packages/attachments test:  Test Files  12 passed (12)",
+        "packages/attachments test:       Tests  118 passed (118)",
+        "packages/teams test:  Test Files  5 passed (5)",
+        "packages/teams test:       Tests  101 passed (101)",
+        "packages/onboarding test:  Test Files  10 passed (10)",
+        "packages/onboarding test:       Tests  48 passed (48)",
+        "packages/channel-web test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯",
+        "packages/channel-web test:  Test Files  2 failed | 286 passed (288)",
+        "packages/channel-web test:       Tests  5 failed | 4740 passed (4745)",
+        "presets/k8s test:  Test Files  23 passed (23)",
+        "presets/k8s test:       Tests  260 passed (260)",
+        "presets/memory test:  Test Files  3 passed (3)",
+        "presets/memory test:       Tests  80 passed (80)",
+        "packages/cli test: Scope: 82 of 87 workspace projects",
+        "packages/cli test:  Test Files  15 passed | 1 skipped (16)",
+        "packages/cli test:       Tests  99 passed | 1 skipped (100)",
+        "Summary: 1 fails, 85 passes"
+      ]
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm test:eslint-rules",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-eslint-rules.log",
+      "sha256": "3a6406849eb42c2d5d7b20407e42734bc5ff9f03cb00df0c0990c069898c5156",
+      "summaries": [
+        " Test Files  1 passed (1)",
+        "      Tests  22 passed (22)"
+      ]
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm test:scripts -- --maxWorkers=1",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-scripts.log",
+      "sha256": "a07259f79259fee41746fb887ad133e7754124394f84b89371e0933f3e3b3272",
+      "summaries": [
+        " Test Files  49 passed (49)",
+        "      Tests  1140 passed | 3 skipped (1143)"
+      ]
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm exec tsc --build",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summaries": []
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm typecheck",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-typecheck.log",
+      "sha256": "ab4a1803138b50003c500ef444b71203480fe3eb70671a3688c32afff5c3cf07",
+      "summaries": [
+        "Scope: 86 of 87 workspace projects"
+      ]
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm lint",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-lint.log",
+      "sha256": "ac4f291365afb778153fa293e7b02fe79d17e087824efa6cf29cfadd63066a5c",
+      "summaries": []
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock VITEST_MAX_WORKERS=2 pnpm --filter @ax/channel-web test",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-channel-retry.log",
+      "sha256": "5532efe31e2330e130fd4e86073e3ef6bfaff0cc081503991807a616e29723c2",
+      "summaries": [
+        " Test Files  288 passed (288)",
+        "      Tests  4745 passed (4745)"
+      ]
+    },
+    {
+      "command": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm exec tsc --build",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-assertion-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summaries": []
+    },
+    {
+      "command": "pnpm exec eslint packages/channel-web/src/__tests__/server/routes-workspace.test.ts",
+      "completedExit": 0,
+      "log": "/tmp/db-routines-final-assertion-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summaries": []
+    }
+  ],
+  "initialAggregate": {
+    "completedExit": 1,
+    "packagePasses": 85,
+    "packageFailures": 1,
+    "passed": 18543,
+    "failed": 5,
+    "skipped": 13,
+    "failedPackage": {
+      "package": "packages/channel-web",
+      "passed": 4740,
+      "failed": 5,
+      "skipped": 0,
+      "todo": 0
+    },
+    "failures": [
+      "Four strict WIRE_KEYS assertions omitted newly projected routineOperation",
+      "Existing mock chat-sse persistence/auto-title case timed out at 20000ms"
+    ]
+  },
+  "finalCoverage": {
+    "all86PackagesHaveCompletedPassingResults": true,
+    "passed": 18548,
+    "failed": 0,
+    "skipped": 13,
+    "method": "85 unchanged passing package results from complete no-bail run plus full channel-web rerun (288 files/4745 tests); original aggregate exit remains 1."
+  },
+  "rootSuites": {
+    "eslintRulesPassed": 22,
+    "scriptsPassed": 1140,
+    "scriptsSkipped": 3,
+    "scriptsArguments": "pnpm forwarded -- --maxWorkers=1; successful root suite is recorded without asserting its worker-limit interpretation."
+  },
+  "packages": [
+    {
+      "package": "packages/agent-identity-templates",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/credential-proxy-bridge",
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/routines-contract",
+      "passed": 95,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/sandbox-protocol",
+      "passed": 150,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/skills-parser",
+      "passed": 70,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-protocol",
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/core",
+      "passed": 478,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "deploy/charts/ax-next",
+      "passed": 278,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/admin-settings-routes",
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/branding",
+      "passed": 56,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/embeddings",
+      "passed": 191,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/ipc-protocol",
+      "passed": 282,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/llm-anthropic",
+      "passed": 69,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/llm-openrouter",
+      "passed": 71,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/memory-facts-contract",
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/sandbox-mount-protocol",
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/model-policy",
+      "passed": 94,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/tool-connector-propose",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/tool-skill-propose",
+      "passed": 25,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/validator-identity",
+      "passed": 40,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-bundle-protocol",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/validator-service",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/validator-skill",
+      "passed": 64,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/tool-artifact-publish",
+      "passed": 33,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/conversation-titles",
+      "passed": 55,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/agent-claude-sdk-runner-host",
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/user-files-read",
+      "passed": 40,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/memory-facts-sqlite",
+      "passed": 402,
+      "failed": 0,
+      "skipped": 1,
+      "todo": 0
+    },
+    {
+      "package": "packages/agent-runner-core",
+      "passed": 559,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/agent-aisdk-runner",
+      "passed": 451,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/agent-claude-sdk-runner",
+      "passed": 351,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/chat-orchestrator",
+      "passed": 393,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/ipc-server",
+      "passed": 30,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/ipc-core",
+      "passed": 280,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/agents",
+      "passed": 417,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/test-harness",
+      "passed": 177,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/skills",
+      "passed": 360,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/connectors",
+      "passed": 576,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/mcp-client",
+      "passed": 215,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/routines",
+      "passed": 203,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/audit-log",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/agent-activity",
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/blob-store-s3",
+      "passed": 174,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/eventbus-inprocess",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/blob-store-fs",
+      "passed": 106,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/database-postgres",
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/eventbus-postgres",
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/session-inmemory",
+      "passed": 67,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/http-server",
+      "passed": 118,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/storage-sqlite",
+      "passed": 33,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/web-tools",
+      "passed": 39,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/credential-proxy",
+      "passed": 666,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-filestore",
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-git-core",
+      "passed": 111,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-localdir",
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/routines-admin-routes",
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/session-postgres",
+      "passed": 75,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-git-server",
+      "passed": 528,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/credentials-store-db",
+      "passed": 21,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/ipc-http",
+      "passed": 24,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/host-grants",
+      "passed": 21,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/blob-gc",
+      "passed": 65,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/disk-quota",
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/sandbox-subprocess",
+      "passed": 111,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/static-files",
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/sandbox-k8s",
+      "passed": 365,
+      "failed": 0,
+      "skipped": 1,
+      "todo": 0
+    },
+    {
+      "package": "packages/storage-postgres",
+      "passed": 24,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/memory-facts-postgres",
+      "passed": 308,
+      "failed": 0,
+      "skipped": 10,
+      "todo": 0
+    },
+    {
+      "package": "packages/workspace-git",
+      "passed": 33,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/tool-policy",
+      "passed": 347,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/usage-limits",
+      "passed": 159,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/credentials",
+      "passed": 207,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/memory",
+      "passed": 1046,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/decisions",
+      "passed": 439,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/conversations",
+      "passed": 236,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/credentials-admin-routes",
+      "passed": 73,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/skill-broker",
+      "passed": 77,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/mcp-oauth",
+      "passed": 563,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/auth-better",
+      "passed": 64,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/attachments",
+      "passed": 118,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/teams",
+      "passed": 101,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/onboarding",
+      "passed": 48,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/channel-web",
+      "passed": 4745,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "presets/k8s",
+      "passed": 260,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "presets/memory",
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    {
+      "package": "packages/cli",
+      "passed": 99,
+      "failed": 0,
+      "skipped": 1,
+      "todo": 0
+    }
+  ]
+}

@@ -5,7 +5,7 @@ const PLUGIN_NAME = '@ax/credentials';
 export type Destination =
   | { kind: 'provider'; provider: string }
   | { kind: 'skill-slot'; skillId: string; slot: string }
-  | { kind: 'routine-hmac'; agentId: string; routinePath: string }
+  | { kind: 'routine-hmac'; agentId: string; routineId: string }
   // JIT P2 — service-keyed user vault. `slot` (TASK-124, per-slot credential
   // refs) is OPTIONAL and adaptive: omit it for a single-slot connector / a
   // standalone account key (ref stays `account:<service>` — back-compat by
@@ -40,8 +40,8 @@ export function refForDestination(dest: Destination): string {
       return `skill:${dest.skillId}:${dest.slot}`;
     case 'routine-hmac':
       assertNoColon('agentId', dest.agentId);
-      assertNoColon('routinePath', dest.routinePath);
-      return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+      assertNoColon('routineId', dest.routineId);
+      return `routine:${dest.agentId}:${dest.routineId}:hmac`;
     case 'account':
       assertNoColon('service', dest.service);
       // TASK-124 — adaptive per-slot ref. A multi-slot connector supplies the
