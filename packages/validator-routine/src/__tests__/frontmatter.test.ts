@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseRoutineFrontmatter,
   parseRoutineFrontmatterBytes,
+  buildRoutineMd,
 } from '../frontmatter.js';
 
 function fm(body: string): string {
@@ -326,5 +327,16 @@ describe('parseRoutineFrontmatter — webhook trigger', () => {
       'conversation: per-fire',
     ].join('\n')));
     expect(r.ok).toBe(false);
+  });
+});
+
+ describe('enabled and canonical webhook paths', () => {
+  it.each([true, false])('round trips enabled=%s', enabled => {
+    const result = parseRoutineFrontmatter(buildRoutineMd({ name: 'r', description: 'd', enabled, trigger: { kind: 'interval', every: '1h' }, conversation: 'per-fire', silenceMaxChars: 300, promptBody: 'Work' }));
+    expect(result.ok && result.fields.enabled).toBe(enabled);
+  });
+  it('rejects dot segments that browsers normalize away in URL previews', () => {
+    const result = parseRoutineFrontmatter(buildRoutineMd({ name: 'r', description: 'd', trigger: { kind: 'webhook', path: '/./event' }, conversation: 'per-fire', silenceMaxChars: 300, promptBody: 'Work' }));
+    expect(result.ok).toBe(false);
   });
 });

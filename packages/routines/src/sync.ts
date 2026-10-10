@@ -110,6 +110,7 @@ export async function handleWorkspaceApplied(
         // PERSONAL agent the writer already IS that owner, since the owner is
         // the only identity `agents:resolve` authorises.
         ownerUserId: userId,
+        enabled: parsed.fields.enabled ?? true,
         name: parsed.fields.name,
         description: parsed.fields.description,
         specHash: parsed.specHash,
@@ -123,7 +124,7 @@ export async function handleWorkspaceApplied(
       });
 
       // ---- Webhook lifecycle ----
-      if (parsed.fields.trigger.kind !== 'webhook') {
+      if (parsed.fields.trigger.kind !== 'webhook' || parsed.fields.enabled === false) {
         // Was webhook, now isn't — drop the prior closure (transition from webhook → interval/cron).
         const stale = deps.webhookRoutes.get(key);
         if (stale !== undefined) {
@@ -206,7 +207,7 @@ async function bindWebhookRouteFor(
   row: RoutineRow,
   errLogKey: string,
 ): Promise<void> {
-  if (row.trigger.kind !== 'webhook') return;
+  if (row.trigger.kind !== 'webhook' || row.enabled === false) return;
   const key = webhookKey(row.agentId, row.path);
   const stale = deps.webhookRoutes.get(key);
   if (stale !== undefined) {

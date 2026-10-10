@@ -4,6 +4,7 @@ import type { TriggerSpec, ActiveHours } from '@ax/validator-routine';
 import type { FireRow, FireSource, FireStatus, RoutineRow } from './types.js';
 
 export interface UpsertInput {
+  enabled?: boolean;
   agentId: string;
   path: string;
   ownerUserId: string;
@@ -221,6 +222,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function rowToRoutine(row: {
+  enabled?: boolean;
   agent_id: string; path: string; owner_user_id: string;
   name: string; description: string; spec_hash: string;
   trigger_kind: string; trigger_spec: unknown;
@@ -234,6 +236,7 @@ function rowToRoutine(row: {
   definition_updated_at: Date | null;
 }): RoutineRow {
   return {
+    enabled: row.enabled ?? true,
     agentId: row.agent_id,
     path: row.path,
     ownerUserId: row.owner_user_id,
@@ -289,6 +292,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           .executeTakeFirst();
 
         await trx.insertInto('routines_v1_definitions').values({
+          enabled: input.enabled ?? true,
           agent_id: input.agentId,
           path: input.path,
           owner_user_id: input.ownerUserId,
@@ -319,6 +323,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
             // apply carries the routine's CONTENT and nothing else. The
             // column is written once at INSERT and thereafter only by
             // `reconcileOwners`, which derives it from the agent.
+            enabled: eb.ref('excluded.enabled'),
             name: eb.ref('excluded.name'),
             description: eb.ref('excluded.description'),
             trigger_kind: eb.ref('excluded.trigger_kind'),
@@ -369,6 +374,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       // branch); only workspace rows advance their next_run_at by the
       // claim window.
       const rows = await sql<{
+        enabled: boolean;
         agent_id: string; path: string; owner_user_id: string;
         name: string; description: string; spec_hash: string;
         trigger_kind: string; trigger_spec: unknown;
@@ -384,7 +390,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         WITH workspace_due AS (
           SELECT agent_id, path
             FROM routines_v1_definitions
-           WHERE definition_id IS NULL
+           WHERE enabled
+             AND definition_id IS NULL
              AND next_run_at IS NOT NULL
              AND next_run_at <= ${input.now}
              AND trigger_kind IN ('interval', 'cron')
@@ -396,7 +403,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           SELECT r.agent_id, r.path
             FROM routines_v1_definitions r
             JOIN default_routines_v1 d ON d.default_routine_id = r.definition_id
-           WHERE r.definition_id IS NOT NULL
+           WHERE r.enabled
+             AND r.definition_id IS NOT NULL
              AND d.enabled
              AND d.trigger_kind = 'interval'
              AND r.definition_updated_at IS NOT NULL

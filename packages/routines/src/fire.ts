@@ -149,6 +149,7 @@ export function createFireRoutine(deps: FireDeps) {
     source: FireSource,
     payload?: unknown,
   ): Promise<FireResult> => {
+    if (row.enabled === false) return { status: 'error', error: 'This routine is disabled.', conversationId: null, renderedPrompt: null };
     // sessionId must be unique per fire: session:create rejects duplicates
     // (even when the prior session is terminated), so reusing a stable
     // `routine-<agentId>-<path>` id makes every fire after the first fail

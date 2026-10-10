@@ -42,7 +42,7 @@ export function makeWebhookHandler(deps: WebhookHandlerDeps): HttpRouteHandler {
 
     // Step 1: row lookup
     const row = await deps.store.findOne({ agentId: deps.agentId, path: deps.routinePath });
-    if (row === null || row.trigger.kind !== 'webhook') {
+    if (row === null || row.enabled === false || row.trigger.kind !== 'webhook') {
       res.status(404).end();
       return;
     }

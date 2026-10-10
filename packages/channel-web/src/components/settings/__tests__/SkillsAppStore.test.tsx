@@ -37,8 +37,8 @@ vi.mock('@/lib/admin', () => ({
   listAdminAgents: vi.fn(),
   patchAgentSkillAttachments: vi.fn(),
 }));
-vi.mock('@/components/admin/SkillEditor', () => ({
-  SkillEditor: () => <div data-testid="skill-editor" />,
+vi.mock('@/components/settings/SkillForm', () => ({
+  SkillForm: () => <div data-testid="skill-editor" />,
 }));
 vi.mock('@/components/admin/BundleReviewDialog', () => ({
   BundleReviewDialog: () => <div data-testid="bundle-review" />,
@@ -555,5 +555,31 @@ describe('SkillsAppStore', () => {
     expect(await screen.findByTestId('installed-drafted')).toBeInTheDocument();
     // The authored shelf no longer shows the draft (it was adopted).
     expect(screen.queryByTestId('authored-drafted')).toBeNull();
+  });
+});
+
+ describe('agent-specific skills settings', () => {
+  it('uses the fixed agent’s installed data without needing an agent picker', async () => {
+    mockListAgents.mockResolvedValue([]);
+    render(<SkillsAppStore isAdmin={false} agentId="a1" agentName="Alpha" />);
+    await screen.findByText('My helper');
+    expect(mockGetConnections).toHaveBeenCalledWith('a1');
+    expect(mockListAgents).not.toHaveBeenCalled();
+    expect(screen.queryByText(/don’t have an assistant/)).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Installed' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for my-helper' }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit skill' }));
+    expect(await screen.findByTestId('skill-editor')).toBeTruthy();
+  });
+  it('places unattached private skills in Browse and filters them by the search', async () => {
+    mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
+    render(<SkillsAppStore isAdmin={false} agentId="a1" />);
+    await screen.findByText(/No skills installed yet/);
+    expect(screen.queryByText('My helper')).toBeNull();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Browse' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByText('My helper')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search the workspace catalog' }), { target: { value: 'pdf' } });
+    expect(screen.queryByText('My helper')).toBeNull();
+    expect(screen.getByTestId('catalog-pdf-tools')).toBeTruthy();
   });
 });

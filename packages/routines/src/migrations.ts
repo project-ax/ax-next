@@ -23,6 +23,7 @@ const HEARTBEAT_SEED_MD: string = [
 ].join('\n');
 
 export interface RoutinesDefinitionsRow {
+  enabled: ColumnType<boolean, boolean | undefined, boolean>;
   agent_id: string;
   path: string;
   owner_user_id: string;
@@ -127,6 +128,9 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       PRIMARY KEY (agent_id, path)
     )
   `.execute(db);
+
+  // Existing routines stay enabled when this column is first installed.
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`.execute(db);
 
   // TASK-397: `author_user_id` → `owner_user_id`.
   //

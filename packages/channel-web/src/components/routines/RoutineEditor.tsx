@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronsUpDown } from 'lucide-react';
+import { Check, ChevronsUpDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Field, FieldGroup } from '@/components/ui/field';
+import { Switch } from '@/components/ui/switch';
+import { Separator } from '@/components/ui/separator';
+import { WebhookUrlPreview } from './WebhookUrlPreview';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -51,6 +55,8 @@ export interface RoutineEditorConstraints {
 }
 
 export interface RoutineEditorProps {
+  agentId?: string;
+  agentName?: string | undefined;
   /** Existing routine to edit (parsed fields). Omit for create. */
   initial?: RoutineFrontmatterFields;
   constraints: RoutineEditorConstraints;
@@ -91,6 +97,7 @@ const browserTz = (() => {
 interface RoutineFormState {
   name: string;
   description: string;
+  enabled: boolean;
   triggerKind: TriggerKind;
   intervalEvery: string;
   cronExpr: string;
@@ -109,6 +116,7 @@ function emptyForm(defaultKind: TriggerKind): RoutineFormState {
   return {
     name: '',
     description: '',
+    enabled: true,
     triggerKind: defaultKind,
     intervalEvery: '',
     cronExpr: '',
@@ -126,6 +134,7 @@ function emptyForm(defaultKind: TriggerKind): RoutineFormState {
 
 function formFromFields(f: RoutineFrontmatterFields, defaultKind: TriggerKind): RoutineFormState {
   const base = emptyForm(defaultKind);
+  base.enabled = f.enabled ?? true;
   base.name = f.name;
   base.description = f.description;
   base.conversation = f.conversation;
@@ -169,6 +178,7 @@ function triggerFromForm(form: RoutineFormState): TriggerSpec {
 
 function fieldsFromForm(form: RoutineFormState): RoutineFrontmatterFields {
   const fields: RoutineFrontmatterFields = {
+    enabled: form.enabled,
     name: form.name,
     description: form.description,
     trigger: triggerFromForm(form),
@@ -176,7 +186,7 @@ function fieldsFromForm(form: RoutineFormState): RoutineFrontmatterFields {
     conversation: form.conversation,
     promptBody: form.promptBody,
   };
-  if (form.activeHours !== null) fields.activeHours = form.activeHours;
+  if (form.activeHours !== null && form.triggerKind !== 'webhook') fields.activeHours = form.activeHours;
   if (form.silenceToken.length > 0) fields.silenceToken = form.silenceToken;
   return fields;
 }
@@ -190,7 +200,13 @@ interface AgentOption {
   displayName: string;
 }
 
-export function RoutineEditor({
+export function RoutineEditor(props: RoutineEditorProps) {
+  return <RoutineForm key={`${props.agentId ?? 'picker'}:${JSON.stringify(props.initial ?? 'new')}`} {...props} />;
+}
+
+function RoutineForm({
+  agentId: fixedAgentId,
+  agentName,
   initial,
   constraints,
   onSave,
@@ -211,7 +227,7 @@ export function RoutineEditor({
 
   // Create-mode agent picker.
   const [agents, setAgents] = useState<AgentOption[]>([]);
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string | null>(fixedAgentId ?? null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
   useEffect(() => {
@@ -264,7 +280,7 @@ export function RoutineEditor({
       : form.name;
     try {
       await onSave(activeMd, {
-        agentId: constraints.showAgentPicker ? agentId : null,
+        agentId: fixedAgentId ?? (constraints.showAgentPicker ? agentId : null),
         name: effectiveName,
       });
       onSaved();
@@ -275,15 +291,13 @@ export function RoutineEditor({
     }
   }
 
-  const saveLabel = saving ? 'Saving…' : initial ? 'Update' : 'Create';
+  const saveLabel = saving ? 'Saving…' : initial ? 'Save changes' : 'Create routine';
   const triggerOptions = constraints.allowedTriggers;
   const liveError = !parsed.ok ? parsed.reason : null;
   const selectedAgentLabel =
     agents.find((a) => a.agentId === agentId)?.displayName ?? null;
 
-  return (
-    <div className="flex flex-col gap-4 max-h-[72vh] overflow-y-auto pr-1">
-      {/* Advanced toggle — demotes the raw .md editor to an opt-in escape
+  const advancedControls = <>        {/* Advanced toggle — demotes the raw .md editor to an opt-in escape
           hatch. Form is the default surface. */}
       <div className="flex items-start gap-2">
         <Checkbox
@@ -302,12 +316,16 @@ export function RoutineEditor({
         </div>
       </div>
 
+ </>;
+
+  return (
+    <div className="settings-form flex min-h-0 flex-col gap-4">
       {advanced ? (
-        <RawEditor value={rawText} onChange={setRawText} liveError={liveError} />
+        <>{advancedControls}<RawEditor value={rawText} onChange={setRawText} liveError={liveError} /></>
       ) : (
         <div className="flex flex-col gap-4">
           {constraints.showAgentPicker && (
-            <div className="flex flex-col gap-1.5">
+            <Field className="gap-1.5">
               <Label className="text-xs font-medium text-muted-foreground">Agent</Label>
               <Popover open={agentPickerOpen} onOpenChange={setAgentPickerOpen}>
                 <PopoverTrigger asChild>
@@ -356,28 +374,28 @@ export function RoutineEditor({
               <p className="text-xs text-muted-foreground">
                 The agent this routine belongs to.
               </p>
-            </div>
+            </Field>
           )}
 
-          <div className="flex flex-col gap-1.5">
+          <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field className="gap-1.5">
             <Label htmlFor="routine-name" className="text-xs font-medium text-muted-foreground">
               Name
             </Label>
             <Input
               id="routine-name"
-              className="font-mono text-sm"
+              className="text-sm"
               placeholder="daily-digest"
               value={form.name}
               aria-invalid={form.name.length > 0 && !slugValid}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             />
             <p className="text-xs text-muted-foreground">
-              Lowercase slug — becomes the routine filename. Letters, digits, and
-              dashes.
+              Lowercase letters, numbers, and dashes.
             </p>
-          </div>
+          </Field>
 
-          <div className="flex flex-col gap-1.5">
+          <Field className="gap-1.5">
             <Label htmlFor="routine-description" className="text-xs font-medium text-muted-foreground">
               Description
             </Label>
@@ -388,19 +406,34 @@ export function RoutineEditor({
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
             />
-          </div>
+          </Field>
+
+          </FieldGroup>
+          <Field className="gap-1.5">
+            <Label htmlFor="routine-prompt" className="text-xs font-medium text-muted-foreground">
+              {agentName ? `What should ${agentName} do?` : 'Prompt'}
+            </Label>
+            <Textarea
+              id="routine-prompt"
+              className="min-h-[88px]"
+              placeholder="The instruction the agent receives on every fire."
+              value={form.promptBody}
+              onChange={(e) => setForm((f) => ({ ...f, promptBody: e.target.value }))}
+            />
+          </Field>
 
           {/* Trigger kind — hidden when only one kind is allowed (defaults). */}
           {triggerOptions.length > 1 && (
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">Trigger</Label>
+            <Field className="gap-1.5">
+              <Label id="routine-trigger-label" className="text-xs font-medium text-muted-foreground">When to run</Label>
               <ToggleGroup
                 type="single"
+                aria-labelledby="routine-trigger-label"
                 value={form.triggerKind}
                 onValueChange={(v) => {
                   if (v) setForm((f) => ({ ...f, triggerKind: v as TriggerKind }));
                 }}
-                className="justify-start"
+                className="justify-start [&_[data-state=on]]:bg-primary-soft [&_[data-state=on]]:text-primary"
               >
                 {triggerOptions.map((k) => (
                   <ToggleGroupItem key={k} value={k}>
@@ -408,48 +441,36 @@ export function RoutineEditor({
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
-            </div>
+            </Field>
           )}
 
           <TriggerFields form={form} setForm={setForm} />
+          <WebhookUrlPreview agentId={fixedAgentId ?? agentId} path={form.webhookPath} editing={initial !== undefined} active={form.triggerKind === 'webhook'} />
 
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs font-medium text-muted-foreground">Conversation</Label>
+          <Field className="gap-1.5">
+            <Label id="routine-conversation-label" className="text-xs font-medium text-muted-foreground">Conversation</Label>
             <ToggleGroup
               type="single"
+              aria-labelledby="routine-conversation-label"
               value={form.conversation}
               onValueChange={(v) => {
                 if (v === 'per-fire' || v === 'shared') {
                   setForm((f) => ({ ...f, conversation: v }));
                 }
               }}
-              className="justify-start"
+              className="justify-start [&_[data-state=on]]:bg-primary-soft [&_[data-state=on]]:text-primary"
             >
-              <ToggleGroupItem value="per-fire">Per-fire</ToggleGroupItem>
-              <ToggleGroupItem value="shared">Shared</ToggleGroupItem>
+              <ToggleGroupItem value="per-fire">New each run</ToggleGroupItem>
+              <ToggleGroupItem value="shared">One ongoing thread</ToggleGroupItem>
             </ToggleGroup>
             <p className="text-xs text-muted-foreground">
-              Per-fire opens a fresh conversation each run; shared appends to one
-              ongoing thread.
+              {form.conversation === 'per-fire' ? 'Each run starts in a fresh conversation.' : 'Each run continues the same conversation.'}
             </p>
-          </div>
+          </Field>
 
-          <OptionsSection form={form} setForm={setForm} />
+          <OptionsSection form={form} setForm={setForm} advancedControls={advancedControls} />
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="routine-prompt" className="text-xs font-medium text-muted-foreground">
-              Prompt
-            </Label>
-            <Textarea
-              id="routine-prompt"
-              className="font-mono text-xs min-h-[160px]"
-              placeholder="The instruction the agent receives on every fire."
-              value={form.promptBody}
-              onChange={(e) => setForm((f) => ({ ...f, promptBody: e.target.value }))}
-            />
-          </div>
-
-          {liveError !== null && (
+          {liveError !== null && (form.name.trim() || form.description.trim()) && (
             <Alert variant="destructive">
               <AlertDescription className="text-xs">{liveError}</AlertDescription>
             </Alert>
@@ -463,7 +484,15 @@ export function RoutineEditor({
         </Alert>
       )}
 
-      <div className="flex justify-end gap-2">
+      <Separator />
+      <div className="flex flex-wrap items-center justify-end gap-2 bg-background pt-1">
+        <Field orientation="horizontal" className="mr-auto w-auto gap-2">
+          <Label htmlFor="routine-enabled">Enabled</Label>
+          <Switch id="routine-enabled" checked={advanced && parsed.ok ? parsed.fields.enabled ?? true : form.enabled} onCheckedChange={(enabled) => {
+            setForm((f) => ({ ...f, enabled }));
+            if (advanced && parsed.ok) setRawText(buildRoutineMd({ ...parsed.fields, enabled }));
+          }} />
+        </Field>
         <Button variant="outline" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
@@ -557,13 +586,13 @@ interface FieldProps {
 function TriggerFields({ form, setForm }: FieldProps) {
   if (form.triggerKind === 'interval') {
     return (
-      <div className="flex flex-col gap-1.5">
+      <Field className="gap-1.5">
         <Label htmlFor="routine-interval" className="text-xs font-medium text-muted-foreground">
           Interval
         </Label>
         <Input
           id="routine-interval"
-          className="font-mono text-sm"
+          className="text-sm"
           placeholder="1h"
           value={form.intervalEvery}
           onChange={(e) => setForm((f) => ({ ...f, intervalEvery: e.target.value }))}
@@ -573,14 +602,14 @@ function TriggerFields({ form, setForm }: FieldProps) {
           <code className="font-mono">5m</code>, <code className="font-mono">1h</code>,{' '}
           <code className="font-mono">1d</code> (minimum 60s).
         </p>
-      </div>
+      </Field>
     );
   }
   if (form.triggerKind === 'cron') {
     return (
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1.5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field className="gap-1.5">
             <Label htmlFor="routine-cron-expr" className="text-xs font-medium text-muted-foreground">
               Cron expression
             </Label>
@@ -594,26 +623,26 @@ function TriggerFields({ form, setForm }: FieldProps) {
             */}
             <Input
               id="routine-cron-expr"
-              className="font-mono text-sm"
+              className="text-sm"
               placeholder="0 2 * * *"
               value={form.cronExpr}
               onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
               aria-describedby="routine-cron-preview"
               aria-invalid={isCronInvalid(form.cronExpr, form.cronTz) || undefined}
             />
-          </div>
-          <div className="flex flex-col gap-1.5">
+          </Field>
+          <Field className="gap-1.5">
             <Label htmlFor="routine-cron-tz" className="text-xs font-medium text-muted-foreground">
               Timezone
             </Label>
             <Input
               id="routine-cron-tz"
-              className="font-mono text-sm"
+              className="text-sm"
               placeholder="America/New_York"
               value={form.cronTz}
               onChange={(e) => setForm((f) => ({ ...f, cronTz: e.target.value }))}
             />
-          </div>
+          </Field>
         </div>
         <CronPreview expr={form.cronExpr} tz={form.cronTz} />
       </div>
@@ -621,39 +650,37 @@ function TriggerFields({ form, setForm }: FieldProps) {
   }
   // webhook
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1.5">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <Field className="gap-1.5">
         <Label htmlFor="routine-webhook-path" className="text-xs font-medium text-muted-foreground">
           Webhook path
         </Label>
         <Input
           id="routine-webhook-path"
-          className="font-mono text-sm"
+          className="text-sm"
           placeholder="/gh/push"
           value={form.webhookPath}
           onChange={(e) => setForm((f) => ({ ...f, webhookPath: e.target.value }))}
         />
         <p className="text-xs text-muted-foreground">
-          Must start with <code className="font-mono">/</code>. The full receiver
-          URL includes a per-agent token prefix.
+          Must start with <code className="font-mono">/</code>. Letters, numbers, dots, dashes, underscores, and slashes.
         </p>
-      </div>
-      <div className="flex flex-col gap-1.5">
+      </Field>
+      <Field className="gap-1.5">
         <Label htmlFor="routine-webhook-events" className="text-xs font-medium text-muted-foreground">
           Events (comma-separated)
         </Label>
         <Input
           id="routine-webhook-events"
-          className="font-mono text-sm"
+          className="text-sm"
           placeholder="push, pull_request"
           value={form.webhookEvents}
           onChange={(e) => setForm((f) => ({ ...f, webhookEvents: e.target.value }))}
         />
         <p className="text-xs text-muted-foreground">
-          Optional GitHub-style event filter. HMAC signing is configured in
-          Advanced (raw) mode.
+          Optional event filter. Leave blank to accept all events.
         </p>
-      </div>
+      </Field>
       {form.webhookHmac !== null && (
         <p className="text-xs text-muted-foreground">
           HMAC verification is configured (
@@ -667,24 +694,25 @@ function TriggerFields({ form, setForm }: FieldProps) {
 
 // ── Optional fields (silence + active hours) ─────────────────────────────────
 
-function OptionsSection({ form, setForm }: FieldProps) {
+function OptionsSection({ form, setForm, advancedControls }: FieldProps & { advancedControls: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const activeHoursOn = form.activeHours !== null;
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="self-start px-1 text-xs text-muted-foreground">
-          {open ? 'Hide options' : 'More options'}
+        <Button type="button" variant="ghost" size="sm" className="w-full justify-start gap-2 px-0">
+          Optional settings <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">Active hours · quiet responses</span><ChevronRight data-icon="inline-end" />
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="flex flex-col gap-3 pt-2">
-        <div className="flex flex-col gap-1.5">
+        {advancedControls}
+        <Field className="gap-1.5">
           <Label htmlFor="routine-silence-token" className="text-xs font-medium text-muted-foreground">
             Silence token
           </Label>
           <Input
             id="routine-silence-token"
-            className="font-mono text-sm"
+            className="text-sm"
             placeholder="NOTHING_TO_REPORT"
             value={form.silenceToken}
             onChange={(e) => setForm((f) => ({ ...f, silenceToken: e.target.value }))}
@@ -693,8 +721,8 @@ function OptionsSection({ form, setForm }: FieldProps) {
             If the run outputs only this token (within the limit below), the fire
             is silenced.
           </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
+        </Field>
+        <Field className="gap-1.5">
           <Label htmlFor="routine-silence-max" className="text-xs font-medium text-muted-foreground">
             Silence max chars
           </Label>
@@ -708,9 +736,10 @@ function OptionsSection({ form, setForm }: FieldProps) {
               setForm((f) => ({ ...f, silenceMaxChars: Number.isNaN(n) ? 0 : n }));
             }}
           />
-        </div>
+        </Field>
         <div className="flex items-start gap-2">
           <Checkbox
+            disabled={form.triggerKind === 'webhook'}
             id="routine-active-hours"
             checked={activeHoursOn}
             onCheckedChange={(v) =>
@@ -724,15 +753,16 @@ function OptionsSection({ form, setForm }: FieldProps) {
             Restrict to active hours
           </label>
         </div>
-        {activeHoursOn && form.activeHours !== null && (
-          <div className="grid grid-cols-3 gap-3">
-            <div className="flex flex-col gap-1.5">
+        {form.triggerKind === 'webhook' && <p className="text-xs text-muted-foreground">Active hours apply to schedules and intervals.</p>}
+        {form.triggerKind !== 'webhook' && activeHoursOn && form.activeHours !== null && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Field className="gap-1.5">
               <Label htmlFor="routine-ah-start" className="text-xs font-medium text-muted-foreground">
                 Start
               </Label>
               <Input
                 id="routine-ah-start"
-                className="font-mono text-sm"
+                className="text-sm"
                 placeholder="09:00"
                 value={form.activeHours.start}
                 onChange={(e) =>
@@ -742,14 +772,14 @@ function OptionsSection({ form, setForm }: FieldProps) {
                   }))
                 }
               />
-            </div>
-            <div className="flex flex-col gap-1.5">
+            </Field>
+            <Field className="gap-1.5">
               <Label htmlFor="routine-ah-end" className="text-xs font-medium text-muted-foreground">
                 End
               </Label>
               <Input
                 id="routine-ah-end"
-                className="font-mono text-sm"
+                className="text-sm"
                 placeholder="17:00"
                 value={form.activeHours.end}
                 onChange={(e) =>
@@ -759,14 +789,14 @@ function OptionsSection({ form, setForm }: FieldProps) {
                   }))
                 }
               />
-            </div>
-            <div className="flex flex-col gap-1.5">
+            </Field>
+            <Field className="gap-1.5">
               <Label htmlFor="routine-ah-tz" className="text-xs font-medium text-muted-foreground">
                 Timezone
               </Label>
               <Input
                 id="routine-ah-tz"
-                className="font-mono text-sm"
+                className="text-sm"
                 value={form.activeHours.tz}
                 onChange={(e) =>
                   setForm((f) => ({
@@ -775,7 +805,7 @@ function OptionsSection({ form, setForm }: FieldProps) {
                   }))
                 }
               />
-            </div>
+            </Field>
           </div>
         )}
       </CollapsibleContent>
@@ -795,7 +825,7 @@ function RawEditor({
   liveError: string | null;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div className="flex flex-col gap-1">
         <Label className="text-xs font-medium text-muted-foreground">Routine .md</Label>
         <Textarea

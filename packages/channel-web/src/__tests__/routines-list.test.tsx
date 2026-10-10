@@ -432,3 +432,16 @@ describe('RoutinesList', () => {
     expect(deleteCalls).toHaveLength(1);
   });
 });
+
+ describe('agent settings routine creation', () => {
+  it('opens the requested shared editor while list data is pending', async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    const props = { agentId: 'agt_a', onFired: vi.fn(), hideCreateAction: true };
+    const { rerender } = render(<RoutinesList {...props} createRequest={0} />);
+    expect(screen.getByText('Loading…')).toBeTruthy();
+    rerender(<RoutinesList {...props} createRequest={1} />);
+    expect(await screen.findByTestId('routine-editor')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editor' }));
+    await waitFor(() => expect(screen.queryByTestId('routine-editor')).toBeNull());
+  });
+});

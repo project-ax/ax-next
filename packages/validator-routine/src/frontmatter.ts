@@ -36,6 +36,7 @@ export interface ActiveHours {
 export interface RoutineFrontmatterFields {
   name: string;
   description: string;
+  enabled?: boolean;
   trigger: TriggerSpec;
   activeHours?: ActiveHours;
   silenceToken?: string;
@@ -75,6 +76,10 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
   }
   if (typeof obj['description'] !== 'string' || (obj['description'] as string).length === 0) {
     return fail('frontmatter missing required field: description');
+  }
+
+  if (obj['enabled'] !== undefined && typeof obj['enabled'] !== 'boolean') {
+    return fail('enabled must be a boolean');
   }
 
   const triggerRaw = obj['trigger'];
@@ -136,6 +141,7 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
       if (pathRaw.startsWith('/webhooks/')) {
         return fail('webhook.path: must not start with /webhooks/');
       }
+      if (pathRaw.split('/').includes('.')) return fail('webhook.path: must not contain . segments');
       if (pathRaw.includes('..')) {
         return fail('webhook.path: must not contain ..');
       }
@@ -268,6 +274,7 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
     conversation,
     promptBody,
   };
+  if (obj['enabled'] !== undefined) fields.enabled = obj['enabled'] as boolean;
   if (activeHours !== undefined) fields.activeHours = activeHours;
   if (silenceToken !== undefined) fields.silenceToken = silenceToken;
   return { ok: true, fields };
@@ -328,6 +335,7 @@ export function buildRoutineMd(fields: RoutineFrontmatterFields): string {
     description: fields.description,
     trigger,
   };
+  if (fields.enabled !== undefined) doc['enabled'] = fields.enabled;
   if (fields.activeHours !== undefined) doc['activeHours'] = fields.activeHours;
   if (fields.silenceToken !== undefined) doc['silenceToken'] = fields.silenceToken;
   if (fields.silenceMaxChars !== DEFAULT_SILENCE_MAX_CHARS) {
