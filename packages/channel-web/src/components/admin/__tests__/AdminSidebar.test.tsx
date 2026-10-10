@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render as renderComponent, fireEvent, screen } from '@testing-library/react';
 import { AdminSidebar } from '../AdminSidebar';
+
+function render(...args: Parameters<typeof renderComponent>) {
+  const result = renderComponent(...args);
+  const administration = screen.queryByRole('button', { name: 'Administration' });
+  if (administration?.getAttribute('aria-expanded') === 'false') fireEvent.click(administration);
+  return result;
+}
 
 const noop = () => {};
 
@@ -185,4 +192,19 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.queryByText('Models')).not.toBeInTheDocument();
   });
 
+});
+
+it('collapses Administration on personal screens and follows the active section', () => {
+  const props = { isAdmin: true, onTabChange: noop, onBack: noop, backLabel: 'workspace' };
+  const { rerender } = renderComponent(<AdminSidebar {...props} activeTab="skills" />);
+  expect(screen.getByRole('button', { name: 'Administration' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('button', { name: 'Models' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Administration' }));
+  expect(screen.getByRole('button', { name: 'Models' })).toBeVisible();
+  rerender(<AdminSidebar {...props} activeTab="models" />);
+  expect(screen.getByRole('button', { name: 'Administration' })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByRole('button', { name: 'Models' })).toHaveAttribute('aria-current', 'page');
+  rerender(<AdminSidebar {...props} activeTab="agents" />);
+  expect(screen.getByRole('button', { name: 'Administration' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page');
 });

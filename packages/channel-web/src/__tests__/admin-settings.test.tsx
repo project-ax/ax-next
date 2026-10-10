@@ -15,10 +15,17 @@
  * when no provider is mounted). We wrap every render in a UserProvider.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render as renderComponent, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AdminShell } from '../components/admin/AdminShell';
 import { UserProvider } from '../lib/user-context';
 import type { AuthUser } from '../lib/auth';
+
+function render(...args: Parameters<typeof renderComponent>) {
+  const result = renderComponent(...args);
+  const administration = screen.queryByRole('button', { name: 'Administration' });
+  if (administration?.getAttribute('aria-expanded') === 'false') fireEvent.click(administration);
+  return result;
+}
 
 const fetchMock = vi.fn();
 
@@ -142,9 +149,10 @@ describe('AdminShell', () => {
   it('clicking the "Helper model" nav item shows ModelConfigTab', async () => {
     renderShell();
     fireEvent.click(screen.getByRole('button', { name: /helper model/i }));
-    // ModelConfigTab renders a save button.
+    // Helper model is editable and shows its saved selection.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Save changes/i })).toBeTruthy();
+      expect(screen.getByRole('combobox')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Save changes/i })).toBeNull();
     });
   });
 
@@ -153,7 +161,7 @@ describe('AdminShell', () => {
     renderShell(onClose);
     // The back button in AdminSidebar renders as a button with text "chat"
     // (and a ChevronLeft icon). The accessible name is "chat".
-    fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Back to chat$/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

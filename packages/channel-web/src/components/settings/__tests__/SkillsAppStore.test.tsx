@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SkillsAppStore } from '../SkillsAppStore';
 import type { ConnectionSkill, CatalogSkillListing } from '@/lib/connections';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
@@ -102,6 +102,14 @@ beforeEach(() => {
   mockSetDefault.mockResolvedValue(undefined);
 });
 
+async function openSkillDetails(testId: string) {
+  const active = screen.queryByRole('dialog');
+  if (active) fireEvent.click(within(active).getByRole('button', { name: 'Close' }));
+  fireEvent.mouseDown(screen.getByRole('tab', { name: testId.startsWith('catalog-') ? 'Browse' : 'Installed' }));
+  const row = await screen.findByTestId(testId);
+  fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+}
+
 describe('SkillsAppStore', () => {
   /**
    * A walk on a fresh cluster found the page arguing with itself. With nothing
@@ -167,6 +175,7 @@ describe('SkillsAppStore', () => {
     // counting Install buttons.
     await screen.findByTestId('catalog-pdf-tools');
     // Only one "Install" button — for pdf-tools — since web-search is installed.
+    await openSkillDetails('catalog-pdf-tools');
     const installButtons = screen.getAllByRole('button', { name: /^Install$/i });
     expect(installButtons).toHaveLength(1);
     // web-search is NOT on the catalog shelf (it's installed).
@@ -184,6 +193,7 @@ describe('SkillsAppStore', () => {
   it('opens the consent dialog when Install is clicked', async () => {
     render(<SkillsAppStore isAdmin={false} />);
     await screen.findByTestId('catalog-pdf-tools');
+    await openSkillDetails('catalog-pdf-tools');
     fireEvent.click(screen.getByRole('button', { name: /^Install$/i }));
     // The consent dialog titles itself "Install <skillId>".
     expect(await screen.findByText('Install PDF tools')).toBeInTheDocument();
@@ -214,7 +224,9 @@ describe('SkillsAppStore', () => {
     ]);
     render(<SkillsAppStore isAdmin={true} />);
     await screen.findByTestId('catalog-pdf-tools');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Browse' }));
     expect(screen.getByRole('button', { name: /Add to workspace/i })).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Review' }));
     expect(await screen.findByText(/Awaiting review \(1\)/i)).toBeInTheDocument();
   });
 
@@ -256,16 +268,16 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
 
     const row = await screen.findByTestId('authored-drafted');
-    const desc = row.querySelector('.truncate');
+    const desc = row.querySelector('.break-words');
     expect(desc).not.toBeNull();
     // `truncate` without `block` is inert on a span in a block parent.
-    expect(desc!.className).toContain('block');
+    expect(desc!.className).toContain('break-words');
 
     // The catalog shelf's description has the same block parent and the same bug.
     const catalogRow = await screen.findByTestId('catalog-pdf-tools');
-    const catalogDesc = catalogRow.querySelector('.truncate');
+    const catalogDesc = catalogRow.querySelector('.break-words');
     expect(catalogDesc).not.toBeNull();
-    expect(catalogDesc!.className).toContain('block');
+    expect(catalogDesc!.className).toContain('break-words');
   });
 
   it('an authored draft shows an Edit (adopt-&-edit) button', async () => {
@@ -274,6 +286,7 @@ describe('SkillsAppStore', () => {
     const row = await screen.findByTestId('authored-drafted');
     expect(row).toBeInTheDocument();
     expect(screen.getByText('Authored by your agents')).toBeInTheDocument();
+    await openSkillDetails('authored-drafted');
     expect(screen.getByRole('button', { name: /Edit drafted/i })).toBeInTheDocument();
   });
 
@@ -283,6 +296,7 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
     await screen.findByTestId('authored-drafted');
 
+    await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
 
     // The adopt call is made with the draft's (agentId, skillId).
@@ -301,6 +315,7 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
     await screen.findByTestId('authored-drafted');
 
+    await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
 
     expect(await screen.findByText(/not-adoptable/i)).toBeInTheDocument();
@@ -336,6 +351,7 @@ describe('SkillsAppStore', () => {
     ]);
 
     render(<SkillsAppStore isAdmin={true} />);
+    await openSkillDetails('installed-agent-skill');
     const removeBtn = await screen.findByRole('button', {
       name: /Remove agent-skill from this agent/i,
     });
@@ -358,6 +374,7 @@ describe('SkillsAppStore', () => {
     mockListUserSkills.mockResolvedValue([]);
 
     render(<SkillsAppStore isAdmin={true} />);
+    await openSkillDetails('installed-web-search');
     const unsetBtn = await screen.findByRole('button', {
       name: /Unset web-search as a workspace default/i,
     });
@@ -381,6 +398,7 @@ describe('SkillsAppStore', () => {
     await screen.findByTestId('installed-agent-skill');
     expect(screen.queryByRole('button', { name: /Remove agent-skill/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /Unset .* default/i })).toBeNull();
+    await openSkillDetails('installed-agent-skill');
     expect(screen.getByText('set by admin')).toBeInTheDocument();
   });
 
@@ -394,10 +412,13 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
     // The catalog is still browsable, but every Install button is disabled.
     await screen.findByTestId('catalog-web-search');
+    await openSkillDetails('catalog-pdf-tools');
     const installButtons = screen.getAllByRole('button', { name: /^Install$/i });
     expect(installButtons.length).toBeGreaterThan(0);
     for (const b of installButtons) expect(b).toBeDisabled();
     // The empty INSTALLED state explains the fix: create an agent on the Agents tab.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Installed' }));
     expect(screen.getByText(/Agents tab/i)).toBeInTheDocument();
   });
 
@@ -408,6 +429,7 @@ describe('SkillsAppStore', () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
     render(<SkillsAppStore isAdmin={false} />);
     await screen.findByTestId('authored-drafted');
+    await openSkillDetails('authored-drafted');
     expect(screen.getByRole('button', { name: /Delete drafted/i })).toBeInTheDocument();
   });
 
@@ -419,6 +441,7 @@ describe('SkillsAppStore', () => {
     await screen.findByTestId('authored-drafted');
 
     // Click Delete → a confirmation dialog appears (no call yet).
+    await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Delete drafted/i }));
     expect(await screen.findByText(/Delete authored draft\?/i)).toBeInTheDocument();
     expect(mockDeleteAuthored).not.toHaveBeenCalled();
@@ -443,6 +466,7 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
     await screen.findByTestId('authored-drafted');
 
+    await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Delete drafted/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^Delete$/ }));
 
@@ -481,6 +505,7 @@ describe('SkillsAppStore', () => {
     // It shows the "your own" badge.
     expect(screen.getByText('My brand-new skill.')).toBeInTheDocument();
     // Edit and Delete buttons are present.
+    await openSkillDetails('installed-my-new-skill');
     expect(screen.getByRole('button', { name: /Edit my-new-skill/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Delete my-new-skill/i })).toBeInTheDocument();
   });
@@ -544,6 +569,7 @@ describe('SkillsAppStore', () => {
     // is only in the authored section — NOT in ownNotInstalled — so the Edit
     // button is unambiguous.
     await screen.findByTestId('authored-drafted');
+    await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
     await waitFor(() => expect(mockAdoptAuthored).toHaveBeenCalledWith('a1', 'drafted'));
 

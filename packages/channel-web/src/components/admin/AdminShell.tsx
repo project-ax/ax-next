@@ -1,7 +1,8 @@
-import { Menu } from 'lucide-react';
+import { ArrowLeft, Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useIsCompact } from '@/lib/use-compact';
+import { SettingsActionsContext } from '../settings/SettingsLayout';
 import { ModelsTab } from './ModelsTab';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ADMIN_NAV, AdminSidebar, type AdminTabId } from './AdminSidebar';
@@ -72,6 +73,22 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   usage: { eyebrow: 'Admin', title: 'Usage and limits' },
 };
 
+const TAB_HELP: Record<AdminTabId, string> = {
+  skills: 'Install skills from your workspace, or create your own. Choose an agent to manage its skills.',
+  sites: 'Allowed sites control an agent’s network access. Remembered choices control which pages we read without asking. These permissions are separate.',
+  agents: 'Manage your agents, their models, identity, and skills. Each agent has its own workspace.',
+  routines: 'Schedule work for your agents, configure self-improvement, and manage workspace defaults.',
+  storage: 'Your agents’ files and everything you upload share the same storage limit. Admins can manage workspace limits here.',
+  connectors: 'Define the connectors available in your workspace. People add them to their agents from the agent’s settings.',
+  providers: 'Manage the API keys for your model providers. Keys are encrypted at rest and never returned in plaintext.',
+  models: 'Choose which models people can use and the default for agents. Removing a model may move agents onto the default.',
+  'model-config': 'Used for conversation titles and quick tasks. Each agent’s chat model is chosen in Agents. Choose from the models enabled in Models.',
+  'auth-providers': 'Manage the methods people use to sign in. Client secrets are encrypted at rest and never returned in plaintext.',
+  teams: 'Teams are view-only for now. You can see the teams you’re in, but cannot create or change them.',
+  branding: 'Set the name and logo shown across the app, sign-in page, and browser tab. Branding is public so people see it before signing in.',
+  usage: 'Review estimated model spending, message counts, and workspace limits. You can pause agents or change a person’s limits.',
+};
+
 export function AdminShell({
   isAdmin,
   onClose,
@@ -89,6 +106,7 @@ export function AdminShell({
       : 'skills',
   );
   const meta = TAB_META[activeTab];
+  const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
   const compact = useIsCompact();
   const [navOpen, setNavOpen] = useState(false);
 
@@ -113,7 +131,8 @@ export function AdminShell({
   }, []);
 
   return (
-    <div className="ax-settings-frame flex flex-1 min-w-0 h-full bg-canvas">
+    <SettingsActionsContext.Provider value={actionsTarget}>
+    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-background">
       {compact ? (
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
           <SheetContent side="left" aria-describedby={undefined} className="flex w-[280px] flex-col gap-0 p-0">
@@ -126,16 +145,19 @@ export function AdminShell({
       ) : <AdminSidebar activeTab={activeTab} isAdmin={isAdmin} onTabChange={setActiveTab} onBack={onClose} backLabel={backLabel} />}
       <AdminPane
         header={
+          <div className="flex flex-col gap-10">
+          {compact && <div className="flex items-center justify-between">
+            <Button type="button" variant="ghost" className="justify-start px-0" onClick={onClose} aria-label={`Back to ${backLabel}`}><ArrowLeft aria-hidden="true" /><span className="capitalize">{backLabel}</span></Button>
+            <Button type="button" variant="ghost" size="icon" aria-label="Open settings navigation" onClick={() => setNavOpen(true)}><Menu aria-hidden="true" /></Button>
+          </div>}
           <AdminPaneHeader
             eyebrow={meta.eyebrow}
             title={meta.title}
             headingRef={headingRef}
-            badge={compact ? (
-              <Button type="button" variant="ghost" size="icon" aria-label="Open settings navigation" onClick={() => setNavOpen(true)}>
-                <Menu aria-hidden="true" />
-              </Button>
-            ) : undefined}
+            actionsRef={setActionsTarget}
+            help={TAB_HELP[activeTab]}
           />
+          </div>
         }
       >
         {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
@@ -153,5 +175,6 @@ export function AdminShell({
         {activeTab === 'storage' && <StorageTab isAdmin={isAdmin} />}
       </AdminPane>
     </div>
+    </SettingsActionsContext.Provider>
   );
 }

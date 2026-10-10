@@ -14,8 +14,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Field, FieldContent, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
+import { SettingsDisclosure } from '../settings/SettingsLayout';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useBranding } from '@/lib/branding-context';
 import {
   putBranding,
@@ -71,11 +73,10 @@ function LogoField({
         ? false
         : hasCurrent;
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label>{label}</Label>
-      {hint !== undefined && (
-        <p className="text-[12px] text-muted-foreground">{hint}</p>
-      )}
+    <Field orientation="horizontal" className="min-h-16 flex-wrap border-b border-border py-3">
+      <FieldContent><FieldLabel>{label}</FieldLabel>
+      {hint !== undefined && <FieldDescription>{hint}</FieldDescription>}
+      </FieldContent>
       <div className="flex items-center gap-2.5">
         <input
           ref={inputRef}
@@ -95,7 +96,7 @@ function LogoField({
           size="sm"
           onClick={() => inputRef.current?.click()}
         >
-          {present ? 'Replace' : 'Choose file'}
+          {present ? 'Replace' : 'Upload'}
         </Button>
         {present && (
           <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
@@ -106,7 +107,7 @@ function LogoField({
           {statusText(change, hasCurrent)}
         </span>
       </div>
-    </div>
+    </Field>
   );
 }
 
@@ -318,50 +319,31 @@ export function BrandingTab() {
   const darkInvert = darkChosen === null && lightSrc !== null;
 
   return (
-    <div className="max-w-[640px] mx-auto font-sans">
-      <div className="mb-5">
-        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-          Branding
-        </h2>
-        <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Set the product name and logo your team sees in the header, sign-in
-          page, and browser tab. Reads are public so the login page shows your
-          branding before anyone signs in.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-5">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="branding-name">Product name</Label>
+    <div className="font-sans">
+      <FieldGroup className="gap-0">
+        <Field orientation="horizontal" className="min-h-16 flex-wrap border-b border-border py-3">
+          <FieldContent><FieldLabel htmlFor="branding-name">Product name</FieldLabel></FieldContent>
           <Input
+            className="w-full md:w-[280px]"
             id="branding-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="ax"
             maxLength={200}
           />
-        </div>
+        </Field>
 
-        <div className="flex flex-col gap-1.5">
-          <Label>Logo style</Label>
-          <ToggleGroup
-            type="single"
-            value={logoType}
-            onValueChange={(v) => {
-              if (v === 'full' || v === 'icon') setLogoType(v);
-            }}
-            className="justify-start"
-            aria-label="Logo style"
-          >
-            <ToggleGroupItem value="full">
-              Full logo (includes the name)
-            </ToggleGroupItem>
-            <ToggleGroupItem value="icon">
-              Icon only (show the name beside it)
-            </ToggleGroupItem>
-          </ToggleGroup>
-        </div>
-
+        <Field orientation="horizontal" className="min-h-16 flex-wrap border-b border-border py-3">
+          <FieldContent><FieldLabel htmlFor="branding-logo-style">Logo style</FieldLabel></FieldContent>
+          <Select value={logoType} onValueChange={(v) => { if (v === 'full' || v === 'icon') setLogoType(v); }}>
+            <SelectTrigger id="branding-logo-style" className="w-full md:w-[280px]"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectGroup>
+              <SelectItem value="full">Full logo</SelectItem>
+              <SelectItem value="icon">Icon and name</SelectItem>
+            </SelectGroup></SelectContent>
+          </Select>
+        </Field>
+        <h2 className="mt-6 text-sm font-medium">Logo</h2>
         <LogoField
           label="Light logo"
           testId="light-logo-input"
@@ -371,6 +353,7 @@ export function BrandingTab() {
           onRemove={() => setLight('clear')}
         />
 
+        <SettingsDisclosure title="Dark logo" value={darkChosen ? 'Custom' : 'Automatic'}>
         <LogoField
           label="Dark logo"
           hint="Optional — leave empty and we'll auto-invert the light logo for dark mode."
@@ -381,17 +364,12 @@ export function BrandingTab() {
           onRemove={() => setDark('clear')}
         />
 
+        </SettingsDisclosure>
         {fileError !== null && (
-          <div
-            role="alert"
-            className="px-2.5 py-1.5 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-          >
-            {fileError}
-          </div>
+          <Alert variant="destructive"><AlertDescription>{fileError}</AlertDescription></Alert>
         )}
 
-        <div className="flex flex-col gap-1.5">
-          <Label>Preview</Label>
+        <SettingsDisclosure title="Preview">
           <div className="grid grid-cols-2 gap-3">
             <PreviewTile
               surface="light"
@@ -408,33 +386,29 @@ export function BrandingTab() {
               logoType={logoType}
             />
           </div>
-        </div>
-      </div>
-
-      <div className="mt-6 pt-4 border-t border-rule-soft flex items-center gap-3">
-        <Button type="button" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
-        </Button>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           onClick={handleClear}
           disabled={saving}
         >
           Clear branding
         </Button>
+        </SettingsDisclosure>
+      </FieldGroup>
+
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        {(name !== branding.name || logoType !== branding.logoType || light !== null || dark !== null || savedOk) && <Button type="button" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save changes'}
+        </Button>}
+        {(name !== branding.name || logoType !== branding.logoType || light !== null || dark !== null) && <Button type="button" variant="ghost" disabled={saving} onClick={() => { setName(branding.name); setLogoType(branding.logoType); setLight(null); setDark(null); setFileError(null); setSaveError(null); }}>Cancel</Button>}
         {savedOk && (
           <span className="text-[12.5px] text-muted-foreground">
             Saved — your branding is live.
           </span>
         )}
         {saveError !== null && (
-          <div
-            role="alert"
-            className="px-2.5 py-1.5 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-          >
-            {saveError}
-          </div>
+          <Alert variant="destructive"><AlertDescription>{saveError}</AlertDescription></Alert>
         )}
       </div>
     </div>

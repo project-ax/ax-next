@@ -71,7 +71,7 @@ describe('AdminSettings — Teams tab', () => {
 
     render(<TeamList />);
     await waitFor(() =>
-      expect(screen.getByText(/team management is coming soon/i)).toBeTruthy(),
+      expect(screen.getByText(/Teams are view-only for now/i)).toBeTruthy(),
     );
     // (TASK-343/D6) Neither a path into our own repo nor our internal milestone
     // vocabulary belongs on a screen an operator reads. Both named things the

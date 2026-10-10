@@ -3,7 +3,7 @@ import { PersonalUsageLine } from './PersonalUsageLine';
  * UserMenu — popover at the bottom of the sidebar.
  *
  * Click the user row → opens a popover with: Settings (every user — TASK-42),
- * a theme tri-toggle (Light / Dark / System), and Sign out. (Neither Routines
+ * an Appearance submenu (Light / Dark / System), and Sign out. (Neither Routines
  * nor Credentials is a top-level entry anymore — both live inside Settings:
  * Routines is a Settings tab, credentials live on each connector.)
  *
@@ -14,12 +14,14 @@ import { PersonalUsageLine } from './PersonalUsageLine';
  * or the shell shows, and the user-scoped Settings routes server-force the
  * caller's own id (a user can only ever read/change their own data).
  */
-import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuPortal,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -37,13 +39,12 @@ import { IconTooltip } from './workspace/IconTooltip';
 interface ThemeOption {
   value: Theme;
   label: string;
-  Icon: typeof Sun;
 }
 const THEME_OPTIONS: ThemeOption[] = [
-  { value: 'light', label: 'Light', Icon: Sun },
-  { value: 'dark', label: 'Dark', Icon: Moon },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
   // 'auto' lets the OS preference drive (prefers-color-scheme); see lib/theme.ts.
-  { value: 'auto', label: 'System', Icon: Monitor },
+  { value: 'auto', label: 'System' },
 ];
 
 export function UserMenu({
@@ -157,37 +158,16 @@ export function UserMenu({
           </div>
           <PersonalUsageLine />
           <DropdownMenuItem
-            className="gap-2.5 px-2.5 py-2 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+            className="min-h-10 px-3 text-sm"
             onSelect={() => onOpenAdminSettings?.()}
             data-action="settings"
           >
-            <Settings aria-hidden="true" strokeWidth={1.4} />
             <span>Settings</span>
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {/*
-            (C5) Three unlabelled icons. A sun, a moon and a rectangle tell a
-            first-time reader nothing — and the one that matters most, "System",
-            is the least guessable of the three — so each option carries a
-            visible label, not a `title` only a patient mouse user would find.
-
-            (TASK-500) These are the menu's own radio items, not a hand-rolled
-            `role="radiogroup"` of buttons. Inside a Radix menu the content
-            swallows Tab and the roving focus walks only menu items, so the old
-            buttons were unreachable from the keyboard: ArrowDown went straight
-            from Settings to Sign out. `DropdownMenuRadioItem` is a
-            `menuitemradio` in that roving set, so the arrow keys land on each
-            theme and Enter/Space picks it — the WAI-ARIA menu pattern, which
-            also makes the ARIA valid (a `radiogroup` is not an allowed child
-            of a `menu`).
-
-            They stack vertically on purpose: a menu's arrow keys are Up/Down,
-            and a horizontal row whose options you reach with ArrowDown would
-            teach the wrong key.
-          */}
-          <DropdownMenuLabel className="px-2.5 pt-1.5 pb-1 text-[11px] font-normal text-muted-foreground">
-            Theme
-          </DropdownMenuLabel>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="min-h-10 px-3 text-sm">Appearance</DropdownMenuSubTrigger>
+            <DropdownMenuPortal>
+              <DropdownMenuSubContent className="min-w-44 p-1">
           <DropdownMenuRadioGroup
             aria-label="Theme"
             data-action="theme"
@@ -198,7 +178,7 @@ export function UserMenu({
               if (next) setTheme(next);
             }}
           >
-            {THEME_OPTIONS.map(({ value, label, Icon }) => (
+            {THEME_OPTIONS.map(({ value, label }) => (
               <DropdownMenuRadioItem
                 key={value}
                 value={value}
@@ -207,20 +187,21 @@ export function UserMenu({
                 // next arrow press can preview another one. Radix still fires
                 // `onValueChange` — its handler ignores `defaultPrevented`.
                 onSelect={(event) => event.preventDefault()}
-                className="gap-2.5 py-2 pr-2.5 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0"
+                className="min-h-10 py-2 pr-3 text-sm"
               >
-                <Icon className="text-muted-foreground" aria-hidden="true" strokeWidth={1.4} />
                 <span>{label}</span>
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuPortal>
+          </DropdownMenuSub>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            className="gap-2.5 px-2.5 py-2 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+            className="min-h-10 px-3 text-sm"
             onSelect={() => signOut()}
             data-action="sign-out"
           >
-            <LogOut aria-hidden="true" strokeWidth={1.4} />
             <span>Sign out</span>
           </DropdownMenuItem>
           <SidebarSectionLabel className="px-2.5 pt-2 pb-1 mt-1 border-t border-border">

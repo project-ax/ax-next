@@ -14,7 +14,8 @@
  * fixed-width strings.
  */
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, Plus, Pencil, Trash2, Copy, Check } from 'lucide-react';
+import { Pencil, Trash2, Copy, Check } from 'lucide-react';
+import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -72,6 +73,7 @@ function routineToFields(r: Routine): RoutineFrontmatterFields {
 type EditorMode = { kind: 'create' } | { kind: 'edit'; routine: Routine };
 
 export interface RoutinesListProps {
+  showHeaderAction?: boolean;
   refreshKey?: number;
   onFired: () => void;
   /**
@@ -99,7 +101,7 @@ function relativeTime(d: Date | null): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: RoutinesListProps) {
+export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false, showHeaderAction = true }: RoutinesListProps) {
   const [list, setList] = useState<Routine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -223,13 +225,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
 
   return (
     <>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-[13px] font-medium text-muted-foreground">Your routines</span>
-        <Button size="sm" onClick={() => setEditorMode({ kind: 'create' })}>
-          <Plus className="h-3.5 w-3.5 mr-1" />
-          New routine
-        </Button>
-      </div>
+      {showHeaderAction && <SettingsActions><Button onClick={() => setEditorMode({ kind: 'create' })}>New routine</Button></SettingsActions>}
 
       {error !== null && (
         <div
@@ -246,9 +242,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
 
       {list!.length === 0 ? (
         <PaneStatus variant="empty">
-          No routines yet. Click <span className="font-medium">New routine</span> to create one —
-          routines live in <code className="font-mono">.ax/routines/*.md</code> in the agent's
-          workspace, and you can also create them via chat or git.
+          No routines yet. Choose New routine to schedule work for an agent.
         </PaneStatus>
       ) : (
         <div className="flex flex-col">
@@ -256,36 +250,11 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
             const key = `${r.agentId}::${r.path}`;
             const isOpen = expanded === key;
             return (
-              <div key={key} className="border-b border-rule-soft last:border-b-0">
-                <div className="py-[1.125rem] flex items-center gap-3.5">
-                  <button
-                    type="button"
-                    aria-expanded={isOpen}
-                    aria-label={isOpen ? `Collapse ${r.name}` : `Expand ${r.name}`}
-                    onClick={() => toggle(r.agentId, r.path)}
-                    className="w-8 h-8 rounded-md bg-muted inline-flex items-center justify-center shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    <ChevronRight
-                      className="h-3.5 w-3.5 transition-transform duration-150"
-                      style={{ transform: isOpen ? 'rotate(90deg)' : undefined }}
-                      strokeWidth={1.4}
-                      aria-hidden="true"
-                    />
-                  </button>
-                  <span className="flex flex-col gap-0.5 flex-1 min-w-0">
-                    <span className="text-[15px] font-medium tracking-[-0.01em] truncate">
-                      {r.name}
-                    </span>
-                    <span className="text-[12.5px] text-muted-foreground font-mono tracking-[0.02em] truncate">
-                      {r.agentId} · {r.path}
-                    </span>
-                    {r.lastWarning !== null && <RunWarning text={r.lastWarning} truncate />}
-                  </span>
-                  <TriggerChip trigger={r.trigger} />
-                  <StatusChip status={r.lastStatus} />
-                  <span className="text-[12px] text-muted-foreground tabular-nums w-[5.5rem] text-right shrink-0">
-                    {relativeTime(r.lastRunAt)}
-                  </span>
+              <SettingsDetailRow key={key} label={r.name} description={r.description || 'Manage this routine.'}
+                detail={<span className="flex flex-col gap-1"><span className="inline-flex flex-wrap items-center gap-2"><TriggerChip trigger={r.trigger} /> · {relativeTime(r.lastRunAt)}</span>{r.lastWarning != null && <RunWarning text={r.lastWarning} />}</span>}
+                value={<StatusChip status={r.lastStatus} />}>
+                {(close) => <>
+                <div className="flex flex-wrap items-center gap-2">
                   <FireNowControl
                     routine={r}
                     onFired={() => {
@@ -300,7 +269,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     variant="ghost"
                     size="sm"
                     aria-label={`Edit ${r.name}`}
-                    onClick={() => setEditorMode({ kind: 'edit', routine: r })}
+                    onClick={() => { close(); setEditorMode({ kind: 'edit', routine: r }); }}
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
@@ -309,6 +278,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     size="sm"
                     aria-label={`Delete ${r.name}`}
                     onClick={() => {
+                      close();
                       setDeleteError(null);
                       setPendingDelete(r);
                     }}
@@ -316,8 +286,9 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
+                <Button type="button" variant="outline" onClick={() => toggle(r.agentId, r.path)}>{isOpen ? 'Hide recent runs' : 'Recent runs'}</Button>
                 {isOpen && (
-                  <div className="pb-4 pl-[2.875rem] pr-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+                  <div className="pb-4">
                     {firesError[key] !== undefined ? (
                       <div className="text-[12.5px] text-destructive">Error: {firesError[key]}</div>
                     ) : fires[key] === undefined ? (
@@ -330,7 +301,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                   </div>
                 )}
                 {r.trigger.kind === 'webhook' && (
-                  <div className="pb-3 pl-[2.875rem] pr-2 flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 pb-3">
                     <WebhookReceiver
                       state={webhookTokens[r.agentId]}
                       path={r.trigger.path}
@@ -361,7 +332,8 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     )}
                   </div>
                 )}
-              </div>
+                </>}
+              </SettingsDetailRow>
             );
           })}
         </div>

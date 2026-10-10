@@ -472,7 +472,9 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
   });
@@ -483,7 +485,9 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const tile = screen.getByTestId('connector-tile-company-salesforce');
+    const row = screen.getByTestId('connector-tile-company-salesforce');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     expect(within(tile).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
     expect(within(tile).queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
   });
@@ -493,7 +497,9 @@ describe('ConnectorsTab', () => {
   it('a connector the server sent without canEdit is editable (any admin may edit a shared one)', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const tile = screen.getByTestId('connector-tile-company-salesforce');
+    const row = screen.getByTestId('connector-tile-company-salesforce');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
   });
@@ -509,7 +515,9 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(screen.getByRole('button', { name: /new connector/i })).toBeInTheDocument();
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
     // The connector "default" concept is gone: no per-row default toggle.
@@ -526,7 +534,9 @@ describe('ConnectorsTab', () => {
   it('admin per-row Edit opens the edit form prefilled', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^edit$/i }));
     const nameInput = await screen.findByLabelText(/service name/i);
     await waitFor(() => expect(nameInput).toHaveValue('My Notion'));
@@ -536,7 +546,9 @@ describe('ConnectorsTab', () => {
     const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
     expect(await screen.findByText(/delete connector\?/i)).toBeInTheDocument();
     // The dialog's Delete button (the destructive confirm) is the last one.
@@ -556,7 +568,9 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const listCalls = vi.mocked(connectorsLib.listConnectors).mock.calls.length;
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
     await screen.findByText(/delete connector\?/i);
     fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i }).at(-1)!);
@@ -583,6 +597,7 @@ describe('ConnectorsTab', () => {
   it('tells people where they sign in', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
+    fireEvent.click(within(screen.getByTestId('connector-tile-my-notion')).getByRole('button', { name: /^Details for / }));
     expect(
       screen.getByText(/People sign in from each agent’s Connectors tab\./),
     ).toBeInTheDocument();
@@ -622,10 +637,12 @@ describe('ConnectorsTab', () => {
   it('an editable tile shows exactly Edit and Delete', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
+    const row = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
     expect(
       within(tile)
-        .getAllByRole('button')
+        .getAllByRole('button').filter((button) => button.textContent !== 'Close')
         .map((b) => b.textContent?.trim()),
     ).toEqual(['Edit', 'Delete']);
   });
@@ -636,8 +653,11 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const tile = screen.getByTestId('connector-tile-company-salesforce');
-    expect(within(tile).queryAllByRole('button')).toEqual([]);
+    const row = screen.getByTestId('connector-tile-company-salesforce');
+    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const tile = screen.getByRole('dialog');
+    expect(within(tile).queryByRole('button', { name: /^edit$/i })).toBeNull();
+    expect(within(tile).queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
   // Slice 2a: the two site lists moved to their own Settings › Sites page
@@ -676,8 +696,7 @@ describe('ConnectorsTab', () => {
 
     expect(headingOutlineProblems(document.body, 2)).toEqual([]);
     expect(headingOutline()).toEqual([
-      'h2: Connectors',
-      'h3: Awaiting approval (1)',
+            'h2: Awaiting approval (1)',
     ]);
   });
 });

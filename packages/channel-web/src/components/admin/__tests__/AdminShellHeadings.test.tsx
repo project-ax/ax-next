@@ -23,7 +23,7 @@
  * `TABS` below is the live list.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render as renderComponent, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AdminShell } from '../AdminShell';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
@@ -37,6 +37,13 @@ import {
   bodies render their real chrome (which is where the headings are) rather than
   an error pane — see `AdminShell.test.tsx`, which documents the same routes.
 */
+function render(...args: Parameters<typeof renderComponent>) {
+  const result = renderComponent(...args);
+  const administration = screen.queryByRole('button', { name: 'Administration' });
+  if (administration?.getAttribute('aria-expanded') === 'false') fireEvent.click(administration);
+  return result;
+}
+
 const fetchMock = vi.fn();
 function emptyResponse(url: string): Response {
   const json = (body: unknown) =>
@@ -194,8 +201,8 @@ describe('AdminShell heading outline', () => {
     await waitFor(() =>
       expect(headingOutline()).toEqual([
         'h1: Usage and limits',
-        'h2: Limits',
         'h2: Last 24 hours',
+        'h2: Limits',
       ]),
     );
     expect(headingOutlineProblems()).toEqual([]);
@@ -218,8 +225,7 @@ describe('AdminShell heading outline', () => {
       expect(headingOutline()).toEqual([
         'h1: Storage',
         'h2: Your storage',
-        'h2: Storage limits',
-        "h2: Everyone's storage",
+        'h2: Workspace',
       ]),
     );
     expect(headingOutlineProblems()).toEqual([]);

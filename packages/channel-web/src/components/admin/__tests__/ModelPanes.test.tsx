@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { CatalogProvider } from '@/lib/models-admin';
 import { filterProviders, removeModel, setDefault, toggleModel, addModels, type Draft } from '@/lib/models-picker';
 import { ModelCatalogPane } from '../ModelCatalogPane';
@@ -47,6 +47,14 @@ function Harness(props: { providers?: CatalogProvider[]; initial?: Draft; onOpen
   );
 }
 
+function openDetails(label: string) {
+  fireEvent.click(screen.getByRole('button', { name: `Details for ${label}` }));
+}
+function removeSelectedModel(label: string) {
+  openDetails(label);
+  fireEvent.click(screen.getByRole('button', { name: `Remove ${label}` }));
+}
+
 describe('ModelCatalogPane', () => {
   it('lists every model grouped by provider, with a live count', () => {
     render(<Harness />);
@@ -83,7 +91,7 @@ describe('ModelCatalogPane', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('checkbox', { name: /Kimi K3/ }));
     expect(screen.getByRole('heading', { name: 'Available to users (2)' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toBeInTheDocument();
   });
 
   it('offers "Select all N shown" only while searching, and it selects every match', () => {
@@ -92,8 +100,8 @@ describe('ModelCatalogPane', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'openrouter' } });
     fireEvent.click(screen.getByRole('button', { name: 'Select all 2 shown' }));
     expect(screen.getByRole('heading', { name: 'Available to users (3)' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Make xAI: Grok 4.6 the Default' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details for xAI: Grok 4.6' })).toBeInTheDocument();
   });
 
   it('opens a matching provider group while searching even if the admin collapsed it', () => {
@@ -130,40 +138,59 @@ describe('ModelCatalogPane', () => {
 });
 
 describe('SelectedModelsPane', () => {
+  it('opens model actions on demand and restores the row without changing the selection', async () => {
+    render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
+    expect(screen.queryByRole('button', { name: 'Remove Kimi K3' })).toBeNull();
+    const row = screen.getByRole('button', { name: 'Details for Kimi K3' });
+    row.focus();
+    openDetails('Kimi K3');
+    const dialog = screen.getByRole('dialog', { name: 'Kimi K3' });
+    expect(within(dialog).getByText(KIMI)).toBeVisible();
+    expect(within(dialog).getByText(/The Default is what new agents start with/)).toBeVisible();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(row).toHaveFocus());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    expect(row).toHaveTextContent('Enabled');
+  });
+
   it('explains the Default and shows the empty state when nothing is selected', () => {
     render(<Harness initial={{ allowed: [], default: '' }} />);
     expect(screen.getByRole('heading', { name: 'Available to users (0)' })).toBeInTheDocument();
     expect(screen.getByText('No models yet')).toBeInTheDocument();
-    expect(screen.getByText('Pick at least one on the left so people can create agents.')).toBeInTheDocument();
+    expect(screen.getByText('Pick at least one model in Catalog so people can create agents.')).toBeInTheDocument();
   });
 
   it('marks the Default and lets the admin move it', () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
-    expect(screen.getByRole('radio', { name: 'Make Claude Sonnet 4.6 the Default' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
     expect(screen.getByText('Default')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' }));
-    expect(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' })).toBeChecked();
+    openDetails('Kimi K3');
+    fireEvent.click(screen.getByRole('button', { name: 'Make Kimi K3 the Default' }));
+    expect(screen.getByRole('button', { name: 'Make Kimi K3 the Default' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
   });
 
   it('removing the Default promotes the first remaining model, visibly', () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Claude Sonnet 4.6' }));
-    expect(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' })).toBeChecked();
+    removeSelectedModel('Claude Sonnet 4.6');
+    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
   });
 
-  it('badges a model the provider no longer lists and one whose provider has no key', () => {
+  it('shows when a model is no longer listed or its provider has no key', () => {
     const providers = PROVIDERS.map((p) => (p.id === 'anthropic' ? { ...p, status: 'no-key' as const, models: [] } : p));
     render(<Harness providers={providers} initial={{ allowed: [SONNET, 'openrouter/gone/model'], default: SONNET }} />);
-    expect(screen.getByText('Needs an API key')).toBeInTheDocument();
-    expect(screen.getByText('No longer listed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Details for ${SONNET}` })).toHaveTextContent('Needs an API key');
+    expect(screen.getByRole('button', { name: 'Details for openrouter/gone/model' })).toHaveTextContent('No longer listed');
   });
 
-  it('moves focus to the next row after a remove, and to the list when none remain', () => {
+  it('moves focus to the next row after a remove, and to the list when none remain', async () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Claude Sonnet 4.6' }));
-    expect(screen.getByRole('radio', { name: 'Make Kimi K3 the Default' })).toHaveFocus();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Claude Sonnet 4.6');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveFocus());
+    removeSelectedModel('Kimi K3');
     expect(screen.getByText('No models yet')).toBeInTheDocument();
-    expect(document.activeElement).not.toBe(document.body);
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
   });
 });

@@ -76,7 +76,7 @@ export function AllowedSitesPanel() {
   };
 
   return (
-    <section className="flex flex-col gap-3.5 border-t border-border pt-5 mt-2">
+    <section className="flex flex-col gap-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-medium text-foreground">Allowed sites</h2>
@@ -102,7 +102,7 @@ export function AllowedSitesPanel() {
         </Alert>
       )}
 
-      <Card className="divide-y divide-border">
+      <Card variant="settings" className="divide-y divide-border">
         {grants === null && !error && (
           <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
         )}
@@ -117,9 +117,9 @@ export function AllowedSitesPanel() {
             <div
               key={host}
               data-testid={`allowed-site-${host}`}
-              className="flex items-center gap-3 px-4 py-2.5"
+              className="flex items-center gap-3 px-2 py-3 min-h-[72px] flex-wrap"
             >
-              <span className="flex-1 min-w-0 truncate text-sm text-foreground">{host}</span>
+              <span className="flex-1 min-w-0 break-all text-sm text-foreground">{host}</span>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {isAllAgents(ids) ? (
                   <Badge variant="secondary">All agents</Badge>

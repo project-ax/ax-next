@@ -116,7 +116,7 @@ export function RememberedSitesPanel() {
   };
 
   return (
-    <section className="flex flex-col gap-3.5 border-t border-border pt-5 mt-2">
+    <section className="flex flex-col gap-5">
       <div>
         <h2 className="text-sm font-medium text-foreground">Sites we read without asking</h2>
         <p className="text-xs text-muted-foreground">
@@ -172,7 +172,7 @@ export function RememberedSitesPanel() {
           </AlertDescription>
         </Alert>
       ) : (
-      <Card className="divide-y divide-border">
+      <Card variant="settings" className="divide-y divide-border">
         {list.status === 'loading' && (
           <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
         )}
@@ -198,9 +198,9 @@ export function RememberedSitesPanel() {
               // rather than a visibly wrong row.
               key={`${site.scope}:${site.host}`}
               data-testid={`remembered-site-${site.host}`}
-              className="flex items-center gap-3 px-4 py-2.5"
+              className="flex items-center gap-3 px-2 py-3 min-h-[72px] flex-wrap"
             >
-              <span className="flex-1 min-w-0 truncate text-sm text-foreground">
+              <span className="flex-1 min-w-0 break-all text-sm text-foreground">
                 {site.host}
               </span>
               {date && <span className="text-xs text-muted-foreground">{date}</span>}

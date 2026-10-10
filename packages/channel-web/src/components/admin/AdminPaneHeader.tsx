@@ -1,56 +1,21 @@
 import type { ReactNode, Ref } from 'react';
+import { SettingsHelp } from '../settings/SettingsLayout';
 
 export interface AdminPaneHeaderProps {
   eyebrow: string;
   title: string;
-  /** Optional right-aligned slot — typically a status badge or count. */
   badge?: ReactNode;
-  /**
-   * The `h1`, for a caller that moves focus to it. `AdminShell` does, once, on
-   * mount (TASK-510) — see there.
-   */
+  help?: string | undefined;
   headingRef?: Ref<HTMLHeadingElement> | undefined;
+  actionsRef?: Ref<HTMLDivElement> | undefined;
 }
 
-/**
- * THE `h1` OF THE SETTINGS SURFACE (TASK-446).
- *
- * `AdminShell` mounts this on every one of its tabs and mounts nothing
- * else that is always present, so this title — and only this title — is the
- * page heading a screen-reader user lands on. It used to be a `<span>`, which
- * left the whole surface with no `h1` at all while six of the (then nine) tab bodies
- * went straight to `h2` (or, on Skills and Connectors, straight to `h3`).
- *
- * The eyebrow stays a `<span>` deliberately. "Settings" / "Admin" is the
- * section this tab belongs to, not a heading of its own — promoting it would
- * put the same two words at the top of the outline on every tab and make the
- * real title look like a subsection of the nav group it came from.
- *
- * Preflight resets heading typography, so the rendered pixels are unchanged.
- */
-export function AdminPaneHeader({ eyebrow, title, badge, headingRef }: AdminPaneHeaderProps) {
-  return (
-    <header className="flex items-center justify-between gap-4 px-4 md:px-8 pt-[18px] pb-4 border-b border-rule-soft">
-      <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-[11px] tracking-[0.06em] uppercase text-muted-foreground font-medium">
-          {eyebrow}
-        </span>
-        {/*
-          `tabIndex={-1}`: focusable from script, not a Tab stop — it is where
-          Settings puts focus on entry (TASK-510), not a control. The outline
-          is dropped because a heading is not something you act on; the
-          screen-reader announcement is the point of the move, and a ring
-          round a title reads as a button that does nothing.
-        */}
-        <h1
-          ref={headingRef}
-          tabIndex={-1}
-          className="text-[19px] font-medium tracking-[-0.012em] outline-none"
-        >
-          {title}
-        </h1>
-      </div>
-      {badge && <div className="flex items-center gap-3.5">{badge}</div>}
-    </header>
-  );
+/** The single page heading also receives focus when Settings opens. */
+export function AdminPaneHeader({ title, badge, help, headingRef, actionsRef }: AdminPaneHeaderProps) {
+  return <header className="flex min-h-11 flex-wrap items-center gap-2">
+    <h1 ref={headingRef} tabIndex={-1} className="text-[22px] font-semibold leading-[30px] tracking-[-0.025em] outline-none">{title}</h1>
+    {help && <SettingsHelp title={title}>{help}</SettingsHelp>}
+    <div ref={actionsRef} className="ml-auto flex flex-wrap items-center gap-2" />
+    {badge}
+  </header>;
 }

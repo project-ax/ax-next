@@ -48,6 +48,7 @@ import {
 import { relativeDay } from '@/lib/workspace-time';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
 import { RoleCard } from '@/components/admin/RoleCard';
+import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -238,7 +239,8 @@ export function ConnectorsTab() {
     const canEdit = c.canEdit ?? true;
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
-        <RoleCard pill="service" title={c.name} caption={needsCaption(c.keyMode)}>
+        <SettingsDetailRow label={c.name} detail={needsCaption(c.keyMode)}>
+          <p className="text-sm text-muted-foreground">People sign in from each agent’s Connectors tab.</p>
           <div className="flex flex-col gap-3">
             {canEdit && (
               <div className="flex flex-wrap items-center justify-end gap-2">
@@ -255,35 +257,14 @@ export function ConnectorsTab() {
               </div>
             )}
           </div>
-        </RoleCard>
+        </SettingsDetailRow>
       </div>
     );
   };
 
   return (
-    <div className="flex flex-col gap-4 max-w-2xl">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          {/* `h2` under the pane title's `h1` (TASK-446) — the tab's one
-              top-level section; the Awaiting approval shelf inside it is `h3`. */}
-          <h2 className="text-sm font-medium text-foreground">Connectors</h2>
-          <p className="text-xs text-muted-foreground">
-            Services your assistant can reach. Each one bundles what it needs —
-            a key, the data it talks to — behind a single name. People sign in
-            from each agent’s Connectors tab.
-          </p>
-        </div>
-        {/* Every connector is shared with the workspace. */}
-        <Button
-          size="sm"
-          onClick={() => {
-            setPrefill(null);
-            setEditing('new');
-          }}
-        >
-          New connector
-        </Button>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SettingsActions><Button onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button></SettingsActions>
 
       {error && (
         <Alert variant="destructive">
@@ -321,9 +302,9 @@ export function ConnectorsTab() {
           when there is at least one. */}
       {groups.length > 0 && (
         <section className="flex flex-col gap-3.5">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h2 className="text-sm font-medium">
             Awaiting approval ({groups.length})
-          </h3>
+          </h2>
           {groups.map((g) => {
             const r = g.newest;
             const reach = proposalReach(r.proposal);

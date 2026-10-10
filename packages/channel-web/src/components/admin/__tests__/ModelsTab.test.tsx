@@ -82,16 +82,24 @@ afterEach(() => {
 
 async function ready() {
   render(<ModelsTab />);
-  await screen.findByRole('heading', { name: 'All models' });
+  await screen.findByRole('heading', { name: /^Available to users/ });
+}
+function catalogTab() { fireEvent.mouseDown(screen.getByRole('tab', { name: 'Catalog' })); }
+function enabledTab() { fireEvent.mouseDown(screen.getByRole('tab', { name: 'Enabled' })); }
+function removeSelectedModel(label: string) {
+  fireEvent.click(screen.getByRole('button', { name: `Details for ${label}` }));
+  fireEvent.click(screen.getByRole('button', { name: `Remove ${label}` }));
 }
 const save = () => screen.getByRole('button', { name: 'Save changes' });
 
 describe('ModelsTab — loading', () => {
   it('shows both panes with the saved selection and Default', async () => {
     await ready();
-    expect(screen.getByRole('heading', { name: 'Available to users (2)' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Make Claude Sonnet 4.6 the Default' })).toBeChecked();
+    expect(screen.getByRole('heading', { name: 'Available to users (2)', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    catalogTab();
     expect(screen.getByRole('checkbox', { name: /Kimi K3/ })).toBeChecked();
+    catalogTab();
     expect(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ })).not.toBeChecked();
   });
 
@@ -113,7 +121,7 @@ describe('ModelsTab — loading', () => {
     render(<ModelsTab />);
     expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't load the saved list of models.");
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await screen.findByRole('heading', { name: 'All models' });
+    await screen.findByRole('heading', { name: /^Available to users/ });
   });
 
   it('still shows the saved selection when only the catalog fails', async () => {
@@ -126,32 +134,50 @@ describe('ModelsTab — loading', () => {
   it('Try again on a provider asks for a refreshed catalog', async () => {
     cat = catalog({ openrouter: { status: 'fallback' } });
     await ready();
+    catalogTab();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(callsTo('GET', '/admin/models/catalog?refresh=1')).toHaveLength(1));
   });
 });
 
 describe('ModelsTab — saving', () => {
+  it('keeps a default change in the draft until Save, and Cancel restores the saved default', async () => {
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Kimi K3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make Kimi K3 the Default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
+    expect(save()).toBeEnabled();
+    expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(0);
+  });
+
   it('Save is off until something changes, and Cancel puts everything back', async () => {
     await ready();
-    expect(save()).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    catalogTab();
     fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
     expect(save()).toBeEnabled();
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(save()).toBeDisabled();
-    expect(screen.getByRole('heading', { name: 'Available to users (2)' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    enabledTab();
+    expect(screen.getByRole('heading', { name: 'Available to users (2)', hidden: true })).toBeInTheDocument();
   });
 
   it('Save is off when nothing is selected', async () => {
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Claude Sonnet 4.6' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Claude Sonnet 4.6');
+    removeSelectedModel('Kimi K3');
     expect(save()).toBeDisabled();
   });
 
   it('adding a model saves straight away (no agents to move), with the version it loaded', async () => {
     await ready();
+    catalogTab();
     fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
     fireEvent.click(save());
     await waitFor(() => expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(1));
@@ -160,13 +186,13 @@ describe('ModelsTab — saving', () => {
     expect(put.headers['x-requested-with']).toBe('ax-admin');
     expect(callsTo('POST', '/admin/agents/models/impact')).toHaveLength(0);
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Models saved' })));
-    expect(save()).toBeDisabled(); // now clean, at version 3
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull(); // now clean, at version 3
   });
 
   it('removing a model nobody uses saves without a confirmation', async () => {
     impact = [];
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Kimi K3');
     fireEvent.click(save());
     await waitFor(() => expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(1));
     expect(callsTo('POST', '/admin/agents/models/impact')[0]!.body).toEqual({ remove: [KIMI] });
@@ -176,7 +202,7 @@ describe('ModelsTab — saving', () => {
   it('removing a model agents use asks first, names the count and the Default, and saves only on confirm', async () => {
     impact = [{ model: KIMI, agentCount: 3 }];
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Kimi K3');
     fireEvent.click(save());
     const dialog = await screen.findByRole('dialog', { name: 'Move 3 agents to Claude Sonnet 4.6?' });
     expect(within(dialog).getByText('Kimi K3: 3 agents')).toBeInTheDocument();
@@ -195,7 +221,7 @@ describe('ModelsTab — saving', () => {
   it("uses the singular for one agent", async () => {
     impact = [{ model: KIMI, agentCount: 1 }];
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Kimi K3');
     fireEvent.click(save());
     expect(await screen.findByRole('dialog', { name: 'Move 1 agent to Claude Sonnet 4.6?' })).toBeInTheDocument();
   });
@@ -203,7 +229,7 @@ describe('ModelsTab — saving', () => {
   it("still confirms, honestly, when the agent count can't be fetched", async () => {
     handler = (c) => (c.path === '/admin/agents/models/impact' ? json(500, {}) : defaultHandler(c));
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Kimi K3');
     fireEvent.click(save());
     const dialog = await screen.findByRole('dialog', { name: 'Some agents may move to Claude Sonnet 4.6' });
     expect(within(dialog).getByText(/We couldn't check which agents use the models you removed\./)).toBeInTheDocument();
@@ -212,12 +238,15 @@ describe('ModelsTab — saving', () => {
   it('reports a conflict with a Reload that brings back the other admin’s version', async () => {
     handler = (c) => (c.method === 'PUT' ? json(409, { error: 'stale-version' }) : defaultHandler(c));
     await ready();
+    catalogTab();
     fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
     fireEvent.click(save());
     expect(await screen.findByText('Someone else just changed this list. Reload to see their version.')).toBeInTheDocument();
     pol = policy({ version: 3, allowed: [KIMI], default: KIMI });
     handler = defaultHandler;
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    await screen.findByRole('tab', { name: 'Enabled' });
+    enabledTab();
     await screen.findByRole('heading', { name: 'Available to users (1)' });
     expect(screen.queryByText(/Someone else just changed/)).toBeNull();
   });
@@ -225,9 +254,11 @@ describe('ModelsTab — saving', () => {
   it('says plainly what went wrong, keeps the draft, and lets the admin try again', async () => {
     handler = (c) => (c.method === 'PUT' ? json(500, { error: 'boom' }) : defaultHandler(c));
     await ready();
+    catalogTab();
     fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
     fireEvent.click(save());
     expect(await screen.findByText("We couldn't save that. Nothing changed. Try again in a moment.")).toBeInTheDocument();
+    catalogTab();
     expect(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ })).toBeChecked();
     expect(save()).toBeEnabled();
   });
@@ -239,6 +270,7 @@ describe('ModelsTab — unsaved changes', () => {
     const clean = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(clean);
     expect(clean.defaultPrevented).toBe(false);
+    catalogTab();
     fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
     const dirty = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(dirty);
@@ -251,7 +283,9 @@ describe('ModelsTab — the keys link', () => {
     cat = catalog({ openrouter: { status: 'no-key', models: [] } });
     const onOpenKeys = vi.fn();
     render(<ModelsTab onOpenKeys={onOpenKeys} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Open AI model keys' }));
+    await screen.findByRole('tab', { name: 'Catalog' });
+    catalogTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Open AI model keys' }));
     expect(onOpenKeys).toHaveBeenCalledOnce();
   });
 });
@@ -263,13 +297,26 @@ describe('ModelsTab — pending save', () => {
     handler = (c) => c.path === '/admin/agents/models/impact'
       ? new Promise<Response>((resolve) => { finish = resolve; }) : defaultHandler(c);
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kimi K3' }));
+    removeSelectedModel('Kimi K3');
     fireEvent.click(save());
     await waitFor(() => expect(callsTo('POST', '/admin/agents/models/impact')).toHaveLength(1));
+    catalogTab();
     expect(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     finish(json(200, { affected: [] }));
     await waitFor(() => expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(1));
     expect(callsTo('PUT', '/admin/models/policy')[0]!.body).toMatchObject({ allowed: [SONNET], default: SONNET });
   });
+});
+
+it('keeps an unsaved catalog selection when switching back to Enabled', async () => {
+  await ready();
+  catalogTab();
+  fireEvent.click(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ }));
+  enabledTab();
+  expect(screen.getByRole('heading', { name: 'Available to users (3)' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+  expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(0);
+  catalogTab();
+  expect(screen.getByRole('checkbox', { name: /Claude Opus 4\.7/ })).toBeChecked();
 });

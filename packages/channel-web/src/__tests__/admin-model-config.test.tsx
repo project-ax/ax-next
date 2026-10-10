@@ -69,9 +69,8 @@ describe('ModelConfigTab enabled models', () => {
   it('preselects the saved canonical ref and displays its catalog label', async () => {
     script({ current: GROK }); render(<ModelConfigTab />);
     await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Grok 4.6'));
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(JSON.parse(puts()[0]![1].body).value).toBe(GROK);
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(puts()).toHaveLength(0);
   });
 
   it('keeps provider identity when two providers offer the same model id and label', async () => {
@@ -90,7 +89,7 @@ describe('ModelConfigTab enabled models', () => {
   it('shows a removed saved model without silently changing it or letting it be saved again', async () => {
     script({ current: DISABLED }); render(<ModelConfigTab />);
     expect(await screen.findByText(/saved helper model.*isn.t enabled/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
     expect(puts()).toHaveLength(0);
     await choose('Grok 4.6');
     expect(screen.queryByText(/saved helper model.*isn.t enabled/i)).toBeNull();
@@ -115,7 +114,7 @@ describe('ModelConfigTab enabled models', () => {
     script({ allowed: [] }); render(<ModelConfigTab />);
     expect(await screen.findByText(/enable a model in Settings.*Models/i)).toBeInTheDocument();
     expect(screen.getByRole('combobox')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
   });
 
   it('shows a save error without losing the selected model', async () => {
@@ -127,7 +126,7 @@ describe('ModelConfigTab enabled models', () => {
 
   it('keeps Save disabled until an enabled model is selected', async () => {
     script(); render(<ModelConfigTab />);
-    await screen.findByRole('button', { name: 'Save changes' });
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    await screen.findByRole('combobox');
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
   });
 });

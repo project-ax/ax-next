@@ -56,10 +56,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -128,6 +130,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   const [ownSkills, setOwnSkills] = useState<Map<string, SkillSummary>>(new Map());
   const [authored, setAuthored] = useState<AuthoredSkillListing[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [category, setCategory] = useState('installed');
   const [search, setSearch] = useState('');
 
   // Dialog / confirmation state.
@@ -383,27 +386,24 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col gap-5 max-h-[72vh] overflow-y-auto pr-1">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">
-            What your assistant can do. Install skills from your workspace, or
-            create your own.
-          </p>
+      <div className="flex min-w-0 flex-col gap-6">
+        <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
+        {agents.length > 1 && <div className="flex items-center justify-end gap-3">
           {agents.length > 1 && (
             <Select value={agentId} onValueChange={setAgentId}>
               <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="Select an agent" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent><SelectGroup>
                 {agents.map((a) => (
                   <SelectItem key={a.agentId} value={a.agentId}>
                     {a.displayName}
                   </SelectItem>
                 ))}
-              </SelectContent>
+              </SelectGroup></SelectContent>
             </Select>
           )}
-        </div>
+        </div>}
 
         {error && (
           <Alert variant="destructive">
@@ -430,6 +430,13 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
           </Alert>
         )}
 
+        <Tabs value={category} onValueChange={setCategory} className="settings-tabs">
+          <TabsList aria-label="Skill categories">
+            <TabsTrigger value="installed">Installed</TabsTrigger>
+            <TabsTrigger value="browse">Browse</TabsTrigger>
+            {isAdmin && <TabsTrigger value="review">Review</TabsTrigger>}
+          </TabsList>
+          <TabsContent value="installed" forceMount hidden={category !== 'installed'}>
         {/* ============================ INSTALLED =========================
             `h2`, not the `h3` this shelf used to be (TASK-446). The Settings
             surface's `h1` is the pane title above ("Skills"), so a shelf that
@@ -437,14 +444,11 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             first division under the title, and their own sub-lists below step
             down to `h3`. */}
         <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
+          <div className="sr-only">
             <h2 className="text-sm font-medium text-foreground">
               {installed !== null ? `Installed (${installedCount})` : 'Installed'}
             </h2>
-            <Button size="sm" onClick={() => setEditor({ mode: 'create-user' })}>
-              <Plus className="h-3.5 w-3.5 mr-1" />
-              Create
-            </Button>
+
           </div>
 
           {agentsLoaded && agents.length === 0 ? (
@@ -462,19 +466,16 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                   door that opens. */}
               {catalog !== null && catalog.length === 0
                 ? 'No skills installed yet. Create one to get started.'
-                : 'No skills installed yet. Install one from your workspace below, or create your own.'}
+                : 'No skills installed yet. Choose Browse to install one from your workspace, or create your own.'}
             </p>
           ) : (
-            <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+            <div className="flex min-w-0 flex-col">
               {/* User-created or adopted skills that have no agent attachment yet.
                   They exist in ownSkills but aren't returned by getConnections, so
                   without this they'd be invisible after the editor closes (the bug). */}
               {ownNotInstalled.map((s) => (
-                <div
-                  key={`own-${s.id}`}
-                  data-testid={`installed-${s.id}`}
-                  className="flex items-center gap-3 px-3 py-2.5"
-                >
+                <div key={`own-${s.id}`} data-testid={`installed-${s.id}`}>
+<SettingsDetailRow label={s.description || s.id} detail={'Your own skill'} value={'Not attached'}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm truncate">{s.description || s.id}</span>
@@ -513,7 +514,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </div>
+                </SettingsDetailRow></div>
               ))}
               {installed.map((s) => {
                 const own = ownSkills.get(s.skillId);
@@ -522,11 +523,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                 // source='default' when the user created a default-attached skill.
                 const isOwn = own !== undefined;
                 return (
-                  <div
-                    key={s.skillId}
-                    data-testid={`installed-${s.skillId}`}
-                    className="flex items-center gap-3 px-3 py-2.5"
-                  >
+                  <div key={s.skillId} data-testid={`installed-${s.skillId}`}>
+<SettingsDetailRow label={s.description || s.skillId} detail={<span>{agents.find((a) => a.agentId === agentId)?.displayName || 'Installed skill'}{s.source === 'default' && ' · Workspace default'}{isOwn && ' · Your own'}</span>} value={'Enabled'}>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm truncate">
@@ -617,7 +615,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                         </span>
                       )}
                     </div>
-                  </div>
+                  </SettingsDetailRow></div>
                 );
               })}
             </div>
@@ -637,18 +635,15 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                 Skills your agents drafted. Edit one to make an editable copy you
                 own.
               </p>
-              <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+              <div className="flex min-w-0 flex-col">
                 {authored.map((a) => {
                   const key = `${a.agentId}/${a.skillId}`;
                   const isAdopting = adopting === key;
                   const isDismissing = dismissing === key;
                   const busy = adopting !== null || dismissing !== null;
                   return (
-                    <div
-                      key={key}
-                      data-testid={`authored-${a.skillId}`}
-                      className="flex items-center justify-between gap-3 px-3 py-2"
-                    >
+                    <div key={key} data-testid={`authored-${a.skillId}`}>
+<SettingsDetailRow label={a.description || a.skillId} detail={'Authored by your agent'} value={a.status === 'active' ? 'Active' : 'Pending review'}>
                       <div className="min-w-0">
                         {/*
                           `block` is what makes `truncate` work, and leaving it
@@ -698,7 +693,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                           {isDismissing ? 'Deleting…' : 'Delete'}
                         </Button>
                       </div>
-                    </div>
+                    </SettingsDetailRow></div>
                   );
                 })}
               </div>
@@ -706,8 +701,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
           )}
         </section>
 
-        <Separator />
-
+        </TabsContent>
+        <TabsContent value="browse" forceMount hidden={category !== 'browse'}>
         {/* ========================= NOT INSTALLED ======================= */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
@@ -768,13 +763,10 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                   : 'Nothing left to install — everything in your workspace is already on this assistant.'}
             </p>
           ) : (
-            <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+            <div className="flex min-w-0 flex-col">
               {notInstalled.map((c) => (
-                <div
-                  key={c.skillId}
-                  data-testid={`catalog-${c.skillId}`}
-                  className="flex items-center gap-3 px-3 py-2.5"
-                >
+                <div key={c.skillId} data-testid={`catalog-${c.skillId}`}>
+<SettingsDetailRow label={c.description || c.skillId} detail={'Available in your workspace'} value={'Not installed'}>
                   <div className="flex-1 min-w-0">
                     {/* `block` for the same reason as the authored row above —
                         this parent is a block, so an inline span ignores
@@ -851,21 +843,18 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                       </Button>
                     )}
                   </div>
-                </div>
+                </SettingsDetailRow></div>
               ))}
             </div>
           )}
 
-          {/* Admin-only: the folded admit queue (the old "Skills awaiting
-              review" surface, now an inline affordance). */}
-          {isAdmin && (
-            <AwaitingReviewSection
-              onReviewed={() => {
-                void refreshCatalog();
-              }}
-            />
-          )}
         </section>
+        </TabsContent>
+        {isAdmin && <TabsContent value="review" forceMount hidden={category !== 'review'}>
+          <AwaitingReviewSection onReviewed={() => { void refreshCatalog(); }} />
+        </TabsContent>}
+        </Tabs>
+
       </div>
 
       {/* ---------------------------- dialogs --------------------------- */}

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { SettingsRow } from '../settings/SettingsLayout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,9 +19,10 @@ export interface CredentialSlotRowProps {
   slot: { label: string; kind: 'api-key'; description?: string };
   /** Admin-set keys only: a model provider's (global) or a routine's (agent). */
   scope: { scope: 'global' | 'agent'; ownerId: string | null };
+  displayName?: string;
 }
 
-export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRowProps) {
+export function CredentialSlotRow({ destination, slot, scope, displayName }: CredentialSlotRowProps) {
   const ref = refForDestination(destination);
   const [open, setOpen] = useState(false);
   const [isSet, setIsSet] = useState(false);
@@ -74,7 +76,7 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
 
   return (
     <>
-      <div className="flex items-center justify-between gap-3 py-2">
+      {displayName ? <SettingsRow label={displayName} value={isSet ? 'Key saved' : 'Not set'} onClick={() => setOpen(true)} /> : <div className="flex items-center justify-between gap-3 py-2">
         <div className="flex items-center gap-2">
           {/* (E1) The row led with the raw slot id in mono — `ANTHROPIC_API_KEY`
               as the name of the thing you are being asked for. */}
@@ -87,7 +89,7 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
         <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
           {isSet ? 'Replace key' : 'Add key'}
         </Button>
-      </div>
+      </div>}
       <Sheet open={open} onOpenChange={setOpen}>
         {/* Radix warns when a dialog has no description; tell it that is
             deliberate rather than leaving an empty one to satisfy it. */}

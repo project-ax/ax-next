@@ -9,13 +9,13 @@
  * `limits === null` means "still loading": the card keeps its place and shows
  * skeletons, so the page does not jump when the numbers arrive.
  */
+import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { useState, type FormEvent } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -146,14 +146,12 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
 
   return (
     <form onSubmit={(e) => void save(e)} noValidate>
-      <Card>
+      <Card variant="settings">
         <CardHeader>
           <CardTitle role="heading" aria-level={2} className="text-lg">
             Limits
           </CardTitle>
-          <CardDescription>
-            Set workspace-wide protection and the default limits for each person.
-          </CardDescription>
+
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
           {limits === null ? (
@@ -162,7 +160,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
               <Skeleton className="h-[72px] w-full max-w-sm" />
             </div>
           ) : (
-            <FieldGroup>
+            <FieldGroup className="gap-0">
+              <SettingsDisclosure title="Workspace per day" value={`$${fleetValue}`}>
               <Field
                 className="max-w-sm"
                 data-invalid={(draft !== null && !fleetValid) || undefined}
@@ -190,6 +189,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError>Enter an amount between $0.01 and $1,000,000.</FieldError>
                 )}
               </Field>
+              </SettingsDisclosure>
+              <SettingsDisclosure title="Per person per day" value={`$${dailyValue}`}>
               <Field className="max-w-sm" data-invalid={dailyInvalid || undefined}>
                 <FieldLabel htmlFor="usage-daily-limit">
                   Daily spend limit per person (USD)
@@ -221,7 +222,9 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError id="usage-daily-limit-error">{DAILY_LIMIT_INVALID}</FieldError>
                 )}
               </Field>
+              </SettingsDisclosure>
 
+              <SettingsDisclosure title="Messages per person per hour" value={turnsValue}>
               <Field className="max-w-sm" data-invalid={turnsInvalid || undefined}>
                 <FieldLabel htmlFor="usage-turns-limit">Messages per person per hour</FieldLabel>
                 <Input
@@ -247,6 +250,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError id="usage-turns-limit-error">{TURNS_LIMIT_INVALID}</FieldError>
                 )}
               </Field>
+              </SettingsDisclosure>
+              <SettingsDisclosure title="Unreported usage estimate" value={`$${assumedValue}`}>
               <Field
                 className="max-w-sm"
                 data-invalid={(draft !== null && !assumedValid) || undefined}
@@ -274,6 +279,7 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError>Enter an amount between $0 and $100.</FieldError>
                 )}
               </Field>
+              </SettingsDisclosure>
             </FieldGroup>
           )}
           {saveError !== null && (
@@ -282,11 +288,12 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
             </Alert>
           )}
         </CardContent>
-        <CardFooter>
+        {(draft !== null || saving || saveError !== null) && <CardFooter className="gap-3">
           <Button type="submit" disabled={!changed || saving}>
             {saving ? 'Saving…' : 'Save limits'}
           </Button>
-        </CardFooter>
+          <Button type="button" variant="ghost" disabled={saving} onClick={() => { setDraft(null); setSaveError(null); }}>Cancel</Button>
+        </CardFooter>}
       </Card>
     </form>
   );

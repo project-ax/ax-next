@@ -14,7 +14,7 @@ export const CATALOG_LOAD_FAILED = "We couldn't load the model list. Your curren
 export const DEFAULT_HELP =
   'The Default is what new agents start with, and where an agent moves if its model is removed.';
 export const NONE_SELECTED_TITLE = 'No models yet';
-export const NONE_SELECTED_BODY = 'Pick at least one on the left so people can create agents.';
+export const NONE_SELECTED_BODY = 'Pick at least one model in Catalog so people can create agents.';
 export const NO_LONGER_LISTED = 'No longer listed';
 export const NEEDS_KEY = 'Needs an API key';
 export const SAVED_TITLE = 'Models saved';

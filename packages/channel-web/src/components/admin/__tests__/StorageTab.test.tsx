@@ -207,8 +207,16 @@ async function renderPerson() {
   return utils;
 }
 
-async function renderAdmin() {
+async function renderAdminSections() {
   const utils = render(<StorageTab isAdmin />);
+  fireEvent.click(await screen.findByRole('button', { name: /^Storage limits/ }));
+  const everyone = screen.queryByRole('button', { name: /^Everyone’s storage/ });
+  if (everyone) fireEvent.click(everyone);
+  return utils;
+}
+
+async function renderAdmin() {
+  const utils = await renderAdminSections();
   await screen.findByRole('table');
   return utils;
 }
@@ -383,7 +391,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
     const titles = screen
       .getAllByRole('heading')
       .map((h) => h.textContent);
-    expect(titles).toEqual(['Your storage', 'Storage limits', "Everyone's storage"]);
+    expect(titles).toEqual(['Your storage', 'Workspace', 'Storage limits', "Everyone's storage"]);
   });
 
   describe('everyone\'s storage', () => {
@@ -462,7 +470,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
 
     it('teaches, rather than showing an empty table, when nobody has stored anything', async () => {
       admin = makeAdmin({ owners: [], ownerCount: 0, totalBytes: 0 });
-      render(<StorageTab isAdmin />);
+      await renderAdminSections();
       expect(await screen.findByText('No storage used yet')).toBeInTheDocument();
       expect(
         screen.getByText("When people start saving files and uploads, they'll show up here."),
@@ -490,7 +498,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       const line = await screen.findByText(LINE);
       expect(callsTo('GET', '/admin/storage/cleanup')).toHaveLength(1);
       // A small muted aside at the foot of the card, not a heading or an alert.
-      expect(everyoneCard()).toContainElement(line);
+      expect(document.body).toContainElement(line);
       expect(line).toHaveClass('text-sm', 'text-muted-foreground');
       expect(line.tagName).toBe('P');
       expect(within(everyoneCard()).queryByRole('alert')).toBeNull();
@@ -503,7 +511,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       expect(table.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       // The last thing in the card's content, with nothing after it.
       expect(line.nextElementSibling).toBeNull();
-      expect(line.parentElement?.parentElement).toBe(everyoneCard());
+      expect(line.closest('[data-slot="card"]')).toBeNull();
     });
 
     it('reads the same when there is one file, and groups a big count', async () => {
@@ -550,7 +558,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
     it('asks while the owners list is still loading, so the two reads run side by side', async () => {
       handler = (call) =>
         call.path === '/admin/storage' ? new Promise<Response>(() => {}) : defaultHandler(call);
-      render(<StorageTab isAdmin />);
+      await renderAdminSections();
       expect(await screen.findByText(LINE)).toBeInTheDocument();
       expect(screen.getByText("Loading everyone's storage…")).toBeInTheDocument();
     });
@@ -604,7 +612,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
 
     it('is still there on a quiet day, under the empty state', async () => {
       admin = makeAdmin({ owners: [], ownerCount: 0, totalBytes: 0 });
-      render(<StorageTab isAdmin />);
+      await renderAdminSections();
       expect(await screen.findByText('No storage used yet')).toBeInTheDocument();
       expect(await screen.findByText(LINE)).toBeInTheDocument();
     });
@@ -839,7 +847,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
         }
         return defaultHandler(call);
       };
-      render(<StorageTab isAdmin />);
+      await renderAdminSections();
 
       // The person's own numbers are theirs whatever the admin read does.
       expect(await screen.findByText('2.3 GB of 5 GB used')).toBeInTheDocument();
@@ -850,6 +858,8 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       expect(screen.queryByRole('table')).toBeNull();
 
       fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      fireEvent.click(await screen.findByRole('button', { name: /^Storage limits/ }));
+      fireEvent.click(await screen.findByRole('button', { name: /^Everyone’s storage/ }));
       expect(await screen.findByRole('table')).toBeInTheDocument();
       expect(screen.getByLabelText('Limit per person (MB)')).toBeInTheDocument();
       expect(callsTo('GET', '/admin/storage')).toHaveLength(2);
@@ -860,7 +870,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
     it('tells someone who lost admin rights to ask an admin, in a sentence', async () => {
       handler = (call) =>
         call.path === '/admin/storage' ? json(403, { error: 'forbidden' }) : defaultHandler(call);
-      render(<StorageTab isAdmin />);
+      await renderAdminSections();
       const alert = (await screen.findByText(/couldn't load the storage limits/i)).closest(
         '[role="alert"]',
       );

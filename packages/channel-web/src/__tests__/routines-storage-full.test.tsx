@@ -66,7 +66,8 @@ async function openEditor(): Promise<void> {
   reply(200, { routines: [heartbeat] });
   render(<RoutinesList onFired={() => {}} />);
   await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
-  fireEvent.click(screen.getByRole('button', { name: 'Edit heartbeat' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Details for heartbeat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit heartbeat' }));
   await screen.findByRole('button', { name: 'Update' });
 }
 
@@ -117,6 +118,7 @@ describe('RoutinesList when a delete is turned away', () => {
     reply(200, { routines: [heartbeat] });
     render(<RoutinesList onFired={() => {}} />);
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Details for heartbeat' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete heartbeat' }));
     await waitFor(() => expect(screen.getByText(/Delete routine\?/i)).toBeTruthy());
   }

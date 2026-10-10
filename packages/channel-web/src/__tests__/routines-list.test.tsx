@@ -65,6 +65,11 @@ const sampleRoutine = {
   silenceMaxChars: 300,
 };
 
+async function openRoutineDetails(name = 'heartbeat') {
+  if (screen.queryByRole('dialog', { name })) return;
+  fireEvent.click(await screen.findByRole('button', { name: `Details for ${name}` }));
+}
+
 describe('RoutinesList', () => {
   it('renders the empty state when the server returns an empty list', async () => {
     mockJsonOnce(200, { routines: [] });
@@ -102,7 +107,8 @@ describe('RoutinesList', () => {
         },
       ],
     });
-    fireEvent.click(screen.getByRole('button', { name: /Expand heartbeat/i }));
+    await openRoutineDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'Recent runs' }));
     await waitFor(() => expect(screen.getByText(/hello world/)).toBeTruthy());
 
     // Second call: the recent-fires GET. URL contains the agentId and path.
@@ -118,17 +124,19 @@ describe('RoutinesList', () => {
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
 
     mockJsonOnce(200, { fires: [] });
-    fireEvent.click(screen.getByRole('button', { name: /Expand heartbeat/i }));
+    await openRoutineDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'Recent runs' }));
     await waitFor(() =>
       expect(screen.getByText(/No fires yet/i)).toBeTruthy(),
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Collapse.
-    fireEvent.click(screen.getByRole('button', { name: /Collapse heartbeat/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide recent runs' }));
 
     // Re-expand: cached, so no additional fetch.
-    fireEvent.click(screen.getByRole('button', { name: /Expand heartbeat/i }));
+    await openRoutineDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'Recent runs' }));
     await waitFor(() =>
       expect(screen.getByText(/No fires yet/i)).toBeTruthy(),
     );
@@ -154,15 +162,15 @@ describe('RoutinesList', () => {
       expect(line.textContent).toContain(WARNING);
       expect(line.getAttribute('title')).toBe(WARNING);
       // Same cell as the name, not a separate row of the list.
-      const nameCell = screen.getByText('heartbeat').parentElement!;
+      const nameCell = screen.getByRole('button', { name: 'Details for heartbeat' });
       expect(nameCell.contains(line)).toBe(true);
       // A note, not a failure: neither the line nor anything inside it.
       expect(line.className).not.toContain('destructive');
       expect(line.querySelector('[class*="destructive"]')).toBeNull();
       // One line with an ellipsis in a list row; the full text is in title.
       const text = line.querySelector('[dir="auto"]')!;
-      expect(text.className).toContain('truncate');
-      expect(text.className).not.toContain('break-words');
+      expect(text.className).toContain('break-words');
+      expect(text.className).not.toContain('truncate');
       expect(text.textContent).toContain(WARNING);
     });
 
@@ -215,7 +223,8 @@ describe('RoutinesList', () => {
           },
         ],
       });
-      fireEvent.click(screen.getByRole('button', { name: /Expand heartbeat/i }));
+      await openRoutineDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'Recent runs' }));
       await waitFor(() => expect(screen.getByText(/hello world/)).toBeTruthy());
       const line = screen.getByTestId('routine-warning');
       expect(line.textContent).toContain(WARNING);
@@ -271,6 +280,7 @@ describe('RoutinesList', () => {
     mockWebhookRow();
     render(<RoutinesList isAdmin onFired={() => {}} />);
 
+    await openRoutineDetails(webhookRoutine.name);
     // The HMAC label (slot label from CredentialSlotRow) should appear
     expect(await screen.findByText(/HMAC/, { selector: 'span' })).toBeInTheDocument();
     // The "Set credential" button from CredentialSlotRow should appear
@@ -281,7 +291,9 @@ describe('RoutinesList', () => {
     mockWebhookRow(); // webhookRoutine HAS hmac configured
     render(<RoutinesList onFired={() => {}} />); // non-admin (default)
 
+    await openRoutineDetails(webhookRoutine.name);
     // The Receiver URL still loads (owner-scoped), so the row has rendered.
+    await openRoutineDetails(webhookRoutine.name);
     expect(await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/)).toBeTruthy();
     // A non-admin sees an explanatory note (so a dead HMAC webhook is
     // diagnosable) — but NOT the admin slot: no "Set credential", no HMAC
@@ -308,6 +320,7 @@ describe('RoutinesList', () => {
 
     render(<RoutinesList onFired={() => {}} />); // non-admin
 
+    await openRoutineDetails(webhookRoutine.name);
     expect(await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/)).toBeTruthy();
     expect(screen.queryByText(/workspace admin/i)).toBeNull();
     expect(screen.queryByText('HMAC', { selector: 'span' })).toBeNull();
@@ -323,6 +336,7 @@ describe('RoutinesList', () => {
 
     render(<RoutinesList onFired={() => {}} />);
 
+    await openRoutineDetails(webhookRoutine.name);
     // The full receiver URL is <origin>/webhooks/<token><routine-path> —
     // assert the origin prefix too, not just the suffix.
     const expectedUrl = `${window.location.origin}/webhooks/wh-TOKEN/gh`;
@@ -350,9 +364,8 @@ describe('RoutinesList', () => {
 
     render(<RoutinesList onFired={() => {}} />);
 
-    expect(
-      await screen.findByText(/only the agent owner can view it/i),
-    ).toBeTruthy();
+    await openRoutineDetails(webhookRoutine.name);
+    expect(await screen.findByText(/only the agent owner can view it/i)).toBeTruthy();
     // The URL + copy button are absent.
     expect(screen.queryByRole('button', { name: /copy webhook url/i })).toBeNull();
   });
@@ -384,6 +397,7 @@ describe('RoutinesList', () => {
     render(<RoutinesList onFired={() => {}} />);
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
 
+    await openRoutineDetails();
     fireEvent.click(screen.getByRole('button', { name: 'Edit heartbeat' }));
     expect(await screen.findByTestId('routine-editor')).toBeTruthy();
   });
@@ -393,6 +407,7 @@ describe('RoutinesList', () => {
     render(<RoutinesList onFired={() => {}} />);
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
 
+    await openRoutineDetails();
     fireEvent.click(screen.getByRole('button', { name: 'Delete heartbeat' }));
     await waitFor(() => expect(screen.getByText(/Delete routine\?/i)).toBeTruthy());
 
@@ -415,6 +430,7 @@ describe('RoutinesList', () => {
     render(<RoutinesList onFired={() => {}} />);
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
 
+    await openRoutineDetails();
     fireEvent.click(screen.getByRole('button', { name: 'Delete heartbeat' }));
     await waitFor(() => expect(screen.getByText(/Delete routine\?/i)).toBeTruthy());
 

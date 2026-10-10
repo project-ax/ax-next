@@ -42,6 +42,11 @@ import {
   putAgentIdentity,
 } from '@/lib/admin';
 
+function openAgentDetails(index = 0) {
+  const row = screen.getAllByRole('button', { name: /^Details for / })[index]!;
+  fireEvent.click(row);
+}
+
 const mockList = vi.mocked(listAdminAgents);
 const mockDelete = vi.mocked(deleteAgent);
 
@@ -104,6 +109,8 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
 
+    openAgentDetails();
+
     fireEvent.click(screen.getByRole('button', { name: 'delete' }));
 
     await waitFor(() => {
@@ -124,6 +131,7 @@ describe('AgentForm — styled delete confirm', () => {
     await waitFor(() => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
+    openAgentDetails();
     fireEvent.click(screen.getByRole('button', { name: 'delete' }));
     await waitFor(() => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
@@ -144,6 +152,8 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
 
+    openAgentDetails();
+
     fireEvent.click(screen.getByRole('button', { name: 'delete' }));
     await waitFor(() => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
@@ -161,6 +171,8 @@ describe('AgentForm — styled delete confirm', () => {
     await waitFor(() => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
+
+    openAgentDetails();
 
     fireEvent.click(screen.getByRole('button', { name: 'delete' }));
     await waitFor(() => {
@@ -225,6 +237,8 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
 
+    openAgentDetails();
+
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
 
     // The editor reads the files via workspace:read (mocked at the wire).
@@ -252,6 +266,8 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
     });
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+
+    openAgentDetails();
 
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() =>
@@ -299,6 +315,8 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     mockList.mockResolvedValue([BARE_AGENT]);
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Bare Bot')).toBeTruthy());
+
+    openAgentDetails();
 
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() =>
@@ -372,6 +390,8 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
 
+    openAgentDetails();
+
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() =>
       expect(
@@ -437,6 +457,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
     mockList.mockResolvedValue([{ ...AGENT, requestedModel: 'openrouter/moonshotai/kimi-k3' }]);
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
 
@@ -454,6 +475,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
     mockList.mockResolvedValue([AGENT]);
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
 
@@ -469,6 +491,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
     mockList.mockResolvedValue([{ ...AGENT, requestedModel: 'openrouter/moonshotai/kimi-k3' }]);
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     expect(
       await screen.findByText(
@@ -482,6 +505,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
     mockList.mockResolvedValue([AGENT]);
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
     expect(screen.queryByText(/Your admin changed the available models/)).toBeNull();
@@ -496,6 +520,7 @@ it('opens resolved agent details so a stored removed model is shown as the Defau
   vi.mocked(getAdminAgent).mockResolvedValue({ ...AGENT, requestedModel: 'openrouter/removed' });
   render(<AgentForm isAdmin />);
   await screen.findByText('Research Bot');
+  openAgentDetails();
   fireEvent.click(screen.getByRole('button', { name: 'edit' }));
   expect(await screen.findByText(/Your admin changed the available models/)).toBeInTheDocument();
   expect(getAdminAgent).toHaveBeenCalledWith(AGENT.id);
@@ -508,8 +533,10 @@ it('keeps a delayed Edit read from replacing a new agent draft', async () => {
   vi.mocked(getAdminAgent).mockImplementation(() => new Promise((resolve) => { release = resolve; }));
   render(<AgentForm isAdmin />);
   await screen.findByText('Research Bot');
+  openAgentDetails();
   fireEvent.click(screen.getByRole('button', { name: 'edit' }));
   await waitFor(() => expect(getAdminAgent).toHaveBeenCalled());
+  if (screen.queryByRole('dialog')) fireEvent.click(screen.getByRole('button', { name: 'Close' }));
   fireEvent.click(screen.getByRole('button', { name: 'New agent' }));
   const name = screen.getByLabelText('Name');
   fireEvent.change(name, { target: { value: 'New draft' } });
@@ -529,9 +556,11 @@ it('keeps a delayed first Edit from replacing a newer Edit', async () => {
   }));
   render(<AgentForm isAdmin />);
   await screen.findByText('Other Bot');
-  const edits = screen.getAllByRole('button', { name: 'edit' });
-  fireEvent.click(edits[0]!);
-  fireEvent.click(edits[1]!);
+  openAgentDetails(0);
+  fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  openAgentDetails(1);
+  fireEvent.click(screen.getByRole('button', { name: 'edit' }));
   second(other);
   await screen.findByRole('heading', { name: 'Edit Other Bot' });
   first(AGENT);
@@ -594,7 +623,8 @@ describe('AgentForm — no per-agent connector assignment (TASK-799)', () => {
   ])('editing agent #%i (%s), which has connectors, shows no picker and no sign-in', async (idx, name) => {
     render(<AgentForm isAdmin />);
     await screen.findByText(name);
-    fireEvent.click(screen.getAllByRole('button', { name: 'edit' })[idx]!);
+    openAgentDetails(idx);
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
     await screen.findByRole('heading', { name: `Edit ${name}` });
     await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).not.toBe(''));
     expectNoConnectorAssignment();

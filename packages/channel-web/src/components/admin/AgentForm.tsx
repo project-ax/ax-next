@@ -52,7 +52,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RoleCard } from './RoleCard';
+import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
 type FormState = {
   displayName: string;
@@ -436,18 +436,8 @@ if (base.model !== editing.model) patch.model = base.model;
   // ── List view ──────────────────────────────────────────────────────────
   if (editing === null) {
     return (
-      <div className="max-w-[640px] mx-auto font-sans">
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-              Agents
-            </h2>
-            <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-              Define the agents available across this deployment.
-            </p>
-          </div>
-          <Button onClick={startNew}>New agent</Button>
-        </div>
+      <div className="font-sans">
+        <SettingsActions><Button onClick={startNew}>New agent</Button></SettingsActions>
 
         {/* (D2) Was a hand-rolled destructive div. `Alert` is installed, this
             file already imports it, and one of the two copies had different
@@ -464,14 +454,9 @@ if (base.model !== editing.model) patch.model = base.model;
             No agents yet. Make one.
           </div>
         ) : (
-          <div className="flex flex-col gap-3.5">
+          <div className="flex flex-col">
             {agents.map((a) => (
-              <RoleCard
-                key={a.id}
-                pill="agent"
-                title={a.displayName}
-                caption={agentCaption(a, teams, models)}
-              >
+              <SettingsDetailRow key={a.id} label={a.displayName} detail={agentCaption(a, teams, models)}>
                 <div className="flex items-center justify-end gap-2">
                   <Button
                     variant="outline"
@@ -488,7 +473,7 @@ if (base.model !== editing.model) patch.model = base.model;
                     delete
                   </Button>
                 </div>
-              </RoleCard>
+              </SettingsDetailRow>
             ))}
           </div>
         )}
@@ -538,7 +523,7 @@ if (base.model !== editing.model) patch.model = base.model;
 
   // ── Create / edit form view ────────────────────────────────────────────
   return (
-    <div className="max-w-[640px] mx-auto font-sans">
+    <div className="font-sans">
       <div className="mb-5 flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={cancelForm}>
           ← Back

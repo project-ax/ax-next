@@ -41,7 +41,7 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
   const groups = filtering ? shown : providers;
 
   return (
-    <Card>
+    <Card variant="settings">
       <CardHeader className="flex flex-col gap-3">
         <CardTitle role="heading" aria-level={2} className="text-lg">
           All models

@@ -49,6 +49,7 @@ describe('Theme toggle', () => {
       </UserProvider>,
     );
     fireEvent.pointerDown(screen.getByRole('button', { name: /Alice/i }), { button: 0, ctrlKey: false });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /dark/i }));
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(localStorage.getItem('ax-theme')).toBe('dark');

@@ -45,6 +45,11 @@ import { AdminShell } from '../components/admin/AdminShell';
 import { UserProvider } from '../lib/user-context';
 import type { AuthUser } from '../lib/auth';
 
+function openAgentDetails(index = 0) {
+  const row = screen.getAllByRole('button', { name: /^Details for / })[index]!;
+  fireEvent.click(row);
+}
+
 const fetchMock = vi.fn();
 
 const mockUser: AuthUser = {
@@ -456,7 +461,8 @@ describe('AdminSettings — agents tab', () => {
 
     render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText('team-bot'));
-    fireEvent.click(screen.getByText(/^edit$/i));
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     await screen.findByRole('heading', { name: 'Edit team-bot' });
     await waitFor(() =>
       expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
@@ -510,7 +516,8 @@ describe('AdminSettings — agents tab', () => {
     await waitFor(() => screen.getByText('probe'));
     // Before the camelCase fix this threw "Cannot read properties of
     // undefined (reading 'join')" inside formFromAgent.
-    fireEvent.click(screen.getByText(/^edit$/i));
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     const nameInput = await screen.findByLabelText(/name/i) as HTMLInputElement;
     expect(nameInput.value).toBe('probe');
     const tools = screen.getByLabelText(/allowed tools/i) as HTMLInputElement;
@@ -529,7 +536,8 @@ describe('AdminSettings — agents tab', () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
     render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText('probe'));
-    fireEvent.click(screen.getByText(/^delete$/i));
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
 
     // A styled dialog gates the delete — no OS confirm.
     const dialog = await screen.findByRole('dialog');
@@ -576,7 +584,7 @@ describe('AdminSettings — agents tab', () => {
       </UserProvider>,
     );
     // AdminSidebar's back button has text "chat" (with a ChevronLeft icon).
-    fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Back to chat$/i }));
     expect(onClose).toHaveBeenCalled();
   });
 });

@@ -17,7 +17,7 @@
 import { useEffect, useState } from 'react';
 import { listTeams, type Team } from '../../lib/admin';
 import { PaneStatus } from '../PaneStatus';
-import { RoleCard } from './RoleCard';
+import { SettingsRow } from '../settings/SettingsLayout';
 
 /**
  * When the team was created, in the reader's own locale — the one fact on the
@@ -51,17 +51,8 @@ export function TeamList() {
   }, []);
 
   return (
-    <div className="max-w-[640px] mx-auto font-sans">
-      <div className="mb-5">
-        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">Teams</h2>
-        {/* (TASK-343 / audit D6) This paragraph showed an admin a path to a
-            planning document inside our own repository — a file they cannot
-            open, naming a milestone that means nothing outside this team. */}
-        <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Team management is coming soon. For now you can see the teams
-          you&rsquo;re in, but not create or change them.
-        </p>
-      </div>
+    <div className="font-sans">
+      <p className="mb-6 text-sm text-muted-foreground">Teams are view-only for now.</p>
 
       {error && <PaneStatus variant="error">{error}</PaneStatus>}
 
@@ -76,17 +67,8 @@ export function TeamList() {
         </PaneStatus>
       )}
 
-      <div className="flex flex-col gap-3.5">
-        {teams?.map((t) => (
-          <RoleCard
-            key={t.id}
-            pill="team"
-            title={t.displayName}
-            caption={teamCaption(t)}
-          >
-            <span aria-hidden="true" />
-          </RoleCard>
-        ))}
+      <div className="flex flex-col">
+        {teams?.map((t) => <SettingsRow key={t.id} label={t.displayName} detail={teamCaption(t)} />)}
       </div>
     </div>
   );

@@ -168,7 +168,7 @@ describe('closing Settings from the workspace (TASK-443)', () => {
     // is about the opener itself and not about the compact stand-in (TASK-474).
     expect(screen.queryByRole('button', { name: /open navigation/i })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /^workspace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Back to workspace$/i }));
 
     // Re-query: the pane swap mounted a NEW workspace, so this is a different
     // node from the one clicked above. Asserting against the OLD handle would
@@ -221,7 +221,7 @@ describe('closing Settings on a compact viewport (TASK-474)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }));
     await screen.findByRole('dialog', { name: 'Settings navigation' });
-    fireEvent.click(screen.getByRole('button', { name: /^workspace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Back to workspace$/i }));
 
     await waitFor(() => {
       expect(document.activeElement).toBe(navTrigger());
@@ -293,6 +293,7 @@ describe('opening Settings moves focus into it (TASK-510)', () => {
     await openSettingsFromWorkspace();
     await expectHeadingHoldsFocus();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Administration' }));
     const connectors = screen.getByRole('button', { name: /^Connectors$/ });
     connectors.focus();
     fireEvent.click(connectors);
@@ -332,7 +333,7 @@ describe('Escape leaves Settings open (TASK-475)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBe(heading);
-    screen.getByRole('button', { name: /^workspace$/i }); // throws if gone
+    screen.getByRole('button', { name: /^Back to workspace$/i }); // throws if gone
     // The workspace's user menu is what comes back when Settings closes.
     expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { SkillsTab } from '../SkillsTab';
 import type { ConnectionSkill, CatalogSkillListing } from '@/lib/connections';
 
@@ -68,7 +68,7 @@ beforeEach(() => {
 describe('SkillsTab', () => {
   it('renders the INSTALLED and NOT INSTALLED app-store shelves', async () => {
     render(<SkillsTab isAdmin={false} />);
-    expect(await screen.findByText(/^Installed/)).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: 'Installed' })).toBeInTheDocument();
     expect(await screen.findByText(/Not installed/i)).toBeInTheDocument();
     // The not-installed shelf surfaces the catalog item that isn't installed.
     expect(await screen.findByText('Work with PDFs.')).toBeInTheDocument();
@@ -83,6 +83,7 @@ describe('SkillsTab', () => {
   it('passes isAdmin=true through (admin curation affordances render)', async () => {
     render(<SkillsTab isAdmin={true} />);
     await screen.findByText('Work with PDFs.');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Browse' }));
     expect(screen.getByRole('button', { name: /Add to workspace/i })).toBeInTheDocument();
   });
 });

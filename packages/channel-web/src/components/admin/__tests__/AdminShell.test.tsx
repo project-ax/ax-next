@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { render as renderComponent, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { AdminShell } from '../AdminShell';
 import type { AdminTabId } from '../AdminSidebar';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
+
+function render(...args: Parameters<typeof renderComponent>) {
+  const result = renderComponent(...args);
+  const administration = screen.queryByRole('button', { name: 'Administration' });
+  if (administration?.getAttribute('aria-expanded') === 'false') fireEvent.click(administration);
+  return result;
+}
 
 const MB = 1_048_576;
 const MY_STORAGE = {
@@ -219,10 +226,11 @@ describe('AdminShell', () => {
     expect(screen.queryByLabelText('Limit per person (MB)')).toBeNull();
   });
 
-  it('opens Storage for an admin with the limits form beside their own bar', async () => {
+  it('opens Storage for an admin with workspace limits in a disclosure', async () => {
     renderShell();
     fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
     expect(await screen.findByText('512 MB of 1 GB used')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /^Storage limits/ }));
     expect(await screen.findByLabelText('Limit per person (MB)')).toBeTruthy();
     expect(
       fetchMock.mock.calls.some(([url]) => /\/admin\/storage$/.test(String(url))),
@@ -384,6 +392,7 @@ it('moves Settings navigation into a closable sheet on narrow screens', async ()
     expect(screen.queryByRole('complementary')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }));
     const sheet = await screen.findByRole('dialog', { name: 'Settings navigation' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Administration' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Models' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByRole('heading', { level: 1, name: 'Available models' })).toBeInTheDocument();
