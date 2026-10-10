@@ -52,6 +52,7 @@
     "@ax/credentials-admin-routes": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/decisions": "workspace:*",
+    "@ax/routines-admin-routes": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/tool-policy": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.15",

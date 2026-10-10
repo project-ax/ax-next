@@ -23,6 +23,10 @@ import type { ResolvedSandboxK8sConfig } from './config.js';
 const K8S_LABEL_MAX_BYTES = 63;
 const K8S_LABEL_HASH_SUFFIX_BYTES = 8;
 
+function isAsciiAlphanumeric(code: number): boolean {
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
 /**
  * Coerce an arbitrary string into a valid k8s label VALUE that satisfies
  * `(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?` and ≤ 63 bytes.
@@ -33,33 +37,45 @@ const K8S_LABEL_HASH_SUFFIX_BYTES = 8;
  * 2. Trim leading/trailing non-alphanumerics — the regex pins the first
  *    AND last char to `[A-Za-z0-9]`.
  * 3. If the result still exceeds 63 bytes, truncate to 54 chars and
- *    append `-<sha1(original)[:8]>`. The hash makes the truncation
- *    deterministic AND collision-resistant: two distinct inputs that
- *    happen to share a 54-char prefix get different label values.
+ *    append `-<sha256(original)[:8]>`. The suffix reduces collisions
+ *    between distinct inputs sharing a prefix; labels are not identities.
  * 4. If sanitization leaves an empty string (caller passed all
- *    non-alphanumerics), fall back to the first 16 chars of sha1 — a
- *    valid label, deterministic, and unique per input.
+ *    non-alphanumerics), fall back to the first 16 chars of sha256 — a
+ *    valid, deterministic label.
  *
  * Used for `ax.io/session-id` which carries `input.sessionId`. The
  * underlying `AX_SESSION_ID` env keeps the ORIGINAL value — only the
  * k8s label surface is sanitized.
  */
 function sanitizeLabel(value: string): string {
-  const slug = value
-    .replace(/[^A-Za-z0-9._-]/g, '-')
-    .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
-  if (slug.length === 0) {
-    return createHash('sha1').update(value).digest('hex').slice(0, 16);
+  // One forward scan finds the trimmed boundaries without regex backtracking
+  // or allocating a slug proportional to untrusted input. Only ASCII survives,
+  // so the output's character count also bounds its UTF-8 byte count.
+  let first = -1;
+  let last = -1;
+  for (let index = 0; index < value.length; index++) {
+    if (isAsciiAlphanumeric(value.charCodeAt(index))) {
+      if (first === -1) first = index;
+      last = index;
+    }
   }
-  if (slug.length <= K8S_LABEL_MAX_BYTES) return slug;
-  const hash = createHash('sha1')
-    .update(value)
-    .digest('hex')
-    .slice(0, K8S_LABEL_HASH_SUFFIX_BYTES);
+  if (first === -1) {
+    return createHash('sha256').update(value).digest('hex').slice(0, 16);
+  }
   // -1 reserves a byte for the `-` that joins head + hash.
   const headBudget = K8S_LABEL_MAX_BYTES - K8S_LABEL_HASH_SUFFIX_BYTES - 1;
-  const head = slug.slice(0, headBudget).replace(/[^A-Za-z0-9]+$/, '');
-  return `${head}-${hash}`;
+  const truncated = last - first + 1 > K8S_LABEL_MAX_BYTES;
+  const end = truncated ? first + headBudget : last + 1;
+  const chars: string[] = [];
+  for (let index = first; index < end; index++) {
+    const code = value.charCodeAt(index);
+    chars.push(isAsciiAlphanumeric(code) || code === 46 || code === 95 || code === 45 ? value[index]! : '-');
+  }
+  if (!truncated) return chars.join('');
+  // At most 54 iterations; keep the truncated head's last character alphanumeric.
+  while (!isAsciiAlphanumeric(chars[chars.length - 1]!.charCodeAt(0))) chars.pop();
+  const hash = createHash('sha256').update(value).digest('hex').slice(0, K8S_LABEL_HASH_SUFFIX_BYTES);
+  return `${chars.join('')}-${hash}`;
 }
 
 /**
@@ -1038,8 +1054,8 @@ export function buildPodSpec(
         // session. Labels are constrained to `[A-Za-z0-9._-]`, must start
         // and end with `[A-Za-z0-9]`, and cap at 63 bytes. Callers may
         // supply paths or long session IDs. `sanitizeLabel`
-        // slugifies + truncates with a sha1 suffix so the label remains a
-        // deterministic, collision-resistant function of the sessionId.
+        // slugifies + truncates with a SHA-256 suffix so the label remains a
+        // deterministic debugging aid. It is not a session identity.
         // The original sessionId still rides in the `AX_SESSION_ID` env.
         'ax.io/session-id': sanitizeLabel(input.sessionId),
       },

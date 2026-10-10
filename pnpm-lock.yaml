@@ -637,6 +637,9 @@ importers:
       '@ax/decisions':
         specifier: workspace:*
         version: link:../decisions
+      '@ax/routines-admin-routes':
+        specifier: workspace:*
+        version: link:../routines-admin-routes
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness

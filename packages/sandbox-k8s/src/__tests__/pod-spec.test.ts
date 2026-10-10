@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config.js';
 import { buildPodSpec } from '../pod-spec.js';
@@ -220,10 +221,10 @@ describe('buildPodSpec', () => {
     );
   });
 
-  it('falls back to sha1 prefix when sanitization leaves no alphanumerics', () => {
+  it('falls back to sha256 prefix when sanitization leaves no alphanumerics', () => {
     // Defensive: a sessionId of all-non-alphanumerics would slugify to a
     // string that fails the k8s `[A-Za-z0-9]` start/end constraint. The
-    // helper returns a sha1[:16] in that case so the label is still
+    // helper returns a sha256[:16] in that case so the label is still
     // valid and deterministic (instead of empty, which the API rejects).
     const spec = buildPodSpec(
       'p1',
@@ -231,6 +232,7 @@ describe('buildPodSpec', () => {
       baseResolved(),
     );
     const label = spec.metadata.labels['ax.io/session-id'];
+    expect(label).toBe(createHash('sha256').update('/////').digest('hex').slice(0, 16));
     expect(label).toMatch(/^[a-f0-9]{16}$/);
     expect(label).toMatch(/^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$/);
   });
@@ -256,6 +258,40 @@ describe('buildPodSpec', () => {
     const overLabel = over.metadata.labels['ax.io/session-id'];
     expect(Buffer.byteLength(overLabel!, 'utf8')).toBeLessThanOrEqual(63);
     expect(overLabel).toMatch(/^a{54}-[a-f0-9]{8}$/);
+    expect(overLabel).toBe(`${'a'.repeat(54)}-${createHash('sha256').update(sixtyFour).digest('hex').slice(0, 8)}`);
+  });
+
+  it.each([
+    ['long slash padding', `${'/'.repeat(100_000)}A/B${'/'.repeat(100_000)}`, 'A-B'],
+    ['long punctuation padding', `${'._-!'.repeat(25_000)}A._-B${'._-!'.repeat(25_000)}`, 'A._-B'],
+    ['non-ASCII padding and interior', `${'é😀'.repeat(25_000)}Aé😀B${'é😀'.repeat(25_000)}`, 'A---B'],
+    ['all invalid slashes', '/'.repeat(100_000), null],
+    ['all invalid punctuation', '._-!'.repeat(25_000), null],
+    ['all invalid non-ASCII', 'é😀'.repeat(25_000), null],
+    ['empty input', '', null],
+  ])('bounds the actual pod label for %s and preserves runner identity', (_name, sessionId, head) => {
+    const spec = buildPodSpec('adversarial', { ...baseInput, sessionId }, baseResolved());
+    const label = spec.metadata.labels['ax.io/session-id'];
+    const digest = createHash('sha256').update(sessionId).digest('hex');
+    const expected = head === null ? digest.slice(0, 16) : head;
+    expect(label).toBe(expected);
+    expect(Buffer.byteLength(label!, 'utf8')).toBeLessThanOrEqual(63);
+    expect(label).toMatch(/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/);
+    expect(buildPodSpec('again', { ...baseInput, sessionId }, baseResolved()).metadata.labels['ax.io/session-id']).toBe(label);
+    const env = (spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }).containers[0]!.env;
+    expect(env.find((entry) => entry.name === 'AX_SESSION_ID')?.value).toBe(sessionId);
+  });
+
+  it('trims punctuation from the bounded truncated head before the SHA-256 suffix', () => {
+    const sessionId = `A${'._/'.repeat(30)}B`;
+    const spec = buildPodSpec('head-trim', { ...baseInput, sessionId }, baseResolved());
+    expect(spec.metadata.labels['ax.io/session-id']).toBe(`A-${createHash('sha256').update(sessionId).digest('hex').slice(0, 8)}`);
+  });
+
+  it('distinguishes all-invalid IDs and long IDs with the same sanitized prefix', () => {
+    const inputs = ['/////', '!!!!!', `${'A'.repeat(80)}/tail`, `${'A'.repeat(80)}!tail`];
+    const labels = inputs.map((sessionId) => buildPodSpec('distinct', { ...baseInput, sessionId }, baseResolved()).metadata.labels['ax.io/session-id']);
+    expect(new Set(labels).size).toBe(inputs.length);
   });
 
   it('mounts /agent (workspace) and /ephemeral (scratch) emptyDirs', () => {

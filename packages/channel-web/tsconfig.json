@@ -29,6 +29,7 @@
     { "path": "../skills" },
     { "path": "../skills-parser" },
     { "path": "../routines" },
+    { "path": "../routines-admin-routes" },
     { "path": "../routines-contract" },
     { "path": "../sandbox-mount-protocol" },
     { "path": "../teams" },
