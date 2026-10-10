@@ -11,6 +11,7 @@ import { createRoutinesPlugin } from '../../plugin.js';
 import { createRoutinesStore } from '../../store.js';
 import type { RoutinesDatabase } from '../../migrations.js';
 import { drainRoutineCleanup } from '../../cleanup.js';
+import type { Clock } from '../../clock.js';
 export type RoutineHarness = {
   routes: HttpRegisterRouteInput[];
   shutdownRoutines(): Promise<void>;
@@ -21,12 +22,13 @@ export type RoutineHarness = {
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
-export async function createRoutineHarness(options: { authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
+export async function createRoutineHarness(options: { clock?: Clock; strictCredentials?: boolean; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   let clock = options.reuse?.clock ?? Date.parse('2026-10-09T12:00:00Z');
   let attended = true;
+  const secrets = new Map<string, Uint8Array>();
   const descriptors: ToolDescriptor[] = [];
   const routes: HttpRegisterRouteInput[] = [];
   const credentialCalls: RoutineHarness['credentialCalls'] = [];
@@ -36,7 +38,7 @@ export async function createRoutineHarness(options: { authenticatedUserId?: stri
   const invokeCalls: string[] = [];
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
-  const routinesPlugin = createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, undefined, options.dispatch ? {
+  const routinesPlugin = createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, options.clock, options.dispatch ? {
       dispatch: async accepted => {
         const runCtx = makeAgentContext({ userId: accepted.row.ownerUserId, agentId: accepted.row.agentId, sessionId: 'routine', reqId: accepted.reqId });
         await liveBus.call('agent:invoke', runCtx, {});
@@ -62,7 +64,12 @@ export async function createRoutineHarness(options: { authenticatedUserId?: stri
       'conversations:create': async () => ({ conversationId: 'conversation' }),
       'conversations:drop-turn': async () => undefined,
       'conversations:hide': async () => undefined,
-      'credentials:get': async () => 'test-secret',
+      'credentials:get': async (_ctx, raw) => {
+        const value = secrets.get((raw as { ref: string }).ref);
+        if (value) return Buffer.from(value).toString('utf8');
+        if (options.strictCredentials) throw new Error('Credential not found');
+        return 'test-secret';
+      },
       'credentials:delete': async (ctx, raw) => {
         credentialCalls.push({ operation: 'delete', ref: (raw as { ref: string }).ref });
         if (failDelete) {
@@ -76,6 +83,7 @@ export async function createRoutineHarness(options: { authenticatedUserId?: stri
           };
           throw new Error('unavailable');
         }
+        secrets.delete((raw as { ref: string }).ref);
       },
       'workspace:apply': async () => { throw new Error('Workspace storage is unavailable'); },
     },
@@ -95,6 +103,8 @@ export async function createRoutineHarness(options: { authenticatedUserId?: stri
         bus.registerService('credentials:set', '@test/credential-effects', (ctx, raw) => bus.call('test:credential-write', ctx, raw));
         bus.registerService('test:credential-write', '@test/credential-effects', async (_ctx, raw) => {
           started?.(); await gate; credentialCalls.push({ operation: 'set', ref: (raw as { ref: string }).ref });
+          const input = raw as { ref: string; payload: Uint8Array };
+          secrets.set(input.ref, input.payload);
         }, { timeoutMs: options.credentialTimeoutMs ?? 120_000 });
       },
     }, createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), routinesPlugin],

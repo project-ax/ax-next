@@ -67,10 +67,16 @@ const CLEANUP_TRIGGERS = [/['"`]agents:deleted['"`]/, /['"`]conversations:purged
  * product or safety decision, not a to-do; a to-do belongs on the board.
  */
 const KEPT_ON_PURPOSE = {
-  routines_v1_fires:
-    'Routine fire history (when it ran, status). TASK-680 kept it on purpose: it has no foreign key to the ' +
-    'definitions and is preserved when a routine is de-materialized. Whether it should go with the agent is a ' +
-    'retention question of its own; a follow-up card asks it.',
+  routines_v1_retired_agents:
+    'Deletion tombstones contain only opaque agent IDs and retirement times. Retained to fence accepted ' +
+    'dispatch completion, delayed default materialization and request retries after agent deletion; deleting ' +
+    'them would permit purged routine state to be recreated.',
+  decisions_v1_routine_retired_agents:
+    'Deletion tombstones fence delayed routine authorization and settlement after agent deletion. They retain ' +
+    'only the opaque agent identity, not calls, approval content or user data.',
+  tool_policy_v1_routine_consent_retired_agents:
+    'Deletion tombstones prevent delayed consent delivery or writes from restoring grants after agent deletion. ' +
+    'They retain only the opaque agent identity; grants and delivery records are purged.',
   attachments_v1_temps:
     'Pre-commit uploads. They carry a user id and no conversation or agent, expire on a TTL and are swept by ' +
     "the plugin's own janitor, so they cannot outlive the agent by more than the TTL.",

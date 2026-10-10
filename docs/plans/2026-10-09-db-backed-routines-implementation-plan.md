@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node >=24, pnpm 10.33.2, TypeScript project references, Zod 3.25.76, Croner 8.1.2, Kysely/PostgreSQL, Vitest/Testcontainers, React and existing shadcn components. Reuse isomorphic-git 1.37.5 for offline workspace maintenance.
 
-**Spec:** [Approved design](2026-10-09-db-backed-routines-design.md), approved by the user after commit `b10579304`. This implementation plan still requires review and execution-method selection.
+**Spec:** [Approved design](2026-10-09-db-backed-routines-design.md), approved by the user after commit `b10579304`. The user approved this plan and selected subagent-driven execution. Tasks 1–11 are implemented and reviewed; Task 12 validation and kind acceptance are in progress.
 
 ## Global Constraints
 

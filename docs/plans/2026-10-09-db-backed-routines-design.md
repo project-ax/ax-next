@@ -1,6 +1,6 @@
 # DB-backed routines
 
-Date: 2026-10-09. Status: approved by the user; implementation has not started. The implementation plan is awaiting its own review and execution-method selection.
+Date: 2026-10-09. Status: design and implementation plan approved; Tasks 1–11 implemented on `codex/db-backed-routines`. Task 12 validation and kind acceptance are in progress; this is not a deployment-completion claim.
 
 Worktree: `/Users/vpulim/dev/ai/ax-next-db-routines`; branch: `codex/db-backed-routines`, based on `origin/main` at `a730c4c6e`.
 
@@ -18,7 +18,7 @@ The user has settled these choices:
 - Updates are patches with revision checks. Omitted fields stay unchanged; `null` clears optional fields; `trigger` and `activeHours` replace complete objects.
 - Use a short system instruction alongside tool descriptions. Read current definitions through tools instead of embedding them in the prompt.
 
-Implementation proposals below, including ACL details and retirement veto behavior, are part of this written review. There is no product-code authorization until the spec is approved, an implementation plan is reviewed, and its execution method is selected.
+The user approved the ACL and retirement behavior below, reviewed the implementation plan, and selected subagent-driven execution. The final validation record documents the implemented refinements and completed evidence.
 
 Out of scope: goals, identity files, workspace-store retirement, multi-host scheduling, and `.ax/skill-reflection/last-run.json`.
 
