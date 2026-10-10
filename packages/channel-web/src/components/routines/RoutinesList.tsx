@@ -43,6 +43,10 @@ export interface RoutinesListProps {
   onFired: () => void;
   isAdmin?: boolean;
   origin?: 'authored' | 'default';
+  /** Bumped by a parent-owned "New routine" button to open the create dialog. */
+  createRequest?: number;
+  /** The parent draws the "New routine" button, so the list doesn't. */
+  hideCreateAction?: boolean;
 }
 export function RoutinesList({
   agentId,
@@ -51,6 +55,8 @@ export function RoutinesList({
   onFired,
   isAdmin = false,
   origin = 'authored',
+  createRequest = 0,
+  hideCreateAction = false,
 }: RoutinesListProps) {
   const { agents, agentsStatus } = useAgentStore();
   const ids = agentId ? [agentId] : agents.map((a) => a.id);
@@ -74,6 +80,11 @@ export function RoutinesList({
     setFireProtected(pending);
   }
   const flight = useRef(false);
+  const previousCreateRequest = useRef(createRequest);
+  useEffect(() => {
+    if (createRequest !== previousCreateRequest.current && agentId) setCreating(agentId);
+    previousCreateRequest.current = createRequest;
+  }, [createRequest, agentId]);
   const operation = useRef<{
     key: string;
     requestId: string;
@@ -185,7 +196,7 @@ export function RoutinesList({
         <p className="text-sm text-muted-foreground">
           {origin === 'default' ? 'Run workspace defaults and inspect their recent runs.' : 'Work that runs when its trigger fires.'}
         </p>
-        {origin === 'authored' && (agentId ? (
+        {origin === 'authored' && !hideCreateAction && (agentId ? (
           <Button
             disabled={busy !== null || uncertain || fireProtected}
             onClick={() => setCreating(agentId)}

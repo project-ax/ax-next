@@ -8,6 +8,7 @@ import {
 } from './AgentSelfImprovementSection';
 import { RoutineConsentSection } from './RoutineConsentSection';
 import { DefaultRoutinesSection } from '@/components/admin/DefaultRoutinesSection';
+
 export function RoutinesTab({
   isAdmin,
   agentId,
@@ -19,55 +20,59 @@ export function RoutinesTab({
   agentName?: string | undefined;
   onViewSkills?: (() => void) | undefined;
 }) {
+  const [tab, setTab] = useState('mine');
+  const [createRequest, setCreateRequest] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = () => setRefreshKey((n) => n + 1);
+  if (!agentId) {
+    return (
+      <div className="flex flex-col gap-4">
+        <AgentSelfImprovementSection onChanged={refresh} />
+        {isAdmin && <DefaultRoutinesSection />}
+        <RoutinesList refreshKey={refreshKey} isAdmin={isAdmin} onFired={refresh} />
+      </div>
+    );
+  }
   return (
-    <div className="flex flex-col gap-5">
-      <Tabs defaultValue="mine">
-        <TabsList>
-          <TabsTrigger value="mine">My routines</TabsTrigger>
-          <TabsTrigger value="improvement">Self-improvement</TabsTrigger>
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <TabsList variant="quiet" aria-label="Routine views">
+          <TabsTrigger variant="quiet" value="mine">My routines</TabsTrigger>
+          <TabsTrigger variant="quiet" value="improvement">Self-improvement</TabsTrigger>
         </TabsList>
-        <TabsContent value="mine" className="flex flex-col gap-5">
-          {agentId && (
-            <RoutineConsentSection
-              agentId={agentId}
-              agentName={agentName ?? 'This agent'}
-            />
-          )}
-          <RoutinesList
-            agentId={agentId}
-            agentName={agentName}
-            refreshKey={refreshKey}
-            isAdmin={isAdmin}
-            onFired={() => setRefreshKey((n) => n + 1)}
-          />
-        </TabsContent>
-        <TabsContent value="improvement" className="flex flex-col gap-4">
-          <AgentSelfImprovementSection
-            agentId={agentId}
-            agentName={agentName}
-            onChanged={() => setRefreshKey((n) => n + 1)}
-          />
-          {agentId && <AgentDefaultControls agentId={agentId} onChanged={() => setRefreshKey((n) => n + 1)} />}
-          <RoutinesList
-            origin="default"
-            agentId={agentId}
-            agentName={agentName}
-            refreshKey={refreshKey}
-            onFired={() => setRefreshKey((n) => n + 1)}
-          />
-          {agentId && onViewSkills && (
-            <Button
-              variant="link"
-              className="w-fit px-0"
-              onClick={onViewSkills}
-            >
-              View skills
-            </Button>
-          )}
-        </TabsContent>
-      </Tabs>
-      {!agentId && isAdmin && <DefaultRoutinesSection />}
-    </div>
+        {tab === 'mine' && (
+          <Button onClick={() => setCreateRequest((n) => n + 1)}>New routine</Button>
+        )}
+      </div>
+      <TabsContent value="mine" className="flex flex-col gap-5">
+        <RoutineConsentSection agentId={agentId} agentName={agentName ?? 'This agent'} />
+        <RoutinesList
+          key={agentId}
+          hideCreateAction
+          createRequest={createRequest}
+          agentId={agentId}
+          agentName={agentName}
+          refreshKey={refreshKey}
+          isAdmin={isAdmin}
+          onFired={refresh}
+        />
+      </TabsContent>
+      <TabsContent value="improvement" className="flex flex-col gap-5">
+        <AgentSelfImprovementSection
+          agentId={agentId}
+          agentName={agentName}
+          onChanged={refresh}
+          onViewSkills={onViewSkills}
+        />
+        <AgentDefaultControls agentId={agentId} onChanged={refresh} />
+        <RoutinesList
+          origin="default"
+          agentId={agentId}
+          agentName={agentName}
+          refreshKey={refreshKey}
+          onFired={refresh}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }

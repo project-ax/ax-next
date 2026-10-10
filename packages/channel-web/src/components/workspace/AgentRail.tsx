@@ -450,7 +450,7 @@ export function AgentRailContent({
         </TabsContent>
       )}
       {!collapsed && learned && (
-        <div className="max-h-[45%] shrink-0 overflow-y-auto px-3 pb-4">
+        <div className="max-h-[45%] shrink-0 overflow-y-auto px-3 pb-4 empty:hidden">
           {learned}
         </div>
       )}

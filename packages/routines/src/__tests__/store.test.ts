@@ -124,3 +124,17 @@ it('generates the approved opaque rtn identity for new authored routines and pre
   expect(row.routineId).toMatch(/^rtn_[a-f0-9]{32}$/);
   expect((await f.store.createAuthored(createInput('id-spelling'))).routineId).toBe(row.routineId);
 });
+
+describe('enabled routines persistence and scheduling', () => {
+  it('defaults to enabled, persists disabling, excludes due claims and resumes when enabled', async () => {
+    const later = new Date(now.getTime() + 3_600_000);
+    const claim = async () => (await f.store.claimDue({ now: later, limit: 10, claimWindowMinutes: 1 })).filter(r => r.routineId === row.routineId);
+    const row = await f.store.createAuthored(createInput('enabled-claims'));
+    expect(row.enabled).toBe(true);
+    const stopped = await f.store.updateAuthored({ ...update(row, { enabled: false }, 'stop-claims'), stopOnly: true });
+    expect((await f.store.findOne({ agentId: row.agentId, routineId: row.routineId }))?.enabled).toBe(false);
+    expect(await claim()).toEqual([]);
+    await f.store.updateAuthored(update(stopped, { enabled: true }, 'start-claims'));
+    expect(await claim()).toHaveLength(1);
+  });
+});

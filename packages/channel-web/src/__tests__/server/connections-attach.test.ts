@@ -81,7 +81,7 @@ const RESOLVE_A1 = {
 const GLOBAL_CATALOG = {
   'skills:list': (input: unknown) => {
     const i = input as { scope?: string };
-    if (i.scope === 'global') {
+    if (i.scope === 'global' || i.scope === 'all') {
       return {
         skills: [
           { id: 'web-search', description: 'Search the web.', defaultAttached: true, connectors: ['serp'] },
@@ -180,6 +180,29 @@ describe('TASK-126 self-install attach route', () => {
     const { res, captured } = mkRes();
     await handlers.attach(mkReq({ agentId: 'a1' }, {}), res);
     expect(captured.statusCode).toBe(400);
+    expect(attach).not.toHaveBeenCalled();
+  });
+});
+
+ describe('private skill attachment isolation', () => {
+  it('accepts the caller’s own newly created skill before it exists in the workspace catalog', async () => {
+    const attach = vi.fn(() => ({ created: true }));
+    const bus = fakeBus({ ...AUTH_OK, ...RESOLVE_A1, 'skills:attach-for-user': attach,
+      'skills:list': input => { expect(input).toEqual({ scope: 'all', ownerUserId: 'u1' }); return { skills: [{ id: 'private-skill' }] }; },
+    });
+    const { res, captured } = mkRes();
+    await makeConnectionsHandlers({ bus, initCtx }).attach(mkReq({ agentId: 'a1' }, { skillId: 'private-skill', userId: 'u2' }), res);
+    expect(captured.statusCode).toBe(201);
+    expect(attach).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', skillId: 'private-skill' }));
+  });
+  it('rejects another user’s private skill before attachment', async () => {
+    const attach = vi.fn();
+    const bus = fakeBus({ ...AUTH_OK, ...RESOLVE_A1, 'skills:attach-for-user': attach,
+      'skills:list': input => { expect(input).toEqual({ scope: 'all', ownerUserId: 'u1' }); return { skills: [] }; },
+    });
+    const { res, captured } = mkRes();
+    await makeConnectionsHandlers({ bus, initCtx }).attach(mkReq({ agentId: 'a1' }, { skillId: 'other-private-skill' }), res);
+    expect(captured.statusCode).toBe(404);
     expect(attach).not.toHaveBeenCalled();
   });
 });

@@ -13,10 +13,10 @@
  */
 import { SkillsAppStore } from './SkillsAppStore';
 
-export function SkillsTab({ isAdmin, initialAgentId }: { isAdmin: boolean; initialAgentId?: string | undefined }) {
+export function SkillsTab({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div className="font-sans">
-      <SkillsAppStore isAdmin={isAdmin} initialAgentId={initialAgentId} />
+      <SkillsAppStore isAdmin={isAdmin} />
     </div>
   );
 }

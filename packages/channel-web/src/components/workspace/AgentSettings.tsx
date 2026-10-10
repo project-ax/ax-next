@@ -20,9 +20,8 @@
  *   - below `md`: the list of sections first, a tap drills in, and
  *     "Settings" comes back out. Every target is 44px tall.
  *
- * Model and Skills are honest empty states; Routines hosts structured controls. There is nothing to
- * set there yet, so the page says so instead of drawing controls that do
- * nothing (decided 2026-10-08).
+ * Skills and Routines use the existing services, scoped to this agent.
+ * Model selection remains a workspace-default empty state.
  */
 import { useState, type ComponentType, type ReactNode, type SVGProps } from 'react';
 import {
@@ -52,6 +51,9 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
+import { useUser } from '@/lib/user-context';
+import { SkillsAppStore } from '@/components/settings/SkillsAppStore';
+import { RoutinesTab } from '@/components/routines/RoutinesTab';
 import { useAgentRail } from '@/lib/workspace-rail';
 import type { AgentDetail } from '@/lib/workspace-api';
 import {
@@ -60,8 +62,6 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
-import { useUser } from '@/lib/user-context';
-import { RoutinesTab } from '../routines/RoutinesTab';
 import { ConnectorsTab } from './ConnectorsTab';
 
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
@@ -105,14 +105,14 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
   skills: {
     label: 'Skills',
     Icon: Sparkles,
-    description: (name) => `What ${name} knows how to do.`,
-    summary: () => 'Nothing installed yet',
+    description: () => null,
+    summary: () => 'Instructions this agent can reuse',
   },
   routines: {
     label: 'Routines',
     Icon: Clock,
-    description: (name) => `Work ${name} does on a schedule.`,
-    summary: () => 'Triggers and scheduled work',
+    description: () => null,
+    summary: () => 'Scheduled runs, intervals and webhooks',
   },
 };
 
@@ -122,7 +122,6 @@ export interface AgentSettingsProps {
   onSection: (section: AgentSettingsSection) => void;
   /** Back to this agent's chat — the conversation that was open stays open. */
   onBack: () => void;
-  onViewSkills?: (() => void) | undefined;
   /** Below `md`: the section list first, then one section at a time. */
   compact: boolean;
   /** Generic Settings entry opens the phone index; direct section links drill in. */
@@ -289,8 +288,8 @@ export function AgentSettings(props: AgentSettingsProps) {
   );
 }
 
-function SectionBody({ agent, section, busy, instructions, memory, onViewSkills }: AgentSettingsProps) {
-  const user = useUser();
+function SectionBody({ agent, section, busy, instructions, memory, onSection }: AgentSettingsProps) {
+  const isAdmin = useUser()?.role === 'admin';
   switch (section) {
     case 'instructions':
       return <>{instructions}</>;
@@ -315,15 +314,9 @@ function SectionBody({ agent, section, busy, instructions, memory, onViewSkills 
         />
       );
     case 'skills':
-      return (
-        <SettingsEmpty
-          Icon={Sparkles}
-          title="Nothing installed yet"
-          description={`Choosing skills just for ${agent.name} isn't here yet.`}
-        />
-      );
+      return <SkillsAppStore key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} />;
     case 'routines':
-      return <RoutinesTab isAdmin={user?.role === 'admin'} agentId={agent.id} agentName={agent.name} onViewSkills={onViewSkills} />;
+      return <RoutinesTab key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} onViewSkills={() => onSection('skills')} />;
   }
 }
 

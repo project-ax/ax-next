@@ -201,7 +201,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
   // Which tab Settings opens on — set only by a caller that knows where the
   // person needs to go (the rail's paused-memory "Fix this", TASK-627).
-  const [adminSettingsAgentId, setAdminSettingsAgentId] = useState<string | undefined>();
   const [adminSettingsTab, setAdminSettingsTab] = useState<AdminTabId | undefined>(undefined);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
@@ -459,14 +458,12 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               onClose={closeAdminSettings}
               backLabel="workspace"
               initialTab={adminSettingsTab}
-              initialAgentId={adminSettingsAgentId}
             />
           </div>
         ) : (
           <WorkspaceShell
-            onOpenAdminSettings={(tab?: AdminTabId, agentId?: string) => {
+            onOpenAdminSettings={(tab?: AdminTabId) => {
               setAdminSettingsTab(tab);
-              setAdminSettingsAgentId(agentId);
               setAdminSettingsOpen(true);
             }}
             onCreateAgent={() => {

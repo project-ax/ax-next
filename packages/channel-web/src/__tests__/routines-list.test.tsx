@@ -222,3 +222,17 @@ describe('routine list', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 });
+
+describe('agent settings routine creation', () => {
+  it('opens the create dialog from a parent-owned button while list data is pending', async () => {
+    vi.mocked(routineApi.list).mockImplementation(() => new Promise(() => {}));
+    const props = { agentId: 'a', agentName: 'Caveman', onFired: vi.fn(), hideCreateAction: true };
+    const { rerender } = render(<RoutinesList {...props} createRequest={0} />);
+    expect(screen.getByLabelText('Loading routines')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
+    rerender(<RoutinesList {...props} createRequest={1} />);
+    expect(await screen.findByRole('dialog', { name: 'New routine' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+});

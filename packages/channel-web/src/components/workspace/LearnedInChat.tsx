@@ -8,10 +8,8 @@ import { ChevronRight } from 'lucide-react';
  * conversation, so a new memory shows up where the person can see it and fix
  * it while the chat is still fresh — without interrupting the chat.
  *
- * The rail's first rule applies here too: an empty list is a CLAIM. So the
- * block always says which of its states it is in — nothing new yet, reading,
- * paused, a save that failed, a read that failed, or memory not switched on —
- * and never shows a bare empty card.
+ * A successful empty read stays hidden. Reading, paused and failed states
+ * remain visible as compact summaries, with details behind the disclosure.
  *
  * Every word is in `memory-copy.ts`; Fix, Forget and the receipt are the
  * shared ones in `MemoryCorrection.tsx`. The state behind this block is
@@ -20,12 +18,11 @@ import { ChevronRight } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
 import type { FactMemoryStatement } from '@/lib/workspace-api';
 import type { ConversationMemory, LearnedRow } from '@/lib/use-conversation-memory';
 import { previewSource, type TurnSource } from '@/lib/thread-jump';
-import { SectionLabel } from './bits';
 import {
   MemoryFixDialog,
   MemoryForgetDialog,
@@ -47,6 +44,11 @@ import {
   LEARNED_SAVE_FAILED,
   LEARNED_SEE_ALL,
   LEARNED_TITLE,
+  LEARNED_STATUS_LOADING,
+  LEARNED_STATUS_READING,
+  LEARNED_STATUS_PAUSED,
+  LEARNED_STATUS_SAVE_FAILED,
+  LEARNED_STATUS_READ_FAILED,
   MEMORY_FIX,
   MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
@@ -104,6 +106,7 @@ export function LearnedInChat({
   onSeeAll,
 }: Props) {
   const rootRef = useRef<HTMLElement>(null);
+  const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
@@ -181,21 +184,47 @@ export function LearnedInChat({
     receipt in this block, so the block itself is the scope.
   */
 
+  const summary = memory.status === 'loading'
+    ? LEARNED_STATUS_LOADING
+    : memory.status === 'read-failed'
+      ? LEARNED_STATUS_READ_FAILED
+      : memory.extraction === 'paused'
+        ? LEARNED_STATUS_PAUSED
+        : memory.pass === 'failed'
+          ? LEARNED_STATUS_SAVE_FAILED
+          : memory.pass === 'extracting'
+            ? LEARNED_STATUS_READING
+            : null;
+  // Keep an open empty disclosure as a focus landing after the final Forget.
+  if (memory.status === 'not-enabled' || (memory.rows.length === 0 && summary === null && !(open && receiptRowId !== null))) {
+    return null;
+  }
+
   return (
     <section ref={rootRef} aria-labelledby="learned-in-chat-title">
       {receipt.announcer}
-      <SectionLabel>
-        <span id="learned-in-chat-title" {...memoryHeadingLanding}>
-          {LEARNED_TITLE}
-        </span>
-        {unseen > 0 && (
-          <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[11px]">
-            {learnedNewBadge(unseen)}
-          </Badge>
-        )}
-      </SectionLabel>
-      <Card className="shadow-sm">
-        <CardContent className="flex flex-col gap-2 p-3.5">
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <CollapsibleTrigger asChild>
+          <Button
+            {...memoryHeadingLanding}
+            tabIndex={0}
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={`h-auto min-h-9 w-full justify-start gap-1.5 whitespace-normal px-2 py-2 text-xs ${memoryHeadingLanding.className}`}
+          >
+            <ChevronRight aria-hidden="true" className={`size-3.5 shrink-0 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`} />
+            <span id="learned-in-chat-title">{LEARNED_TITLE}</span>
+            {memory.status === 'ready' && <span className="text-muted-foreground">· {memory.rows.length}</span>}
+            {unseen > 0 && (
+              <Badge variant="secondary" className="ml-auto px-1.5 py-0 text-xs">
+                {learnedNewBadge(unseen)}
+              </Badge>
+            )}
+          </Button>
+        </CollapsibleTrigger>
+        {summary !== null && <p role="status" className="px-2 pb-2 text-xs text-muted-foreground">{summary}</p>}
+        <CollapsibleContent className="flex flex-col gap-2 px-2 pb-2">
           <p className="text-[12px] text-muted-foreground">{learnedHelper(agentName)}</p>
           <Body
             memory={memory}
@@ -259,21 +288,19 @@ export function LearnedInChat({
               return line;
             }}
           />
-          {memory.status !== 'not-enabled' && (
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                className="h-auto p-0 text-[11.5px]"
-                onClick={onSeeAll}
-              >
-                {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[11.5px]"
+              onClick={onSeeAll}
+            >
+              {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
+            </Button>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
       <MemoryFixDialog
         target={fixTarget}
         agentId={agentId}
