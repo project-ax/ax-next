@@ -96,10 +96,21 @@ async function lockLiveAgent(db: DB, agentId: string): Promise<boolean> {
   await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${agentId}, 18427132))`.execute(db);
   return !await db.selectFrom('routines_v1_retired_agents').select('agent_id').where('agent_id', '=', agentId).executeTakeFirst();
 }
+/** Routines-owned default controls fence. Dispatch and materialization read under
+ * a shared lock; catalog and override writers hold it exclusively through commit.
+ * Order: agent lifecycle fence (when present) → default controls → receipts/rows.
+ * Catalog/refresh never acquire an agent fence after taking this lock. A single
+ * catalog fence deliberately favors simple stop semantics over parallel writers.
+ */
+async function lockDefaultControls(db: DB, write = false): Promise<void> {
+  if (write) await sql`SELECT pg_advisory_xact_lock(18427133)`.execute(db);
+  else await sql`SELECT pg_advisory_xact_lock_shared(18427133)`.execute(db);
+}
 async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>, onReplay?: () => void): Promise<T> {
   try {
     return await db.transaction().execute(async trx => {
       if (!await lockLiveAgent(trx, key.agentId)) throw new SafeToolError('not-found', 'routineId');
+      if (key.operation === 'dispatch') await lockDefaultControls(trx);
       await trx.insertInto('routines_v1_requests').values({
         agent_id: key.agentId, owner_user_id: key.actorUserId, operation: key.operation,
         request_id: key.requestId, input_hash: key.inputHash, result: null, routine_id: null
@@ -158,7 +169,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       }, async trx => {
         const row = await trx.insertInto('routines_v1_definitions').values({
           ...definitionColumns(definition), agent_id: input.agentId,
-          routine_id: opaqueId('routine'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
+          routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
           last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null, created_at: input.now, updated_at: input.now
         }).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -406,35 +417,38 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const insertEnabled = input.enabled ?? true;
       const enabledUpdateFragment =
         input.enabled === undefined ? sql`` : sql`enabled = EXCLUDED.enabled,`;
-      const row = await sql<{ default_routine_id: string; created: boolean }>`
-        INSERT INTO default_routines_v1
-          (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
-           interval_seconds, active_hours, silence_token, silence_max, conversation,
-           prompt_body, enabled)
-        VALUES
-          (${id}, ${input.name}, ${input.description}, ${inputHash(definition)},
-           ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
-           ${durationToSeconds(input.trigger.every)}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
-           ${input.silenceToken}, ${input.silenceMaxChars}, ${input.conversation},
-           ${input.promptBody}, ${insertEnabled})
-        ON CONFLICT (name) DO UPDATE SET
-          description = EXCLUDED.description,
-          spec_hash = EXCLUDED.spec_hash,
-          trigger_kind = EXCLUDED.trigger_kind,
-          trigger_spec = EXCLUDED.trigger_spec,
-          interval_seconds = EXCLUDED.interval_seconds,
-          active_hours = EXCLUDED.active_hours,
-          silence_token = EXCLUDED.silence_token,
-          silence_max = EXCLUDED.silence_max,
-          conversation = EXCLUDED.conversation,
-          prompt_body = EXCLUDED.prompt_body,
-          ${enabledUpdateFragment}
-          updated_at = now()
-        RETURNING default_routine_id, (xmax = 0) AS created
-      `.execute(db);
-      const r = row.rows[0];
-      if (!r) throw new Error('upsertDefault: INSERT … RETURNING returned no row');
-      return { defaultRoutineId: r.default_routine_id, created: r.created };
+      return db.transaction().execute(async trx => {
+        await lockDefaultControls(trx, true);
+        const row = await sql<{ default_routine_id: string; created: boolean }>`
+          INSERT INTO default_routines_v1
+            (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
+             interval_seconds, active_hours, silence_token, silence_max, conversation,
+             prompt_body, enabled)
+          VALUES
+            (${id}, ${input.name}, ${input.description}, ${inputHash(definition)},
+             ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
+             ${durationToSeconds(input.trigger.every)}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
+             ${input.silenceToken}, ${input.silenceMaxChars}, ${input.conversation},
+             ${input.promptBody}, ${insertEnabled})
+          ON CONFLICT (name) DO UPDATE SET
+            description = EXCLUDED.description,
+            spec_hash = EXCLUDED.spec_hash,
+            trigger_kind = EXCLUDED.trigger_kind,
+            trigger_spec = EXCLUDED.trigger_spec,
+            interval_seconds = EXCLUDED.interval_seconds,
+            active_hours = EXCLUDED.active_hours,
+            silence_token = EXCLUDED.silence_token,
+            silence_max = EXCLUDED.silence_max,
+            conversation = EXCLUDED.conversation,
+            prompt_body = EXCLUDED.prompt_body,
+            ${enabledUpdateFragment}
+            updated_at = now()
+          RETURNING default_routine_id, (xmax = 0) AS created
+        `.execute(trx);
+        const r = row.rows[0];
+        if (!r) throw new Error('upsertDefault: INSERT … RETURNING returned no row');
+        return { defaultRoutineId: r.default_routine_id, created: r.created };
+      });
     },
 
     async getDefault(defaultRoutineId) {
@@ -456,9 +470,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     },
 
     async deleteDefault(defaultRoutineId) {
-      await db.deleteFrom('default_routines_v1')
-        .where('default_routine_id', '=', defaultRoutineId)
-        .execute();
+      await db.transaction().execute(async trx => {
+        await lockDefaultControls(trx, true);
+        await trx.deleteFrom('default_routines_v1')
+          .where('default_routine_id', '=', defaultRoutineId).execute();
+      });
     },
 
     async materializeMissing(input) {
@@ -468,6 +484,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         for (const agent of [...input.agents].sort((a, b) => a.agentId.localeCompare(b.agentId))) {
           if (await lockLiveAgent(trx, agent.agentId)) liveAgents.push(agent);
         }
+        await lockDefaultControls(trx);
         const defaults = await trx.selectFrom('default_routines_v1').select('default_routine_id').execute();
         const pairs = liveAgents.flatMap(a => defaults.map(d => ({ ...a, defaultId: d.default_routine_id, revision: opaqueId('rev') })));
         const agentIds = pairs.map(a => a.agentId);
@@ -513,6 +530,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async refreshStale(input) {
       await db.transaction().execute(async trx => {
+        await lockDefaultControls(trx);
         const rows = await trx.selectFrom('routines_v1_definitions as r').innerJoin('default_routines_v1 as d', 'd.default_routine_id', 'r.definition_id')
           .selectAll('r').select(['d.updated_at as source_updated_at']).where(eb => eb.or([eb('r.definition_updated_at', 'is', null), eb('r.definition_updated_at', '<', eb.ref('d.updated_at'))])).forUpdate('r').execute();
         for (const row of rows) {
@@ -549,6 +567,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async setAgentDefaultEnabled(input) {
       await db.transaction().execute(async trx => {
         if (!await lockLiveAgent(trx, input.agentId)) throw new SafeToolError('not-found', 'routineId');
+        await lockDefaultControls(trx, true);
         const source = await trx.selectFrom('default_routines_v1').select('default_routine_id').where('default_routine_id', '=', input.defaultRoutineId).forKeyShare().executeTakeFirst();
         if (!source) throw new SafeToolError('not-found', 'routineId');
         if (input.enabled) {

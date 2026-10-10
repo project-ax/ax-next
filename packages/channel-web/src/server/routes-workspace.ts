@@ -160,7 +160,7 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
-import { AGENT_ABILITIES, isOpenDecision } from '../lib/workspace-types.js';
+import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
@@ -2554,6 +2554,7 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
     consentDeliveryState: stored.consentDeliveryState ?? 'none',
     consentGranted: stored.consentGranted ?? null,
     routineOutcome: stored.routineOutcome ?? null,
+    routineOperation: ROUTINE_DECISION_OPERATIONS.find(name => name === stored.call?.name) ?? null,
     // A predicate with no readable label is not a claim we can put in front of
     // anyone, so the whole predicate goes rather than half of it. `kind` and
     // `value` are opaque tokens the UI never parses or prints — see

@@ -281,6 +281,11 @@ export function isAboutToHappen(d: Decision, now: number = Date.now()): boolean 
   return !Number.isNaN(at) && at > now;
 }
 
+/** Identity comes from the stored-call projection, independently of consent. */
+export function isRoutineDecision(d: Decision): boolean {
+  return d.routineOperation != null;
+}
+
 export function decisionOutcome(
   d: Decision,
   now: number = Date.now(),
@@ -296,6 +301,14 @@ export function decisionOutcome(
       : d.status === 'expired' ? 'The original request expired and was not run.'
       : 'The original routine change has not completed.';
     return { line, note, tone: d.routineOutcome === 'failed' || d.consentDeliveryState === 'failed' ? 'bad' : d.routineOutcome === 'succeeded' ? 'done' : 'quiet' };
+  }
+  if (isRoutineDecision(d) && (d.status === 'executed' || d.status === 'approved-pending-agent')) {
+    if (d.routineOutcome === 'succeeded') return {
+      line: d.routineOperation === 'routine_fire_now' ? 'The routine run was accepted.' : 'The approved routine operation completed.',
+      note: null, tone: 'done',
+    };
+    if (d.routineOutcome === 'failed') return { line: 'The approved routine operation failed.', note: null, tone: 'bad' };
+    return { line: 'The approved routine operation has not completed.', note: 'We’re checking its outcome.', tone: 'quiet' };
   }
   switch (d.status) {
     case 'pending':

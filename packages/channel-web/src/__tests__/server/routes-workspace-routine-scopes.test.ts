@@ -122,6 +122,21 @@ function setup(over: Partial<typeof stored> = {}, allowed = true) {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('server-authored routine approval scopes', () => {
+  it.each(['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now', 'gmail_send'])(
+    'projects %s identity on a resolved once-only receipt without exposing its input', async name => {
+      const s = setup({ status: 'executed', call: { ...stored.call, name } });
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        await s.handlers.decision(s.req('{}'), s.res);
+        return new Response(JSON.stringify(s.result().data), { status: s.result().status, headers: { 'Content-Type': 'application/json' } });
+      }));
+      const { decision } = await workspaceApi.decision('d');
+      expect(decision).toMatchObject({ approvalScope: 'once', request: null, routineOperation: name === 'gmail_send' ? null : name });
+    },
+  );
+  it('rejects a malformed operation marker in a polled receipt', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ decision: { id: 'd', routineOperation: 'shell_execute' } }), { headers: { 'Content-Type': 'application/json' } })));
+    await expect(workspaceApi.decision('d')).rejects.toMatchObject({ name: 'WorkspaceShapeError' });
+  });
   it.each(['once', 'agent-routines'] as const)(
     'serializes actual client scope %s into the strict approval route',
     async (approvalScope) => {

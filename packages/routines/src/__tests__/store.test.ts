@@ -8,7 +8,7 @@ describe('transactional authored store', () => {
   it('creates one row for concurrent retry and returns the committed result after response loss', async () => {
     const input = createInput(); const [a, b] = await Promise.all([f.store.createAuthored(input), f.store.createAuthored(input)]);
     expect(a).toEqual(b); expect(a.ownerUserId).toBe('owner'); expect(a.promptBody).toBe(input.definition.promptBody);
-    expect(a.routineId).toMatch(/^routine_[0-9a-f]{32}$/); expect(a.revision).toMatch(/^rev_[0-9a-f]{32}$/);
+    expect(a.routineId).toMatch(/^rtn_[0-9a-f]{32}$/); expect(a.revision).toMatch(/^rev_[0-9a-f]{32}$/);
     expect((await f.store.list({ agentId: 'a' }))).toHaveLength(1);
     const replay = await f.store.createAuthored({ ...input, now: new Date(), ownerUserId: 'new-owner' });
     expect(replay).toEqual(a); expect(replay.nextRunAt).toBeInstanceOf(Date);
@@ -117,4 +117,10 @@ describe('transactional authored store', () => {
     expect(effect).not.toHaveBeenCalled();
     await f.store.withLockedWebhookSecret({ ...row, expectedRevision: row.revision, operation: 'delete' }, effect); expect(effect).toHaveBeenCalledTimes(1);
   });
+});
+
+it('generates the approved opaque rtn identity for new authored routines and preserves exact replay identity', async () => {
+  const row = await f.store.createAuthored(createInput('id-spelling'));
+  expect(row.routineId).toMatch(/^rtn_[a-f0-9]{32}$/);
+  expect((await f.store.createAuthored(createInput('id-spelling'))).routineId).toBe(row.routineId);
 });

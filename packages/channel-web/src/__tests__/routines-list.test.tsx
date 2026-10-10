@@ -73,6 +73,33 @@ describe('routine list', () => {
       screen.queryByRole('button', { name: 'Fire now' }),
     ).not.toBeInTheDocument();
   });
+  it('lets a stop-only team manager disable and delete, but never enable, edit or fire', async () => {
+    const managed = { ...row, permissions: { edit: false, stop: true, fire: false, manageSecret: false } };
+    vi.mocked(routineApi.list).mockResolvedValue([managed]);
+    vi.mocked(routineApi.update).mockImplementation(async () => { const disabled = { ...managed, enabled: false, revision: 'disabled-v' }; vi.mocked(routineApi.list).mockResolvedValue([disabled]); return disabled; });
+    show();
+    await screen.findByText(row.name);
+    expect(screen.queryByRole('button', { name: `Edit ${row.name}` })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('switch'));
+    await waitFor(() => expect(screen.getByRole('switch')).not.toBeChecked());
+    expect(routineApi.update).toHaveBeenCalledWith({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, requestId: expect.any(String), patch: { enabled: false } });
+    expect(screen.getByRole('switch')).toBeDisabled();
+    fireEvent.click(screen.getByRole('switch'));
+    expect(routineApi.update).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    expect(screen.queryByRole('button', { name: 'Fire now' })).not.toBeInTheDocument();
+    vi.mocked(routineApi.remove).mockResolvedValue({ deleted: true, cleanupPending: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete routine' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(routineApi.remove).toHaveBeenCalledWith({ agentId: 'a', routineId: row.routineId, expectedRevision: 'disabled-v', requestId: expect.any(String) }));
+  });
+  it('keeps HMAC credential controls unavailable to a member owner despite routine edit permission', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, trigger: { kind: 'webhook', path: '/member', hmac: { header: 'sig', algorithm: 'sha256' } } }]);
+    show(); // isAdmin=false, while the real owner shape has manageSecret=true
+    await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    expect(screen.queryByText('Webhook HMAC secret')).not.toBeInTheDocument();
+  });
   it('opens a fresh edit and sends enable/delete revision checks with retry-stable IDs', async () => {
     vi.mocked(routineApi.remove)
       .mockRejectedValueOnce(new RoutineApiError(0))

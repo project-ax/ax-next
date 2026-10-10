@@ -38,6 +38,7 @@
  * says, so the affordance can go away the moment it is no longer true rather
  * than sitting there until the ten seconds run out on the clock alone.
  */
+import { isRoutineDecision } from '@/components/workspace/decision-copy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   workspaceApi,
@@ -148,7 +149,7 @@ function toDecisionReadError(e: unknown): DecisionReadError {
  * next read, never kept indefinitely.
  */
 function needsRoutineRead(d: Decision): boolean {
-  return d.approvalScope === 'agent-routines' && (d.consentDeliveryState === 'pending' || (d.routineOutcome == null && (d.status === 'executed' || d.status === 'approved-pending-agent')));
+  return (d.approvalScope === 'agent-routines' && d.consentDeliveryState === 'pending') || ((isRoutineDecision(d) || d.approvalScope === 'agent-routines') && d.routineOutcome == null && (d.status === 'executed' || d.status === 'approved-pending-agent'));
 }
 
 function mergeReadWithReceipts(

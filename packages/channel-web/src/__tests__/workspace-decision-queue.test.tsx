@@ -28,6 +28,7 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-types';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import {
   DECISION_UNDO_TOO_LATE,
+  decisionOutcome,
   undoSecondsLeft,
 } from '@/components/workspace/decision-copy';
 import { DecisionRow } from '@/components/workspace/DecisionRow';
@@ -521,6 +522,37 @@ describe('useDecisionQueue — onDecisionUndone (TASK-574)', () => {
 describe('routine scope after the grace window', () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-08-22T12:00:00.000Z')); listDecisions.mockReset(); readDecision.mockReset(); approveDecision.mockReset(); });
   afterEach(() => vi.useRealTimers());
+  it.each(['succeeded', 'failed'] as const)('retains and polls an Allow once unknown outcome after grace until %s', async (routineOutcome) => {
+    const pending = resolvedFixture('executed', { routineOperation: 'routine_update', approvalScope: 'once', routineOutcome: null, undoable: false, pendingUntil: new Date(Date.now() - 1000).toISOString(), resolvedAt: new Date(Date.now() - 60000).toISOString(), approvedText: 'The approved routine operation completed.' });
+    expect(decisionOutcome(pending)?.tone).toBe('quiet');
+    expect(decisionOutcome(pending)?.line).toBe('The approved routine operation has not completed.');
+    readDecision.mockResolvedValue({ decision: pending });
+    const { result } = await mountWith([pending]);
+    listDecisions.mockResolvedValue({ decisions: [] });
+    await act(async () => { await result.current.refresh(); });
+    expect(result.current.decisions).toHaveLength(1);
+    await tick(POLL_MS * 3);
+    expect(readDecision).toHaveBeenCalledTimes(3);
+    expect(result.current.decisions[0]?.routineOutcome).toBeNull();
+    readDecision.mockResolvedValue({ decision: { ...pending, routineOutcome } });
+    await tick(POLL_MS);
+    expect(decisionOutcome(result.current.decisions[0]!)?.tone).toBe(routineOutcome === 'succeeded' ? 'done' : 'bad');
+    await tick(POLL_MS * 2);
+    expect(readDecision).toHaveBeenCalledTimes(4);
+  });
+  it('uses durable outcomes for every routine tool, keeps run acceptance honest, and separates permission delivery', () => {
+    for (const routineOperation of ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const) {
+      const pending = resolvedFixture('executed', { routineOperation, approvalScope: 'once', routineOutcome: null, undoable: false });
+      expect(decisionOutcome(pending)?.tone).toBe('quiet');
+      expect(decisionOutcome({ ...pending, routineOutcome: 'failed' })?.tone).toBe('bad');
+      expect(decisionOutcome({ ...pending, routineOutcome: 'succeeded' })?.line).toBe(routineOperation === 'routine_fire_now' ? 'The routine run was accepted.' : 'The approved routine operation completed.');
+    }
+    const standing = resolvedFixture('executed', { routineOperation: 'routine_create', approvalScope: 'agent-routines', consentDeliveryState: 'delivered', consentGranted: true, routineOutcome: null });
+    expect(decisionOutcome(standing)).toMatchObject({ line: 'Routine permission delivered.', note: 'The original routine change has not completed.', tone: 'quiet' });
+    expect(decisionOutcome({ ...standing, consentDeliveryState: 'failed', routineOutcome: 'succeeded' })).toMatchObject({ line: 'Routine permission could not be delivered.', note: 'The original routine change completed.', tone: 'bad' });
+    const unrelated = resolvedFixture('executed', { undoable: false });
+    expect(decisionOutcome(unrelated)).toEqual({ line: unrelated.approvedText, note: null, tone: 'done' });
+  });
   it('keeps watching pending consent after Undo ends and applies delivered permission separately from expiry', async () => {
     const pending = resolvedFixture('executed', { approvalScope: 'agent-routines', consentDeliveryState: 'pending', consentGranted: null, routineOutcome: null, undoable: false, resolvedAt: new Date(Date.now() - 11000).toISOString() });
     const changed = vi.fn(); window.addEventListener('ax:routine-permissions-changed',changed);

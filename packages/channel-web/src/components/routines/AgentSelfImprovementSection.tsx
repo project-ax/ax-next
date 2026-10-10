@@ -49,7 +49,9 @@ interface RowState {
 function AgentToggleRow({
   agentId,
   agentName,
+  onChanged,
 }: {
+  onChanged?: (() => void) | undefined;
   agentId: string;
   agentName: string;
 }) {
@@ -98,6 +100,7 @@ function AgentToggleRow({
         enabled: next,
       });
       setState((s) => ({ ...s, saving: false }));
+      onChanged?.();
     } catch (err) {
       setState((s) => ({
         ...s,
@@ -140,7 +143,8 @@ function AgentToggleRow({
 export function AgentSelfImprovementSection({
   agentId,
   agentName,
-}: { agentId?: string | undefined; agentName?: string | undefined } = {}) {
+  onChanged,
+}: { agentId?: string | undefined; agentName?: string | undefined; onChanged?: (() => void) | undefined } = {}) {
   const { agents, agentsStatus } = useAgentStore();
 
   return (
@@ -166,7 +170,7 @@ export function AgentSelfImprovementSection({
               ? [{ id: agentId, name: agentName ?? 'This agent' }]
               : agents
             ).map((a) => (
-              <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} />
+              <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} onChanged={onChanged} />
             ))}
           </div>
         )}
@@ -176,7 +180,7 @@ export function AgentSelfImprovementSection({
 }
 
 /** Existing catalog overrides stay reachable, including heartbeat. */
-export function AgentDefaultControls({ agentId }: { agentId: string }) {
+export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; onChanged?: (() => void) | undefined }) {
   const [rows, setRows] = useState<
     import('@/lib/routines').AgentDefaultState[] | null
   >(null);
@@ -251,6 +255,7 @@ export function AgentDefaultControls({ agentId }: { agentId: string }) {
                         ) ?? null,
                     ),
                   )
+                  .then(() => onChanged?.())
                   .catch(() =>
                     setError(
                       'We couldn’t change this default routine. Try again.',

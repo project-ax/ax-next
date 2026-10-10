@@ -3172,7 +3172,7 @@ describe('channel-web agent-workspace BFF', () => {
 
     /** Every key the browser is allowed to see, and no others. */
     const WIRE_KEYS = [
-      'approvalScopes', 'approvalScope', 'consentDeliveryState', 'consentGranted', 'routineOutcome',
+      'approvalScopes', 'approvalScope', 'consentDeliveryState', 'consentGranted', 'routineOperation', 'routineOutcome',
       'id',
       'agentId',
       'conversationId',

@@ -32,12 +32,17 @@ import { FireRowsTable } from './FireRowsTable';
 import { TriggerChip } from './TriggerChip';
 import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 
+function rowKey(row: Pick<Routine, 'agentId' | 'routineId'>): string {
+  return JSON.stringify([row.agentId, row.routineId]);
+}
+
 export interface RoutinesListProps {
   agentId?: string | undefined;
   agentName?: string | undefined;
   refreshKey?: number;
   onFired: () => void;
   isAdmin?: boolean;
+  origin?: 'authored' | 'default';
 }
 export function RoutinesList({
   agentId,
@@ -45,6 +50,7 @@ export function RoutinesList({
   refreshKey = 0,
   onFired,
   isAdmin = false,
+  origin = 'authored',
 }: RoutinesListProps) {
   const { agents, agentsStatus } = useAgentStore();
   const ids = agentId ? [agentId] : agents.map((a) => a.id);
@@ -88,7 +94,7 @@ export function RoutinesList({
     }
     void Promise.all(ids.map((id) => routineApi.list(id)))
       .then((rows) => {
-        if (active) setList(rows.flat().filter((r) => r.origin === 'authored'));
+        if (active) setList(rows.flat().filter((r) => r.origin === origin));
       })
       .catch(() => {
         if (active) setError('We couldn’t load routines.');
@@ -96,9 +102,9 @@ export function RoutinesList({
     return () => {
       active = false;
     };
-  }, [idKey, agentsStatus, version, refreshKey, fireProtected]);
+  }, [idKey, agentsStatus, version, refreshKey, fireProtected, origin]);
   useEffect(() => {
-    const row = list?.find((r) => r.routineId === expanded);
+    const row = list?.find((r) => rowKey(r) === expanded);
     if (!row) return;
     let active = true;
     setFires(null);
@@ -131,7 +137,7 @@ export function RoutinesList({
   }
   async function mutate(row: Routine, kind: 'enabled' | 'delete') {
     if (flight.current || fireProtectedRef.current) return;
-    const key = `${row.routineId}:${row.revision}:${kind}`;
+    const key = JSON.stringify([row.agentId, row.routineId, row.revision, kind]);
     if (operation.current && operation.current.key !== key) {
       setError('Retry the unconfirmed change before making another change.');
       return;
@@ -177,9 +183,9 @@ export function RoutinesList({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          Work that runs when its trigger fires.
+          {origin === 'default' ? 'Run workspace defaults and inspect their recent runs.' : 'Work that runs when its trigger fires.'}
         </p>
-        {agentId ? (
+        {origin === 'authored' && (agentId ? (
           <Button
             disabled={busy !== null || uncertain || fireProtected}
             onClick={() => setCreating(agentId)}
@@ -199,7 +205,7 @@ export function RoutinesList({
               </Button>
             ))}
           </div>
-        )}
+        ))}
       </div>
       {error && (
         <Alert
@@ -241,25 +247,25 @@ export function RoutinesList({
       ) : list?.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>No routines yet</EmptyTitle>
+            <EmptyTitle>{origin === 'default' ? 'No active default routines' : 'No routines yet'}</EmptyTitle>
             <EmptyDescription>
-              Create a routine to schedule work for {agentName ?? 'an agent'}.
+              {origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
         list?.map((row) => (
-          <div key={row.routineId} className="min-w-0">
+          <div key={rowKey(row)} className="min-w-0">
             <div className="flex flex-wrap items-center gap-3 py-3">
               <Button
                 variant="ghost"
                 aria-label={`Recent runs for ${row.name}`}
-                aria-expanded={expanded === row.routineId}
+                aria-expanded={expanded === rowKey(row)}
                 disabled={fireProtected}
                 onClick={() => {
                   if (!fireProtectedRef.current)
                     setExpanded((v) =>
-                      v === row.routineId ? null : row.routineId,
+                      v === rowKey(row) ? null : rowKey(row),
                     );
                 }}
               >
@@ -274,7 +280,7 @@ export function RoutinesList({
                   </p>
                 )}
               </div>
-              <Field orientation="horizontal" className="w-auto">
+              {row.origin === 'authored' && <Field orientation="horizontal" className="w-auto">
                 <FieldLabel htmlFor={`routine-${row.routineId}`}>
                   {row.enabled ? 'On' : 'Off'}
                 </FieldLabel>
@@ -283,11 +289,11 @@ export function RoutinesList({
                   aria-label={`Enabled for ${row.name}`}
                   checked={row.enabled}
                   disabled={
-                    busy !== null || uncertain || fireProtected || !row.permissions.stop
+                    busy !== null || uncertain || fireProtected || !(row.enabled ? row.permissions.stop : row.permissions.edit)
                   }
                   onCheckedChange={() => void mutate(row, 'enabled')}
                 />
-              </Field>
+              </Field>}
               {row.permissions.edit && (
                 <Button
                   variant="ghost"
@@ -299,7 +305,7 @@ export function RoutinesList({
                 </Button>
               )}
             </div>
-            {expanded === row.routineId && (
+            {expanded === rowKey(row) && (
               <div className="flex flex-col gap-3 pb-4">
                 {row.description && (
                   <p className="text-sm text-muted-foreground">
@@ -314,7 +320,7 @@ export function RoutinesList({
                       onPendingChange={protectFire}
                     />
                   )}
-                  {row.permissions.edit && (
+                  {row.permissions.stop && (
                     <Button
                       variant="outline"
                       size="sm"

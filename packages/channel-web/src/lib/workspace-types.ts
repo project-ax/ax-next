@@ -148,7 +148,12 @@ export interface DecisionRequest {
   truncated: boolean;
 }
 
+export const ROUTINE_DECISION_OPERATIONS = ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const;
+export type RoutineDecisionOperation = (typeof ROUTINE_DECISION_OPERATIONS)[number];
+
 export interface Decision {
+  /** Server-derived operation identity; carries no input or execution authority. */
+  routineOperation?: RoutineDecisionOperation | null;
   approvalScopes: ('once' | 'agent-routines')[];
   approvalScope?: 'once' | 'agent-routines';
   consentDeliveryState?: 'none' | 'pending' | 'delivered' | 'failed';

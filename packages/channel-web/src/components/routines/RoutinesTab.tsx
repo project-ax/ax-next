@@ -46,8 +46,16 @@ export function RoutinesTab({
           <AgentSelfImprovementSection
             agentId={agentId}
             agentName={agentName}
+            onChanged={() => setRefreshKey((n) => n + 1)}
           />
-          {agentId && <AgentDefaultControls agentId={agentId} />}
+          {agentId && <AgentDefaultControls agentId={agentId} onChanged={() => setRefreshKey((n) => n + 1)} />}
+          <RoutinesList
+            origin="default"
+            agentId={agentId}
+            agentName={agentName}
+            refreshKey={refreshKey}
+            onFired={() => setRefreshKey((n) => n + 1)}
+          />
           {agentId && onViewSkills && (
             <Button
               variant="link"

@@ -38,6 +38,17 @@ function edit() {
   );
 }
 describe('structured routine form', () => {
+  it('explains the administrator, owner and edit restrictions to a member configuring HMAC', async () => {
+    const memberRow = { ...row, trigger: { kind: 'webhook' as const, path: '/member' }, permissions: { edit: true, stop: true, fire: true, manageSecret: true } };
+    vi.mocked(routineApi.get).mockResolvedValue(memberRow);
+    render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={memberRow} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue(row.name);
+    fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Verify HMAC signature' }));
+    expect(screen.getByText(/Only an administrator who owns this routine and has routine edit permission/)).toBeVisible();
+    expect(screen.getByText(/Without a saved secret, signed deliveries are rejected/)).toBeVisible();
+    expect(screen.queryByLabelText('Webhook HMAC secret')).not.toBeInTheDocument();
+  });
   it('creates canonical definitions with Enabled and multiline prompts, without filename or markdown controls', async () => {
     const saved = vi.fn();
     render(
