@@ -11,7 +11,7 @@ import { createRoutinesPlugin } from '../../plugin.js';
 import { createRoutinesStore } from '../../store.js';
 import type { RoutinesDatabase } from '../../migrations.js';
 import { drainRoutineCleanup } from '../../cleanup.js';
-import type { Clock } from '../../clock.js';
+import { systemClock, type Clock } from '../../clock.js';
 export type RoutineHarness = {
   routes: HttpRegisterRouteInput[];
   shutdownRoutines(): Promise<void>;
@@ -23,7 +23,7 @@ export type RoutineHarness = {
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 
-/** Make seeded-default coexistence independent of the bootstrap tick's timing. */
+/** Materialize the seeded defaults for the harness agents, as a later tick would. */
 export async function materializePersonalDefaults(harness: RoutineHarness): Promise<void> {
   const { agents } = await harness.bus.call<unknown, { agents: Array<{ agentId: string; ownerUserId: string }> }>(
     'agents:list-personal-owners', harness.owner, {},
@@ -47,7 +47,15 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
   const invokeCalls: string[] = [];
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
-  const routinesPlugin = createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, options.clock, options.dispatch ? {
+  // The tick loop starts at plugin init and its first pass (materialize,
+  // reconcile owners, claim, drain cleanup) runs in the background. Left alone
+  // it lands at a load-dependent point inside the test; the loop sleeps right
+  // after each pass, so the first sleep marks the first pass as finished.
+  const baseClock = options.clock ?? systemClock;
+  let firstTickDone!: () => void;
+  const firstTick = new Promise<void>(resolve => { firstTickDone = resolve; });
+  const tickClock: Clock = { now: () => baseClock.now(), sleep: (ms, signal) => { firstTickDone(); return baseClock.sleep(ms, signal); } };
+  const routinesPlugin = createRoutinesPlugin({ tickIntervalMs: 3_600_000 }, tickClock, options.dispatch ? {
       dispatch: async accepted => {
         const runCtx = makeAgentContext({ userId: accepted.row.ownerUserId, agentId: accepted.row.agentId, sessionId: 'routine', reqId: accepted.reqId });
         await liveBus.call('agent:invoke', runCtx, {});
@@ -118,6 +126,7 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
       },
     }, createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), routinesPlugin],
   });
+  await firstTick;
   const ctx = (userId: string) => makeAgentContext({ userId, agentId: 'test', sessionId: 'test' });
   const owner = ctx('owner'), teamAdmin = ctx('admin'), teamMember = ctx('member');
   async function create(team: boolean) {
