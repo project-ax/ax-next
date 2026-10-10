@@ -45,6 +45,7 @@ import {
   useMemoryReceipt,
 } from './MemoryCorrection';
 import {
+  LEARNED_STATUS_PAUSED,
   MEMORY_CLOSURE_BADGE,
   MEMORY_FIX,
   MEMORY_FORGET,
@@ -52,6 +53,11 @@ import {
   MEMORY_PERSONAL_NOTICE,
   MEMORY_REPLACED_BY_UNKNOWN,
   MEMORY_TEAM_NOTICE,
+  MEMORY_KIND_FACT,
+  MEMORY_KIND_PREFERENCE,
+  MEMORY_NOTED_TODAY,
+  MEMORY_NOTED_YESTERDAY,
+  memoryListFooter,
   memoryFixLabel,
   memoryForgetLabel,
   memoryReplacedBy,
@@ -93,12 +99,15 @@ type ReadState =
  * (TASK-526, card item 1).
  */
 function kindLabel(row: FactMemoryStatement): string {
-  if (row.kind === 'world' || row.kind === 'experience') return 'Fact';
-  if (row.kind === 'observation') return 'Observation';
-  if (row.kind === 'opinion') return 'Opinion';
+  if (row.kind === 'opinion') return MEMORY_KIND_PREFERENCE;
+  if (row.kind === 'world' || row.kind === 'experience' || row.kind === 'observation') return MEMORY_KIND_FACT;
   if (row.savedBy === 'person') return 'Saved by a person';
   if (row.savedBy === 'agent') return 'Agent note';
   return 'Older memory';
+}
+
+function KindBadge({ row }: { row: FactMemoryStatement }) {
+  return <Badge variant={row.kind === 'opinion' ? 'accent' : 'secondary'} size="compact">{kindLabel(row)}</Badge>;
 }
 
 /**
@@ -159,7 +168,7 @@ function DegradedNotice() {
 function ExtractionPausedNotice() {
   return (
     <Alert>
-      <AlertTitle>Memory is paused</AlertTitle>
+      <AlertTitle>{LEARNED_STATUS_PAUSED}</AlertTitle>
       <AlertDescription>
         We&apos;re not picking up anything new from your conversations right now, because
         this workspace doesn&apos;t have an OpenRouter key yet. An admin can add one under
@@ -308,9 +317,16 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
 function NotedDate({ when }: { when: string }) {
   const date = new Date(when);
   if (Number.isNaN(date.getTime())) return <span>Unknown date</span>;
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  // Calendar days, rather than elapsed hours, also work at midnight and across DST.
+  const label = date.toDateString() === today.toDateString() ? MEMORY_NOTED_TODAY
+    : date.toDateString() === yesterday.toDateString() ? MEMORY_NOTED_YESTERDAY
+    : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   return (
     <time dateTime={when}>
-      {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+      {label}
     </time>
   );
 }
@@ -327,7 +343,7 @@ function MemoryActions({ row, onFix, onForget }: {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button ref={trigger} type="button" variant="ghost" size="icon" aria-label={`Memory actions: ${row.value}`}>
+        <Button ref={trigger} type="button" variant="ghost" size="icon" className="size-11 md:size-8" aria-label={`Memory actions: ${row.value}`}>
           <MoreHorizontal aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
@@ -411,18 +427,18 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
           <Field className="min-w-0 md:flex-1">
             <FieldLabel htmlFor="memory-search" className="sr-only">Search memories</FieldLabel>
             <InputGroup>
-              <InputGroupInput id="memory-search" placeholder="Search memories…" value={draft} onChange={(e) => {
+              <InputGroupInput id="memory-search" placeholder="Search memories" value={draft} onChange={(e) => {
                 setDraft(e.target.value);
                 if (e.target.value.trim() === '') setQuery('');
               }} />
-              <InputGroupAddon align="inline-end">
+              <InputGroupAddon align="inline-start">
                 <InputGroupButton type="submit" size="icon-sm" aria-label="Search"><Search aria-hidden="true" /></InputGroupButton>
               </InputGroupAddon>
             </InputGroup>
           </Field>
-          <Field orientation="horizontal" className="md:w-auto md:shrink-0">
+          <Field orientation="horizontal" className="min-h-11 justify-end md:min-h-0 md:w-auto md:shrink-0">
+            <FieldLabel htmlFor="memories-history" className="text-muted-foreground">Show replaced memories</FieldLabel>
             <Switch id="memories-history" checked={history} onCheckedChange={setHistory} />
-            <FieldLabel htmlFor="memories-history">Show replaced memories</FieldLabel>
           </Field>
         </FieldGroup>
       </form>
@@ -437,7 +453,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
             {rows.map((row) => <li key={row.id}>
               <Card>
                 <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-2">
-                  <CardTitle><Badge variant="secondary">{kindLabel(row)}</Badge></CardTitle>
+                  <CardTitle><KindBadge row={row} /></CardTitle>
                   {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2 p-4 pt-0">
@@ -448,26 +464,27 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
             </li>)}
           </ul>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
+          <Card className="overflow-hidden border border-border shadow-none">
             <Table className="min-w-[30rem] table-fixed">
-              <TableHeader className="bg-muted/50">
-                <TableRow>
-                  <TableHead className="w-36">Kind</TableHead>
-                  <TableHead>What {agentName} remembers</TableHead>
-                  <TableHead className="w-32">Noted</TableHead>
-                  <TableHead className="w-14"><span className="sr-only">Actions</span></TableHead>
+              <TableHeader className="bg-muted">
+                <TableRow className="border-border">
+                  <TableHead className="h-9 w-32 text-xs">Kind</TableHead>
+                  <TableHead className="h-9 text-xs">What {agentName} remembers</TableHead>
+                  <TableHead className="h-9 w-28 text-xs">Noted</TableHead>
+                  <TableHead className="h-9 w-16"><span className="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>{rows.map((row) => <TableRow key={row.id}>
-                <TableCell className="align-top"><Badge variant="secondary">{kindLabel(row)}</Badge></TableCell>
-                <TableCell className="align-top">{statement(row)}</TableCell>
-                <TableCell className="align-top text-muted-foreground"><NotedDate when={row.when} /></TableCell>
-                <TableCell className="align-top">{isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}</TableCell>
+              <TableBody>{rows.map((row) => <TableRow key={row.id} className="border-border">
+                <TableCell className="py-3"><KindBadge row={row} /></TableCell>
+                <TableCell className="py-3">{statement(row)}</TableCell>
+                <TableCell className="py-3 text-muted-foreground"><NotedDate when={row.when} /></TableCell>
+                <TableCell className="py-3">{isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}</TableCell>
               </TableRow>)}</TableBody>
             </Table>
-          </div>
+          </Card>
         )}
         {query && rows.length > 0 && <p className="text-sm text-muted-foreground">Best matches first.</p>}
+        {count !== null && <p className="text-xs text-muted-foreground">{memoryListFooter(count)}</p>}
         {rows.length === 40 && <p className="text-sm text-muted-foreground">Showing 40 memories. Use search to find more.</p>}
       </>}
     </section>

@@ -155,6 +155,11 @@ beforeEach(() => {
 
 afterEach(() => clearViewport());
 
+async function expandLearned() {
+  const toggle = await screen.findByRole('button', { name: /^Learned in this chat/ });
+  if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+}
+
 describe('AgentView — "What I learned in this chat"', () => {
   it('pins learned facts below Chats and follows this conversation', async () => {
     recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
@@ -184,12 +189,25 @@ describe('AgentView — "What I learned in this chat"', () => {
     expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
     await batch([st('new')]);
     expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
+    await expandLearned();
     expect(screen.getByText("What Quill picked up in this chat. Fix or forget anything that's off.")).toBeTruthy();
+  });
+
+  it('shows paused and failed summaries even when this conversation has no facts', async () => {
+    renderView();
+    await streamOpen();
+    act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    expect(await screen.findByText('Memory is paused')).toBeTruthy();
+    expect(screen.queryByText(LEARNED_PAUSED)).toBeNull();
+    act(() => push({ kind: 'status', extraction: 'ok', conversation: 'idle' }));
+    act(() => push({ kind: 'activity', state: 'failed', statementIds: [] }));
+    expect(await screen.findByText("Couldn't save memory")).toBeTruthy();
   });
 
   it('See all memory opens settings Memory directly', async () => {
     recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     const { onSettingsSection } = renderView();
+    await expandLearned();
     fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
     expect(onSettingsSection).toHaveBeenCalledWith('memory');
   });
@@ -199,6 +217,7 @@ describe('AgentView — "What I learned in this chat"', () => {
     const { onOpenModelKeys } = renderView({ role: 'admin' });
     await streamOpen();
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    await expandLearned();
     fireEvent.click(screen.getByRole('button', { name: LEARNED_PAUSED_ACTION }));
     expect(onOpenModelKeys).toHaveBeenCalledTimes(1);
   });
@@ -208,6 +227,7 @@ describe('AgentView — "What I learned in this chat"', () => {
     renderView({ role: 'user' });
     await streamOpen();
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
+    await expandLearned();
     expect(screen.getByText(LEARNED_PAUSED)).toBeTruthy();
     expect(screen.queryByRole('button', { name: LEARNED_PAUSED_ACTION })).toBeNull();
   });
@@ -239,6 +259,7 @@ describe('AgentView — the block below md', () => {
     renderView();
     fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
     const sheet = await screen.findByRole('dialog');
+    await expandLearned();
     fireEvent.click(await within(sheet).findByRole('button', { name: learnedSourceLabel('person', 'I just moved to Denver') }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -266,6 +287,7 @@ describe('AgentView — the block below md', () => {
       degraded: [],
     });
     renderView();
+    await expandLearned();
     const link = await screen.findByRole('button', {
       name: learnedSourceLabel('agent', 'Got it — Oct 14.'),
     });
@@ -314,6 +336,7 @@ describe('AgentView — the chip and the rail share one set of fixes', () => {
   }
 
   async function rail(): Promise<HTMLElement> {
+    await expandLearned();
     const title = await screen.findByText(LEARNED_TITLE);
     const section = title.closest('section');
     expect(section).not.toBeNull();

@@ -71,6 +71,106 @@ async function memoryAction(label: string): Promise<HTMLElement> {
 }
 
 describe('MemorySurface', () => {
+  it.each([false, true])('uses Preference and Fact chips with saved-by fallbacks (compact=%s)', async (compact) => {
+    recallMock.mockResolvedValue({ statements: [
+      fact({ id: 'opinion', kind: 'opinion', savedBy: 'person' }),
+      fact({ id: 'observation', kind: 'observation' }),
+      fact({ id: 'world', kind: 'world' }),
+      fact({ id: 'experience', kind: 'experience' }),
+      fact({ id: 'person', savedBy: 'person' }),
+      fact({ id: 'agent', savedBy: 'agent' }),
+      fact({ id: 'older' }),
+    ], degraded: [] });
+    render(<CompactSurfaceContext.Provider value={compact}>
+      <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+    </CompactSurfaceContext.Provider>);
+    expect(await screen.findByText('Preference')).toHaveClass('bg-primary-soft', 'text-primary');
+    expect(screen.getAllByText('Fact')).toHaveLength(3);
+    expect(screen.getByText('Saved by a person')).toBeInTheDocument();
+    expect(screen.getByText('Agent note')).toBeInTheDocument();
+    expect(screen.getByText('Older memory')).toBeInTheDocument();
+    expect(screen.queryByText('Person')).toBeNull();
+    expect(screen.queryByText('Project')).toBeNull();
+  });
+
+  it.each([0, 1, 3])('shows the current-memory footer for %s memories', async (count) => {
+    recallMock.mockResolvedValue({ statements: Array.from({ length: count }, (_, i) => fact({ id: `m${i}` })), degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText(`${count} ${count === 1 ? 'memory' : 'memories'} · Fix and Forget live in each row's menu.`)).toBeInTheDocument();
+  });
+
+  it('keeps the 40-row limit guidance in the list and in search', async () => {
+    recallMock.mockResolvedValue({ statements: Array.from({ length: 40 }, (_, i) => fact({ id: `m${i}` })), degraded: [] });
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    const cap = 'Showing 40 memories. Use search to find more.';
+    await screen.findByText(cap);
+    expect(screen.getByText(/40 memories · Fix and Forget/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'Boston' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Best matches first.');
+    expect(screen.getByText(cap)).toBeInTheDocument();
+    expect(screen.queryByText(/Fix and Forget live/)).toBeNull();
+  });
+
+  it('uses Yesterday across the fall DST change and handles an invalid noted date', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 10, 2, 0, 15));
+    try {
+      recallMock.mockResolvedValue({ statements: [
+        fact({ id: 'dst', when: new Date(2026, 10, 1, 0, 1).toISOString() }),
+        fact({ id: 'invalid', when: 'unknown' }),
+      ], degraded: [] });
+      render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+      expect(await screen.findByText('Yesterday')).toBeInTheDocument();
+      expect(screen.getByText('Unknown date')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts only current memories in history and hides the footer while searching', async () => {
+    const current = fact({ id: 'current' });
+    recallMock.mockImplementation(async (_id, options) => ({ statements: options?.history ? [current,
+      fact({ id: 'replaced', until: '2026-10-01T00:00:00Z', closure: 'replaced' }),
+      fact({ id: 'overridden', closure: 'overridden' }),
+    ] : [current], degraded: [] }));
+    render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    const footer = "1 memory · Fix and Forget live in each row's menu.";
+    await screen.findByText(footer);
+    fireEvent.click(screen.getByRole('switch', { name: 'Show replaced memories' }));
+    await screen.findByText('Replaced');
+    expect(screen.getByText(footer)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'Boston' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Best matches first.');
+    expect(screen.queryByText(footer)).toBeNull();
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: '' } });
+    expect(await screen.findByText(footer)).toBeInTheDocument();
+    recallMock.mockResolvedValue({ statements: [], degraded: [] });
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'nothing' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('No memories match that. Try a different word or phrase.');
+    expect(screen.queryByText(/Fix and Forget live/)).toBeNull();
+  });
+
+  it.each([false, true])('formats noted dates by local calendar day (compact=%s)', async (compact) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 9, 0, 15));
+    try {
+      const dates = [new Date(2026, 9, 9, 0, 1), new Date(2026, 9, 8, 23, 59), new Date(2026, 8, 29, 12)];
+      recallMock.mockResolvedValue({ statements: dates.map((date, i) => fact({ id: `date${i}`, when: date.toISOString() })), degraded: [] });
+      const { container } = render(<CompactSurfaceContext.Provider value={compact}>
+        <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+      </CompactSurfaceContext.Provider>);
+      await waitFor(() => expect(container.querySelector('time')?.textContent).toBe('Today'));
+      const times = Array.from(container.querySelectorAll('time'));
+      expect(times.map((time) => time.textContent)).toEqual(['Today', 'Yesterday', dates[2]!.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]);
+      expect(times.map((time) => time.dateTime)).toEqual(dates.map((date) => date.toISOString()));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('lists memories from earlier chats without a profile or conversation filter', async () => {
     const earlierNote = fact({ id: 'from-earlier-chat', about: 'project:canopy',
       aboutText: 'Canopy project', relation: 'launch_date', value: 'October 15' });
@@ -121,7 +221,7 @@ describe('MemorySurface', () => {
     expect(await screen.findByText('Boston')).toBeInTheDocument();
     expect(screen.getByText('UTC-5')).toBeInTheDocument();
     expect(screen.getByText('lives in:')).toBeInTheDocument();
-    expect(screen.getAllByText(new Date('2026-09-01T00:00:00.000Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(new Date('2026-09-01T00:00:00.000Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })).length).toBeGreaterThan(0);
   });
 
   it('says the profile is empty only when the read worked', async () => {
@@ -455,8 +555,10 @@ describe('MemorySurface', () => {
     );
     expect(await screen.findByText(/Tea/)).toBeInTheDocument();
     expect(screen.getAllByText('Fact')).not.toHaveLength(0);
-    expect(screen.getByText('Observation')).toBeInTheDocument();
-    expect(screen.getByText('Opinion')).toBeInTheDocument();
+    expect(screen.getAllByText('Fact')).toHaveLength(2);
+    expect(screen.getByText('Preference')).toBeInTheDocument();
+    expect(screen.queryByText('Observation')).toBeNull();
+    expect(screen.queryByText('Opinion')).toBeNull();
     // No kind, no savedBy: the honest gap is "Older memory", not "Unclassified"
     // (which read as a claim about the row rather than about our own metadata).
     expect(screen.getByText('Older memory')).toBeInTheDocument();
@@ -992,7 +1094,7 @@ describe('MemorySurface — settings manager (TASK-890)', () => {
     expect(screen.getAllByRole('switch', { name: 'Show replaced memories' })).toHaveLength(1);
     const date = table.querySelector('time')!;
     expect(date.dateTime).toBe(when);
-    expect(date.textContent).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }));
+    expect(date.textContent).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
     expect(screen.queryByText('UTC engine date')).toBeNull();
     expect(screen.getByRole('button', { name: 'Memory actions: Boston' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull();

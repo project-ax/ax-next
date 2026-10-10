@@ -482,7 +482,12 @@ describe('Memory settings and the pinned learned card (TASK-890)', () => {
     vi.mocked(workspaceApi.forgetMemory).mockImplementation(async () => { rows = []; return { forgotten: true }; });
     vi.mocked(workspaceApi.unforgetMemory).mockImplementation(async () => { rows = [original]; return { restored: ['m1'] }; });
   });
+  async function expandLearned() {
+    const toggle = await screen.findByRole('button', { name: /^Learned in this chat/ });
+    if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+  }
   async function openSettings() {
+    await expandLearned();
     fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
     await screen.findByRole('table');
     expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/memory');
@@ -506,12 +511,14 @@ describe('Memory settings and the pinned learned card (TASK-890)', () => {
     await saveFix();
     expect(await screen.findByRole('button', { name: 'Memory actions: Denver' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    await expandLearned();
     const card = (await screen.findByText(LEARNED_TITLE)).closest('section')!;
     expect(within(card).getByText(memoryStatementText({ ...original, value: 'Denver' }))).toBeTruthy();
     expect(within(card).queryByText(memoryStatementText(original))).toBeNull();
   });
   it('fixes in the pinned card appear in the settings manager', async () => {
     renderAt('/workspace/agents/a-quill');
+    await expandLearned();
     fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }));
     await saveFix();
     await openSettings();
@@ -531,11 +538,13 @@ describe('Memory settings and the pinned learned card (TASK-890)', () => {
     fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
     await screen.findByRole('button', { name: 'Memory actions: Boston' });
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
+    await expandLearned();
     expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
     expect(screen.getByRole('button', { name: memoryFixLabel(memoryStatementText(original)) })).toBeTruthy();
   });
   it('rail Forget updates the settings manager while the Undo receipt is still available', async () => {
     renderAt('/workspace/agents/a-quill');
+    await expandLearned();
     fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel(memoryStatementText(original)) }));
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
