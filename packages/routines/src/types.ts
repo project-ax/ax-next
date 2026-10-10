@@ -30,6 +30,7 @@ export interface RoutineRow {
   ownerUserId: string;
   name: string;
   description: string;
+  enabled?: boolean;
   specHash: string;
   trigger: TriggerSpec;
   activeHours: ActiveHours | null;
@@ -283,6 +284,7 @@ const RoutineRowSchema = z.object({
   agentId: z.string(),
   path: z.string(),
   ownerUserId: z.string(),
+  enabled: z.boolean().optional(),
   name: z.string(),
   description: z.string(),
   specHash: z.string(),

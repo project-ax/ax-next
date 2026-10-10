@@ -55,6 +55,17 @@ async function makeBus(opts: {
 }
 
 describe('fireRoutine', () => {
+  it('does not invoke a disabled routine, including manual fires', async () => {
+    const invoke = vi.fn();
+    const create = vi.fn();
+    const bus = await makeBus({ invoke, create });
+    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
+    const result = await fire(row({ enabled: false }), 'manual');
+    expect(result.status).toBe('error');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('per-fire: calls conversations:create and agent:invoke with the prompt body', async () => {
     let createdWith: unknown;
     let invokedWith: unknown;

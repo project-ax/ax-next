@@ -58,6 +58,7 @@ beforeEach(() => {
 async function fillValidForm(name = 'my-skill', description = 'Does something useful.') {
   const nameInput = await screen.findByLabelText('Name');
   fireEvent.change(nameInput, { target: { value: name } });
+  fireEvent.change(screen.getByLabelText('Instructions'), { target: { value: 'Do useful work.' } });
   fireEvent.change(screen.getByLabelText('Description'), {
     target: { value: description },
   });
@@ -98,7 +99,7 @@ describe('SkillEditor (form-first)', () => {
     await screen.findByLabelText('Name');
     // No name → invalid-name → Save disabled.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(
         true,
       );
     });
@@ -113,11 +114,11 @@ describe('SkillEditor (form-first)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(
         false,
       );
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }));
 
     await waitFor(() => {
       expect(mockUpsertSkill).toHaveBeenCalledTimes(1);
@@ -141,7 +142,7 @@ describe('SkillEditor (form-first)', () => {
 
     expect(await screen.findByLabelText('Remove connector salesforce')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }));
     await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
     const [skillMd] = mockUpsertSkill.mock.calls[0]!;
     expect(skillMd).toContain('connectors:');
@@ -176,12 +177,14 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm('greeter', 'A friendly skill.');
 
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     const raw = (await screen.findByLabelText('Raw SKILL.md')) as HTMLTextAreaElement;
     expect(raw.value).toContain('name: greeter');
     expect(raw.value).toContain('description: A friendly skill.');
 
     // Toggle back to the form — fields are reconstructed from the raw text.
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() => {
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('greeter');
@@ -192,6 +195,7 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm('greeter', 'A friendly skill.');
 
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     const raw = await screen.findByLabelText('Raw SKILL.md');
     fireEvent.change(raw, {
@@ -200,6 +204,7 @@ describe('SkillEditor (form-first)', () => {
       },
     });
 
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() => {
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('renamed');
@@ -216,11 +221,13 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm();
 
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     const raw = await screen.findByLabelText('Raw SKILL.md');
     fireEvent.change(raw, { target: { value: 'no frontmatter at all' } });
 
     // Attempt to toggle back — it must refuse and stay in raw.
+    await openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() => {
       expect(screen.getByLabelText('Raw SKILL.md')).toBeTruthy();
@@ -229,7 +236,7 @@ describe('SkillEditor (form-first)', () => {
     // (TASK-343/D8) the parser's `code` prefix no longer rides the message.
     expect(screen.queryByText(/no-fence/)).toBeNull();
     // Save is disabled while the raw manifest is invalid.
-    expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('round-trips UNKNOWN frontmatter keys through the form (TASK-133)', async () => {
@@ -256,7 +263,7 @@ describe('SkillEditor (form-first)', () => {
     fireEvent.change(screen.getByLabelText('Description'), {
       target: { value: 'Updated description.' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
     const [, skillMd] = mockUpdateSkill.mock.calls[0]!;
@@ -271,9 +278,9 @@ describe('SkillEditor (form-first)', () => {
     await fillValidForm();
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }));
     await waitFor(() => expect(screen.getByText('name mismatch')).toBeTruthy());
   });
 
@@ -283,10 +290,11 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm('greeter', 'A skill.');
 
+    await openOptions();
     const checkbox = await screen.findByLabelText(/Available to all my agents by default/i);
     expect(checkbox).not.toBeDisabled();
     fireEvent.click(checkbox);
-    fireEvent.click(screen.getByRole('button', { name: /install/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }));
 
     await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
     const [, opts] = mockUpsertSkill.mock.calls[0]!;
@@ -296,6 +304,7 @@ describe('SkillEditor (form-first)', () => {
   it('loads existing defaultAttached state on edit', async () => {
     mockGetSkill.mockResolvedValueOnce({ ...DETAIL, defaultAttached: true });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await openOptions();
     const checkbox = await screen.findByLabelText(/Available to all my agents by default/i);
     await waitFor(() => expect(checkbox).toBeChecked());
   });
@@ -312,6 +321,7 @@ describe('SkillEditor (form-first)', () => {
     });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
+    await openOptions();
     const pathInput = await screen.findByLabelText('Bundle file path 1');
     expect((pathInput as HTMLInputElement).value).toBe('scripts/run.py');
     expect((screen.getByLabelText('Bundle file contents 1') as HTMLTextAreaElement).value).toBe(
@@ -326,6 +336,7 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm();
 
+    await openOptions();
     fireEvent.click(screen.getByRole('button', { name: /add file/i }));
     fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
       target: { value: 'scripts/run.py' },
@@ -335,9 +346,9 @@ describe('SkillEditor (form-first)', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }));
 
     await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
     const [, opts] = mockUpsertSkill.mock.calls[0]!;
@@ -354,11 +365,12 @@ describe('SkillEditor (form-first)', () => {
     });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
+    await openOptions();
     await screen.findByLabelText('Bundle file path 1');
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Save changes' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
     const [, , opts] = mockUpdateSkill.mock.calls[0]!;
@@ -372,6 +384,7 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm();
 
+    await openOptions();
     fireEvent.click(screen.getByRole('button', { name: /add file/i }));
     fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
       target: { value: '../escape.md' },
@@ -379,7 +392,7 @@ describe('SkillEditor (form-first)', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/may not contain ".."/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(true);
     });
   });
 
@@ -387,6 +400,7 @@ describe('SkillEditor (form-first)', () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
     await fillValidForm();
 
+    await openOptions();
     fireEvent.click(screen.getByRole('button', { name: /add file/i }));
     fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
       target: { value: '.mcp.json' },
@@ -394,7 +408,7 @@ describe('SkillEditor (form-first)', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/reserved path/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('button', { name: 'Create skill' }).hasAttribute('disabled')).toBe(true);
     });
   });
 
@@ -408,11 +422,12 @@ describe('SkillEditor (form-first)', () => {
     });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
+    await openOptions();
     fireEvent.click(await screen.findByLabelText(/remove bundle file a\.md/i));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Save changes' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
     const [, , opts] = mockUpdateSkill.mock.calls[0]!;
@@ -431,7 +446,52 @@ describe('SkillEditor (form-first)', () => {
     const raw = (await screen.findByLabelText('Raw SKILL.md')) as HTMLTextAreaElement;
     expect(raw.value).toContain('name: broken');
     // The Advanced toggle reflects raw mode.
+    await openOptions();
     expect(screen.getByLabelText(/Advanced — edit raw/i)).toBeChecked();
+  });
+
+  it('resets drafts, connectors, advanced options and files when changing skills or modes', async () => {
+    mockGetSkill.mockResolvedValueOnce(DETAIL).mockResolvedValueOnce({ ...DETAIL, id: 'second', manifestYaml: 'name: second\ndescription: Second skill', bodyMd: 'Second instructions', connectors: [] });
+    const handlers = { onSaved: vi.fn(), onCancel: vi.fn() };
+    const { rerender } = render(<SkillEditor skillId="github-api" {...handlers} />);
+    await screen.findByDisplayValue('github-api');
+    await openOptions();
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(screen.getByLabelText('Bundle file path 1'), { target: { value: 'draft.md' } });
+    fireEvent.change(screen.getByLabelText('Instructions'), { target: { value: 'Unsaved draft' } });
+    rerender(<SkillEditor skillId="second" {...handlers} />);
+    await screen.findByDisplayValue('second');
+    expect(screen.getByLabelText('Instructions')).toHaveValue('Second instructions');
+    expect(screen.queryByLabelText('Bundle file path 1')).toBeNull();
+    expect(screen.queryByLabelText('Remove connector github')).toBeNull();
+    expect(screen.getByLabelText('Name')).toHaveAttribute('readonly');
+    rerender(<SkillEditor {...handlers} />);
+    expect(await screen.findByLabelText('Name')).toHaveValue('');
+    expect(screen.getByLabelText('Instructions')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Create skill' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(handlers.onCancel).toHaveBeenCalledOnce();
+    expect(mockUpdateSkill).not.toHaveBeenCalled();
+    expect(mockUpsertSkill).not.toHaveBeenCalled();
+  });
+
+  it('blocks a raw edit from changing the existing skill identity', async () => {
+    mockGetSkill.mockResolvedValueOnce(DETAIL);
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue('github-api');
+    await openOptions();
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    const raw = screen.getByLabelText('Raw SKILL.md') as HTMLTextAreaElement;
+    fireEvent.change(raw, { target: { value: raw.value.replace('name: github-api', 'name: other-name') } });
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(mockUpdateSkill).not.toHaveBeenCalled();
+  });
+
+  it('requires nonempty instructions', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+    fireEvent.change(screen.getByLabelText('Instructions'), { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: 'Create skill' })).toBeDisabled();
   });
 
   it('loads connector suggestions from /settings/connectors (non-admins get 403 from /admin/connectors)', async () => {
@@ -453,3 +513,8 @@ describe('SkillEditor (form-first)', () => {
     expect(await screen.findByLabelText('Remove connector lonely-connector')).toBeTruthy();
   });
 });
+
+async function openOptions() {
+  await screen.findByRole('button', { name: 'Advanced' });
+  if (!screen.queryByLabelText(/Advanced — edit raw/i)) fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+}

@@ -433,3 +433,27 @@ describe('handleAgentDeleted (TASK-680)', () => {
     expect(kept.some((r) => r.path.startsWith('default:'))).toBe(true);
   });
 });
+
+ describe('enabled webhook sync', () => {
+  it('removes a registered route when disabled and reuses the receiver when reenabled', async () => {
+    const captured: Captured = { routes: [], unregisters: [], ensures: 0 };
+    const bus = makeBus({ initialToken: 'existing', captured });
+    const store = createRoutinesStore(db);
+    const webhookRoutes = new Map<string, () => void>();
+    async function apply(enabled: boolean) {
+      const text = Buffer.from(webhookFile()).toString('utf8').replace('name:', `enabled: ${enabled}\nname:`);
+      await handleWorkspaceApplied({ store, bus, webhookRoutes, fireRoutine: noopFire }, ctx(), {
+        before: null, after: 'v1' as unknown as ReturnType<typeof import('@ax/core').asWorkspaceVersion>, author: { agentId: 'agt_a', userId: 'u1' },
+        changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => Buffer.from(text) }],
+      }, new Date());
+    }
+    await apply(true);
+    expect(webhookRoutes.size).toBe(1);
+    await apply(false);
+    expect(webhookRoutes.size).toBe(0);
+    expect(captured.unregisters).toEqual(['/webhooks/existing/r/x']);
+    await apply(true);
+    expect(webhookRoutes.size).toBe(1);
+    expect(captured.routes).toEqual([{ path: '/webhooks/existing/r/x' }, { path: '/webhooks/existing/r/x' }]);
+  });
+});

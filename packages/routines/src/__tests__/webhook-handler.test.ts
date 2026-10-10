@@ -96,6 +96,16 @@ describe('makeWebhookHandler', () => {
     expect(fire).not.toHaveBeenCalled();
   });
 
+  it('rejects a disabled row even when the request raced route unregistration', async () => {
+    const fire = vi.fn();
+    const row = makeRow({ enabled: false });
+    const handler = makeWebhookHandler({ bus: makeBus(), store: { findOne: async () => row }, agentId: row.agentId, routinePath: row.path, fire });
+    const res = makeRes();
+    await handler(makeReq(), res);
+    expect(res._calls.status).toBe(404);
+    expect(fire).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when the row exists but trigger.kind is not webhook', async () => {
     const fire = vi.fn();
     const row = makeRow({ trigger: { kind: 'interval', every: '60s' } });

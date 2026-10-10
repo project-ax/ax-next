@@ -806,3 +806,17 @@ describe('RoutinesStore default-routine CRUD', () => {
     expect(remaining).toEqual([]);
   });
 });
+
+ describe('enabled routines persistence and scheduling', () => {
+  it('defaults to enabled, persists disabling, excludes due claims and resumes when enabled', async () => {
+    const store = createRoutinesStore(db);
+    const input = baseInput({ trigger: { kind: 'interval', every: '1h' }, nextRunAt: new Date(0) });
+    await store.upsert(input);
+    expect((await store.findOne({ agentId: input.agentId, path: input.path }))?.enabled).toBe(true);
+    await store.upsert({ ...input, specHash: 'disabled', enabled: false });
+    expect((await store.findOne({ agentId: input.agentId, path: input.path }))?.enabled).toBe(false);
+    expect(await store.claimDue({ now: new Date(), limit: 10, claimWindowMinutes: 1 })).toEqual([]);
+    await store.upsert({ ...input, specHash: 'enabled', enabled: true });
+    expect(await store.claimDue({ now: new Date(), limit: 10, claimWindowMinutes: 1 })).toHaveLength(1);
+  });
+});

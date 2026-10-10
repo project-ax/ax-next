@@ -60,15 +60,15 @@ describe('RoutineEditor (form-first)', () => {
     fillField('Interval', '1h');
 
     // No agent picked yet → Save disabled.
-    expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(true);
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Agent' }));
     fireEvent.click(await screen.findByText('Alpha'));
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     const [sourceMd, opts] = onSave.mock.calls[0]!;
@@ -95,10 +95,10 @@ describe('RoutineEditor (form-first)', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'Agent' }));
     fireEvent.click(await screen.findByText('Alpha'));
     // Name still empty → invalid → disabled.
-    expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(true);
     // Uppercase / spaces are not a valid slug.
     fillField('Name', 'Not A Slug');
-    expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('switching the trigger to Cron reveals expr + tz and writes a cron trigger', async () => {
@@ -117,9 +117,9 @@ describe('RoutineEditor (form-first)', () => {
     fillField('Timezone', 'America/New_York');
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const [sourceMd] = onSave.mock.calls[0]!;
     expect(sourceMd).toContain('kind: cron');
@@ -142,9 +142,9 @@ describe('RoutineEditor (form-first)', () => {
     fillField('Webhook path', '/gh/push');
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const [sourceMd] = onSave.mock.calls[0]!;
     expect(sourceMd).toContain('kind: webhook');
@@ -185,7 +185,7 @@ describe('RoutineEditor (form-first)', () => {
     );
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('nightly');
     expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe('0 3 * * *');
-    expect(screen.getByRole('button', { name: 'Update' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
   });
 
   it('toggles to raw seeded from the form and back, preserving the name', async () => {
@@ -200,11 +200,13 @@ describe('RoutineEditor (form-first)', () => {
     await fillBasics('greeter', 'a friendly routine', 'hello');
     fillField('Interval', '2h');
 
+    openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     const raw = (await screen.findByLabelText('Raw routine .md')) as HTMLTextAreaElement;
     expect(raw.value).toContain('name: greeter');
     expect(raw.value).toContain('every: 2h');
 
+    openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() =>
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('greeter'),
@@ -222,13 +224,15 @@ describe('RoutineEditor (form-first)', () => {
     );
     await fillBasics();
     fillField('Interval', '1h');
+    openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     const raw = await screen.findByLabelText('Raw routine .md');
     fireEvent.change(raw, { target: { value: 'no frontmatter here' } });
 
+    openOptions();
     fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() => expect(screen.getByLabelText('Raw routine .md')).toBeTruthy());
-    expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('preserves a webhook hmac across a form round-trip (carried, not editable)', async () => {
@@ -261,7 +265,7 @@ describe('RoutineEditor (form-first)', () => {
     // Edit a form field, then save — hmac must survive even though the form
     // has no control for it.
     fillField('Description', 'gh hook updated');
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const [sourceMd] = onSave.mock.calls[0]!;
     expect(sourceMd).toContain('secretRef: routine:agt_a:.ax/routines/gh.md:hmac');
@@ -281,9 +285,9 @@ describe('RoutineEditor (form-first)', () => {
     await fillBasics();
     fillField('Interval', '1h');
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(false),
+      expect(screen.getByRole('button', { name: 'Create routine' }).hasAttribute('disabled')).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
     await waitFor(() => expect(screen.getByText(/minimum is 60s/)).toBeTruthy());
   });
 
@@ -378,5 +382,37 @@ describe('RoutineEditor (form-first)', () => {
       expect(field().getAttribute('aria-invalid')).toBe('true');
       expect(screen.getByText(/doesn't look like a cron schedule yet/i)).toBeTruthy();
     });
+  });
+});
+
+function openOptions() {
+  if (!screen.queryByLabelText(/Advanced — edit raw/i)) fireEvent.click(screen.getByRole('button', { name: /Optional settings/ }));
+}
+
+ describe('RoutineEditor shared new/edit state', () => {
+  it('prefills all modes, saves enabled=false, and resets unsaved trigger values across agents and modes', async () => {
+    const initial: RoutineFrontmatterFields = { name: 'review', description: 'Review events', enabled: false, trigger: { kind: 'webhook', path: '/incoming', events: ['push'] }, conversation: 'shared', promptBody: 'Review payload', silenceMaxChars: 500, silenceToken: 'QUIET' };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onCancel = vi.fn();
+    const common = { constraints: { allowedTriggers: ALL_TRIGGERS, showAgentPicker: false }, onSave, onSaved: vi.fn(), onCancel };
+    const { rerender } = render(<RoutineEditor {...common} agentId="agt_a" initial={initial} />);
+    expect(screen.getByLabelText('Name')).toHaveValue('review');
+    expect(screen.getByLabelText('Webhook path')).toHaveValue('/incoming');
+    expect(screen.getByLabelText('Events (comma-separated)')).toHaveValue('push');
+    expect(screen.getByRole('switch', { name: 'Enabled' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0]![0]).toContain('enabled: false');
+    fireEvent.change(screen.getByLabelText('Webhook path'), { target: { value: '/unsaved' } });
+    rerender(<RoutineEditor {...common} agentId="agt_b" initial={{ ...initial, name: 'second', trigger: { kind: 'interval', every: '2h' } }} />);
+    expect(screen.getByLabelText('Name')).toHaveValue('second');
+    expect(screen.getByLabelText('Interval')).toHaveValue('2h');
+    rerender(<RoutineEditor {...common} agentId="agt_b" />);
+    expect(screen.getByLabelText('Name')).toHaveValue('');
+    expect(screen.getByRole('switch', { name: 'Enabled' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Create routine' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(onSave).toHaveBeenCalledOnce();
   });
 });

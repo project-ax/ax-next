@@ -22,6 +22,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { DialogDescription } from '@/components/ui/dialog';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
+import { describeCron } from '@/lib/cron-describe';
+import { humanizeId } from '@/lib/humanize';
 import { PaneStatus } from '../PaneStatus';
 import { routines, type Routine, type Fire } from '../../lib/routines';
 import { TriggerChip } from './TriggerChip';
@@ -48,7 +52,7 @@ const CREATE_CONSTRAINTS: RoutineEditorConstraints = {
 };
 // On edit the agent + file path are fixed; the picker is hidden.
 const EDIT_CONSTRAINTS: RoutineEditorConstraints = {
-  allowedTriggers: ['interval', 'cron', 'webhook'],
+  allowedTriggers: ['cron', 'interval', 'webhook'],
   showAgentPicker: false,
 };
 
@@ -57,6 +61,7 @@ const EDIT_CONSTRAINTS: RoutineEditorConstraints = {
  *  runtime (routines:list returns the validator's TriggerSpec). */
 function routineToFields(r: Routine): RoutineFrontmatterFields {
   const fields: RoutineFrontmatterFields = {
+    enabled: r.enabled ?? true,
     name: r.name,
     description: r.description,
     trigger: r.trigger as unknown as TriggerSpec,
@@ -72,6 +77,10 @@ function routineToFields(r: Routine): RoutineFrontmatterFields {
 type EditorMode = { kind: 'create' } | { kind: 'edit'; routine: Routine };
 
 export interface RoutinesListProps {
+  createRequest?: number;
+  hideCreateAction?: boolean;
+  agentId?: string;
+  agentName?: string | undefined;
   refreshKey?: number;
   onFired: () => void;
   /**
@@ -99,7 +108,7 @@ function relativeTime(d: Date | null): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: RoutinesListProps) {
+export function RoutinesList({ agentId: fixedAgentId, agentName, refreshKey = 0, createRequest = 0, hideCreateAction = false, onFired, isAdmin = false }: RoutinesListProps) {
   const [list, setList] = useState<Routine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -108,6 +117,11 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
   const [fires, setFires] = useState<Record<string, Fire[] | undefined>>({});
   const [firesError, setFiresError] = useState<Record<string, string | undefined>>({});
   const [editorMode, setEditorMode] = useState<EditorMode | null>(null);
+  const previousCreateRequest = useRef(createRequest);
+  useEffect(() => {
+    if (createRequest !== previousCreateRequest.current) setEditorMode({ kind: 'create' });
+    previousCreateRequest.current = createRequest;
+  }, [createRequest]);
   const [pendingDelete, setPendingDelete] = useState<Routine | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   // `deleting` drives the disabled/“Deleting…” button state; `deletingRef` is
@@ -133,7 +147,8 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
   async function reload(): Promise<void> {
     setError(null);
     try {
-      setList(await routines.list());
+      const rows = await routines.list();
+      setList(fixedAgentId ? rows.filter((r) => r.agentId === fixedAgentId && !r.path.startsWith('default:')) : rows);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -170,7 +185,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
   // valid regardless of later list changes); only setState-after-unmount is
   // the cost, which React tolerates.
   useEffect(() => {
-    if (list === null) return;
+    if (fixedAgentId || list === null) return;
     const agentIds = Array.from(
       new Set(
         list.filter((r) => r.trigger.kind === 'webhook').map((r) => r.agentId),
@@ -191,7 +206,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
         )
         .finally(() => webhookInFlight.current.delete(agentId));
     }
-  }, [list, webhookTokens]);
+  }, [list, webhookTokens, fixedAgentId]);
 
   async function loadFires(agentId: string, path: string): Promise<void> {
     const key = `${agentId}::${path}`;
@@ -214,22 +229,15 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
     if (fires[key] === undefined) void loadFires(agentId, path);
   }
 
-  if (list === null && error === null) {
-    return <PaneStatus variant="loading">Loading…</PaneStatus>;
-  }
-  if (list === null && error !== null) {
-    return <PaneStatus variant="error">Error: {error}</PaneStatus>;
-  }
-
   return (
     <>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-[13px] font-medium text-muted-foreground">Your routines</span>
+      {!hideCreateAction && <div className="flex items-center justify-end mb-3 gap-3">
+        {!fixedAgentId && <span className="text-[13px] font-medium text-muted-foreground">Your routines</span>}
         <Button size="sm" onClick={() => setEditorMode({ kind: 'create' })}>
           <Plus className="h-3.5 w-3.5 mr-1" />
           New routine
         </Button>
-      </div>
+      </div>}
 
       {error !== null && (
         <div
@@ -244,7 +252,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
         </div>
       )}
 
-      {list!.length === 0 ? (
+      {list === null ? (error === null ? <PaneStatus variant="loading">Loading…</PaneStatus> : null) : list.length === 0 ? (
         <PaneStatus variant="empty">
           No routines yet. Click <span className="font-medium">New routine</span> to create one —
           routines live in <code className="font-mono">.ax/routines/*.md</code> in the agent's
@@ -257,7 +265,10 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
             const isOpen = expanded === key;
             return (
               <div key={key} className="border-b border-rule-soft last:border-b-0">
-                <div className="py-[1.125rem] flex items-center gap-3.5">
+                {fixedAgentId ? <Button variant="ghost" onClick={() => setEditorMode({ kind: 'edit', routine: r })} aria-label={`Edit ${r.name}`} className="h-auto min-h-[72px] w-full justify-start gap-3 rounded-none px-2 py-4 text-left whitespace-normal">
+                  <span className="min-w-0 flex-1"><span className="block truncate">{humanizeId(r.name)}</span><span className="block text-xs text-muted-foreground">{triggerSummary(r)}</span>{r.lastWarning && <RunWarning text={r.lastWarning} truncate />}</span>
+                  <span className="text-xs text-muted-foreground">{r.enabled === false ? 'Off' : 'On'}</span><ChevronRight data-icon="inline-end" />
+                </Button> : <div className="py-[1.125rem] flex items-center gap-3.5">
                   <button
                     type="button"
                     aria-expanded={isOpen}
@@ -315,8 +326,8 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
-                </div>
-                {isOpen && (
+                </div>}
+                {!fixedAgentId && isOpen && (
                   <div className="pb-4 pl-[2.875rem] pr-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
                     {firesError[key] !== undefined ? (
                       <div className="text-[12.5px] text-destructive">Error: {firesError[key]}</div>
@@ -329,7 +340,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     )}
                   </div>
                 )}
-                {r.trigger.kind === 'webhook' && (
+                {!fixedAgentId && r.trigger.kind === 'webhook' && (
                   <div className="pb-3 pl-[2.875rem] pr-2 flex flex-col gap-2">
                     <WebhookReceiver
                       state={webhookTokens[r.agentId]}
@@ -374,16 +385,19 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
           if (!o) setEditorMode(null);
         }}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="settings-dialog max-w-[688px] sm:px-8">
           <DialogHeader>
             <DialogTitle>
               {editorMode?.kind === 'edit' ? 'Edit routine' : 'New routine'}
             </DialogTitle>
+            <DialogDescription>{agentName ?? 'The agent'} runs this work when its trigger fires.</DialogDescription>
           </DialogHeader>
           {editorMode !== null &&
             (editorMode.kind === 'create' ? (
               <RoutineEditor
-                constraints={CREATE_CONSTRAINTS}
+                {...(fixedAgentId ? { agentId: fixedAgentId } : {})}
+                agentName={agentName}
+                constraints={fixedAgentId ? EDIT_CONSTRAINTS : CREATE_CONSTRAINTS}
                 onSave={async (sourceMd, { agentId, name }) => {
                   if (agentId === null) throw new Error('Pick an agent first.');
                   await routines.save({
@@ -401,6 +415,8 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
               />
             ) : (
               <RoutineEditor
+                agentId={editorMode.routine.agentId}
+                agentName={agentName}
                 initial={routineToFields(editorMode.routine)}
                 constraints={EDIT_CONSTRAINTS}
                 onSave={async (sourceMd) => {
@@ -420,6 +436,20 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                 onCancel={() => setEditorMode(null)}
               />
             ))}
+          {fixedAgentId && editorMode?.kind === 'edit' && <Collapsible className="mt-2">
+            <CollapsibleTrigger asChild><Button variant="ghost" onClick={() => toggle(editorMode.routine.agentId, editorMode.routine.path)}>Run history and actions</Button></CollapsibleTrigger>
+            <CollapsibleContent className="flex flex-col gap-3 pt-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusChip status={editorMode.routine.lastStatus} />
+                <span className="text-xs text-muted-foreground">Last run: {relativeTime(editorMode.routine.lastRunAt)}</span>
+                <FireNowControl routine={editorMode.routine} onFired={() => { onFired(); void loadFires(editorMode.routine.agentId, editorMode.routine.path); }} />
+                <Button variant="destructive" size="sm" onClick={() => { setPendingDelete(editorMode.routine); setEditorMode(null); }}>Delete routine</Button>
+              </div>
+              {firesError[`${editorMode.routine.agentId}::${editorMode.routine.path}`] ? <PaneStatus variant="error">Couldn’t load run history.</PaneStatus> : <FireRowsTable fires={fires[`${editorMode.routine.agentId}::${editorMode.routine.path}`] ?? []} />}
+              {isAdmin && editorMode.routine.trigger.kind === 'webhook' && <CredentialSlotRow destination={{ kind: 'routine-hmac', agentId: editorMode.routine.agentId, routinePath: editorMode.routine.path }} slot={{ label: 'HMAC', kind: 'api-key', description: 'Signing secret for this webhook.' }} scope={{ scope: 'agent', ownerId: editorMode.routine.agentId }} />}
+              {!isAdmin && editorMode.routine.trigger.kind === 'webhook' && editorMode.routine.trigger.hmac != null && <p className="text-xs text-muted-foreground">HMAC is configured. A workspace admin manages its signing secret.</p>}
+            </CollapsibleContent>
+          </Collapsible>}
         </DialogContent>
       </Dialog>
 
@@ -532,4 +562,11 @@ function WebhookUrlRow({ url }: { url: string }) {
       </Button>
     </div>
   );
+}
+
+function triggerSummary(r: Routine): string {
+  if (r.trigger.kind === 'webhook') return `Webhook · ${r.trigger.path}`;
+  if (r.trigger.kind === 'interval') return `Every ${r.trigger.every}`;
+  const summary = describeCron(r.trigger.expr, r.trigger.tz);
+  return summary.kind === 'described' ? summary.text : `Schedule · ${r.trigger.expr} · ${r.trigger.tz}`;
 }

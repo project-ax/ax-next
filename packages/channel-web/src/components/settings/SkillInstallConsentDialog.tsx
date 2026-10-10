@@ -38,6 +38,7 @@ export interface SkillInstallConsentDialogProps {
   skill: CatalogSkillListing;
   /** The agent the skill is being installed onto (the app-store's current agent). */
   agentId: string;
+  agentName?: string | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Called after the attach succeeds, so the caller can re-list. */
@@ -47,6 +48,7 @@ export interface SkillInstallConsentDialogProps {
 export function SkillInstallConsentDialog({
   skill,
   agentId,
+  agentName,
   open,
   onOpenChange,
   onInstalled,
@@ -77,18 +79,17 @@ export function SkillInstallConsentDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!installing) onOpenChange(o); }}>
-      <DialogContent>
+      <DialogContent className="settings-dialog">
         <DialogHeader>
           {/* (TASK-344 / audit E4) The title embedded the raw slug. The consent
               copy below it is exemplary and is deliberately untouched — this is
               only the heading above it. */}
           <DialogTitle>Install {humanizeId(skill.skillId)}</DialogTitle>
-          <DialogDescription>{skill.description}</DialogDescription>
+          <DialogDescription>Add this skill to {agentName ?? 'this agent'}.</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            This skill is from your workspace's vetted catalog. Installing it adds
-            it to this assistant — only you can see your copy.
+            {skill.description}
           </p>
           {skill.connectors.length > 0 && (
             <div className="flex flex-col gap-1.5">
@@ -104,7 +105,7 @@ export function SkillInstallConsentDialog({
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                You'll connect any that need a key under Connectors.
+                Connect any services that need sign-in under Connectors. Installing a skill keeps their existing permissions.
               </p>
             </div>
           )}
@@ -122,7 +123,7 @@ export function SkillInstallConsentDialog({
               Cancel
             </Button>
             <Button onClick={() => void handleInstall()} disabled={installing}>
-              {installing ? 'Installing…' : 'Install'}
+              {installing ? 'Installing…' : agentName ? `Install for ${agentName}` : 'Install'}
             </Button>
           </div>
         </div>

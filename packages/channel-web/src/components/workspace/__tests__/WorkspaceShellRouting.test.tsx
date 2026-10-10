@@ -312,7 +312,7 @@ describe('agent settings page (TASK-888)', () => {
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/routines'),
     );
-    expect(screen.getByText('Nothing scheduled yet')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'My routines' })).toBeTruthy();
     expect(navItem('Routines')).toHaveAttribute('aria-current', 'page');
   });
 
