@@ -59,6 +59,18 @@ function decision(over: Partial<Decision> = {}): Decision {
     replayError: null,
     deliveryDueAt: null,
     deliveredAt: null,
+    approvalScope: 'once',
+    consentExpectedRevision: null,
+    consentDeliveryState: 'none',
+    consentGranted: null,
+    consentDeliveryClaimedAt: null,
+    routineReleaseAt: null,
+    routineAuthorizationId: null,
+    routineExecutionFingerprint: null,
+    routineOutcome: null,
+    routineFailureCode: null,
+    routineFailureField: null,
+
     ...over,
   };
 }

@@ -341,9 +341,8 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      *
      * Security (invariant #5): identity is SERVER-FORCED from auth (never the
      * body); the agent ACL is enforced via agents:resolve (404, no existence
-     * leak); and the skillId MUST be a real global-catalog id (rejected 404
-     * otherwise) so a browser can only ever install one of the workspace's vetted
-     * skills — not an arbitrary id. A skill declares no capability block
+     * leak); and the skillId must resolve in the global catalog or the caller’s own
+     * private scope (404 otherwise). A skill declares no capability block
      * (TASK-100), so the attachment carries empty credentialBindings.
      */
     async attach(req: RouteRequest, res: RouteResponse): Promise<void> {
@@ -375,13 +374,12 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         return;
       }
 
-      // Capability-min gate: the requested id MUST be a real GLOBAL catalog
-      // skill. A browser may only self-install one of the workspace's vetted
-      // catalog skills — never an arbitrary or user-private id.
+      // Only workspace-vetted skills or this caller's own private skills.
+      // Ownership is forced from auth, matching the existing read/resolve path.
       const listed = await bus.call<SkillsListInput, SkillsListOutput>(
         'skills:list',
         initCtx,
-        { scope: 'global' } as unknown as SkillsListInput,
+        { scope: 'all', ownerUserId: userId },
       );
       if (!listed.skills.some((s) => s.id === skillId)) {
         res.status(404).json({ error: 'skill-not-found' });

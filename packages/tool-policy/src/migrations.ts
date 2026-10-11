@@ -110,6 +110,30 @@ export async function runToolPolicyMigration<DB>(db: Kysely<DB>): Promise<void> 
       updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS tool_policy_v1_routine_consent (
+      agent_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL, revision TEXT NOT NULL,
+      PRIMARY KEY (agent_id, owner_user_id)
+    )
+  `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS tool_policy_v1_routine_consent_deliveries (
+      decision_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL
+    )
+  `.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS tool_policy_v1_routine_consent_deliveries_agent_idx
+      ON tool_policy_v1_routine_consent_deliveries (agent_id)
+  `.execute(db);
+  // Deletion fence, not agent identity/ACL truth. No cross-plugin FK.
+  await sql`
+    CREATE TABLE IF NOT EXISTS tool_policy_v1_routine_consent_retired_agents (
+      agent_id TEXT PRIMARY KEY
+    )
+  `.execute(db);
+
 }
 
 export interface EgressAllowlistRow {
@@ -151,7 +175,16 @@ export interface AgentSourcedNamespaceRow {
   updated_at: Date;
 }
 
+export interface RoutineConsentRow {
+  agent_id: string; owner_user_id: string; enabled: boolean; revision: string;
+}
+export interface RoutineConsentDeliveryRow {
+  decision_id: string; agent_id: string; owner_user_id: string;
+}
 export interface ToolPolicyDatabase {
+  tool_policy_v1_routine_consent: RoutineConsentRow;
+  tool_policy_v1_routine_consent_deliveries: RoutineConsentDeliveryRow;
+  tool_policy_v1_routine_consent_retired_agents: { agent_id: string };
   tool_policy_v1_egress_allowlist: EgressAllowlistRow;
   tool_policy_v1_connector_defaults: ConnectorDefaultRow;
   tool_policy_v1_agent_overrides: AgentOverrideRow;

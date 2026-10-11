@@ -720,6 +720,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'skills:attach-for-user',
       ],
       optionalCalls: [
+        { hook: 'agents:can-manage-routines', degradation: 'standing routine approval is unavailable; decisions remain once-only' },
         {
           hook: 'models:get-policy',
           degradation: 'personal-agent bootstrap uses the built-in Sonnet model',

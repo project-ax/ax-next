@@ -1,0 +1,246 @@
+{
+  "authorization": "User explicitly approved Approve temporary kind admin (Recommended) for the prepared disposable account; no pre-existing administrator role was changed.",
+  "promotion": {
+    "affectedRows": 1,
+    "userId": "BxMmuoAADtRk9IEMuTlzpYYG9wmlaewR",
+    "role": "admin",
+    "preexistingIdentitiesUnchanged": true
+  },
+  "normalSignin": {
+    "status": 200,
+    "adminMeStatus": 200,
+    "isAdmin": true
+  },
+  "agentId": "agt_DSQVh1Ya9-NQA0kX3zIxGg",
+  "routineId": "routine_03c1251e9d8f49ff804d4a0755d6ba06",
+  "humanCredentialUi": "Add key -> Save -> Saved",
+  "signedPostStatus": 202,
+  "unsignedPostStatus": 401,
+  "completedFire": {
+    "firedAt": "2026-10-10T15:17:22.032Z",
+    "triggerSource": "webhook",
+    "status": "ok",
+    "conversationId": "cnv_8gY0cyLdURANdKqhQjyk4Q",
+    "renderedPrompt": "Respond only with TASK12_SIGNED_WEBHOOK_OK."
+  },
+  "activity": "Actual Activity: one webhook entry for Task12 Signed Webhook; no summary available.",
+  "afterDeleteSignedPost": {
+    "signedPostAfterDeleteStatus": 404
+  },
+  "credentialAbsence": {
+    "status": 200,
+    "testHmacPresent": false
+  },
+  "beforeAgentPurge": {
+    "checkedAt": "2026-10-10T15:19:32.901826+00:00",
+    "definitions": 0,
+    "pendingCleanup": 0,
+    "fires": 1,
+    "dispatches": 1,
+    "lastAccepted": "2026-10-10T15:17:22.032+00:00",
+    "receipts": [
+      {
+        "operation": "dispatch",
+        "createdAt": "2026-10-10T15:17:22.032789+00:00",
+        "routineId": null
+      },
+      {
+        "operation": "delete",
+        "createdAt": "2026-10-10T15:18:28.06168+00:00",
+        "routineId": null
+      },
+      {
+        "operation": "create",
+        "createdAt": "2026-10-10T15:16:52.346161+00:00",
+        "routineId": null
+      }
+    ]
+  },
+  "agentDeleteStatus": 204,
+  "browserSignoutStatus": 200,
+  "afterSignoutMeStatus": 401,
+  "cleanup": {
+    "deleted": [
+      {
+        "table_name": "auth_better_v1_sessions",
+        "rows": 1
+      },
+      {
+        "table_name": "auth_better_v1_accounts",
+        "rows": 1
+      },
+      {
+        "table_name": "usage_limits_v1_buckets",
+        "rows": 4
+      },
+      {
+        "table_name": "usage_limits_v1_turns",
+        "rows": 2
+      },
+      {
+        "table_name": "auth_better_v1_users",
+        "rows": 1
+      }
+    ],
+    "preexistingAuthAndProvidersUnchanged": true,
+    "postcheck": {
+      "identityCount": 0,
+      "references": [
+        {
+          "table_name": "auth_better_v1_sessions",
+          "rows": 0
+        },
+        {
+          "table_name": "auth_better_v1_accounts",
+          "rows": 0
+        },
+        {
+          "table_name": "teams_v1_memberships",
+          "rows": 0
+        },
+        {
+          "table_name": "connectors_v1_connectors",
+          "rows": 0
+        },
+        {
+          "table_name": "session_postgres_v2_session_agent",
+          "rows": 0
+        },
+        {
+          "table_name": "connectors_v1_authored",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_skill_files",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_user_skills",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_user_attachments",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_quarantine",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_approved_caps",
+          "rows": 0
+        },
+        {
+          "table_name": "skills_v1_authored",
+          "rows": 0
+        },
+        {
+          "table_name": "conversations_v1_conversations",
+          "rows": 0
+        },
+        {
+          "table_name": "agents_v1_agents",
+          "rows": 0
+        },
+        {
+          "table_name": "agent_default_routine_overrides_v1",
+          "rows": 0
+        },
+        {
+          "table_name": "attachments_v1_temps",
+          "rows": 0
+        },
+        {
+          "table_name": "tool_policy_v1_egress_allowlist",
+          "rows": 0
+        },
+        {
+          "table_name": "attachments_v1_files",
+          "rows": 0
+        },
+        {
+          "table_name": "attachments_v1_artifacts",
+          "rows": 0
+        },
+        {
+          "table_name": "host_grants_v1_grants",
+          "rows": 0
+        },
+        {
+          "table_name": "memory_facts_v1",
+          "rows": 0
+        },
+        {
+          "table_name": "usage_limits_v1_suspensions",
+          "rows": 0
+        },
+        {
+          "table_name": "usage_limits_v1_buckets",
+          "rows": 0
+        },
+        {
+          "table_name": "disk_quota_v1_usage",
+          "rows": 0
+        },
+        {
+          "table_name": "mcp_oauth_v1_pending",
+          "rows": 0
+        },
+        {
+          "table_name": "usage_limits_v1_user_limits",
+          "rows": 0
+        },
+        {
+          "table_name": "usage_limits_v1_turns",
+          "rows": 0
+        },
+        {
+          "table_name": "mcp_client_v1_tool_inventory",
+          "rows": 0
+        },
+        {
+          "table_name": "tool_policy_v1_routine_consent",
+          "rows": 0
+        },
+        {
+          "table_name": "tool_policy_v1_routine_consent_deliveries",
+          "rows": 0
+        },
+        {
+          "table_name": "decisions_v1_routine_authorizations",
+          "rows": 0
+        },
+        {
+          "table_name": "decisions_v1_decisions",
+          "rows": 0
+        },
+        {
+          "table_name": "routines_v1_credential_cleanup",
+          "rows": 0
+        },
+        {
+          "table_name": "routines_v1_definitions",
+          "rows": 0
+        },
+        {
+          "table_name": "routines_v1_requests",
+          "rows": 0
+        }
+      ],
+      "verificationCount": 0
+    }
+  },
+  "finalAuthAndCredentials": {
+    "providers": [],
+    "adminAccounts": [],
+    "admins": 2,
+    "testCredentialRows": 0,
+    "activeAdminSessions": 0
+  },
+  "hostEnvAndConfigmapSecretDataUnchanged": true,
+  "limits": [
+    "Google OAuth provider was absent before cutover and remains unconfigured.",
+    "Administrator acceptance uses explicit operator promotion of only the disposable account, then real normal sign-in and current DB-backed authorization.",
+    "Deletion response reconciled before endpoint rejection check; immediate unsigned request returned401 before delete finished, settled endpoint returns404."
+  ]
+}

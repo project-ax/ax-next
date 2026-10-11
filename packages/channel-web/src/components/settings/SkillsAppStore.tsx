@@ -35,7 +35,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Trash2,
   Pencil,
@@ -45,6 +45,7 @@ import {
   Star,
   XCircle,
   Building2,
+  ChevronRight,
 } from 'lucide-react';
 import {
   Dialog,
@@ -52,12 +53,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import {
   Select,
   SelectContent,
@@ -74,6 +74,7 @@ import {
 } from '@/components/ui/tooltip';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import {
+  attachConnectionSkill,
   getConnections,
   detachConnectionSkill,
   listCatalogSkills,
@@ -97,7 +98,11 @@ import {
 } from '@/lib/skills';
 import { listAdminAgents, patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
-import { SkillEditor } from '@/components/admin/SkillEditor';
+import { SkillForm } from './SkillForm';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
+import { DialogDescription } from '@/components/ui/dialog';
+import { humanizeId } from '@/lib/humanize';
 import type { SkillEditorApi } from '@/components/admin/SkillEditor';
 import { SkillInstallConsentDialog } from './SkillInstallConsentDialog';
 import { AwaitingReviewSection } from './AwaitingReviewSection';
@@ -115,13 +120,45 @@ type EditorTarget =
   | { mode: 'create-admin' }
   | { mode: 'edit-admin'; skillId: string };
 
-export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
+/**
+ * One skill row. The global Settings page uses the Figma settings rhythm — a
+ * summary row whose actions open in a details sheet; the agent-scoped page
+ * keeps its inline row. `data-testid` stays on the outer element either way.
+ */
+function SkillRow({ testId, sheet, label, detail, value, className, children }: {
+  testId: string;
+  sheet: boolean;
+  label: string;
+  detail?: ReactNode;
+  value?: ReactNode;
+  className: string;
+  children: ReactNode;
+}) {
+  if (!sheet) return <div data-testid={testId} className={className}>{children}</div>;
+  return (
+    <div data-testid={testId}>
+      <SettingsDetailRow label={label} detail={detail} value={value}>{children}</SettingsDetailRow>
+    </div>
+  );
+}
+
+export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { isAdmin: boolean; agentId?: string; agentName?: string }) {
+  const [tab, setTab] = useState('installed');
+  const currentAgent = useRef(fixedAgentId ?? '');
+  const scopedApi = useMemo<SkillEditorApi>(() => ({
+    ...userSkillsApi,
+    upsertSkill: async (md, opts) => {
+      const out = await createUserSkill(md, opts);
+      if (fixedAgentId) await attachConnectionSkill(fixedAgentId, out.skillId);
+      return out;
+    },
+  }), [fixedAgentId]);
   // Agent selector (the app-store is per-agent). `agentsLoaded` distinguishes
   // "still fetching the agent list" from "fetched, and there are none" so a
   // zero-agent account doesn't get stuck on a permanent INSTALLED spinner.
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [agentId, setAgentId] = useState<string>('');
+  const [agentId, setAgentId] = useState<string>(fixedAgentId ?? '');
 
   const [installed, setInstalled] = useState<ConnectionSkill[] | null>(null);
   const [catalog, setCatalog] = useState<CatalogSkillListing[] | null>(null);
@@ -130,7 +167,6 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   const [ownSkills, setOwnSkills] = useState<Map<string, SkillSummary>>(new Map());
   const [authored, setAuthored] = useState<AuthoredSkillListing[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [category, setCategory] = useState('installed');
   const [search, setSearch] = useState('');
 
   // Dialog / confirmation state.
@@ -154,10 +190,12 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     if (!id) return;
     try {
       const r = await getConnections(id);
-      setInstalled(r.skills);
+      if (currentAgent.current === id) setInstalled(r.skills);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setInstalled([]);
+      if (currentAgent.current === id) {
+        setError(err instanceof Error ? err.message : String(err));
+        setInstalled([]);
+      }
     }
   }, []);
 
@@ -188,6 +226,11 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   // Load the agent list once; default to the first agent.
   useEffect(() => {
     let cancelled = false;
+    if (fixedAgentId) {
+      setAgentsLoaded(true);
+      void refreshCatalog(); void refreshOwn();
+      return () => { cancelled = true; };
+    }
     listChatAgents()
       .then((a) => {
         if (cancelled) return;
@@ -206,12 +249,19 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshCatalog, refreshOwn]);
+  }, [fixedAgentId, refreshCatalog, refreshOwn]);
 
   // (Re)load installed whenever the selected agent changes.
   useEffect(() => {
+    currentAgent.current = agentId;
+    setInstalled(null);
+    setInstalling(null); setEditor(null);
     void refreshInstalled(agentId);
   }, [agentId, refreshInstalled]);
+
+  useEffect(() => {
+    if (fixedAgentId) setAgentId(fixedAgentId);
+  }, [fixedAgentId]);
 
   // ---- derived ----------------------------------------------------------
 
@@ -234,7 +284,9 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   // filtered by the search box (id or description).
   const notInstalled = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return (catalog ?? [])
+    const available = new Map((catalog ?? []).map((c) => [c.skillId, c]));
+    if (fixedAgentId) for (const skill of ownSkills.values()) available.set(skill.id, { skillId: skill.id, description: skill.description, defaultAttached: skill.defaultAttached, connectors: skill.connectors });
+    return [...available.values()]
       .filter((c) => !installedIds.has(c.skillId))
       .filter(
         (c) =>
@@ -242,7 +294,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
           c.skillId.toLowerCase().includes(q) ||
           c.description.toLowerCase().includes(q),
       );
-  }, [catalog, installedIds, search]);
+  }, [catalog, installedIds, search, fixedAgentId, ownSkills]);
 
   // ---- actions ----------------------------------------------------------
 
@@ -331,6 +383,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     setError(null);
     try {
       const out = await adoptAuthoredSkill(a.agentId, a.skillId);
+      if (fixedAgentId) await attachConnectionSkill(fixedAgentId, out.skillId);
+      await refreshInstalled(agentId);
       // The copy now lives in the user's own skills; refresh both the authored
       // list (the draft drops off) and the installed/own surfaces, then open the
       // editor on the adopted copy for further editing.
@@ -370,7 +424,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     // The admin variant uses the SkillEditor's default (admin /admin/skills*)
     // api; the user variant injects the /settings/skills* api.
     return target.mode === 'create-user' || target.mode === 'edit-user'
-      ? userSkillsApi
+      ? scopedApi
       : undefined;
   }
 
@@ -381,29 +435,124 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
 
   // ---- render -----------------------------------------------------------
 
+  const visibleAuthored = authored.filter((a) => !fixedAgentId || a.agentId === fixedAgentId);
   const installedCount = (installed?.length ?? 0) + ownNotInstalled.length;
   const notInstalledCount = notInstalled.length;
+  const hasPendingAuthored = visibleAuthored.some((a) => a.status !== 'active');
+
+  function renderAuthored(rows: AuthoredSkillListing[]) {
+    return rows.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <h3 className="text-xs font-medium text-muted-foreground">
+                Authored by your agents
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Skills your agents drafted. Edit one to make an editable copy you
+                own.
+              </p>
+              <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
+                {rows.map((a) => {
+                  const key = `${a.agentId}/${a.skillId}`;
+                  const isAdopting = adopting === key;
+                  const isDismissing = dismissing === key;
+                  const busy = adopting !== null || dismissing !== null;
+                  return (
+                    <SkillRow
+                      key={key}
+                      testId={`authored-${a.skillId}`}
+                      sheet={!fixedAgentId}
+                      label={a.description || a.skillId}
+                      detail="Authored by your agent"
+                      value={a.status === 'active' ? 'Active' : 'Pending review'}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        {/*
+                          `block` is what makes `truncate` work, and leaving it
+                          off fails silently: `overflow` and `text-overflow` do
+                          NOTHING to a non-replaced inline box, so the span
+                          ignores `truncate` outright and reports its full
+                          intrinsic width. A walk with a real 231-character
+                          description measured this span at 1313px inside an
+                          896px row — under the status badge, under the Edit and
+                          Delete buttons, and a horizontal scrollbar in the panel.
+
+                          Why it hid: a span that is a flex ITEM gets blockified
+                          by its flex container, so the two rows further up were
+                          never affected. This parent is a block, so we have to
+                          say it. The sibling below already did.
+                        */}
+                        <span className="block text-sm truncate">
+                          {a.description}
+                        </span>
+                        <span className="block font-mono text-xs text-muted-foreground">
+                          {a.skillId} · {a.agentId}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Badge
+                          variant={a.status === 'active' ? 'secondary' : 'outline'}
+                          className="text-xs"
+                        >
+                          {a.status === 'active' ? 'active' : 'pending review'}
+                        </Badge>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => void handleAdopt(a)}
+                          aria-label={`Edit ${a.skillId}`}
+                        >
+                          {isAdopting ? 'Adopting…' : 'Edit'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => setPendingDismiss(a)}
+                          aria-label={`Delete ${a.skillId}`}
+                        >
+                          {isDismissing ? 'Deleting…' : 'Delete'}
+                        </Button>
+                      </div>
+                    </SkillRow>
+                  );
+                })}
+              </div>
+            </div>
+          );
+  }
 
   return (
     <TooltipProvider>
-      <div className="flex min-w-0 flex-col gap-6">
-        <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
-        {agents.length > 1 && <div className="flex items-center justify-end gap-3">
-          {agents.length > 1 && (
-            <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Select an agent" />
-              </SelectTrigger>
-              <SelectContent><SelectGroup>
-                {agents.map((a) => (
-                  <SelectItem key={a.agentId} value={a.agentId}>
-                    {a.displayName}
-                  </SelectItem>
-                ))}
-              </SelectGroup></SelectContent>
-            </Select>
-          )}
-        </div>}
+      <Tabs value={tab} onValueChange={setTab} className={fixedAgentId ? 'agent-settings-content flex flex-col gap-5' : 'settings-tabs flex min-w-0 flex-col gap-6'}>
+        {fixedAgentId ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <TabsList variant="quiet" aria-label="Skills views">
+              <TabsTrigger variant="quiet" value="installed">Installed</TabsTrigger>
+              <TabsTrigger variant="quiet" value="browse">Browse</TabsTrigger>
+              <TabsTrigger variant="quiet" value="review">Review</TabsTrigger>
+            </TabsList>
+            <Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
+          </div>
+        ) : (
+          <>
+            <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
+            {agents.length > 1 && (
+              <div className="flex items-center justify-end gap-3">
+                <Select value={agentId} onValueChange={setAgentId}>
+                  <SelectTrigger className="w-[200px]"><SelectValue placeholder="Select an agent" /></SelectTrigger>
+                  <SelectContent><SelectGroup>{agents.map((a) => <SelectItem key={a.agentId} value={a.agentId}>{a.displayName}</SelectItem>)}</SelectGroup></SelectContent>
+                </Select>
+              </div>
+            )}
+            <TabsList aria-label="Skill categories">
+              <TabsTrigger value="installed">Installed</TabsTrigger>
+              <TabsTrigger value="browse">Browse</TabsTrigger>
+              {(isAdmin || hasPendingAuthored) && <TabsTrigger value="review">Review</TabsTrigger>}
+            </TabsList>
+          </>
+        )}
 
         {error && (
           <Alert variant="destructive">
@@ -430,35 +579,23 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
           </Alert>
         )}
 
-        <Tabs value={category} onValueChange={setCategory} className="settings-tabs">
-          <TabsList aria-label="Skill categories">
-            <TabsTrigger value="installed">Installed</TabsTrigger>
-            <TabsTrigger value="browse">Browse</TabsTrigger>
-            {isAdmin && <TabsTrigger value="review">Review</TabsTrigger>}
-          </TabsList>
-          <TabsContent value="installed" forceMount hidden={category !== 'installed'}>
         {/* ============================ INSTALLED =========================
             `h2`, not the `h3` this shelf used to be (TASK-446). The Settings
             surface's `h1` is the pane title above ("Skills"), so a shelf that
             opened at `h3` skipped a level in the outline; the shelves ARE the
             first division under the title, and their own sub-lists below step
             down to `h3`. */}
-        <section className="flex flex-col gap-3">
-          <div className="sr-only">
-            <h2 className="text-sm font-medium text-foreground">
-              {installed !== null ? `Installed (${installedCount})` : 'Installed'}
-            </h2>
+        <TabsContent value="installed" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'installed' } : {})} className="flex flex-col gap-3">
+          {!fixedAgentId && <h2 className="sr-only">Installed{installedCount > 0 ? ` (${installedCount})` : ''}</h2>}
 
-          </div>
-
-          {agentsLoaded && agents.length === 0 ? (
+          {!fixedAgentId && agentsLoaded && agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               You don’t have an assistant yet. Create one on the Agents tab, then
               come back here to install skills onto it.
             </p>
           ) : installed === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : installed.length === 0 && ownNotInstalled.length === 0 ? (
+          ) : installed.length === 0 && (fixedAgentId || ownNotInstalled.length === 0) ? (
             <p className="text-sm text-muted-foreground">
               {/* Don't send a first-run reader "below" to a shelf that is also
                   empty — the other half of the walk finding at the catalog
@@ -466,24 +603,31 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                   door that opens. */}
               {catalog !== null && catalog.length === 0
                 ? 'No skills installed yet. Create one to get started.'
-                : 'No skills installed yet. Choose Browse to install one from your workspace, or create your own.'}
+                : 'No skills installed yet. Install one from Browse, or create your own.'}
             </p>
           ) : (
-            <div className="flex min-w-0 flex-col">
+            <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {/* User-created or adopted skills that have no agent attachment yet.
                   They exist in ownSkills but aren't returned by getConnections, so
                   without this they'd be invisible after the editor closes (the bug). */}
-              {ownNotInstalled.map((s) => (
-                <div key={`own-${s.id}`} data-testid={`installed-${s.id}`}>
-<SettingsDetailRow label={s.description || s.id} detail={'Your own skill'} value={'Not attached'}>
+              {(fixedAgentId ? [] : ownNotInstalled).map((s) => (
+                <SkillRow
+                  key={`own-${s.id}`}
+                  testId={`installed-${s.id}`}
+                  sheet
+                  label={humanizeId(s.id)}
+                  detail={s.description}
+                  value="Your own · not attached"
+                  className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm truncate">{s.description || s.id}</span>
-                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                      <span className="text-sm truncate">{humanizeId(s.id)}</span>
+                      <Badge variant="secondary" className="text-xs shrink-0">
                         your own
                       </Badge>
                     </div>
-                    <span className="font-mono text-xs text-muted-foreground">{s.id}</span>
+                    <span className="text-xs text-muted-foreground">{s.description}</span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <Button
@@ -514,7 +658,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </SettingsDetailRow></div>
+                </SkillRow>
               ))}
               {installed.map((s) => {
                 const own = ownSkills.get(s.skillId);
@@ -522,29 +666,46 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                 // not just source='user' (explicit attachment), but also
                 // source='default' when the user created a default-attached skill.
                 const isOwn = own !== undefined;
+                if (fixedAgentId) return <div key={s.skillId} data-testid={`installed-${s.skillId}`} className="flex items-center gap-3 py-4">
+                  <span className="min-w-0 flex-1 truncate text-sm">{humanizeId(s.skillId)}</span>
+                  <span className="text-xs text-muted-foreground">Enabled</span>
+                  <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${s.skillId}`}><ChevronRight /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-muted-foreground">{s.description}</DropdownMenuLabel>
+                      {isOwn && <><DropdownMenuItem onSelect={() => setEditor({ mode: 'edit-user', skillId: s.skillId })}>Edit skill</DropdownMenuItem><DropdownMenuItem onSelect={() => { setShareResult(null); setPendingShare(s.skillId); }}>Submit to workspace</DropdownMenuItem><DropdownMenuItem onSelect={() => setPendingDelete({ skillId: s.skillId, scope: 'user' })}>Delete skill</DropdownMenuItem></>}
+                      {!isOwn && isAdmin && <DropdownMenuItem onSelect={() => setEditor({ mode: 'edit-admin', skillId: s.skillId })}>Edit workspace skill</DropdownMenuItem>}
+                      {s.removable ? <DropdownMenuItem onSelect={() => void handleRemove(s.skillId)}>Remove from this agent</DropdownMenuItem> : isAdmin && s.source === 'default' ? <DropdownMenuItem onSelect={() => void handleSetDefault(s.skillId, false)}>Unset workspace default</DropdownMenuItem> : isAdmin && s.source === 'agent' ? <DropdownMenuItem onSelect={() => void handleRemoveAgentSkill(s.skillId)}>Remove from this agent</DropdownMenuItem> : <DropdownMenuLabel className="font-normal text-muted-foreground">{s.source === 'default' ? 'From workspace defaults' : 'Managed by an admin'}</DropdownMenuLabel>}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>;
                 return (
-                  <div key={s.skillId} data-testid={`installed-${s.skillId}`}>
-<SettingsDetailRow label={s.description || s.skillId} detail={<span>{agents.find((a) => a.agentId === agentId)?.displayName || 'Installed skill'}{s.source === 'default' && ' · Workspace default'}{isOwn && ' · Your own'}</span>} value={'Enabled'}>
+                  <SkillRow
+                    key={s.skillId}
+                    testId={`installed-${s.skillId}`}
+                    sheet
+                    label={humanizeId(s.skillId)}
+                    detail={s.description}
+                    value={[s.source === 'default' ? 'Workspace default' : null, isOwn ? 'Your own' : null].filter(Boolean).join(' · ') || 'Enabled'}
+                    className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
+                  >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm truncate">
-                          {s.description || s.skillId}
+                          {humanizeId(s.skillId)}
                         </span>
                         {s.source === 'default' && (
-                          <Badge variant="outline" className="text-[10px] shrink-0">
+                          <Badge variant="outline" className="text-xs shrink-0">
                             <Building2 className="h-3 w-3 mr-1" />
                             default
                           </Badge>
                         )}
                         {isOwn && (
-                          <Badge variant="secondary" className="text-[10px] shrink-0">
+                          <Badge variant="secondary" className="text-xs shrink-0">
                             your own
                           </Badge>
                         )}
                       </div>
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {s.skillId}
-                      </span>
+                      <span className="text-xs text-muted-foreground">{s.description}</span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {isOwn && (
@@ -610,12 +771,12 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                           Remove
                         </Button>
                       ) : (
-                        <span className="text-[11px] text-muted-foreground pl-1">
+                        <span className="text-xs text-muted-foreground pl-1">
                           {s.source === 'default' ? 'from workspace' : 'set by admin'}
                         </span>
                       )}
                     </div>
-                  </SettingsDetailRow></div>
+                  </SkillRow>
                 );
               })}
             </div>
@@ -626,91 +787,28 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
               replacing the old approve-only affordance: it copies the draft
               (manifest + body + files) into your installed skills and opens the
               editor on the copy. */}
-          {authored.length > 0 && (
-            <div className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">
-                Authored by your agents
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Skills your agents drafted. Edit one to make an editable copy you
-                own.
-              </p>
-              <div className="flex min-w-0 flex-col">
-                {authored.map((a) => {
-                  const key = `${a.agentId}/${a.skillId}`;
-                  const isAdopting = adopting === key;
-                  const isDismissing = dismissing === key;
-                  const busy = adopting !== null || dismissing !== null;
-                  return (
-                    <div key={key} data-testid={`authored-${a.skillId}`}>
-<SettingsDetailRow label={a.description || a.skillId} detail={'Authored by your agent'} value={a.status === 'active' ? 'Active' : 'Pending review'}>
-                      <div className="min-w-0">
-                        {/*
-                          `block` is what makes `truncate` work, and leaving it
-                          off fails silently: `overflow` and `text-overflow` do
-                          NOTHING to a non-replaced inline box, so the span
-                          ignores `truncate` outright and reports its full
-                          intrinsic width. A walk with a real 231-character
-                          description measured this span at 1313px inside an
-                          896px row — under the status badge, under the Edit and
-                          Delete buttons, and a horizontal scrollbar in the panel.
-
-                          Why it hid: a span that is a flex ITEM gets blockified
-                          by its flex container, so the two rows further up were
-                          never affected. This parent is a block, so we have to
-                          say it. The sibling below already did.
-                        */}
-                        <span className="block text-sm truncate">
-                          {a.description}
-                        </span>
-                        <span className="block font-mono text-xs text-muted-foreground">
-                          {a.skillId} · {a.agentId}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <Badge
-                          variant={a.status === 'active' ? 'secondary' : 'outline'}
-                          className="text-xs"
-                        >
-                          {a.status === 'active' ? 'active' : 'pending review'}
-                        </Badge>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => void handleAdopt(a)}
-                          aria-label={`Edit ${a.skillId}`}
-                        >
-                          {isAdopting ? 'Adopting…' : 'Edit'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => setPendingDismiss(a)}
-                          aria-label={`Delete ${a.skillId}`}
-                        >
-                          {isDismissing ? 'Deleting…' : 'Delete'}
-                        </Button>
-                      </div>
-                    </SettingsDetailRow></div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </section>
-
+          {renderAuthored(visibleAuthored.filter((a) => a.status === 'active'))}
         </TabsContent>
-        <TabsContent value="browse" forceMount hidden={category !== 'browse'}>
+        <TabsContent value="review" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'review' } : {})} className="flex flex-col gap-4">
+          {renderAuthored(visibleAuthored.filter((a) => a.status !== 'active'))}
+          {fixedAgentId && !visibleAuthored.some((a) => a.status !== 'active') && !isAdmin && <p className="text-sm text-muted-foreground">No skills awaiting review.</p>}
+          {isAdmin && (
+            <AwaitingReviewSection
+              onReviewed={() => {
+                void refreshCatalog();
+              }}
+            />
+          )}
+        </TabsContent>
+
         {/* ========================= NOT INSTALLED ======================= */}
-        <section className="flex flex-col gap-3">
+        <TabsContent value="browse" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'browse' } : {})} className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-medium text-foreground">
               {catalog !== null &&
               agentsLoaded &&
               (installed !== null || agents.length === 0)
-                ? `Not installed · available in your workspace (${notInstalledCount})`
+                ? (fixedAgentId ? 'Available in your workspace' : `Not installed · available in your workspace (${notInstalledCount})`)
                 : 'Not installed · available in your workspace'}
             </h2>
             {isAdmin && (
@@ -725,6 +823,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             )}
           </div>
 
+          {fixedAgentId && <p className="text-sm text-muted-foreground">Install a skill for {agentName ?? 'this agent'}. Review the services it uses before adding it.</p>}
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -738,7 +837,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
 
           {catalog === null ||
           !agentsLoaded ||
-          (agents.length > 0 && installed === null) ? (
+          ((fixedAgentId || agents.length > 0) && installed === null) ? (
             // Wait for the catalog, the agent list, and — when there's an agent —
             // the installed set, so we never flash an already-installed skill as
             // "installable" before the exclusion lands. With no agent, the catalog
@@ -763,24 +862,29 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                   : 'Nothing left to install — everything in your workspace is already on this assistant.'}
             </p>
           ) : (
-            <div className="flex min-w-0 flex-col">
+            <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {notInstalled.map((c) => (
-                <div key={c.skillId} data-testid={`catalog-${c.skillId}`}>
-<SettingsDetailRow label={c.description || c.skillId} detail={'Available in your workspace'} value={'Not installed'}>
+                <SkillRow
+                  key={c.skillId}
+                  testId={`catalog-${c.skillId}`}
+                  sheet={!fixedAgentId}
+                  label={humanizeId(c.skillId)}
+                  detail={c.description}
+                  value="Not installed"
+                  className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
+                >
                   <div className="flex-1 min-w-0">
                     {/* `block` for the same reason as the authored row above —
                         this parent is a block, so an inline span ignores
                         `truncate` entirely. (`flex-1` here binds to the PARENT's
                         flex container, not this div's children.) */}
                     <span className="block text-sm truncate">
-                      {c.description || c.skillId}
+                      {humanizeId(c.skillId)}
                     </span>
-                    <span className="block font-mono text-xs text-muted-foreground">
-                      {c.skillId}
-                    </span>
+                    <span className="block text-xs text-muted-foreground">{c.description}</span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {isAdmin && (
+                    {isAdmin && !ownSkills.has(c.skillId) && (
                       <>
                         <Button
                           variant="ghost"
@@ -838,37 +942,35 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                         </TooltipContent>
                       </Tooltip>
                     ) : (
-                      <Button size="sm" onClick={() => setInstalling(c)}>
+                      <Button variant="outline" size="sm" onClick={() => setInstalling(c)}>
                         Install
                       </Button>
                     )}
                   </div>
-                </SettingsDetailRow></div>
+                </SkillRow>
               ))}
             </div>
           )}
 
-        </section>
-        </TabsContent>
-        {isAdmin && <TabsContent value="review" forceMount hidden={category !== 'review'}>
-          <AwaitingReviewSection onReviewed={() => { void refreshCatalog(); }} />
-        </TabsContent>}
-        </Tabs>
+          {/* Admin-only: the folded admit queue (the old "Skills awaiting
+              review" surface, now an inline affordance). */}
 
-      </div>
+        </TabsContent>
+      </Tabs>
 
       {/* ---------------------------- dialogs --------------------------- */}
 
       {editor !== null && (
         <Dialog open onOpenChange={(o) => { if (!o) setEditor(null); }}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="settings-dialog max-w-[640px]">
             <DialogHeader>
               <DialogTitle>
-                {editor.mode === 'create-user' && 'Create a skill'}
-                {editor.mode === 'edit-user' && `Edit skill: ${editor.skillId}`}
+                {editor.mode === 'create-user' && 'Create skill'}
+                {editor.mode === 'edit-user' && 'Edit skill'}
                 {editor.mode === 'create-admin' && 'Add a skill to the workspace'}
                 {editor.mode === 'edit-admin' && `Edit workspace skill: ${editor.skillId}`}
               </DialogTitle>
+              <DialogDescription>Write instructions {agentName ?? 'your agent'} can use again.</DialogDescription>
             </DialogHeader>
             {(() => {
               // Build the optional props as a single object so
@@ -885,7 +987,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
               const api = editorApiFor(editor);
               if (api !== undefined) editorProps.api = api;
               return (
-                <SkillEditor
+                <SkillForm
                   {...editorProps}
                   onSaved={() => void onEditorSaved()}
                   onCancel={() => setEditor(null)}
@@ -1003,6 +1105,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
         <SkillInstallConsentDialog
           skill={installing}
           agentId={agentId}
+          agentName={agentName}
           open
           onOpenChange={(o) => {
             if (!o) setInstalling(null);

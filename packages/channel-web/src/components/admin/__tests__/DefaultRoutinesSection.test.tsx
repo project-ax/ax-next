@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { DefaultRoutinesSection } from '../DefaultRoutinesSection';
-import type { DefaultRoutineSummary } from '@ax/routines';
+import type { DefaultRoutineSummary } from '@/lib/default-routines';
 
 // Mock the wire client
 vi.mock('@/lib/default-routines', () => ({
@@ -15,9 +15,11 @@ vi.mock('@/lib/default-routines', () => ({
 // Mock the shared RoutineEditor so these tests stay focused on the section's
 // table / dialog / delete behaviour, not the editor internals.
 vi.mock('@/components/routines/RoutineEditor', () => ({
-  RoutineEditor: ({ onCancel }: { onCancel: () => void }) => (
+  DefaultRoutineEditor: ({ onCancel, onSaved, onPendingChange }: { onCancel: () => void; onSaved: () => void; onPendingChange?: (pending: boolean) => void }) => (
     <div data-testid="routine-editor">
       <button onClick={onCancel}>Cancel editor</button>
+      <button onClick={() => onPendingChange?.(true)}>Start submission</button>
+      <button onClick={onSaved}>Finish submission</button>
     </div>
   ),
 }));
@@ -128,13 +130,23 @@ describe('DefaultRoutinesSection', () => {
     expect(screen.getByTestId('routine-editor')).toBeTruthy();
   });
 
+  it('can open a second editor after a pending submit succeeds', async () => {
+    mockList.mockResolvedValue([]);
+    render(<DefaultRoutinesSection />);
+    fireEvent.click(screen.getByRole('button',{name:/new default routine/i}));
+    fireEvent.click(await screen.findByRole('button',{name:'Start submission'}));
+    fireEvent.click(screen.getByRole('button',{name:'Finish submission'}));
+    await waitFor(() => expect(screen.queryByTestId('routine-editor')).toBeNull());
+    fireEvent.click(screen.getByRole('button',{name:/new default routine/i}));
+    expect(await screen.findByTestId('routine-editor')).toBeVisible();
+  });
+
   it('clicking edit fetches the routine and opens the editor populated', async () => {
     mockList.mockResolvedValueOnce([HEARTBEAT]);
     mockGet.mockResolvedValueOnce({
       ...HEARTBEAT,
-      sourceMd: '---\nname: heartbeat\n---\nbody',
       silenceToken: null,
-      silenceMax: 300,
+      silenceMaxChars: 300,
       conversation: 'shared',
       activeHours: null,
       promptBody: 'check in',

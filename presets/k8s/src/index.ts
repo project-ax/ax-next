@@ -12,7 +12,6 @@ import { createSandboxK8sPlugin, type SharedPoolConfig } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
-import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createRoutinesPlugin } from '@ax/routines';
@@ -818,7 +817,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // manifest), but we keep it adjacent to audit-log because both are
   // observe-only hook subscribers with no dependencies of their own.
   plugins.push(createValidatorSkillPlugin());
-  plugins.push(createValidatorRoutinePlugin());
   // Phase 3 (conversational-agent-identity): gates the agent's writes to its
   // own /agent/.ax/ identity files. Subscribes workspace:pre-apply; reads
   // the committed .ax/BOOTSTRAP.md at the parent version (via the workspace:read

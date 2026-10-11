@@ -1,80 +1,58 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { makeAgentContext, type HookBus } from '@ax/core';
-import type { HttpRouteHandler } from '@ax/http-server';
-import type { CredentialsGetInput, CredentialsGetOutput } from '@ax/credentials';
-import type { RoutineRow, FireSource } from './types.js';
+import { validateWebhookPath } from '@ax/routines-contract';
+import { credentialRef } from './definition.js';
+import type { AcceptedDispatch } from './types.js';
 import type { FireResult } from './tick.js';
 import type { RoutinesStore } from './store.js';
 
-export interface WebhookHandlerDeps {
+// HTTP is duck-typed here: no runtime dependency on another plugin.
+export interface HttpRequest {
+  readonly path: string;
+  readonly rawPath: string;
+  readonly params: Record<string, string>;
+  readonly headers: Record<string, string>;
+  readonly body: Buffer;
+}
+export interface HttpResponse {
+  status(code: number): HttpResponse;
+  end(): void;
+}
+export type HttpRouteHandler = (req: HttpRequest, res: HttpResponse) => Promise<void>;
+export interface WebhookRouterDeps {
   bus: HookBus;
-  store: Pick<RoutinesStore, 'findOne'>;
-  agentId: string;
-  routinePath: string;
-  fire: (row: RoutineRow, source: FireSource, payload?: unknown) => Promise<FireResult>;
+  store: RoutinesStore;
+  fire: (accepted: AcceptedDispatch, payload?: unknown) => Promise<FireResult>;
+  now: () => Date;
 }
 
-/**
- * Build the http handler bound to a specific (agentId, routinePath).
- *
- * Chain (design §5):
- *   1. lookup row by (agentId, routinePath); 404 if gone / wrong kind
- *   2. if hmac configured: fetch secret, compute, timingSafeEqual; 401 on miss
- *   3. parse body by Content-Type; 400 on malformed JSON, 415 on unknown CT
- *   4. if events configured AND X-GitHub-Event present AND mismatch: 204
- *   5. fire(row, 'webhook', payload) fire-and-forget
- *   6. 202
- *
- * Trust boundary K9: req.body flows JSON.parse → renderTemplate (in fire.ts)
- * → agent:invoke. No dynamic-evaluation sink is reachable from the payload.
- *
- * Trust boundary K11: HMAC verification uses crypto.timingSafeEqual only.
- * Buffer-of-utf8 equality with an explicit length-mismatch short-circuit so
- * timingSafeEqual never receives unequal-length buffers (which would throw).
- */
-export function makeWebhookHandler(deps: WebhookHandlerDeps): HttpRouteHandler {
+/** Token authentication routes a request; the fire path separately checks the stored owner's ACL. */
+export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
   return async (req, res) => {
-    const ctx = makeAgentContext({
-      sessionId: `webhook-${deps.agentId}-${deps.routinePath}`,
-      agentId: deps.agentId,
-      userId: 'system',
-    });
-
-    // Step 1: row lookup
-    const row = await deps.store.findOne({ agentId: deps.agentId, path: deps.routinePath });
-    if (row === null || row.trigger.kind !== 'webhook') {
-      res.status(404).end();
-      return;
-    }
+    const token = req.params.token;
+    const path = '/' + (req.params['*'] ?? '');
+    // Token params are decoded by the HTTP adapter; require the original spelling too.
+    if (!token || !/^[A-Za-z0-9_-]+$/.test(token) || !validateWebhookPath(path)
+      || req.rawPath !== `/webhooks/${token}${path}`) { res.status(404).end(); return; }
+    if (req.body.byteLength > 1024 * 1024) { res.status(413).end(); return; }
+    const requestCtx = makeAgentContext({ sessionId: 'routine-webhook-routing', agentId: '@ax/routines', userId: 'system' });
+    const resolved = await deps.bus.callJoined<{ token: string }, { agent: { id: string } } | null>(
+      'agents:resolve-by-webhook-token', requestCtx, { token });
+    if (!resolved?.agent) { res.status(404).end(); return; }
+    const row = await deps.store.findWebhook({ agentId: resolved.agent.id, path });
+    if (!row || !row.enabled || row.trigger.kind !== 'webhook') { res.status(404).end(); return; }
     const trigger = row.trigger;
-
+    const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
     // Step 2: HMAC verify (if configured)
     if (trigger.hmac !== undefined) {
       let secret: string;
       try {
-        secret = await deps.bus.call<CredentialsGetInput, CredentialsGetOutput>(
+        secret = await deps.bus.callJoined<{ ref: string; userId: string }, string>(
           'credentials:get', ctx,
-          { ref: trigger.hmac.secretRef, userId: row.ownerUserId },
+          { ref: credentialRef(row), userId: row.ownerUserId },
         );
-      } catch (err) {
-        // Reviewer finding. The 401 is right — we cannot verify a signature
-        // without the secret, so the request does not get in. But it used to
-        // be SILENT, which made two very different situations look identical
-        // from the outside: an attacker sending a bad signature, and our own
-        // `secretRef` pointing at a credential that was never set (or a
-        // credential backend having a bad day). One of those is the system
-        // working; the other is a webhook that will never fire again and
-        // nobody knowing why.
-        //
-        // The log names the ref, never the secret — a ref is a lookup key the
-        // person typed into the routine themselves, and the whole point of
-        // this branch is that we did not get a value back.
-        ctx.logger.warn('routines_webhook_secret_fetch_failed', {
-          agentId: deps.agentId,
-          path: deps.routinePath,
-          secretRef: trigger.hmac.secretRef,
-          err: err instanceof Error ? err.message : String(err),
-        });
+      } catch {
+        ctx.logger.warn('routines_webhook_secret_fetch_failed', { agentId: row.agentId, routineId: row.routineId });
         res.status(401).end();
         return;
       }
@@ -132,18 +110,11 @@ export function makeWebhookHandler(deps: WebhookHandlerDeps): HttpRouteHandler {
       }
     }
 
-    // Step 5: fire-and-forget dispatch
-    // The fire path records its own status (ok | silenced | error) via the
-    // chat:turn-end one-shot in plugin.ts. We 202 immediately so the sender
-    // isn't blocked on agent:invoke completing.
-    void deps.fire(row, 'webhook', payload).catch((err: unknown) => {
-      process.stderr.write(
-        `[ax/routines] webhook fire failed for ${deps.agentId}${deps.routinePath}: ` +
-        `${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    });
-
-    // Step 6: 202 Accepted
+    const dispatch = await deps.store.acceptDispatch({ agentId: row.agentId, routineId: row.routineId,
+      expectedRevision: row.revision, actorUserId: row.ownerUserId, source: 'webhook',
+      requestId: crypto.randomUUID(), now: deps.now() });
+    if (!dispatch) { res.status(404).end(); return; }
+    if (!dispatch.replayed) await deps.fire(dispatch.accepted, payload);
     res.status(202).end();
   };
 }

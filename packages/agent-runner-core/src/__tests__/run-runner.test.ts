@@ -2229,3 +2229,23 @@ describe('runRunner — disallowedTools catalog filter', () => {
     expect(makeLoop.mock.calls[0]?.[0].tools.map((t) => t.name)).toEqual(['web_search']);
   });
 });
+
+
+describe('routine prompt availability from filtered catalog', () => {
+  it.each(['claude-sdk', 'aisdk'])('uses filtered tools for %s', async runner => {
+    const original = fakeClient.call.getMockImplementation()!;
+    const { buildSystemPrompt } = await import('../prompt-engine.js');
+    for (const [allowedTools, disallowedTools, expected] of [
+      [[], [], true], [['web_search'], [], false], [[], ['routine_get'], false],
+    ] as const) {
+      fakeClient.call.mockImplementation(async (action: string, input: unknown) => {
+        if (action === 'tool.list') return { tools: [{ name: 'routine_get', executesIn: 'host', inputSchema: {} }, { name: 'web_search', executesIn: 'host', inputSchema: {} }] };
+        const result = await original(action, input) as Record<string, unknown>;
+        if (action === 'session.get-config') return { ...result, agentConfig: { ...result.agentConfig as object, runner, allowedTools, disallowedTools } };
+        return result;
+      });
+      expect(await runRunner(() => ({ run: async () => 0 }), seams(fakeEnv))).toBe(0);
+      expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[9]).toBe(expected);
+    }
+  });
+});

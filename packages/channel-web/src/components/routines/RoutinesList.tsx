@@ -1,507 +1,455 @@
-/**
- * RoutinesList — row-style list mirroring CredentialsList, with each row
- * collapsible to show recent fires.
- *
- * Phase D shape only. Fetches `await routines.list()` (no agent filter
- * — most users have one or two agents; the agent label per row keeps
- * the noise low). Each row's "expanded" body fetches fires lazily via
- * `routines.recentFires({ agentId, path, limit: 20 })` so we don't pay
- * for the full audit trail until the operator asks.
- *
- * The list and the expanded fires both go through React's default
- * escaping. Rendered prompts are font-mono + truncated + show-more,
- * matching the existing "subtitle" treatment in CredentialsList for
- * fixed-width strings.
- */
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Trash2, Copy, Check } from 'lucide-react';
-import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
+import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { Field, FieldLabel } from '@/components/ui/field';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { PaneStatus } from '../PaneStatus';
-import { routines, type Routine, type Fire } from '../../lib/routines';
-import { TriggerChip } from './TriggerChip';
-import { StatusChip } from './StatusChip';
-import { FireRowsTable } from './FireRowsTable';
-import { RunWarning } from './RunWarning';
-import { FireNowControl } from './FireNowControl';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
-  RoutineEditor,
-  type RoutineEditorConstraints,
-} from '@/components/routines/RoutineEditor';
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from '@/components/ui/empty';
+import { Separator } from '@/components/ui/separator';
+import {
+  routineApi,
+  RoutineApiError,
+  type Routine,
+  type Fire,
+} from '@/lib/routines';
+import { useAgentStore } from '@/lib/agent-store';
+import { RoutineEditor } from './RoutineEditor';
+import { FireNowControl } from './FireNowControl';
+import { FireRowsTable } from './FireRowsTable';
+import { TriggerChip } from './TriggerChip';
 import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
-import { refForDestination } from '@/lib/credentials';
-import type {
-  RoutineFrontmatterFields,
-  TriggerSpec,
-} from '@ax/validator-routine/frontmatter';
 
-// Per-user routines accept all three trigger kinds and, on create, pick the
-// owning agent.
-const CREATE_CONSTRAINTS: RoutineEditorConstraints = {
-  allowedTriggers: ['interval', 'cron', 'webhook'],
-  showAgentPicker: true,
-};
-// On edit the agent + file path are fixed; the picker is hidden.
-const EDIT_CONSTRAINTS: RoutineEditorConstraints = {
-  allowedTriggers: ['interval', 'cron', 'webhook'],
-  showAgentPicker: false,
-};
-
-/** Project a listed Routine into the editor's `initial` shape. The wire types
- *  are structurally identical to the validator's; the trigger cast is exact at
- *  runtime (routines:list returns the validator's TriggerSpec). */
-function routineToFields(r: Routine): RoutineFrontmatterFields {
-  const fields: RoutineFrontmatterFields = {
-    name: r.name,
-    description: r.description,
-    trigger: r.trigger as unknown as TriggerSpec,
-    silenceMaxChars: r.silenceMaxChars,
-    conversation: r.conversation,
-    promptBody: r.promptBody,
-  };
-  if (r.activeHours !== null) fields.activeHours = r.activeHours;
-  if (r.silenceToken !== null) fields.silenceToken = r.silenceToken;
-  return fields;
+function rowKey(row: Pick<Routine, 'agentId' | 'routineId'>): string {
+  return JSON.stringify([row.agentId, row.routineId]);
 }
-
-type EditorMode = { kind: 'create' } | { kind: 'edit'; routine: Routine };
 
 export interface RoutinesListProps {
-  showHeaderAction?: boolean;
+  agentId?: string | undefined;
+  agentName?: string | undefined;
   refreshKey?: number;
   onFired: () => void;
-  /**
-   * Admins manage the per-routine webhook HMAC credential. Routine HMAC creds
-   * are agent-scoped, and both reading their status (`/admin/credentials`) and
-   * setting them (`/admin/destinations/...`) are admin-only today — so the HMAC
-   * slot is rendered only for admins. Non-admins still get the (owner-scoped)
-   * Receiver URL.
-   */
   isAdmin?: boolean;
+  origin?: 'authored' | 'default';
+  /** Bumped by a parent-owned "New routine" button to open the create dialog. */
+  createRequest?: number;
+  /** The parent draws the "New routine" button, so the list doesn't. */
+  hideCreateAction?: boolean;
 }
-
-function relativeTime(d: Date | null): string {
-  if (d === null) return 'never';
-  const ms = Date.now() - d.getTime();
-  // Clock skew between the server and the user's machine can produce a
-  // negative delta. Falling through into the Math.floor branches would
-  // render "1s ago" for a future timestamp, which is misleading. Treat
-  // anything in the future as "just now" — the row exists, the time is
-  // close enough.
-  if (ms < 0) return 'just now';
-  if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1_000))}s ago`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / 86_400_000)}d ago`;
-}
-
-export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false, showHeaderAction = true }: RoutinesListProps) {
+export function RoutinesList({
+  agentId,
+  agentName,
+  refreshKey = 0,
+  onFired,
+  isAdmin = false,
+  origin = 'authored',
+  createRequest = 0,
+  hideCreateAction = false,
+}: RoutinesListProps) {
+  const { agents, agentsStatus } = useAgentStore();
+  const ids = agentId ? [agentId] : agents.map((a) => a.id);
+  const idKey = ids.join('\0');
   const [list, setList] = useState<Routine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const [editing, setEditing] = useState<Routine | null>(null);
+  const [editorPending, setEditorPending] = useState(false);
+  const [creating, setCreating] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  // Keyed by `agentId::path` so flipping between rows doesn't drop the
-  // cached fires when an operator re-opens the same row.
-  const [fires, setFires] = useState<Record<string, Fire[] | undefined>>({});
-  const [firesError, setFiresError] = useState<Record<string, string | undefined>>({});
-  const [editorMode, setEditorMode] = useState<EditorMode | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<Routine | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  // `deleting` drives the disabled/“Deleting…” button state; `deletingRef` is
-  // the synchronous re-entrancy guard. A state flag alone can't stop a
-  // same-tick double-dispatch (both click handlers close over the stale
-  // value before React re-renders the disabled button), so the ref is what
-  // actually prevents the duplicate DELETE seen in the kind walk.
-  const [deleting, setDeleting] = useState(false);
-  const deletingRef = useRef(false);
-  // Per-agent webhook receiver token state (one token serves all of an agent's
-  // webhook routines). Fetched lazily once the list loads so we can show the
-  // full /webhooks/<token><path> URL on each webhook row. `{ failed: true }`
-  // records a load failure so the row can explain the gap instead of silently
-  // omitting the URL (the expected failure is a 403 on a team agent the actor
-  // can see but doesn't own — see WebhookReceiver).
-  const [webhookTokens, setWebhookTokens] = useState<
-    Record<string, { token: string } | { failed: true }>
-  >({});
-  // Agents whose token fetch is in flight — keeps the effect from re-issuing a
-  // pending request when it re-runs on each token commit.
-  const webhookInFlight = useRef<Set<string>>(new Set());
-
-  async function reload(): Promise<void> {
+  const [fires, setFires] = useState<Fire[] | null>(null);
+  const [firesError, setFiresError] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [uncertain, setUncertain] = useState(false);
+  const [deleting, setDeleting] = useState<Routine | null>(null);
+  const [fireProtected, setFireProtected] = useState(false);
+  const fireProtectedRef = useRef(false);
+  function protectFire(pending: boolean) {
+    fireProtectedRef.current = pending;
+    setFireProtected(pending);
+  }
+  const flight = useRef(false);
+  const previousCreateRequest = useRef(createRequest);
+  useEffect(() => {
+    if (createRequest !== previousCreateRequest.current && agentId) setCreating(agentId);
+    previousCreateRequest.current = createRequest;
+  }, [createRequest, agentId]);
+  const operation = useRef<{
+    key: string;
+    requestId: string;
+    row: Routine;
+    kind: 'enabled' | 'delete';
+  } | null>(null);
+  useEffect(() => {
+    // Preserve the child and its exact retry identity. A changed refresh key is
+    // picked up when the operation is confirmed or explicitly refused.
+    if (fireProtectedRef.current) return;
+    let active = true;
+    setList(null);
     setError(null);
-    try {
-      setList(await routines.list());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function handleDelete(routine: Routine): Promise<void> {
-    if (deletingRef.current) return; // guard against a double-submit
-    deletingRef.current = true;
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await routines.remove({ agentId: routine.agentId, path: routine.path });
-      setPendingDelete(null);
-      await reload();
-      onFired();
-    } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : String(err));
-    } finally {
-      deletingRef.current = false;
-      setDeleting(false);
-    }
-  }
-
-  useEffect(() => {
-    void reload();
-  }, [refreshKey]);
-
-  // Fetch the receiver token for each agent that has a webhook routine. An
-  // agent is fetched once: it's skipped if a result is already cached OR a
-  // request is in flight (`webhookInFlight`). That in-flight guard is what
-  // keeps this loop-safe AND amplification-free — without it, re-running on
-  // each `webhookTokens` commit would re-issue the still-pending requests of
-  // the other agents. The result is committed unconditionally (a token stays
-  // valid regardless of later list changes); only setState-after-unmount is
-  // the cost, which React tolerates.
-  useEffect(() => {
-    if (list === null) return;
-    const agentIds = Array.from(
-      new Set(
-        list.filter((r) => r.trigger.kind === 'webhook').map((r) => r.agentId),
-      ),
-    ).filter(
-      (id) => webhookTokens[id] === undefined && !webhookInFlight.current.has(id),
-    );
-    if (agentIds.length === 0) return;
-    for (const agentId of agentIds) {
-      webhookInFlight.current.add(agentId);
-      void routines
-        .webhookToken(agentId)
-        .then(({ token }) =>
-          setWebhookTokens((m) => ({ ...m, [agentId]: { token } })),
-        )
-        .catch(() =>
-          setWebhookTokens((m) => ({ ...m, [agentId]: { failed: true } })),
-        )
-        .finally(() => webhookInFlight.current.delete(agentId));
-    }
-  }, [list, webhookTokens]);
-
-  async function loadFires(agentId: string, path: string): Promise<void> {
-    const key = `${agentId}::${path}`;
-    setFiresError((m) => ({ ...m, [key]: undefined }));
-    try {
-      const rows = await routines.recentFires({ agentId, path, limit: 20 });
-      setFires((m) => ({ ...m, [key]: rows }));
-    } catch (err) {
-      setFiresError((m) => ({ ...m, [key]: err instanceof Error ? err.message : String(err) }));
-    }
-  }
-
-  function toggle(agentId: string, path: string): void {
-    const key = `${agentId}::${path}`;
-    if (expanded === key) {
-      setExpanded(null);
+    if (!agentId && agentsStatus === 'loading') return;
+    if (!agentId && agentsStatus === 'error') {
+      setError('We couldn’t load your agents.');
       return;
     }
-    setExpanded(key);
-    if (fires[key] === undefined) void loadFires(agentId, path);
+    void Promise.all(ids.map((id) => routineApi.list(id)))
+      .then((rows) => {
+        if (active) setList(rows.flat().filter((r) => r.origin === origin));
+      })
+      .catch(() => {
+        if (active) setError('We couldn’t load routines.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [idKey, agentsStatus, version, refreshKey, fireProtected, origin]);
+  useEffect(() => {
+    const row = list?.find((r) => rowKey(r) === expanded);
+    if (!row) return;
+    let active = true;
+    setFires(null);
+    setFiresError(false);
+    void routineApi
+      .recentFires({
+        agentId: row.agentId,
+        routineId: row.routineId,
+        limit: 20,
+      })
+      .then((rows) => {
+        if (active) setFires(rows);
+      })
+      .catch(() => {
+        if (active) setFiresError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [expanded, refreshKey, list]);
+  const nameFor = (id: string) =>
+    agentId === id && agentName
+      ? agentName
+      : (agents.find((a) => a.id === id)?.name ?? 'This agent');
+  function saved() {
+    setEditorPending(false);
+    setEditing(null);
+    setCreating(null);
+    setVersion((n) => n + 1);
   }
-
-  if (list === null && error === null) {
-    return <PaneStatus variant="loading">Loading…</PaneStatus>;
+  async function mutate(row: Routine, kind: 'enabled' | 'delete') {
+    if (flight.current || fireProtectedRef.current) return;
+    const key = JSON.stringify([row.agentId, row.routineId, row.revision, kind]);
+    if (operation.current && operation.current.key !== key) {
+      setError('Retry the unconfirmed change before making another change.');
+      return;
+    }
+    operation.current ??= { key, requestId: crypto.randomUUID(), row, kind };
+    flight.current = true;
+    setBusy(row.routineId);
+    setError(null);
+    try {
+      const identity = {
+        agentId: row.agentId,
+        routineId: row.routineId,
+        expectedRevision: row.revision,
+        requestId: operation.current.requestId,
+      };
+      if (kind === 'delete') {
+        await routineApi.remove(identity);
+        setDeleting(null);
+      } else
+        await routineApi.update({
+          ...identity,
+          patch: { enabled: !row.enabled },
+        });
+      operation.current = null;
+      setUncertain(false);
+      setVersion((n) => n + 1);
+    } catch (e) {
+      setError(
+        e instanceof RoutineApiError
+          ? e.message
+          : 'We couldn’t confirm this change. Try again.',
+      );
+      if (e instanceof RoutineApiError && e.status > 0 && e.status < 500) {
+        operation.current = null;
+        setUncertain(false);
+      } else setUncertain(true);
+    } finally {
+      flight.current = false;
+      setBusy(null);
+    }
   }
-  if (list === null && error !== null) {
-    return <PaneStatus variant="error">Error: {error}</PaneStatus>;
-  }
-
   return (
-    <>
-      {showHeaderAction && <SettingsActions><Button onClick={() => setEditorMode({ kind: 'create' })}>New routine</Button></SettingsActions>}
-
-      {error !== null && (
-        <div
-          role="alert"
-          className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive flex items-center gap-2 mb-3"
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">
+          {origin === 'default' ? 'Run workspace defaults and inspect their recent runs.' : 'Work that runs when its trigger fires.'}
+        </p>
+        {origin === 'authored' && !hideCreateAction && (agentId ? (
+          <Button
+            disabled={busy !== null || uncertain || fireProtected}
+            onClick={() => setCreating(agentId)}
+          >
+            New routine
+          </Button>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {agents.map((a) => (
+              <Button
+                key={a.id}
+                variant="outline"
+                disabled={busy !== null || uncertain || fireProtected}
+                onClick={() => setCreating(a.id)}
+              >
+                New routine for {a.name}
+              </Button>
+            ))}
+          </div>
+        ))}
+      </div>
+      {error && (
+        <Alert
+          variant="destructive"
+          className="bg-destructive-soft text-destructive"
           data-testid="routines-list-error"
         >
-          <span className="flex-1">Error: {error}</span>
-          <Button variant="ghost" size="sm" aria-label="Dismiss error" onClick={() => setError(null)}>
-            Dismiss
-          </Button>
-        </div>
+          <AlertDescription>
+            {error}
+            <Button
+              variant="ghost"
+              disabled={fireProtected}
+              onClick={() => setVersion((n) => n + 1)}
+            >
+              Refresh
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
-
-      {list!.length === 0 ? (
-        <PaneStatus variant="empty">
-          No routines yet. Choose New routine to schedule work for an agent.
-        </PaneStatus>
-      ) : (
-        <div className="flex flex-col">
-          {list!.map((r) => {
-            const key = `${r.agentId}::${r.path}`;
-            const isOpen = expanded === key;
-            return (
-              <SettingsDetailRow key={key} label={r.name} description={r.description || 'Manage this routine.'}
-                detail={<span className="flex flex-col gap-1"><span className="inline-flex flex-wrap items-center gap-2"><TriggerChip trigger={r.trigger} /> · {relativeTime(r.lastRunAt)}</span>{r.lastWarning != null && <RunWarning text={r.lastWarning} />}</span>}
-                value={<StatusChip status={r.lastStatus} />}>
-                {(close) => <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <FireNowControl
-                    routine={r}
-                    onFired={() => {
-                      onFired();
-                      // Re-pull fires for this row immediately so the new
-                      // row appears at the top without waiting for the
-                      // collapse/expand cycle.
-                      if (isOpen) void loadFires(r.agentId, r.path);
-                    }}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Edit ${r.name}`}
-                    onClick={() => { close(); setEditorMode({ kind: 'edit', routine: r }); }}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Delete ${r.name}`}
-                    onClick={() => {
-                      close();
-                      setDeleteError(null);
-                      setPendingDelete(r);
-                    }}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                <Button type="button" variant="outline" onClick={() => toggle(r.agentId, r.path)}>{isOpen ? 'Hide recent runs' : 'Recent runs'}</Button>
-                {isOpen && (
-                  <div className="pb-4">
-                    {firesError[key] !== undefined ? (
-                      <div className="text-[12.5px] text-destructive">Error: {firesError[key]}</div>
-                    ) : fires[key] === undefined ? (
-                      <div className="text-[12.5px] text-muted-foreground">Loading fires…</div>
-                    ) : fires[key]!.length === 0 ? (
-                      <div className="text-[12.5px] text-muted-foreground">No fires yet.</div>
-                    ) : (
-                      <FireRowsTable fires={fires[key]!} />
-                    )}
-                  </div>
-                )}
-                {r.trigger.kind === 'webhook' && (
-                  <div className="flex flex-col gap-2 pb-3">
-                    <WebhookReceiver
-                      state={webhookTokens[r.agentId]}
-                      path={r.trigger.path}
-                    />
-                    {/* The HMAC credential is agent-scoped and admin-managed
-                        today (both read + set are admin-only routes). Admins get
-                        the slot; a non-admin gets a read-only note ONLY when the
-                        routine declares hmac (so a webhook that 401s on a missing
-                        secret is diagnosable) — never a 403-on-load admin slot. */}
-                    {isAdmin ? (
-                      <CredentialSlotRow
-                        destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
-                        slot={{
-                          label: 'HMAC',
-                          kind: 'api-key',
-                          description: `Routine markdown should declare secretRef: ${refForDestination({ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path })}`,
-                        }}
-                        scope={{ scope: 'agent', ownerId: r.agentId }}
-                      />
-                    ) : (
-                      r.trigger.hmac != null && (
-                        <p className="text-[11px] text-muted-foreground">
-                          HMAC is configured — a workspace admin must set the
-                          signing secret, or this webhook rejects inbound
-                          requests.
-                        </p>
-                      )
-                    )}
-                  </div>
-                )}
-                </>}
-              </SettingsDetailRow>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Create / edit editor dialog. */}
-      <Dialog
-        open={editorMode !== null}
-        onOpenChange={(o) => {
-          if (!o) setEditorMode(null);
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {editorMode?.kind === 'edit' ? 'Edit routine' : 'New routine'}
-            </DialogTitle>
-          </DialogHeader>
-          {editorMode !== null &&
-            (editorMode.kind === 'create' ? (
-              <RoutineEditor
-                constraints={CREATE_CONSTRAINTS}
-                onSave={async (sourceMd, { agentId, name }) => {
-                  if (agentId === null) throw new Error('Pick an agent first.');
-                  await routines.save({
-                    agentId,
-                    path: `.ax/routines/${name}.md`,
-                    sourceMd,
-                  });
-                }}
-                onSaved={() => {
-                  setEditorMode(null);
-                  void reload();
-                  onFired();
-                }}
-                onCancel={() => setEditorMode(null)}
-              />
-            ) : (
-              <RoutineEditor
-                initial={routineToFields(editorMode.routine)}
-                constraints={EDIT_CONSTRAINTS}
-                onSave={async (sourceMd) => {
-                  // Edit keeps the existing file path — the name field edits
-                  // only the frontmatter, never moves the file.
-                  await routines.save({
-                    agentId: editorMode.routine.agentId,
-                    path: editorMode.routine.path,
-                    sourceMd,
-                  });
-                }}
-                onSaved={() => {
-                  setEditorMode(null);
-                  void reload();
-                  onFired();
-                }}
-                onCancel={() => setEditorMode(null)}
-              />
-            ))}
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete confirmation. */}
-      <Dialog
-        open={pendingDelete !== null}
-        onOpenChange={(o) => {
-          if (!o) setPendingDelete(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete routine?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Delete <code className="font-mono">{pendingDelete?.name}</code>? This removes its{' '}
-            <code className="font-mono">.ax/routines</code> file and stops it from firing.
-          </p>
-          {deleteError !== null && (
-            <p className="text-sm text-destructive">{deleteError}</p>
-          )}
-          <div className="flex justify-end gap-2">
+      {uncertain && (
+        <Alert>
+          <AlertDescription>
+            We couldn’t confirm this change. Retry sends the same change.
             <Button
               variant="outline"
-              disabled={deleting}
-              onClick={() => setPendingDelete(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleting}
+              disabled={busy !== null}
               onClick={() => {
-                if (pendingDelete !== null) void handleDelete(pendingDelete);
+                const pending = operation.current;
+                if (pending) void mutate(pending.row, pending.kind);
               }}
             >
-              {deleting ? 'Deleting…' : 'Delete'}
+              Retry change
             </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {list === null && !error ? (
+        <Skeleton aria-label="Loading routines" className="h-28 w-full" />
+      ) : list?.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>{origin === 'default' ? 'No active default routines' : 'No routines yet'}</EmptyTitle>
+            <EmptyDescription>
+              {origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        list?.map((row) => (
+          <div key={rowKey(row)} className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3 py-3">
+              <Button
+                variant="ghost"
+                aria-label={`Recent runs for ${row.name}`}
+                aria-expanded={expanded === rowKey(row)}
+                disabled={fireProtected}
+                onClick={() => {
+                  if (!fireProtectedRef.current)
+                    setExpanded((v) =>
+                      v === rowKey(row) ? null : rowKey(row),
+                    );
+                }}
+              >
+                <ChevronRight data-icon="inline-start" />
+              </Button>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{row.name}</p>
+                <TriggerChip trigger={row.trigger} />
+                {!agentId && (
+                  <p className="text-xs text-muted-foreground">
+                    {nameFor(row.agentId)}
+                  </p>
+                )}
+              </div>
+              {row.origin === 'authored' && <Field orientation="horizontal" className="w-auto">
+                <FieldLabel htmlFor={`routine-${row.routineId}`}>
+                  {row.enabled ? 'On' : 'Off'}
+                </FieldLabel>
+                <Switch
+                  id={`routine-${row.routineId}`}
+                  aria-label={`Enabled for ${row.name}`}
+                  checked={row.enabled}
+                  disabled={
+                    busy !== null || uncertain || fireProtected || !(row.enabled ? row.permissions.stop : row.permissions.edit)
+                  }
+                  onCheckedChange={() => void mutate(row, 'enabled')}
+                />
+              </Field>}
+              {row.permissions.edit && (
+                <Button
+                  variant="ghost"
+                  aria-label={`Edit ${row.name}`}
+                  disabled={busy !== null || uncertain || fireProtected}
+                  onClick={() => setEditing(row)}
+                >
+                  <Pencil data-icon="inline-start" />
+                </Button>
+              )}
+            </div>
+            {expanded === rowKey(row) && (
+              <div className="flex flex-col gap-3 pb-4">
+                {row.description && (
+                  <p className="text-sm text-muted-foreground">
+                    {row.description}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {row.permissions.fire && (
+                    <FireNowControl
+                      routine={row}
+                      onFired={onFired}
+                      onPendingChange={protectFire}
+                    />
+                  )}
+                  {row.permissions.stop && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== null || uncertain || fireProtected}
+                      onClick={() => setDeleting(row)}
+                    >
+                      Delete routine
+                    </Button>
+                  )}
+                </div>
+                {row.lastError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{row.lastError}</AlertDescription>
+                  </Alert>
+                )}
+                {row.trigger.kind === 'webhook' &&
+                  row.trigger.hmac &&
+                  row.permissions.manageSecret &&
+                  isAdmin && (
+                    <CredentialSlotRow
+                      destination={{
+                        kind: 'routine-hmac',
+                        agentId: row.agentId,
+                        routineId: row.routineId,
+                      }}
+                      slot={{ label: 'Webhook HMAC secret', kind: 'api-key' }}
+                      scope={{ scope: 'agent', ownerId: row.agentId }}
+                    />
+                  )}
+                {firesError ? (
+                  <Alert variant="destructive">
+                    <AlertDescription>
+                      Recent runs are unavailable.
+                    </AlertDescription>
+                  </Alert>
+                ) : fires === null ? (
+                  <Skeleton
+                    aria-label="Loading recent runs"
+                    className="h-12 w-full"
+                  />
+                ) : fires.length ? (
+                  <FireRowsTable fires={fires} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No runs yet.</p>
+                )}
+              </div>
+            )}
+            <Separator />
           </div>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-/**
- * The webhook receiver affordance for a webhook routine. Three states:
- *   - undefined → token still loading: render nothing.
- *   - { token } → show the full /webhooks/<token><path> URL + copy.
- *   - { failed } → couldn't load the token: explain the gap rather than render
- *     nothing. The expected failure is a 403 on a team agent the actor can see
- *     but doesn't own (the token is owner/admin-scoped in @ax/agents).
- */
-function WebhookReceiver({
-  state,
-  path,
-}: {
-  state: { token: string } | { failed: true } | undefined;
-  path: string;
-}) {
-  if (state === undefined) return null;
-  if ('failed' in state) {
-    return (
-      <p className="text-[11px] text-muted-foreground">
-        Receiver URL unavailable — only the agent owner can view it.
-      </p>
-    );
-  }
-  return (
-    <WebhookUrlRow url={`${window.location.origin}/webhooks/${state.token}${path}`} />
-  );
-}
-
-/**
- * The webhook receiver URL (token included) with a copy button. The token is
- * what authenticates an external sender, so it's shown only to the agent owner
- * (the list itself is owner-scoped).
- */
-function WebhookUrlRow({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5">
-      <span className="text-[11px] font-medium text-muted-foreground shrink-0">
-        Receiver URL
-      </span>
-      <code className="text-[11px] font-mono truncate flex-1" title={url}>
-        {url}
-      </code>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        aria-label="Copy webhook URL"
-        onClick={() => {
-          // Only flip to the "copied" check when the write actually resolves —
-          // clipboard.writeText can reject (not focused / permission) or be a
-          // no-op when navigator.clipboard is undefined (non-secure context).
-          void navigator.clipboard
-            ?.writeText(url)
-            .then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-            })
-            .catch(() => {
-              /* leave the icon as Copy — the URL is still visible to select */
-            });
-        }}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </Button>
+        ))
+      )}
+      {(editing || creating) && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !editorPending) {
+              setEditing(null);
+              setCreating(null);
+            }
+          }}
+        >
+          <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[688px]">
+            <DialogHeader>
+              <DialogTitle>
+                {editing ? 'Edit routine' : 'New routine'}
+              </DialogTitle>
+              <DialogDescription>
+                Set the trigger and the work this agent should do.
+              </DialogDescription>
+            </DialogHeader>
+            <RoutineEditor
+              mode={editing ? 'edit' : 'create'}
+              agentId={editing?.agentId ?? creating!}
+              agentName={nameFor(editing?.agentId ?? creating!)}
+              routine={editing ?? undefined}
+              onPendingChange={setEditorPending}
+              onSaved={saved}
+              onCancel={() => {
+                setEditing(null);
+                setCreating(null);
+              }}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
+      {deleting && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !flight.current && !uncertain) setDeleting(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete {deleting.name}?</DialogTitle>
+              <DialogDescription>
+                This stops future runs. Existing Activity remains available.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={busy !== null || uncertain || fireProtected}
+                onClick={() => setDeleting(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={busy !== null}
+                onClick={() => void mutate(deleting, 'delete')}
+              >
+                Delete
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

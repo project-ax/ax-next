@@ -70,6 +70,7 @@ import {
   fileOutputNote,
   communicationNote,
   operationalNotes,
+  routineNote,
   workPolicyNote,
   type SdkSystemPrompt,
 } from './system-prompt.js';
@@ -311,6 +312,7 @@ export async function buildSystemPrompt(
   cwd: string = workspaceRoot,
   memoryRoot: string | undefined = undefined,
   bootstrapAugment = '',
+  routineToolsAvailable = false,
 ): Promise<SdkSystemPrompt> {
   const files = await readAxIdentityFiles(workspaceRoot);
 
@@ -359,6 +361,6 @@ export async function buildSystemPrompt(
     ...(files.agents !== undefined ? { agents: files.agents } : {}),
     identity,
     ...(files.soul !== undefined ? { soul: files.soul } : {}),
-    notes,
+    notes: routineToolsAvailable ? `${notes}\n\n${routineNote()}` : notes,
   });
 }

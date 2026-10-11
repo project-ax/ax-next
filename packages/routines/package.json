@@ -19,7 +19,7 @@
     "@ax/core": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/http-server": "workspace:*",
-    "@ax/validator-routine": "workspace:*",
+    "@ax/routines-contract": "workspace:*",
     "croner": "8.1.2",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
@@ -32,6 +32,9 @@
     "@types/pg": "8.20.0",
     "pg": "8.20.0",
     "typescript": "^5.4.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "@ax/agents": "workspace:*",
+    "@ax/decisions": "workspace:*",
+    "@ax/tool-policy": "workspace:*"
   }
 }

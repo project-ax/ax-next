@@ -1,0 +1,25 @@
+{
+  "deleted": [
+    {
+      "table_name": "auth_better_v1_sessions",
+      "rows": 2
+    },
+    {
+      "table_name": "auth_better_v1_accounts",
+      "rows": 1
+    },
+    {
+      "table_name": "usage_limits_v1_buckets",
+      "rows": 4
+    },
+    {
+      "table_name": "usage_limits_v1_turns",
+      "rows": 5
+    },
+    {
+      "table_name": "auth_better_v1_users",
+      "rows": 1
+    }
+  ],
+  "preexistingAuthAndProvidersUnchanged": true
+}

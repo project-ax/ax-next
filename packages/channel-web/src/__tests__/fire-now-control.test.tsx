@@ -1,220 +1,73 @@
-/**
- * FireNowControl — per-row "Fire now" affordance (Phase D Task 11).
- *
- *   - interval/cron routines: clicking the button fires immediately via
- *     `routines.fireNow` (no nested form).
- *   - webhook routines: clicking reveals a JSON textarea; Submit parses
- *     the JSON and POSTs it as `payload`. Invalid JSON surfaces inline.
- */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FireNowControl } from '../components/routines/FireNowControl';
-import type { Routine } from '../lib/routines';
-
-const fetchMock = vi.fn();
-// Capture the platform fetch so afterEach can restore it. Without this
-// the override leaks into adjacent test files when vitest reuses the
-// same JSDOM context — any later test that hits real fetch would see
-// our mock instead.
-const originalFetch = globalThis.fetch;
-
-beforeEach(() => {
-  fetchMock.mockReset();
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
-});
-afterEach(() => {
-  fetchMock.mockReset();
-  globalThis.fetch = originalFetch;
-});
-
-function mockJson(status: number, body: unknown): void {
-  fetchMock.mockResolvedValueOnce({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  } as Response);
-}
-
-const intervalRoutine: Routine = {
-  agentId: 'agt_a',
-  path: 'heartbeat.md',
-  name: 'heartbeat',
-  description: 'every 24h',
-  trigger: { kind: 'interval', every: '24h' },
-  conversation: 'shared',
-  lastStatus: null,
-  lastError: null,
-  lastWarning: null,
-  lastRunAt: null,
-  promptBody: 'body',
-  activeHours: null,
-  silenceToken: null,
-  silenceMaxChars: 300,
-};
-
-const webhookRoutine: Routine = {
-  agentId: 'agt_b',
-  path: 'on-ping.md',
-  name: 'on-ping',
-  description: 'webhook',
-  trigger: { kind: 'webhook', path: '/hooks/ping' },
-  conversation: 'per-fire',
-  lastStatus: null,
-  lastError: null,
-  lastWarning: null,
-  lastRunAt: null,
-  promptBody: 'body',
-  activeHours: null,
-  silenceToken: null,
-  silenceMaxChars: 300,
-};
-
-describe('FireNowControl — interval/cron', () => {
-  it('clicking "Fire now" POSTs to /settings/routines/:agentId/fire (no payload)', async () => {
-    mockJson(200, { status: 'ok' });
-    const onFired = vi.fn();
-    render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const call = fetchMock.mock.calls[0]!;
-    expect(call[0]).toBe('/settings/routines/agt_a/fire');
-    const body = JSON.parse(call[1]!.body as string) as Record<string, unknown>;
-    expect(body.path).toBe('heartbeat.md');
-    expect('payload' in body).toBe(false);
-    await waitFor(() => expect(onFired).toHaveBeenCalledTimes(1));
-  });
-
-  it('surfaces server error message inline', async () => {
-    mockJson(403, { error: { message: 'forbidden' } });
-    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    await waitFor(() => expect(screen.getByText('forbidden')).toBeTruthy());
-  });
-});
-
-describe('FireNowControl — webhook', () => {
-  it('clicking "Fire now" reveals an inline JSON form (does NOT fire yet)', () => {
-    render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
-    const trigger = screen.getByRole('button', { name: /Fire now/i });
-    expect(screen.queryByRole('textbox')).toBeNull();
-    fireEvent.click(trigger);
-    expect(screen.getByRole('textbox')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Submit/i })).toBeTruthy();
-    // No fetch happens yet — only the form opens.
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('Submit posts the parsed JSON as `payload`', async () => {
-    mockJson(200, { status: 'ok' });
-    const onFired = vi.fn();
-    render(<FireNowControl routine={webhookRoutine} onFired={onFired} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: '{"x":1}' } });
-    fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(
-      fetchMock.mock.calls[0]![1]!.body as string,
-    ) as { payload?: unknown; path: string };
-    expect(body.path).toBe('on-ping.md');
-    expect(body.payload).toEqual({ x: 1 });
-    await waitFor(() => expect(onFired).toHaveBeenCalledTimes(1));
-  });
-
-  it('invalid JSON surfaces an inline error and does NOT POST', () => {
-    render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: 'not json' } });
-    fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
-    expect(screen.getByText(/Invalid JSON/i)).toBeTruthy();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * The rendered confirmation line (TASK-313).
- *
- * This used to interpolate `out.fireId` — a postgres BIGSERIAL row id — into
- * user-facing text ("Fired (#7, ok)"). The id no longer crosses the hook bus,
- * so the line is status-driven. Both branches are pinned here because the
- * confirmation string was previously uncovered, which is how a storage row id
- * sat on screen unnoticed.
- */
-describe('FireNowControl — confirmation line', () => {
-  it('a successful fire confirms in plain language, with no row id', async () => {
-    mockJson(200, { status: 'ok' });
-    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    const line = await screen.findByText('Started — the agent is running it now.');
-    // Muted, not destructive: this is the success register.
-    expect(line.className).toContain('text-muted-foreground');
-    expect(line.className).not.toContain('text-destructive');
-    // No BIGSERIAL, and no raw status token, anywhere in the line.
-    expect(line.textContent).not.toMatch(/#\d/);
-    expect(line.textContent).not.toMatch(/\bok\b/);
-  });
-
-  it('a 200 that reports status "error" reads as a failure, in the destructive register', async () => {
-    // The two `status: 'error'` early returns in fire.ts (agents:resolve and
-    // the conversation create/find) both answer 200. Before TASK-313 this
-    // rendered muted grey as "Fired (#7, error)" — a failure dressed as a
-    // success.
-    mockJson(200, { status: 'error' });
-    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    const line = await screen.findByText("We couldn't start this run. Please try again.");
-    expect(line.className).toContain('text-destructive');
-    expect(line.textContent).not.toMatch(/#\d/);
-    // Never claims the routine started, and never says "silenced" — that
-    // status is written later by the chat:turn-end subscriber and cannot
-    // reach this response.
-    expect(line.textContent).not.toMatch(/Started/i);
-    expect(line.textContent).not.toMatch(/silenced/i);
-  });
-
-  it('the failure line stays put — unlike the success line, it does not auto-dismiss', async () => {
-    // The success line clears itself after 2.5s so the row doesn't stay noisy.
-    // A failure must not: it is the only thing telling the reader the run did
-    // not happen, and it would vanish while they were still reading it.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      mockJson(200, { status: 'error' });
-      render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
-      fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-      await screen.findByText("We couldn't start this run. Please try again.");
-      await act(async () => {
-        vi.advanceTimersByTime(10_000);
-      });
+import { routineFixture } from '../components/routines/__tests__/routine-fixture';
+import { routineApi, RoutineApiError } from '@/lib/routines';
+vi.mock('@/lib/routines', async (original) => ({
+  ...(await original<typeof import('@/lib/routines')>()),
+  routineApi: { fireNow: vi.fn() },
+}));
+beforeEach(() => vi.resetAllMocks());
+describe('Fire now', () => {
+  it.each(['interval', 'webhook'] as const)(
+    'accepts %s with ID, revision and request ID; does not invent turn success',
+    async (kind) => {
+      vi.mocked(routineApi.fireNow).mockResolvedValue({ status: 'ok' });
+      const routine = {
+        ...routineFixture,
+        trigger:
+          kind === 'webhook'
+            ? { kind, path: '/updates' }
+            : { kind, every: '1h' },
+      };
+      const fired = vi.fn();
+      render(<FireNowControl routine={routine} onFired={fired} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Fire now' }));
       expect(
-        screen.queryByText("We couldn't start this run. Please try again."),
-      ).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+        await screen.findByText(
+          'Run accepted. Check recent runs for the outcome.',
+        ),
+      ).toBeVisible();
+      expect(routineApi.fireNow).toHaveBeenCalledWith({
+        agentId: routine.agentId,
+        routineId: routine.routineId,
+        expectedRevision: routine.revision,
+        requestId: expect.any(String),
+      });
+      expect(fired).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('retains exact request after transport error, and blocks overlapping requests', async () => {
+    vi.mocked(routineApi.fireNow)
+      .mockRejectedValueOnce(new RoutineApiError(0))
+      .mockResolvedValue({ status: 'ok' });
+    const { rerender } = render(
+      <FireNowControl routine={routineFixture} onFired={vi.fn()} />,
+    );
+    const button = screen.getByRole('button', { name: 'Fire now' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await screen.findByText('Routine management is temporarily unavailable.');
+    expect(routineApi.fireNow).toHaveBeenCalledTimes(1);
+    rerender(
+      <FireNowControl
+        routine={{ ...routineFixture, revision: 'new-revision' }}
+        onFired={vi.fn()}
+      />,
+    );
+    fireEvent.click(button);
+    await waitFor(() => expect(routineApi.fireNow).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(routineApi.fireNow).mock.calls[0]).toEqual(
+      vi.mocked(routineApi.fireNow).mock.calls[1],
+    );
   });
-
-  it('a failed webhook fire leaves the JSON form open, payload intact, to retry with', async () => {
-    // Success closes the form. Failure must not — closing it would throw away
-    // the payload the reader just typed, on the one outcome where they need
-    // to send it again.
-    mockJson(200, { status: 'error' });
-    render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"x":1}' } });
-    fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
-    await screen.findByText("We couldn't start this run. Please try again.");
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    expect(textarea.value).toBe('{"x":1}');
-  });
-
-  it('an errored fire still refreshes the parent so the new fire row shows up', async () => {
-    mockJson(200, { status: 'error' });
-    const onFired = vi.fn();
-    render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
-    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
-    // The fire row IS recorded on the error paths, so the row list and the
-    // routine's last_status are both stale until the parent refetches.
-    await waitFor(() => expect(onFired).toHaveBeenCalledTimes(1));
+  it('disables unavailable or disabled runs', () => {
+    render(
+      <FireNowControl
+        routine={{ ...routineFixture, enabled: false }}
+        onFired={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Fire now' })).toBeDisabled();
   });
 });

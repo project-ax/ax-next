@@ -499,3 +499,29 @@ describe('registerWorkspaceApplyFacade', () => {
 const _typecheck: (bus: HookBus, plugin: string) => void =
   registerWorkspaceApplyFacade;
 void _typecheck;
+
+
+describe('retired routine paths at public apply', () => {
+  it.each(['.ax/routines/a.md', '.ax\\routines\\a.md', './.ax/routines/a.md', '.ax/./routines/a.md', '.ax/routines/../a.md', '.ax//routines/a.md'])('refuses %s before subscribers or persistence', async (path) => {
+    const bus = new HookBus();
+    const internal = vi.fn(async () => makeOutput('v1'));
+    const permissive = vi.fn(async () => undefined);
+    const throwing = vi.fn(async () => { throw new Error('bad subscriber'); });
+    bus.subscribe('workspace:pre-apply', 'earlier-permissive', permissive);
+    bus.subscribe('workspace:pre-apply', 'throwing', throwing);
+    bus.registerService('workspace:apply-internal', FACADE_PLUGIN, internal);
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+    await expect(bus.call('workspace:apply', silentCtx(), { changes: [{ path, kind: 'put', content: enc.encode('routine') }], parent: null })).rejects.toMatchObject({ code: path === '.ax/routines/a.md' ? 'rejected' : 'invalid-path' });
+    expect(permissive).not.toHaveBeenCalled();
+    expect(throwing).not.toHaveBeenCalled();
+    expect(internal).not.toHaveBeenCalled();
+  });
+  it('allows retired deletes and similarly named live paths', async () => {
+    const bus = new HookBus();
+    const internal = vi.fn(async () => makeOutput('v1'));
+    bus.registerService('workspace:apply-internal', FACADE_PLUGIN, internal);
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+    await bus.call('workspace:apply', silentCtx(), { changes: [{ path: '.ax/routines/a.md', kind: 'delete' }, { path: '.ax/routines-extra/a.md', kind: 'put', content: enc.encode('other') }], parent: null });
+    expect(internal).toHaveBeenCalledTimes(1);
+  });
+});

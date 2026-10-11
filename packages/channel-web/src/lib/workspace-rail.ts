@@ -138,6 +138,12 @@ export function useAgentRail(
     load();
   }, [agentId, rosterWord, detailWord, busy, load]);
 
+  useEffect(() => {
+    const changed = (event: Event) => { if ((event as CustomEvent<{ agentId: string }>).detail?.agentId === agentId) load(); };
+    window.addEventListener('ax:routine-permissions-changed', changed);
+    return () => window.removeEventListener('ax:routine-permissions-changed', changed);
+  }, [agentId, load]);
+
   const revoke = useCallback(
     async (ref: GrantRef): Promise<'revoked' | 'already-gone' | 'failed'> => {
       if (agentId === null) return 'failed';

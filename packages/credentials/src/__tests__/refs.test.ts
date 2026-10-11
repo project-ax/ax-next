@@ -15,8 +15,8 @@ describe('refForDestination', () => {
   });
   it('computes routine-hmac ref', () => {
     expect(refForDestination({
-      kind: 'routine-hmac', agentId: 'agt-1', routinePath: '.ax/routines/cron.md',
-    })).toBe('routine:agt-1:.ax/routines/cron.md:hmac');
+      kind: 'routine-hmac', agentId: 'agt-1', routineId: 'rtn_opaque',
+    })).toBe('routine:agt-1:rtn_opaque:hmac');
   });
 
   it('canonical refs match KNOWN_DESTINATION_FIXTURES (drift guard)', () => {
@@ -30,8 +30,8 @@ describe('refForDestination', () => {
       { kind: 'provider', provider: 'an:thropic' as 'anthropic' },
       { kind: 'skill-slot', skillId: 'a:b', slot: 'SLOT' },
       { kind: 'skill-slot', skillId: 'ok', slot: 'A:B' },
-      { kind: 'routine-hmac', agentId: 'a:b', routinePath: '.ax/r.md' },
-      { kind: 'routine-hmac', agentId: 'ok', routinePath: 'has:colon' },
+      { kind: 'routine-hmac', agentId: 'a:b', routineId: 'rtn_a' },
+      { kind: 'routine-hmac', agentId: 'ok', routineId: 'has:colon' },
     ];
     for (const d of tries) {
       expect(() => refForDestination(d)).toThrow(PluginError);

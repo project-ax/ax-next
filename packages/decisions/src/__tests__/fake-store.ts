@@ -123,13 +123,15 @@ export function createFakeStore(): FakeStore {
      * Postgres.
      */
     async count({ ownerUserId, agentId, since }) {
-      return [...rows.values()]
-        .filter((r) => r.ownerUserId === ownerUserId)
-        .filter((r) => agentId === undefined || r.agentId === agentId)
-        // Parsed, not compared as strings. Two ISO instants that differ only
-        // in offset order correctly as instants and wrongly as text, and the
-        // real query compares instants.
-        .filter((r) => Date.parse(r.createdAt) >= Date.parse(since)).length;
+      return (
+        [...rows.values()]
+          .filter((r) => r.ownerUserId === ownerUserId)
+          .filter((r) => agentId === undefined || r.agentId === agentId)
+          // Parsed, not compared as strings. Two ISO instants that differ only
+          // in offset order correctly as instants and wrongly as text, and the
+          // real query compares instants.
+          .filter((r) => Date.parse(r.createdAt) >= Date.parse(since)).length
+      );
     },
 
     /**
@@ -164,7 +166,17 @@ export function createFakeStore(): FakeStore {
 
     async claimForApproval(
       decisionId,
-      { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId },
+      {
+        nowIso,
+        status,
+        replayDueAt,
+        replayClaimedAt,
+        deliveryDueAt,
+        continuationReqId,
+        approvalScope,
+        consentExpectedRevision,
+        routineReleaseAt,
+      },
     ) {
       const row = open(decisionId);
       if (row === null) return null;
@@ -195,6 +207,17 @@ export function createFakeStore(): FakeStore {
         replayError: null,
         deliveryDueAt: deliveryDueAt ?? null,
         deliveredAt: null,
+        approvalScope: approvalScope ?? 'once',
+        consentExpectedRevision: consentExpectedRevision ?? null,
+        consentDeliveryState: approvalScope === 'agent-routines' ? 'pending' : 'none',
+        consentGranted: null,
+        consentDeliveryClaimedAt: null,
+        routineReleaseAt: routineReleaseAt ?? null,
+        routineAuthorizationId: null,
+        routineExecutionFingerprint: null,
+        routineOutcome: null,
+        routineFailureCode: null,
+        routineFailureField: null,
       };
       rows.set(decisionId, next);
       deliveryReqIds.set(decisionId, continuationReqId ?? null);
@@ -307,6 +330,7 @@ export function createFakeStore(): FakeStore {
       if (row.replayedAt !== null) return null;
       if (row.replayClaimedAt !== null) return null;
       if (row.deliveredAt !== null) return null;
+      if (row.consentDeliveryClaimedAt !== null || row.routineAuthorizationId !== null) return null;
       const next: Decision = {
         ...row,
         status: 'pending',
@@ -315,6 +339,11 @@ export function createFakeStore(): FakeStore {
         replayDueAt: null,
         replayError: null,
         deliveryDueAt: null,
+        approvalScope: 'once',
+        consentExpectedRevision: null,
+        consentDeliveryState: 'none',
+        consentGranted: null,
+        routineReleaseAt: null,
       };
       rows.set(decisionId, next);
       deliveryReqIds.set(decisionId, null);
@@ -338,6 +367,7 @@ export function createFakeStore(): FakeStore {
         if (claimed.length >= limit) break;
         if (
           row.status === 'executed' &&
+          !['pending', 'failed'].includes(row.consentDeliveryState) &&
           row.replayDueAt !== null &&
           row.replayClaimedAt === null &&
           Date.parse(row.replayDueAt) <= Date.parse(nowIso)
@@ -356,6 +386,7 @@ export function createFakeStore(): FakeStore {
         if (claimed.length >= limit) break;
         if (
           row.status === 'executed' &&
+          !['pending', 'failed'].includes(row.consentDeliveryState) &&
           row.deliveryDueAt !== null &&
           row.consumedAt === null &&
           Date.parse(row.deliveryDueAt) <= Date.parse(nowIso)
@@ -383,6 +414,7 @@ export function createFakeStore(): FakeStore {
         if (reclaimed.length >= limit) break;
         if (
           row.status === 'executed' &&
+          row.routineReleaseAt === null &&
           row.replayClaimedAt !== null &&
           Date.parse(row.replayClaimedAt) <= Date.parse(claimedBeforeIso) &&
           row.replayedAt === null &&
@@ -421,6 +453,33 @@ export function createFakeStore(): FakeStore {
       return null;
     },
 
+    async findRoutineApproval(agentId, userId, fingerprint, nowIso) {
+      return (
+        [...rows.values()].find(
+          (r) =>
+            r.agentId === agentId &&
+            r.ownerUserId === userId &&
+            r.callFingerprint === fingerprint &&
+            AUTHORISING_STATUSES.includes(r.status) &&
+            r.expiresAt > nowIso &&
+            r.routineOutcome === null,
+        ) ?? null
+      );
+    },
+    async hasRoutineAuthority() { return false; },
+    async claimRoutineAuthority() {
+      throw new Error('Routine authority requires the real database test fixture');
+    },
+    async settleRoutineAuthority() {
+      throw new Error('Routine authority requires the real database test fixture');
+    },
+    async claimRoutineConsent() {
+      return [];
+    },
+    async finishRoutineConsent() {
+      throw new Error('Routine consent requires the real database test fixture');
+    },
+    async recoverRoutineReplays() {},
     async deleteAllForAgent(agentId) {
       if (typeof agentId !== 'string' || agentId.length === 0) {
         throw new Error('fake store: agentId is required');

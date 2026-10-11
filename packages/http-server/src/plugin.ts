@@ -317,6 +317,7 @@ async function handle(
 ): Promise<void> {
   const startedAt = Date.now();
   const rawMethod = (req.method ?? 'GET').toUpperCase();
+  const rawPath = (req.url ?? '/').split('?')[0]!;
   const url = new URL(req.url ?? '/', 'http://http-server.local');
   const path = url.pathname;
   const headers = lowercaseHeaders(req.headers);
@@ -389,6 +390,7 @@ async function handle(
   const adapterReq: HttpRequest = {
     method,
     path,
+    rawPath,
     query,
     params: matched.params,
     headers,

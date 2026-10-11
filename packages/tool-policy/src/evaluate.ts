@@ -45,6 +45,8 @@ export interface EvaluateOptions {
    * know what is allowed" and "nothing is allowed" produce the same hold.
    */
   allowedHosts?: ReadonlySet<string> | undefined;
+  /** Fresh agent/person consent, established by the host; omitted fails closed. */
+  routineConsentAllowed?: boolean;
 }
 
 function matches(when: PredicateSpec | undefined, input: unknown): boolean {
@@ -178,10 +180,12 @@ export function evaluate(
       // silent allow that reported `ruleId: null` would look to the rail like a
       // tool nothing describes.
       //
-      // Reached ONLY by a rule that opted in with `egress`. Every other rule
-      // answers exactly what it answered before this existed, so the allowlist
-      // can never turn some unrelated `hold` into an `allow` by accident.
-      verdict: egressAllows(rule, call.input, opts.allowedHosts)
+      // Each relaxation requires its own reviewed opt-in. Routine consent
+      // is restricted further to exact create/update tools and a matched hold;
+      // deny and unrelated holds keep their original verdict.
+      verdict: (rule.verdict === 'hold' && rule.routineConsent === 'create-update' &&
+        (call.name === 'routine_create' || call.name === 'routine_update') &&
+        opts.routineConsentAllowed === true) || egressAllows(rule, call.input, opts.allowedHosts)
         ? 'allow'
         : rule.verdict,
       ruleId: rule.id,

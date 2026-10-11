@@ -1,3 +1,4 @@
+import { IpcRequestError } from '@ax/ipc-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { IpcClient, ToolDescriptor } from '@ax/ipc-protocol';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
@@ -448,4 +449,17 @@ describe('buildHostTools', () => {
       expect(order).toEqual(['flush-throw']);
     });
   });
+});
+
+it('rejects actionable routine IPC refusals and reports failure to policy', async () => {
+  const message = 'The routine changed. Read it with routine_get and submit a fresh edit. Field: expectedRevision';
+  const error = new IpcRequestError('HOOK_REJECTED', 409, message);
+  const { client } = mkClient(async () => { throw error; });
+  const policy = fakePolicy();
+  const onToolFailure = vi.fn();
+  const tools = buildHostTools({ policy, client, tools: [{ ...HOST_TOOL_A, name: 'routine_update' }], holdLatch, onHold: () => {}, onToolFailure });
+  await expect(unwrap(tools.routine_update?.execute)({}, OPTS)).rejects.toThrow(message);
+  expect(policy.postToolUse).toHaveBeenCalledWith('routine_update', 'call-1', {}, `IpcRequestError: ${message}`, false);
+  // Thrown errors use the SDK error channel; this callback records returned failures only.
+  expect(onToolFailure).not.toHaveBeenCalled();
 });

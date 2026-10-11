@@ -16,6 +16,7 @@
   "exclude": ["dist", "node_modules"],
   "references": [
     { "path": "../core" },
+    { "path": "../decisions" },
     { "path": "../agent-identity-templates" },
     { "path": "../http-server" },
     { "path": "../agents" },
@@ -28,9 +29,10 @@
     { "path": "../skills" },
     { "path": "../skills-parser" },
     { "path": "../routines" },
+    { "path": "../routines-admin-routes" },
+    { "path": "../routines-contract" },
     { "path": "../sandbox-mount-protocol" },
     { "path": "../teams" },
-    { "path": "../tool-policy" },
-    { "path": "../validator-routine" }
+    { "path": "../tool-policy" }
   ]
 }

@@ -1,3 +1,7 @@
+import { ROUTINE_EXECUTION_CONTEXT, routineExecutionBindingSchema } from './routine-authorization.js';
+import { z } from 'zod';
+import { callFingerprint } from './fingerprint.js';
+import { routineToolKind } from '@ax/routines-contract';
 /**
  * The host replay: doing the thing a human just approved.
  *
@@ -25,7 +29,13 @@
  * boot, so the worst a hostile name can do is miss. It cannot traverse, glob or
  * escalate, and a miss parks the decision instead of running anything.
  */
-import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import {
+  SafeToolError,
+  safeToolMessage,
+  makeAgentContext,
+  type AgentContext,
+  type HookBus,
+} from '@ax/core';
 import type { DecisionStore } from './store.js';
 import { sanitizeFailureDetail } from './templates.js';
 import { PLUGIN_NAME } from './pre-call.js';
@@ -40,6 +50,21 @@ export interface ReplayOutcome {
   error: string | null;
   /** Present only when the host cannot replay this tool at all. */
   status?: 'approved-pending-agent';
+  pending?: boolean;
+  failureCode?: import('@ax/core').SafeToolCode;
+}
+
+const pendingEffectSchema = z.object({ authorizationId: z.string().min(1), requestId: z.string().min(1),
+  fingerprint: z.string().min(1), agentId: z.string().min(1), userId: z.string().min(1) }).strict();
+function pendingEffect(ctx: AgentContext, decision: Decision): boolean {
+  const checked = routineExecutionBindingSchema.safeParse(ctx.state.get(ROUTINE_EXECUTION_CONTEXT));
+  if (!checked.success) return false;
+  const binding = checked.data;
+  const parsed = pendingEffectSchema.safeParse(ctx.state.get(`routines:pending-effect:${binding.authorizationId}`));
+  return parsed.success && parsed.data.authorizationId === binding.authorizationId && parsed.data.requestId === binding.requestId &&
+    parsed.data.fingerprint === binding.fingerprint && parsed.data.agentId === ctx.agentId &&
+    parsed.data.userId === ctx.userId && parsed.data.agentId === decision.agentId && parsed.data.userId === decision.ownerUserId &&
+    parsed.data.requestId === (decision.call.input as { requestId?: unknown })?.requestId && parsed.data.fingerprint === callFingerprint(decision.call);
 }
 
 /**
@@ -111,7 +136,18 @@ export async function replayOnApprove(args: {
     // The recorded call, verbatim — the same `{id, name, input}` object the
     // human read on the card. Nothing is re-derived, re-serialised or
     // "normalised" on the way in; that is what makes the card WYSIWYG.
-    await bus.call<Decision['call'], unknown>(hookName, ctx, decision.call);
+    const routine = routineToolKind(decision.call.name) !== null;
+    const result = routine
+      ? await bus.callJoined<Decision['call'], unknown>(hookName, ctx, decision.call)
+      : await bus.call<Decision['call'], unknown>(hookName, ctx, decision.call);
+    if (
+      routine &&
+      typeof result === 'object' &&
+      result !== null &&
+      (Object.hasOwn(result, 'error') || ('status' in result && result.status === 'error'))
+    ) {
+      throw new SafeToolError('unavailable', 'input');
+    }
     ctx.logger.info('decision_replayed', {
       plugin: PLUGIN_NAME,
       decisionId: decision.id,
@@ -119,6 +155,14 @@ export async function replayOnApprove(args: {
     });
     return { executed: true, path: 'host-replays', error: null };
   } catch (err) {
+    if (routineToolKind(decision.call.name) === 'write' && pendingEffect(ctx, decision))
+      return { executed: false, path: null, error: safeToolMessage('unavailable', 'input'), pending: true };
+    const routineFailure =
+      routineToolKind(decision.call.name) !== null
+        ? err instanceof SafeToolError
+          ? new SafeToolError(err.toolCode, err.field)
+          : new SafeToolError('unavailable', 'input')
+        : null;
     // H1: an action that did not happen must never leave a trace saying it
     // did. We record the failure and return it; the caller writes the AUTHORED
     // failure line as the receipt and never `approvedText`.
@@ -126,16 +170,31 @@ export async function replayOnApprove(args: {
       plugin: PLUGIN_NAME,
       decisionId: decision.id,
       tool: decision.call.name,
-      err: err instanceof Error ? err : new Error(String(err)),
+      err:
+        routineToolKind(decision.call.name) !== null
+          ? new Error(
+              err instanceof SafeToolError
+                ? safeToolMessage(err.toolCode, err.field)
+                : safeToolMessage('unavailable', 'input'),
+            )
+          : err instanceof Error
+            ? err
+            : new Error(String(err)),
     });
     return {
       executed: false,
       path: null,
+      ...(routineFailure !== null ? { failureCode: routineFailure.toolCode } : {}),
       // `HookBus.call` already wraps whatever a host executor throws in a
       // `PluginError`, so in practice this is always the Error branch. The
       // `String(err)` fallback covers anything thrown around the call rather
       // than by it, and is the reason this function is total.
-      error: sanitizeFailureDetail(err instanceof Error ? err.message : String(err)),
+      error:
+        routineToolKind(decision.call.name) !== null
+          ? err instanceof SafeToolError
+            ? safeToolMessage(err.toolCode, err.field)
+            : safeToolMessage('unavailable', 'input')
+          : sanitizeFailureDetail(err instanceof Error ? err.message : String(err)),
     };
   }
 }
@@ -172,7 +231,45 @@ export async function settleReplay(args: {
 }): Promise<ReplayOutcome> {
   const { store, bus, ctx, decision } = args;
   const now = args.now ?? (() => new Date());
-  const outcome = await replayOnApprove({ bus, ctx, decision });
+  const routine = routineToolKind(decision.call.name) === 'write';
+  let authority: { authorizationId: string; requestId: string } | null = null;
+  if (routine) {
+    try {
+      authority = await bus.call('decisions:authorize-routine-call', ctx, { call: decision.call });
+    } catch (err) {
+      const error =
+        err instanceof SafeToolError
+          ? safeToolMessage(err.toolCode, err.field)
+          : safeToolMessage('unavailable', 'input');
+      await store.markFailed(decision.id, {
+        error,
+        failureCode:
+          err instanceof SafeToolError
+            ? new SafeToolError(err.toolCode, err.field).toolCode
+            : 'unavailable',
+      });
+      return { executed: false, path: null, error };
+    }
+  }
+  let outcome = await replayOnApprove({ bus, ctx, decision });
+  // Keep the durable claim in flight: neither a failure receipt nor a success
+  // receipt is justified until the joined executor can recover its effect.
+  // The existing stranded-routine sweep retries only this recorded request.
+  if (outcome.pending) return outcome;
+  if (routine) {
+    // A joined executor may settle the durable effect before its response is lost.
+    const stored = await store.get(decision.id, decision.ownerUserId);
+    if (stored?.routineOutcome === 'succeeded')
+      outcome = { executed: true, path: 'host-replays', error: null };
+  }
+  if (authority !== null) {
+    await bus.call('decisions:settle-routine-call', ctx, {
+      authorizationId: authority.authorizationId,
+      outcome: outcome.executed ? 'succeeded' : 'failed',
+      ...(outcome.executed ? {} : { failureCode: outcome.failureCode ?? 'unavailable' }),
+    });
+    ctx.state.delete(ROUTINE_EXECUTION_CONTEXT);
+  }
 
   if (outcome.executed) {
     // `replayed_at` is what takes the row out of the standing-authorisation
@@ -218,6 +315,7 @@ export async function settleReplay(args: {
     return outcome;
   }
 
+  if (routine && authority !== null) return outcome;
   warnIfLost(
     ctx,
     decision,

@@ -1,4 +1,7 @@
 export * from './errors.js';
+export * from './safe-tool-error.js';
+export { assertNoRetiredRoutinePuts } from './retired-routine-path.js';
+export { validateWorkspacePath } from './workspace-path.js';
 export { clampCodeUnits } from './clamp.js';
 export * from './model-ref.js';
 export * from './providers.js';

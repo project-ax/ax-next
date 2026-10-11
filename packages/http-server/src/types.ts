@@ -15,6 +15,10 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export interface HttpRequest {
   readonly method: HttpMethod;
   readonly path: string;
+  /** Original request-target path, before URL normalization or percent decoding.
+   * Query text is excluded. Derived from the socket request, never forwarding headers.
+   */
+  readonly rawPath: string;
   /**
    * Parsed query parameters, lowercased keys, repeated keys collapsed to
    * the LAST value. Empty object when the URL has no `?...`. Provided so

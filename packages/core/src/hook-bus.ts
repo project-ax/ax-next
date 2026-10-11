@@ -1,8 +1,12 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ZodType } from 'zod';
 import { createLogger, type AgentContext } from './context.js';
 import { isRejection, PluginError, type Rejection } from './errors.js';
 import type { FireResult } from './types.js';
 import { withTimeout } from './util/with-timeout.js';
+
+// Invocation lifetime only. No permission or durable domain state lives here.
+const joinedEffects = new AsyncLocalStorage<Set<Promise<unknown>>>();
 
 export type ServiceHandler<I = unknown, O = unknown> = (
   ctx: AgentContext,
@@ -125,6 +129,7 @@ interface RegisteredService {
 interface RegisteredSubscriber {
   plugin: string;
   handler: SubscriberHandler;
+  priority: number;
 }
 
 /** Per-call options for `HookBus.fire`. */
@@ -346,6 +351,31 @@ export class HookBus {
     return [...this.services.keys()];
   }
 
+  /** Keep host lifecycle locks until every nested service handler settles.
+   * Deadlines still fail the call; they do not cancel an effect. A stuck provider
+   * therefore retains the caller's lock (and existing stall diagnostics).
+   */
+  async callJoined<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
+    // Each explicit joined boundary owns its wait, even inside another one:
+    // the inner caller may be holding a different lifecycle lock.
+    const parent = joinedEffects.getStore();
+    const pending = new Set<Promise<unknown>>();
+    const joined = joinedEffects.run(pending, async () => {
+      try { return await this.call<I, O>(hookName, ctx, input); }
+      finally {
+        // A live handler can start another nested call while we await it.
+        while (pending.size) await Promise.allSettled([...pending]);
+      }
+    });
+    // A detached child can outlive its invoking handler. Enroll the complete
+    // child boundary in its parent, never in its own set (which would deadlock).
+    if (parent) {
+      parent.add(joined);
+      void joined.then(() => parent.delete(joined), () => parent.delete(joined));
+    }
+    return joined;
+  }
+
   async call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
     const registered = this.services.get(hookName);
     if (registered === undefined) {
@@ -367,8 +397,14 @@ export class HookBus {
       registered.stallWarnMs ?? this.stallWarnMs,
     );
     try {
+      const handler = registered.handler(ctx, input);
+      const pending = joinedEffects.getStore();
+      if (pending) {
+        pending.add(handler);
+        void handler.then(() => pending.delete(handler), () => pending.delete(handler));
+      }
       const result = await withTimeout(
-        registered.handler(ctx, input),
+        handler,
         timeoutMs,
         () =>
           new PluginError({
@@ -411,9 +447,14 @@ export class HookBus {
     }
   }
 
-  subscribe<P>(hookName: string, plugin: string, handler: SubscriberHandler<P>): void {
-    const list = this.subscribers.get(hookName) ?? [];
-    list.push({ plugin, handler: handler as SubscriberHandler });
+  subscribe<P>(hookName: string, plugin: string, handler: SubscriberHandler<P>,
+    options: { priority?: number } = {}): void {
+    const priority = options.priority ?? 0;
+    if (!Number.isSafeInteger(priority)) throw new Error('subscriber priority must be a safe integer');
+    // An active fire owns its captured list; registration takes effect on the next fire.
+    const list = [...(this.subscribers.get(hookName) ?? [])];
+    list.push({ plugin, handler: handler as SubscriberHandler, priority });
+    list.sort((left, right) => left.priority - right.priority);
     this.subscribers.set(hookName, list);
   }
 
@@ -554,7 +595,7 @@ export class HookBus {
   }
 
   /**
-   * Run every subscriber on `hookName`, in registration order.
+   * Run every subscriber on `hookName`, in priority order (registration order within ties).
    *
    * `opts.subscriberTimeoutMs` (TASK-514) bounds EACH subscriber. It is
    * opt-in, and the caller — the owner of the hook's latency contract — picks
@@ -603,7 +644,7 @@ export class HookBus {
         // fail the thing it is observing — which makes subscribers the one
         // place on the bus where a hang can burn a caller's budget in silence.
         // The stall watch names such a hang while it is happening. Subscribers
-        // keep the bus-wide stall threshold: `subscribe` has no options bag to
+        // keep the bus-wide stall threshold: `subscribe` has no stall-threshold option to
         // carry an override, and 15s is right for them.
         const settleStallWatch = this.watchStall(
           ctx,

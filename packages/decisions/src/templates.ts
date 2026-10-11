@@ -160,6 +160,31 @@ export interface DecisionText {
  * string surgery, and a test asserts it.
  */
 export function decisionText(input: DecisionTextInput): DecisionText {
+  const routineAction = (
+    {
+      routine_create: 'create a routine',
+      routine_update: 'edit a routine',
+      routine_delete: 'delete a routine',
+      routine_fire_now: 'run a routine now',
+    } as Record<string, string>
+  )[input.toolName];
+  if (
+    ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(
+      input.toolName,
+    )
+  )
+    return {
+      summary: `Wants to ${routineAction}`,
+      detail: 'Review the proposed routine change before allowing it.',
+      primaryLabel: 'Allow once',
+      secondaryLabel: 'Show me the details',
+      ghostLabel: 'Decline',
+      approvedText:
+        input.toolName === 'routine_fire_now'
+          ? 'The routine run was accepted.'
+          : 'The approved routine operation completed.',
+      dismissedText: 'You declined this routine operation. Nothing ran.',
+    };
   const capability = sanitizeCapability(input.capability);
   const { tool, verb } = rowToolName(input);
   const verbing = verb === 'use' ? 'using' : 'running';
@@ -167,8 +192,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
   // The subject is always "it" — the agent. Naming the agent would mean
   // reading a display name from another plugin at hold time, and the row has
   // to be writable inside a 10-second ceiling.
-  const summary =
-    capability !== null ? `Wants to ${capability}` : `Wants to ${verb} ${tool}`;
+  const summary = capability !== null ? `Wants to ${capability}` : `Wants to ${verb} ${tool}`;
 
   // WHEN WE HAVE THE CLAUSE, THE CLAUSE IS THE WHOLE ANSWER — the tool's
   // internal name never appears (TASK-429). `connector_propose` and
@@ -249,8 +273,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
  * of that line here would let "you said yes" bleed into a receipt whose whole
  * job is to say the opposite — it tried, and it did not work.
  */
-export const FAILED_RECEIPT =
-  'It tried to do this, and it did not work. Nothing was completed.';
+export const FAILED_RECEIPT = 'It tried to do this, and it did not work. Nothing was completed.';
 
 /**
  * The receipt when NOBODY ANSWERED IN TIME (TASK-447).
@@ -317,8 +340,7 @@ export const CLAIM_REFUSED_DETAIL =
  * says exactly that and nothing more — never "Sent", because nothing has
  * gone anywhere yet.
  */
-export const PENDING_AGENT_RECEIPT =
-  'Approved — it will do this the next time it runs.';
+export const PENDING_AGENT_RECEIPT = 'Approved — it will do this the next time it runs.';
 
 /**
  * The two sentences the MODEL reads when a person has ANSWERED a call it held
@@ -384,10 +406,7 @@ export function decisionDismissedNote(): string {
  * retry. No workspace surface renders tool-result text today; one that starts
  * to must re-name connector tools itself rather than show this sentence.
  */
-export function holdNote(input: {
-  capability: string | null;
-  toolName: string;
-}): string {
+export function holdNote(input: { capability: string | null; toolName: string }): string {
   const capability = sanitizeCapability(input.capability);
   const tool = sanitizeToolName(input.toolName) ?? UNNAMEABLE_TOOL;
   const what =
@@ -409,10 +428,7 @@ export function holdNote(input: {
  * Unlike a hold, this one IS final, and says so. It still names the reason,
  * because a denial with no reason is the one most likely to be worked around.
  */
-export function denialSentence(input: {
-  capability: string | null;
-  toolName: string;
-}): string {
+export function denialSentence(input: { capability: string | null; toolName: string }): string {
   const capability = sanitizeCapability(input.capability);
   const tool = sanitizeToolName(input.toolName) ?? UNNAMEABLE_TOOL;
   return capability !== null

@@ -514,3 +514,14 @@ describe('buildSystemPrompt — memoryRoot forwarding', () => {
     expect(out).not.toContain(memoryExportNote('/memory'));
   });
 });
+
+ describe('routine guidance', () => {
+  it('adds fixed guidance only in normal mode when the catalog includes routine tools', async () => {
+    const normal = await buildSystemPrompt('Ada', '', dir, undefined, false, undefined, dir, undefined, '', true);
+    expect(normal).toContain('Use the routine tools to schedule unattended work');
+    expect(normal).toContain('Report success only after the tool confirms it. Do not create routine files.');
+    expect(await buildSystemPrompt('Ada', '', dir, undefined)).not.toContain('Use the routine tools');
+    await writeAx('BOOTSTRAP.md', 'bootstrap only');
+    expect(await buildSystemPrompt('Ada', '', dir, undefined, false, undefined, dir, undefined, '', true)).not.toContain('Use the routine tools');
+  });
+});

@@ -52,6 +52,7 @@ async function bootRoute(): Promise<{
   const stub = (name: string, fn: (input: unknown) => unknown) =>
     bus.registerService(name, 'test', async (_ctx, input: unknown) => fn(input));
 
+  stub('routines:set-webhook-secret', () => ({}));
   stub('auth:require-user', () => ({ user: { id: 'admin', isAdmin: true } }));
   stub('http:register-route', (input) => {
     const r = input as { method: string; path: string; handler: Handler };

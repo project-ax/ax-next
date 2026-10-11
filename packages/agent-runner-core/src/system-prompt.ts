@@ -439,3 +439,10 @@ export function operationalNotes(
   notes.push(clarifyingQuestionsNote());
   return notes.join('\n\n');
 }
+
+export function routineNote(): string {
+  return 'Use the routine tools to schedule unattended work with interval, cron, or webhook triggers. ' +
+    'Use routine_list/routine_get to read current definitions and routine_get before editing. ' +
+    'Creates and edits require approval unless the person enabled Always Allow for this agent. ' +
+    'Report success only after the tool confirms it. Do not create routine files.';
+}

@@ -1128,3 +1128,45 @@ describe('HookBus — subscriber abort signal (TASK-552)', () => {
     ]);
   });
 });
+
+
+describe('subscriber priorities', () => {
+  it.each([undefined, 1000])('keeps an active fire stable when registering earlier priority (timeout %s)', async (subscriberTimeoutMs) => {
+    const bus = new HookBus();
+    const seen: string[] = [];
+    let registered = false;
+    bus.subscribe('ordered', 'first', async () => {
+      seen.push('first');
+      if (!registered) {
+        registered = true;
+        bus.subscribe('ordered', 'new-earlier', async () => {
+          seen.push('new-earlier');
+        }, { priority: -10 });
+      }
+    });
+    bus.subscribe('ordered', 'last', async () => {
+      seen.push('last');
+    });
+    const options = subscriberTimeoutMs === undefined ? {} : { subscriberTimeoutMs };
+
+    await bus.fire('ordered', silentCtx(), {}, options);
+    expect(seen).toEqual(['first', 'last']);
+
+    seen.length = 0;
+    await bus.fire('ordered', silentCtx(), {}, options);
+    expect(seen).toEqual(['new-earlier', 'first', 'last']);
+  });
+  it('orders by priority and preserves registration order within ties', async () => {
+    const bus = new HookBus();
+    const seen: string[] = [];
+    for (const [name, priority] of [['default-a', undefined], ['hold', 10], ['preflight-a', -10], ['default-b', undefined], ['preflight-b', -10]] as const) {
+      bus.subscribe('ordered', name, async () => { seen.push(name); }, priority === undefined ? {} : { priority });
+    }
+    await bus.fire('ordered', silentCtx(), {});
+    expect(seen).toEqual(['preflight-a', 'preflight-b', 'default-a', 'default-b', 'hold']);
+  });
+  it.each([NaN, Infinity, -Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1])('rejects unsafe priority %s before registration', (priority) => {
+    const bus = new HookBus();
+    expect(() => bus.subscribe('event', 'bad', async () => {}, { priority })).toThrow('subscriber priority must be a safe integer');
+  });
+});

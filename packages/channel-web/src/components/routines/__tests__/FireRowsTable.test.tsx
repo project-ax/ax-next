@@ -27,11 +27,11 @@ import { FireRowsTable } from '../FireRowsTable';
 import type { Fire } from '@/lib/routines';
 
 /** Same instant for both fires — the collision case. */
-const SHARED_FIRED_AT = new Date('2026-05-17T01:00:00.000Z');
+const SHARED_FIRED_AT = '2026-05-17T01:00:00.000Z';
 
 const firstFire: Fire = {
   agentId: 'agt_a',
-  path: 'heartbeat.md',
+  routineId: 'r1',
   firedAt: SHARED_FIRED_AT,
   triggerSource: 'tick',
   status: 'ok',

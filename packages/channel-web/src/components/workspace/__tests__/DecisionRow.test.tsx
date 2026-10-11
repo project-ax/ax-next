@@ -42,6 +42,13 @@ function renderRow(
 }
 
 describe('DecisionRow — pending', () => {
+  it('offers standing routine permission only from server scopes and forwards that scope', () => {
+    const onApprove = vi.fn();
+    renderRow(decisionFixture({approvalScopes:['once','agent-routines']}), true, {onApprove});
+    screen.getByRole('button', {name:'Always Allow'}).click();
+    expect(onApprove).toHaveBeenCalledWith('agent-routines');
+    expect(screen.getByText(/Scheduler.*create and edit routines/)).toBeVisible();
+  });
   it('shows what the decision was checked against', () => {
     renderRow(decisionFixture());
     expect(

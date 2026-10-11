@@ -1,0 +1,40 @@
+{
+  "freshSchema": {
+    "agentId": "agt_wF3wOqIAxM9RDbGnE1L0_A",
+    "createAttempts": 1,
+    "validationFailures": 0,
+    "definitionKeys": [
+      "name",
+      "description",
+      "promptBody",
+      "enabled",
+      "trigger"
+    ],
+    "triggerKeys": [
+      "kind",
+      "every"
+    ],
+    "requestedBy": "natural chat, fresh agent; no definition/default read"
+  },
+  "enabledDelete": {
+    "checkedAt": "2026-10-10T14:44:37.688132+00:00",
+    "definitions": 0,
+    "dispatches": 0,
+    "lastAccepted": null,
+    "receipts": [
+      {
+        "operation": "create",
+        "createdAt": "2026-10-10T14:42:22.967652+00:00",
+        "routineId": null
+      },
+      {
+        "operation": "delete",
+        "createdAt": "2026-10-10T14:43:23.841175+00:00",
+        "routineId": null
+      }
+    ]
+  },
+  "savedNextRunAt": "2026-10-10T14:43:22.967Z",
+  "checkBeforeAgentPurge": true,
+  "note": "Delete committed 0.874s after saved due; durable dispatch records are retained by routine deletion and absent before agent purge."
+}

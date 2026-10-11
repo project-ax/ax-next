@@ -1,0 +1,25 @@
+{
+  "fixtureIdentityAbsent": true,
+  "envPreserved": true,
+  "configPreserved": true,
+  "authAndProviderPreserved": true,
+  "agentDeletionStatus": 204,
+  "routineReadAfterPurge": 404,
+  "defaultFires": 2,
+  "defaultConversationStable": true,
+  "newRoutineIdFormat": "rtn_<32hex>",
+  "oncePendingThenSucceeded": true,
+  "memberHmacWarningVisible": true,
+  "hmacDraftCancelled": true,
+  "heartbeatToggledAndRestored": true,
+  "skillSelfImprovementToggledAndRestored": true,
+  "secretBytesWritten": 0,
+  "administratorGrants": 0,
+  "signoutAttemptStatus": 403,
+  "signoutAttemptReason": "Missing Origin; exact fixture sessions subsequently removed in guarded cleanup",
+  "visualEvidence": {
+    "defaultControls": "default-controls.png shows actual Fire now, silenced history, heartbeat enabled and skill toggle off before restoration",
+    "onceCreatedRoutine": "once-created-routine.png shows the resulting rtn_ row in real conversation; status-card copy was verified in aria snapshots above the captured viewport",
+    "memberHmacSelection": "member-hmac-selection.png masks receiver token and shows selected HMAC editor; exact warning text was verified in the aria snapshot below the captured viewport"
+  }
+}

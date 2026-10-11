@@ -1,1006 +1,153 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { createHmac } from 'node:crypto';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import {
-  createTestHarness,
-  type TestHarness,
-  stopPostgresContainer,
-  startTestContainer,
-} from '@ax/test-harness';
-import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createRoutinesPlugin } from '../plugin.js';
-import { asWorkspaceVersion, type AgentContext, type WorkspaceDelta } from '@ax/core';
-import { Kysely, PostgresDialect } from 'kysely';
-import pg from 'pg';
-import type { RoutinesDatabase } from '../migrations.js';
-import { systemClock, type Clock } from '../clock.js';
-import type { HttpRequest, HttpResponse, HttpRouteHandler, HttpRegisterRouteInput } from '@ax/http-server';
+import { createHmac, randomUUID } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutinesStore } from '../store.js';
+import { isHold, makeAgentContext } from '@ax/core';
+import { createTestHarness } from '@ax/test-harness';
+import { createHttpServerPlugin } from '@ax/http-server';
+import type { Clock } from '../clock.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 
-pg.types.setTypeParser(20, (v) => Number(v));
-
-let container: StartedPostgreSqlContainer;
-let connectionString: string;
-const harnesses: TestHarness[] = [];
-
-const ENC = new TextEncoder();
-function routineBody(opts: { silenceToken?: string } = {}): Uint8Array {
-  return ENC.encode([
-    '---',
-    'name: hb',
-    'description: heartbeat',
-    'trigger:', '  kind: interval', '  every: "60s"',
-    ...(opts.silenceToken ? [`silenceToken: "${opts.silenceToken}"`] : []),
-    'conversation: per-fire',
-    '---',
-    'check in',
-  ].join('\n') + '\n');
+let h: RoutineHarness;
+afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
+async function create(overrides = {}) {
+  return h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+    agentId: h.agentId, requestId: randomUUID(),
+    definition: RoutineDefinitionSchema.parse({ name: 'Canary', promptBody: 'Check in', trigger: { kind: 'interval', every: '60s' }, silenceToken: 'HEARTBEAT_OK', ...overrides }),
+  });
+}
+async function fire(row: RoutineView) {
+  await h.bus.call('routines:fire-now', h.owner, { agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: randomUUID() });
 }
 
-interface Captured {
-  invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
-  drops: Array<{ conversationId: string; turnId: string }>;
-  hides: Array<{ conversationId: string }>;
-  findOrCreateCalls: Array<{ externalKey: string; fallbackHidden?: boolean }>;
-  createInputs: Array<{ hidden?: boolean }>;
-}
-
-interface TickOpts {
-  /** Personal agents the tick materializes default routines for. */
-  agents: Array<{ agentId: string; ownerUserId: string }>;
-  clock: Clock;
-}
-
-async function makeHarness(
-  captured: Captured,
-  replyOnInvoke: {
-    contentBlocks: unknown[];
-    /**
-     * Slice 6 — when set, the invoke fires `chat:connectors-skipped` with
-     * these connectors before its turn ends (the orchestrator's order).
-     * Read at invoke time, so a test can change it between fires.
-     */
-    skipped?: (ctx: AgentContext) => unknown[] | undefined;
-    /**
-     * Final review — when set and it returns an outcome, the invoke answers
-     * that outcome at once, with no event and no turn end (a refusal at
-     * agent:invoke's front gates, e.g. a chat:start veto).
-     */
-    refuse?: () => unknown;
-  },
-  tick?: TickOpts,
-) {
-  let nextConvId = 1;
-  // Cache by externalKey so the shared-conversation routine sees the same
-  // conversationId across fires (mirrors the real find-or-create handler).
-  const sharedConvIds = new Map<string, string>();
-  const busRef: { current: TestHarness | undefined } = { current: undefined };
-  const h = await createTestHarness({
-    services: {
-      'agents:resolve': async (_ctx, input: unknown) => ({
-        agent: {
-          id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null,
-          displayName: 'Bob',
-        },
-      }),
-      'agents:ensure-webhook-token': async (_ctx, input: unknown) => ({
-        token: `tok-${(input as { agentId: string }).agentId}`,
-      }),
-      'agents:resolve-by-webhook-token': async () => ({ agent: null }),
-      'agents:list-personal-owners': async () => ({ agents: tick?.agents ?? [] }),
-      'credentials:get': async () => 'secret',
-      'http:register-route': async () => ({ unregister: () => {} }),
-      'workspace:apply': async () => ({
-        version: 'v1',
-        delta: { before: null, after: 'v1', changes: [] },
-      }),
-      'conversations:find-or-create': async (_ctx, input: unknown) => {
-        const i = input as { externalKey: string; fallback: { hidden?: boolean } };
-        captured.findOrCreateCalls.push({
-          externalKey: i.externalKey,
-          fallbackHidden: i.fallback.hidden,
-        });
-        const existing = sharedConvIds.get(i.externalKey);
-        if (existing !== undefined) {
-          return { conversation: { conversationId: existing }, created: false };
-        }
-        const fresh = `cnv_${nextConvId++}`;
-        sharedConvIds.set(i.externalKey, fresh);
-        return { conversation: { conversationId: fresh }, created: true };
-      },
-      'conversations:create': async (_ctx, input: unknown) => {
-        captured.createInputs.push(input as { hidden?: boolean });
-        return { conversationId: `cnv_${nextConvId++}` };
-      },
-      'conversations:drop-turn': async (_ctx, input: unknown) => {
-        captured.drops.push(input as { conversationId: string; turnId: string });
-      },
-      'conversations:hide': async (_ctx, input: unknown) => {
-        captured.hides.push(input as { conversationId: string });
-      },
-      'agent:invoke': async (ctx, input: unknown) => {
-        const msg = (input as { message: { content: string } }).message;
-        captured.invokes.push({
-          message: msg,
-          reqId: ctx.reqId ?? '',
-          conversationId: ctx.conversationId,
-        });
-        const refused = replyOnInvoke.refuse?.();
-        if (refused !== undefined) return refused;
-        const skipped = replyOnInvoke.skipped?.(ctx);
-        if (skipped !== undefined) {
-          await busRef.current!.bus.fire('chat:connectors-skipped', ctx, {
-            reqId: ctx.reqId, connectors: skipped,
-          });
-        }
-        // Synchronously fire chat:turn-end so the routines plugin's
-        // one-shot router runs in the same tick.
-        await busRef.current!.bus.fire('chat:turn-end', ctx, {
-          reqId: ctx.reqId,
-          turnId: 'fake-uuid-1',
-          contentBlocks: replyOnInvoke.contentBlocks,
-        });
-        return { kind: 'complete', messages: [] };
-      },
-    },
-    plugins: [
-      createDatabasePostgresPlugin({ connectionString }),
-      tick === undefined
-        ? createRoutinesPlugin({ tickIntervalMs: 60_000 /* loop effectively idle */ })
-        : createRoutinesPlugin({ tickIntervalMs: 20, electionRetryMs: 20 }, tick.clock),
-    ],
+describe('DB routine canary — real ACL, durable dispatch and turn completion', () => {
+  it.each(['per-fire', 'shared'] as const)('creates, fires and silences a %s conversation without workspace writes', async conversation => {
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+      await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, turnId: 'turn', contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
+      return { kind: 'complete' };
+    } });
+    const calls = vi.spyOn(h.bus, 'call');
+    const row = await create({ conversation });
+    expect(row.routineId).not.toContain('/');
+    const store = createRoutinesStore(h.db);
+    await fire(row);
+    await expect.poll(async () => (await store.recentFires(row)).length).toBe(1);
+    expect((await store.recentFires(row))[0]).toMatchObject({ status: 'silenced', conversationId: 'conversation', error: null });
+    expect((await store.findOne(row))?.lastStatus).toBe('silenced');
+    expect(calls.mock.calls.some(([hook]) => hook === 'conversations:drop-turn')).toBe(true);
+    expect(calls.mock.calls.some(([hook]) => hook === 'conversations:hide')).toBe(conversation === 'per-fire');
+    if (conversation === 'shared') expect(calls).toHaveBeenCalledWith('conversations:find-or-create', expect.anything(), expect.objectContaining({ externalKey: row.routineId }));
+    expect(calls.mock.calls.some(([hook]) => hook === 'workspace:apply')).toBe(false);
+    expect(h.invokeCalls).toHaveLength(1);
   });
-  busRef.current = h;
-  harnesses.push(h);
-  return h;
-}
-
-beforeAll(async () => {
-  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
-  connectionString = container.getConnectionUri();
-}, 120_000);
-
-afterEach(async () => {
-  while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
-  const cleanup = new pg.Client({ connectionString });
-  await cleanup.connect();
-  try {
-    await cleanup.query('TRUNCATE routines_v1_definitions, routines_v1_fires');
-  } finally {
-    await cleanup.end();
-  }
-});
-
-afterAll(async () => { if (container) await stopPostgresContainer(container); }, 60_000);
-
-const HEARTBEAT_PATH = 'default:default-heartbeat-2026-05-19';
-
-/**
- * Every fire row for `agentId`, oldest first, once the turn-end write has
- * landed. Waits for at least one row whose status came from the turn (the
- * turn-end subscriber runs in the background of a fire), then reads the whole
- * set — so a second row written by the dispatcher is counted, not missed.
- */
-async function settledFireStatuses(agentId: string): Promise<string[]> {
-  const k = new Kysely<RoutinesDatabase>({
-    dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+  it('keeps ordinary output visible and returns history through the current opaque identity', async () => {
+    h = await createRoutineHarness();
+    const row = await create();
+    await fire(row);
+    await expect.poll(async () => (await createRoutinesStore(h.db).recentFires(row))[0]?.status).toBe('ok');
+    expect(await h.bus.call('routines:recent-fires', h.owner, { agentId: row.agentId, routineId: row.routineId })).toMatchObject({ fires: [expect.objectContaining({ status: 'ok' })] });
+    await expect(h.bus.call('routines:fire-now', h.teamAdmin, { agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: randomUUID() })).rejects.toThrow();
+    expect(h.invokeCalls).toHaveLength(1);
   });
-  try {
-    let statuses: string[] = [];
-    await vi.waitFor(async () => {
-      const fires = await k.selectFrom('routines_v1_fires').selectAll()
-        .where('agent_id', '=', agentId).orderBy('id', 'asc').execute();
-      statuses = fires.map((f) => f.status);
-      expect(statuses.length).toBeGreaterThan(0);
-    }, { timeout: 5_000, interval: 25 });
-    return statuses;
-  } finally {
-    await k.destroy();
-  }
-}
-
-describe('Phase B canary — routine creates → fires → silence path closes window', () => {
-  it('indexes a routine when workspace:applied carries .ax/routines/r.md', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
-    const delta: WorkspaceDelta = {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    };
-    const r = await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), delta);
-    expect(r.rejected).toBe(false);
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    const rows = await k.selectFrom('routines_v1_definitions').selectAll().execute();
-    await k.destroy();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.path).toBe('.ax/routines/r.md');
+  it('persists connector warnings even when the response is silenced, then clears them on the next clean run', async () => {
+    let skipped = true;
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+      if (skipped) await bus.fire('chat:connectors-skipped', ctx, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] });
+      await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, turnId: 'turn', contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
+      return { kind: 'complete' };
+    } });
+    const row = await create(); const store = createRoutinesStore(h.db);
+    await fire(row);
+    await expect.poll(async () => (await store.recentFires(row)).length).toBe(1);
+    expect((await store.findOne(row))?.lastWarning).toContain('Gmail');
+    skipped = false;
+    await fire(row);
+    await expect.poll(async () => (await store.recentFires(row)).length).toBe(2);
+    expect((await store.findOne(row))?.lastWarning).toBeNull();
   });
-
-  it('fire-now: silence-token reply triggers drop-turn + hide; status=silenced', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
-
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    });
-
-    const out = await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-    });
-
-    // routines:fire-now returns as soon as fireRoutine has dispatched
-    // agent:invoke (fire-and-forget, see fire.ts). The chat:turn-end
-    // subscriber chain (drop-turn → hide → recordFire(silenced)) runs
-    // in the background. Poll for the side effect instead of fixing a
-    // microtask count — Phase 2 added another await to that chain
-    // which made a single setImmediate flush insufficient on CI.
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    let silenced: { status: string } | undefined;
-    try {
-      await vi.waitFor(async () => {
-        const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
-        silenced = fires.find((f) => f.status === 'silenced');
-        expect(silenced, 'expected a silenced fire row').toBeDefined();
-      }, { timeout: 5_000, interval: 25 });
-    } finally {
-      await k.destroy();
-    }
-
-    expect(captured.invokes).toHaveLength(1);
-    expect(captured.invokes[0]!.message.content).toBe('check in');
-    // chat:turn-end now carries turnId (Phase 2), so the silence path
-    // drops the turn via conversations:drop-turn before hiding the
-    // conversation.
-    expect(captured.drops).toHaveLength(1);
-    expect(captured.drops[0]!.turnId).toBe('fake-uuid-1');
-    expect(captured.hides).toHaveLength(1);
-
-    void out;
-  });
-
-  it('fire-now: non-silence reply records status=ok and skips drop/hide', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'real reply text' }] });
-
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    });
-
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-    });
-
-    await new Promise((r) => setImmediate(r));
-
-    expect(captured.invokes).toHaveLength(1);
-    expect(captured.drops).toEqual([]);
-    expect(captured.hides).toEqual([]);
-  });
-
-  // TASK-679: a fire used to be recorded TWICE — once by
-  // whoever dispatched it (`routines:fire-now`, the tick) with `ok`, meaning
-  // only "agent:invoke was started", and again by the chat:turn-end
-  // subscriber with the real outcome. A silent fire therefore left an `ok`
-  // row beside its `silenced` one, and the Activity tab rendered the `ok`
-  // twin as "Ran heartbeat" every day. One fire, one row.
-  it('fire-now: a silent fire writes exactly ONE fire row, and it is silenced (TASK-679)', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    });
-
-    // Awaiting the call means the dispatcher's own write (if any) has landed.
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-    });
-
-    const statuses = await settledFireStatuses('agt_a');
-    expect(statuses).toEqual(['silenced']);
-  });
-
-  it('fire-now: a fire with a real reply writes exactly ONE fire row, and it is ok (TASK-679)', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'real reply text' }] });
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    });
-
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-    });
-
-    const statuses = await settledFireStatuses('agt_a');
-    expect(statuses).toEqual(['ok']);
-  });
-
-  // The prod report, end to end: the seeded daily heartbeat, materialized and
-  // fired by the plugin's OWN tick loop (not a hand-called runTickOnce), for an
-  // agent whose reply is the silence token.
-  it.each([
-    { reply: 'HEARTBEAT_OK', want: 'silenced' },
-    { reply: 'Two things need your attention today.', want: 'ok' },
-  ])('tick: the default heartbeat replying "$reply" writes exactly ONE row, $want (TASK-679)', async ({ reply, want }) => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const t0 = new Date('2031-03-01T00:00:00Z');
-    let now = t0;
-    const clock: Clock = { now: () => now, sleep: systemClock.sleep };
-    await makeHarness(
-      captured,
-      { contentBlocks: [{ type: 'text', text: reply }] },
-      { agents: [{ agentId: 'agt_hb', ownerUserId: 'u1' }], clock },
-    );
-
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    try {
-      // Tick 1 materializes the heartbeat (created_at = t0; not yet due).
-      await vi.waitFor(async () => {
-        const rows = await k.selectFrom('routines_v1_definitions').selectAll()
-          .where('agent_id', '=', 'agt_hb').execute();
-        expect(rows.map((r) => r.path)).toContain(HEARTBEAT_PATH);
-      }, { timeout: 10_000, interval: 25 });
-
-      // A day and an hour later it is due; the next tick fires it once. The
-      // clock then stands still, so it is not due again.
-      const t1 = new Date(t0.getTime() + 25 * 3600 * 1000);
-      now = t1;
-
-      // `advance` (last_run_at) is the tick's LAST write for a fire, after any
-      // recordFire of its own — so once it lands, every row that fire will
-      // ever get from the tick is in the table.
-      await vi.waitFor(async () => {
-        const row = await k.selectFrom('routines_v1_definitions').selectAll()
-          .where('agent_id', '=', 'agt_hb').where('path', '=', HEARTBEAT_PATH)
-          .executeTakeFirstOrThrow();
-        expect(row.last_run_at?.getTime()).toBe(t1.getTime());
-      }, { timeout: 10_000, interval: 25 });
-    } finally {
-      await k.destroy();
-    }
-
-    expect(captured.invokes).toHaveLength(1);
-    const statuses = await settledFireStatuses('agt_hb');
-    expect(statuses).toEqual([want]);
-  });
-
-  it('shared routine reuses the same conversation across fires (find-or-create)', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'reply' }] });
-
-    const sharedBody = ENC.encode([
-      '---', 'name: shared', 'description: d',
-      'trigger:', '  kind: interval', '  every: "60s"',
-      'conversation: shared',
-      '---', 'check in',
-    ].join('\n') + '\n');
-
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/s.md', kind: 'added', contentAfter: async () => sharedBody }],
-    });
-
-    const first = await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/s.md',
-    });
-    const second = await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/s.md',
-    });
-    // Both fires succeeded, and the answer is the verdict and nothing else.
-    // The fire row's BIGSERIAL used to ride out on this hook and render to
-    // users as "Fired (#7, ok)"; `conversationId` rode out alongside it with
-    // nothing above the bus able to show it (TASK-313). This is the
-    // end-to-end half of the guarantee — return-schemas.test.ts pins the
-    // schema in isolation. The conversation is still asserted below, from
-    // what the plugin actually did rather than from what it returned.
-    for (const out of [first, second] as Array<Record<string, unknown>>) {
-      expect(out).toEqual({ status: 'ok' });
-    }
-
-    // Real reuse check: both fires hit conversations:find-or-create with the
-    // routine path as the externalKey, and the (stable) handler returned
-    // the same conversationId — which the routines plugin then lifted into
-    // ctx.conversationId on each agent:invoke. If the routines plugin
-    // mistakenly called :create on the second fire, the two captured
-    // conversationIds would diverge.
-    expect(captured.findOrCreateCalls).toEqual([
-      { externalKey: '.ax/routines/s.md', fallbackHidden: true },
-      { externalKey: '.ax/routines/s.md', fallbackHidden: true },
-    ]);
-    expect(captured.invokes).toHaveLength(2);
-    expect(captured.invokes[0]!.conversationId).toBeDefined();
-    expect(captured.invokes[0]!.conversationId).toBe(captured.invokes[1]!.conversationId);
-  });
-
-  it('case 11: per-fire routine marks conversation hidden at creation (#Phase D)', async () => {
-    // Routine-created conversations are observability rows surfaced via the
-    // Routines modal (Task 11), not chat-sidebar rows. Both call sites in
-    // fire.ts must pass `hidden: true` so the conversations plugin marks
-    // the row hidden — otherwise the "today" chat list fills with one row
-    // per fire and the sidebar becomes useless within minutes.
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'ack' }] });
-
-    // routineBody() defaults to `conversation: per-fire` (see line ~27),
-    // which exercises the conversations:create branch.
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => routineBody() }],
-    });
-
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-    });
-
-    expect(captured.createInputs).toHaveLength(1);
-    expect(captured.createInputs[0]!.hidden).toBe(true);
-    // And the shared branch is covered by the existing reuse test above
-    // (fallbackHidden: true assertion).
+  it('stops a saved definition without editing its prompt and deletes it through DB services', async () => {
+    h = await createRoutineHarness();
+    const row = await create();
+    const stopped = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, { agentId: row.agentId, routineId: row.routineId, requestId: randomUUID(), expectedRevision: row.revision, patch: { enabled: false } });
+    expect(stopped.promptBody).toBe(row.promptBody);
+    await expect(fire(stopped)).rejects.toMatchObject({ toolCode: 'disabled' });
+    expect(await h.bus.call('routines:delete', h.owner, { agentId: row.agentId, routineId: row.routineId, requestId: randomUUID(), expectedRevision: stopped.revision })).toEqual({ deleted: true, cleanupPending: false });
+    expect(await createRoutinesStore(h.db).findOne(row)).toBeNull();
   });
 });
 
-// Slice 6 — a routine run that went without a connector says so: on its fire
-// row and on the routine. Driven through the real plugin: the
-// chat:connectors-skipped subscriber, then the chat:turn-end write.
-describe('slice 6 canary — a run that went without a connector', () => {
-  const GMAIL = { connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' };
 
-  async function applyRoutine(h: TestHarness, path: string): Promise<void> {
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path, kind: 'added', contentAfter: async () => routineBody() }],
+describe('registered approval-to-tick-to-webhook cutover canary', () => {
+  it('holds a real owner tool, releases approval, ticks, reads Settings edits, signs a static webhook and deletes without workspace writes', async () => {
+    let now = Date.parse('2026-10-09T12:00:00Z');
+    let wake: (() => void) | undefined;
+    const clock: Clock = {
+      now: () => new Date(now),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        const finish = () => { signal.removeEventListener('abort', finish); wake = undefined; resolve(); };
+        if (signal.aborted) return finish();
+        wake = finish; signal.addEventListener('abort', finish, { once: true });
+      }),
+    };
+    h = await createRoutineHarness({ clock, strictCredentials: true });
+    const ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    const calls = vi.spyOn(h.bus, 'call');
+    await expect.poll(() => Boolean(wake)).toBe(true);
+    const call = { id: 'canary-call', name: 'routine_create', input: {
+      requestId: 'canary-create', definition: RoutineDefinitionSchema.parse({
+        name: 'Approved canary', promptBody: 'Check progress.', trigger: { kind: 'interval', every: '1m' },
+      }),
+    } };
+    const held = await h.bus.fire('tool:pre-call', ctx, call);
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    const store = createRoutinesStore(h.db);
+    expect((await store.list({ agentId: h.agentId })).filter(row => row.definitionId === null)).toHaveLength(0);
+    await h.bus.call('decisions:approve', ctx, { decisionId: held.hold.decisionId, userId: ctx.userId, approvalScope: 'once' });
+    await expect(h.bus.call('tool:execute:routine_create', ctx, call)).rejects.toMatchObject({ toolCode: 'approval-required' });
+    h.advance(11_000);
+    const row = await h.bus.call<unknown, RoutineView>('tool:execute:routine_create', ctx, call);
+    expect(await h.bus.call('tool:execute:routine_create', ctx, call)).toEqual(row);
+    expect((await store.list({ agentId: h.agentId })).filter(item => item.definitionId === null)).toHaveLength(1);
+    now += 60_000; wake!();
+    await expect.poll(async () => (await store.recentFires(row)).length).toBe(1);
+    await expect.poll(() => Boolean(wake)).toBe(true);
+    expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: 'Check progress.' });
+    const changed = await h.bus.call<unknown, RoutineView>('routines:update', ctx, {
+      agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision,
+      requestId: 'settings-edit', patch: { promptBody: 'Exact Settings edit — preserve this punctuation.', trigger: {
+        kind: 'webhook', path: '/canary', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' },
+      } },
     });
-  }
-
-  async function readBack(path: string): Promise<{ fires: Array<{ warning: string | null; conversation_id: string | null }>; lastWarning: string | null }> {
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
+    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual(changed);
+    await expect(h.bus.call('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId })).rejects.toThrow();
+    await h.bus.call('routines:set-webhook-secret', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, operation: 'set', secret: Buffer.from('canary-only-key') });
+    const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, { agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false } });
+    const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
+    const server = createHttpServerPlugin({ host: '127.0.0.1', port: 0, cookieKey: Buffer.alloc(32, 1), allowedOrigins: ['http://localhost'] });
+    const http = await createTestHarness({ plugins: [server] });
     try {
-      const fires = await k.selectFrom('routines_v1_fires').select(['warning', 'conversation_id'])
-        .where('agent_id', '=', 'agt_a').where('path', '=', path).orderBy('id', 'asc').execute();
-      const def = await k.selectFrom('routines_v1_definitions').select(['last_warning'])
-        .where('agent_id', '=', 'agt_a').where('path', '=', path).executeTakeFirstOrThrow();
-      return { fires, lastWarning: def.last_warning };
-    } finally {
-      await k.destroy();
-    }
-  }
-
-  async function waitForFires(path: string, n: number) {
-    let out!: Awaited<ReturnType<typeof readBack>>;
-    await vi.waitFor(async () => {
-      out = await readBack(path);
-      expect(out.fires).toHaveLength(n);
-    }, { timeout: 5_000, interval: 25 });
-    return out;
-  }
-
-  it('records the warning on the fire row and as lastWarning; routines:list carries it; the next clean fire clears it', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const reply: Parameters<typeof makeHarness>[1] = {
-      contentBlocks: [{ type: 'text', text: 'done' }],
-      skipped: () => [GMAIL],
-    };
-    const h = await makeHarness(captured, reply);
-    await applyRoutine(h, '.ax/routines/r.md');
-
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-    const W = "Gmail isn't signed in on Bob, so this run went without it.";
-    const first = await waitForFires('.ax/routines/r.md', 1);
-    expect(first.fires[0]!.warning).toBe(W);
-    expect(first.lastWarning).toBe(W);
-    const listed = await h.bus.call<unknown, { routines: Array<{ path: string; lastWarning: string | null }> }>(
-      'routines:list', h.ctx({ userId: 'u1' }), { agentId: 'agt_a' },
-    );
-    expect(listed.routines.find((r) => r.path === '.ax/routines/r.md')!.lastWarning).toBe(W);
-    const fires = await h.bus.call<unknown, { fires: Array<{ warning: string | null }> }>(
-      'routines:recent-fires', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' },
-    );
-    expect(fires.fires[0]!.warning).toBe(W);
-
-    delete reply.skipped;
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-    const second = await waitForFires('.ax/routines/r.md', 2);
-    expect(second.fires.map((f) => f.warning)).toEqual([W, null]);
-    expect(second.lastWarning).toBeNull();
-  });
-
-  // Final review ruling — a fire refused before turn assembly says nothing
-  // about connectors, so it leaves the routine's warning as it was.
-  it('a fire vetoed at chat:start records an error row and leaves lastWarning unchanged', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const reply: Parameters<typeof makeHarness>[1] = {
-      contentBlocks: [{ type: 'text', text: 'done' }],
-      skipped: () => [GMAIL],
-    };
-    const h = await makeHarness(captured, reply);
-    await applyRoutine(h, '.ax/routines/r.md');
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-    const W = "Gmail isn't signed in on Bob, so this run went without it.";
-    expect((await waitForFires('.ax/routines/r.md', 1)).lastWarning).toBe(W);
-
-    reply.refuse = () => ({ kind: 'terminated', reason: 'chat:start:vetoed' });
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-      const out = await waitForFires('.ax/routines/r.md', 2);
-      expect(out.fires.map((f) => f.warning)).toEqual([W, null]);
-      expect(out.lastWarning).toBe(W);
-    } finally {
-      stderr.mockRestore();
-    }
-  });
-
-  it('a silenced fire that skipped a connector still records the warning', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, {
-      contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }],
-      skipped: () => [{ connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' }],
-    });
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
-    });
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-    const out = await waitForFires('.ax/routines/r.md', 1);
-    expect(out.lastWarning).toBe('Linear needs to be signed in again on Bob, so this run went without it.');
-  });
-
-  it('two routines fired at once each get their own warning, never crossed', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const nameByConversation = new Map<string, string>();
-    let n = 0;
-    const h = await makeHarness(captured, {
-      contentBlocks: [{ type: 'text', text: 'done' }],
-      skipped: (ctx) => {
-        const name = (n++ % 2 === 0) ? 'Gmail' : 'Linear';
-        nameByConversation.set(ctx.conversationId!, name);
-        return [{ connectorId: name.toLowerCase(), name, reason: 'not-signed-in' }];
-      },
-    });
-    await applyRoutine(h, '.ax/routines/one.md');
-    await applyRoutine(h, '.ax/routines/two.md');
-    await Promise.all(['one', 'two'].map((p) => h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: `.ax/routines/${p}.md`,
-    })));
-    for (const p of ['one', 'two']) {
-      const out = await waitForFires(`.ax/routines/${p}.md`, 1);
-      const want = nameByConversation.get(out.fires[0]!.conversation_id!);
-      expect(want).toBeDefined();
-      const W = `${want} isn't signed in on Bob, so this run went without it.`;
-      expect(out.fires[0]!.warning).toBe(W);
-      expect(out.lastWarning).toBe(W);
-    }
-  });
-
-  it('an event for a reqId that is not a routine fire (an interactive chat) is ignored', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
-    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'done' }] });
-    await applyRoutine(h, '.ax/routines/r.md');
-    const r = await h.bus.fire('chat:connectors-skipped', h.ctx({ userId: 'u1' }), {
-      reqId: 'req-chat-1', connectors: [GMAIL],
-    });
-    expect(r.rejected).toBe(false);
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
-    const out = await waitForFires('.ax/routines/r.md', 1);
-    expect(out.fires[0]!.warning).toBeNull();
-    expect(out.lastWarning).toBeNull();
-  });
-});
-
-describe('Phase C webhook canary — half-wired window closure', () => {
-  function webhookBody(over: { secretRef?: string; path?: string } = {}): Uint8Array {
-    const triggerPath = over.path ?? '/r/x';
-    const lines = [
-      '---',
-      'name: r', 'description: d',
-      'trigger:', '  kind: webhook', `  path: "${triggerPath}"`,
-    ];
-    if (over.secretRef !== undefined) {
-      lines.push('  hmac:', `    secretRef: ${over.secretRef}`,
-                 '    header: "X-Sig"', '    algorithm: sha256',
-                 '    prefix: "sha256="');
-    }
-    lines.push('conversation: per-fire', '---', 'PR: {{payload.pr.title}}');
-    return ENC.encode(lines.join('\n') + '\n');
-  }
-
-  interface WebCaptured {
-    invokes: Array<{ message: { content: string }; reqId: string; sessionId: string; conversationId: string | undefined }>;
-    routes: Array<{ method: string; path: string; bypassCsrf: boolean | undefined }>;
-    handlers: Map<string, HttpRouteHandler>;
-    unregisters: string[];
-    ensures: number;
-  }
-
-  async function makeWebHarness(): Promise<{
-    h: TestHarness;
-    captured: WebCaptured;
-    tokens: Map<string, string>;
-  }> {
-    const captured: WebCaptured = {
-      invokes: [], routes: [], handlers: new Map(), unregisters: [], ensures: 0,
-    };
-    let nextConvId = 1;
-    const tokens = new Map<string, string>();
-    const busRef: { current: TestHarness | undefined } = { current: undefined };
-
-    const h = await createTestHarness({
-      services: {
-        'agents:resolve': async (_c, input: unknown) => {
-          const i = input as { agentId: string };
-          return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
-        },
-        // agents:ensure-webhook-token: idempotent — generates a token on first
-        // call per agent, returns the same one on subsequent calls (no rotation).
-        'agents:ensure-webhook-token': async (_c, input: unknown) => {
-          const i = input as { agentId: string };
-          captured.ensures += 1;
-          let tok = tokens.get(i.agentId);
-          if (tok === undefined) {
-            tok = `tok-${captured.ensures}`;
-            tokens.set(i.agentId, tok);
-          }
-          return { token: tok };
-        },
-        'agents:resolve-by-webhook-token': async (_c, input: unknown) => {
-          const t = (input as { token: string }).token;
-          for (const [id, tok] of tokens.entries()) {
-            if (tok === t) return { agent: { id, ownerId: 'u1' } };
-          }
-          return null;
-        },
-        'agents:list-personal-owners': async () => ({ agents: [] }),
-        'credentials:get': async (_c, input: unknown) => {
-          const ref = (input as { ref: string }).ref;
-          if (ref === 'gh-secret') return 'shhh';
-          throw new Error('no-such-credential');
-        },
-        'http:register-route': async (_c, input: unknown) => {
-          const i = input as HttpRegisterRouteInput;
-          captured.routes.push({
-            method: i.method,
-            path: i.path,
-            bypassCsrf: i.bypassCsrf,
-          });
-          captured.handlers.set(i.path, i.handler);
-          return {
-            unregister: () => {
-              captured.unregisters.push(i.path);
-              captured.handlers.delete(i.path);
-            },
-          };
-        },
-        'conversations:create': async () => ({ conversationId: `cnv_${nextConvId++}` }),
-        'conversations:find-or-create': async () => ({
-          conversation: { conversationId: 'shared' }, created: false,
-        }),
-        'conversations:drop-turn': async () => undefined,
-        'conversations:hide': async () => undefined,
-        'workspace:apply': async () => ({
-          version: 'v1',
-          delta: { before: null, after: 'v1', changes: [] },
-        }),
-        'agent:invoke': async (ctx, input: unknown) => {
-          const i = input as { message: { content: string } };
-          captured.invokes.push({
-            message: i.message, reqId: ctx.reqId ?? '',
-            sessionId: ctx.sessionId,
-            conversationId: ctx.conversationId,
-          });
-          await busRef.current!.bus.fire('chat:turn-end', ctx, {
-            reqId: ctx.reqId, turnId: 'fake-uuid-1',
-            contentBlocks: [{ type: 'text', text: 'ack' }],
-          });
-          return { kind: 'complete', messages: [] };
-        },
-      },
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createRoutinesPlugin({ tickIntervalMs: 60_000 }),
-      ],
-    });
-    busRef.current = h;
-    harnesses.push(h);
-    return { h, captured, tokens };
-  }
-
-  function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}): HttpRequest {
-    return {
-      method: 'POST',
-      path: '/webhooks/tok-1/r/x',
-      query: {}, params: {},
-      headers: { 'content-type': 'application/json', ...(over.headers ?? {}) },
-      body: over.body ?? Buffer.from('{}'),
-      cookies: {},
-      signedCookie: () => null,
-    } as unknown as HttpRequest;
-  }
-
-  interface SyntheticRes extends HttpResponse {
-    _calls: { status?: number; ended?: boolean };
-  }
-
-  function makeRes(): SyntheticRes {
-    const calls: { status?: number; ended?: boolean } = {};
-    const r: SyntheticRes = {
-      status(n: number) { calls.status = n; return r; },
-      header() { return r; },
-      end() { calls.ended = true; },
-      text() { calls.ended = true; },
-      json() { calls.ended = true; },
-      body() { calls.ended = true; },
-      redirect() { calls.ended = true; },
-      setSignedCookie() {}, clearCookie() {},
-      stream() { throw new Error('not used'); },
-      _calls: calls,
-    };
-    return r;
-  }
-
-  it('case 1: route mounts on first webhook routine indexing', async () => {
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    expect(captured.routes).toEqual([
-      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
-    ]);
-    expect(captured.ensures).toBe(1);
-    expect(captured.handlers.size).toBe(1);
-  });
-
-  it('case 2: lazy token generation is idempotent across two webhook routines for the same agent', async () => {
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [
-        { path: '.ax/routines/a.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/a' }) },
-        { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/b' }) },
-      ],
-    });
-    // ensure is called once per routine (2 calls total) but returns the SAME
-    // token both times (idempotent — ensures does not rotate).
-    expect(captured.ensures).toBe(2);
-    expect(captured.routes.map((r) => r.path).sort()).toEqual([
-      '/webhooks/tok-1/r/a', '/webhooks/tok-1/r/b',
-    ]);
-  });
-
-  it('case 3: HMAC mismatch returns 401 and does not fire agent:invoke', async () => {
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
-    });
-    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
-    expect(handler).toBeDefined();
-    const res = makeRes();
-    await handler(makeReq({
-      headers: { 'content-type': 'application/json', 'x-sig': 'sha256=deadbeef' },
-      body: Buffer.from('{"pr":{"title":"x"}}'),
-    }), res);
-    expect(res._calls.status).toBe(401);
-    expect(captured.invokes).toHaveLength(0);
-  });
-
-  it('case 4: valid POST → templated agent:invoke with substituted prompt', async () => {
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
-    });
-    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
-    const body = Buffer.from('{"pr":{"title":"fix bug"}}');
-    const sig = 'sha256=' + createHmac('sha256', 'shhh').update(body).digest('hex');
-    const res = makeRes();
-    await handler(makeReq({
-      headers: { 'content-type': 'application/json', 'x-sig': sig },
-      body,
-    }), res);
-    await vi.waitFor(() => expect(captured.invokes).toHaveLength(1),
-      { timeout: 5_000, interval: 25 });
-    expect(res._calls.status).toBe(202);
-    expect(captured.invokes[0]!.message.content).toBe('PR: fix bug');
-  });
-
-  it('case 5: routine deletion calls the stashed unregister closure', async () => {
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: asWorkspaceVersion('v1'), after: asWorkspaceVersion('v2'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'deleted' }],
-    });
-    expect(captured.unregisters).toEqual(['/webhooks/tok-1/r/x']);
-    expect(captured.handlers.size).toBe(0);
-  });
-
-  it('case 7: webhook routes register with bypassCsrf: true (initial + rebind)', async () => {
-    // #82 pin: webhook receivers are external by design — the token in the
-    // URL is the auth (Phase C design §5). Both the initial registration
-    // and the post-rotation rebind MUST opt out of CSRF; without this,
-    // every plain external POST hits the http-server CSRF subscriber and
-    // 403s before the handler runs.
-    const { h, captured, tokens } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    expect(captured.routes[0]?.bypassCsrf).toBe(true);
-
-    tokens.set('agt_a', 'tok-2');
-    await h.bus.fire('agents:webhook-token-rotated', h.ctx({ userId: 'u1' }),
-      { agentId: 'agt_a' });
-    const rebound = captured.routes.find((r) => r.path === '/webhooks/tok-2/r/x');
-    expect(rebound?.bypassCsrf).toBe(true);
-  });
-
-  it('case 8: repeated webhook fires of the same routine produce distinct sessionIds (#86)', async () => {
-    // The host-side session store rejects duplicate sessionIds even after the
-    // prior session has terminated. If the routines plugin reuses the same
-    // `routine-<agentId>-<path>` sessionId across fires, every fire after the
-    // first will fail at session:create with `session 'X' already exists`.
-    // Each fire MUST mint a unique sessionId so downstream session:create can
-    // succeed every time.
-    const { h, captured } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
-    expect(handler).toBeDefined();
-
-    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"first"}}') }), makeRes());
-    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"second"}}') }), makeRes());
-
-    await vi.waitFor(() => expect(captured.invokes).toHaveLength(2),
-      { timeout: 5_000, interval: 25 });
-    const [a, b] = captured.invokes;
-    expect(a!.sessionId).not.toBe(b!.sessionId);
-    expect(a!.sessionId).toMatch(/^routine-agt_a-\.ax\/routines\/r\.md-/);
-    expect(b!.sessionId).toMatch(/^routine-agt_a-\.ax\/routines\/r\.md-/);
-  });
-
-  it('case 6: agents:webhook-token-rotated unmounts old route and registers fresh route (K5 e2e)', async () => {
-    const { h, captured, tokens } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    expect(captured.routes).toEqual([
-      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
-    ]);
-    expect(captured.handlers.size).toBe(1);
-
-    // Simulate @ax/agents rotating the token: mutate the harness map so the
-    // next ensure-webhook-token call returns the fresh value, then fire the
-    // event that PR #77's rebind subscriber listens for.
-    tokens.set('agt_a', 'tok-2');
-    await h.bus.fire('agents:webhook-token-rotated', h.ctx({ userId: 'u1' }),
-      { agentId: 'agt_a' });
-
-    expect(captured.unregisters).toContain('/webhooks/tok-1/r/x');
-    expect(captured.routes.map((r) => r.path)).toEqual([
-      '/webhooks/tok-1/r/x', '/webhooks/tok-2/r/x',
-    ]);
-    expect(captured.handlers.size).toBe(1);
-    expect(captured.handlers.has('/webhooks/tok-2/r/x')).toBe(true);
-    expect(captured.handlers.has('/webhooks/tok-1/r/x')).toBe(false);
-  });
-
-  it('case 9: plugin init re-mounts webhook routes from DB rows (fixes #87)', async () => {
-    // Host pod restart leaves the in-memory `webhookRoutes` Map empty, but
-    // the routine definitions are still in `routines_v1_definitions`. Plugin
-    // init MUST scan and re-mount, otherwise webhook URLs return 403 (no
-    // route registered = no `bypassCsrf` flag) until a downstream
-    // `workspace:applied` event happens to touch the routine file.
-
-    const first = await makeWebHarness();
-    await first.h.bus.fire('workspace:applied', first.h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    expect(first.captured.routes).toEqual([
-      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
-    ]);
-
-    // Tear down the first harness ("pod restart"). afterEach truncates only
-    // after the full test, so the routine row persists for harness 2.
-    await first.h.close({ onError: () => {} });
-    const idx = harnesses.indexOf(first.h);
-    if (idx >= 0) harnesses.splice(idx, 1);
-
-    const second = await makeWebHarness();
-    // Fresh harness mounted the route WITHOUT a workspace:applied event —
-    // the startup scan handled it. CSRF bypass must carry over.
-    expect(second.captured.routes).toEqual([
-      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
-    ]);
-    expect(second.captured.handlers.size).toBe(1);
-    expect(second.captured.handlers.has('/webhooks/tok-1/r/x')).toBe(true);
-
-    // And the freshly-mounted handler should actually fire the routine —
-    // proves the closure was rebuilt with a live `fire` reference, not a
-    // dangling reference to the prior harness.
-    const handler = second.captured.handlers.get('/webhooks/tok-1/r/x')!;
-    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"after-restart"}}') }), makeRes());
-    await vi.waitFor(() => expect(second.captured.invokes).toHaveLength(1),
-      { timeout: 5_000, interval: 25 });
-    expect(second.captured.invokes[0]!.message.content).toBe('PR: after-restart');
-  });
-
-  it('case 10: routines:fire-now with payload renders template into rendered_prompt (#Phase D)', async () => {
-    const { h } = await makeWebHarness();
-    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
-      before: null, after: asWorkspaceVersion('v1'),
-      author: { agentId: 'agt_a', userId: 'u1' },
-      changes: [{ path: '.ax/routines/r.md', kind: 'added',
-        contentAfter: async () => webhookBody() }],
-    });
-    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
-      agentId: 'agt_a', path: '.ax/routines/r.md',
-      payload: { pr: { title: 'hello' } },
-    });
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    try {
-      await vi.waitFor(async () => {
-        // SQL row order is not guaranteed without ORDER BY — explicitly
-        // pick the most-recently-inserted row by id DESC. Previous version
-        // happened to pass because postgres typically returns rows in
-        // insertion order on a single-process insert, but that's an
-        // implementation detail to lean on.
-        const last = await k
-          .selectFrom('routines_v1_fires')
-          .selectAll()
-          .orderBy('id', 'desc')
-          .executeTakeFirstOrThrow();
-        expect(last.rendered_prompt).toBe('PR: hello');
-      }, { timeout: 5_000, interval: 25 });
-    } finally {
-      await k.destroy();
-    }
+      await http.bus.call('http:register-route', http.ctx(), h.routes.find(route => route.path === '/webhooks/:token/*')!);
+      const body = '{"event":"push","title":"canary"}';
+      const signature = createHmac('sha256', 'canary-only-key').update(body).digest('hex');
+      const post = () => fetch(`http://127.0.0.1:${server.boundPort()}/webhooks/${token}/canary`, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${signature}` } });
+      now += 1_000;
+      expect((await post()).status).toBe(202);
+      await expect.poll(async () => (await store.recentFires(row)).length).toBe(2);
+      expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: changed.promptBody });
+      expect(await h.bus.call('routines:delete', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, requestId: 'delete-canary' })).toEqual({ deleted: true, cleanupPending: true });
+      const secretRef = h.credentialCalls.find(item => item.operation === 'set')!.ref;
+      expect(h.credentialCalls).toContainEqual({ operation: 'delete', ref: secretRef });
+      await expect(h.bus.call('credentials:get', ctx, { ref: secretRef })).rejects.toThrow();
+      const invocations = h.invokeCalls.length;
+      expect((await post()).status).toBe(404);
+      now += 60_000; wake!();
+      await expect.poll(() => Boolean(wake)).toBe(true);
+      expect(h.invokeCalls).toHaveLength(invocations);
+      expect(await store.findOne(row)).toBeNull();
+      expect(calls.mock.calls.some(([hook]) => hook === 'workspace:apply')).toBe(false);
+      expect(listening.messages).toHaveLength(1);
+    } finally { await http.close(); listening.restore(); }
   });
 });

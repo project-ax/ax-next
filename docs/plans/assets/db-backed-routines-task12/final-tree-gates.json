@@ -1,0 +1,48 @@
+{
+  "checkpointBase": "793f1ba64",
+  "testedCodeBlobs": {
+    "packages/agent-claude-sdk-runner/src/host-mcp-server.ts": "83a50084bb076f2b0bf6fbfa2665ee450370c5e4",
+    "packages/agent-claude-sdk-runner/src/__tests__/host-mcp-server.test.ts": "b25cff82cbd42b79d086f5731ba0b5885e759129"
+  },
+  "commands": {
+    "build": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-build.log"
+    },
+    "recursive": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-recursive.log"
+    },
+    "eslint-rules": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-eslint-rules.log"
+    },
+    "scripts": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-scripts.log"
+    },
+    "tsc": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-tsc.log"
+    },
+    "typecheck": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-typecheck.log"
+    },
+    "lint": {
+      "exit": 0,
+      "log": "/tmp/task12-final-tree-lint.log"
+    }
+  },
+  "packageSummaries": 86,
+  "packageTests": {
+    "passed": 18529,
+    "skipped": 13
+  },
+  "eslintRuleTests": 22,
+  "scriptTests": {
+    "passed": 1140,
+    "skipped": 3,
+    "files": 49
+  }
+}

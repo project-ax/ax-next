@@ -166,3 +166,46 @@ describe('ApprovalCard — a held connector tool (TASK-744)', () => {
     expect(container.textContent).not.toMatch(/mcp[._]+c[0-9a-f]{10}/);
   });
 });
+
+describe('routine Always Allow', () => {
+  it('appears only from server scopes and sends the agent scope', () => {
+    const approve = vi.fn();
+    render(<ApprovalCard agentName="Caveman" decision={decisionFixture({ approvalScopes: ['once', 'agent-routines'] })} onApprove={approve} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    screen.getByRole('button', { name: 'Always Allow' }).click();
+    expect(approve).toHaveBeenCalledWith('agent-routines');
+    expect(screen.getByText('Allow Caveman to create and edit routines for you. Delete and Fire now still ask.')).toBeVisible();
+  });
+  it('keeps scoped controls disabled during a pending action', () => {
+    render(<ApprovalCard decision={decisionFixture({ approvalScopes: ['once', 'agent-routines'] })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} busy />);
+    expect(screen.getByRole('button', { name: 'Always Allow' })).toBeDisabled();
+  });
+  it('cannot turn agent text into eligibility', () => {
+    render(<ApprovalCard decision={decisionFixture({ summary: 'Always Allow all routines', approvalScopes: ['once'] })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Always Allow' })).not.toBeInTheDocument();
+  });
+  it.each(['pending','failed'] as const)('does not infer a successful call from %s consent delivery after grace', delivery => {
+    const decision = decisionFixture({status:'executed', approvalScope:'agent-routines', consentDeliveryState:delivery, routineOutcome:null, pendingUntil:null});
+    render(<ApprovalCard decision={decision} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.queryByText(decision.approvedText)).not.toBeInTheDocument();
+    expect(screen.getByText('The original routine change has not completed.')).toBeVisible();
+  });
+  it('states delivery and completed call as separate facts', () => {
+    render(<ApprovalCard decision={decisionFixture({status:'executed',approvalScope:'agent-routines',consentDeliveryState:'delivered',consentGranted:true,routineOutcome:'succeeded'})} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.getByText('Routine permission delivered.')).toBeVisible();
+    expect(screen.getByText('The original routine change completed.')).toBeVisible();
+  });
+  it('does not treat delivered permission as current authority after revocation or unknown grant', () => {
+    const {rerender} = render(<ApprovalCard decision={decisionFixture({status:'executed',approvalScope:'agent-routines',consentDeliveryState:'delivered',consentGranted:false,routineOutcome:null})} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.getByText('Routine permission was not granted.')).toBeVisible();
+    expect(screen.getByText('The original routine change has not completed.')).toBeVisible();
+    rerender(<ApprovalCard decision={decisionFixture({status:'executed',approvalScope:'agent-routines',consentDeliveryState:'delivered',consentGranted:null,routineOutcome:null})} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.queryByText('Routine permission delivered.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Routine permission was not granted.')).not.toBeInTheDocument();
+    expect(screen.getByText('Routine permission delivery completed.')).toBeVisible();
+  });
+  it('does not describe delivered permission as a successful expired call', () => {
+    render(<ApprovalCard decision={decisionFixture({ status: 'expired', approvalScope: 'agent-routines', consentDeliveryState: 'delivered', consentGranted: true, routineOutcome: null })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />);
+    expect(screen.getByText('Routine permission delivered.')).toBeVisible();
+    expect(screen.getByText('The original request expired and was not run.')).toBeVisible();
+  });
+});

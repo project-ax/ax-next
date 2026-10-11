@@ -1,5 +1,6 @@
 import {
   PluginError,
+  assertNoRetiredRoutinePuts,
   clampCodeUnits,
   findRunnerImmutableViolations,
   type AgentContext,
@@ -385,6 +386,25 @@ async function commitBundleCore(
       return internalError();
     }
 
+    // Hard policy runs before any subscriber or workspace persistence. The
+    // shared guard validates canonical paths before matching the retired prefix.
+    try {
+      assertNoRetiredRoutinePuts(allChanges);
+    } catch (err) {
+      if (err instanceof PluginError && (err.reasonCode === 'routine-files-retired' || err.code === 'invalid-path')) {
+        const body = {
+          accepted: false as const,
+          recoverable: false as const,
+          code: err.reasonCode ?? 'invalid-path',
+          reason: err.reasonCode === 'routine-files-retired'
+            ? 'Routine files are no longer supported. Use the routine tools.'
+            : 'Workspace paths must be canonical relative POSIX paths.',
+        };
+        return { status: 200, body: WorkspaceCommitNotifyResponseSchema.parse(body) };
+      }
+      throw err;
+    }
+
     // ---- runner-immutable guard (TASK-486): refuse before anything else
     //      gets a say. ----
     //
@@ -458,7 +478,7 @@ async function commitBundleCore(
     // `CLAUDE.local.md`), which is the pair that catches the ordinary
     // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core.
     // Subscribers — @ax/validator-skill's SDK-config veto,
-    // @ax/validator-identity, and @ax/validator-routine — see ONLY
+    // @ax/validator-identity — see ONLY
     // agent-managed memory and SDK setting-source paths; user-code changes are
     // not policy-checked.
     const policyChanges = filterToPolicy(allChanges);
@@ -487,7 +507,7 @@ async function commitBundleCore(
     );
     if (pre.rejected) {
       // Three plugins reject on `workspace:pre-apply`: @ax/validator-skill's
-      // SDK-config veto, @ax/validator-identity, and @ax/validator-routine.
+      // SDK-config veto, @ax/validator-identity.
       //
       // validator-skill's SKILL.md *content* scan is NOT a fourth: TASK-74 took
       // it off `workspace:pre-apply` altogether and moved it to the

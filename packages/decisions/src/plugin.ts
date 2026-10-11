@@ -1,3 +1,12 @@
+import { routineToolKind } from '@ax/routines-contract';
+import { SafeToolError } from '@ax/core';
+import {
+  approvalConsentRevision,
+  deliverRoutineConsents,
+  registerRoutineAuthorization,
+  ROUTINE_GRANT_FAILED,
+  routineFailureText,
+} from './routine-authorization.js';
 import { randomUUID } from 'node:crypto';
 import {
   makeAgentContext,
@@ -13,12 +22,7 @@ import {
   CONVERSATION_METADATA_HOOK,
 } from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK, validContinuationReqId } from './delivery.js';
-import {
-  reclaimStrandedReplays,
-  runDueDeliveries,
-  runDueReplays,
-  sweepExpired,
-} from './expiry.js';
+import { reclaimStrandedReplays, runDueDeliveries, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
   approveDecision,
@@ -31,11 +35,7 @@ import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
 import { receiptFor } from './receipts.js';
 import { replayContext, settleReplay } from './replay.js';
-import {
-  createDecisionsStore,
-  DuplicateAuthorisationError,
-  type DecisionStore,
-} from './store.js';
+import { createDecisionsStore, DuplicateAuthorisationError, type DecisionStore } from './store.js';
 import { CLAIM_REFUSED_DETAIL } from './templates.js';
 import { CONNECTOR_TOOL_LABELS_HOOK, namingFromToolLabels } from './tool-label.js';
 import {
@@ -226,6 +226,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         'decisions:get',
         'decisions:recent-receipts-for-agent',
         'decisions:approve',
+        'decisions:authorize-routine-call',
+        'decisions:settle-routine-call',
         'decisions:dismiss',
         'decisions:undo',
         'decisions:sweep',
@@ -254,6 +256,19 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // its next run. Declaring either as a hard `call` would make @ax/decisions
       // unloadable in a preset that is perfectly capable of running it.
       optionalCalls: [
+        {
+          hook: 'agents:can-manage-routines',
+          degradation:
+            'Routine approvals and execution fail closed without current management access.',
+        },
+        {
+          hook: 'tool-policy:get-routine-consent',
+          degradation: 'Routine consent approvals fail closed without durable policy consent.',
+        },
+        {
+          hook: 'tool-policy:grant-routine-consent',
+          degradation: 'Routine consent delivery stays pending; execution is not released.',
+        },
         {
           // TASK-744 — names the connector behind a held connector tool
           // (`mcp.<toolNamespace>.<tool>`) so the approval card reads
@@ -301,6 +316,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       const typed = db as Kysely<DecisionsDatabase>;
       await runDecisionsMigration(typed);
       store = createDecisionsStore(typed);
+      registerRoutineAuthorization(bus, store, now);
       busRef = bus;
 
       // ---------------------------------------------------------------------
@@ -336,11 +352,9 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (!bus.hasService(CONNECTOR_TOOL_LABELS_HOOK)) {
             return { connectorName: null, toolTitle: null };
           }
-          const out = await bus.call<{ userId: string }, unknown>(
-            CONNECTOR_TOOL_LABELS_HOOK,
-            ctx,
-            { userId: ctx.userId },
-          );
+          const out = await bus.call<{ userId: string }, unknown>(CONNECTOR_TOOL_LABELS_HOOK, ctx, {
+            userId: ctx.userId,
+          });
           return namingFromToolLabels(out, toolNamespace, tool);
         },
       });
@@ -397,14 +411,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       let auditedAfterBoot = false;
 
       /** One maintenance pass: expire what nobody answered, run what is due. */
-      const runSweep = async (
-        ctx: AgentContext,
-        limit?: number,
-      ): Promise<DecisionsSweepOutput> => {
+      const runSweep = async (ctx: AgentContext, limit?: number): Promise<DecisionsSweepOutput> => {
         if (!auditedAfterBoot) {
           auditedAfterBoot = true;
           auditFreshnessPairs(bus, ctx, reportedPairs);
         }
+        await deliverRoutineConsents(store!, bus, now());
+        await store!.recoverRoutineReplays(
+          now().toISOString(),
+          new Date(now().getTime() - 15 * 60 * 1000).toISOString(),
+        );
         return {
           expired: await sweepExpired(store!, now()),
           // BEFORE the due replays, not after, and the order is not cosmetic.
@@ -551,9 +567,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // is a read, not a claim. Filtering rather than asserting means a
           // future divergence costs a missing row, not a crashed feed.
           return {
-            receipts: rows
-              .map(receiptFor)
-              .filter((r): r is NonNullable<typeof r> => r !== null),
+            receipts: rows.map(receiptFor).filter((r): r is NonNullable<typeof r> => r !== null),
           };
         },
         { returns: DecisionsRecentReceiptsOutputSchema },
@@ -568,6 +582,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         async (ctx, input) => {
           const decisionId = requireField(input.decisionId, 'decisionId');
           const ownerUserId = requireField(input.userId, 'userId');
+          if (ctx.userId !== ownerUserId) throw new SafeToolError('forbidden', 'input');
           const current = await store!.get(decisionId, ownerUserId);
           if (current === null) return inert(null);
 
@@ -579,6 +594,13 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             return inert(current);
           }
 
+          const approvalScope = input.approvalScope ?? 'once';
+          const consentExpectedRevision = await approvalConsentRevision(
+            bus,
+            replayContext(current),
+            current,
+            approvalScope,
+          );
           const nowIso = now().toISOString();
 
           // -----------------------------------------------------------------
@@ -694,21 +716,21 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // -----------------------------------------------------------------
           const liveSessionId =
             current.attendance === 'attended'
-              ? ((
-                  await conversationChannel(
-                    bus,
-                    replayContext(current),
-                    current.conversationId,
-                  )
-                )?.activeSessionId ?? null)
+              ? ((await conversationChannel(bus, replayContext(current), current.conversationId))
+                  ?.activeSessionId ?? null)
               : null;
           const attended = liveSessionId !== null;
           const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
           const parked = !attended && !hasExecutor;
-          const deferred = !attended && hasExecutor && current.irreversible;
-          const immediate = !attended && hasExecutor && !current.irreversible;
+          const deferred =
+            !attended &&
+            hasExecutor &&
+            (current.irreversible || approvalScope === 'agent-routines');
+          const immediate = !attended && hasExecutor && !deferred;
           const replayDueAt = deferred
-            ? new Date(Date.parse(nowIso) + UNDO_WINDOW_MS).toISOString()
+            ? new Date(
+                Date.parse(nowIso) + (current.irreversible ? UNDO_WINDOW_MS : 0),
+              ).toISOString()
             : null;
           // TASK-574. The attended twin: when the warm agent gets told. The
           // continuation id is validated HERE, once, because it is stored for a
@@ -789,6 +811,12 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               replayClaimedAt: immediate ? nowIso : null,
               deliveryDueAt,
               continuationReqId,
+              approvalScope,
+              consentExpectedRevision,
+              routineReleaseAt:
+                routineToolKind(current.call.name) === 'write'
+                  ? (deliveryDueAt ?? replayDueAt ?? nowIso)
+                  : null,
             });
           } catch (err) {
             if (!(err instanceof DuplicateAuthorisationError)) throw err;
@@ -845,6 +873,22 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             return inert(claimed);
           }
 
+          if (approvalScope === 'agent-routines' && !attended && !current.irreversible) {
+            await deliverRoutineConsents(store!, bus, now());
+            const stored = (await store!.get(decisionId, ownerUserId))!;
+            if (stored.consentDeliveryState === 'failed')
+              return { ...inert(stored), error: ROUTINE_GRANT_FAILED };
+            if (stored.consentDeliveryState === 'delivered') {
+              await runDueReplays({ store: store!, bus, now: now(), logCtx: ctx });
+              const saved = (await store!.get(decisionId, ownerUserId))!;
+              return {
+                ...inert(saved),
+                executed: saved.routineOutcome === 'succeeded',
+                path: 'host-replays',
+                error: saved.routineOutcome === 'failed' ? routineFailureText(saved) : null,
+              };
+            }
+          }
           if (deferred) {
             // Approved, and it WILL run — just not yet. `executed: false` is
             // the literal truth for the next ten seconds, and the undo window
@@ -974,7 +1018,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // Lost the race with a concurrent resolve or a consume. Report what
           // is stored; never report an undo that did not happen.
           if (saved === null) {
-            return { decision: (await store!.get(decisionId, ownerUserId)) ?? current, undone: false };
+            return {
+              decision: (await store!.get(decisionId, ownerUserId)) ?? current,
+              undone: false,
+            };
           }
 
           // THE RECEIPT IS ALREADY GONE, and nothing here had to remove it.

@@ -639,9 +639,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     // The wire response is not a channel anyone watches: the runner writes the
     // reason to stderr (k8s: `kubectl logs` on an ephemeral pod) and, on this
     // branch, hard-resets the turn. Without a host-side log line an operator
-    // asking "why did that agent's work vanish?" has nowhere to look — two of
-    // the three pre-apply rejecters (@ax/validator-skill, @ax/validator-routine)
-    // log nothing of their own.
+    // asking "why did that agent's work vanish?" has nowhere to look.
+    // Pre-apply validators do not all log their own rejection.
     prepareScratchRepoMock.mockResolvedValueOnce({
       ...DEFAULT_SCRATCH,
       dispose: vi.fn().mockResolvedValue(undefined),
@@ -654,8 +653,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     await bootstrap({ bus, plugins: [probe], config: {} });
     bus.subscribe(
       'workspace:pre-apply',
-      '@ax/validator-routine',
-      async () => reject({ reason: '.ax/routines/nightly.md: schedule is not a valid cron expression' }),
+      '@ax/validator-skill',
+      async () => reject({ reason: 'skills/nightly/SKILL.md: invalid frontmatter' }),
     );
 
     const warn = vi.fn();
@@ -684,8 +683,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
       expect.objectContaining({
         action: 'workspace.commit-notify',
         // Which plugin refused, and in its own words why.
-        rejectedBy: '@ax/validator-routine',
-        reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+        rejectedBy: '@ax/validator-skill',
+        reason: 'skills/nightly/SKILL.md: invalid frontmatter',
       }),
     );
   });
@@ -1045,5 +1044,37 @@ describe('workspace.commit-notify handler — reason caps (TASK-781)', () => {
       bus,
     );
     expect(result.status).toBe(400);
+  });
+});
+
+
+describe('retired routine paths at runner commit', () => {
+  it.each(['.ax/routines/a.md', '.ax\\routines\\a.md', './.ax/routines/a.md', '.ax/./routines/a.md', '.ax/routines/../a.md', '.ax//routines/a.md'])('refuses %s before subscribers or apply-bundle', async (path) => {
+    prepareScratchRepoMock.mockResolvedValueOnce(DEFAULT_SCRATCH);
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([{ path, kind: 'put', content: new Uint8Array([1]) }]);
+    const { plugin, applyBundle } = makeSpyingPhase3Probe('@ax/retired-probe');
+    const { bus, ctx } = await makeEnv([plugin]);
+    const permissive = vi.fn(async () => undefined);
+    const throwing = vi.fn(async () => { throw new Error('bad subscriber'); });
+    bus.subscribe('workspace:pre-apply', 'earlier-permissive', permissive);
+    bus.subscribe('workspace:pre-apply', 'throwing', throwing);
+    const result = await workspaceCommitNotifyHandler({ bundleBytes: 'UEFDSwAAAAA=', parentVersion: null, reason: 'turn' }, ctx, bus);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ accepted: false, recoverable: false, code: path === '.ax/routines/a.md' ? 'routine-files-retired' : 'invalid-path' });
+    if (path === '.ax/routines/a.md') expect(result.body).toMatchObject({ reason: 'Routine files are no longer supported. Use the routine tools.' });
+    expect(permissive).not.toHaveBeenCalled();
+    expect(throwing).not.toHaveBeenCalled();
+    expect(applyBundle).not.toHaveBeenCalled();
+  });
+  it('allows deleting retired files', async () => {
+    prepareScratchRepoMock.mockResolvedValueOnce(DEFAULT_SCRATCH);
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([{ path: '.ax/routines/a.md', kind: 'delete' }]);
+    const { plugin, applyBundle } = makeSpyingPhase3Probe('@ax/retired-delete-probe');
+    const { bus, ctx } = await makeEnv([plugin]);
+    const result = await workspaceCommitNotifyHandler({ bundleBytes: 'UEFDSwAAAAA=', parentVersion: null, reason: 'turn' }, ctx, bus);
+    expect(result.body).toMatchObject({ accepted: true });
+    expect(applyBundle).toHaveBeenCalledTimes(1);
   });
 });
