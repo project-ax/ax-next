@@ -35,7 +35,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Trash2,
   Pencil,
@@ -58,10 +58,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -100,6 +100,7 @@ import { listAdminAgents, patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 import { SkillForm } from './SkillForm';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import { DialogDescription } from '@/components/ui/dialog';
 import { humanizeId } from '@/lib/humanize';
 import type { SkillEditorApi } from '@/components/admin/SkillEditor';
@@ -118,6 +119,28 @@ type EditorTarget =
   | { mode: 'edit-user'; skillId: string }
   | { mode: 'create-admin' }
   | { mode: 'edit-admin'; skillId: string };
+
+/**
+ * One skill row. The global Settings page uses the Figma settings rhythm — a
+ * summary row whose actions open in a details sheet; the agent-scoped page
+ * keeps its inline row. `data-testid` stays on the outer element either way.
+ */
+function SkillRow({ testId, sheet, label, detail, value, className, children }: {
+  testId: string;
+  sheet: boolean;
+  label: string;
+  detail?: ReactNode;
+  value?: ReactNode;
+  className: string;
+  children: ReactNode;
+}) {
+  if (!sheet) return <div data-testid={testId} className={className}>{children}</div>;
+  return (
+    <div data-testid={testId}>
+      <SettingsDetailRow label={label} detail={detail} value={value}>{children}</SettingsDetailRow>
+    </div>
+  );
+}
 
 export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { isAdmin: boolean; agentId?: string; agentName?: string }) {
   const [tab, setTab] = useState('installed');
@@ -415,6 +438,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   const visibleAuthored = authored.filter((a) => !fixedAgentId || a.agentId === fixedAgentId);
   const installedCount = (installed?.length ?? 0) + ownNotInstalled.length;
   const notInstalledCount = notInstalled.length;
+  const hasPendingAuthored = visibleAuthored.some((a) => a.status !== 'active');
 
   function renderAuthored(rows: AuthoredSkillListing[]) {
     return rows.length > 0 && (
@@ -426,16 +450,20 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                 Skills your agents drafted. Edit one to make an editable copy you
                 own.
               </p>
-              <div className="flex flex-col divide-y divide-border">
+              <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
                 {rows.map((a) => {
                   const key = `${a.agentId}/${a.skillId}`;
                   const isAdopting = adopting === key;
                   const isDismissing = dismissing === key;
                   const busy = adopting !== null || dismissing !== null;
                   return (
-                    <div
+                    <SkillRow
                       key={key}
-                      data-testid={`authored-${a.skillId}`}
+                      testId={`authored-${a.skillId}`}
+                      sheet={!fixedAgentId}
+                      label={a.description || a.skillId}
+                      detail="Authored by your agent"
+                      value={a.status === 'active' ? 'Active' : 'Pending review'}
                       className="flex items-center justify-between gap-3 px-3 py-2"
                     >
                       <div className="min-w-0">
@@ -487,7 +515,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                           {isDismissing ? 'Deleting…' : 'Delete'}
                         </Button>
                       </div>
-                    </div>
+                    </SkillRow>
                   );
                 })}
               </div>
@@ -497,21 +525,34 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
 
   return (
     <TooltipProvider>
-      <Tabs value={tab} onValueChange={setTab} className="agent-settings-content flex flex-col gap-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {fixedAgentId ? <TabsList variant="quiet" aria-label="Skills views">
-            <TabsTrigger variant="quiet" value="installed">Installed</TabsTrigger>
-            <TabsTrigger variant="quiet" value="browse">Browse</TabsTrigger>
-            <TabsTrigger variant="quiet" value="review">Review</TabsTrigger>
-          </TabsList> : <p className="text-sm text-muted-foreground">Install workspace skills, or create your own.</p>}
-          <div className="flex items-center gap-2">
-            {!fixedAgentId && agents.length > 1 && <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger className="w-[200px]"><SelectValue placeholder="Select an agent" /></SelectTrigger>
-              <SelectContent>{agents.map((a) => <SelectItem key={a.agentId} value={a.agentId}>{a.displayName}</SelectItem>)}</SelectContent>
-            </Select>}
+      <Tabs value={tab} onValueChange={setTab} className={fixedAgentId ? 'agent-settings-content flex flex-col gap-5' : 'settings-tabs flex min-w-0 flex-col gap-6'}>
+        {fixedAgentId ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <TabsList variant="quiet" aria-label="Skills views">
+              <TabsTrigger variant="quiet" value="installed">Installed</TabsTrigger>
+              <TabsTrigger variant="quiet" value="browse">Browse</TabsTrigger>
+              <TabsTrigger variant="quiet" value="review">Review</TabsTrigger>
+            </TabsList>
             <Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
           </div>
-        </div>
+        ) : (
+          <>
+            <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
+            {agents.length > 1 && (
+              <div className="flex items-center justify-end gap-3">
+                <Select value={agentId} onValueChange={setAgentId}>
+                  <SelectTrigger className="w-[200px]"><SelectValue placeholder="Select an agent" /></SelectTrigger>
+                  <SelectContent><SelectGroup>{agents.map((a) => <SelectItem key={a.agentId} value={a.agentId}>{a.displayName}</SelectItem>)}</SelectGroup></SelectContent>
+                </Select>
+              </div>
+            )}
+            <TabsList aria-label="Skill categories">
+              <TabsTrigger value="installed">Installed</TabsTrigger>
+              <TabsTrigger value="browse">Browse</TabsTrigger>
+              {(isAdmin || hasPendingAuthored) && <TabsTrigger value="review">Review</TabsTrigger>}
+            </TabsList>
+          </>
+        )}
 
         {error && (
           <Alert variant="destructive">
@@ -544,8 +585,8 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
             opened at `h3` skipped a level in the outline; the shelves ARE the
             first division under the title, and their own sub-lists below step
             down to `h3`. */}
-        <TabsContent value="installed" {...(!fixedAgentId ? { forceMount: true as const } : {})} className="flex flex-col gap-3">
-          {!fixedAgentId && <h2 className="text-sm font-medium">Installed{installedCount > 0 ? ` (${installedCount})` : ''}</h2>}
+        <TabsContent value="installed" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'installed' } : {})} className="flex flex-col gap-3">
+          {!fixedAgentId && <h2 className="sr-only">Installed{installedCount > 0 ? ` (${installedCount})` : ''}</h2>}
 
           {!fixedAgentId && agentsLoaded && agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -565,14 +606,18 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                 : 'No skills installed yet. Install one from Browse, or create your own.'}
             </p>
           ) : (
-            <div className="flex flex-col divide-y divide-border">
+            <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {/* User-created or adopted skills that have no agent attachment yet.
                   They exist in ownSkills but aren't returned by getConnections, so
                   without this they'd be invisible after the editor closes (the bug). */}
               {(fixedAgentId ? [] : ownNotInstalled).map((s) => (
-                <div
+                <SkillRow
                   key={`own-${s.id}`}
-                  data-testid={`installed-${s.id}`}
+                  testId={`installed-${s.id}`}
+                  sheet
+                  label={humanizeId(s.id)}
+                  detail={s.description}
+                  value="Your own · not attached"
                   className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
                 >
                   <div className="flex-1 min-w-0">
@@ -613,7 +658,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </div>
+                </SkillRow>
               ))}
               {installed.map((s) => {
                 const own = ownSkills.get(s.skillId);
@@ -634,9 +679,13 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                   </DropdownMenu>
                 </div>;
                 return (
-                  <div
+                  <SkillRow
                     key={s.skillId}
-                    data-testid={`installed-${s.skillId}`}
+                    testId={`installed-${s.skillId}`}
+                    sheet
+                    label={humanizeId(s.skillId)}
+                    detail={s.description}
+                    value={[s.source === 'default' ? 'Workspace default' : null, isOwn ? 'Your own' : null].filter(Boolean).join(' · ') || 'Enabled'}
                     className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
                   >
                     <div className="flex-1 min-w-0">
@@ -727,7 +776,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                         </span>
                       )}
                     </div>
-                  </div>
+                  </SkillRow>
                 );
               })}
             </div>
@@ -740,7 +789,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
               editor on the copy. */}
           {renderAuthored(visibleAuthored.filter((a) => a.status === 'active'))}
         </TabsContent>
-        <TabsContent value="review" {...(!fixedAgentId ? { forceMount: true as const } : {})} className="flex flex-col gap-4">
+        <TabsContent value="review" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'review' } : {})} className="flex flex-col gap-4">
           {renderAuthored(visibleAuthored.filter((a) => a.status !== 'active'))}
           {fixedAgentId && !visibleAuthored.some((a) => a.status !== 'active') && !isAdmin && <p className="text-sm text-muted-foreground">No skills awaiting review.</p>}
           {isAdmin && (
@@ -752,10 +801,8 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
           )}
         </TabsContent>
 
-        {!fixedAgentId && <Separator />}
-
         {/* ========================= NOT INSTALLED ======================= */}
-        <TabsContent value="browse" {...(!fixedAgentId ? { forceMount: true as const } : {})} className="flex flex-col gap-3">
+        <TabsContent value="browse" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'browse' } : {})} className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-medium text-foreground">
               {catalog !== null &&
@@ -815,11 +862,15 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                   : 'Nothing left to install — everything in your workspace is already on this assistant.'}
             </p>
           ) : (
-            <div className="flex flex-col divide-y divide-border">
+            <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {notInstalled.map((c) => (
-                <div
+                <SkillRow
                   key={c.skillId}
-                  data-testid={`catalog-${c.skillId}`}
+                  testId={`catalog-${c.skillId}`}
+                  sheet={!fixedAgentId}
+                  label={humanizeId(c.skillId)}
+                  detail={c.description}
+                  value="Not installed"
                   className="flex flex-wrap items-center gap-3 border-b border-border px-2 py-5"
                 >
                   <div className="flex-1 min-w-0">
@@ -896,7 +947,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                       </Button>
                     )}
                   </div>
-                </div>
+                </SkillRow>
               ))}
             </div>
           )}

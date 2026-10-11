@@ -66,14 +66,13 @@ describe('BrandingTab', () => {
     });
     fireEvent.change(input, { target: { files: [pdf] } });
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-    await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
-    // The rejected file is not staged → no light field sent.
-    expect(putSpy.mock.calls[0]?.[0]).not.toHaveProperty('light');
+    expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
+    expect(putSpy).not.toHaveBeenCalled();
   });
 
   it('clears all branding back to defaults', async () => {
     render(<BrandingTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
     fireEvent.click(screen.getByRole('button', { name: /clear/i }));
     await waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
     expect(putSpy.mock.calls[0]?.[0]).toEqual({
@@ -83,4 +82,15 @@ describe('BrandingTab', () => {
       dark: null,
     });
   });
+});
+
+it('shows save and cancel only after editing and cancels without writing', () => {
+  render(<BrandingTab />);
+  expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Product name'), { target: { value: 'Draft name' } });
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByLabelText('Product name')).toHaveValue(DEFAULT_BRANDING.name);
+  expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+  expect(putSpy).not.toHaveBeenCalled();
 });

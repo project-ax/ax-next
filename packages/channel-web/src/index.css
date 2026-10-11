@@ -315,3 +315,22 @@ input, textarea { caret-color: hsl(var(--primary)); }
 .settings-form label { font-size: 14px; color: hsl(var(--foreground)); line-height: 22px; }
 .settings-form input:not([type="checkbox"]), .settings-form textarea { font-family: inherit; font-size: 14px; }
 .settings-form [data-slot="field-description"] { font-size: 12px; line-height: 18px; }
+
+/* Settings uses the Figma page rhythm while inheriting the app's semantic palette. */
+@layer components {
+  .settings-tabs > [role="tablist"] {
+    @apply h-auto max-w-full justify-start gap-2 overflow-x-auto rounded-none bg-transparent p-0 text-foreground;
+  }
+  .settings-tabs > [role="tablist"] > [role="tab"] {
+    @apply min-h-10 rounded-md px-4 py-2 font-normal shadow-none;
+  }
+  .settings-tabs > [role="tablist"] > [role="tab"][data-state="active"] {
+    @apply bg-muted text-foreground shadow-none;
+  }
+  .settings-tabs [role="tabpanel"] { @apply mt-6; }
+  .settings-section { @apply rounded-none bg-transparent shadow-none; }
+  .settings-section > [data-slot="card-header"] { @apply gap-3 px-0 pb-5 pt-0; }
+  .settings-section > [data-slot="card-header"] [data-slot="card-title"] { @apply text-sm font-medium leading-relaxed tracking-normal; }
+  .settings-section > [data-slot="card-content"] { @apply p-0; }
+  .settings-section > [data-slot="card-footer"] { @apply px-0 pb-0 pt-6; }
+}

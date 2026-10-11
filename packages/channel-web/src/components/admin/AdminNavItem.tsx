@@ -1,6 +1,5 @@
 import type { ComponentType, SVGProps } from 'react';
-import { cn } from '@/lib/utils';
-import { SidebarRow } from '../SidebarRow';
+import { Button } from '@/components/ui/button';
 
 export interface AdminNavItemProps {
   icon: ComponentType<SVGProps<SVGSVGElement>>;
@@ -9,16 +8,6 @@ export interface AdminNavItemProps {
   onClick: () => void;
 }
 
-export function AdminNavItem({ icon: Icon, label, active, onClick }: AdminNavItemProps) {
-  return (
-    <SidebarRow active={active} onClick={onClick}>
-      <Icon
-        className={cn(
-          'w-3.5 h-3.5 shrink-0 transition-colors',
-          active ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground/75',
-        )}
-      />
-      <span>{label}</span>
-    </SidebarRow>
-  );
+export function AdminNavItem({ label, active, onClick }: AdminNavItemProps) {
+  return <Button type="button" variant="settings-nav" className="w-full px-3" data-active={active || undefined} aria-current={active ? 'page' : undefined} onClick={onClick}>{label}</Button>;
 }

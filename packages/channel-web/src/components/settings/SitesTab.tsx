@@ -18,7 +18,7 @@ import { RememberedSitesPanel } from './RememberedSitesPanel';
 
 export function SitesTab() {
   return (
-    <div className="flex flex-col gap-4 max-w-2xl">
+    <div className="flex flex-col gap-8">
       <AllowedSitesPanel />
       <RememberedSitesPanel />
     </div>

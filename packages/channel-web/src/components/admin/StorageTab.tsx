@@ -86,6 +86,7 @@ import {
   unusedFilesLine,
   usageLine,
 } from '@/lib/storage-copy';
+import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { StorageLimitsCard } from './StorageLimitsCard';
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <p className="text-base font-medium">{line}</p>
-        <Progress
+        <Progress className="h-1"
           aria-label="Storage used"
           aria-valuetext={line}
           // With no limit to measure against there is nothing to fill.
@@ -211,11 +212,11 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
           max={storage.limitBytes > 0 ? storage.limitBytes : 1}
         />
       </div>
-      <dl className="flex flex-col gap-1.5 text-sm">
+      <dl className="mt-4 flex flex-col text-sm">
         {breakdownRows(storage).map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-4">
-            <dt className="text-muted-foreground">{row.label}</dt>
-            <dd className="font-medium">{row.value}</dd>
+          <div key={row.label} className="flex min-h-[72px] items-center justify-between gap-4 border-b border-border px-2">
+            <dt >{row.label}</dt>
+            <dd className="text-muted-foreground">{row.value}</dd>
           </div>
         ))}
       </dl>
@@ -242,7 +243,7 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
 function MyStorageCard({ read }: { read: Read<MyStorage> }) {
   const { state, load } = read;
   return (
-    <Card>
+    <Card variant="settings">
       <CardHeader>
         <CardTitle role="heading" aria-level={2} className="text-lg">
           Your storage
@@ -326,7 +327,7 @@ function UnusedFilesLine() {
 function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
   const limitBytes = admin === null ? 0 : admin.limits.limitMb * BYTES_PER_MB;
   return (
-    <Card>
+    <Card variant="settings">
       <CardHeader>
         <CardTitle role="heading" aria-level={2} className="text-lg">
           Everyone's storage
@@ -373,7 +374,6 @@ function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
             )}
           </>
         )}
-        <UnusedFilesLine />
       </CardContent>
     </Card>
   );
@@ -389,7 +389,7 @@ function AdminStorageSection({ onLimitsSaved }: { onLimitsSaved: () => void }) {
     // Nothing to edit or list when we cannot see the numbers. The card keeps
     // its title so the page outline does not change shape.
     return (
-      <Card>
+      <Card variant="settings">
         <CardHeader>
           <CardTitle role="heading" aria-level={2} className="text-lg">
             Storage limits
@@ -413,8 +413,16 @@ function AdminStorageSection({ onLimitsSaved }: { onLimitsSaved: () => void }) {
 
   return (
     <>
-      <StorageLimitsCard limits={admin?.limits ?? null} onSaved={saved} />
-      <EveryoneCard admin={admin} />
+      <section className="flex flex-col gap-2">
+        <h2 className="mb-4 text-sm font-medium">Workspace</h2>
+        <SettingsDisclosure title="Storage limits" value={admin ? `${formatBytes(admin.limits.limitMb * BYTES_PER_MB)} per person` : 'Loading…'}>
+          <StorageLimitsCard limits={admin?.limits ?? null} onSaved={saved} />
+        </SettingsDisclosure>
+        <SettingsDisclosure title="Everyone’s storage" value={admin ? `${admin.ownerCount} people or teams` : 'Loading…'}>
+          <EveryoneCard admin={admin} />
+        </SettingsDisclosure>
+        <UnusedFilesLine />
+      </section>
     </>
   );
 }
@@ -437,7 +445,7 @@ export function StorageTab({ isAdmin }: StorageTabProps) {
   const reloadMine = mine.load;
 
   return (
-    <div className="max-w-[960px] mx-auto flex flex-col gap-6 font-sans">
+    <div className="flex flex-col gap-8 font-sans">
       <MyStorageCard read={mine} />
       {isAdmin && <AdminStorageSection onLimitsSaved={() => void reloadMine('again')} />}
     </div>

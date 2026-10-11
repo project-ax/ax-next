@@ -113,6 +113,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
     const group = screen.getByRole('group', { name: 'Theme' });
     // Three options, one per Theme mode the provider supports ('light' | 'dark' | 'auto').
     expect(within(group).getByRole('menuitemradio', { name: 'Light' })).toBeTruthy();
@@ -128,6 +129,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
     const group = screen.getByRole('group', { name: 'Theme' });
     // Pin dark first so there is something to clear.
     fireEvent.click(within(group).getByRole('menuitemradio', { name: 'Dark' }));
@@ -186,6 +188,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     openMenu(/Alice/i);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Appearance' }));
     const group = screen.getByRole('group', { name: 'Theme' });
     // Visible text, not a `title` attribute a mouse user has to hover to find
     // — "System" in particular is not guessable from a rectangle icon.

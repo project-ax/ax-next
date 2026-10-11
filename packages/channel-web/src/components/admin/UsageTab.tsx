@@ -1,3 +1,4 @@
+import { SettingsDetailRow, SettingsDisclosure } from '../settings/SettingsLayout';
 import { UsagePricesCard } from './UsagePricesCard';
 import { UsageOverrideEditor } from './UsageOverrideEditor';
 /**
@@ -16,22 +17,14 @@ import { UsageOverrideEditor } from './UsageOverrideEditor';
  * cards. Card titles carry `role="heading"` (level 2) so the outline stays
  * h1 → h2 without the `h5` that `AlertTitle` would add (see TASK-446).
  */
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge, type BadgeProps } from '@/components/ui/badge';
+import { badgeVariants, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableCaption,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+
 import { toastActions } from '@/lib/toast-store';
 import {
   fetchUsage,
@@ -253,15 +246,7 @@ export function UsageTab() {
   const report = state.kind === 'ready' ? state.report : null;
 
   return (
-    <div className="max-w-[960px] mx-auto flex flex-col gap-6 font-sans">
-      <UsageLimitsCard
-        limits={report?.limits ?? null}
-        onSaved={(limits) => {
-          supersedeReads();
-          changeReport((r) => ({ ...r, limits }));
-          void load('again');
-        }}
-      />
+    <div className="flex flex-col gap-8 font-sans">
 
       {report?.fleetBlocked && (
         <Alert variant="destructive">
@@ -271,7 +256,7 @@ export function UsageTab() {
           </AlertDescription>
         </Alert>
       )}
-      <Card>
+      <Card variant="settings">
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
           <div className="flex flex-col gap-1.5">
             <CardTitle role="heading" aria-level={2} className="text-lg">
@@ -322,37 +307,11 @@ export function UsageTab() {
             </Empty>
           ) : (
             <>
-              <Table>
-                <TableCaption className="sr-only">
-                  Estimated usage per person, last 24 hours
-                </TableCaption>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Person</TableHead>
-                    <TableHead>Messages</TableHead>
-                    <TableHead>Estimated spend</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>
-                      <span className="sr-only">Action</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {report.users.map((u) => (
-                    <Fragment key={u.userId}>
-                      <UsageRow
-                        key={u.userId}
-                        user={u}
-                        limits={u.limits ?? report.limits}
-                        busy={busyUserId === u.userId}
-                        onPause={() => openPause(u)}
-                        onResume={() => void resume(u)}
-                        onEditLimits={() => setOverrideUserId(u.userId)}
-                      />
-                    </Fragment>
-                  ))}
-                </TableBody>
-              </Table>
+              <div role="list" aria-label="Estimated usage per person, last 24 hours" className="flex flex-col">
+                {report.users.map((u) => <div key={u.userId} role="listitem"><UsageRow user={u} limits={u.limits ?? report.limits}
+                  busy={busyUserId === u.userId} onPause={() => openPause(u)} onResume={() => resume(u)}
+                  onEditLimits={() => setOverrideUserId(u.userId)} /></div>)}
+              </div>
               {report.users.filter((u) => u.userId === overrideUserId).map((u) => (
                 <UsageOverrideEditor key={u.userId} user={u}
                   onCancel={() => setOverrideUserId(null)}
@@ -366,7 +325,16 @@ export function UsageTab() {
         </CardContent>
       </Card>
 
-      {report && (
+      <UsageLimitsCard
+        limits={report?.limits ?? null}
+        onSaved={(limits) => {
+          supersedeReads();
+          changeReport((r) => ({ ...r, limits }));
+          void load('again');
+        }}
+      />
+
+      {report && <SettingsDisclosure title="Advanced">
         <UsagePricesCard
           prices={report.prices ?? []}
           onSaved={(prices) => {
@@ -374,7 +342,7 @@ export function UsageTab() {
             changeReport((r) => ({ ...r, prices }));
           }}
         />
-      )}
+      </SettingsDisclosure>}
       <p className="text-sm text-muted-foreground">
         Pausing a person stops new model calls and tries to stop running tasks. A tool action they
         already approved can still finish on the host.
@@ -396,7 +364,7 @@ interface UsageRowProps {
   limits: UsageLimits;
   busy: boolean;
   onPause: () => void;
-  onResume: () => void;
+  onResume: () => Promise<void>;
   onEditLimits: () => void;
 }
 
@@ -408,43 +376,18 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
   const note = user.suspended?.note ?? null;
 
   return (
-    <TableRow>
-      <TableCell className="align-top">
-        <div className="font-medium break-words">{label}</div>
-        {subline !== null && (
-          <div className="text-xs text-muted-foreground break-words">{subline}</div>
-        )}
-      </TableCell>
-      <TableCell className="align-top">
-        <div>{formatCount(user.turnsLast24h)}</div>
-        <div className="text-xs text-muted-foreground">
-          {`${formatCount(user.turnsLastHour)} in the last hour`}
-        </div>
-      </TableCell>
-      <TableCell className="align-top">
-        <div>{formatUsd(user.spendUsd)}</div>
-        {share !== null && <div className="text-xs text-muted-foreground">{share}</div>}
-      </TableCell>
-      <TableCell className="align-top">
-        <div className="flex flex-col items-start gap-1">
-          <Badge
-            variant={STATUS_VARIANT.get(user.status) ?? 'outline'}
-            className="whitespace-nowrap"
-          >
-            {statusLabel(user.status)}
-          </Badge>
-          {paused && note !== null && note.length > 0 && (
-            <div className="max-w-[16rem] text-xs text-muted-foreground break-words">{note}</div>
-          )}
-        </div>
-      </TableCell>
-      <TableCell className="align-top text-right">
+    <SettingsDetailRow label={label} detail={<span className="flex flex-col gap-0.5"><span>{formatCount(user.turnsLast24h)} messages</span>{subline && <span>{subline}</span>}</span>}
+      value={<span className="flex flex-wrap items-center justify-end gap-2 tabular-nums">{formatUsd(user.spendUsd)}{user.status !== 'ok' && <span className={badgeVariants({ variant: STATUS_VARIANT.get(user.status) ?? 'outline' })}>{statusLabel(user.status)}</span>}</span>}>
+      {(close) => <>
+      <p className="text-sm text-muted-foreground">{`${formatCount(user.turnsLastHour)} messages in the last hour`}</p>
+      {share !== null && <p className="text-sm text-muted-foreground">{share}</p>}
+      {paused && note && <p className="break-words text-sm">{note}</p>}
         <div className="flex justify-end gap-2">
           <Button
             variant="ghost"
             size="sm"
             aria-label={`Edit limits for ${label}`}
-            onClick={onEditLimits}
+            onClick={() => { close(); onEditLimits(); }}
           >
             Edit limits
           </Button>
@@ -454,7 +397,7 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
               size="sm"
               disabled={busy}
               aria-label={`Resume agents for ${label}`}
-              onClick={onResume}
+              onClick={async () => { await onResume(); close(); }}
             >
               {busy ? 'Resuming…' : 'Resume'}
             </Button>
@@ -463,13 +406,13 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
               variant="outline"
               size="sm"
               aria-label={`Pause agents for ${label}`}
-              onClick={onPause}
+              onClick={() => { close(); onPause(); }}
             >
               Pause agents
             </Button>
           )}
         </div>
-      </TableCell>
-    </TableRow>
+      </>}
+    </SettingsDetailRow>
   );
 }

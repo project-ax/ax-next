@@ -21,16 +21,30 @@ export function RoutinesTab({
   onViewSkills?: (() => void) | undefined;
 }) {
   const [tab, setTab] = useState('mine');
+  const [category, setCategory] = useState('scheduled');
   const [createRequest, setCreateRequest] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((n) => n + 1);
   if (!agentId) {
     return (
-      <div className="flex flex-col gap-4">
-        <AgentSelfImprovementSection onChanged={refresh} />
-        {isAdmin && <DefaultRoutinesSection />}
-        <RoutinesList refreshKey={refreshKey} isAdmin={isAdmin} onFired={refresh} />
-      </div>
+      <Tabs value={category} onValueChange={setCategory} className="settings-tabs">
+        <TabsList aria-label="Routine categories">
+          <TabsTrigger value="scheduled">Scheduled</TabsTrigger>
+          <TabsTrigger value="self-improvement">Self-improvement</TabsTrigger>
+          {isAdmin && <TabsTrigger value="defaults">Workspace defaults</TabsTrigger>}
+        </TabsList>
+        <TabsContent value="scheduled" forceMount hidden={category !== 'scheduled'}>
+          <RoutinesList refreshKey={refreshKey} isAdmin={isAdmin} onFired={refresh} />
+        </TabsContent>
+        <TabsContent value="self-improvement" forceMount hidden={category !== 'self-improvement'}>
+          <AgentSelfImprovementSection onChanged={refresh} />
+        </TabsContent>
+        {isAdmin && (
+          <TabsContent value="defaults" forceMount hidden={category !== 'defaults'}>
+            <DefaultRoutinesSection />
+          </TabsContent>
+        )}
+      </Tabs>
     );
   }
   return (

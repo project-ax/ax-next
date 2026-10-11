@@ -67,7 +67,7 @@ export function UsagePricesCard({
     }
   };
   return (
-    <Card>
+    <Card variant="settings">
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>
           Model prices

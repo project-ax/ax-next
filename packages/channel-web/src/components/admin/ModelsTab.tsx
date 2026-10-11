@@ -10,6 +10,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { FieldSet } from '@/components/ui/field';
+import { SettingsActions } from '../settings/SettingsLayout';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   fetchCatalog,
@@ -25,7 +27,6 @@ import {
   POLICY_LOAD_FAILED,
   SAVED_DETAIL,
   SAVED_TITLE,
-  TAB_INTRO,
   UNREADABLE_NOTICE,
   saveFailure,
 } from '@/lib/models-copy';
@@ -55,6 +56,7 @@ const draftOf = (p: ModelPolicy): Draft => ({ allowed: [...p.allowed], default: 
 export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [category, setCategory] = useState('enabled');
   const [query, setQuery] = useState('');
   const [retrying, setRetrying] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -193,7 +195,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
 
   return (
     <div className="mx-auto flex max-w-[960px] flex-col gap-4 pb-4 font-sans">
-      <p className="text-sm text-muted-foreground">{TAB_INTRO}</p>
+      <SettingsActions><Button type="button" onClick={() => setCategory('catalog')}>Add models</Button></SettingsActions>
 
       {load.policy.warning === 'saved-policy-unreadable' ? (
         <Alert>
@@ -217,7 +219,10 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
         </Alert>
       )}
 
-      <FieldSet disabled={checking || saving || confirm !== null} className="grid items-start gap-4 md:grid-cols-2">
+      <Tabs value={category} onValueChange={setCategory} className="settings-tabs">
+        <TabsList aria-label="Model categories"><TabsTrigger value="enabled">Enabled</TabsTrigger><TabsTrigger value="catalog">Catalog</TabsTrigger></TabsList>
+      <FieldSet disabled={checking || saving || confirm !== null}>
+        <TabsContent value="catalog" forceMount hidden={category !== 'catalog'}>
         <ModelCatalogPane
           providers={providers}
           shown={filterProviders(providers, query)}
@@ -231,13 +236,17 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
           {...(onOpenKeys !== undefined ? { onOpenKeys } : {})}
           nowMs={Date.now()}
         />
+        </TabsContent>
+        <TabsContent value="enabled" forceMount hidden={category !== 'enabled'}>
         <SelectedModelsPane
           draft={current}
           providers={providers}
           onSetDefault={(ref) => setDraft((d) => setDefault(d ?? current, ref))}
           onRemove={(ref) => setDraft((d) => removeModel(d ?? current, ref))}
         />
+        </TabsContent>
       </FieldSet>
+      </Tabs>
 
       {saveError !== null && (
         <Alert variant="destructive">
@@ -252,7 +261,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
         </Alert>
       )}
 
-      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-border bg-background px-1 py-3">
+      {dirty && <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-border bg-background px-1 py-3">
         {dirty && <span className="mr-auto text-sm text-muted-foreground">Unsaved changes</span>}
         <Button type="button" variant="outline" disabled={!dirty || saving || checking || confirm !== null} onClick={() => setDraft(draftOf(load.policy))}>
           Cancel
@@ -264,7 +273,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
         >
           {saving || checking ? 'Saving…' : 'Save changes'}
         </Button>
-      </div>
+      </div>}
 
       <SaveImpactDialog
         open={confirm !== null}

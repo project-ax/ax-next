@@ -1,6 +1,7 @@
 // packages/channel-web/src/components/admin/AdminSidebar.tsx
 import {
-  ChevronLeft,
+  ArrowLeft,
+  ChevronDown,
   KeyRound,
   Cpu,
   Layers,
@@ -15,8 +16,9 @@ import {
   HardDrive,
   Globe,
 } from 'lucide-react';
-import { BrandMark } from '../BrandMark';
-import { SidebarSectionLabel } from '../SidebarSectionLabel';
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { AdminNavItem } from './AdminNavItem';
 import { cn } from '@/lib/utils';
 
@@ -77,76 +79,47 @@ export interface AdminSidebarProps {
   backLabel: string;
 }
 
-function NavSection({
-  label,
-  items,
-  activeTab,
-  onTabChange,
-}: {
-  label: string;
-  items: NavItem[];
-  activeTab: AdminTabId;
-  onTabChange: (t: AdminTabId) => void;
+function NavSection({ items, activeTab, onTabChange }: {
+  items: NavItem[]; activeTab: AdminTabId; onTabChange: (tab: AdminTabId) => void;
 }) {
-  return (
-    <>
-      <SidebarSectionLabel className="px-4 py-2">{label}</SidebarSectionLabel>
-      <ul className="flex flex-col gap-px px-1 list-none m-0 p-0">
-        {items.map((item) => (
-          <li key={item.id}>
-            <AdminNavItem
-              icon={item.icon}
-              label={item.label}
-              active={activeTab === item.id}
-              onClick={() => onTabChange(item.id)}
-            />
-          </li>
-        ))}
-      </ul>
-    </>
-  );
+  return <ul className="m-0 flex list-none flex-col gap-2 p-0">
+    {items.map((item) => <li key={item.id}>
+      <AdminNavItem icon={item.icon} label={item.label} active={activeTab === item.id} onClick={() => onTabChange(item.id)} />
+    </li>)}
+  </ul>;
 }
 
-export function AdminSidebar({
-  activeTab,
-  isAdmin,
-  onTabChange,
-  onBack,
-  backLabel,
-}: AdminSidebarProps) {
+export function AdminSidebar({ activeTab, isAdmin, onTabChange, onBack, backLabel }: AdminSidebarProps) {
+  const adminActive = ADMIN_NAV.some((item) => item.id === activeTab);
+  const [expanded, setExpanded] = useState(adminActive);
+  // Returning to a personal screen closes the workspace group. Manual expansion
+  // still lets an admin find those pages from a personal screen.
+  const [previousTab, setPreviousTab] = useState(activeTab);
+  if (previousTab !== activeTab) {
+    setPreviousTab(activeTab);
+    setExpanded(adminActive);
+  }
   return (
-    <aside className="ax-panel h-full w-[258px] shrink-0 bg-sidebar flex flex-col font-sans">
-      <div className="px-5 pt-5 pb-3 min-h-[48px] flex items-center justify-between gap-2">
-        <BrandMark />
-        <button
-          type="button"
-          onClick={onBack}
-          className={cn(
-            'cursor-pointer inline-flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-xl text-[11.5px]',
-            'text-muted-foreground bg-muted border border-transparent',
-            'hover:text-foreground hover:bg-background hover:border-border transition-colors',
-          )}
-        >
-          <ChevronLeft className="w-[11px] h-[11px]" strokeWidth={1.4} />
-          {backLabel}
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pt-2.5 pb-2 flex flex-col">
-        <NavSection
-          label="Settings"
-          items={USER_NAV}
-          activeTab={activeTab}
-          onTabChange={onTabChange}
-        />
-        {isAdmin && (
-          <NavSection
-            label="Admin"
-            items={ADMIN_NAV}
-            activeTab={activeTab}
-            onTabChange={onTabChange}
-          />
-        )}
-      </div>
+    <aside className="flex h-full w-full md:w-[220px] shrink-0 flex-col border-r border-border bg-background p-4 font-sans">
+      <Button type="button" variant="ghost" className="shrink-0 justify-start px-0" onClick={onBack} aria-label={`Back to ${backLabel}`}>
+        <ArrowLeft aria-hidden="true" />
+        <span className="capitalize">{backLabel}</span>
+      </Button>
+      <nav aria-label="Settings" className="min-h-0 flex-1 overflow-y-auto pt-6">
+        <p className="mb-6 text-sm font-medium">Settings</p>
+        <NavSection items={USER_NAV} activeTab={activeTab} onTabChange={onTabChange} />
+        {isAdmin && <Collapsible open={expanded} onOpenChange={setExpanded} className="mt-8">
+          <CollapsibleTrigger asChild>
+            <Button type="button" variant="ghost" className="group mb-2 w-full justify-between px-0">
+              <span>Administration</span>
+              <ChevronDown aria-hidden="true" className={cn('transition-transform', !expanded && '-rotate-90')} />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <NavSection items={ADMIN_NAV} activeTab={activeTab} onTabChange={onTabChange} />
+          </CollapsibleContent>
+        </Collapsible>}
+      </nav>
     </aside>
   );
 }

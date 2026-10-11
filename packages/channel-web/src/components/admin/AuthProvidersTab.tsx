@@ -7,7 +7,9 @@
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
 import { useEffect, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
+import { SettingsActions } from '../settings/SettingsLayout';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -36,6 +38,7 @@ export function AuthProvidersTab() {
   const [providers, setProviders] = useState<AuthProviderEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<AuthProviderEntry | null>(null);
   const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // Providers awaiting confirmation (null = no dialog). Styled-confirm pattern
@@ -121,16 +124,8 @@ export function AuthProvidersTab() {
   };
 
   return (
-    <div className="max-w-[640px] mx-auto font-sans">
-      <div className="mb-5">
-        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-          Sign-in methods
-        </h2>
-        <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Configure OAuth identity providers users can sign in with. Client
-          secrets are encrypted at rest and never returned in plaintext.
-        </p>
-      </div>
+    <div className="font-sans">
+      <SettingsActions><Button type="button" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
 
       {loading && <PaneStatus variant="loading">Loading providers…</PaneStatus>}
 
@@ -166,17 +161,15 @@ export function AuthProvidersTab() {
         </PaneStatus>
       )}
 
-      <ul className="flex flex-col gap-2 list-none m-0 p-0">
+      <ul className="flex flex-col list-none m-0 p-0">
         {providers.map((p) => (
           <li
             key={p.kind}
-            className="flex items-center gap-3 px-3.5 py-3 bg-muted border border-rule-soft rounded-lg"
+            className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
           >
             <div className="flex flex-col min-w-0 flex-1 gap-0.5">
               <span className="text-[13px] font-medium">{KIND_LABEL[p.kind]}</span>
-              <span className="font-mono text-[11.5px] text-muted-foreground truncate">
-                {p.clientId}
-              </span>
+
             </div>
             {/* (D5) Was a hand-rolled switch — two divs and a translate. The
                 primitive is installed and brings its own keyboard handling. */}
@@ -189,10 +182,10 @@ export function AuthProvidersTab() {
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={`Remove ${KIND_LABEL[p.kind]}`}
-              onClick={() => setPendingDelete(p)}
+              aria-label={`Details for ${KIND_LABEL[p.kind]}`}
+              onClick={() => setSelected(p)}
             >
-              <Trash2 className="w-3.5 h-3.5" strokeWidth={1.6} />
+              <ChevronRight aria-hidden="true" />
             </Button>
           </li>
         ))}
@@ -206,15 +199,17 @@ export function AuthProvidersTab() {
           }}
           onCancel={() => setAdding(false)}
         />
-      ) : (
-        !loading && (
-          <div className="mt-4">
-            <Button type="button" onClick={() => setAdding(true)}>
-              Add provider
-            </Button>
-          </div>
-        )
-      )}
+      ) : null}
+
+      <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
+        <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]">
+          <SheetHeader><SheetTitle>{selected ? KIND_LABEL[selected.kind] : 'Sign-in method'}</SheetTitle><SheetDescription>Manage this sign-in method.</SheetDescription></SheetHeader>
+          {selected && <div className="mt-6 flex flex-col gap-6">
+            <p className="break-all text-sm text-muted-foreground">Client ID: {selected.clientId}</p>
+            <Button type="button" variant="destructive" onClick={() => { setPendingDelete(selected); setSelected(null); }} aria-label={`Remove ${KIND_LABEL[selected.kind]}`}>Remove {selected ? KIND_LABEL[selected.kind] : 'method'}</Button>
+          </div>}
+        </SheetContent>
+      </Sheet>
 
       {/* (D5) The last sign-in method asks before it goes. Nothing else on this
           page can lock every user, including this admin, out of the product. */}

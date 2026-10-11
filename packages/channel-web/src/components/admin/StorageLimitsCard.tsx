@@ -130,7 +130,7 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
 
   return (
     <form onSubmit={(e) => void save(e)} noValidate>
-      <Card>
+      <Card variant="settings">
         <CardHeader>
           <CardTitle role="heading" aria-level={2} className="text-lg">
             Storage limits

@@ -43,6 +43,15 @@ async function openWithKeyboard(): Promise<HTMLElement> {
   return settings;
 }
 
+async function openAppearanceWithKeyboard() {
+  await openWithKeyboard();
+  const appearance = screen.getByRole('menuitem', { name: 'Appearance' });
+  await pressAndExpectFocus('ArrowDown', appearance);
+  fireEvent.keyDown(appearance, { key: 'ArrowRight' });
+  await screen.findByRole('group', { name: 'Theme' });
+  await waitFor(() => expect(screen.getByRole('menuitemradio', { name: 'Light' })).toHaveFocus());
+}
+
 async function pressAndExpectFocus(key: string, target: HTMLElement): Promise<void> {
   const from = document.activeElement;
   if (!(from instanceof HTMLElement)) throw new Error('nothing focused');
@@ -51,24 +60,24 @@ async function pressAndExpectFocus(key: string, target: HTMLElement): Promise<vo
 }
 
 describe('UserMenu Theme control — keyboard (TASK-500)', () => {
-  it('ArrowDown walks Settings → Light → Dark → System → Sign out, and ArrowUp walks back', async () => {
+  it('walks the account menu and opens the Appearance submenu with ArrowRight', async () => {
     await openWithKeyboard();
-    const group = screen.getByRole('group', { name: 'Theme' });
-    const light = within(group).getByRole('menuitemradio', { name: 'Light' });
-    const dark = within(group).getByRole('menuitemradio', { name: 'Dark' });
-    const system = within(group).getByRole('menuitemradio', { name: 'System' });
+    const appearance = screen.getByRole('menuitem', { name: 'Appearance' });
     const signOut = screen.getByRole('menuitem', { name: 'Sign out' });
-
-    await pressAndExpectFocus('ArrowDown', light);
-    await pressAndExpectFocus('ArrowDown', dark);
-    await pressAndExpectFocus('ArrowDown', system);
+    await pressAndExpectFocus('ArrowDown', appearance);
     await pressAndExpectFocus('ArrowDown', signOut);
-    await pressAndExpectFocus('ArrowUp', system);
-    await pressAndExpectFocus('ArrowUp', dark);
+    await pressAndExpectFocus('ArrowUp', appearance);
+    fireEvent.keyDown(appearance, { key: 'ArrowRight' });
+    const light = await screen.findByRole('menuitemradio', { name: 'Light' });
+    await waitFor(() => expect(light).toHaveFocus());
+    await pressAndExpectFocus('ArrowDown', screen.getByRole('menuitemradio', { name: 'Dark' }));
+    await pressAndExpectFocus('ArrowDown', screen.getByRole('menuitemradio', { name: 'System' }));
+    await pressAndExpectFocus('ArrowUp', screen.getByRole('menuitemradio', { name: 'Dark' }));
+    await pressAndExpectFocus('ArrowLeft', appearance);
   });
 
   it('aria-checked marks the current theme (System when nothing is pinned)', async () => {
-    await openWithKeyboard();
+    await openAppearanceWithKeyboard();
     const group = screen.getByRole('group', { name: 'Theme' });
     const checked = within(group)
       .getAllByRole('menuitemradio')
@@ -78,12 +87,12 @@ describe('UserMenu Theme control — keyboard (TASK-500)', () => {
   });
 
   it('Enter on a focused option selects it, moves aria-checked, and keeps the menu open', async () => {
-    await openWithKeyboard();
+    await openAppearanceWithKeyboard();
     const group = screen.getByRole('group', { name: 'Theme' });
     const light = within(group).getByRole('menuitemradio', { name: 'Light' });
     const dark = within(group).getByRole('menuitemradio', { name: 'Dark' });
 
-    await pressAndExpectFocus('ArrowDown', light);
+    expect(light).toHaveFocus();
     await pressAndExpectFocus('ArrowDown', dark);
     fireEvent.keyDown(dark, { key: 'Enter' });
 
@@ -97,7 +106,7 @@ describe('UserMenu Theme control — keyboard (TASK-500)', () => {
     ).toEqual([dark]);
     // Picking a theme is a preview-and-compare action — the menu stays put so
     // the next arrow press can try another one.
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getAllByRole('menu')).toHaveLength(2);
     expect(dark.isConnected).toBe(true);
   });
 });

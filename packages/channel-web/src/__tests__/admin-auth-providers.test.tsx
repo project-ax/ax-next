@@ -51,7 +51,8 @@ describe('AuthProvidersTab', () => {
     render(<AuthProvidersTab />);
     await waitFor(() => expect(screen.getByText('Google')).toBeTruthy());
     expect(fetchMock.mock.calls[0]![0]).toBe('/admin/auth/providers');
-    expect(screen.getByText('123.apps.googleusercontent.com')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
+    expect(screen.getByText(/123\.apps\.googleusercontent\.com/)).toBeTruthy();
   });
 
   it('shows the empty state when no providers are configured', async () => {
@@ -234,7 +235,7 @@ describe('AuthProvidersTab', () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
 
     render(<AuthProvidersTab />);
-    await waitFor(() => screen.getByRole('button', { name: /Remove Google/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Details for Google' }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
 
     // A styled dialog appears (no OS confirm).
@@ -257,7 +258,7 @@ describe('AuthProvidersTab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
 
     render(<AuthProvidersTab />);
-    await waitFor(() => screen.getByRole('button', { name: /Remove Google/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Details for Google' }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
 
     // Confirm in the dialog — its action button is "Remove".

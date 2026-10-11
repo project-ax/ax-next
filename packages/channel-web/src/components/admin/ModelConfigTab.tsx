@@ -17,7 +17,9 @@ import { labelFor } from '@/lib/models-picker';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getAdminSetting, putAdminSetting } from '@/lib/admin-settings';
 import { Button } from '@/components/ui/button';
-import { RoleCard } from './RoleCard';
+import { Field, FieldContent, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Separator } from '@/components/ui/separator';
+import { SettingsHelp } from '../settings/SettingsLayout';
 import { ModelCombobox, type ModelComboboxGroup } from './ModelCombobox';
 
 interface RoleMeta {
@@ -43,6 +45,7 @@ export function ModelConfigTab() {
   const [loadError, setLoadError] = useState(false);
   // (D7) Bumping this re-runs the load effect — what the Retry button needs.
   const [reloadTick, setReloadTick] = useState(0);
+  const [originalModel, setOriginalModel] = useState('');
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
@@ -69,6 +72,7 @@ export function ModelConfigTab() {
         setProviders(catalog);
         setEnabledModels(policy.allowed);
         setSelectedModel(current ?? '');
+        setOriginalModel(current ?? '');
         setLoadError(false);
       } catch (err) {
         if (cancelled) return;
@@ -116,6 +120,7 @@ export function ModelConfigTab() {
     }
     try {
       await putAdminSetting('fast-model', selectedModel);
+      setOriginalModel(selectedModel);
       setSavedOk(true);
       savedTimeoutRef.current = setTimeout(() => {
         setSavedOk(false);
@@ -154,23 +159,7 @@ export function ModelConfigTab() {
   }
 
   return (
-    <div className="max-w-[640px] mx-auto font-sans">
-      <div className="mb-5">
-        {/* (TASK-341 / audit D3) This tab was called "Default AI model", in the
-            nav and here. It is not: it picks the small, fast model used for
-            conversation titles and other quick jobs, while each agent's CHAT
-            model is chosen on the Agents tab. An admin reading the old name had
-            every reason to think they were setting what their agents think
-            with — actively misleading, not merely vague. */}
-        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-          Helper model
-        </h2>
-        <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Used for conversation titles and quick tasks. Each agent picks its own
-          chat model on the Agents tab. Choose from the models enabled in
-          Settings → Models.
-        </p>
-      </div>
+    <div className="font-sans">
 
       {noModels && (
         <Alert className="mb-4">
@@ -185,8 +174,11 @@ export function ModelConfigTab() {
         </Alert>
       )}
 
-      <div className="flex flex-col gap-3.5">
-        <RoleCard pill={ROLE.pill} title={ROLE.label} caption={ROLE.description}>
+      <FieldGroup>
+        <Field orientation="horizontal" className="min-h-16 flex-wrap py-3">
+          <FieldContent><FieldLabel>Model</FieldLabel></FieldContent>
+          <SettingsHelp title="Model">{ROLE.description}</SettingsHelp>
+          <div className="w-full md:w-[280px]">
           <ModelCombobox
             ariaLabel={ROLE.label}
             groups={groups}
@@ -198,17 +190,12 @@ export function ModelConfigTab() {
               noModels ? '— Enable a model first —' : '— Select a model —'
             }
           />
-          {selectedModel.length > 0 && (
-            <span className="flex items-center gap-1.5 mt-2 text-[11.5px] text-muted-foreground">
-              Currently ·{' '}
-              <code className="font-mono text-[11.5px] text-primary tracking-[0.02em]">
-                {selectedLabel}
-              </code>
-            </span>
-          )}
-        </RoleCard>
-      </div>
+          </div>
+        </Field>
+      </FieldGroup>
+      <Separator />
 
+      {(selectedModel !== originalModel || savedOk || saveError) &&
       <div className="mt-6 pt-4 border-t border-rule-soft flex items-center gap-3">
         <Button
           type="button"
@@ -217,11 +204,7 @@ export function ModelConfigTab() {
         >
           {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
         </Button>
-        {selectedModel.length === 0 && !saving && !savedOk && !saveError && (
-          <span className="text-[12.5px] text-muted-foreground">
-            Pick a model above to enable save.
-          </span>
-        )}
+        {selectedModel !== originalModel && <Button type="button" variant="ghost" disabled={saving} onClick={() => { setSelectedModel(originalModel); setSaveError(false); }}>Cancel</Button>}
         {savedOk && (
           <span className="text-[12.5px] text-muted-foreground">
             Changes apply on the next chat turn.
@@ -235,7 +218,7 @@ export function ModelConfigTab() {
             <AlertDescription>We couldn’t save that. Give it another try in a moment.</AlertDescription>
           </Alert>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

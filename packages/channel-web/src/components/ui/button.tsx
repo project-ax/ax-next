@@ -19,6 +19,8 @@ const buttonVariants = cva(
         ghost: "hover:bg-accent hover:text-accent-foreground",
         send: "bg-send text-send-foreground shadow-key hover:bg-send-hover",
         navigation: "justify-start font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[active=true]:bg-primary-soft data-[active=true]:font-medium data-[active=true]:text-primary",
+        "settings-nav": "justify-start text-foreground hover:bg-muted data-[active=true]:bg-muted",
+        "settings-row": "h-auto min-h-[72px] justify-start gap-4 whitespace-normal px-2 py-3 text-foreground hover:bg-muted/60",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

@@ -48,6 +48,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
 
     await waitFor(() => {
@@ -65,6 +66,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
     await waitFor(() => {
       expect(screen.getByText('Remove provider?')).toBeTruthy();
@@ -83,6 +85,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
     await waitFor(() => {
       expect(screen.getByText('Remove provider?')).toBeTruthy();

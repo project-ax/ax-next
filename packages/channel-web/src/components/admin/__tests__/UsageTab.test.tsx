@@ -150,15 +150,35 @@ afterEach(() => {
 /** Render and wait for the table to appear. */
 async function renderLoaded() {
   const utils = render(<UsageTab />);
-  await screen.findByRole('table');
+  await screen.findByRole('list', { name: 'Estimated usage per person, last 24 hours' });
+  openUsageLimitFields();
   return utils;
 }
 
 /** The table row that holds this exact text. */
 function rowOf(text: string): HTMLElement {
-  const row = screen.getByText(text).closest('tr');
+  const row = screen.getByRole('button', { name: `Details for ${text}`, hidden: true });
   if (row === null) throw new Error(`no table row holds "${text}"`);
   return row;
+}
+
+function openUsageLimitFields() {
+  for (const title of ['Workspace per day', 'Per person per day', 'Messages per person per hour', 'Unreported usage estimate']) {
+    const button = screen.getByRole('button', { name: new RegExp(`^${title}`) });
+    if (button.getAttribute('aria-expanded') === 'false') fireEvent.click(button);
+  }
+}
+
+function closeUsageDetails() {
+  const dialog = screen.queryByRole('dialog');
+  if (dialog && within(dialog).queryByRole('button', { name: 'Close' })) {
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  }
+}
+function openUsageDetails(name: string) {
+  if (screen.queryByRole('dialog', { name })) return;
+  closeUsageDetails();
+  fireEvent.click(screen.getByRole('button', { name: `Details for ${name}` }));
 }
 
 function lastToast(): { title: string; detail?: string; kind?: string } {
@@ -190,6 +210,7 @@ describe('UsageTab — loading, empty and failure', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('table')).toBeNull();
     // The limits are still editable on a quiet day.
+    openUsageLimitFields();
     expect(screen.getByLabelText('Daily spend limit per person (USD)')).toBeInTheDocument();
   });
 
@@ -212,7 +233,7 @@ describe('UsageTab — loading, empty and failure', () => {
     expect(screen.queryByLabelText('Daily spend limit per person (USD)')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(await screen.findByRole('list', { name: 'Estimated usage per person, last 24 hours' })).toBeInTheDocument();
     expect(screen.queryByText(/couldn't load usage/i)).toBeNull();
     expect(callsTo('GET', '/admin/usage')).toHaveLength(2);
   });
@@ -253,20 +274,16 @@ describe('UsageTab — who used what', () => {
     expect(screen.getByText('1 person, 1 message, about $0.25 estimated')).toBeInTheDocument();
   });
 
-  it('gives the table a caption and a column for each thing an admin decides on', async () => {
+  it('names the list and provides a detail action for each person', async () => {
     await renderLoaded();
-    const table = screen.getByRole('table', {
-      name: 'Estimated usage per person, last 24 hours',
-    });
-    const headers = within(table)
-      .getAllByRole('columnheader')
-      .map((h) => h.textContent);
-    expect(headers).toEqual(['Person', 'Messages', 'Estimated spend', 'Status', 'Action']);
+    const list = screen.getByRole('list', { name: 'Estimated usage per person, last 24 hours' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
+    expect(within(list).getAllByRole('button', { name: /^Details for / })).toHaveLength(5);
   });
 
   it('lists the biggest spender first, in the order the server sent', async () => {
     await renderLoaded();
-    const rows = screen.getAllByRole('row').slice(1);
+    const rows = screen.getAllByRole('listitem');
     expect(rows).toHaveLength(5);
     expect(within(rows[0]!).getByText('jo@example.co')).toBeInTheDocument();
     expect(within(rows[4]!).getByText('u-anon')).toBeInTheDocument();
@@ -290,21 +307,26 @@ describe('UsageTab — who used what', () => {
     await renderLoaded();
 
     const sam = rowOf('Sam Chen');
-    expect(within(sam).getByText('12')).toBeInTheDocument();
-    expect(within(sam).getByText('3 in the last hour')).toBeInTheDocument();
+    expect(within(sam).getByText('12 messages')).toBeInTheDocument();
+    openUsageDetails('Sam Chen');
+    expect(screen.getByText('3 messages in the last hour')).toBeInTheDocument();
     expect(within(sam).getByText('$1.25')).toBeInTheDocument();
-    expect(within(sam).getByText('25% of limit')).toBeInTheDocument();
+    expect(screen.getByText('25% of limit')).toBeInTheDocument();
 
     // Over the limit is shown as it is, not clamped to 100.
-    expect(within(rowOf('jo@example.co')).getByText('110% of limit')).toBeInTheDocument();
+    openUsageDetails('jo@example.co');
+    expect(screen.getByText('110% of limit')).toBeInTheDocument();
     // A cent is not zero, and is not shown as if it were nothing.
+    closeUsageDetails();
     expect(within(rowOf('u-anon')).getByText('$0.01')).toBeInTheDocument();
-    expect(within(rowOf('u-anon')).getByText('<1% of limit')).toBeInTheDocument();
+    openUsageDetails('u-anon');
+    expect(screen.getByText('<1% of limit')).toBeInTheDocument();
   });
 
   it('says the status in words, never in colour alone', async () => {
     await renderLoaded();
-    expect(within(rowOf('Sam Chen')).getByText('OK')).toBeInTheDocument();
+    closeUsageDetails();
+    expect(within(rowOf('Sam Chen')).queryByText('Paused')).toBeNull();
     expect(within(rowOf('Riley Park')).getByText('Close to limit')).toBeInTheDocument();
     expect(within(rowOf('jo@example.co')).getByText('At limit')).toBeInTheDocument();
     expect(within(rowOf('Casey Lee')).getByText('Paused')).toBeInTheDocument();
@@ -312,17 +334,21 @@ describe('UsageTab — who used what', () => {
 
   it("shows why someone is paused, so the next admin doesn't have to ask", async () => {
     await renderLoaded();
-    expect(
-      within(rowOf('Casey Lee')).getByText('Runaway loop, checking in with Casey'),
-    ).toBeInTheDocument();
+    openUsageDetails('Casey Lee');
+    expect(screen.getByText('Runaway loop, checking in with Casey')).toBeInTheDocument();
   });
 
   it('offers Pause to everyone who is running and Resume to whoever is paused, by name', async () => {
     await renderLoaded();
+    openUsageDetails('Sam Chen');
     expect(screen.getByRole('button', { name: 'Pause agents for Sam Chen' })).toBeInTheDocument();
+    openUsageDetails('jo@example.co');
     expect(screen.getByRole('button', { name: 'Pause agents for jo@example.co' })).toBeInTheDocument();
+    openUsageDetails('Casey Lee');
     expect(screen.getByRole('button', { name: 'Resume agents for Casey Lee' })).toBeInTheDocument();
+    openUsageDetails('Casey Lee');
     expect(screen.queryByRole('button', { name: 'Pause agents for Casey Lee' })).toBeNull();
+    openUsageDetails('Sam Chen');
     expect(screen.queryByRole('button', { name: 'Resume agents for Sam Chen' })).toBeNull();
   });
 
@@ -346,7 +372,7 @@ describe('UsageTab — who used what', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
 
     expect(await screen.findByRole('button', { name: 'Refreshing…' })).toBeDisabled();
-    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Estimated usage per person, last 24 hours' })).toBeInTheDocument();
 
     release(json(200, { ...report, totals: { turns: 151, spendUsd: 12.9, users: 5 } }));
     expect(
@@ -376,10 +402,10 @@ describe('UsageTab — the two limits', () => {
 
   it('keeps Save limits off until there is a valid change to save', async () => {
     await renderLoaded();
-    const save = screen.getByRole('button', { name: 'Save limits' });
-    expect(save).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save limits' })).toBeNull();
 
     fireEvent.change(screen.getByLabelText(dailyLabel), { target: { value: '10' } });
+    const save = screen.getByRole('button', { name: 'Save limits' });
     expect(save).toBeEnabled();
 
     // Putting it back is "no change" again.
@@ -413,15 +439,15 @@ describe('UsageTab — the two limits', () => {
     expect(lastToast().kind ?? 'info').toBe('info');
 
     // The form now IS the saved state: nothing left to save.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save limits' })).toBeDisabled());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save limits' })).toBeNull());
     expect(screen.getByLabelText(dailyLabel)).toHaveValue(12.5);
     // …and the share-of-limit column uses the new limit (1.25 of 12.5 is 10%).
-    expect(within(rowOf('Sam Chen')).getByText('10% of limit')).toBeInTheDocument();
+    openUsageDetails('Sam Chen');
+    expect(screen.getByText('10% of limit')).toBeInTheDocument();
   });
 
   it('accepts the edges of the allowed ranges', async () => {
     await renderLoaded();
-    const save = screen.getByRole('button', { name: 'Save limits' });
     for (const [daily, turns] of [
       ['0.01', '1'],
       ['10000', '100000'],
@@ -430,7 +456,7 @@ describe('UsageTab — the two limits', () => {
       fireEvent.change(screen.getByLabelText(turnsLabel), { target: { value: turns } });
       expect(screen.getByLabelText(dailyLabel)).not.toHaveAttribute('aria-invalid', 'true');
       expect(screen.getByLabelText(turnsLabel)).not.toHaveAttribute('aria-invalid', 'true');
-      expect(save).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Save limits' })).toBeEnabled();
     }
   });
 
@@ -530,6 +556,7 @@ describe('UsageTab — pausing someone', () => {
   }
 
   async function openPauseDialog(name: string) {
+    openUsageDetails(name);
     fireEvent.click(screen.getByRole('button', { name: `Pause agents for ${name}` }));
     return screen.findByRole('dialog', { name: `Pause agents for ${name}?` });
   }
@@ -554,7 +581,8 @@ describe('UsageTab — pausing someone', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
-    expect(within(rowOf('Sam Chen')).getByText('OK')).toBeInTheDocument();
+    closeUsageDetails();
+    expect(within(rowOf('Sam Chen')).queryByText('Paused')).toBeNull();
   });
 
   it('pauses with the reason, flips the row, and says how many running tasks it stopped', async () => {
@@ -578,7 +606,8 @@ describe('UsageTab — pausing someone', () => {
     const sam = rowOf('Sam Chen');
     expect(within(sam).getByText('Paused')).toBeInTheDocument();
     expect(within(sam).queryByText('OK')).toBeNull();
-    expect(within(sam).getByText('Loop on the billing agent')).toBeInTheDocument();
+    openUsageDetails('Sam Chen');
+    expect(screen.getByText('Loop on the billing agent')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Resume agents for Sam Chen' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pause agents for Sam Chen' })).toBeNull();
 
@@ -646,7 +675,8 @@ describe('UsageTab — pausing someone', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(within(rowOf('Sam Chen')).getByText('OK')).toBeInTheDocument();
+    closeUsageDetails();
+    expect(within(rowOf('Sam Chen')).queryByText('Paused')).toBeNull();
     expect(showToast).not.toHaveBeenCalled();
   });
 
@@ -661,7 +691,8 @@ describe('UsageTab — pausing someone', () => {
     expect(message).toHaveTextContent('Nothing was changed.');
     expect(message).toHaveTextContent('The server ran into a problem.');
     expect(message).toHaveTextContent('Try again in a moment.');
-    expect(within(rowOf('Sam Chen')).getByText('OK')).toBeInTheDocument();
+    closeUsageDetails();
+    expect(within(rowOf('Sam Chen')).queryByText('Paused')).toBeNull();
   });
 
   it('forgets the last reason and error when the dialog is opened for someone else', async () => {
@@ -711,6 +742,7 @@ describe('UsageTab — resuming someone', () => {
     });
     await renderLoaded();
 
+    openUsageDetails('Casey Lee');
     fireEvent.click(screen.getByRole('button', { name: 'Resume agents for Casey Lee' }));
 
     await waitFor(() =>
@@ -720,13 +752,13 @@ describe('UsageTab — resuming someone', () => {
     expect(del.headers['x-requested-with']).toBe('ax-admin');
     expect(screen.queryByRole('dialog')).toBeNull();
 
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Pause agents for Casey Lee' })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(rowOf('Casey Lee')).queryByText('Paused')).toBeNull());
+    openUsageDetails('Casey Lee');
+    expect(screen.getByRole('button', { name: 'Pause agents for Casey Lee' })).toBeInTheDocument();
     const casey = rowOf('Casey Lee');
     expect(within(casey).queryByText('Paused')).toBeNull();
     expect(within(casey).queryByText('Runaway loop, checking in with Casey')).toBeNull();
-    expect(within(casey).getByText('OK')).toBeInTheDocument();
+    expect(within(casey).queryByText('Paused')).toBeNull();
     expect(lastToast().title).toBe('Resumed agents for Casey Lee.');
   });
 
@@ -738,6 +770,7 @@ describe('UsageTab — resuming someone', () => {
       casey.suspended = null;
     });
     await renderLoaded();
+    openUsageDetails('Casey Lee');
     fireEvent.click(screen.getByRole('button', { name: 'Resume agents for Casey Lee' }));
 
     await waitFor(() =>
@@ -754,6 +787,7 @@ describe('UsageTab — resuming someone', () => {
         : defaultHandler(call);
     await renderLoaded();
 
+    openUsageDetails('Casey Lee');
     fireEvent.click(screen.getByRole('button', { name: 'Resume agents for Casey Lee' }));
     const busy = await screen.findByRole('button', { name: 'Resume agents for Casey Lee' });
     expect(busy).toBeDisabled();
@@ -767,6 +801,7 @@ describe('UsageTab — resuming someone', () => {
     handler = (call) => (call.method === 'DELETE' ? json(500, {}) : defaultHandler(call));
     await renderLoaded();
 
+    openUsageDetails('Casey Lee');
     fireEvent.click(screen.getByRole('button', { name: 'Resume agents for Casey Lee' }));
 
     const alert = await screen.findByText(/We couldn't resume Casey Lee's agents\./);
