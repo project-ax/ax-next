@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { constants, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
-  rmSync, writeFileSync, symlinkSync } from 'node:fs';
+  rmSync, statSync, existsSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { StorageNodeEngine, type StorageAuthority } from '../storage-node/engine.js';
+import { BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
+import { StorageNodeEngine, STORAGE_REQUEST_MAX_BYTES, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from '../storage-node/authority.js';
-import { StorageAssignmentSchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { StorageAssignmentSchema, StorageRecordSchema, StorageRecoverySchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -34,7 +35,7 @@ function engineFixture(data = input()) {
     for (const part of parts) {
       if (!part || ['.', '..'].includes(part) || part.includes('/') || part.includes('\0')) throw new Error('unsafe component');
       path = join(path, part);
-      if (create) { try { mkdirSync(path); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; } }
+      if (create) { try { mkdirSync(path, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; } }
       const test = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); closeSync(test);
     }
     const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); fds.set(fd, path);
@@ -56,9 +57,10 @@ function engineFixture(data = input()) {
       if (!pretendSuccess) mounted.delete(args.at(-1)!);
     }
   });
-  const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
+  const chowned: (string | undefined)[] = [];
+  const io = { directory, chown: vi.fn((fd: number) => { chowned.push(fds.get(fd)); }), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
-    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io };
+    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, chowned };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -196,6 +198,110 @@ describe('storage-node ledger and lifecycle', () => {
   });
 });
 
+// W2 §3.8.1 — shared folders on the shared warm pool. The source path comes
+// from the folder id only; the claim annotation is the host's decision.
+const SHARED = [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }];
+const withShared = (data = input(), sharedFolders = SHARED): StorageAssignment => ({ ...data, sharedFolders });
+describe('storage-node shared folders', () => {
+  it('binds .shared/<id> to ax-late/shared/<id>, ro-remounts viewers and chowns only writers, all before publishing', async () => {
+    const f = engineFixture(withShared()); await f.make().assign(f.data);
+    const files = f.config.userFilesRoot;
+    expect(f.command.mock.calls.filter(([p]) => p === 'mount').map(([, a]) => a)).toEqual([
+      ['--no-canonicalize', '--bind', join(files, 'agent-a'), join(f.volume, 'files')],
+      ['--no-canonicalize', '--bind', join(files, '.shared/sf_a'), join(f.volume, 'shared/sf_a')],
+      ['--no-canonicalize', '--bind', join(files, '.shared/sf_b'), join(f.volume, 'shared/sf_b')],
+      ['--no-canonicalize', '-o', 'remount,bind,ro', join(f.volume, 'shared/sf_b')],
+    ]);
+    expect(f.chowned).toContain(join(files, '.shared/sf_a'));
+    expect(f.chowned).not.toContain(join(files, '.shared/sf_b'));
+    expect(f.chowned).not.toContain(join(files, '.shared'));
+    // `shared` is not a mount point: the non-root runner must be able to traverse it.
+    expect(statSync(join(f.volume, 'shared')).mode & 0o777).toBe(0o755);
+    // Every bind precedes the pre-publish authorization recheck and the publish.
+    expect(f.events).toEqual(['authorize', 'protect', 'mount', 'mount', 'mount', 'mount', 'authorize']);
+    expect(readdirSync(join(f.volume, 'bootstrap'))).toEqual(['session.json']);
+    const ledger = JSON.parse(readFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), 'utf8'));
+    expect(ledger.sharedFolders).toEqual(SHARED);
+    expect(f.authority.protect).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sharedFolders: SHARED }));
+  });
+  it('binds a shared folder for a session with no other storage role', async () => {
+    const f = engineFixture(withShared({ ...input(), roles: [] }, [{ folderId: 'sf_a', readOnly: true }]));
+    await f.make().assign(f.data);
+    expect([...f.mounted]).toEqual([join(f.volume, 'shared/sf_a')]);
+  });
+  it.each([
+    ['.shared', (files: string, ledger: string) => { symlinkSync(ledger, join(files, '.shared')); }],
+    ['folder', (files: string, ledger: string) => { mkdirSync(join(files, '.shared')); symlinkSync(ledger, join(files, '.shared/sf_a')); }],
+    ['staging shared', (_files: string, _ledger: string, volume: string) => { symlinkSync('/tmp', join(volume, 'shared')); }],
+  ])('refuses a symlinked %s directory before any shared bind', async (_label, plant) => {
+    const f = engineFixture(withShared()); plant(f.config.userFilesRoot, f.config.ledgerRoot, f.volume);
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.some(x => x.includes('.shared')))).toBe(false);
+    // Credentials are never published without every bind in place.
+    expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
+  });
+  it('unmounts every shared target on release and verifies each in mountinfo', async () => {
+    const f = engineFixture(withShared()); const engine = f.make(); await engine.assign(f.data); f.events.length = 0;
+    const unmounted: string[] = [];
+    f.command.mockImplementation((program: string, args: string[]) => {
+      f.events.push(program); if (program === 'umount') { unmounted.push(args.at(-1)!); f.mounted.delete(args.at(-1)!); }
+    });
+    await engine.release(identity(f.data));
+    expect(f.events).toEqual(['stop', 'sync', 'umount', 'sync', 'umount', 'sync', 'umount', 'finish']);
+    expect(unmounted).toEqual([join(f.volume, 'files'), join(f.volume, 'shared/sf_a'), join(f.volume, 'shared/sf_b')]);
+    expect(f.mounted.size).toBe(0); expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  it('does not trust umount for a shared target that mountinfo still shows', async () => {
+    const f = engineFixture(withShared({ ...input(), roles: [] })); await f.make().assign(f.data); f.pretendSuccess();
+    await expect(f.make().release(identity(f.data))).rejects.toThrow('remains attached');
+    expect(f.authority.finish).not.toHaveBeenCalled(); expect(readdirSync(f.config.ledgerRoot)).toHaveLength(1);
+  });
+  it('releases shared binds from the ledger after a helper restart', async () => {
+    const f = engineFixture(withShared()); await f.make().assign(f.data);
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true);
+    await f.make().reconcile();
+    expect(f.mounted.size).toBe(0); expect(f.authority.finish).toHaveBeenCalledOnce();
+  });
+  it('releases shared binds from the recovery annotation after the local ledger is lost', async () => {
+    const f = engineFixture(withShared()); await f.make().assign(f.data);
+    const ledger = join(f.config.ledgerRoot, `${f.data.podUid}.json`);
+    const record = JSON.parse(readFileSync(ledger, 'utf8')); unlinkSync(ledger);
+    f.authority.recover = vi.fn(async () => [{ ...record, published: false }]);
+    await f.make().reconcile();
+    expect(f.mounted.size).toBe(0); expect(f.authority.finish).toHaveBeenCalledOnce();
+  });
+  it('treats a different folder list as a different assignment on retry', async () => {
+    const f = engineFixture(withShared()); await f.make().assign(f.data);
+    await expect(f.make().assign({ ...f.data, sharedFolders: [{ folderId: 'sf_a', readOnly: false }] })).rejects.toThrow('already assigned');
+  });
+  it('rejects malformed folder lists in the protocol', () => {
+    const base = input();
+    const many = Array.from({ length: 17 }, (_, i) => ({ folderId: `sf_${String(i).padStart(2, '0')}`, readOnly: true }));
+    for (const sharedFolders of [[{ folderId: '../agent-b', readOnly: false }], [{ folderId: 'sf_a/..', readOnly: false }],
+      [{ folderId: 'agent-a', readOnly: false }], [{ folderId: 'sf_a', readOnly: 'no' }], [{ folderId: 'sf_a' }],
+      [{ folderId: 'sf_a', readOnly: false, path: '/etc' }], [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_a', readOnly: true }],
+      [{ folderId: 'sf_b', readOnly: false }, { folderId: 'sf_a', readOnly: false }], [], many]) {
+      expect(StorageAssignmentSchema.safeParse({ ...base, sharedFolders }).success).toBe(false);
+      const { bootstrap, ...rest } = base;
+      expect(StorageRecordSchema.safeParse({ ...rest, assignmentId: bootstrap.assignmentId, published: false, sharedFolders }).success).toBe(false);
+    }
+    expect(StorageAssignmentSchema.safeParse({ ...base, sharedFolders: many.slice(0, 16) }).success).toBe(true);
+  });
+  it('keeps 16 maximum-length folders under the ledger, annotation and request caps', () => {
+    const name = 'n'.repeat(63);
+    const longest = Array.from({ length: 16 }, (_, i) => ({ folderId: `sf_${i.toString(16)}${'z'.repeat(63)}`, readOnly: false }));
+    const { bootstrap, ...rest } = input();
+    const record = StorageRecordSchema.parse({ ...rest, podName: name, claimName: name, sandboxName: name, agentId: 'a'.repeat(128),
+      roles: ['user-files', 'memory'], assignmentId: bootstrap.assignmentId, published: false, sharedFolders: longest });
+    expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThanOrEqual(8192);
+    const intent = StorageRecoverySchema.parse({ version: 1, fence: { machineId: randomUUID(), bootId: randomUUID() }, record });
+    expect(Buffer.byteLength(JSON.stringify(intent))).toBeLessThanOrEqual(8192);
+    const { assignmentId: _a, published: _p, ...request } = record;
+    // The request is the identity + list plus a bootstrap bounded by BOOTSTRAP_MAX_BYTES.
+    expect(Buffer.byteLength(JSON.stringify({ ...request, bootstrap: null })) + BOOTSTRAP_MAX_BYTES).toBeLessThanOrEqual(STORAGE_REQUEST_MAX_BYTES);
+  });
+});
+
 function kubeFixture(data = input()) {
   const pod: StorageObject = { metadata: { name: data.podName, uid: data.podUid, resourceVersion: '1',
     labels: { 'ax.io/shared-standby': 'pool' }, annotations: { 'dev.gvisor.empty-dir.ax-late.force-shared': 'true' },
@@ -253,6 +359,40 @@ describe('storage-node Kubernetes authority', () => {
   });
 });
 
+describe('storage-node shared-folder authority', () => {
+  const ANNOTATION = 'ax.io/shared-folders';
+  const canonical = '[{"folderId":"sf_a","readOnly":false},{"folderId":"sf_b","readOnly":true}]';
+  it('accepts a list that equals the claim annotation exactly', async () => {
+    const f = kubeFixture(withShared()); f.claim.metadata!.annotations = { [ANNOTATION]: canonical };
+    await expect(f.authority.authorize(f.data)).resolves.toBeUndefined();
+  });
+  it('accepts no list when the claim carries no annotation', async () => {
+    const f = kubeFixture(); await expect(f.authority.authorize(f.data)).resolves.toBeUndefined();
+  });
+  it.each<[string, string | undefined, StorageAssignment['sharedFolders']]>([
+    ['an extra folder', '[{"folderId":"sf_a","readOnly":false}]', SHARED],
+    ['a missing folder', canonical, [{ folderId: 'sf_a', readOnly: false }]],
+    ['a flipped readOnly', canonical, [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: false }]],
+    ['a malformed annotation', '[{"folderId":"sf_a","readOnly":false},{"folderId":"sf_b","readOnly":true}', SHARED],
+    ['a non-canonical annotation', '[{"readOnly":false,"folderId":"sf_a"},{"folderId":"sf_b","readOnly":true}]', SHARED],
+    ['an annotation with an unvalidated id', '[{"folderId":"../x","readOnly":false}]', undefined],
+    ['an empty annotation', '[]', undefined],
+    ['an annotation but no request list', canonical, undefined],
+    ['a request list but no annotation', undefined, SHARED],
+  ])('refuses %s', async (_label, annotation, sharedFolders) => {
+    const f = kubeFixture(sharedFolders ? withShared(input(), sharedFolders) : input());
+    if (annotation !== undefined) f.claim.metadata!.annotations = { [ANNOTATION]: annotation };
+    await expect(f.authority.authorize(f.data)).rejects.toThrow('no longer active');
+    expect(f.api.patchFinalizers).not.toHaveBeenCalled();
+  });
+  it('re-checks the annotation in the pre-publish recheck', async () => {
+    const f = kubeFixture(withShared()); f.claim.metadata!.annotations = { [ANNOTATION]: canonical };
+    await f.authority.authorize(f.data);
+    f.claim.metadata!.annotations = { [ANNOTATION]: '[{"folderId":"sf_a","readOnly":false}]' };
+    await expect(f.authority.authorize(f.data)).rejects.toThrow('no longer active');
+  });
+});
+
 describe.skipIf(process.platform !== 'linux')('Linux descriptor confinement', () => {
   it('pins parent directories across rename and rejects intermediate symlinks', () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-confined-')); roots.push(root);
@@ -285,6 +425,12 @@ describe('shared storage recovery after local ledger loss', () => {
     await f.authority.protect(f.data,f.record);
     const calls=vi.mocked(f.api.patchFinalizers).mock.calls;expect(calls[0]![2][2]).toMatchObject({path:'/metadata/annotations'});
     const intent=JSON.parse(f.pod.metadata!.annotations![annotation]!);expect(intent.record).not.toHaveProperty('bootstrap');expect(intent.record).not.toHaveProperty('env');expect(intent.fence).toEqual(fence);
+  });
+  it('carries the shared-folder list through the recovery annotation', async () => {
+    const f = recoveredFixture(); const record = { ...f.record, sharedFolders: SHARED };
+    await f.authority.protect({ ...f.data, sharedFolders: SHARED }, record);
+    expect(JSON.parse(f.pod.metadata!.annotations![annotation]!).record.sharedFolders).toEqual(SHARED);
+    expect(await f.authority.recover!()).toEqual([record]);
   });
   it('recovers a secret-free intent and fences a prior boot before finishing a lost ledger', async () => {
     const f = recoveredFixture();

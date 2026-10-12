@@ -293,32 +293,12 @@ export function createOpenSession(deps: OpenSessionDeps) {
       }
     }
 
-    // 2c. W2 shared folders vs the shared warm pool. The pool's node helper
-    //     binds only the user-files + memory roles, so a pooled session cannot
-    //     carry a shared-folder mount yet (design §3.8). Refuse BEFORE building
-    //     or creating anything, with a clear error, and roll back the session
-    //     like every other open failure. Non-pooled sessions are unaffected.
+    // 2c. Will this session run on the shared warm pool? Pooled sessions bind
+    //     their storage — /files, /memory and any shared folders (W2 §3.8.1) —
+    //     through the node helper rather than pod volumes.
     const pooled = deps.config.sharedPool !== undefined &&
       Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
       (input.services?.length ?? 0) === 0;
-    if (pooled && mounts.some((m) => m.role === 'shared-folder')) {
-      podLog.error('shared_folders_unsupported_in_pool', {});
-      await deps.bus
-        .call<SessionTerminateInput, Record<string, never>>(
-          'session:terminate',
-          ctx,
-          { sessionId: created.sessionId },
-        )
-        .catch(() => undefined);
-      throw new PluginError({
-        code: 'shared-folders-unsupported-in-pool',
-        plugin: PLUGIN_NAME,
-        hookName: HOOK_NAME,
-        message:
-          'shared folders are not supported for sessions on the shared warm pool yet; ' +
-          'this session asked to mount one, so it was not started',
-      });
-    }
 
     // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
     //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the

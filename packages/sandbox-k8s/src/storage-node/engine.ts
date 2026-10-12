@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
-import { sourceParts } from './sources.js';
+import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
@@ -21,6 +21,15 @@ export interface StorageNodeConfig {
   kubeletPodsRoot: string; ledgerRoot: string; userFilesRoot: string; memoryRoot?: string;
 }
 const targetName = (role: 'user-files' | 'memory') => role === 'user-files' ? 'files' : 'memory';
+/**
+ * Every bind target a record owns, below the late-bind volume: `files`,
+ * `memory`, then `shared/<folderId>` per shared folder (W2 §3.8.1). Release and
+ * recovery derive these from the record alone; the id is re-validated here.
+ */
+const targetParts = (record: StorageRecord): string[][] => [
+  ...record.roles.map(role => [targetName(role)]),
+  ...(record.sharedFolders ?? []).map(folder => sharedFolderTargetParts(folder.folderId)),
+];
 
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
@@ -109,6 +118,30 @@ export class StorageNodeEngine {
             }
           } finally { target?.close(); volume.close(); source.close(); }
         }
+        // W2 §3.8.1 — shared folders. The source comes from the id alone, under
+        // the user-files export, each component pinned with O_NOFOLLOW; a
+        // symlinked `.shared` or folder directory is refused. Every bind lands
+        // before the bootstrap is published, so the runner never starts without it.
+        for (const folder of input.sharedFolders ?? []) {
+          const source = this.io.directory(this.config.userFilesRoot, sharedFolderSourceParts(folder.folderId), true);
+          const volume = this.volume(record);
+          let parent, target;
+          try {
+            // Writable folders belong to the runner uid, as /files does; a viewer's
+            // folder is never written, not even its owner.
+            if (!folder.readOnly) this.io.chown(source.fd);
+            const [dir, leaf] = sharedFolderTargetParts(folder.folderId) as [string, string];
+            // `shared` is not mounted over, so the runner must be able to traverse it.
+            parent = this.io.directory(volume, [dir], true); fchmodSync(parent.fd, 0o755);
+            target = this.io.directory(parent, [leaf], true);
+            this.command('mount', ['--no-canonicalize', '--bind', source.path, target.path]);
+            if (folder.readOnly) {
+              const mounted = this.io.directory(parent, [leaf]);
+              try { this.command('mount', ['--no-canonicalize', '-o', 'remount,bind,ro', mounted.path]); }
+              finally { mounted.close(); }
+            }
+          } finally { target?.close(); parent?.close(); volume.close(); source.close(); }
+        }
         const volume = this.volume(record);
         const directory = this.io.directory(volume, ['bootstrap'], true);
         try {
@@ -175,15 +208,15 @@ export class StorageNodeEngine {
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     if (volume) {
       try {
-        for (const role of record.roles) {
+        for (const parts of targetParts(record)) {
           let target;
           try {
-            target = this.io.directory(volume, [targetName(role)]);
+            target = this.io.directory(volume, parts);
             const targetStat = fstatSync(target.fd), volumeStat = fstatSync(volume.fd);
             // A planned but never completed bind lives on the same filesystem as emptyDir.
             // Require a mount record too: local acceptance sources may have the same device.
             const stillMounted = () => this.io.mountInfo().split('\n').some(line => line.split(' ')[4]?.endsWith(
-              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${targetName(role)}`));
+              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${parts.join('/')}`));
             const mounted = stillMounted();
             if (mounted || targetStat.dev !== volumeStat.dev) {
               this.command('sync', ['-f', target.path]);

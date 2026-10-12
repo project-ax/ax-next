@@ -48,16 +48,24 @@ function fixture() {
   return { pods, direct, custom, storage, changePod: () => { podUid = randomUUID(); },
     changeSandbox: () => { sandboxUid = randomUUID(); }, deleteClaim: () => { deleting = true; } };
 }
-function sessionPod(agent = 'agent-a', memory = false) {
+function sessionPod(agent = 'agent-a', memory = false, shared: { id: string; readOnly: boolean }[] = []) {
   const pod = buildPodSpec('session', { sessionId: 'session-a', workspaceRoot: '/agent', runnerBinary: '/runner.js',
     authToken: 'secret-session-token', runnerEndpoint: config.hostIpcUrl,
     proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' }, proxyAuthToken: 'e'.repeat(32) },
     mounts: [{ kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: agent,
       mountPath: '/files', readOnly: false }, ...(memory ? [{ kind: 'nfs' as const, role: 'memory' as const,
-      server: '10.0.0.10', exportPath: '/memory', subPath: memoryPath(agent), mountPath: '/memory', readOnly: true }] : [])],
+      server: '10.0.0.10', exportPath: '/memory', subPath: memoryPath(agent), mountPath: '/memory', readOnly: true }] : []),
+      ...shared.map(s => ({ kind: 'nfs' as const, role: 'shared-folder' as const, folderId: s.id, server: '10.0.0.9', exportPath: '/files',
+        subPath: `.shared/${s.id}`, mountPath: `/shared/${s.id}`, readOnly: s.readOnly }))],
   }, config);
   pod.metadata.labels['ax.io/agent-id'] = agent;
   return pod;
+}
+const runnerOf = (pod: ReturnType<typeof sessionPod>) => (pod.spec.containers as {
+  env: { name: string; value?: string }[]; volumeMounts: { name: string; mountPath: string; subPath?: string; readOnly?: boolean }[] }[])[0]!;
+function claimBody(f: ReturnType<typeof fixture>) {
+  const call = vi.mocked(f.custom.createNamespacedCustomObject).mock.calls.find(([c]) => c.plural === 'sandboxclaims')!;
+  return call[0].body as { metadata: { labels: Record<string, string>; annotations?: Record<string, string> } };
 }
 describe('shared Agent Sandbox pool', () => {
   it('bounds warm capacity by execution class and keeps all session state out of templates', () => {
@@ -264,10 +272,10 @@ describe('shared Agent Sandbox pool', () => {
       await result.handle.kill(); expect(f.storage.release).toHaveBeenCalledTimes(1);
     } finally { await h.close(); }
   });
-  // W2 shared folders §3.8: the pool's node helper cannot bind a shared folder
-  // yet, so a pooled session that would carry one refuses to open — clearly,
-  // and before any claim, storage assignment or pod exists.
-  it('refuses a pooled session with a shared-folder mount before creating anything', async () => {
+  // W2 shared folders §3.8.1: a pooled session late-binds its shared folders
+  // through the node helper. The claim carries the host's decision; the helper
+  // refuses anything the claim doesn't name.
+  it('opens a pooled session with a shared-folder mount through the real plugin bus', async () => {
     const f = fixture();
     const resolver: Plugin = { manifest: { name: 'fixture-resolver', version: '0', registers: ['sandbox:resolve-mounts'], calls: [], subscribes: [] },
       init({ bus }) { bus.registerService('sandbox:resolve-mounts', 'fixture-resolver', async () => ({ mounts: [
@@ -278,22 +286,67 @@ describe('shared Agent Sandbox pool', () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin(), resolver,
       createSandboxK8sPlugin({ ...config, api: f.pods, sandboxApi: f.custom, storageClient: f.storage })] });
     try {
-      const claimCreatesBefore = vi.mocked(f.custom.createNamespacedCustomObject).mock.calls
-        .filter(([req]) => req.plural === 'sandboxclaims').length;
-      await expect(h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+      const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
         sessionId: 's-shared', workspaceRoot: '/agent', runnerBinary: '/runner.js', sharedFolderIds: ['sf_x'],
         proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {}, proxyAuthToken: 'e'.repeat(32) }, owner: {
           userId: 'user-a', agentId: 'agent-a', agentConfig: { displayName: 'A', systemPromptAugment: '',
             allowedTools: [], mcpConfigIds: [], model: 'model', runner: 'claude-sdk' },
         },
-      })).rejects.toMatchObject({ code: 'shared-folders-unsupported-in-pool' });
-      expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls
-        .filter(([req]) => req.plural === 'sandboxclaims')).toHaveLength(claimCreatesBefore);
-      expect(f.storage.assign).not.toHaveBeenCalled();
-      expect(f.pods.creates).toHaveLength(0);
-      // Rolled back like any other open failure: no live token left behind.
-      expect(await h.bus.call('session:is-alive', h.ctx(), { sessionId: 's-shared' })).toEqual({ alive: false });
+      });
+      expect(f.pods.creates).toHaveLength(0); expect(f.direct.creates).toHaveLength(0);
+      expect(claimBody(f).metadata.annotations).toEqual({ 'ax.io/shared-folders': '[{"folderId":"sf_x","readOnly":false}]' });
+      expect(f.storage.assign).toHaveBeenCalledWith('gvisor-node', expect.objectContaining({
+        roles: ['user-files'], sharedFolders: [{ folderId: 'sf_x', readOnly: false }] }));
+      await result.handle.kill(); expect(f.storage.release).toHaveBeenCalledTimes(1);
     } finally { await h.close(); }
+  });
+  it('carries editor and viewer folders on the claim, the assignment and the bootstrap, sorted by id', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const pod = sessionPod('agent-a', true, [{ id: 'sf_b', readOnly: true }, { id: 'sf_a', readOnly: false }]);
+    const envValue = runnerOf(pod).env.find(e => e.name === 'AX_SHARED_FOLDERS')!.value;
+    await api.createNamespacedPod({ namespace: config.namespace, body: pod });
+    expect(f.direct.creates).toHaveLength(0);
+    expect(claimBody(f).metadata.annotations).toEqual({
+      'ax.io/shared-folders': '[{"folderId":"sf_a","readOnly":false},{"folderId":"sf_b","readOnly":true}]' });
+    expect(claimBody(f).metadata.labels).toEqual({ 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name, 'ax.io/agent-id': 'agent-a' });
+    expect(f.storage.assign).toHaveBeenCalledWith('gvisor-node', expect.objectContaining({
+      agentId: 'agent-a', roles: ['user-files', 'memory'],
+      sharedFolders: [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }],
+      bootstrap: expect.objectContaining({ env: expect.objectContaining({ AX_SHARED_FOLDERS: envValue }) }),
+    }));
+  });
+  it('leaves a session without shared folders byte-identical: no annotation, no sharedFolders key', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod('agent-a', true) });
+    expect('annotations' in claimBody(f).metadata).toBe(false);
+    const req = vi.mocked(f.storage.assign).mock.calls[0]![1];
+    expect('sharedFolders' in req).toBe(false);
+    expect(req.bootstrap.env).not.toHaveProperty('AX_SHARED_FOLDERS');
+  });
+  type Mutable = { volumes: { name: string; nfs?: { server: string; path: string } }[]; mount: { name: string; mountPath: string; subPath?: string; readOnly?: boolean };
+    runner: ReturnType<typeof runnerOf>; pod: ReturnType<typeof sessionPod> };
+  it.each<[string, (m: Mutable) => void]>([
+    ['another server', m => { m.volumes.find(v => v.name === m.mount.name)!.nfs!.server = '10.0.0.10'; }],
+    ['another export', m => { m.volumes.find(v => v.name === m.mount.name)!.nfs!.path = '/memory'; }],
+    ['a subPath into an agent tree', m => { m.mount.subPath = 'agent-b'; }],
+    ['a subPath naming another folder', m => { m.mount.subPath = '.shared/sf_b'; }],
+    ['a nested subPath', m => { m.mount.subPath = '.shared/sf_a/../sf_b'; }],
+    ['a mountPath for another folder', m => { m.mount.mountPath = '/shared/sf_b'; }],
+    ['a mountPath outside /shared', m => { m.mount.mountPath = '/files/sf_a'; }],
+    ['an invalid id', m => { m.mount.subPath = '.shared/bad'; m.mount.mountPath = '/shared/bad'; }],
+    ['a duplicate folder', m => { m.runner.volumeMounts.push({ ...m.mount, readOnly: true }); }],
+    ['a bootstrap env that disagrees with the mounts', m => {
+      m.runner.env.find(e => e.name === 'AX_SHARED_FOLDERS')!.value = '[{"id":"sf_a","path":"/shared/sf_a","readOnly":true}]'; }],
+    ['a bootstrap env with no mounts', m => {
+      m.runner.volumeMounts.splice(m.runner.volumeMounts.indexOf(m.mount), 1); }],
+  ])('rejects a shared-folder mount with %s before making a claim', async (_label, mutate) => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const pod = sessionPod('agent-a', false, [{ id: 'sf_a', readOnly: false }]);
+    const runner = runnerOf(pod);
+    mutate({ pod, runner, volumes: pod.spec.volumes as Mutable['volumes'], mount: runner.volumeMounts.find(m => m.mountPath === '/shared/sf_a')! });
+    await expect(api.createNamespacedPod({ namespace: config.namespace, body: pod })).rejects.toThrow();
+    expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls).toHaveLength(2);
+    expect(f.storage.assign).not.toHaveBeenCalled(); expect(f.direct.creates).toHaveLength(0);
   });
 });
 

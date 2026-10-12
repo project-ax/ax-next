@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { StorageAuthority } from './engine.js';
-import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, STANDBY_LABEL, LATE_VOLUME, STORAGE_FINALIZER,
+import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, CLAIM_SHARED_FOLDERS_ANNOTATION, SharedFoldersSchema, canonicalSharedFolders, STANDBY_LABEL, LATE_VOLUME, STORAGE_FINALIZER,
   STORAGE_RECOVERY, StorageRecoverySchema, type NodeFence,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
@@ -40,6 +40,20 @@ const quiescent = (pod: StorageObject) => (pod.status?.containerStatuses?.length
     const t = s.state?.terminated as { reason?: string; finishedAt?: string | Date } | undefined;
     return t && t.reason !== 'ContainerStatusUnknown' && t.finishedAt != null && Number.isFinite(new Date(t.finishedAt).getTime());
   });
+/**
+ * W2 §3.8.1 — the claim annotation is the host's decision of which shared
+ * folders this instance may bind. The request must name exactly that list:
+ * absent annotation ⇔ no list; otherwise a valid, canonical annotation equal
+ * byte for byte to the request's canonical form. Anything else is refused.
+ */
+function sharedFoldersMatch(claim: StorageObject, input: StorageAssignment): boolean {
+  const raw = claim.metadata?.annotations?.[CLAIM_SHARED_FOLDERS_ANNOTATION];
+  if (raw === undefined) return input.sharedFolders === undefined;
+  if (input.sharedFolders === undefined) return false;
+  let parsed;
+  try { parsed = SharedFoldersSchema.safeParse(JSON.parse(raw)); } catch { return false; }
+  return parsed.success && canonicalSharedFolders(parsed.data) === raw && canonicalSharedFolders(input.sharedFolders) === raw;
+}
 const expired = (claim: StorageObject) => {
   const deadline = Date.parse(claim.spec?.lifecycle?.shutdownTime ?? '');
   return !Number.isFinite(deadline) || deadline <= Date.now();
@@ -100,7 +114,8 @@ export function createStorageAuthority(api: StorageKubeApi, nodeName: string, po
     async authorize(input: StorageAssignment) {
       const { pod, claim, sandbox } = await observed(input);
       if (pod.metadata?.deletionTimestamp || claim.metadata?.deletionTimestamp || sandbox.metadata?.deletionTimestamp ||
-          terminal(pod) || expired(claim) || claim.metadata?.labels?.[CLAIM_AGENT_LABEL] !== input.agentId) {
+          terminal(pod) || expired(claim) || claim.metadata?.labels?.[CLAIM_AGENT_LABEL] !== input.agentId ||
+          !sharedFoldersMatch(claim, input)) {
         throw new Error('storage assignment is no longer active');
       }
     },
