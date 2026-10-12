@@ -1689,7 +1689,8 @@ describe('@ax/preset-memory canary', () => {
   // The real @ax/shared-folders (loaded by the k8s base), the real @ax/agents
   // and the real filestore resolver decide which folders mount; the fake k8s
   // api records the pod. This proves the pod SPEC — NFS volume + subPath,
-  // writable + chowned for owner/editor, read-only + no chown for a viewer, and
+  // writable + chowned for owner/editor, a read-only volume for a viewer (its
+  // folder is created and chowned through a separate prep volume), and
   // AX_SHARED_FOLDERS — not file access across agents (that's the
   // sandbox-subprocess shared-folders canary). The canary runs the `pod`
   // backend; the agent-sandbox preparation of the same chown inits is pinned in
@@ -1813,7 +1814,7 @@ describe('@ax/preset-memory canary', () => {
       }
     });
 
-    it('a viewer (after a downgrade): read-only mount, no chown, readOnly in AX_SHARED_FOLDERS', async () => {
+    it('a viewer (after a downgrade): read-only volume and mount, chowned only through a prep volume, readOnly in AX_SHARED_FOLDERS', async () => {
       await bus.call('shared-folders:grant', ctxFor(ownerAgent, ALICE), {
         folderId,
         agentId: memberAgent,
@@ -1823,8 +1824,17 @@ describe('@ax/preset-memory canary', () => {
       const { mount, volume, chown, env } = sharedParts(pod);
       expect(mount?.subPath).toBe(`.shared/${folderId}`);
       expect(mount?.readOnly).toBe(true);
-      expect(volume?.nfs).toEqual({ server: 'filestore.example.invalid', path: '/exports/ax-user-files' });
-      expect(chown, 'a viewer mount gets no chown (that would be a write)').toBeUndefined();
+      expect(volume?.nfs).toEqual({
+        server: 'filestore.example.invalid',
+        path: '/exports/ax-user-files',
+        readOnly: true,
+      });
+      // The folder is created + chowned by an init that mounts a SEPARATE
+      // writable prep volume; the runner never mounts that volume.
+      const prepName = `${mount?.name}-prep`;
+      expect(chown?.volumeMounts?.map((m) => m.name)).toEqual([prepName]);
+      expect(pod.spec?.volumes?.find((v) => v.name === prepName)?.nfs?.readOnly).not.toBe(true);
+      expect(pod.spec?.containers?.[0]?.volumeMounts?.some((m) => m.name === prepName)).toBe(false);
       expect(env).toEqual([{ id: folderId, path: `/shared/${folderId}`, readOnly: true }]);
       // Its own /files is still writable and still chowned.
       const files = pod.spec?.containers?.[0]?.volumeMounts?.find((m) => m.mountPath === '/files');
