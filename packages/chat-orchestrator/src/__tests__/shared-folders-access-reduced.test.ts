@@ -56,6 +56,8 @@ async function setup(opts: {
   runnerExitsOnKill?: boolean;
   idleWindowMs?: number;
   idleGraceMs?: number;
+  /** Runs inside the fake `sandbox:open-session`, before it returns. */
+  duringOpen?: (fire: (payload: unknown) => Promise<void>) => Promise<void>;
 } = {}) {
   const conv = { activeSessionId: null as string | null };
   const live = new Set<string>();
@@ -103,6 +105,7 @@ async function setup(opts: {
     },
     'sandbox:open-session': async (_c, input: unknown) => {
       openInputs.push(input as Record<string, unknown>);
+      if (opts.duringOpen !== undefined) await opts.duringOpen((payload) => reduce(payload));
       const hk = handles[opens]!;
       opens += 1;
       return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
@@ -145,8 +148,9 @@ async function setup(opts: {
       { message: { role: 'user', content: 'hi' } });
   };
 
-  const reduce = (payload: unknown) =>
-    h.bus.fire('shared-folders:access-reduced', mkCtx('admin-revoke', 'req-revoke'), payload);
+  async function reduce(payload: unknown): Promise<void> {
+    await h.bus.fire('shared-folders:access-reduced', mkCtx('admin-revoke', 'req-revoke'), payload);
+  }
 
   const settle = () => new Promise((r) => setTimeout(r, 50));
   const cancels = (sid: string) => queued.filter((q) => q.sessionId === sid && q.type === 'cancel');
@@ -276,6 +280,20 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     expect(closedMidTurn).toBe(false);
     expect(cancelledMidTurn).toBe(0);
     // Not the ordinary 60s idle-out: the reap ran right after the turn.
+    expect(t.cancels('s-1')).toHaveLength(1);
+    expect(t.proxyCloses).toContain('s-1');
+    t.cleanup();
+  });
+
+  it('a reduction that lands WHILE the session is opening still reaps it at turn end', async () => {
+    // The resolver authorized the mount inside sandbox:open-session; a revoke
+    // that commits before the open returns must not be missed.
+    const t = await setup({
+      sharedFolderIdsFor: withFolders(['sf_a']), runnerExitsOnKill: false, idleGraceMs: 60_000,
+      duringOpen: async (fire) => { await fire({ folderId: 'sf_a', agentIds: ['test-agent'] }); },
+    });
+    await t.turn('s-1', 'req-1');
+    await t.settle();
     expect(t.cancels('s-1')).toHaveLength(1);
     expect(t.proxyCloses).toContain('s-1');
     t.cleanup();

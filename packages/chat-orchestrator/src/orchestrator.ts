@@ -3999,6 +3999,11 @@ export function createOrchestrator(
         // W2 — host-picked shared folders; key absent when there are none.
         ...(sharedFolderIds.length > 0 ? { sharedFolderIds } : {}),
       };
+      // W2 — record the requested folders BEFORE the open: the resolver
+      // authorizes the mounts inside it, so a reduction that commits while
+      // the open is in flight must already find (and mark) this session. A
+      // failed open forgets it in the catch below.
+      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds);
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
@@ -4009,7 +4014,6 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
-      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds);
       // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
       // turns, slice 6) has a row, so re-asking presence would answer yes and
       // retire the session on every turn. Harmless: only a routine turn makes
@@ -4065,6 +4069,7 @@ export function createOrchestrator(
       }
     } catch (err) {
       unregisterWaiter(sessionId, ctx.reqId);
+      forgetSessionSharedFolders(sessionId);
       // Best-effort: terminate the session if sandbox-subprocess managed to
       // create it before the spawn failed. The sandbox plugin ALREADY tears
       // down in most failure modes, but belt-and-suspender for the case
