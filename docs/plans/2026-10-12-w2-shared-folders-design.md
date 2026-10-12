@@ -286,8 +286,10 @@ anything that isn't an absolute path.
 - **If that purge fails** (its transaction rolls back and is logged), the sweep
   heals it: each pass asks `agents:list-ids`, finds grants older than 60 s
   whose agent no longer exists (at most 50 agents a pass), and runs the same
-  purge for them, with the same events. A failed or malformed `list-ids`
-  answer purges nothing.
+  purge for them, with the same events. It fails closed: a failed, malformed
+  or empty `list-ids` answer purges nothing, and so does a pass where more than
+  half of at least 10 candidates would count as orphaned (logged at error; this
+  path only heals failed purges, so it can safely wait for an operator).
 - `shared_folders_v1_grants.agent_id` (the only agent-keyed column) is covered
   by the whole-schema cleanup check and by `agent-keyed-tables-are-cleaned`.
 
