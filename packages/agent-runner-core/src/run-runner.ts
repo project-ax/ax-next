@@ -1563,6 +1563,8 @@ async function runRunnerInner(
     // a session frozen before TASK-524 carries none, which means none.
     agentConfig.systemPromptBootstrapAugment ?? '',
     tools.some(tool => ['routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(tool.name)),
+    // W2: shared folders the sandbox mounted (AX_SHARED_FOLDERS).
+    env.sharedFolders,
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based

@@ -4242,6 +4242,85 @@ describe('main()', () => {
       expect(queryArg.options.settingSources).toEqual(['user']);
     });
 
+    it('W2: grants AX_SHARED_FOLDERS paths via additionalDirectories only — never cwd/HOME/settingSources', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        AX_USERFILES_ROOT: '/files',
+        AX_MEMORY_ROOT: '/memory',
+        AX_SHARED_FOLDERS: JSON.stringify([
+          { id: 'sf_a', path: '/shared/sf_a', readOnly: false },
+          { id: 'sf_b', path: '/shared/sf_b', readOnly: true },
+        ]),
+        // Even if something upstream set it, the SDK subprocess must never see
+        // the flag that makes the bundled CLI load CLAUDE.md from added dirs.
+        CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          cwd: string;
+          env: Record<string, string | undefined>;
+          settingSources: string[];
+          additionalDirectories?: string[];
+        };
+      };
+      expect(queryArg.options.additionalDirectories).toEqual([
+        '/tmp/workspace',
+        '/ephemeral',
+        '/memory',
+        '/shared/sf_a',
+        '/shared/sf_b',
+      ]);
+      expect(queryArg.options.cwd).toBe('/files');
+      expect(queryArg.options.env.HOME).toBe('/files');
+      expect(queryArg.options.settingSources).toEqual(['user']);
+      expect('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD' in queryArg.options.env).toBe(false);
+      // The host-control env var itself never reaches the SDK subprocess either.
+      expect('AX_SHARED_FOLDERS' in queryArg.options.env).toBe(false);
+    });
+
+    it('W2: strips CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD even when it rides the credential-placeholder forward', async () => {
+      // proxy-startup forwards ANY env key whose value has the ax-cred:<hex>
+      // placeholder shape (skill credential slots). The flag is truthy in that
+      // shape, and the real-SDK e2e measured that the flag ALONE makes the CLI
+      // load CLAUDE.md from every added directory — i.e. from shared folders
+      // other agents write. main.ts must strip it unconditionally.
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_USERFILES_ROOT: '/files',
+        AX_SHARED_FOLDERS: JSON.stringify([{ id: 'sf_a', path: '/shared/sf_a', readOnly: false }]),
+        CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: `ax-cred:${'a'.repeat(32)}`,
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string | undefined>; additionalDirectories?: string[] };
+      };
+      expect(queryArg.options.additionalDirectories).toContain('/shared/sf_a');
+      expect('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD' in queryArg.options.env).toBe(false);
+    });
+
+    it('W2: omits shared folders when AX_SHARED_FOLDERS is unset (no permission widening)', async () => {
+      setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral', AX_USERFILES_ROOT: '/files' });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { additionalDirectories?: string[] };
+      };
+      expect(queryArg.options.additionalDirectories).toEqual(['/tmp/workspace', '/ephemeral']);
+    });
+
     it('omits the memory root when AX_MEMORY_ROOT is unset (no permission widening)', async () => {
       setEnv({
         ...COMPLETE_ENV,

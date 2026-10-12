@@ -17,6 +17,7 @@ import {
   fileOutputNote,
   memoryExportNote,
   pythonVenvNote,
+  sharedFoldersNote,
   skillAuthoringNote,
   workPolicyNote,
   workspaceNote,
@@ -512,6 +513,31 @@ describe('buildSystemPrompt — memoryRoot forwarding', () => {
     )) as string;
     expect(out).not.toContain('Memory files:');
     expect(out).not.toContain(memoryExportNote('/memory'));
+  });
+});
+
+describe('buildSystemPrompt — sharedFolders forwarding (W2)', () => {
+  const FOLDERS = [{ id: 'sf_a', path: '/shared/sf_a', readOnly: true }];
+
+  it('appends the exact sharedFoldersNote when the final sharedFolders argument is provided', async () => {
+    const out = (await buildSystemPrompt(
+      'Helper', '', dir, undefined, false, undefined, dir, undefined, '', false, FOLDERS,
+    )) as string;
+    expect(out).toContain(sharedFoldersNote(FOLDERS));
+  });
+
+  it('carries no shared-folders note when sharedFolders is absent', async () => {
+    const out = (await buildSystemPrompt('Helper', '', dir, undefined, false, undefined, dir)) as string;
+    expect(out).not.toContain('Shared folders:');
+  });
+
+  it('never adds the note in bootstrap mode', async () => {
+    await writeAx('BOOTSTRAP.md', '# Bootstrap\nwake up');
+    const out = (await buildSystemPrompt(
+      'Helper', '', dir, undefined, false, undefined, dir, undefined, '', false, FOLDERS,
+    )) as string;
+    expect(out).not.toContain('Shared folders:');
+    expect(out).not.toContain('/shared/sf_a');
   });
 });
 

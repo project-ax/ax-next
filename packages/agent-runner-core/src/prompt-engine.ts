@@ -313,6 +313,9 @@ export async function buildSystemPrompt(
   memoryRoot: string | undefined = undefined,
   bootstrapAugment = '',
   routineToolsAvailable = false,
+  // W2: shared folders mounted into this session. Normal mode only — bootstrap
+  // mode never names them.
+  sharedFolders: readonly { readonly path: string; readonly readOnly: boolean }[] | undefined = undefined,
 ): Promise<SdkSystemPrompt> {
   const files = await readAxIdentityFiles(workspaceRoot);
 
@@ -354,6 +357,7 @@ export async function buildSystemPrompt(
     userFilesRoot,
     cwd,
     memoryRoot,
+    sharedFolders,
   );
   const identity = files.identity ?? fallbackIdentityLine(displayName);
   return composeNormalModePrompt({
