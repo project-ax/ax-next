@@ -17,7 +17,7 @@ import type {
 import type { Kysely } from 'kysely';
 import type { ZodType } from 'zod';
 import { runSharedFoldersMigration, type SharedFoldersDatabase } from './migrations.js';
-import { createSharedFoldersStore, type SharedFoldersStore } from './store.js';
+import { createSharedFoldersStore, type AgentDeletedResult, type SharedFoldersStore } from './store.js';
 import {
   AuthorizeMountsInputSchema,
   AuthorizeMountsOutputSchema,
@@ -47,6 +47,14 @@ const DELETE_PROVIDER_HOOK = 'sandbox:delete-shared-folder';
 
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const SWEEP_BATCH = 50;
+/**
+ * The orphan sweep only considers grants older than this. A grant is only
+ * ever created for an agent that already exists, so an agent missing from an
+ * `agents:list-ids` answer taken now, yet holding a grant from before this
+ * window, really is gone — the window absorbs clock skew between replicas
+ * (grant `created_at` is stamped by whichever host made it).
+ */
+const ORPHAN_GRACE_MS = 60 * 1000;
 
 export interface SharedFoldersPluginOptions {
   /**
@@ -132,8 +140,10 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
   let sweepInFlight: Promise<{ attempted: number; removed: number }> | undefined;
   let stopped = false;
-  /** Fire-and-forget cleanups kicked from the `agents:deleted` subscriber; joined on shutdown. */
+  /** Fire-and-forget cleanups (delete, agent purge, orphan sweep); joined on shutdown. */
   const detached = new Set<Promise<void>>();
+  /** Folders whose cleanup is running right now — the sweep skips them instead of doubling the provider call. */
+  const cleaning = new Set<string>();
 
   const systemCtx = (): AgentContext =>
     makeAgentContext({ sessionId: 'shared-folders-sweep', agentId: PLUGIN_NAME, userId: 'system' });
@@ -180,6 +190,8 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
    */
   async function cleanup(ctx: AgentContext, folderId: string): Promise<boolean> {
     const s = store!;
+    if (cleaning.has(folderId)) return false;
+    cleaning.add(folderId);
     try {
       // `sandbox:delete-shared-folder` is deliberately NOT declared in the
       // manifest (neither `calls` nor `optionalCalls`): the provider locates
@@ -215,16 +227,95 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
         });
       }
       return false;
+    } finally {
+      cleaning.delete(folderId);
+    }
+  }
+
+  /**
+   * Start a tombstoned folder's cleanup WITHOUT awaiting it — the provider may
+   * take minutes (a k8s reclaim pod), longer than any caller should wait.
+   * Joined on shutdown; once stopping, the tombstone is left for the sweep.
+   */
+  function startCleanup(ctx: AgentContext, folderId: string): void {
+    if (stopped) return;
+    const p: Promise<void> = cleanup(ctx, folderId).then(
+      () => undefined,
+      () => undefined,
+    );
+    detached.add(p);
+    void p.finally(() => detached.delete(p));
+  }
+
+  /**
+   * Remove everything an agent held (§3.7), fire `access-reduced` and start
+   * cleanup for folders that lost their last possible owner. Throws only if
+   * the purge transaction itself fails (nothing was changed then).
+   */
+  async function purgeAgent(ctx: AgentContext, agentId: string): Promise<AgentDeletedResult> {
+    const res = await store!.deleteAllForAgent(agentId);
+    for (const r of res.reduced) await fireAccessReduced(ctx, r.folderId, r.agentIds);
+    const sys = systemCtx();
+    for (const folderId of res.tombstoned) startCleanup(sys, folderId);
+    return res;
+  }
+
+  /**
+   * Heal grants whose agent no longer exists — an `agents:deleted` purge that
+   * failed (or never arrived) would otherwise leave them forever, including an
+   * owner grant that makes the folder unmanageable. Never throws.
+   */
+  async function reconcileOrphans(ctx: AgentContext): Promise<void> {
+    let orphans: string[];
+    try {
+      // Candidates FIRST, then the agent listing: every candidate's agent
+      // existed when its grant was made, so absence from a later listing
+      // means it was deleted since.
+      const candidates = await store!.grantAgentIdsBefore(new Date(Date.now() - ORPHAN_GRACE_MS));
+      if (candidates.length === 0) return;
+      const out = await bus!.call<Record<string, never>, { agentIds: unknown }>('agents:list-ids', ctx, {});
+      const agentIds = (out as { agentIds?: unknown } | null | undefined)?.agentIds;
+      // Fail closed: a malformed answer must never read as "no agents exist".
+      if (!Array.isArray(agentIds) || !agentIds.every((id) => typeof id === 'string')) {
+        ctx.logger.error('shared_folders_orphan_sweep_failed', { reason: 'malformed agents:list-ids answer' });
+        return;
+      }
+      const live = new Set<string>(agentIds);
+      orphans = candidates.filter((id) => !live.has(id)).slice(0, SWEEP_BATCH);
+    } catch (err) {
+      ctx.logger.error('shared_folders_orphan_sweep_failed', {
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return;
+    }
+    for (const agentId of orphans) {
+      try {
+        const res = await purgeAgent(ctx, agentId);
+        ctx.logger.warn('shared_folders_purged_orphaned_agent', {
+          agentId,
+          folders: res.reduced.length,
+          transferred: res.transferred.length,
+          tombstoned: res.tombstoned.length,
+        });
+      } catch (err) {
+        ctx.logger.error('shared_folders_purge_orphaned_agent_failed', {
+          agentId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
     }
   }
 
   async function runSweep(now: Date): Promise<{ attempted: number; removed: number }> {
     const ctx = systemCtx();
-    const due = await store!.dueTombstones(now, SWEEP_BATCH);
+    // Tombstones first: folders the orphan pass tombstones below get their
+    // own detached cleanup, so this pass never races it for the same folder.
+    const due = (await store!.dueTombstones(now, SWEEP_BATCH)).filter((id) => !cleaning.has(id));
     let removed = 0;
     for (const folderId of due) {
       if (await cleanup(ctx, folderId)) removed++;
     }
+    await reconcileOrphans(ctx);
     return { attempted: due.length, removed };
   }
 
@@ -251,7 +342,9 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
         'shared-folders:list',
         'shared-folders:authorize-mounts',
       ],
-      calls: ['database:get-instance', 'agents:can-manage-sharing', 'agents:resolve'],
+      // `agents:list-ids` backs the orphan sweep. @ax/agents calls nothing of
+      // ours, so the edge keeps the call graph acyclic.
+      calls: ['database:get-instance', 'agents:can-manage-sharing', 'agents:resolve', 'agents:list-ids'],
       subscribes: ['agents:deleted'],
     },
 
@@ -380,9 +473,11 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
           if (res === null) return { deleted: true };
           ctx.logger.info('shared_folders_deleted', { ...ids, actor: ctx.userId });
           await fireAccessReduced(ctx, input.folderId, res.formerGrantees);
-          // The tombstone is committed; cleanup failure only defers byte
-          // removal to the sweep, so it never fails the delete.
-          await cleanup(ctx, input.folderId);
+          // The tombstone is committed and the folder can no longer be
+          // mounted or granted, so the delete is done from the caller's view.
+          // Byte removal runs detached: a k8s reclaim pod can outlast the
+          // bus's service timeout. A failure only defers it to the sweep.
+          startCleanup(ctx, input.folderId);
           return { deleted: true };
         },
         { returns: DeleteOutputSchema },
@@ -441,26 +536,15 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
           return undefined;
         }
         try {
-          const res = await s.deleteAllForAgent(agentId);
+          const res = await purgeAgent(ctx, agentId);
           ctx.logger.info('shared_folders_purged_for_deleted_agent', {
             agentId,
             folders: res.reduced.length,
             transferred: res.transferred.length,
             tombstoned: res.tombstoned.length,
           });
-          for (const r of res.reduced) await fireAccessReduced(ctx, r.folderId, r.agentIds);
-          if (!stopped) {
-            const sys = systemCtx();
-            for (const folderId of res.tombstoned) {
-              const p: Promise<void> = cleanup(sys, folderId).then(
-                () => undefined,
-                () => undefined,
-              );
-              detached.add(p);
-              void p.finally(() => detached.delete(p));
-            }
-          }
         } catch (err) {
+          // The sweep's orphan pass retries this agent's grants later.
           ctx.logger.error('shared_folders_purge_for_deleted_agent_failed', {
             agentId,
             err: err instanceof Error ? err : new Error(String(err)),

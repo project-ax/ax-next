@@ -77,6 +77,12 @@ export interface SharedFoldersStore {
    * is never promoted. Keyed on `agent_id` alone. Throws on an empty id.
    */
   deleteAllForAgent(agentId: string): Promise<AgentDeletedResult>;
+  /**
+   * Distinct agent ids holding a grant created strictly before `cutoff` (the
+   * orphan sweep's candidates). The bound is deliberate: an agent created and
+   * granted after `cutoff` may be missing from an agent listing taken now.
+   */
+  grantAgentIdsBefore(cutoff: Date): Promise<string[]>;
 }
 
 type Db = Kysely<SharedFoldersDatabase> | Transaction<SharedFoldersDatabase>;
@@ -396,6 +402,17 @@ export function createSharedFoldersStore(db: Kysely<SharedFoldersDatabase>): Sha
         }
         return { reduced, tombstoned, transferred };
       });
+    },
+
+    async grantAgentIdsBefore(cutoff) {
+      const rows = await db
+        .selectFrom('shared_folders_v1_grants')
+        .select('agent_id')
+        .distinct()
+        .where('created_at', '<', cutoff)
+        .orderBy('agent_id', 'asc')
+        .execute();
+      return rows.map((r) => r.agent_id);
     },
   };
 }
