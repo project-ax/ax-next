@@ -19,10 +19,10 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/sandbox-mount-protocol": "workspace:*"
+    "@ax/sandbox-mount-protocol": "workspace:*",
+    "@ax/sandbox-protocol": "workspace:*"
   },
   "devDependencies": {
-    "@ax/sandbox-protocol": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
