@@ -727,7 +727,15 @@ type AugmentStep =
       cls: AugmentClass;
       reason: AugmentFailureReason;
       err?: unknown;
+      /** What was wrong, for the log: field paths and codes, never body text. */
+      detail?: AugmentFailureDetail;
     };
+type AugmentFailureDetail =
+  | { issues: Array<{ path: string; code: string }> }
+  | { section: (typeof AUGMENT_SECTIONS)[number]; length: number };
+
+/** Cap on zod issues copied into one log line. */
+const AUGMENT_MAX_LOGGED_ISSUES = 5;
 
 const AUGMENT_FAMILY_PREFIX = 'system-prompt:augment:';
 const AUGMENT_SECTIONS = ['rules', 'context', 'recall'] as const;
@@ -741,12 +749,17 @@ async function runAugmentProvider(
   cls: AugmentClass,
   deadlineMs: number,
 ): Promise<AugmentStep> {
-  const fail = (reason: AugmentFailureReason, err?: unknown): AugmentStep => ({
+  const fail = (
+    reason: AugmentFailureReason,
+    err?: unknown,
+    detail?: AugmentFailureDetail,
+  ): AugmentStep => ({
     ok: false,
     provider,
     cls,
     reason,
     ...(err !== undefined ? { err } : {}),
+    ...(detail !== undefined ? { detail } : {}),
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let raw: unknown;
@@ -767,13 +780,23 @@ async function runAugmentProvider(
   }
   if (raw === AUGMENT_DEADLINE_MISSED) return fail('deadline');
   const parsed = SystemPromptAugmentOutputSchema.safeParse(raw);
-  if (!parsed.success) return fail('invalid');
+  if (!parsed.success) {
+    // Path and code only: a zod `message` can quote the provider's own keys.
+    const issues = parsed.error.issues
+      .slice(0, AUGMENT_MAX_LOGGED_ISSUES)
+      .map((i) => ({ path: i.path.join('.'), code: i.code }));
+    return fail('invalid', undefined, { issues });
+  }
   const out = parsed.data;
-  if (cls === 'optional' && out.rules !== undefined) return fail('invalid');
+  if (cls === 'optional' && out.rules !== undefined) {
+    return fail('invalid', undefined, {
+      issues: [{ path: 'rules', code: 'optional_provider_returned_rules' }],
+    });
+  }
   for (const section of AUGMENT_SECTIONS) {
     const body = out[section];
     if (body !== undefined && body.length > SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS) {
-      return fail('too_large');
+      return fail('too_large', undefined, { section, length: body.length });
     }
   }
   return { ok: true, provider, cls, out };
@@ -816,6 +839,7 @@ async function buildSystemPromptAugment(
       provider: step.provider,
       class: step.cls,
       reason: step.reason,
+      ...step.detail,
       ...(step.reason === 'threw'
         ? { err: step.err instanceof Error ? step.err : new Error(String(step.err)) }
         : {}),

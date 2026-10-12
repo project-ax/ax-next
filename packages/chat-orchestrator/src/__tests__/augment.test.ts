@@ -499,6 +499,31 @@ describe('Orchestrator: review 1, finding 2 (validation)', () => {
     });
   }
 
+  // Review round 1, finding 1: a required provider's invalid result suppresses
+  // the whole augment, so the log must say what was wrong — field paths and
+  // codes only, never the provider's text.
+  it('failure logs name what was wrong without echoing the body', async () => {
+    const s = await run([
+      [`${OPT}typed`, value({ context: 42, recall: 'SECRET-BODY' })],
+      [`${OPT}sneaky`, value({ rules: 'SECRET-RULES' })],
+      [`${OPT}big`, value({ recall: OVERSIZED })],
+    ]);
+    const byProvider = new Map(
+      logsNamed(s.logs, 'system_prompt_contribution_failed').map((l) => [l.provider, l]),
+    );
+    expect(byProvider.get(`${OPT}typed`)?.issues).toEqual([
+      { path: 'context', code: 'invalid_type' },
+    ]);
+    expect(byProvider.get(`${OPT}sneaky`)?.issues).toEqual([
+      { path: 'rules', code: 'optional_provider_returned_rules' },
+    ]);
+    expect(byProvider.get(`${OPT}big`)).toMatchObject({
+      section: 'recall',
+      length: SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS + 1,
+    });
+    expect(JSON.stringify(s.logs)).not.toContain('SECRET');
+  });
+
   it('a body of exactly the cap is accepted', async () => {
     const atCap = 'y'.repeat(SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS);
     const s = await run([[`${OPT}big`, value({ context: atCap })]]);
