@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SharedFolderIdSchema } from './shared-folder-id.js';
 
 // ---------------------------------------------------------------------------
 // @ax/sandbox-protocol — shared wire contract for `sandbox:open-session`.
@@ -312,6 +313,19 @@ export const OpenSessionInputSchema = z.object({
   // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
   // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 8.
   services: z.array(ServiceDescriptorSchema).max(8).optional(),
+  // W2 shared folders — the folders the HOST wants mounted into this session
+  // (set by the orchestrator, never by the model or the sandbox). This is only
+  // a REQUEST: the mount resolver filters it through
+  // `shared-folders:authorize-mounts`, so listing a folder here grants nothing.
+  // Optional + back-compat with callers that don't share folders. Capped at 16
+  // and duplicate-free so a mount path can never be requested twice.
+  sharedFolderIds: z
+    .array(SharedFolderIdSchema)
+    .max(16)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'sharedFolderIds must be unique',
+    })
+    .optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
