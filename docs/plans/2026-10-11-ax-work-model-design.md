@@ -37,7 +37,8 @@ clear home.
   4. Write the W13 (agent tasks) spec.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
   together in docs PR #987 (branch `docs/ax-work-model`).
-- **2026-10-12, W3:** the W3 spec draft is written and waiting for review:
+- **2026-10-12, W3:** the W3 spec was revised after review 1 (7 findings) and
+  is waiting for re-review:
   [`2026-10-12-w3-projects-design.md`](2026-10-12-w3-projects-design.md). It cuts
   W3 into six slices. **W3a** (create a project, chat in it, the session mounts
   it) is the caller W2 merges with, as one squash. Its §15 has six open

@@ -1,6 +1,6 @@
 # W3: projects (design)
 
-**Status:** draft (2026-10-12), not yet reviewed. **Owner:** Vinay.
+**Status:** draft, revised after review 1 (2026-10-12); see §16. **Owner:** Vinay.
 **Work item:** W3 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`,
 §5 and §13). It needs W1 (shipped, #988) and W2 (built on `feat/w2-shared-folders`,
 not merged). Its first slice is the production caller W2 merges with (§4).
@@ -442,11 +442,11 @@ unauthenticated one gets 401, and a request without CSRF is refused.
 
 ### 5.1 Reading a shared folder on the host
 
-- **A new `sandbox:read-shared-folder { folderId, path } → { entries | file }`**,
-  with the same result shape and limits as `sandbox:read-user-files`. The
-  sandbox providers register it. Like `read-user-files`, it's host-internal:
-  only `@ax/projects` calls it, and only after checking that the person can use
-  the project.
+- **A new `sandbox:read-shared-folder { folderId, path, limitBytes } → { entries | file }`**,
+  with the same result shape as `sandbox:read-user-files`: a listing, or a
+  file's first `limitBytes` with a `truncated` flag. The sandbox providers
+  register it. Like `read-user-files`, it's host-internal: only `@ax/projects`
+  calls it, and only after checking that the person can use the project.
   - **k8s:** reads go through a dedicated host mount of the export's `.shared`
     subtree, **read-only and mounted with `nosymfollow`**. It's a PV/PVC in the
     chart, because inline NFS volumes can't take mount options.
@@ -464,10 +464,45 @@ unauthenticated one gets 401, and a request without CSRF is refused.
     it to `.shared/<one safe segment>`.
 - **Verification gate.** `nosymfollow` on an NFS mount has to be proven on kind
   and on GKE before W3b merges, by a k8s-e2e test that plants a symlink and
-  expects the read to fail. If it can't be proven, W3b falls back to a
-  per-read pod that mounts only `subPath: .shared/<folderId>`. In that pod a
-  symlink can't leave the folder, because nothing else is mounted. Reads are
-  slower that way, so the prompt block stays static.
+  expects the read to fail.
+- **The fallback, if it can't be proven:** a per-call pod that mounts only
+  `subPath: .shared/<folderId>`, **and** walks every path one component at a
+  time.
+  - **Mounting one folder isn't confinement on its own** (review 1, finding 4).
+    The pod still has its own root filesystem and `/proc`. `realpath` plus
+    `O_NOFOLLOW` on the last component leaves a race: swap an *intermediate*
+    directory for a symlink between the check and the open, and the open
+    follows it. The reviewer reproduced an outside read that way.
+  - **The walk.** Each directory is opened relative to the previous one's file
+    descriptor with `O_NOFOLLOW | O_DIRECTORY`, and the last component with
+    `O_NOFOLLOW`. Where the kernel has it, the walk uses `openat2` with
+    `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` instead. A swapped symlink at any
+    level then fails with `ELOOP`, and nothing outside is reached.
+  - Node's `fs` has no `openat`, so the walk is a small helper in the pod
+    image, written in a language that has it. The plan picks the language, and
+    the helper gets supply-chain review like any new binary.
+  - The pod runs as the sandbox uid, with a read-only root filesystem and no
+    service-account token.
+  - Fallback reads are slow, so the prompt block stays static in that mode.
+- **The race test runs against both modes.** An adversarial test swaps an
+  intermediate directory for a symlink to an outside file in a tight loop while
+  the host reads and writes. It runs many thousands of iterations and asserts
+  that no outside byte is ever returned and no outside file is ever written.
+  The `nosymfollow` mount passes because the kernel refuses to follow a symlink
+  at *any* component on it.
+- **Limits.** A preview and a download are different reads (review 1,
+  finding 7):
+
+  | Use | Hook | Limit |
+  |---|---|---|
+  | Preview, and the prompt block | `projects:read-file` | The first 1 MiB, flagged `truncated`. Text is shown up to 128 KiB, as for `/files`. |
+  | Download | `projects:download-file` | The whole file, up to 10 MiB. A bigger file is refused with "This file is too big to download here", **never** returned truncated. |
+  | Upload (W3c) | `projects:write-file` | 10 MiB per file, the same as download, so anything uploaded can be downloaded |
+  | Edit (W3c) | `projects:write-file` | 1 MiB of text |
+  | History content (W3d) | — | 1 MiB |
+
+  Only agents can make files over 10 MiB. Those show in the browser with their
+  size and no download button.
 
 ### 5.2 The full prompt block
 
@@ -504,8 +539,9 @@ Frames 4, 17, 18, 19, 20 and 21:
   - `GET /api/workspace/projects/:projectId/files[/*]`;
   - `GET /api/workspace/projects/:projectId/download/*`.
 
-  Both go through `projects:read-file { projectId, path }`, which checks that
-  the person can use the project.
+  Listing and preview go through `projects:read-file { projectId, path }`, and
+  downloads through `projects:download-file { projectId, path }`. Both check
+  that the person can use the project. Their limits are in §5.1.
 
 ## 6. W3c: people edit project files
 
@@ -529,6 +565,9 @@ Frames 4, 17, 18, 19, 20 and 21:
     host writes as the sandbox uid. The plan picks one after reading the chart's
     `securityContext`, and a k8s-e2e test checks that an agent can edit a file
     a person created.
+- **The fallback pod** (§5.1), if `nosymfollow` can't be proven, does writes
+  with the same component-by-component walk, and creates the temporary file
+  and the rename relative to the final directory's descriptor.
 - **Subprocess (dev):** direct confined writes.
 - Every change is audited: who, which project, which path, and which operation.
 
@@ -616,6 +655,26 @@ use the same field.
     2. It reads the files that changed and records versions attributed to that
        turn's agent and chat.
     3. A file that disappeared gets a delete version.
+- **There's always a version to go back to** (review 1, finding 6). Without the
+  three rules below, the first overwrite of a file that existed before W3d
+  would lose its old bytes, and its first deletion would record only a
+  tombstone.
+  - **A baseline when history starts.** When W3d ships, a one-time sweep
+    records every existing file of 1 MiB or less in every project as a version
+    labeled "Before history started". New projects need no sweep: their seeded
+    files are host writes, so create records them.
+  - **A pass before each writable session opens.** When a writable project
+    session spawns, the same snapshot pass runs before the sandbox opens. So
+    the state the agent starts from is always recorded, including anything
+    changed outside a tracked turn (an older session, a failed earlier pass).
+    Changes it finds are labeled "Changed outside history".
+    - The pass is bounded at 10 s. On a failure or timeout the session still
+      opens, and history records a gap ("History may be missing changes from
+      around 10:42"), which the History sheet shows.
+  - **A preimage before every host write.** Before a host write or delete, the
+    host compares the file's current bytes with its latest recorded version. If
+    they differ, or there's no version yet, it records the current bytes first
+    ("Changed outside history"), then makes the change.
 - **Limits:**
   - files over 1 MiB are recorded as changed, without content ("Too large to
     keep history");
@@ -651,6 +710,10 @@ Frames 17–21:
   - Setting a project requires `projects:resolve { projectId, agentId }` for
     the chat's agent, the same rule as create.
   - Moving out is always allowed, because it only narrows.
+  - **A routine's conversation can't be moved** (review 1, finding 5).
+    `set-project` refuses a conversation whose `origin` is `routine`, and the
+    UI doesn't offer Move for it. A routine's project is set on the routine
+    itself (§9.2).
 - **Live sessions.** On the reuse path, the orchestrator compares the chat's
   current `projectId` with the one the session opened with (§4.5, step 5). If
   they differ, it retires the session with a new reason, `project-changed`,
@@ -696,13 +759,63 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
     security review confirms the proxy's list comes from the installed set.
   - **abilities** (`webSearch`, `readPages`, `runCode`) join `disallowedTools`
     at `:2937`.
-- **Enforcement at the gate.** `@ax/decisions` passes `ctx.projectId` to
-  `tool-policy:evaluate`.
-  - `tool-policy` adds a deny layer from the optional call
-    `projects:narrowing { projectId }`. If that call throws, the gate denies
-    (fails closed).
-  - A narrowed ability is therefore refused even if a runner ignores
+- **Enforcement at the gate: a `tool:pre-call` subscriber in `@ax/projects`,
+  not a call from `tool-policy`.**
+  - **Why not a call** (review 1, finding 1). A `tool-policy → projects` call
+    would close a cycle: `projects → shared-folders → agents → tool-policy`
+    already exists, because `@ax/agents` calls
+    `tool-policy:snapshot-connector-for-agent` (`agents/src/plugin.ts:188`).
+    Bootstrap rejects cycles, including through `optionalCalls` that are
+    present. A subscription adds no call edge.
+  - **Why it has to run first** (finding 2). `@ax/decisions` consumes a
+    standing approval, keyed by agent and call fingerprint, *before* it
+    evaluates policy (`decisions/src/pre-call.ts:169-215`). If narrowing lived
+    inside `evaluate`, an identical call approved somewhere else would run in a
+    project that forbids it.
+    - `HookBus.fire` stops at the first rejection (`core/src/hook-bus.ts:679`).
+    - Decisions registers last on purpose, and `presets/k8s` asserts it
+      (`decisions/src/plugin.ts:322-329`).
+    - So a projects subscriber registered before decisions refuses a narrowed
+      call before any approval is even looked at.
+  - **Deny-only.** The subscriber refuses or passes the call on. It never
+    allows or holds. Without `ctx.projectId` it passes.
+  - **What it refuses:**
+    - narrowed abilities, by tool key;
+    - tools of a narrowed connector, by the connector's tool namespace, which
+      is stored on the narrowing row when it's set.
+  - **It fails closed by construction.** A subscriber that throws is skipped,
+    not counted as a rejection (`hook-bus.ts:666-675`). So the handler catches
+    every error itself and returns a rejection. A test injects a store failure
+    and expects a refusal.
+  - So a narrowed ability is refused even if a runner ignores
     `disallowedTools`, the same as an agent-level deny.
+- **Approvals belong to their project** (finding 2, defense in depth).
+  - Decisions rows get `project_id`, taken from `ctx.projectId` when the hold
+    is created.
+  - `takeApproval` and `findRoutineApproval` match on it, and "no project"
+    matches only "no project".
+  - An approval given in P is never used in Q, or outside a project. An
+    identical call in Q asks again.
+- **Replay keeps the project** (finding 3). `decisions/src/replay.ts` builds a
+  fresh context from the decision row and calls the executor directly
+  (`replay.ts:97`, `:124`), so it never passes through `tool:pre-call`.
+  - The replay context carries the row's `project_id` as `ctx.projectId`. An
+    approved `routine_create` from P therefore replays as a routine in P,
+    because routine tools read `ctx.projectId` (§9.2).
+  - Before it executes, replay fires a new veto hook, `decisions:pre-replay`
+    (a subscription, so again no call edge). The projects subscriber refuses
+    unless:
+    - the project still exists;
+    - the agent still has a live grant (`projects:resolve`);
+    - the narrowing still allows the call.
+  - A refusal ends the decision as "No longer allowed in this project", and
+    nothing runs. The subscriber fails closed in the same way as above.
+  - `projects:deleted` expires that project's pending decisions, so the Today
+    queue doesn't keep asking about them.
+- **The whole graph boots.** `presets/k8s/src/__tests__/prod-bootstrap.test.ts`
+  boots the full preset with every W3 plugin loaded, in every slice. The preset
+  test also asserts that the projects `tool:pre-call` subscriber registers
+  before decisions.
 - **UI** (frame 11): "What your agents can use in this project" is one list of
   switches. It's the union of the member agents' abilities, skills and
   connectors. Anything already off for every member isn't shown.
@@ -722,6 +835,10 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   - If the project is gone, or the agent lost access, the fire fails with
     `project-unavailable` on the fire row and the routine's `last_warning`. It
     never runs outside the project.
+  - **Every fire checks the conversation's project.** If the conversation that
+    find-or-create returns has a different `projectId` from the routine's, the
+    fire fails with `project-mismatch` and doesn't run. That's a second line
+    behind §8's rule that routine conversations can't be moved.
 - **Routine tools only see their own project.** `routine_list`, `get`,
   `create`, `update`, `delete` and `fire_now` are filtered by `ctx.projectId`.
   - A session in project P sees and changes only P's routines. A session
@@ -740,17 +857,17 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 
 | Package | W3a | Later slices |
 |---|---|---|
-| new `@ax/projects` | Table, hooks (§4.3), the `projects:deleted` event, the prompt block, the `shared-folders:deleted` handler | Reads and the full block (b); seeding, writes and `ensureLayout` (c); versions, manifest, snapshots, `blob:collect-refs` and retention (d); narrowing (f) |
+| new `@ax/projects` | Table, hooks (§4.3), the `projects:deleted` event, the prompt block, the `shared-folders:deleted` handler | Reads and the full block (b); seeding, writes and `ensureLayout` (c); versions, manifest, baseline sweep, pre-spawn pass, preimages, `blob:collect-refs` and retention (d); narrowing, plus the `tool:pre-call` and `decisions:pre-replay` subscribers (f) |
 | `@ax/shared-folders` (W2 stack) | `shared-folders:get`, `shared-folders:deleted` | — |
-| `@ax/conversations` | `project_id`; create, list and metadata; the `projects:deleted` subscriber | `conversations:set-project` (e) |
+| `@ax/conversations` | `project_id`; create, list and metadata; the `projects:deleted` subscriber | `conversations:set-project`, which refuses routine conversations (e) |
 | `@ax/core` | `AgentContext.projectId` (host-set only) | — |
 | `@ax/chat-orchestrator` | Remove `sharedFolderIdsFor`; project lookup at spawn; `project-unavailable`; the derived context for providers | `owner.projectId` (d); `project-changed` retire (e); narrowing at spawn and `narrowing-changed` reaps (f) |
 | `@ax/sandbox-protocol`, `@ax/sandbox-mount-protocol` | — | Read and change contracts (b, c); `owner.projectId` (d) |
-| `@ax/sandbox-k8s`, `@ax/sandbox-subprocess` | — | `sandbox:read-shared-folder` (b); `sandbox:change-shared-folder` (c) |
+| `@ax/sandbox-k8s`, `@ax/sandbox-subprocess` | — | `sandbox:read-shared-folder` (b); `sandbox:change-shared-folder` (c); the fallback pod's path-walk helper, only if `nosymfollow` can't be proven (b) |
 | `deploy/charts/ax-next` | — | The `.shared` PV/PVC with `nosymfollow`: read-only (b), then read-write (c) |
 | `@ax/session-postgres`, `@ax/session-inmemory`, `@ax/ipc-server` | — | Persist and stamp `projectId` (d) |
-| `@ax/decisions`, `@ax/tool-policy` | — | `projectId` into `evaluate`, plus the project deny layer (f) |
-| `@ax/routines`, `@ax/routines-contract`, `@ax/routines-admin-routes` | — | `project_id`, fire, tool scoping, and the `projects:deleted` subscriber (f) |
+| `@ax/decisions` | — | `project_id` on decisions rows; approvals match it; replay carries it and fires `decisions:pre-replay` (f). `@ax/tool-policy` doesn't change. |
+| `@ax/routines`, `@ax/routines-contract`, `@ax/routines-admin-routes` | — | `project_id`, fire (including the `project-mismatch` check), tool scoping, and the `projects:deleted` subscriber (f) |
 | `@ax/channel-web` | Sidebar, grid, dialog, project page, header, settings, routes | Files card and browser (b); Edit and the + menu (c); History and the chip (d); Move and Members (e); switches and Scheduled (f) |
 | Presets | k8s loads `@ax/projects`; memory gets it through `createK8sPlugins`; the dev CLI can't (Postgres only, like W2) | — |
 
@@ -788,6 +905,13 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 - A symlink planted in a shared folder (inside, or pointing to another agent's
   `/files`) is never followed by `sandbox:read-shared-folder`. On k8s-e2e this
   is checked against the real `nosymfollow` mount.
+- **The race test (§5.1):** an intermediate directory swapped for a symlink in a
+  tight loop never yields an outside byte, in the `nosymfollow` mode and in the
+  fallback pod's mode.
+- **Limits:**
+  - a 2 MiB file downloads whole;
+  - an 11 MiB file is refused with `too-large`, never truncated;
+  - a preview of either is flagged `truncated`.
 - The block's parts are capped and quoted, and a failed read drops only that
   part.
 - The file routes refuse a person who can't use the project.
@@ -799,6 +923,9 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 - A stale `baseHash` is refused.
 - On k8s-e2e, an agent can edit a file a person created.
 - A viewer-only person can't write.
+- A 10 MiB upload can be downloaded again, byte for byte.
+- In the fallback mode, a write through a swapped intermediate directory never
+  lands outside the folder.
 
 **W3d**
 - `ctx.projectId` on IPC contexts comes from the session record, and a runner
@@ -807,6 +934,11 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   attributed to that turn's agent and chat.
 - A host edit records the person.
 - Restore recreates a deleted file.
+- **First edit and first deletion** of a file that existed before W3d:
+  restoring brings back the original bytes, from the baseline sweep. The same
+  holds for a file changed outside any tracked turn, from the pre-spawn pass or
+  the preimage.
+- A pre-spawn pass that times out still opens the session and records a gap.
 - Blobs that history still references survive `blob-gc`, and released ones
   don't.
 - Retention keeps 30 days plus the last 50 per file.
@@ -817,11 +949,28 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 - Moving retires the live session at its next turn, and the next spawn mounts
   the new project (or none).
 - Adding and removing your own agents goes through W2's rules and reaping.
+- `set-project` refuses a routine's conversation.
 
 **W3f**
 - A narrowed skill's connectors don't come in. A narrowed connector isn't
   installed, and its proxy has no credentials for it.
 - A narrowed ability is denied at the gate even when the runner calls it.
+- **Approval reuse across projects:**
+  - approve a call in P, then make the identical call in a project Q that
+    narrows it: it's refused before any approval is looked at, and P's approval
+    is still unused;
+  - the identical call in a project R that doesn't narrow it asks again rather
+    than using P's approval.
+- **Replay:**
+  - an approved `routine_create` from P replays as a routine in P;
+  - if P was deleted, the agent lost its grant, or P narrowed the tool after
+    approval, replay refuses and nothing runs.
+- The pre-call and pre-replay subscribers turn an injected store failure into a
+  refusal.
+- `prod-bootstrap.test.ts` boots the full preset with every W3 plugin, and the
+  projects `tool:pre-call` subscriber registers before decisions'.
+- A shared routine whose conversation has a different project fails
+  `project-mismatch` and doesn't run.
 - Narrowing reaps idle sessions now and active ones at turn end.
 - Routine tools in project P see only P's routines, and none can set
   `projectId`.
@@ -837,7 +986,9 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   - `sandbox:read-shared-folder` and `sandbox:change-shared-folder`;
   - `conversations:set-project`, and the `projectId` field on conversations;
   - `AgentContext.projectId`;
-  - `projectId` on `tool-policy:evaluate`.
+  - `projects:read-file` and `projects:download-file`;
+  - `decisions:pre-replay`, a veto hook fired by decisions before a replay;
+  - `project_id` on decisions rows.
 - **Alternate implementations:**
   - projects kept by an external project service behind the same `projects:*`
     hooks;
@@ -850,6 +1001,13 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   chart.
 - **Subscriber risk:** `projects:deleted` and `projects:narrowing-changed` carry
   only `projectId`, and `shared-folders:deleted` carries only `folderId`.
+  `decisions:pre-replay` carries the tool call and the replay context. A
+  subscriber may only refuse, never change the call.
+- **Call graph.** `@ax/projects` reaches the gate and replay only through
+  subscriptions (`tool:pre-call`, `decisions:pre-replay`), never as a callee of
+  `tool-policy` or `decisions`. Calls into projects come from conversations, the
+  orchestrator, routines and channel-web, and nothing projects calls reaches
+  back to any of them (§4.4, §9.1).
 - **Wire surface:** none. No `projects:*` hook is an IPC action. The only new
   values crossing into the sandbox are the folder W2 already mounts and the
   block's text.
@@ -865,16 +1023,27 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 - **Grants decide, twice.** `projects:resolve` checks the grant before a session
   opens, and W2's mount resolver checks it again. A wrong `projectId` on a row
   can't mount anything the agent lacks.
-- **Projects narrow, never widen.** Narrowing removes things at spawn and denies
-  them at the gate, and it fails closed if the project's settings can't be
-  read.
+- **Projects narrow, never widen.**
+  - Narrowing removes things at spawn.
+  - At the gate it refuses them before any standing approval is consumed.
+  - It refuses them again before any approved call is replayed.
+  - Both subscribers fail closed if the project's settings can't be read.
+  - Approvals are tied to the project they were given in (§9.1).
 - **Untrusted content.** Everything in the folder, plus the name and
   description, is framed as information and quoted, so it can't pass as Rules
   (W1 §3.6). Projects provide only `context`, never `rules`.
-- **Host file access is kernel-confined.** The host reaches shared folders only
-  through a `.shared` mount with `nosymfollow`, behind lexical path checks, size
-  caps, atomic writes and audit. If `nosymfollow` can't be proven, the fallback
-  is a per-call pod that mounts only that folder.
+- **Host file access is kernel-confined.**
+  - The host reaches shared folders only through a `.shared` mount with
+    `nosymfollow`, behind lexical path checks, size caps, atomic writes and
+    audit.
+  - If `nosymfollow` can't be proven, the fallback is a per-call pod that
+    mounts only that folder **and** opens every path component without
+    following links (§5.1). One mounted folder alone isn't confinement.
+  - An adversarial race test covers both modes.
+- **A pre-existing gap, outside W3:** the reader `/files` uses today
+  (`readConfinedUserFiles`: `realpath` plus a final `O_NOFOLLOW`) has the same
+  intermediate-directory race the reviewer reproduced. It should get its own
+  board card, with the same walk or a `nosymfollow` mount.
 - **Rollback and loss.** History lets a person undo any agent's change to a
   project file, including a delete. Deleting a project is the one irreversible
   act. It sits behind an `AlertDialog` and requires managing the project.
@@ -889,8 +1058,10 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   3. **Agent memory crosses projects** (Q4). Facts learned in one project's chat
      can be recalled in another. Same owner, same person: acceptable. Across
      owners, it carries another owner's content into private memory.
-- **Supply chain:** no new dependencies. The shadcn CLI adds `alert-dialog`
-  (Radix), which is already part of the shadcn set.
+- **Supply chain:** no new npm dependencies. The shadcn CLI adds `alert-dialog`
+  (Radix), which is already part of the shadcn set. The fallback's path-walk
+  helper, if it's needed, is new code in the pod image and gets reviewed like
+  any new binary.
 
 ## 14. Not in W3
 
@@ -934,4 +1105,32 @@ Each has a recommendation, so it can be answered with a yes.
 
 ## 16. Review log
 
-(None yet.)
+**Review 1 (2026-10-12)**, seven findings, all accepted:
+
+1. **[P1] The narrowing call created a bootstrap cycle**
+   (`tool-policy → projects → shared-folders → agents → tool-policy`).
+   Resolved in §9.1: enforcement is a `tool:pre-call` subscriber in
+   `@ax/projects`, with no call edge, and `prod-bootstrap.test.ts` boots the
+   full graph.
+2. **[P1] Standing approvals bypassed project denies**, because decisions
+   consumes them before evaluating policy. Resolved in §9.1: the projects
+   subscriber runs before decisions and refuses first, and approvals are
+   matched on their project. Tested across projects.
+3. **[P1] Replay lost the project.** Resolved in §9.1: decisions rows carry
+   `project_id`, replay puts it on the context, and `decisions:pre-replay`
+   rechecks the project, the grant and the narrowing before anything runs.
+4. **[P1] The per-folder pod fallback wasn't confinement.** Resolved in §5.1 and
+   §6.1: the fallback walks every component with `O_NOFOLLOW` (or `openat2`
+   with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`), and an adversarial race test
+   covers both modes. The same race in today's `/files` reader is noted in §13
+   as its own card.
+5. **[P2] Moving a routine's conversation could redirect later fires.**
+   Resolved in §8 and §9.2: routine conversations can't be moved, and every
+   fire refuses a conversation whose project doesn't match (`project-mismatch`).
+6. **[P2] Undo had no initial version.** Resolved in §7.2: a baseline sweep when
+   history starts, a pass before each writable session opens, and a preimage
+   before every host write. The first edit and first deletion are tested.
+7. **[P2] Upload and download limits conflicted.** Resolved in §5.1: preview
+   (`projects:read-file`, bounded and flagged) and download
+   (`projects:download-file`, whole file up to 10 MiB, never truncated) are
+   separate, and the 10 MiB limit matches uploads.
