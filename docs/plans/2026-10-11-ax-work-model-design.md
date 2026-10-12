@@ -17,10 +17,11 @@ clear home.
 
 ## Resume here
 
-- **Now:** the W1 spec was revised after review 1 (required and optional
-  providers, validation for each provider, an orchestrator deadline) and is
-  waiting for re-review:
-  [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md).
+- **Now:** W1 is built (2026-10-12, standalone `/yolo-ship`, memory shard
+  `AXWM-2`) from the revised spec
+  [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md);
+  plan in [`2026-10-12-w1-prompt-contributions-plan.md`](2026-10-12-w1-prompt-contributions-plan.md).
+  W3, W6 and W13 can now register `system-prompt:augment:optional:<name>`.
 - **Also now:** the W2 spec was revised after review 1 and is waiting for
   re-review:
   [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
@@ -29,8 +30,7 @@ clear home.
   developed as a PR stack and merged as one squash with W3's first slice (the
   orchestrator mounting a conversation's project), following #978.
 - **Next, in order:**
-  1. Approve the W1 and W2 specs, write their plans, and put their cards on
-     the board. W1 and W2 can be built in parallel.
+  1. Approve the W2 spec, write its plan, and put its cards on the board.
   2. Write the W3 (projects) spec, starting with the first slice W2 merges
      with.
   3. Turn the goals design into a final spec, lined up with W1 and W13.
@@ -44,7 +44,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
-| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | spec draft (revised after review 1) | — |
+| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | built (PR pending, see Resume here) | — |
 | W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | spec draft (revised after review 1) | — |
 | W3 | Projects | Projects | W1, W2 | — | no spec | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
