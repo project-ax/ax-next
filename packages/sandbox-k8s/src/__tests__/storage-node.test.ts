@@ -234,6 +234,23 @@ describe('storage-node activation failure reporting', () => {
     const log = f.reports.join('\n');
     expect(log).toContain('leaked'); expect(log).not.toContain('secret-token'); expect(log).not.toContain('d'.repeat(32));
   });
+  it('rethrows a redacted stand-in as the cause, never the credential-bearing original', async () => {
+    const f = engineFixture();
+    const original = new Error('leaked secret-token');
+    f.command.mockImplementationOnce(() => { throw original; });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e as Error);
+    expect(err.cause).not.toBe(original);
+    expect((err.cause as Error).message).toContain('leaked');
+    expect((err.cause as Error).message).not.toContain('secret-token');
+  });
+  it('redacts a short secret-named bootstrap value from the report', async () => {
+    const data = input(); data.bootstrap.env.AX_AUTH_TOKEN = 'tok42';
+    const f = engineFixture(data);
+    f.command.mockImplementationOnce(() => { throw new Error('auth tok42 refused for session'); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('refused'); expect(log).not.toContain('tok42');
+  });
 });
 
 // W2 §3.8.1 — shared folders on the shared warm pool. The source path comes

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
-import { describeFailure } from './describe-failure.js';
+import { describeFailure, redactedError } from './describe-failure.js';
 import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
@@ -200,13 +200,14 @@ export class StorageNodeEngine {
         return { assignmentId: record.assignmentId };
       } catch (cause) {
         // Keep the cause for the operator; never credentials (describeFailure redacts).
-        const secrets = Object.values(bootstrap.env);
-        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, secrets)}`);
+        const env = bootstrap.env;
+        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, env)}`);
         // Keep durable intent + finalizers for recovery; never discard an active mount.
         await this.releaseLocked(record).catch((e: unknown) => {
-          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, secrets)}`);
+          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, env)}`);
         });
-        throw new Error('storage activation failed', { cause });
+        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
+        throw new Error('storage activation failed', { cause: redactedError(cause, env) });
       }
     });
   }
