@@ -21,16 +21,18 @@ clear home.
   providers, validation for each provider, an orchestrator deadline) and is
   waiting for re-review:
   [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md).
-- **Also now:** the W2 spec is drafted and waiting for review:
+- **Also now:** the W2 spec was revised after review 1 and is waiting for
+  re-review:
   [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
-  It proposes mounting shared folders at `/shared/<folderId>` rather than
-  inside `/files` (§5.2 below still shows the older path), and a named
-  half-wired window that W3 closes.
+  It mounts shared folders at `/shared/<folderId>` rather than inside `/files`
+  (§5.2 below still shows the older path). **W2 doesn't merge alone:** it's
+  developed as a PR stack and merged as one squash with W3's first slice (the
+  orchestrator mounting a conversation's project), following #978.
 - **Next, in order:**
   1. Approve the W1 and W2 specs, write their plans, and put their cards on
      the board. W1 and W2 can be built in parallel.
-  2. Write the W3 (projects) spec. It closes W2's half-wired window, so it
-     should follow W2 closely.
+  2. Write the W3 (projects) spec, starting with the first slice W2 merges
+     with.
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
@@ -43,7 +45,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
 | W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | spec draft (revised after review 1) | — |
-| W2 | Shared folders | Foundation | nothing | [W2 spec](2026-10-12-w2-shared-folders-design.md) | spec draft | — |
+| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | spec draft (revised after review 1) | — |
 | W3 | Projects | Projects | W1, W2 | — | no spec | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |

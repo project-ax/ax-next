@@ -1,8 +1,9 @@
 # W2: shared folders (design)
 
-**Status:** draft for review, 2026-10-12. **Owner:** Vinay.
+**Status:** draft, revised after review 1 (2026-10-12); see §10. **Owner:** Vinay.
 **Work item:** W2 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`,
-§5.1). It needs nothing, and it unblocks W3 (projects), which is its first user.
+§5.1). It needs nothing, and it is merged together with W3's first production
+caller (§4).
 **Code cited at:** `c11b489e5`.
 
 ---
@@ -11,349 +12,483 @@
 
 Projects are shared folders (work model §5). Today every durable file belongs
 to exactly one agent: the `/files` mount is the agent's own subtree of the
-backing store (`subPath: agentId`). Two agents can't see the same folder.
+backing store (`subPath: agentId`), so two agents can't see the same folder.
 
 W2 builds the generic building block: a folder that several agents can mount,
 with owner, editor and viewer roles. Projects (W3) are a convention on top of
-it. Per the "don't fold generic infra into a feature" rule, it's its own
+it. Per the "don't fold generic infra into a feature" rule, W2 is its own
 plugin and knows nothing about projects.
 
 ## 2. What exists today
 
 - **Mounts.** `sandbox:resolve-mounts (ctx, { owner, readOnly? }) → { mounts: MountSpec[] }`
   is a host-internal service, never an IPC action
-  (`packages/sandbox-mount-protocol/src/mount-spec.ts`).
-  - Like `system-prompt:augment` before W1, **one plugin holds it**:
-    `@ax/workspace-filestore` in k8s (`packages/workspace-filestore/src/plugin.ts:50`)
-    or `@ax/workspace-localdir` in dev and the canary. Exactly one loads per
-    deployment.
-- **What the resolvers emit today.** Each returns one mount, keyed off
-  `owner.agentId`:
-  - filestore: `{ kind: 'nfs', server, exportPath, subPath: agentId, mountPath: '/files', role: 'user-files' }`
-  - localdir: `{ kind: 'localDir', hostPath: <root>/<agentId>, … }`
-- **k8s already realizes a list of mounts.** `realizeMounts`
-  (`packages/sandbox-k8s/src/pod-spec.ts:491`) turns each `nfs` spec into an
-  inline pod volume plus a `subPath` volume mount. It checks subpaths
-  (`validNfsSubPath`) and adds a chown step for writable `user-files` mounts,
-  because the kubelet creates `subPath` directories root-owned. Under GKE
-  Sandbox, `prepareAgentSandboxMounts` runs those chown steps as separate pods
-  before the sandbox starts (`prepare-mounts.ts`).
-- **Subprocess (dev and canary) shares the host filesystem.** It realizes
-  `localDir` with `mkdir -p hostPath` and stamps the path as `AX_USERFILES_ROOT`
-  (`packages/sandbox-subprocess/src/open-session.ts:412`). It can't enforce
-  `readOnly`.
-- **The runner learns its paths from env.** For example, `AX_USERFILES_ROOT`
-  drives the "Keeping files" note in the system prompt
-  (`packages/agent-runner-core/src/system-prompt.ts:263`).
+  (`packages/sandbox-mount-protocol/src/mount-spec.ts`). Like
+  `system-prompt:augment` before W1, **one plugin holds it**:
+  `@ax/workspace-filestore` in k8s (`packages/workspace-filestore/src/plugin.ts:50`),
+  or `@ax/workspace-localdir` in dev. Each emits one mount keyed off
+  `owner.agentId`.
+- **The resolver owns the backing-store configuration** (NFS server and
+  export, or local root). Providers don't: to find an agent's files for
+  cleanup, they ask the resolver through `sandbox:resolve-mounts`.
+- **k8s already realizes a list of mounts.**
+  - `realizeMounts` (`packages/sandbox-k8s/src/pod-spec.ts:491`) turns each
+    `nfs` spec into an inline pod volume plus a `subPath` volume mount.
+  - It checks subpaths (`validNfsSubPath`).
+  - It adds a chown step for writable `user-files` mounts, because the kubelet
+    creates `subPath` directories root-owned. Under GKE Sandbox,
+    `prepareAgentSandboxMounts` runs those steps as separate pods (`prepare-mounts.ts`).
+- **Subprocess (dev only) shares the host filesystem.** It realizes `localDir`
+  with `mkdir -p` and stamps `AX_USERFILES_ROOT`. It can't enforce `readOnly`.
+- **The runners grant file access explicitly.**
+  - The Claude runner passes `additionalDirectories` built from
+    `workspaceRoot`, `ephemeralRoot`, `userFilesRoot` and `memoryRoot`
+    (`packages/agent-claude-sdk-runner/src/main.ts:516`), and loads settings
+    only from `settingSources: ['user']` (`main.ts:659`).
+  - The aisdk runner's tool policy recognizes `[homeDir, ephemeralRoot]`
+    (`packages/agent-aisdk-runner/src/main.ts:219`).
+  - A new root reaches neither runner automatically.
+- **Management authority already exists; use authority doesn't grant it.**
+  - `agents:resolve` lets ordinary team members use a team agent.
+  - Changing an agent goes through a separate check, `connectorsManageAllowed`
+    (`packages/agents/src/plugin.ts:1049`), exposed as
+    `agents:can-manage-routines` (`plugin.ts:494`). For a personal agent, only
+    its owner. For a team agent, only a team admin. Workspace-admin status
+    alone never grants it. Authority comes from the authenticated context.
+- **Reducing access, the connector precedent.** `connectors:deleted` marks every
+  session that uses the connector, reaps idle sessions immediately, and reaps
+  active ones as soon as their turn ends (`onTurnEnd`)
+  (`chat-orchestrator/src/orchestrator.ts:1994`). A generation bump
+  (`system-prompt:augment-changed`) alone only retires a session when its next
+  turn arrives.
 - **Agent ids.** The resolvers accept any id matching `^[A-Za-z0-9_-]+$`
-  (`workspace-filestore/src/agent-id.ts`). Real ids are minted as `agt_…`, but
-  the check alone would accept `shared`.
+  (`workspace-filestore/src/agent-id.ts`). Real ids are minted `agt_…`, but the
+  check alone would accept `shared`.
 - **Agent deletion.**
-  - Each provider `rm -rf`s the agent's subtree on `agents:deleted`
+  - Providers `rm -rf` the agent's subtree on `agents:deleted`
     (`sandbox-subprocess/src/plugin.ts:108`, `sandbox-k8s/src/user-files-ops.ts`).
-  - Every table with an `agent_id` column must be cleaned up: the k8s preset
-    asks the database itself (`presets/k8s/src/__tests__/agent-delete-cleanup.test.ts`),
-    and `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` keeps the
-    list honest.
-- **Live sessions change only at a turn boundary.**
-  - `system-prompt:augment-changed` bumps a per-agent generation, and that
-    agent's live sessions restart at their next turn.
-  - `connectors:deleted` marks the sessions that use a connector, and reaps
-    idle ones (`chat-orchestrator/src/orchestrator.ts:1994`).
-  - Nothing interrupts a turn in progress.
-- **Plugins own their tables** through `database:get-instance` (Kysely), with
-  their own migrations (for example `packages/teams`).
+  - Every `agent_id` column must be cleaned up: the k8s preset checks the whole
+    schema (`presets/k8s/src/__tests__/agent-delete-cleanup.test.ts`, plus
+    `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js`).
+- **Acceptance harnesses.**
+  - The `presets/memory` canary uses the filestore resolver and a **fake k8s
+    API** (`presets/memory/src/__tests__/canary.test.ts:137`, `:305`). It can
+    check pod specs, but it can't prove that one agent's write is readable by
+    another.
+  - A real subprocess + localdir end-to-end harness already exists:
+    `packages/sandbox-subprocess/src/__tests__/userfiles-canary.acceptance.test.ts`.
 - **The shared pool is opt-in and disabled.** Its node helper binds only the
-  claimed agent's own directory into a prewarmed pod
-  (`docs/plans/2026-10-01-agent-sandbox-shared-pool-design.md`).
-- **`/files` isn't metered.** `@ax/disk-quota` covers the git workspace and
-  blobs only.
+  claimed agent's own directory.
+- **The half-wired policy.** A plugin merges only when it's fully registered,
+  tested and reachable. The agent-owned sign-ins epic was developed as a stack
+  and merged as one squash (#978).
 
 ## 3. Design
 
 ### 3.1 A new plugin owns folders and grants
 
-`@ax/shared-folders` holds two tables and the rules about them. It has no
-storage-backend vocabulary: folders and grants are ids and roles (invariant 1).
+`@ax/shared-folders` holds the tables and the rules. It has no storage-backend
+vocabulary (invariant 1).
 
-- **`shared_folders_v1_folders`:** `folder_id` (minted `sf_<base64url>`, so it's
-  a safe single path segment), `created_by_user`, `created_at`.
+- **`shared_folders_v1_folders`:**
+  - `folder_id` (minted `sf_<base64url>`, a safe single path segment);
+  - `owner_agent_id`;
+  - `created_by_user`, `created_at`;
+  - `deleted_at` (a tombstone while files are being removed, §3.7).
 - **`shared_folders_v1_grants`:** `folder_id`, `agent_id`, `role`
-  (`owner | editor | viewer`), `granted_by_user`, `created_at`.
-  - Exactly one `owner` per folder.
-  - At most one grant per (folder, agent).
+  (`owner | editor | viewer`), `granted_by_user`, `created_at`. Exactly one
+  `owner` per folder, at most one grant per (folder, agent).
 
-**Same owner only in W2.** A grant may go only to an agent with the same owner
-(the same person, or the same team) as the folder's owner agent. This is
-checked through `agents:resolve`. Sharing across owners is W4.
+**Same owner only in W2.** Every grant goes to an agent with the same owner
+(the same person or the same team) as the folder's owner agent. Sharing across
+owners is W4.
 
-**Hooks** (all host-internal services; none is an IPC action or agent tool):
+### 3.2 Who may change what
 
-| Hook | Does |
-|---|---|
-| `shared-folders:create { ownerAgentId }` → `{ folderId }` | Creates a folder with that agent as owner |
-| `shared-folders:grant { folderId, agentId, role }` | Adds or changes a grant (same owner only); can't create a second owner |
-| `shared-folders:revoke { folderId, agentId }` | Removes a grant; the owner can't be revoked, only transferred or the folder deleted |
-| `shared-folders:list { agentId }` → grants | The folders an agent can use, with roles |
-| `shared-folders:authorize-mounts { agentId, folderIds }` → `[{ folderId, readOnly }]` | Filters a requested list down to the agent's grants. Viewer → `readOnly: true`. A folder without a grant is left out, never an error. |
-| `shared-folders:delete { folderId }` | Deletes the folder, its grants, and (through the provider, §3.6) its files |
+Recording who made a change and auditing it isn't authorization. Every
+changing hook checks authority before writing.
 
-Every call that creates, changes or removes access is made for a person,
-records `granted_by_user`, and is audited.
+- **The actor** is the authenticated person on the context (`ctx.userId`), never
+  a field in the payload. A call without a real person is refused, so there's
+  no ownerless or synthetic actor.
+- **New hook `agents:can-manage-sharing { agentId } → { allowed }`.** `@ax/agents`
+  registers it with the same rule as `agents:can-manage-routines`:
+  - personal agent: only its owner;
+  - team agent: only a team admin;
+  - workspace-admin status alone never grants it.
+- **"Manage a folder"** means "manage its owner agent".
 
-### 3.2 Where the files live: a subtree no agent id can name
+| Hook | Allowed when the actor… | Refused when |
+|---|---|---|
+| `shared-folders:create { ownerAgentId }` | can manage `ownerAgentId` | otherwise |
+| `shared-folders:grant { folderId, agentId, role }` (add, or change a role) | can manage the folder **and** can manage `agentId` | the target has a different owner; the change would make a second owner; the folder is tombstoned |
+| `shared-folders:revoke { folderId, agentId }` | can manage the folder, **or** can manage `agentId` (an agent's manager can always take it out) | the target is the owner (transfer or delete instead) |
+| `shared-folders:delete { folderId }` | can manage the folder | otherwise |
+| `shared-folders:list { agentId }` | can use `agentId` (`agents:resolve`) | otherwise |
+
+Two operations have no person, and neither goes through these hooks:
+
+- **`shared-folders:authorize-mounts { agentId, folderIds } → [{ folderId, readOnly }]`.**
+  Mount resolvers call it during session open. It's host-internal and never
+  reachable from the sandbox. It only filters a requested list down to the
+  agent's live grants. Viewer → `readOnly: true`; a tombstoned folder is never
+  returned.
+- **Cleanup after an agent is deleted** (§3.7) runs inside the plugin's
+  `agents:deleted` subscriber. It isn't a call made on anyone's behalf.
+
+Unauthorized calls throw `forbidden`, write nothing, and are audited as refused.
+
+### 3.3 Where the files live: a subtree no agent id can name
 
 A shared folder lives in the same backing store as `/files`, at
 **`.shared/<folderId>`**:
-- NFS: `subPath: .shared/<folderId>` on the existing export.
+- NFS: `subPath: .shared/<folderId>`;
 - localdir: `<root>/.shared/<folderId>`.
 
-The leading dot matters. The agent-id check (`^[A-Za-z0-9_-]+$`) can never
-match `.shared`, so no agent's own `/files` subtree can ever be the parent of
-the shared folders. With a plain `shared/`, an agent whose id happened to be
-`shared` would mount every folder. It also keeps shared data out of the
-per-agent `rm -rf` on agent deletion, which targets `<agentId>` only.
+The agent-id check can never match `.shared`, so no agent's `/files` can be the
+parent of the shared folders. A plain `shared/` would let an agent whose id is
+`shared` mount every folder. The leading dot also keeps shared data out of the
+per-agent `rm -rf`, which targets `<agentId>` only.
 
-### 3.3 Where agents see them: `/shared/<folderId>`, not inside `/files`
+### 3.4 Where agents see them: `/shared/<folderId>`, not inside `/files`
 
 The work model sketched `/files/projects/<id>`. W2 mounts at
-**`/shared/<folderId>`** instead, outside `/files`:
+**`/shared/<folderId>`**, outside `/files`:
 
-- **`/files` is the agent's own writable subtree, so the agent controls
-  whatever path a nested mount would land on.**
-  - The container runtime would create `/files/projects/<id>` inside that
-    subtree on NFS.
-  - An agent that replaced `projects` with a file could make its own pods fail
-    to start.
-  - A symlink there turns mount-target resolution into an attack surface.
-- **A top-level path keeps both properties the work model wanted:** every
-  member sees the folder at the same path, and a path cited in a note works for
-  all of them.
-- W3 decides how a project is presented to the model (for example by naming the
-  path in its prompt block). The umbrella doc's `/files/projects/<id>` gets
-  updated to match.
+- `/files` is the agent's own writable subtree, so the agent would control the
+  mount target. The runtime would create the target inside that subtree. An
+  agent that replaced it with a file could stop its own pods from starting, and
+  a symlink there turns target resolution into an attack surface.
+- A top-level path keeps what the work model wanted: the same path for every
+  member.
 
-### 3.4 Which folders a session mounts: chosen by the host, checked against grants
+W3 decides how a project is presented to the model, and the umbrella doc's path
+gets updated to match.
 
-The work model requires "only the active project is mounted", so a session
-mounts only the folders the host picked for it, never "everything the agent
-can use":
+### 3.5 Which folders a session mounts
 
-1. **The host picks.** `sandbox:open-session`'s input gains an optional
-   `sharedFolderIds: string[]`, set by host code (the orchestrator), never by
-   the model or the sandbox. It's passed through to `sandbox:resolve-mounts` as
+1. **The host picks.** `sandbox:open-session` gains an optional
+   `sharedFolderIds: string[]`, set by host code (the orchestrator) and never by
+   the model or the sandbox. It's passed through to
    `ResolveMountsInput.sharedFolderIds`.
-2. **The grants decide.** The mount resolver (filestore or localdir) calls
-   `shared-folders:authorize-mounts { agentId, folderIds }`. It emits a mount
-   only for each folder that comes back, read-only where the grant is viewer.
-   A folder the agent has no grant for is silently not mounted, and the
-   resolver logs it.
-3. **The backend stays in the resolver.** The resolver turns each authorized
-   folder into its backend's spec: `nfs` with `subPath: .shared/<folderId>`, or
-   `localDir` with `hostPath: <root>/.shared/<folderId>`. Both use
-   `mountPath: /shared/<folderId>` and the new `role: 'shared-folder'`. Grants
-   live in one place and backend details in the other (invariant 4).
+2. **The grants decide.** The mount resolver calls
+   `shared-folders:authorize-mounts` and emits a mount only for each folder
+   that comes back, read-only for a viewer. Anything else isn't mounted, and
+   the resolver logs it.
+3. **The backend stays in the resolver.** It turns each authorized folder into
+   its backend's spec:
+   - `nfs`, `subPath: .shared/<folderId>`; or
+   - `localDir`, `hostPath: <root>/.shared/<folderId>`;
 
-`sandbox:resolve-mounts` stays single-provider. Shared folders don't need a
-second provider, because the resolver that already owns the backend asks the
-grants plugin which folders to add. The resolver lists
-`shared-folders:authorize-mounts` in `optionalCalls`. Without the plugin it
-emits no shared mounts, which is today's behavior.
+   both at `mountPath: /shared/<folderId>` with the new
+   `role: 'shared-folder'` and a `folderId`.
 
-**Telling the runner.** Each provider stamps `AX_SHARED_FOLDERS`, a JSON list
-of `{ id, path, readOnly }` built from the realized `shared-folder` mounts,
-next to `AX_USERFILES_ROOT`. The runner validates it like its other env
-(host-controlled, never model input) and adds a short note to the system
-prompt naming each folder's path and whether it's read-only. W3 replaces that
-note with its project block.
+`sandbox:resolve-mounts` stays single-provider, and the resolver lists
+`shared-folders:authorize-mounts` in `optionalCalls`.
 
-### 3.5 Realizing the mounts
+### 3.6 Giving the runners access
 
-- **k8s.** `realizeMounts` already handles a list. `shared-folder` mounts become
-  inline `nfs` volumes with `subPath: .shared/<folderId>`. Writable ones get the
-  same chown step as `user-files`, so the non-root runner can write a directory
-  the kubelet created root-owned. Under GKE Sandbox that runs through the
-  existing `prepareAgentSandboxMounts`, which picks up chown steps by name.
-  Viewer mounts are `readOnly: true` and need no chown.
-- **Subprocess (dev and canary only).** `mkdir -p` the `hostPath`. Read-only
-  can't be enforced without a real mount; that's an existing limit of this
-  provider, which isn't a security boundary, and it's documented on the spec.
-- **Shared pool (disabled today).** Its node helper binds only the agent's own
-  directory. Until the helper learns to bind shared folders, a pool session
-  asked to mount any shared folder **fails to open with a clear error** rather
-  than starting without the folder. Enabling shared folders in pool mode is an
-  explicit follow-up on the pool's acceptance checklist.
+Each provider stamps `AX_SHARED_FOLDERS`, a JSON list of
+`{ id, path, readOnly }` built from the realized `shared-folder` mounts. It's
+host-controlled; the runner validates it like its other env and rejects
+anything that isn't an absolute path.
 
-### 3.6 Lifecycle
+- **Claude runner.** Add each shared path to `additionalDirectories` (`main.ts:516`),
+  so the native Read, Edit, Write, Glob and Grep tools can reach it.
+  - Shared folders must not become a source of settings, memory or skills:
+    `settingSources` stays `['user']`, and nothing in a shared folder is read as
+    `CLAUDE.md`, `.claude/settings*.json` or `.claude/skills/`.
+  - A test plants all three in a shared folder and checks that none is loaded.
+- **aisdk runner.** Add the shared paths to the tool policy's
+  `recognizedRoots` (`main.ts:219`). A `.ax/` or `.claude/` path inside a shared
+  folder is an ordinary project file: it's never re-rooted onto the agent's
+  governed `/agent` tree, and never loaded as a skill.
+- **Read-only.** For a viewer, the k8s mount is read-only, so a write fails with
+  `EROFS`. The runner's note says the folder is read-only, but the mount is
+  what enforces it.
+- **Prompt note.** A short note names each folder's path and whether it's
+  read-only. W3 replaces it with its project block.
 
-- **Revoking access.**
-  - `shared-folders:revoke` (and `delete`) fires
-    `sandbox:mounts-changed { agentId }` for every agent that lost access.
-  - The orchestrator subscribes and treats it like `augment-changed`: it bumps
-    that agent's generation, so its live sessions restart at their next turn,
-    and the new session no longer mounts the folder.
-  - **A turn in progress keeps access until it ends**, the same posture as
-    `connectors:deleted`, because a mid-turn kill hangs the stream. As with
-    Drive, nothing un-reads what an agent already saw.
-- **Agent deleted** (`agents:deleted`): its grants are removed.
-  - If it owned a folder, ownership passes to the editor with the oldest grant.
-  - If there's no editor, the folder is deleted, files included. A viewer is
-    never promoted to owner, because that would widen its access.
-- **Deleting a folder's files.**
-  - `@ax/shared-folders` fires `shared-folders:deleted { folderId }` after its
-    rows are gone.
-  - The sandbox provider that realizes mounts removes `.shared/<folderId>` with
-    the same machinery it uses for an agent's subtree:
-    - subprocess: `rm -rf` of the resolved `hostPath`;
-    - k8s: the short-lived cleanup job in `user-files-ops.ts`.
-  - It confines the path the same way, refusing anything that isn't
-    `.shared/<one safe segment>`.
-- **Agent-keyed table cleanup.** `shared_folders_v1_grants.agent_id` is covered
-  by the k8s preset's whole-schema check, and the table is added to
+### 3.7 Lifecycle
+
+**Reducing access: revoke, downgrade or delete.**
+
+- Any change that removes or narrows access fires
+  `shared-folders:access-reduced { folderId, agentIds }`. That covers a revoke,
+  a downgrade from editor to viewer, a delete, and the grants removed when an
+  agent is deleted. An increase (a new grant, or viewer to editor) fires
+  nothing; the next session picks it up.
+- **The orchestrator follows the connector precedent exactly:**
+  - it remembers which `sharedFolderIds` it requested for each session;
+  - on `access-reduced` it marks every live session of those agents that
+    requested that folder;
+  - it **reaps idle sessions immediately**, closing their proxy sessions first;
+  - it **reaps active sessions as soon as their turn ends** (`onTurnEnd`).
+
+  A generation bump alone isn't enough, because an idle warm sandbox would keep
+  a writable mount until its next turn.
+- The next session is built from the current grants: no mount after a revoke,
+  a read-only mount after a downgrade. A turn in progress keeps its access until
+  it ends, because a mid-turn kill hangs the stream. As with Drive, nothing
+  un-reads what an agent already saw.
+
+**Deleting a folder's files: cleanup that doesn't depend on grants.**
+
+1. `shared-folders:delete` (or the agent-deletion case below) removes the
+   grants, sets `deleted_at` on the folder row, and fires `access-reduced`. The
+   folder can no longer be mounted or granted.
+2. The plugin then calls **`sandbox:delete-shared-folder { folderId }`**, a new
+   service registered by the sandbox provider that realizes deletes.
+3. The provider locates the folder through **`sandbox:locate-shared-folder { folderId } → MountSpec`**,
+   a new service registered by the mount resolver, because the resolver owns
+   the backing-store configuration.
+   - It answers from the folder id alone, with no grant check, because by now
+     there are no grants. It's host-internal and used only for deletion.
+   - It confines the location to `.shared/<one safe segment>`.
+4. The provider removes the folder with its existing confined machinery:
+   - subprocess: `rm -rf` of the resolved `hostPath`;
+   - k8s: the short-lived cleanup job in `user-files-ops.ts`.
+5. On success, the plugin removes the folder row. If the call fails, or no
+   provider is loaded, the tombstone stays, and a periodic sweep in the plugin
+   retries tombstoned folders with backoff. No cleanup depends on rows that
+   have already been deleted.
+
+**When an agent is deleted** (`agents:deleted`), its grants are removed and
+`access-reduced` fires.
+- If it owned a folder, ownership passes to the editor with the oldest grant.
+- If there's no editor, the folder is deleted through the steps above.
+- A viewer is never promoted to owner, because that would widen its access.
+- `shared_folders_v1_grants.agent_id` and `shared_folders_v1_folders.owner_agent_id`
+  are covered by the whole-schema cleanup check and added to
   `agent-keyed-tables-are-cleaned`.
 
-### 3.7 Not in W2
+### 3.8 Realizing the mounts
+
+- **k8s.** `shared-folder` mounts become inline `nfs` volumes with
+  `subPath: .shared/<folderId>`. Writable ones get the same chown step as
+  `user-files`, which runs through `prepareAgentSandboxMounts` under GKE Sandbox.
+  Viewer mounts are `readOnly: true` and get no chown.
+- **Subprocess (dev only).** `mkdir -p` the `hostPath`. Read-only isn't
+  enforced; that's an existing limit of this provider, which isn't a security
+  boundary.
+- **Shared pool (disabled).** Until its node helper can bind shared folders, a
+  pool session asked to mount one **fails to open with a clear error**. Enabling
+  shared folders in pool mode is a follow-up on the pool's acceptance checklist.
+
+### 3.9 Not in W2
 
 - **Projects:** the fixed layout, `instructions.md`, the project prompt block,
-  conversations' `projectId` (W3). W3 is also where the orchestrator starts
-  setting `sharedFolderIds`.
+  and conversations' `projectId`. That's W3, except for the minimal caller W2
+  merges with (§4).
 - **Sharing across owners and accepting a share (W4).**
-- **Per-file history and undo (W3).**
-- **A web view of a shared folder's files.** The host-read path
-  (`sandbox:read-user-files`) gets a shared-folder variant in W3, alongside the
-  file browser.
-- **Metering shared folders.** `/files` isn't metered today either.
+- **Per-file history and undo, and the web file view of a shared folder (W3).**
+- **Metering shared folders.** `/files` isn't metered either.
 
-## 4. The half-wired window (named on purpose)
+## 4. Merged with a reachable caller, not a named window
 
-W2 has no production caller until W3: nothing sets `sharedFolderIds` on a real
-session. Per the half-wired policy, the window is named and closed rather than
-left open:
+Naming a half-wired window doesn't close it. W2 is developed as a **dependent
+PR stack** and merged **as one squash** together with its first production
+caller, following the sign-ins precedent (#978).
 
-- **Loaded in both presets** (`packages/cli/src/main.ts`, `presets/k8s/src/index.ts`)
-  in the W2 PR.
-- **Reached by acceptance tests:**
-  - the `presets/memory` canary (subprocess + localdir) creates a folder, grants
-    two same-owner agents, opens a session for each with `sharedFolderIds`, and
-    checks that a file written by one is read by the other;
-  - after a revoke, the next session doesn't mount it;
-  - the k8s preset tests cover the pod spec (volume, `subPath`, read-only for a
-    viewer, chown for an editor).
-- **Closed by W3,** which sets `sharedFolderIds` from the conversation's
-  project. W3 is next in the order (work model, "Resume here"). If W3 slips,
-  W2 stays unused but tested, never dead.
+- **The caller is W3's first slice:**
+  - a conversation can belong to a project;
+  - the project names its shared folder;
+  - **the orchestrator sets `sharedFolderIds` from the conversation's project**
+    when it opens a session.
+
+  The W3 spec defines that slice exactly. W2's PRs sit under it in the stack.
+- **Nothing in the stack merges on its own.** The squash lands when:
+  - every PR in it is approved and green;
+  - both presets load `@ax/shared-folders`;
+  - the acceptance tests below pass.
+- **Acceptance: real files, real providers.** A new
+  `packages/sandbox-subprocess/src/__tests__/shared-folders-canary.acceptance.test.ts`
+  follows the existing `userfiles-canary` pattern: the real subprocess
+  provider, the real localdir resolver, the real `@ax/shared-folders`, and a
+  runner stub. It checks:
+  - agent A writes a file in a shared folder and a fresh session of agent B
+    reads it;
+  - after a downgrade, B's next session gets a read-only mount spec (the
+    write failure itself is k8s-only and is covered by the pod-spec checks);
+  - after a revoke, B's next session has no mount;
+  - after a delete, the folder's directory is gone, even though its grants were
+    removed first.
+- **The end-to-end caller test lives in the W3 slice.** A session opened for a
+  conversation in a project mounts that project's folder through the
+  orchestrator.
+- **Pod-spec checks stay separate.** The `presets/memory` canary (filestore plus
+  fake k8s) and the k8s preset tests assert the pod spec:
+  - volume and `subPath`;
+  - read-only and no chown for a viewer, chown for an editor;
+  - pool mode refusing to open.
+
+  They don't claim to prove file access across agents.
 
 ## 5. Changes by package
 
 - **New `@ax/shared-folders`:**
-  - tables, migrations and the hooks in §3.1;
-  - the same-owner check;
-  - `agents:deleted` handling (§3.6);
-  - fires `sandbox:mounts-changed` and `shared-folders:deleted`.
+  - tables, migrations and hooks (§3.1, §3.2), with authorization on every
+    changing hook;
+  - `agents:deleted` handling, ownership transfer and the tombstone sweep;
+  - fires `shared-folders:access-reduced`.
+- **`@ax/agents`:** `agents:can-manage-sharing`, using the same rule as
+  `agents:can-manage-routines`.
 - **`@ax/sandbox-protocol`:** optional `sharedFolderIds` on `OpenSessionInput`.
 - **`@ax/sandbox-mount-protocol`:**
   - `sharedFolderIds` on `ResolveMountsInput`;
-  - `role: 'shared-folder'` and a `folderId` on both mount kinds;
-  - consumers keep branching on `kind`.
+  - `role: 'shared-folder'` and `folderId` on both mount kinds;
+  - the `sandbox:locate-shared-folder` and `sandbox:delete-shared-folder`
+    contracts.
 - **`@ax/workspace-filestore`, `@ax/workspace-localdir`:**
-  - call `shared-folders:authorize-mounts` (optional) and emit the folder mounts
-    (§3.4);
+  - call `shared-folders:authorize-mounts` (optional) and emit folder mounts;
+  - register `sandbox:locate-shared-folder`;
   - reject any `folderId` that isn't one safe segment.
 - **`@ax/sandbox-k8s`:**
   - realize `shared-folder` mounts with chown for writable ones;
   - stamp `AX_SHARED_FOLDERS`;
-  - refuse shared folders in pool mode;
-  - delete a folder's files on `shared-folders:deleted`.
-- **`@ax/sandbox-subprocess`:** `mkdir -p` and `AX_SHARED_FOLDERS`, plus
-  deletion on `shared-folders:deleted`.
-- **`@ax/agent-runner-core`:** parse `AX_SHARED_FOLDERS`, and add the
-  shared-folders note.
-- **`@ax/chat-orchestrator`:** subscribe to `sandbox:mounts-changed`. In W2 it
-  doesn't set `sharedFolderIds` yet (§4).
+  - refuse in pool mode;
+  - register `sandbox:delete-shared-folder`.
+- **`@ax/sandbox-subprocess`:** `mkdir -p`, `AX_SHARED_FOLDERS`, and
+  `sandbox:delete-shared-folder`.
+- **`@ax/agent-runner-core`:** parse `AX_SHARED_FOLDERS`, and the prompt note.
+- **`@ax/agent-claude-sdk-runner`:** shared paths in `additionalDirectories`,
+  never in settings or skill discovery.
+- **`@ax/agent-aisdk-runner`:** shared paths in `recognizedRoots`, with no
+  re-rooting.
+- **`@ax/chat-orchestrator`:**
+  - remember each session's requested `sharedFolderIds`;
+  - subscribe to `shared-folders:access-reduced` with the reap-idle-now and
+    reap-active-at-turn-end lifecycle;
+  - the caller itself arrives with the W3 slice.
 - **Presets:** load the plugin in both.
 
 ## 6. Tests
 
-**Plugin**
-- Grant rules: one owner, same owner only, no second owner, the owner can't be
-  revoked.
-- Ownership transfer to the oldest editor; delete when there's no editor.
-- A viewer is never promoted.
-- `authorize-mounts` filters out ungranted folders and maps a viewer to
-  read-only.
-- `agents:deleted` removes grants.
+**Authorization (review 1, finding 1)**
+- A team member who isn't an admin can't create, grant, revoke or delete on a
+  team agent's folder.
+- A person can't grant a folder to an agent they don't manage, or to an agent
+  with a different owner.
+- Workspace-admin status alone grants nothing.
+- A call with no real person is refused.
+- Every refusal writes nothing and is audited as refused.
+- The manager of a target agent can revoke that agent's own grant.
 
-**Resolvers**
-- They emit nothing for shared folders without the plugin.
-- They emit only authorized folders, with the correct backend spec, and reject
-  an unsafe `folderId`.
+**Reducing access (finding 2)**
+- A downgrade from editor to viewer and a revoke each fire `access-reduced`.
+- An idle session that requested the folder is reaped immediately; an active
+  one is reaped at turn end.
+- Sessions that didn't request the folder are untouched.
+- The next session mounts read-only after a downgrade, and nothing after a
+  revoke.
+
+**Cleanup (finding 3)**
+- Deleting a folder removes its directory after its grants are gone,
+  resolving the location through `sandbox:locate-shared-folder`.
+- A failed delete keeps the tombstone and the sweep retries it.
+- A tombstoned folder can't be mounted or granted.
+- Locate refuses anything outside `.shared/<segment>`.
+
+**Runners (finding 4)**
+- With `AX_SHARED_FOLDERS` set, Claude's native Read and Edit work on a shared
+  path, and the aisdk runner's file tools do too.
+- A `CLAUDE.md`, `.claude/settings.json` and `.claude/skills/x/SKILL.md` planted
+  in a shared folder are not loaded.
+- A `.ax/` path inside a shared folder isn't re-rooted.
+
+**Acceptance (findings 5 and 6):** §4.
+
+**Rules and resolvers**
+- One owner, same owner only.
+- Ownership transfer to the oldest editor, delete when there's none, and a
+  viewer is never promoted.
+- `authorize-mounts` filters correctly.
 - `isValidAgentId('.shared')` is false.
-
-**k8s pod spec**
-- Volume and `subPath: .shared/<id>`.
-- Read-only and no chown for a viewer; chown for an editor.
-- Pool mode with shared folders refuses to open.
-
-**Lifecycle**
-- A revoke fires `sandbox:mounts-changed`, and the next turn's session doesn't
-  mount the folder.
-- `shared-folders:deleted` removes only `.shared/<id>`.
-
-**Acceptance** (§4), plus the k8s whole-schema agent-delete check.
+- Resolvers emit nothing for shared folders without the plugin.
 
 ## 7. Boundary review
 
-- **New hooks:** the six `shared-folders:*` services, plus the
-  `sandbox:mounts-changed` and `shared-folders:deleted` events.
-- **Alternate implementation:** grants kept in an external system (a Drive-like
-  ACL service) behind the same hooks; or folders on object storage through a
-  FUSE mount kind, with no change to `@ax/shared-folders`.
-- **Payload fields that might leak:** none in `shared-folders:*` (`folderId`,
-  `agentId`, `role`, `readOnly`). The backend words (`subPath`, `hostPath`,
-  `.shared/`) stay in the resolvers and in `@ax/sandbox-mount-protocol`, which
-  exists to hold them.
-- **Subscriber risk:** `sandbox:mounts-changed` carries only `agentId`, and
-  `shared-folders:deleted` only `folderId`.
+- **New hooks:**
+  - the `shared-folders:*` services and the `shared-folders:access-reduced`
+    event;
+  - `agents:can-manage-sharing`;
+  - `sandbox:locate-shared-folder` and `sandbox:delete-shared-folder`.
+- **Alternate implementation:**
+  - grants kept in an external ACL service behind the same hooks;
+  - folders on object storage through a FUSE mount kind, with no change to
+    `@ax/shared-folders`.
+- **Payload fields that might leak:** none in `shared-folders:*` or
+  `agents:can-manage-sharing` (`folderId`, `agentId`, `role`, `readOnly`). The
+  backend words (`subPath`, `hostPath`, `.shared/`) stay in the resolvers and in
+  `@ax/sandbox-mount-protocol`, which exists to hold them.
+- **Subscriber risk:** `access-reduced` carries only `folderId` and `agentIds`.
 - **Wire surface:** none. Nothing here is an IPC action.
 
 ## 8. Security note (run `security-checklist` on the PR)
 
-- **Sandbox escape.**
-  - Shared mounts go through the same `subPath` confinement and checks as
-    `/files`.
-  - The `.shared` subtree can't be named by any agent id (§3.2).
-  - Mounting outside `/files` keeps mount targets out of agent-controlled
-    directories (§3.3).
-  - Folder ids are minted single segments and are checked again in every
-    resolver and in the delete job.
-- **Least privilege.**
-  - A session mounts only host-chosen folders that its agent has a grant for.
-  - Viewers get read-only mounts (in k8s).
-  - There's no agent tool or IPC action to share, revoke or mount: agents can't
-    share by themselves (work model §10).
-- **Prompt injection.** Files in a shared folder may be written by another
-  agent, which may itself be prompt-injected. In W2 all those agents have the
-  same owner. Framing shared content as untrusted belongs to W3's prompt block.
-- **Open item for W4, flagged now: symlinks across agents.**
-  - An agent can plant a symlink in a shared folder, for example
-    `report.md → /files/secret.txt`.
-  - When another agent opens it, the link resolves in the reader's own sandbox,
-    so it reads the reader's own private file. An injected reader could then be
-    led to copy that file back into the shared folder.
-  - That matters once agents with different owners share (W4).
+- **Authorization:** every change requires management authority over the
+  folder, and over the target agent for a grant. That authority comes from the
+  authenticated person, using the existing manage rule. Use authority never
+  implies it (§3.2).
+- **Sandbox escape:**
+  - the same `subPath` confinement as `/files`;
+  - a `.shared` subtree no agent id can name;
+  - mounts kept out of agent-controlled directories;
+  - folder ids checked in every resolver, in locate and in delete.
+- **Least privilege:**
+  - a session mounts only host-chosen folders that its agent has a grant for;
+  - viewers get read-only mounts (in k8s);
+  - access reductions reap sessions (idle now, active at turn end);
+  - there's no agent tool or IPC action to share, revoke or mount.
+- **Runners:** shared folders are file-tool roots only, never a source of
+  settings, memory or skills (§3.6).
+- **Prompt injection:** files in a shared folder may be written by another,
+  possibly injected, agent with the same owner. W3's prompt block frames them
+  as untrusted.
+- **W4 blocker: symlinks across agents.**
+  - A planted `report.md → /files/secret.txt` resolves in the reader's own
+    sandbox, and an injected reader could be led to copy its own private file
+    back into the shared folder.
   - Candidate fixes: NFS `nosymfollow` through PV mount options (needs a check
     under gVisor), or a symlink policy in the file tools.
-  - This doesn't block W2, which is same owner only, but W4 can't ship without
-    an answer.
-- **Revocation latency:** up to the end of the current turn (§3.6).
+  - This doesn't block W2, which is same owner only.
+- **Revocation latency:** idle sessions immediately; active sessions at the end
+  of their current turn.
 - **Supply chain:** no new dependencies.
 
-## 9. Size
+## 9. Size and order
 
-Two PRs, in order:
-1. `@ax/shared-folders` with its tables, hooks and lifecycle, the protocol
-   fields, and the orchestrator subscription.
-2. Resolvers, providers, the runner note, presets and acceptance tests.
+A dependent stack, merged as one squash with W3's first slice (§4):
 
-Each PR passes the canary on its own: the first adds the plugin with unit tests
-and loads it in both presets, and the second reaches it end to end.
+1. `@ax/shared-folders` (tables, authorization, lifecycle, tombstone sweep),
+   `agents:can-manage-sharing`, and the protocol fields and contracts.
+2. Resolvers, providers, locate and delete, runner access, and the
+   orchestrator's reap lifecycle.
+3. The subprocess shared-folders acceptance test and the pod-spec checks.
+4. *(W3's first slice, on top: the conversation's project and the
+   orchestrator setting `sharedFolderIds`, with its end-to-end test.)*
+
+## 10. Review log
+
+**Review 1 (2026-10-12)**, six findings, all accepted:
+
+1. **[P1] The authorization for managing folders was unspecified.** Resolved
+   in §3.2: an actor from the authenticated context, a new
+   `agents:can-manage-sharing` that uses the existing manage rule, a per-hook
+   permission table, and tests for unauthorized changes.
+2. **[P1] Reducing access didn't reliably retire mounts.** Resolved in §3.7:
+   downgrades fire `access-reduced` as well, and the orchestrator applies the
+   connector lifecycle (reap idle now, active at turn end).
+3. **[P2] Cleanup lost the information needed to find the files.** Resolved in
+   §3.7: a tombstone, a backend-owned `sandbox:locate-shared-folder` that
+   doesn't depend on grants, a provider-owned `sandbox:delete-shared-folder`,
+   and a retry sweep.
+4. **[P2] The runner change missed Claude's file-tool permissions.** Resolved in
+   §3.6: `additionalDirectories` (Claude) and `recognizedRoots` (aisdk), kept out
+   of settings and skill discovery, with tests.
+5. **[P2] The acceptance harness didn't match the current canary.** Resolved in
+   §4: a real subprocess + localdir acceptance test following
+   `userfiles-canary`. Pod-spec checks stay separate.
+6. **[P2] Naming the half-wired window didn't close it.** Resolved in §4 and §9:
+   a dependent stack merged as one squash with W3's first production caller,
+   following #978.
