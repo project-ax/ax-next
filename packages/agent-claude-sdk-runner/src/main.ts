@@ -497,9 +497,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // pulls `.ax/**`+`.claude/**` back there (see the hook below, §14).
           cwd: sdkHome,
           // Directories the SDK's file tools may reach BEYOND `cwd` (cwd is always
-          // granted implicitly). The SDK bounds file tools to cwd + this list, so
-          // any tier the agent legitimately needs and that isn't the cwd must be
-          // listed here — else writes there fail.
+          // granted implicitly). This is the CLI's OWN directory check, and it is
+          // NOT the boundary: the PreToolUse hook below answers `allow` for every
+          // call the host's `tool.pre-call` approves, and an `allow` from a hook
+          // skips the CLI's directory check entirely (measured 2026-10-12 against
+          // the pinned CLI: shared-folders-tools-real-sdk.e2e.test.ts). The real
+          // bounds are the host verdict and the sandbox's mounts. List every tier
+          // the agent legitimately uses anyway, so a call the CLI does check
+          // itself isn't refused.
           //
           // The set, deduped (cwd is excluded; the SDK already grants it):
           //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
