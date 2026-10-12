@@ -1,5 +1,5 @@
 /**
- * The always-injected memory block — design §4.1, `system-prompt:augment`.
+ * The always-injected memory block — design §4.1, `system-prompt:augment:required:memory`.
  *
  * Four parts, in this order, each from ONE store query, with **no embedding,
  * no rerank and no model call anywhere on the path**:
@@ -46,7 +46,16 @@
  * imperative. That is (2) and (3)'s job, not a regex's.
  */
 
-import { isOwnerlessId, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import {
+  isOwnerlessId,
+  PluginError,
+  SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SystemPromptAugmentOutputSchema,
+  type AgentContext,
+  type HookBus,
+  type SystemPromptAugmentInput,
+  type SystemPromptAugmentOutput,
+} from '@ax/core';
 
 import { PLUGIN_NAME } from './plugin-name.js';
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
@@ -65,8 +74,11 @@ import {
   renderNotedAt,
 } from './render.js';
 
-/** The hook this module registers. Already defined by the orchestrator. */
-export const SYSTEM_PROMPT_AUGMENT_HOOK = 'system-prompt:augment';
+/**
+ * The hook this module registers: a REQUIRED provider of the shared
+ * system-prompt augment contract (`system-prompt:augment:required:<plugin>`).
+ */
+export const SYSTEM_PROMPT_AUGMENT_HOOK = `${SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX}memory`;
 
 /**
  * Logged when the augment coerces a degraded flag that is not a string
@@ -143,21 +155,6 @@ function coerceDegraded(ctx: AgentContext, degraded: unknown): unknown[] {
 
 /** The human tier, read through the shared contract rather than the filesystem. */
 export const RULES_READ_HOOK = 'memory:rules:read';
-
-/** Payload of the hook the orchestrator calls. It carries nothing; `ctx` is the input. */
-export type SystemPromptAugmentInput = Record<string, never>;
-
-/**
- * One contribution. `bootstrapSafe: true` admits it into the agent's
- * bootstrap-mode prompt (its first-run identity conversation), which otherwise
- * carries none of this block (TASK-524). Only the `## Rules From Your User`
- * section sets it: the person's own words, read host-side through
- * `memory:rules:read`, never agent-writable (TASK-486). Everything recalled
- * from the store is agent-derived and stays out of bootstrap.
- */
-export interface SystemPromptAugmentOutput {
-  contributions: Array<{ source: string; body: string; bootstrapSafe?: boolean }>;
-}
 
 /** `memory:rules:read`'s shape, declared structurally — no cross-plugin import. */
 interface RulesReadOutput {
@@ -799,21 +796,26 @@ async function buildMemoryBlockSplit(
 }
 
 /**
- * Register `system-prompt:augment`.
+ * Register the memory plugin's system-prompt augment provider
+ * (`system-prompt:augment:required:memory`).
  *
  * ⚠ **It is a `call`, not a `fire`, and that matters here.** The orchestrator
- * reaches this through `bus.call` and awaits one registered provider, so the
- * block is either built or the call throws — the orchestrator catches, logs
- * `system_prompt_augment_failed` and runs the turn un-augmented. In a
- * `fire()` subscriber this logic would be in a chain that swallows throws,
- * runs without a clock, and can skip every remaining subscriber when one
- * of them fails (TASK-512/TASK-514). Nothing that must not be skipped belongs
- * in a `fire()` subscriber, and building the prompt qualifies.
+ * reaches this through `bus.call`, so the block is either built or the call
+ * throws. In a `fire()` subscriber this logic would be in a chain that
+ * swallows throws, runs without a clock, and can skip every remaining
+ * subscriber when one of them fails (TASK-512/TASK-514). Nothing that must not
+ * be skipped belongs in a `fire()` subscriber, and building the prompt
+ * qualifies.
  *
- * `system-prompt:augment` is a SINGLE-provider service hook, so `@ax/memory`
- * and `@ax/memory-strata` cannot be loaded together — which is design §10.4's
- * "one memory plugin per preset" enforced by the bus rather than by a
- * convention, and is why Invariant 4 holds here trivially.
+ * It registers as a REQUIRED provider because it carries the person's Rules.
+ * A throw (e.g. the Rules-read fail-closed) skips the whole augment for that
+ * spawn rather than running the turn with the recalled half but not the Rules.
+ *
+ * Output is `{ rules, recall }`: `rules` is the `## Rules From Your User`
+ * section (the only part admitted to bootstrap mode, TASK-524), `recall` is
+ * everything recalled from the store. Empty parts are omitted; the orchestrator
+ * joins the present ones with '\n\n', so normal mode is byte-identical to the
+ * old single block.
  */
 export function registerSystemPromptAugment(
   bus: HookBus,
@@ -832,21 +834,14 @@ export function registerSystemPromptAugment(
       // log a warning on every spawn for a configuration that is working
       // exactly as designed.
       if (typeof ctx.userId !== 'string' || ctx.userId === '' || isOwnerlessId(ctx.userId)) {
-        return { contributions: [] };
+        return {};
       }
-      // Two contributions, not one (TASK-524): the Rules section is flagged
-      // bootstrap-safe so it reaches a brand-new agent's first-run prompt —
-      // the Memory tab promises the agent reads Rules before EVERY run. The
-      // recalled sections are not, and bootstrap keeps them out. The
-      // orchestrator joins all contributions with the same '\n\n' the block
-      // used, so normal mode is byte-identical to the single-block shape.
       const { rules, rest } = await buildMemoryBlockSplit(bus, ctx, factsRecallHook, config);
-      const contributions: SystemPromptAugmentOutput['contributions'] = [];
-      if (rules !== '') {
-        contributions.push({ source: PLUGIN_NAME, body: rules, bootstrapSafe: true });
-      }
-      if (rest !== '') contributions.push({ source: PLUGIN_NAME, body: rest });
-      return { contributions };
+      const out: SystemPromptAugmentOutput = {};
+      if (rules !== '') out.rules = rules;
+      if (rest !== '') out.recall = rest;
+      return out;
     },
+    { returns: SystemPromptAugmentOutputSchema },
   );
 }

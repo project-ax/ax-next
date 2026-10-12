@@ -27,11 +27,9 @@ describe('@ax/memory — manifest', () => {
       'memory:status',
       // TASK-628: the recall receipts behind "used N memories".
       'memory:recall-receipts',
-      // TASK-491, design 4.1. A SINGLE-provider service hook, which is what
-      // made `@ax/memory` and `@ax/memory-strata` (deleted in TASK-608)
-      // mutually exclusive in a preset -- 10.4's "one memory plugin per
-      // preset" enforced by the bus rather than by a convention.
-      'system-prompt:augment',
+      // TASK-491, design 4.1. A REQUIRED provider of the shared system-prompt
+      // augment contract (W1): it carries the Rules, so a throw skips the augment.
+      'system-prompt:augment:required:memory',
       'tool:execute:memory_recall',
       'tool:execute:memory_use',
       'tool:execute:memory_note',
@@ -76,7 +74,7 @@ describe('@ax/memory — manifest', () => {
         'memory:uncorrect',
         'memory:status',
         'memory:recall-receipts',
-        'system-prompt:augment',
+        'system-prompt:augment:required:memory',
         'tool:register',
         'tool:execute:memory_recall',
         'tool:execute:memory_use',

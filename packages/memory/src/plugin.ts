@@ -654,7 +654,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       }
 
       // ---------------------------------------------------------------
-      // system-prompt:augment — the always-injected block (design §4.1).
+      // system-prompt:augment:required:memory — the always-injected block (design §4.1).
       // A `call`, not a `fire`: see `registerSystemPromptAugment`.
       // ---------------------------------------------------------------
       registerSystemPromptAugment(bus, FACTS_RECALL_HOOK, config.block ?? {});
