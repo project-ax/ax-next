@@ -79,8 +79,10 @@ plugin and knows nothing about projects.
     another.
   - A real subprocess + localdir end-to-end harness already exists:
     `packages/sandbox-subprocess/src/__tests__/userfiles-canary.acceptance.test.ts`.
-- **The shared pool is opt-in and disabled.** Its node helper binds only the
-  claimed agent's own directory.
+- **The shared warm pool is on in production** (Helm rev 32, 2026-10-02;
+  `deploy/SHARED-POOL.md`). It serves a session whose runner binary has a pool
+  class and that folds no connectors. Its node helper binds only the claimed
+  agent's own `/files` and `/memory`, deriving both paths itself.
 - **The half-wired policy.** A plugin merges only when it's fully registered,
   tested and reachable. The agent-owned sign-ins epic was developed as a stack
   and merged as one squash (#978).
@@ -95,7 +97,8 @@ vocabulary (invariant 1).
 - **`shared_folders_v1_folders`:**
   - `folder_id` (minted `sf_<base64url>`, a safe single path segment);
   - `created_by_user`, `created_at`;
-  - `deleted_at` (a tombstone while files are being removed, §3.7).
+  - `deleted_at` (a tombstone while files are being removed, §3.7);
+  - `cleanup_attempts`, `next_cleanup_at` (the sweep's backoff, §3.7).
 - **`shared_folders_v1_grants`:** `folder_id`, `agent_id`, `role`
   (`owner | editor | viewer`), `granted_by_user`, `created_at`. Exactly one
   `owner` per folder, at most one grant per (folder, agent). The owner grant is
@@ -123,14 +126,14 @@ changing hook checks authority before writing.
 | Hook | Allowed when the actor… | Refused when |
 |---|---|---|
 | `shared-folders:create { ownerAgentId }` | can manage `ownerAgentId` | otherwise |
-| `shared-folders:grant { folderId, agentId, role }` (add, or change a role) | can manage the folder **and** can manage `agentId` | the target has a different owner; the change would make a second owner; the folder is tombstoned |
-| `shared-folders:revoke { folderId, agentId }` | can manage the folder, **or** can manage `agentId` (an agent's manager can always take it out) | the target is the owner (transfer or delete instead) |
-| `shared-folders:delete { folderId }` | can manage the folder | otherwise |
+| `shared-folders:grant { folderId, agentId, role: editor\|viewer }` (add, or change a role) | can manage the folder **and** can manage `agentId` | the target has a different owner; the target is the owner agent; the folder is unknown or tombstoned. `role: 'owner'` is rejected by the input schema (`invalid-payload`) |
+| `shared-folders:revoke { folderId, agentId }` | can manage the folder, **or** can manage `agentId` (an agent's manager can always take it out) | the target is the owner (transfer or delete instead); the folder is unknown or tombstoned |
+| `shared-folders:delete { folderId }` | can manage the folder | otherwise; the folder is unknown or already tombstoned (a delete that loses a race with another delete returns `{ deleted: true }`) |
 | `shared-folders:list { agentId }` | can use `agentId` (`agents:resolve`) | otherwise |
 
 Two operations have no person, and neither goes through these hooks:
 
-- **`shared-folders:authorize-mounts { agentId, folderIds } → [{ folderId, readOnly }]`.**
+- **`shared-folders:authorize-mounts { agentId, folderIds } → { folders: [{ folderId, readOnly }] }`** (at most 256 ids).
   Mount resolvers call it during session open. It's host-internal and never
   reachable from the sandbox. It only filters a requested list down to the
   agent's live grants. Viewer → `readOnly: true`; a tombstoned folder is never
@@ -138,7 +141,11 @@ Two operations have no person, and neither goes through these hooks:
 - **Cleanup after an agent is deleted** (§3.7) runs inside the plugin's
   `agents:deleted` subscriber. It isn't a call made on anyone's behalf.
 
-Unauthorized calls throw `forbidden`, write nothing, and are audited as refused.
+Unauthorized calls throw `forbidden`, write nothing, and are audited as refused
+(`shared_folders_refused`, with the reason). Every refusal carries the same
+message (`<hook>: not allowed`), so a caller can't tell "doesn't exist" from
+"not yours". A malformed payload fails the strict input schema
+(`invalid-payload`) before any authority check, and isn't audited.
 
 ### 3.3 Where the files live: a subtree no agent id can name
 
@@ -254,12 +261,19 @@ anything that isn't an absolute path.
    - k8s: the short-lived cleanup job in `user-files-ops.ts`.
 5. On success, the plugin removes the folder row. If the call fails, or no
    provider is loaded, the tombstone stays, and a periodic sweep in the plugin
-   retries tombstoned folders with backoff. No cleanup depends on rows that
-   have already been deleted.
+   retries tombstoned folders with backoff: every 5 minutes, 50 per pass, and
+   after the n-th failure the next try is 30 s × 2^(n−1) later, capped at 1 h.
+   No cleanup depends on rows that have already been deleted.
+6. `shared-folders:delete` runs step 2 inline and awaits it; the agent-deletion
+   path starts it without awaiting (subscribers run one after another).
 
 **When an agent is deleted** (`agents:deleted`), its grants are removed and
 `access-reduced` fires.
-- If it owned a folder, ownership passes to the editor with the oldest grant.
+- If it owned a folder, ownership passes to the editor with the oldest grant
+  (a role change keeps the grant's original `created_at`). The subscriber locks
+  the agent's folder rows first, in `folder_id` order, the same folder-then-grant
+  order every other change uses, and a promotion only counts if it updated
+  exactly one editor row.
 - If there's no editor, the folder is deleted through the steps above.
 - A viewer is never promoted to owner, because that would widen its access.
 - `shared_folders_v1_grants.agent_id` (the only agent-keyed column) is covered
@@ -323,7 +337,7 @@ caller, following the sign-ins precedent (#978).
   fake k8s) and the k8s preset tests assert the pod spec:
   - volume and `subPath`;
   - read-only and no chown for a viewer, chown for an editor;
-  - pool mode refusing to open.
+  - pool mode (`packages/sandbox-k8s/src/__tests__/shared-pool.test.ts`).
 
   They don't claim to prove file access across agents.
 
@@ -473,6 +487,10 @@ A dependent stack, merged as one squash with W3's first slice (§4):
 4. *(W3's first slice, on top: the conversation's project and the
    orchestrator setting `sharedFolderIds`, with its end-to-end test.)*
 
+As built, the layers are one branch with one draft PR (#989), because a PR whose
+base isn't `main` gets no CI run. The commits interleave the layers rather than
+stacking them strictly (AXWM-3).
+
 ## 10. Review log
 
 **Review 1 (2026-10-12)**, six findings, all accepted:
@@ -527,4 +545,34 @@ the text above:
    conversation's project. The orchestrator records the requested folders
    *before* the sandbox opens, so a reduction that lands mid-open still reaps
    the session.
+8. **Ill-formed folder ids are rejected at open, not dropped.** §3.5 says ids
+   that aren't mounted are logged and skipped. That holds for well-formed ids
+   with no grant. An ill-formed id never reaches a resolver: the
+   `sandbox:open-session` schema rejects the whole open (`invalid-payload`; at
+   most 16 ids, no duplicates), and the orchestrator drops and logs ill-formed
+   ids before it calls open. Stricter on purpose; the acceptance canary pins it.
+9. **Schema failures aren't audited.** §3.2's "every refusal is audited" covers
+   authority refusals. A payload that fails the strict schema
+   (`invalid-payload`, e.g. `role: 'owner'` on grant) is rejected before any
+   authority check and writes no audit line.
+10. **The pool refuses shared folders, and the pool is on in production.** §3.8's
+    "disabled" was wrong when written. A pooled session with a shared-folder
+    mount fails with `shared-folders-unsupported-in-pool`. Once W3a sets
+    `sharedFolderIds`, that is most project chats, so pool support is now part
+    of this stack (§3.8, revised separately).
+
+**Details the text above leaves out** (all deliberate, all tested):
+
+- Caps: 16 folders per session (orchestrator, `sandbox:open-session`, runner
+  env); 256 ids per `authorize-mounts` call.
+- Resolvers fail closed when the authorizer throws, ignore folders they didn't
+  request, treat anything but an explicit `readOnly: false` as read-only, and
+  force every shared mount read-only when the caller asks for a read-only
+  realization.
+- The k8s provider refuses a malformed shared mount, the same folder twice, a
+  mount path that overlaps another mount, and a `folderId` on any other role.
+- The subprocess provider refuses unrequested or duplicate shared mounts; its
+  delete refuses a symlinked `.shared` and only unlinks a symlinked folder
+  directory.
+- The `access-reduced` event for a delete includes the owner agent.
 
