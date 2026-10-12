@@ -399,11 +399,12 @@ interface RealizedMounts {
    */
   sharedFolders: Array<{ id: string; path: string; readOnly: boolean }>;
   /**
-   * Root chown init containers — one per WRITABLE `role:'user-files'` or
-   * `role:'shared-folder'` mount —
-   * that align the kubelet-created per-agent `subPath` dir to the runner
-   * uid/gid so the non-root runner can write it. Empty when no writable
-   * user-files mount was yielded. See `buildUserFilesChownInit`.
+   * Root chown init containers — one per WRITABLE `role:'user-files'` mount
+   * and one per `role:'shared-folder'` mount (editor or viewer) — that align
+   * the kubelet-created `subPath` dir to the runner uid/gid so the non-root
+   * runner can use it. A viewer's init mounts its separate writable
+   * `ax-mount-<i>-prep` volume; the runner never does. See
+   * `buildUserFilesChownInit`.
    */
   chownInits: Array<Record<string, unknown>>;
 }
@@ -435,13 +436,16 @@ const RUNNER_GID = 1000;
  * pods (user-files-ops.ts).
  */
 function buildUserFilesChownInit(
+  name: string,
   volumeName: string,
   mountPath: string,
   subPath: string,
   image: string,
 ): Record<string, unknown> {
   return {
-    name: `${volumeName}-chown`,
+    // `ax-mount-<i>-chown` — `prepareAgentSandboxMounts` selects ownership
+    // inits by exactly this shape.
+    name: `${name}-chown`,
     image,
     command: ['/bin/sh', '-c'],
     args: ['set -eu; chown "$AX_CHOWN_OWNER" "$AX_CHOWN_TARGET"'],
@@ -491,6 +495,12 @@ function normalizeContainerPath(path: string): string {
 function nfsSourcePath(exportPath: string, subPath: string): string {
   return posix.resolve('/', exportPath, subPath);
 }
+
+// A single safe path segment — the per-tenant user-files subtree key. Mirrors
+// `SAFE_SEGMENT_RE` in user-files-ops.ts (and the resolver's agentId gate). No
+// `/`, `.`, `..`, whitespace — so `.shared` (every shared folder) can never be
+// realized as one agent's /files.
+const USER_FILES_SUBPATH_RE = /^[A-Za-z0-9_-]+$/;
 
 function validNfsSubPath(subPath: string): boolean {
   if (subPath.length === 0 || subPath.includes('\0')) return false;
@@ -558,17 +568,36 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
             readOnly: mount.readOnly,
           });
           // Same reason as user-files below: the kubelet creates the subPath
-          // root-owned. A viewer (read-only) mount has nothing to write, so it
-          // gets no chown — and must not, since chown would be a write.
+          // root-owned. An editor's chown uses its own writable volume. A
+          // viewer may be the FIRST to touch a folder, so it needs the same
+          // create + chown — but its runner volume is read-only at the NFS
+          // level. The init instead mounts a SEPARATE writable prep volume
+          // (same server/export, same subPath) that the runner never mounts;
+          // the runner then mounts the existing dir read-only.
           if (!mount.readOnly) {
             out.chownInits.push(
-              buildUserFilesChownInit(name, mount.mountPath, mount.subPath, image),
+              buildUserFilesChownInit(name, name, mount.mountPath, mount.subPath, image),
+            );
+          } else {
+            const prep = `${name}-prep`;
+            out.volumes.push({ name: prep, nfs: { server: mount.server, path: mount.exportPath } });
+            out.chownInits.push(
+              buildUserFilesChownInit(name, prep, mount.mountPath, mount.subPath, image),
             );
           }
         }
+        if (mount.role === 'user-files' && !USER_FILES_SUBPATH_RE.test(mount.subPath)) {
+          throw new Error("a role:'user-files' mount subPath must be a single safe path segment");
+        }
         out.volumes.push({
           name,
-          nfs: { server: mount.server, path: mount.exportPath },
+          // A viewer's shared folder is read-only at the volume, not just the
+          // volumeMount — defense in depth against a mount-option slip.
+          nfs: {
+            server: mount.server,
+            path: mount.exportPath,
+            ...(mount.role === 'shared-folder' && mount.readOnly ? { readOnly: true } : {}),
+          },
         });
         out.volumeMounts.push({
           name,
@@ -584,7 +613,7 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
           // nothing to write, so it needs no chown.
           if (!mount.readOnly) {
             out.chownInits.push(
-              buildUserFilesChownInit(name, mount.mountPath, mount.subPath, image),
+              buildUserFilesChownInit(name, name, mount.mountPath, mount.subPath, image),
             );
           }
         }
@@ -623,8 +652,10 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
   const memoryMounts = mounts.filter(
     (m): m is Extract<MountSpec, { kind: 'nfs' }> => m.kind === 'nfs' && m.role === 'memory',
   );
+  // A viewer shared folder counts as writable here: its prep volume is.
   const writableNfs = mounts.filter(
-    (m): m is Extract<MountSpec, { kind: 'nfs' }> => m.kind === 'nfs' && !m.readOnly,
+    (m): m is Extract<MountSpec, { kind: 'nfs' }> =>
+      m.kind === 'nfs' && (!m.readOnly || m.role === 'shared-folder'),
   );
   for (const memory of memoryMounts) {
     for (const other of mounts) {

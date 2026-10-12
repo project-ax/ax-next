@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
-  rmSync, statSync, existsSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
+  rmSync, statSync, chmodSync, existsSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -58,9 +58,17 @@ function engineFixture(data = input()) {
     }
   });
   const chowned: (string | undefined)[] = [];
-  const io = { directory, chown: vi.fn((fd: number) => { chowned.push(fds.get(fd)); }), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
+  // The helper runs as root; the fixture does not. Directories are reported
+  // root-owned unless a test plants one with another owner.
+  const foreignOwned = new Set<string>();
+  const reports: string[] = [];
+  const io = { directory, chown: vi.fn((fd: number) => { chowned.push(fds.get(fd)); }), isTmpfs: vi.fn(() => true),
+    owner: vi.fn((fd: number) => foreignOwned.has(fds.get(fd)!) ? 1000 : 0),
+    report: vi.fn((message: string) => { reports.push(message); }),
+    mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
-    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, chowned };
+    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, chowned,
+    foreignOwned, reports };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -198,12 +206,42 @@ describe('storage-node ledger and lifecycle', () => {
   });
 });
 
+// F4 — a failed activation keeps its cause: the helper reports the underlying
+// error (and any release error) and rethrows with { cause }. Credentials never
+// reach the report.
+describe('storage-node activation failure reporting', () => {
+  it('reports the failing mount and keeps it as the cause', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('mount: /files: permission denied'); });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e as Error);
+    expect(err.message).toBe('storage activation failed');
+    expect((err.cause as Error).message).toBe('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain(f.data.podUid);
+  });
+  it('reports a release failure during unwind as well as the original error', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('first failure'); });
+    vi.mocked(f.authority.stop).mockRejectedValueOnce(new Error('stop refused'));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('first failure'); expect(log).toContain('stop refused');
+  });
+  it('never reports bootstrap credentials, even when an error message echoes them', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error(`leaked secret-token and ${'d'.repeat(32)}`); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('leaked'); expect(log).not.toContain('secret-token'); expect(log).not.toContain('d'.repeat(32));
+  });
+});
+
 // W2 §3.8.1 — shared folders on the shared warm pool. The source path comes
 // from the folder id only; the claim annotation is the host's decision.
 const SHARED = [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }];
 const withShared = (data = input(), sharedFolders = SHARED): StorageAssignment => ({ ...data, sharedFolders });
 describe('storage-node shared folders', () => {
-  it('binds .shared/<id> to ax-late/shared/<id>, ro-remounts viewers and chowns only writers, all before publishing', async () => {
+  it('binds .shared/<id> to ax-late/shared/<id>, ro-remounts viewers and chowns every source, all before publishing', async () => {
     const f = engineFixture(withShared()); await f.make().assign(f.data);
     const files = f.config.userFilesRoot;
     expect(f.command.mock.calls.filter(([p]) => p === 'mount').map(([, a]) => a)).toEqual([
@@ -213,7 +251,9 @@ describe('storage-node shared folders', () => {
       ['--no-canonicalize', '-o', 'remount,bind,ro', join(f.volume, 'shared/sf_b')],
     ]);
     expect(f.chowned).toContain(join(files, '.shared/sf_a'));
-    expect(f.chowned).not.toContain(join(files, '.shared/sf_b'));
+    // F5 — a viewer may be the first to touch a folder; its source must be
+    // runner-owned to be readable. It is still read-only remounted above.
+    expect(f.chowned).toContain(join(files, '.shared/sf_b'));
     expect(f.chowned).not.toContain(join(files, '.shared'));
     // `shared` is not a mount point: the non-root runner must be able to traverse it.
     expect(statSync(join(f.volume, 'shared')).mode & 0o777).toBe(0o755);
@@ -239,6 +279,26 @@ describe('storage-node shared folders', () => {
     expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.some(x => x.includes('.shared')))).toBe(false);
     // Credentials are never published without every bind in place.
     expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
+  });
+  // F6 — the staging `shared` dir is not mounted over, so whoever owns it
+  // controls the namespace the binds land in. The runner must never own it.
+  it('refuses a staging shared directory the runner pre-created, binding nothing and releasing cleanly', async () => {
+    const f = engineFixture(withShared());
+    mkdirSync(join(f.volume, 'shared')); chmodSync(join(f.volume, 'shared'), 0o777); f.foreignOwned.add(join(f.volume, 'shared'));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.includes('--bind'))).toBe(false);
+    expect(f.chowned).toEqual([]);
+    // Fail closed: ownership is refused, not repaired.
+    expect(statSync(join(f.volume, 'shared')).mode & 0o777).toBe(0o777);
+    expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
+    expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+    expect(f.authority.finish).toHaveBeenCalledTimes(1);
+    expect(f.reports.join('\n')).toMatch(/staging/);
+  });
+  it('accepts a root-owned pre-existing staging shared directory', async () => {
+    const f = engineFixture(withShared()); mkdirSync(join(f.volume, 'shared'), { mode: 0o700 });
+    await f.make().assign(f.data);
+    expect(statSync(join(f.volume, 'shared')).mode & 0o777).toBe(0o755);
   });
   it('unmounts every shared target on release and verifies each in mountinfo', async () => {
     const f = engineFixture(withShared()); const engine = f.make(); await engine.assign(f.data); f.events.length = 0;

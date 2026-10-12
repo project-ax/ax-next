@@ -9,6 +9,7 @@ import type { StorageClient } from './storage-client.js';
 import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, CLAIM_SHARED_FOLDERS_ANNOTATION, STANDBY_LABEL, LATE_VOLUME, SharedFoldersSchema,
   canonicalSharedFolders, type SharedFolders, type StorageIdentity } from './storage-node/protocol.js';
 import { isNotFound } from './storage-node/authority.js';
+import { describeFailure } from './storage-node/describe-failure.js';
 import { sourceParts, sharedFolderSourceParts, backingProfile } from './storage-node/sources.js';
 
 interface Resource {
@@ -240,10 +241,17 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
           if (Date.now() >= deadline) throw new Error('shared activation timed out'); await setTimeout(config.readinessPollMs);
         }
         return claim;
-      } catch {
-        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch(() => undefined); }
-        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch(() => undefined);
-        throw new Error('shared session activation failed');
+      } catch (cause) {
+        // Keep the cause (and any cleanup failure) in the message: the caller's
+        // pod_create_failed log reads only the message. Bootstrap values are
+        // redacted — an error that echoes one must never reach a log.
+        const secrets = Object.values(draft.data.env);
+        const details = [describeFailure(cause, secrets)];
+        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch((e: unknown) => {
+          details.push(`release failed: ${describeFailure(e, secrets)}`); }); }
+        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch((e: unknown) => {
+          details.push(`claim delete failed: ${describeFailure(e, secrets)}`); });
+        throw new Error(`shared session activation failed: ${details.join('; ')}`, { cause });
       }
     },
     readNamespacedPod: read,

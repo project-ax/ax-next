@@ -126,6 +126,21 @@ describe('shared Agent Sandbox pool', () => {
     expect(f.storage.assign).not.toHaveBeenCalled();
     expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls).toHaveLength(2);
   });
+  // F4 — the host's generic activation error keeps its cause, and the
+  // caller's pod_create_failed log (open-session) sees it in the message.
+  it('keeps the underlying activation and cleanup errors without leaking credentials', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const cause = new Error('storage operation rejected');
+    vi.mocked(f.storage.assign).mockRejectedValueOnce(cause);
+    vi.mocked(f.storage.release).mockRejectedValueOnce(new Error('echo secret-session-token release refused'));
+    const err = await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() }).catch((e: unknown) => e as Error);
+    expect(err.message).toMatch(/^shared session activation failed/);
+    expect(err.message).toContain('storage operation rejected');
+    expect(err.message).toContain('release refused');
+    expect(err.message).not.toContain('secret-session-token');
+    expect(err.cause).toBe(cause);
+    expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims' }));
+  });
   it('keeps the claim protected when storage cleanup fails', async () => {
     const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
     await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });

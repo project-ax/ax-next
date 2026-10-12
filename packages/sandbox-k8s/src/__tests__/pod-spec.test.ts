@@ -1316,6 +1316,27 @@ describe('buildPodSpec', () => {
       expect(initCs(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeUndefined();
     });
 
+    // F9 — the user-files subPath is the per-tenant key: exactly one safe
+    // segment. A buggy resolver yielding `.shared` (every folder) or `a/b`
+    // must fail closed at realize, not mount someone else's subtree.
+    it.each([['.shared'], ['a/b'], ['..'], [''], ['.'], ['agent abc'], ['agent-abc/']])(
+      'rejects a user-files subPath %j (fail closed)',
+      (subPath) => {
+        expect(() =>
+          buildPodSpec('m', { ...baseInput, mounts: [{ ...nfsMount, subPath }] }, baseResolved()),
+        ).toThrow(/user-files/);
+      },
+    );
+
+    it('accepts a real agent id as the user-files subPath', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, subPath: 'agt_01HZX9K2Q7-abc' }] },
+        baseResolved(),
+      );
+      expect(runnerMounts(spec).find((m) => m.name === 'ax-mount-0')!.subPath).toBe('agt_01HZX9K2Q7-abc');
+    });
+
     it('adds no chown init when no mounts are yielded (no-mount path unchanged)', () => {
       const spec = buildPodSpec('m', baseInput, baseResolved());
       expect(initCs(spec).some((c) => c.name.endsWith('-chown'))).toBe(false);
@@ -1530,7 +1551,9 @@ describe('buildPodSpec', () => {
       expect(() =>
         buildPodSpec('m', { ...baseInput, mounts: [trailing, writableNfs] }, baseResolved()),
       ).toThrow(/aliases/);
-      const rootExport = { ...writableNfs, exportPath: '/', subPath: '' };
+      // A user-files subPath is one safe segment (F9) — an empty one is refused
+      // before the alias check — so the root export reaches it via `vol1`.
+      const rootExport = { ...writableNfs, exportPath: '/', subPath: 'vol1' };
       expect(() =>
         buildPodSpec(
           'm',
@@ -1627,16 +1650,66 @@ describe('buildPodSpec', () => {
       expect(chown!.env?.find((e) => e.name === 'AX_CHOWN_TARGET')?.value).toBe('/shared/sf_x');
     });
 
-    it('realizes a viewer mount read-only with NO chown init', () => {
+    // W2 §3.8 F5/F7 — a viewer's NFS volume itself is read-only (not just the
+    // runner's volumeMount), and a viewer that is FIRST to touch a folder still
+    // gets a runner-owned directory: a separate writable prep volume, mounted
+    // ONLY by the chown init, creates (kubelet subPath) and chowns the folder;
+    // the runner then mounts the existing dir through the read-only volume.
+    it('realizes a viewer mount on a read-only nfs volume, with a chown init on a separate prep volume', () => {
       const spec = buildPodSpec('m', { ...baseInput, mounts: [userFiles, viewer] }, baseResolved());
-      expect(runner(spec).volumeMounts!.find((m) => m.name === 'ax-mount-1')).toMatchObject({
+      expect(vols(spec).find((v) => v.name === 'ax-mount-1')!.nfs).toEqual({
+        server: '10.0.0.2',
+        path: '/vol1/agents',
+        readOnly: true,
+      });
+      expect(runner(spec).volumeMounts!.find((m) => m.name === 'ax-mount-1')).toEqual({
+        name: 'ax-mount-1',
         mountPath: '/shared/sf_y',
         subPath: '.shared/sf_y',
         readOnly: true,
       });
-      expect(inits(spec).find((c) => c.name === 'ax-mount-1-chown')).toBeUndefined();
-      // The user-files chown is still there — only the viewer is skipped.
+      // The prep volume is writable, on the same server/export.
+      expect(vols(spec).find((v) => v.name === 'ax-mount-1-prep')!.nfs).toEqual({
+        server: '10.0.0.2',
+        path: '/vol1/agents',
+      });
+      const chown = inits(spec).find((c) => c.name === 'ax-mount-1-chown');
+      expect(chown).toBeDefined();
+      expect(chown!.volumeMounts).toEqual([
+        { name: 'ax-mount-1-prep', mountPath: '/shared/sf_y', subPath: '.shared/sf_y', readOnly: false },
+      ]);
+      expect(chown!.env?.find((e) => e.name === 'AX_CHOWN_TARGET')?.value).toBe('/shared/sf_y');
+      // The runner (and every other container) never mounts the writable prep volume.
+      const containers = (spec.spec as { containers: Array<{ volumeMounts?: Array<{ name: string }> }> }).containers;
+      for (const c of containers) {
+        expect((c.volumeMounts ?? []).some((m) => m.name === 'ax-mount-1-prep')).toBe(false);
+      }
+      expect(
+        inits(spec).filter((c) => (c.volumeMounts ?? []).some((m) => m.name === 'ax-mount-1-prep')).map((c) => c.name),
+      ).toEqual(['ax-mount-1-chown']);
+      // The user-files chown is unchanged.
       expect(inits(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeDefined();
+    });
+
+    it('treats a viewer folder as writable for the memory alias check (its prep volume is)', () => {
+      const memory = {
+        kind: 'nfs' as const,
+        mountPath: '/memory',
+        server: viewer.server,
+        exportPath: viewer.exportPath,
+        subPath: viewer.subPath,
+        readOnly: true,
+        role: 'memory' as const,
+      };
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [memory, viewer] }, baseResolved()),
+      ).toThrow(/aliases/);
+    });
+
+    it('leaves an editor on a single writable volume with no prep volume', () => {
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [userFiles, editor] }, baseResolved());
+      expect(vols(spec).some((v) => String(v.name).endsWith('-prep'))).toBe(false);
+      expect((vols(spec).find((v) => v.name === 'ax-mount-1')!.nfs as { readOnly?: boolean }).readOnly).toBeUndefined();
     });
 
     it('stamps AX_SHARED_FOLDERS with the exact JSON list, and AX_USERFILES_ROOT from the user-files mount only', () => {

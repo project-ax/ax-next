@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
+import { describeFailure } from './describe-failure.js';
 import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
@@ -31,16 +32,27 @@ const targetParts = (record: StorageRecord): string[][] => [
   ...(record.sharedFolders ?? []).map(folder => sharedFolderTargetParts(folder.folderId)),
 ];
 
+/** The helper's own uid. Only it may own the late-bind staging directories. */
+const HELPER_UID = 0;
+export interface StorageNodeIo {
+  directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
+  /** The owning uid of a held directory. */
+  owner(fd: number): number;
+  /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
+  report(message: string): void;
+}
+
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
-    }, private readonly io: { directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void;
-      isTmpfs(path: string): boolean } = {
+    }, private readonly io: StorageNodeIo = {
       directory: openDirectory, mountInfo: () => readFileSync('/proc/self/mountinfo', 'utf8'),
       chown: fd => fchownSync(fd, 1000, 1000),
       isTmpfs: path => statfsSync(path).type === 0x01021994,
+      owner: fd => fstatSync(fd).uid,
+      report: message => { process.stderr.write(`${message}\n`); },
     }) {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
     const root = this.io.directory(config.ledgerRoot, []);
@@ -77,6 +89,22 @@ export class StorageNodeEngine {
     return this.io.directory(this.config.kubeletPodsRoot,
       [record.podUid, 'volumes', 'kubernetes.io~empty-dir', LATE_VOLUME], create);
   }
+  /**
+   * Open (creating if needed) the late-bind `shared` staging directory and
+   * prove the helper owns it. It is not mounted over, so its owner controls
+   * the namespace every shared bind lands in: a runner-created one is refused,
+   * never repaired. Then make it traversable (not writable) by the runner.
+   */
+  private sharedStaging(volume: { fd: number }, dir: string) {
+    const parent = this.io.directory(volume, [dir], true);
+    try {
+      if (!fstatSync(parent.fd).isDirectory() || this.io.owner(parent.fd) !== HELPER_UID) {
+        throw new Error('shared staging directory is not owned by the storage helper');
+      }
+      fchmodSync(parent.fd, 0o755);
+      return parent;
+    } catch (e) { parent.close(); throw e; }
+  }
   async assign(raw: StorageAssignment): Promise<{ assignmentId: string }> {
     const input = StorageAssignmentSchema.parse(raw);
     return this.serial(input.podUid, async () => {
@@ -101,6 +129,12 @@ export class StorageNodeEngine {
       this.save(record);
       try {
         await this.authority.protect(input, record);
+        // Refuse a runner-owned staging dir before ANY bind, not just the shared ones.
+        if (input.sharedFolders?.length) {
+          const volume = this.volume(record);
+          try { this.sharedStaging(volume, sharedFolderTargetParts(input.sharedFolders[0]!.folderId)[0]!).close(); }
+          finally { volume.close(); }
+        }
         for (const role of input.roles) {
           const backing = role === 'user-files' ? this.config.userFilesRoot : this.config.memoryRoot;
           if (!backing) throw new Error('storage role is not configured');
@@ -127,12 +161,14 @@ export class StorageNodeEngine {
           const volume = this.volume(record);
           let parent, target;
           try {
-            // Writable folders belong to the runner uid, as /files does; a viewer's
-            // folder is never written, not even its owner.
-            if (!folder.readOnly) this.io.chown(source.fd);
+            // Every folder belongs to the runner uid, as /files does. A viewer may
+            // be the first to touch a folder (created root 0700 above); without
+            // this it could not read it. Its bind is still remounted read-only.
+            this.io.chown(source.fd);
             const [dir, leaf] = sharedFolderTargetParts(folder.folderId) as [string, string];
-            // `shared` is not mounted over, so the runner must be able to traverse it.
-            parent = this.io.directory(volume, [dir], true); fchmodSync(parent.fd, 0o755);
+            // Re-proved per folder on a fresh descriptor: the late-bind volume
+            // itself may be runner-writable, so `shared` could be swapped since.
+            parent = this.sharedStaging(volume, dir);
             target = this.io.directory(parent, [leaf], true);
             this.command('mount', ['--no-canonicalize', '--bind', source.path, target.path]);
             if (folder.readOnly) {
@@ -162,10 +198,15 @@ export class StorageNodeEngine {
         } finally { directory.close(); volume.close(); }
         this.save({ ...record, published: true });
         return { assignmentId: record.assignmentId };
-      } catch {
+      } catch (cause) {
+        // Keep the cause for the operator; never credentials (describeFailure redacts).
+        const secrets = Object.values(bootstrap.env);
+        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, secrets)}`);
         // Keep durable intent + finalizers for recovery; never discard an active mount.
-        await this.releaseLocked(record).catch(() => undefined);
-        throw new Error('storage activation failed');
+        await this.releaseLocked(record).catch((e: unknown) => {
+          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, secrets)}`);
+        });
+        throw new Error('storage activation failed', { cause });
       }
     });
   }
