@@ -17,7 +17,9 @@ clear home.
 
 ## Resume here
 
-- **Now:** the W1 spec is drafted and waiting for review:
+- **Now:** the W1 spec was revised after review 1 (required and optional
+  providers, validation for each provider, an orchestrator deadline) and is
+  waiting for re-review:
   [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md).
 - **Next, in order:**
   1. Approve the W1 spec, write its plan, and put its cards on the board.
@@ -33,7 +35,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
-| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | spec draft | — |
+| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | spec draft (revised after review 1) | — |
 | W2 | Shared folders | Foundation | nothing | — | no spec | — |
 | W3 | Projects | Projects | W1, W2 | — | no spec | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
