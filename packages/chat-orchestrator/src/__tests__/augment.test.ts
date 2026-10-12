@@ -507,6 +507,9 @@ describe('Orchestrator: review 1, finding 2 (validation)', () => {
       [`${OPT}typed`, value({ context: 42, recall: 'SECRET-BODY' })],
       [`${OPT}sneaky`, value({ rules: 'SECRET-RULES' })],
       [`${OPT}big`, value({ recall: OVERSIZED })],
+      // A provider controls an unknown key's NAME; zod puts it in `keys` and
+      // `message`, never in `path`, and neither of those is logged.
+      [`${OPT}evil`, value({ context: 'C', 'SECRET-KEY': 'x' })],
     ]);
     const byProvider = new Map(
       logsNamed(s.logs, 'system_prompt_contribution_failed').map((l) => [l.provider, l]),
@@ -516,6 +519,9 @@ describe('Orchestrator: review 1, finding 2 (validation)', () => {
     ]);
     expect(byProvider.get(`${OPT}sneaky`)?.issues).toEqual([
       { path: 'rules', code: 'optional_provider_returned_rules' },
+    ]);
+    expect(byProvider.get(`${OPT}evil`)?.issues).toEqual([
+      { path: '', code: 'unrecognized_keys' },
     ]);
     expect(byProvider.get(`${OPT}big`)).toMatchObject({
       section: 'recall',
