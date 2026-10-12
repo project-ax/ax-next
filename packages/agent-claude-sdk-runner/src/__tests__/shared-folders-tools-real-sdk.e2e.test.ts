@@ -370,7 +370,7 @@ describe.skipIf(!HAVE_BINARY)("Claude's own Read and Edit tools on a shared fold
     const onDisk = await fs.readFile(notePath, 'utf8');
     expect(onDisk).toContain(REPLACEMENT);
     expect(onDisk).not.toContain(MARKER);
-  }, 90_000);
+  }, 60_000);
 
   // The control: it can fail. The same session, the same scripted model, the
   // same shared folder — but the host rejects the tool calls. The CLI then
@@ -397,5 +397,5 @@ describe.skipIf(!HAVE_BINARY)("Claude's own Read and Edit tools on a shared fold
     expect(edit).toBeDefined();
     expect(edit!.isError).toBe(true);
     expect(await fs.readFile(notePath, 'utf8')).toBe(`# note\nthe secret is ${MARKER}\n`);
-  }, 90_000);
+  }, 60_000);
 });
