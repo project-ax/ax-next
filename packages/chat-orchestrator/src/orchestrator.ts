@@ -3,11 +3,17 @@ import {
   PROVIDER_ENDPOINTS,
   parseModelRef,
   providerEndpointFor,
+  SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
+  SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
+  SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SystemPromptAugmentOutputSchema,
   type AgentContext,
   type AgentMessage,
   type AgentOutcome,
   type FireResult,
   type HookBus,
+  type SystemPromptAugmentInput,
+  type SystemPromptAugmentOutput,
 } from '@ax/core';
 // Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
 // payload (it doesn't validate — trust comes from skills:resolve / agents:resolve
@@ -192,6 +198,16 @@ export interface ChatOrchestratorConfig {
    * service timeout. Exposed so tests need not wait.
    */
   proxyCloseTimeoutMs?: number;
+  /**
+   * W1 — how long a fresh spawn waits on EACH `system-prompt:augment:*`
+   * provider (all run in parallel, so the whole step waits at most this
+   * once). A provider past it counts as failed (`reason: 'deadline'`): an
+   * optional one is dropped, a required one skips the whole augment. The
+   * orchestrator owns this bound because a provider may register
+   * `timeoutMs: Infinity`. Defaults to `AUGMENT_DEADLINE_MS` (15 s). Must be
+   * a finite number > 0 — `Infinity` is refused at init.
+   */
+  augmentDeadlineMs?: number;
   // One-shot mode (default true for 6.5a): on the first `chat:turn-end` the
   // orchestrator queues a `cancel` entry into the runner's inbox, so the
   // runner exits cleanly after processing the single user message and emits
@@ -653,14 +669,45 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
-// system-prompt:augment — registered by @ax/memory (`augment.ts`), and
-// potentially other plugins in the future (personalization, tenant policy).
-// Returns markdown contributions that the orchestrator prepends to the
-// system prompt envelope before fresh-spawning the sandbox.
+// system-prompt contributions (W1,
+// `docs/plans/2026-10-12-w1-prompt-contributions-design.md`). Any plugin may
+// add a block to an agent's system prompt by registering ONE service under
+// one of two name prefixes (shared contract in @ax/core):
 //
-// Single-provider service hook (one registration); the orchestrator dispatches
-// only when `bus.hasService('system-prompt:augment')`. When absent, the
-// orchestrator is a no-op — no augmentation, identical to today.
+//   - `system-prompt:augment:required:<name>` — may return `rules`, `context`,
+//     `recall`. If it fails, the WHOLE augment is skipped for that spawn
+//     (every provider, normal and bootstrap): context or recall without the
+//     Rules that govern them is the worst outcome. @ax/memory registers here.
+//     A required provider that returns no `rules`, or no required provider
+//     at all, is NOT a failure.
+//   - `system-prompt:augment:optional:<name>` — `context` and `recall` only.
+//     A failure drops just this provider's blocks.
+//
+// A name under `system-prompt:augment:` with any other class segment is
+// ignored (logged once per orchestrator instance). The family is discovered
+// with `bus.listServices()` at spawn time, the same way `credentials:login:*`
+// is, so it stays out of the manifest's calls/optionalCalls; none registered
+// is a no-op.
+//
+// Every provider is called in parallel, each in its own isolated step:
+// call → orchestrator deadline (`augmentDeadlineMs`, default
+// `AUGMENT_DEADLINE_MS`) → `SystemPromptAugmentOutputSchema` → class rule (an
+// optional provider returning `rules`, even empty, is invalid as a whole) →
+// size (any body over `SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS` is `too_large`).
+// "Failed" = threw, missed the deadline, or invalid output.
+//
+// Sections set the order: non-empty bodies join with a blank line in section
+// order `rules`, `context`, `recall`, and within a section by full service
+// name (plain code-unit compare, so the bytes never depend on locale or
+// registration order and the prompt cache stays warm). Only `rules` bodies
+// reach `agentConfig.systemPromptBootstrapAugment` (TASK-524: bootstrap mode
+// admits only person-written content no agent can change).
+//
+// Known limit (spec §3.4): the deadline stops the WAIT, not the handler — bus
+// deadlines never cancel an effect. Under a `callJoined` caller (a routine
+// run) a hung provider still holds that run's lifecycle lock until it
+// settles; the bus's stall diagnostics name it. The deadline unblocks session
+// startup only.
 //
 // Note: augmentation applies ONLY on the fresh-spawn path. The routed-into-
 // existing-sandbox path reuses the originally-frozen `agentConfig.systemPromptAugment`
@@ -669,18 +716,131 @@ interface SessionIsAliveOutput {
 // edits Rules), it fires `system-prompt:augment-changed { agentId }` and the
 // orchestrator retires that agent's live sessions at their NEXT turn boundary,
 // so the fresh spawn re-augments (TASK-612).
-// Provider reads from ctx (userId, agentId, sessionId, etc.) — payload is empty.
-//
-// TASK-524: a contribution may set `bootstrapSafe: true`. Bootstrap mode (the
-// agent's first-run identity conversation, decided RUNNER-side by whether the
-// workspace still holds the bootstrap script) admits ONLY those — see
-// `agentConfig.systemPromptBootstrapAugment`. The flag is for content a PERSON
-// authored and no agent can write (e.g. @ax/memory's Rules section); recalled
-// or agent-derived content must leave it unset. Anything other than the
-// boolean `true` counts as unset, so a sloppy provider fails closed.
-type SystemPromptAugmentInput = Record<string, never>;
-interface SystemPromptAugmentOutput {
-  contributions: Array<{ source: string; body: string; bootstrapSafe?: boolean }>;
+// Providers read ctx (userId, agentId, sessionId, etc.) — the input is empty.
+type AugmentClass = 'required' | 'optional';
+type AugmentFailureReason = 'threw' | 'deadline' | 'invalid' | 'too_large';
+type AugmentStep =
+  | { ok: true; provider: string; cls: AugmentClass; out: SystemPromptAugmentOutput }
+  | {
+      ok: false;
+      provider: string;
+      cls: AugmentClass;
+      reason: AugmentFailureReason;
+      err?: unknown;
+    };
+
+const AUGMENT_FAMILY_PREFIX = 'system-prompt:augment:';
+const AUGMENT_SECTIONS = ['rules', 'context', 'recall'] as const;
+const AUGMENT_DEADLINE_MISSED: unique symbol = Symbol('augment-deadline-missed');
+
+/** One provider's isolated step: call → deadline → schema → class rule → size. */
+async function runAugmentProvider(
+  bus: HookBus,
+  ctx: AgentContext,
+  provider: string,
+  cls: AugmentClass,
+  deadlineMs: number,
+): Promise<AugmentStep> {
+  const fail = (reason: AugmentFailureReason, err?: unknown): AugmentStep => ({
+    ok: false,
+    provider,
+    cls,
+    reason,
+    ...(err !== undefined ? { err } : {}),
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let raw: unknown;
+  try {
+    const call = bus.call<SystemPromptAugmentInput, unknown>(provider, ctx, {});
+    // If the deadline wins, a later rejection of the losing call must never
+    // surface as unhandled.
+    call.catch(() => undefined);
+    const deadline = new Promise<typeof AUGMENT_DEADLINE_MISSED>((resolve) => {
+      timer = setTimeout(() => resolve(AUGMENT_DEADLINE_MISSED), deadlineMs);
+      timer.unref?.();
+    });
+    raw = await Promise.race([call, deadline]);
+  } catch (err) {
+    return fail('threw', err);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (raw === AUGMENT_DEADLINE_MISSED) return fail('deadline');
+  const parsed = SystemPromptAugmentOutputSchema.safeParse(raw);
+  if (!parsed.success) return fail('invalid');
+  const out = parsed.data;
+  if (cls === 'optional' && out.rules !== undefined) return fail('invalid');
+  for (const section of AUGMENT_SECTIONS) {
+    const body = out[section];
+    if (body !== undefined && body.length > SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS) {
+      return fail('too_large');
+    }
+  }
+  return { ok: true, provider, cls, out };
+}
+
+/**
+ * Discover, call and assemble the system-prompt contribution family. Returns
+ * `null` when a required provider failed (no augment at all); otherwise the
+ * normal and bootstrap strings (either may be empty).
+ */
+async function buildSystemPromptAugment(
+  bus: HookBus,
+  ctx: AgentContext,
+  deadlineMs: number,
+  unknownClassLogged: Set<string>,
+): Promise<{ normal: string; bootstrap: string } | null> {
+  const providers: Array<{ name: string; cls: AugmentClass }> = [];
+  for (const name of bus.listServices()) {
+    if (name.startsWith(SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX)) {
+      providers.push({ name, cls: 'required' });
+    } else if (name.startsWith(SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX)) {
+      providers.push({ name, cls: 'optional' });
+    } else if (name.startsWith(AUGMENT_FAMILY_PREFIX) && !unknownClassLogged.has(name)) {
+      unknownClassLogged.add(name);
+      ctx.logger.warn('system_prompt_augment_unknown_class', { provider: name });
+    }
+  }
+  if (providers.length === 0) return { normal: '', bootstrap: '' };
+
+  const steps = await Promise.all(
+    providers.map((p) => runAugmentProvider(bus, ctx, p.name, p.cls, deadlineMs)),
+  );
+  // Plain code-unit order, never localeCompare: same bytes on every host.
+  steps.sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
+
+  let requiredFailed = false;
+  for (const step of steps) {
+    if (step.ok) continue;
+    ctx.logger.warn('system_prompt_contribution_failed', {
+      provider: step.provider,
+      class: step.cls,
+      reason: step.reason,
+      ...(step.reason === 'threw'
+        ? { err: step.err instanceof Error ? step.err : new Error(String(step.err)) }
+        : {}),
+    });
+    if (step.cls === 'required') requiredFailed = true;
+  }
+  if (requiredFailed) {
+    for (const step of steps) {
+      if (!step.ok && step.cls === 'required') {
+        ctx.logger.warn('system_prompt_augment_suppressed', { provider: step.provider });
+      }
+    }
+    return null;
+  }
+
+  const landed = steps.flatMap((s) => (s.ok ? [s.out] : []));
+  const bodies = (section: (typeof AUGMENT_SECTIONS)[number]): string[] =>
+    landed.flatMap((o) => {
+      const body = o[section];
+      return body !== undefined && body.length > 0 ? [body] : [];
+    });
+  return {
+    normal: AUGMENT_SECTIONS.flatMap(bodies).join('\n\n'),
+    bootstrap: bodies('rules').join('\n\n'),
+  };
 }
 
 /**
@@ -1111,6 +1271,27 @@ export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
  * `handle.exited` is a second attempt — close is idempotent.
  */
 export const PROXY_CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * W1 — default for `augmentDeadlineMs`: the orchestrator's own bound on each
+ * system-prompt contribution provider. Far below the 120 s bus default that
+ * could otherwise block startup; memory's normal latency is well under it.
+ * Measure memory's p99 before tightening it.
+ */
+export const AUGMENT_DEADLINE_MS = 15_000;
+
+/**
+ * Unlike `validSubscriberBound`, `Infinity` and `0` are refused: the whole
+ * point of the augment deadline is that it is finite (spec §3.4).
+ */
+function validAugmentDeadline(value: number): number {
+  if (Number.isFinite(value) && value > 0) return value;
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message: `augmentDeadlineMs must be a finite number greater than 0 (got ${value})`,
+  });
+}
 
 /**
  * Fail at boot, not on every turn: an invalid bound would make each bounded
@@ -1609,6 +1790,12 @@ export function createOrchestrator(
     'signInStatusTimeoutMs',
     config.signInStatusTimeoutMs ?? SIGN_IN_STATUS_TIMEOUT_MS,
   );
+  const augmentDeadlineMs = validAugmentDeadline(
+    config.augmentDeadlineMs ?? AUGMENT_DEADLINE_MS,
+  );
+  // Unknown-class `system-prompt:augment:<other>:*` names already logged by
+  // THIS orchestrator instance, so a misnamed provider warns once, not per spawn.
+  const augmentUnknownClassLogged = new Set<string>();
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
   // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through
@@ -2229,10 +2416,10 @@ export function createOrchestrator(
       // `.ax/IDENTITY.md`). TASK-142 dropped the `system_prompt` column —
       // identity lives in the agent's `.ax/` files now.
       displayName: agent.displayName,
-      // Seeded empty; the `system-prompt:augment` step below sets it on the
-      // fresh-spawn path (the runner prepends it on top in normal mode).
+      // Seeded empty; the system-prompt contribution step below sets it on
+      // the fresh-spawn path (the runner prepends it on top in normal mode).
       systemPromptAugment: '',
-      // TASK-524: the bootstrap-safe subset of the same augment, set below
+      // TASK-524: the `rules` section of the same augment alone, set below
       // alongside it. The runner prepends THIS (never the full augment) in
       // bootstrap mode.
       systemPromptBootstrapAugment: '',
@@ -2408,7 +2595,7 @@ export function createOrchestrator(
               //
               // TASK-612: same treatment when the session's system prompt
               // predates a change to the agent's augment (a person edited
-              // Rules). The fresh spawn re-runs `system-prompt:augment`.
+              // Rules). The fresh spawn re-runs the system-prompt contributions.
               //
               // TASK-806: and when a connector skipped at spawn (never signed
               // in) has been signed in since. The fresh spawn folds it.
@@ -2660,7 +2847,7 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // Phase 2B — system-prompt:augment. Fresh-spawn path only: a routed
+    // System-prompt contributions (W1). Fresh-spawn path only: a routed
     // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
     // baked into the runner at first spawn, and the runner never reloads it.
     // The prompt is never changed under a running runner. When the augment
@@ -2669,54 +2856,40 @@ export function createOrchestrator(
     // this path runs again, which is how "reads them before every run" on the
     // Memory tab stays true.
     //
-    // Snapshot the agent's augment generation BEFORE the call: a change that
+    // Snapshot the agent's augment generation BEFORE the calls: a change that
     // lands while the augment is being built is then newer than this spawn,
     // and the next turn re-spawns instead of keeping a prompt that missed it.
     // Recorded into `augmentGenBySession` only once the sandbox has opened,
     // so a spawn that fails early leaves no entry behind.
     const augmentGenAtSpawn = augmentGenByAgent.get(ctx.agentId) ?? 0;
     //
-    // Single-provider service hook (one registration at MVP; promoted to
-    // a subscriber chain in Phase 5+ if a second provider lands). When
-    // unregistered: no-op — identical to pre-Phase-2B behavior.
+    // Discovery, the per-provider steps, the required/optional failure rule
+    // and section ordering live in `buildSystemPromptAugment` (see the comment
+    // above it). The result lands on `agentConfig.systemPromptAugment` (its
+    // own field since TASK-142; the runner prepends it on top of the composed
+    // `.ax/` identity prompt in normal mode), and the `rules` bodies alone on
+    // `agentConfig.systemPromptBootstrapAugment` (TASK-524), which is all the
+    // runner prepends in bootstrap mode. A failed required provider leaves
+    // both at their seeded `''`.
     //
-    // The contribution lands on `agentConfig.systemPromptAugment` (its own
-    // field since TASK-142); the runner prepends it on top of the composed
-    // `.ax/` identity prompt in normal mode. The `bootstrapSafe` subset also
-    // lands on `agentConfig.systemPromptBootstrapAugment` (TASK-524), which is
-    // all the runner prepends in bootstrap mode.
-    //
-    // Failure-mode: augmentation is fire-and-degrade. A throw doesn't abort
-    // the chat; we log and fall through with the un-augmented prompt. The
-    // alternative — surfacing as `terminated` — would couple the chat's
-    // success to a soft-dep auxiliary, which is the wrong shape.
-    if (bus.hasService('system-prompt:augment')) {
-      try {
-        const out = await bus.call<
-          SystemPromptAugmentInput,
-          SystemPromptAugmentOutput
-        >('system-prompt:augment', ctx, {});
-        const join = (cs: SystemPromptAugmentOutput['contributions']): string =>
-          cs
-            .map((c) => c.body)
-            .filter((b) => b.length > 0)
-            .join('\n\n');
-        const extra = join(out.contributions);
-        // Strict `=== true`: a truthy non-boolean is NOT an opt-in (TASK-524).
-        const bootstrapExtra = join(out.contributions.filter((c) => c.bootstrapSafe === true));
-        if (extra.length > 0) {
-          // Mutate the struct's field, not the binding. agentConfig is still
-          // a const reference to the same object; only the systemPromptAugment
-          // property changes before it gets frozen on the new session.
-          agentConfig.systemPromptAugment = extra;
-        }
-        if (bootstrapExtra.length > 0) {
-          agentConfig.systemPromptBootstrapAugment = bootstrapExtra;
-        }
-      } catch (err) {
-        ctx.logger.warn('system_prompt_augment_failed', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+    // Never aborts the chat: every failure is logged and degrades to less (or
+    // no) augment. Surfacing it as `terminated` would couple the chat's
+    // success to an auxiliary, which is the wrong shape.
+    const augment = await buildSystemPromptAugment(
+      bus,
+      ctx,
+      augmentDeadlineMs,
+      augmentUnknownClassLogged,
+    );
+    if (augment !== null) {
+      // Mutate the struct's fields, not the binding: agentConfig is still a
+      // const reference to the same object, frozen later on the new session.
+      // Only set when non-empty so an un-augmented snapshot is unchanged.
+      if (augment.normal.length > 0) {
+        agentConfig.systemPromptAugment = augment.normal;
+      }
+      if (augment.bootstrap.length > 0) {
+        agentConfig.systemPromptBootstrapAugment = augment.bootstrap;
       }
     }
 
@@ -2724,8 +2897,9 @@ export function createOrchestrator(
     // only: the runner hides these so the model isn't offered tools it will
     // be refused. Enforcement stays host-side on `tool:pre-call`, so every
     // failure here DEGRADES (log + no extra denies) — it must never abort the
-    // session open. Same optional-peer posture as `system-prompt:augment`
-    // above: hasService-gated, declared in the manifest's `optionalCalls`.
+    // session open. Same degrade-don't-abort posture as the system-prompt
+    // contributions above, but a single named peer: hasService-gated, declared
+    // in the manifest's `optionalCalls`.
     // Only set when non-empty so the frozen snapshot of an agent with no
     // denies is byte-identical to before.
     if (bus.hasService('tool-policy:list-agent-overrides')) {

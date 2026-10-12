@@ -3,32 +3,30 @@ import {
   HookBus,
   makeAgentContext,
   createLogger,
+  SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
+import { AUGMENT_DEADLINE_MS } from '../orchestrator.js';
 
 // ---------------------------------------------------------------------------
-// Phase 2B Task 11 — system-prompt:augment hook in the orchestrator.
+// W1 — system-prompt contributions from several plugins
+// (`docs/plans/2026-10-12-w1-prompt-contributions-design.md`).
 //
-// The orchestrator calls `system-prompt:augment` between the agents:resolve
-// step and the fresh-spawn proxy/sandbox open. Contributions are concatenated
-// in array order (joined with "\n\n", empty bodies filtered) and written to
-// `agentConfig.systemPromptAugment` (its own field since TASK-142 — the runner
-// prepends it on top of the composed `.ax/` identity prompt) before forwarding
-// into `sandbox:open-session`.
-//
-// Properties under test:
-//   1. Provider registered → sandbox sees the augment in systemPromptAugment.
-//   2. Provider absent → systemPromptAugment stays empty.
-//   3. Multiple contributions concat in array order; empty bodies filtered.
-//   4. Provider throw → chat completes with empty augment
-//      (fire-and-degrade; failures don't abort the chat).
-//   5. Routed-into-live-sandbox path: augment NOT called — the runner
-//      already has its baked-in systemPromptAugment.
+// On a fresh spawn the orchestrator discovers every service named
+// `system-prompt:augment:required:<name>` / `…:optional:<name>`, calls them in
+// parallel, and gives each its own step: call → orchestrator deadline → schema
+// → class rule → size. Bodies join with "\n\n" in section order (rules,
+// context, recall), and within a section by full service name. Only `rules`
+// reaches `systemPromptBootstrapAugment`. A failed REQUIRED provider skips the
+// whole augment; a failed OPTIONAL provider drops only its own blocks.
 // ---------------------------------------------------------------------------
+
+const REQ = 'system-prompt:augment:required:';
+const OPT = 'system-prompt:augment:optional:';
 
 const TEST_AGENT = {
   id: 'test-agent',
@@ -43,11 +41,12 @@ const TEST_AGENT = {
   workspaceRef: null,
 };
 
-function silentCtx(overrides?: {
-  sessionId?: string;
-  conversationId?: string;
-  reqId?: string;
-}) {
+type LogLine = Record<string, unknown> & { msg: string; level: string };
+
+function capturingCtx(
+  logs: LogLine[],
+  overrides?: { sessionId?: string; conversationId?: string; reqId?: string },
+) {
   return makeAgentContext({
     sessionId: overrides?.sessionId ?? 'aug-session',
     agentId: 'test-agent',
@@ -56,34 +55,30 @@ function silentCtx(overrides?: {
       ? { conversationId: overrides.conversationId }
       : {}),
     ...(overrides?.reqId !== undefined ? { reqId: overrides.reqId } : {}),
-    logger: createLogger({ reqId: 'aug-test', writer: () => undefined }),
+    logger: createLogger({
+      reqId: 'aug-test',
+      writer: (line) => logs.push(JSON.parse(line) as LogLine),
+    }),
   });
 }
 
-interface AugmentMocks {
-  services: Record<string, ServiceHandler>;
-  trace: {
-    augmentCalls: number;
-    sandboxOpen: number;
-    lastSystemPromptAugment: string | undefined;
-    /** `null` = the key was ABSENT from the forwarded agentConfig. */
-    lastBootstrapAugment: string | null | undefined;
-    lastQueuedMessage: AgentMessage | undefined;
-  };
+interface Trace {
+  sandboxOpen: number;
+  lastSystemPromptAugment: string | undefined;
+  /** `null` = the key was ABSENT from the forwarded agentConfig. */
+  lastBootstrapAugment: string | null | undefined;
+  lastQueuedMessage: AgentMessage | undefined;
 }
 
-// Build a self-contained mock bundle: agents:resolve, sandbox:open-session
-// (fires chat:end on the bus to resolve the orchestrator's waiter), session:
-// queue-work, session:terminate, and proxy stubs. Augment provider, if any,
-// is passed in via `augmentProvider`.
+// Self-contained mock bundle: agents:resolve, sandbox:open-session (fires
+// chat:end on the bus to resolve the orchestrator's waiter), session:
+// queue-work, session:terminate, and proxy stubs.
 function buildMocks(opts: {
   busRef: { current: HookBus | null };
-  augmentProvider?: ServiceHandler;
   /** When set, also wires conversations:* + session:is-alive returning alive. */
   routedSession?: { conversationId: string; activeSessionId: string };
-} = {} as never): AugmentMocks {
-  const trace: AugmentMocks['trace'] = {
-    augmentCalls: 0,
+}): { services: Record<string, ServiceHandler>; trace: Trace } {
+  const trace: Trace = {
     sandboxOpen: 0,
     lastSystemPromptAugment: undefined,
     lastBootstrapAugment: undefined,
@@ -115,7 +110,6 @@ function buildMocks(opts: {
           ? (i.owner.agentConfig.systemPromptBootstrapAugment ?? null)
           : null;
       const originatingReqId = ctx.reqId;
-      // Fire chat:end on the next tick to resolve the orchestrator's waiter.
       setImmediate(() => {
         void opts.busRef.current!.fire(
           'chat:end',
@@ -124,20 +118,14 @@ function buildMocks(opts: {
             agentId: 'test-agent',
             userId: 'test-user',
             reqId: originatingReqId,
-            logger: createLogger({
-              reqId: originatingReqId,
-              writer: () => undefined,
-            }),
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
           }),
           { outcome: { kind: 'complete', messages: [] } },
         );
       });
       return {
         runnerEndpoint: 'unix:///tmp/aug.sock',
-        handle: {
-          kill: async () => undefined,
-          exited: new Promise(() => undefined),
-        },
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
       };
     },
     'proxy:open-session': async () => ({
@@ -149,14 +137,6 @@ function buildMocks(opts: {
     'proxy:close-session': async () => ({}),
   };
 
-  if (opts.augmentProvider !== undefined) {
-    const wrapped = opts.augmentProvider;
-    services['system-prompt:augment'] = async (ctx, input) => {
-      trace.augmentCalls += 1;
-      return wrapped(ctx, input);
-    };
-  }
-
   if (opts.routedSession !== undefined) {
     const { conversationId, activeSessionId } = opts.routedSession;
     services['conversations:get'] = async (_ctx, input: unknown) => {
@@ -166,9 +146,7 @@ function buildMocks(opts: {
           conversationId: i.conversationId,
           userId: i.userId,
           agentId: 'test-agent',
-          activeSessionId: i.conversationId === conversationId
-            ? activeSessionId
-            : null,
+          activeSessionId: i.conversationId === conversationId ? activeSessionId : null,
           activeReqId: null,
         },
       };
@@ -183,165 +161,208 @@ function buildMocks(opts: {
   return { services, trace };
 }
 
-describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
-  it('augment provider registered → prepends contribution to systemPrompt', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      busRef,
-      augmentProvider: async () => ({
-        contributions: [{ source: 'memory', body: 'INJECT-ME' }],
+/** A provider: full service name, handler, optional bus registration opts. */
+type Provider = [name: string, handler: ServiceHandler, opts?: { timeoutMs?: number }];
+
+interface Setup {
+  h: Awaited<ReturnType<typeof createTestHarness>>;
+  trace: Trace;
+  logs: LogLine[];
+  /** Calls per provider service name. */
+  calls: Record<string, number>;
+}
+
+async function setup(opts: {
+  providers?: Provider[];
+  augmentDeadlineMs?: number;
+  routedSession?: { conversationId: string; activeSessionId: string };
+} = {}): Promise<Setup> {
+  const busRef: { current: HookBus | null } = { current: null };
+  const mocks = buildMocks({
+    busRef,
+    ...(opts.routedSession !== undefined ? { routedSession: opts.routedSession } : {}),
+  });
+  const h = await createTestHarness({
+    services: mocks.services,
+    plugins: [
+      createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' },
+        chatTimeoutMs: 5_000,
+        ...(opts.augmentDeadlineMs !== undefined
+          ? { augmentDeadlineMs: opts.augmentDeadlineMs }
+          : {}),
       }),
-    });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    });
-    busRef.current = h.bus;
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx({ sessionId: 'aug-1' }),
-      { message: { role: 'user', content: 'hi' } },
-    );
-
-    expect(outcome.kind).toBe('complete');
-    expect(mocks.trace.augmentCalls).toBe(1);
-    expect(mocks.trace.sandboxOpen).toBe(1);
-    expect(mocks.trace.lastSystemPromptAugment).toBe('INJECT-ME');
+    ],
   });
-
-  it('augment provider not registered → sandbox sees the original prompt unchanged', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({ busRef });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    });
-    busRef.current = h.bus;
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx({ sessionId: 'aug-2' }),
-      { message: { role: 'user', content: 'hi' } },
-    );
-
-    expect(outcome.kind).toBe('complete');
-    expect(mocks.trace.augmentCalls).toBe(0);
-    expect(mocks.trace.lastSystemPromptAugment).toBe('');
-  });
-
-  it('multiple contributions concat in order; empty bodies filtered', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      busRef,
-      augmentProvider: async () => ({
-        contributions: [
-          { source: 'a', body: 'A' },
-          { source: 'b', body: 'B' },
-          // Empty body — must be filtered before the join, otherwise the
-          // resulting prompt would carry a dangling "\n\n" gap.
-          { source: 'empty', body: '' },
-        ],
-      }),
-    });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    });
-    busRef.current = h.bus;
-
-    await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx({ sessionId: 'aug-3' }),
-      { message: { role: 'user', content: 'hi' } },
-    );
-
-    // Concat order: 'A', 'B' (empty filtered) joined with '\n\n', then
-    // separator '\n\n', then base prompt.
-    expect(mocks.trace.lastSystemPromptAugment).toBe('A\n\nB');
-  });
-
-  it('augment provider throws → chat completes with un-augmented prompt', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      busRef,
-      augmentProvider: async () => {
-        throw new Error('augment-impl boom');
+  busRef.current = h.bus;
+  const calls: Record<string, number> = {};
+  // Registered AFTER boot, in array order: the orchestrator discovers the
+  // family at turn time, so registration order is under the test's control.
+  for (const [name, handler, regOpts] of opts.providers ?? []) {
+    calls[name] = 0;
+    h.bus.registerService(
+      name,
+      'test-provider',
+      async (ctx, input) => {
+        calls[name] = (calls[name] ?? 0) + 1;
+        return handler(ctx, input);
       },
-    });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    });
-    busRef.current = h.bus;
-
-    // The agent:invoke call MUST resolve normally — augmentation is fire-
-    // and-degrade. A throw must not propagate as a terminated outcome.
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx({ sessionId: 'aug-4' }),
-      { message: { role: 'user', content: 'hi' } },
+      regOpts,
     );
+  }
+  return { h, trace: mocks.trace, logs: [], calls };
+}
 
-    expect(outcome.kind).toBe('complete');
-    expect(mocks.trace.augmentCalls).toBe(1);
-    // Original prompt forwarded — augmentation never landed.
-    expect(mocks.trace.lastSystemPromptAugment).toBe('');
+async function invoke(s: Setup, sessionId = 'aug-session'): Promise<AgentOutcome> {
+  return s.h.bus.call<unknown, AgentOutcome>(
+    'agent:invoke',
+    capturingCtx(s.logs, { sessionId }),
+    { message: { role: 'user', content: 'hi' } },
+  );
+}
+
+async function run(providers: Provider[], augmentDeadlineMs?: number) {
+  const s = await setup({
+    providers,
+    ...(augmentDeadlineMs !== undefined ? { augmentDeadlineMs } : {}),
+  });
+  const outcome = await invoke(s);
+  expect(outcome.kind).toBe('complete');
+  expect(s.trace.sandboxOpen).toBe(1);
+  return s;
+}
+
+function logsNamed(logs: LogLine[], msg: string): LogLine[] {
+  return logs.filter((l) => l.msg === msg);
+}
+
+function failures(logs: LogLine[]) {
+  return logsNamed(logs, 'system_prompt_contribution_failed').map((l) => ({
+    provider: l.provider,
+    class: l.class,
+    reason: l.reason,
+  }));
+}
+
+function suppressed(logs: LogLine[]) {
+  return logsNamed(logs, 'system_prompt_augment_suppressed').map((l) => l.provider);
+}
+
+const value = (out: unknown): ServiceHandler => async () => out;
+const never: ServiceHandler = () => new Promise(() => undefined);
+
+// ---------------------------------------------------------------------------
+describe('Orchestrator: ordering and landing', () => {
+  const ORDERED: Provider[] = [
+    [`${REQ}memory`, value({ rules: 'R-MEM', recall: 'REC-MEM' })],
+    [`${REQ}zz-policy`, value({ rules: 'R-POLICY' })],
+    [`${OPT}a`, value({ context: 'CTX-a' })],
+    // Upper-case 'B' sorts BEFORE lower-case 'a' under a plain `<` compare
+    // (code-unit order), but after it under localeCompare. Pins the former:
+    // the same bytes on every host, whatever its locale.
+    [`${OPT}B`, value({ context: 'CTX-B', recall: 'REC-B' })],
+  ];
+  const EXPECTED_NORMAL = [
+    'R-MEM',
+    'R-POLICY',
+    'CTX-B',
+    'CTX-a',
+    // `…:optional:B` < `…:required:memory` by full service name.
+    'REC-B',
+    'REC-MEM',
+  ].join('\n\n');
+
+  it('required and optional providers land in section order, independent of registration order', async () => {
+    const forward = await run(ORDERED);
+    const reversed = await run([...ORDERED].reverse());
+    const shuffled = await run([ORDERED[2]!, ORDERED[0]!, ORDERED[3]!, ORDERED[1]!]);
+
+    for (const s of [forward, reversed, shuffled]) {
+      expect(s.trace.lastSystemPromptAugment).toBe(EXPECTED_NORMAL);
+      expect(s.trace.lastBootstrapAugment).toBe('R-MEM\n\nR-POLICY');
+      expect(failures(s.logs)).toEqual([]);
+      for (const [name] of ORDERED) expect(s.calls[name]).toBe(1);
+    }
   });
 
-  it('routed path (live sandbox) does NOT call system-prompt:augment', async () => {
-    // J6 — when ctx.conversationId points at a live session, the
-    // orchestrator routes into that session's inbox without re-spawning.
-    // The runner already has its baked-in systemPrompt; calling augment
-    // on this path would compute a contribution that nothing consumes,
-    // wasting work and potentially logging confusing audit events.
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      busRef,
-      augmentProvider: async () => ({
-        contributions: [{ source: 'memory', body: 'SHOULD-NOT-APPEAR' }],
-      }),
-      routedSession: {
-        conversationId: 'conv-routed',
-        activeSessionId: 's-live',
-      },
-    });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
+  it('bootstrap gets only `rules`; context and recall never reach it', async () => {
+    const s = await run([
+      [`${REQ}memory`, value({ rules: 'RULES', recall: 'RECALLED' })],
+      [`${OPT}project`, value({ context: 'PROJECT' })],
+    ]);
+    expect(s.trace.lastSystemPromptAugment).toBe('RULES\n\nPROJECT\n\nRECALLED');
+    expect(s.trace.lastBootstrapAugment).toBe('RULES');
+  });
+
+  it('no rules anywhere → the bootstrap augment is empty, never the full augment', async () => {
+    const s = await run([[`${OPT}project`, value({ context: 'PROJECT', recall: 'RECALLED' })]]);
+    expect(s.trace.lastSystemPromptAugment).toBe('PROJECT\n\nRECALLED');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+  });
+
+  it('memory-shaped golden: one required { rules, recall } is byte-identical to the old two-contribution output', async () => {
+    const R = '## Rules From Your User\n\n- Always answer in French.';
+    const M = '## What You Remember\n\n- The user likes tea.';
+    const s = await run([[`${REQ}memory`, value({ rules: R, recall: M })]]);
+    // Pre-W1 memory returned R (bootstrap-flagged) and M as two bodies,
+    // joined with "\n\n"; bootstrap mode got R alone. Same bytes now.
+    expect(s.trace.lastSystemPromptAugment).toBe(`${R}\n\n${M}`);
+    expect(s.trace.lastBootstrapAugment).toBe(R);
+  });
+
+  it('empty bodies are skipped, leaving no dangling blank line', async () => {
+    const s = await run([
+      [`${REQ}memory`, value({ rules: '', recall: 'RECALLED' })],
+      [`${OPT}a`, value({ context: '' })],
+      [`${OPT}b`, value({ context: 'B' })],
+    ]);
+    expect(s.trace.lastSystemPromptAugment).toBe('B\n\nRECALLED');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+  });
+
+  it('zero providers is a no-op', async () => {
+    const s = await run([]);
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+    expect(failures(s.logs)).toEqual([]);
+    expect(suppressed(s.logs)).toEqual([]);
+  });
+
+  it('the bare legacy `system-prompt:augment` name is not called', async () => {
+    const s = await run([['system-prompt:augment', value({ rules: 'STALE' })]]);
+    expect(s.calls['system-prompt:augment']).toBe(0);
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+  });
+
+  it('an unknown class segment is ignored and logged once per orchestrator instance', async () => {
+    const s = await setup({
+      providers: [
+        ['system-prompt:augment:mandatory:x', value({ rules: 'SNEAKY' })],
+        [`${OPT}ok`, value({ context: 'OK' })],
       ],
     });
-    busRef.current = h.bus;
+    expect((await invoke(s, 'aug-u1')).kind).toBe('complete');
+    expect(s.trace.lastSystemPromptAugment).toBe('OK');
+    expect((await invoke(s, 'aug-u2')).kind).toBe('complete');
+    expect(s.trace.lastSystemPromptAugment).toBe('OK');
 
-    // The runner emits chat:end on s-live with the originating reqId so
-    // the orchestrator's deferred resolves.
+    expect(s.calls['system-prompt:augment:mandatory:x']).toBe(0);
+    const unknown = logsNamed(s.logs, 'system_prompt_augment_unknown_class');
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]!.provider).toBe('system-prompt:augment:mandatory:x');
+  });
+
+  it('a routed turn (live sandbox) makes no provider calls', async () => {
+    const s = await setup({
+      providers: [
+        [`${REQ}memory`, value({ rules: 'SHOULD-NOT-APPEAR' })],
+        [`${OPT}project`, value({ context: 'SHOULD-NOT-APPEAR' })],
+      ],
+      routedSession: { conversationId: 'conv-routed', activeSessionId: 's-live' },
+    });
     const reqId = 'req-routed-1';
     setImmediate(() => {
-      void h.bus.fire(
+      void s.h.bus.fire(
         'chat:end',
         makeAgentContext({
           sessionId: 's-live',
@@ -353,94 +374,225 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
         { outcome: { kind: 'complete', messages: [] } },
       );
     });
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
+    const outcome = await s.h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
-      silentCtx({
-        sessionId: 'unused-fresh',
-        conversationId: 'conv-routed',
-        reqId,
-      }),
+      capturingCtx(s.logs, { sessionId: 'unused-fresh', conversationId: 'conv-routed', reqId }),
       { message: { role: 'user', content: 'follow-up' } },
     );
-
     expect(outcome.kind).toBe('complete');
-    // Routed: sandbox:open-session NEVER called.
-    expect(mocks.trace.sandboxOpen).toBe(0);
-    // Augment NEVER called — the routed branch returns before reaching it.
-    expect(mocks.trace.augmentCalls).toBe(0);
+    expect(s.trace.sandboxOpen).toBe(0);
+    expect(s.calls[`${REQ}memory`]).toBe(0);
+    expect(s.calls[`${OPT}project`]).toBe(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// TASK-524 — bootstrap-safe contributions.
-//
-// Bootstrap mode (the agent's first-run identity conversation) is decided
-// RUNNER-side, so the orchestrator ships two strings: every contribution in
-// `systemPromptAugment` (normal mode, unchanged), and only the contributions
-// flagged `bootstrapSafe: true` in `systemPromptBootstrapAugment`.
-// ---------------------------------------------------------------------------
+describe('Orchestrator: review 1, finding 1 (Rules failure)', () => {
+  const OPTIONAL_OK: Provider = [`${OPT}project`, value({ context: 'PROJECT' })];
 
-describe('chat-orchestrator system-prompt:augment — bootstrap-safe contributions (TASK-524)', () => {
-  async function run(
-    sessionId: string,
-    contributions: Array<{ source: string; body: string; bootstrapSafe?: unknown }>,
-  ): Promise<AugmentMocks['trace']> {
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      busRef,
-      augmentProvider: async () => ({ contributions }),
-    });
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({
-          runnerBinaries: { 'claude-sdk': '/irrelevant' },
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    });
-    busRef.current = h.bus;
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx({ sessionId }),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    expect(outcome.kind).toBe('complete');
-    return mocks.trace;
+  function expectSuppressed(s: Setup, provider: string) {
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+    expect(suppressed(s.logs)).toEqual([provider]);
+    // The optional provider still RAN (parallel, isolated) — it just didn't land.
+    expect(s.calls[OPTIONAL_OK[0]]).toBe(1);
   }
 
-  it('only bootstrapSafe contributions reach systemPromptBootstrapAugment; all reach systemPromptAugment', async () => {
-    const trace = await run('boot-1', [
-      { source: '@ax/memory', body: 'RULES', bootstrapSafe: true },
-      { source: '@ax/memory', body: 'RECALLED-FACTS' },
+  it('a required provider that throws, beside an optional one that succeeds → no augment at all', async () => {
+    const s = await run([
+      [
+        `${REQ}memory`,
+        async () => {
+          throw new Error('rules read failed');
+        },
+      ],
+      OPTIONAL_OK,
     ]);
-    expect(trace.lastSystemPromptAugment).toBe('RULES\n\nRECALLED-FACTS');
-    expect(trace.lastBootstrapAugment).toBe('RULES');
+    expectSuppressed(s, `${REQ}memory`);
+    const failed = logsNamed(s.logs, 'system_prompt_contribution_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      level: 'warn',
+      provider: `${REQ}memory`,
+      class: 'required',
+      reason: 'threw',
+    });
+    expect(failed[0]!.err).toMatchObject({ message: expect.stringContaining('rules read failed') });
   });
 
-  it('no bootstrapSafe contribution → the bootstrap augment is empty, never the full augment', async () => {
-    const trace = await run('boot-2', [{ source: 'x', body: 'RECALLED-FACTS' }]);
-    expect(trace.lastSystemPromptAugment).toBe('RECALLED-FACTS');
-    expect(trace.lastBootstrapAugment).toBe('');
+  it('a required provider that misses the deadline → no augment at all', async () => {
+    const s = await run([[`${REQ}memory`, never, { timeoutMs: Infinity }], OPTIONAL_OK], 30);
+    expectSuppressed(s, `${REQ}memory`);
+    expect(failures(s.logs)).toEqual([
+      { provider: `${REQ}memory`, class: 'required', reason: 'deadline' },
+    ]);
   });
 
-  it('a truthy non-boolean bootstrapSafe fails closed (stays out of bootstrap)', async () => {
-    const trace = await run('boot-3', [
-      { source: 'x', body: 'SNEAKY', bootstrapSafe: 'yes' },
-      { source: 'y', body: 'ALSO', bootstrapSafe: 1 },
+  it('a required provider that returns invalid output → no augment at all', async () => {
+    const s = await run([[`${REQ}memory`, value({ rules: 42 })], OPTIONAL_OK]);
+    expectSuppressed(s, `${REQ}memory`);
+    expect(failures(s.logs)).toEqual([
+      { provider: `${REQ}memory`, class: 'required', reason: 'invalid' },
     ]);
-    expect(trace.lastSystemPromptAugment).toBe('SNEAKY\n\nALSO');
-    expect(trace.lastBootstrapAugment).toBe('');
   });
 
-  it('empty bootstrapSafe bodies are filtered and safe ones keep array order', async () => {
-    const trace = await run('boot-4', [
-      { source: 'a', body: 'A', bootstrapSafe: true },
-      { source: 'b', body: 'FACTS' },
-      { source: 'c', body: '', bootstrapSafe: true },
-      { source: 'd', body: 'D', bootstrapSafe: true },
+  it('suppression is logged once per failed required provider', async () => {
+    const s = await run([
+      [`${REQ}a`, value(null)],
+      [`${REQ}b`, async () => Promise.reject(new Error('boom'))],
+      [`${REQ}c`, value({ rules: 'FINE' })],
+      OPTIONAL_OK,
     ]);
-    expect(trace.lastBootstrapAugment).toBe('A\n\nD');
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+    expect([...suppressed(s.logs)].sort()).toEqual([`${REQ}a`, `${REQ}b`]);
   });
+
+  it('a required provider that returns no `rules` is not a failure: the optional one lands', async () => {
+    const s = await run([[`${REQ}memory`, value({})], OPTIONAL_OK]);
+    expect(s.trace.lastSystemPromptAugment).toBe('PROJECT');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+    expect(failures(s.logs)).toEqual([]);
+    expect(suppressed(s.logs)).toEqual([]);
+  });
+
+  it('a required provider with recall but no rules still lands both', async () => {
+    const s = await run([[`${REQ}memory`, value({ recall: 'RECALLED' })], OPTIONAL_OK]);
+    expect(s.trace.lastSystemPromptAugment).toBe('PROJECT\n\nRECALLED');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+  });
+
+  it('no required provider registered: the optional one lands', async () => {
+    const s = await run([OPTIONAL_OK]);
+    expect(s.trace.lastSystemPromptAugment).toBe('PROJECT');
+    expect(suppressed(s.logs)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Orchestrator: review 1, finding 2 (validation)', () => {
+  const OVERSIZED = 'x'.repeat(SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS + 1);
+
+  // [label, result, reason] — malformed results from an OPTIONAL provider.
+  const OPTIONAL_CASES: Array<[string, unknown, 'invalid' | 'too_large']> = [
+    ['null', null, 'invalid'],
+    ['a non-object', 'just a string', 'invalid'],
+    ['{ rules } (optional may not carry rules)', { rules: 'SNEAKY', context: 'C' }, 'invalid'],
+    ['{ rules: "" } (even empty)', { rules: '', context: 'C' }, 'invalid'],
+    ['a null body', { recall: null }, 'invalid'],
+    ['a number body', { context: 42 }, 'invalid'],
+    ['an unknown key', { context: 'C', extra: 'x' }, 'invalid'],
+    ['the old { contributions } shape', { contributions: [{ source: 'x', body: 'C' }] }, 'invalid'],
+    ['an oversized body', { context: OVERSIZED }, 'too_large'],
+  ];
+
+  for (const [label, result, reason] of OPTIONAL_CASES) {
+    it(`optional provider returning ${label} is dropped (${reason}); a valid sibling lands`, async () => {
+      const s = await run([
+        [`${OPT}bad`, value(result)],
+        [`${OPT}good`, value({ context: 'GOOD' })],
+        [`${REQ}memory`, value({ rules: 'RULES' })],
+      ]);
+      expect(s.trace.lastSystemPromptAugment).toBe('RULES\n\nGOOD');
+      expect(s.trace.lastBootstrapAugment).toBe('RULES');
+      expect(failures(s.logs)).toEqual([{ provider: `${OPT}bad`, class: 'optional', reason }]);
+      expect(suppressed(s.logs)).toEqual([]);
+    });
+  }
+
+  it('a body of exactly the cap is accepted', async () => {
+    const atCap = 'y'.repeat(SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS);
+    const s = await run([[`${OPT}big`, value({ context: atCap })]]);
+    expect(s.trace.lastSystemPromptAugment).toBe(atCap);
+  });
+
+  // The same malformed results from a REQUIRED provider skip everything.
+  const REQUIRED_CASES: Array<[string, unknown, 'invalid' | 'too_large']> = [
+    ['null', null, 'invalid'],
+    ['a null body', { recall: null }, 'invalid'],
+    ['a number body', { rules: 42 }, 'invalid'],
+    ['an unknown key', { rules: 'R', extra: 'x' }, 'invalid'],
+    ['an oversized rules body', { rules: OVERSIZED }, 'too_large'],
+    ['an oversized recall body', { rules: 'R', recall: OVERSIZED }, 'too_large'],
+  ];
+
+  for (const [label, result, reason] of REQUIRED_CASES) {
+    it(`required provider returning ${label} skips the whole augment (${reason})`, async () => {
+      const s = await run([
+        [`${REQ}memory`, value(result)],
+        [`${OPT}good`, value({ context: 'GOOD' })],
+      ]);
+      expect(s.trace.lastSystemPromptAugment).toBe('');
+      expect(s.trace.lastBootstrapAugment).toBe('');
+      expect(failures(s.logs)).toEqual([{ provider: `${REQ}memory`, class: 'required', reason }]);
+      expect(suppressed(s.logs)).toEqual([`${REQ}memory`]);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+describe('Orchestrator: review 1, finding 3 (deadline)', () => {
+  it('defaults to a finite 15 s deadline', () => {
+    expect(AUGMENT_DEADLINE_MS).toBe(15_000);
+  });
+
+  it('an optional provider with timeoutMs: Infinity that never settles: the session opens and the others land', async () => {
+    const started = Date.now();
+    const s = await run(
+      [
+        [`${OPT}hung`, never, { timeoutMs: Infinity }],
+        [`${OPT}good`, value({ context: 'GOOD' })],
+        [`${REQ}memory`, value({ rules: 'RULES' })],
+      ],
+      40,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(s.trace.lastSystemPromptAugment).toBe('RULES\n\nGOOD');
+    expect(failures(s.logs)).toEqual([
+      { provider: `${OPT}hung`, class: 'optional', reason: 'deadline' },
+    ]);
+  });
+
+  it('a required provider with timeoutMs: Infinity that never settles: the session opens with no augment', async () => {
+    const started = Date.now();
+    const s = await run(
+      [
+        [`${REQ}memory`, never, { timeoutMs: Infinity }],
+        [`${OPT}good`, value({ context: 'GOOD' })],
+      ],
+      40,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+    expect(s.trace.lastBootstrapAugment).toBe('');
+    expect(suppressed(s.logs)).toEqual([`${REQ}memory`]);
+  });
+
+  it('a provider that rejects AFTER the deadline is still just a deadline miss (no unhandled rejection)', async () => {
+    const s = await run(
+      [
+        [
+          `${OPT}late`,
+          () =>
+            new Promise((_res, rej) => {
+              setTimeout(() => rej(new Error('too late')), 80);
+            }),
+          { timeoutMs: Infinity },
+        ],
+        [`${OPT}good`, value({ context: 'GOOD' })],
+      ],
+      20,
+    );
+    // Let the late rejection land; vitest fails the run on an unhandled one.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(s.trace.lastSystemPromptAugment).toBe('GOOD');
+    expect(failures(s.logs)).toEqual([
+      { provider: `${OPT}late`, class: 'optional', reason: 'deadline' },
+    ]);
+  });
+
+  for (const bad of [Infinity, Number.NaN, 0, -1]) {
+    it(`config rejects augmentDeadlineMs=${bad} at init`, async () => {
+      await expect(setup({ augmentDeadlineMs: bad })).rejects.toThrow(/augmentDeadlineMs/);
+    });
+  }
 });
