@@ -1,0 +1,575 @@
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import {
+  createTestHarness,
+  type TestHarness,
+  stopPostgresContainer,
+  startTestContainer,
+} from '@ax/test-harness';
+import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import {
+  createLogger,
+  makeAgentContext,
+  ownerlessIdFor,
+  PluginError,
+  type AgentContext,
+  type ServiceHandler,
+} from '@ax/core';
+import { isValidSharedFolderId } from '@ax/sandbox-protocol';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import pg from 'pg';
+import { createSharedFoldersPlugin, type SharedFoldersPlugin } from '../plugin.js';
+import type { SharedFoldersAccessReducedEvent } from '../types.js';
+
+// ---------------------------------------------------------------------------
+// A tiny in-test agents world, standing in for @ax/agents:
+//   - personal agent: managed and usable only by its owner;
+//   - team agent: managed only by a team ADMIN, usable by any team member;
+//   - `extraManagers` lets one test give a person authority over a single
+//     agent without the folder's owner agent (the revoke OR-rule).
+// Workspace-admin status does not exist here at all — which is the point: it
+// must grant nothing on its own.
+// ---------------------------------------------------------------------------
+
+interface StubAgent {
+  ownerType: 'user' | 'team';
+  ownerId: string;
+}
+
+const AGENTS: Record<string, StubAgent> = {
+  'a-alice-1': { ownerType: 'user', ownerId: 'alice' },
+  'a-alice-2': { ownerType: 'user', ownerId: 'alice' },
+  'a-alice-3': { ownerType: 'user', ownerId: 'alice' },
+  'a-alice-4': { ownerType: 'user', ownerId: 'alice' },
+  'a-bob': { ownerType: 'user', ownerId: 'bob' },
+  'a-tadmin': { ownerType: 'user', ownerId: 'tadmin' },
+  'a-team-1': { ownerType: 'team', ownerId: 't1' },
+  'a-team-2': { ownerType: 'team', ownerId: 't1' },
+};
+const TEAMS: Record<string, { admins: string[]; members: string[] }> = {
+  t1: { admins: ['tadmin'], members: ['tmember'] },
+};
+const extraManagers = new Map<string, string>(); // agentId → userId
+
+function manages(userId: string, agentId: string): boolean {
+  const a = AGENTS[agentId]!;
+  if (extraManagers.get(agentId) === userId) return true;
+  if (a.ownerType === 'user') return a.ownerId === userId;
+  return TEAMS[a.ownerId]!.admins.includes(userId);
+}
+function canUse(userId: string, agentId: string): boolean {
+  const a = AGENTS[agentId]!;
+  if (a.ownerType === 'user') return a.ownerId === userId;
+  const t = TEAMS[a.ownerId]!;
+  return t.admins.includes(userId) || t.members.includes(userId);
+}
+function notFound(hookName: string, agentId: string): PluginError {
+  return new PluginError({ code: 'not-found', plugin: 'stub-agents', hookName, message: `no ${agentId}` });
+}
+
+type ProviderMode = 'ok' | 'fail';
+let providerMode: ProviderMode = 'ok';
+let providerCalls: string[] = [];
+
+const agentServices: Record<string, ServiceHandler> = {
+  'agents:can-manage-sharing': async (ctx, raw) => {
+    const { agentId } = raw as { agentId: string };
+    if (!AGENTS[agentId]) throw notFound('agents:can-manage-sharing', agentId);
+    return { allowed: manages(ctx.userId, agentId) };
+  },
+  'agents:resolve': async (_ctx, raw) => {
+    const { agentId, userId } = raw as { agentId: string; userId: string };
+    const a = AGENTS[agentId];
+    if (!a) throw notFound('agents:resolve', agentId);
+    if (!canUse(userId, agentId)) {
+      throw new PluginError({ code: 'forbidden', plugin: 'stub-agents', hookName: 'agents:resolve', message: 'no' });
+    }
+    return { agent: { id: agentId, ...a } };
+  },
+};
+const providerService: Record<string, ServiceHandler> = {
+  'sandbox:delete-shared-folder': async (_ctx, raw) => {
+    const { folderId } = raw as { folderId: string };
+    providerCalls.push(folderId);
+    if (providerMode === 'fail') throw new Error('nfs unavailable');
+    return { deleted: true };
+  },
+};
+
+// ---------------------------------------------------------------------------
+
+let container: StartedPostgreSqlContainer;
+let connectionString: string;
+const harnesses: TestHarness[] = [];
+
+interface World {
+  h: TestHarness;
+  plugin: SharedFoldersPlugin;
+  logs: Record<string, unknown>[];
+  events: SharedFoldersAccessReducedEvent[];
+  as(userId: string): AgentContext;
+  call<O = unknown>(userId: string, hook: string, input: unknown): Promise<O>;
+}
+
+async function makeWorld(opts: { provider?: boolean; sweepIntervalMs?: number } = {}): Promise<World> {
+  const plugin = createSharedFoldersPlugin({ sweepIntervalMs: opts.sweepIntervalMs ?? 0 });
+  const h = await createTestHarness({
+    services: { ...agentServices, ...(opts.provider === false ? {} : providerService) },
+    plugins: [createDatabasePostgresPlugin({ connectionString }), plugin],
+  });
+  harnesses.push(h);
+  const logs: Record<string, unknown>[] = [];
+  const logger = createLogger({ reqId: 'test', writer: (line) => logs.push(JSON.parse(line)) });
+  const events: SharedFoldersAccessReducedEvent[] = [];
+  h.bus.subscribe<SharedFoldersAccessReducedEvent>('shared-folders:access-reduced', 'test', async (_c, p) => {
+    events.push(p);
+    return undefined;
+  });
+  const as = (userId: string): AgentContext =>
+    makeAgentContext({ sessionId: 's', agentId: 'caller-agent', userId, logger });
+  return {
+    h,
+    plugin,
+    logs,
+    events,
+    as,
+    call: (userId, hook, input) => h.bus.call(hook, as(userId), input),
+  };
+}
+
+async function q<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
+  const c = new pg.Client({ connectionString });
+  await c.connect();
+  try {
+    return (await c.query(text, params)).rows as T[];
+  } finally {
+    await c.end().catch(() => {});
+  }
+}
+async function counts(): Promise<{ folders: number; grants: number; snapshot: string }> {
+  const f = await q('SELECT * FROM shared_folders_v1_folders ORDER BY folder_id');
+  const g = await q('SELECT * FROM shared_folders_v1_grants ORDER BY folder_id, agent_id');
+  return { folders: f.length, grants: g.length, snapshot: JSON.stringify([f, g]) };
+}
+async function grantsOf(folderId: string): Promise<Record<string, string>> {
+  const rows = await q<{ agent_id: string; role: string }>(
+    'SELECT agent_id, role FROM shared_folders_v1_grants WHERE folder_id = $1',
+    [folderId],
+  );
+  return Object.fromEntries(rows.map((r) => [r.agent_id, r.role]));
+}
+async function folderRow(folderId: string): Promise<Record<string, unknown> | undefined> {
+  return (await q('SELECT * FROM shared_folders_v1_folders WHERE folder_id = $1', [folderId]))[0];
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function create(w: World, userId: string, ownerAgentId: string): Promise<string> {
+  const { folderId } = await w.call<{ folderId: string }>(userId, 'shared-folders:create', { ownerAgentId });
+  return folderId;
+}
+function refusals(w: World): Record<string, unknown>[] {
+  return w.logs.filter((l) => l.msg === 'shared_folders_refused');
+}
+
+/** Assert a call is refused as `forbidden`, writes nothing, and is audited with `reason`. */
+async function expectRefused(w: World, userId: string, hook: string, input: unknown, reason: string): Promise<void> {
+  const before = await counts();
+  const auditedBefore = refusals(w).length;
+  const eventsBefore = w.events.length;
+  await expect(w.call(userId, hook, input)).rejects.toMatchObject({ code: 'forbidden', hookName: hook });
+  const after = await counts();
+  expect(after.snapshot).toBe(before.snapshot);
+  expect(w.events.length).toBe(eventsBefore);
+  const audited = refusals(w).slice(auditedBefore);
+  expect(audited).toHaveLength(1);
+  expect(audited[0]).toMatchObject({ level: 'warn', hook, reason });
+}
+
+beforeAll(async () => {
+  container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
+  connectionString = container.getConnectionUri();
+}, 120_000);
+afterEach(async () => {
+  while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
+  providerMode = 'ok';
+  providerCalls = [];
+  extraManagers.clear();
+  await q('DROP TABLE IF EXISTS shared_folders_v1_grants');
+  await q('DROP TABLE IF EXISTS shared_folders_v1_folders');
+});
+afterAll(async () => {
+  if (container) await stopPostgresContainer(container);
+});
+
+describe('@ax/shared-folders manifest', () => {
+  it('declares its surface; the provider delete hook is NOT declared (call-graph cycle)', () => {
+    const m = createSharedFoldersPlugin().manifest;
+    expect(m).toEqual({
+      name: '@ax/shared-folders',
+      version: '0.0.0',
+      registers: [
+        'shared-folders:create',
+        'shared-folders:grant',
+        'shared-folders:revoke',
+        'shared-folders:delete',
+        'shared-folders:list',
+        'shared-folders:authorize-mounts',
+      ],
+      calls: ['database:get-instance', 'agents:can-manage-sharing', 'agents:resolve'],
+      subscribes: ['agents:deleted'],
+    });
+  });
+});
+
+describe('create', () => {
+  it('mints an sf_ id and records the owner as the single owner grant', async () => {
+    const w = await makeWorld();
+    const folderId = await create(w, 'alice', 'a-alice-1');
+    expect(isValidSharedFolderId(folderId)).toBe(true);
+    expect(await grantsOf(folderId)).toEqual({ 'a-alice-1': 'owner' });
+    expect(await folderRow(folderId)).toMatchObject({ created_by_user: 'alice', deleted_at: null });
+    const other = await create(w, 'alice', 'a-alice-1');
+    expect(other).not.toBe(folderId);
+  });
+
+  it('a team admin may create on a team agent', async () => {
+    const w = await makeWorld();
+    const folderId = await create(w, 'tadmin', 'a-team-1');
+    expect(await grantsOf(folderId)).toEqual({ 'a-team-1': 'owner' });
+  });
+
+  it('refuses a person who does not manage the owner agent (another user, a non-admin team member, a workspace admin)', async () => {
+    const w = await makeWorld();
+    await expectRefused(w, 'bob', 'shared-folders:create', { ownerAgentId: 'a-alice-1' }, 'cannot-manage-owner-agent');
+    await expectRefused(w, 'tmember', 'shared-folders:create', { ownerAgentId: 'a-team-1' }, 'cannot-manage-owner-agent');
+    await expectRefused(w, 'wsadmin', 'shared-folders:create', { ownerAgentId: 'a-team-1' }, 'cannot-manage-owner-agent');
+    await expectRefused(w, 'alice', 'shared-folders:create', { ownerAgentId: 'a-ghost' }, 'cannot-manage-owner-agent');
+  });
+
+  it('refuses a call with no real person: empty, system, owner-less', async () => {
+    const w = await makeWorld();
+    // Give `system` real authority in the stub, so the only thing that can
+    // refuse it is the actor gate itself (not the manage check).
+    extraManagers.set('a-alice-1', 'system');
+    for (const actor of ['', 'system', ownerlessIdFor('sess-1')]) {
+      await expectRefused(w, actor, 'shared-folders:create', { ownerAgentId: 'a-alice-1' }, 'no-actor');
+    }
+  });
+
+  it('rejects unknown payload keys (the actor never comes from the payload)', async () => {
+    const w = await makeWorld();
+    await expect(
+      w.call('bob', 'shared-folders:create', { ownerAgentId: 'a-alice-1', userId: 'alice' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    expect((await counts()).folders).toBe(0);
+  });
+});
+
+describe('grant', () => {
+  it('adds a grant to a same-owner agent the actor manages; re-granting the same role is a no-op', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    expect(await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' })).toEqual({ changed: true });
+    expect(await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' })).toEqual({ changed: false });
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner', 'a-alice-2': 'editor' });
+  });
+
+  it('refuses granting to an agent the actor does not manage', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await expectRefused(w, 'alice', 'shared-folders:grant', { folderId: f, agentId: 'a-bob', role: 'viewer' }, 'cannot-manage-target');
+  });
+
+  it('refuses granting to an agent with a different owner even when the actor manages both', async () => {
+    const w = await makeWorld();
+    // tadmin manages the team folder AND their own personal agent — only the
+    // same-owner rule stops this.
+    const f = await create(w, 'tadmin', 'a-team-1');
+    await expectRefused(w, 'tadmin', 'shared-folders:grant', { folderId: f, agentId: 'a-tadmin', role: 'viewer' }, 'different-owner');
+    // …while a same-owner team agent is fine.
+    expect(await w.call('tadmin', 'shared-folders:grant', { folderId: f, agentId: 'a-team-2', role: 'viewer' })).toEqual({ changed: true });
+  });
+
+  it('refuses a person who manages the target but not the folder', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    extraManagers.set('a-alice-2', 'delegate');
+    await expectRefused(w, 'delegate', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' }, 'cannot-manage-folder');
+  });
+
+  it('a non-admin team member and a workspace admin are refused on a team folder', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'tadmin', 'a-team-1');
+    for (const actor of ['tmember', 'wsadmin']) {
+      await expectRefused(w, actor, 'shared-folders:grant', { folderId: f, agentId: 'a-team-2', role: 'viewer' }, 'cannot-manage-folder');
+    }
+  });
+
+  it('refuses role owner (no second owner) and refuses a grant that targets the owner', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await expect(
+      w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'owner' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expectRefused(w, 'alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-1', role: 'viewer' }, 'target-is-owner');
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+  });
+
+  it('the database itself allows only one owner per folder', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await expect(
+      q(`INSERT INTO shared_folders_v1_grants (folder_id, agent_id, role, granted_by_user) VALUES ($1, 'a-alice-2', 'owner', 'x')`, [f]),
+    ).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('refuses an unknown folder', async () => {
+    const w = await makeWorld();
+    await expectRefused(w, 'alice', 'shared-folders:grant', { folderId: 'sf_doesnotexist', agentId: 'a-alice-2', role: 'viewer' }, 'folder-unavailable');
+  });
+
+  it('a downgrade editor→viewer fires access-reduced; a new grant and an upgrade do not', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'viewer' });
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    expect(w.events).toEqual([]);
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'viewer' });
+    expect(w.events).toEqual([{ folderId: f, agentIds: ['a-alice-2'] }]);
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner', 'a-alice-2': 'viewer' });
+  });
+});
+
+describe('revoke', () => {
+  it('the folder manager revokes; access-reduced fires; revoking nothing fires nothing', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    expect(await w.call('alice', 'shared-folders:revoke', { folderId: f, agentId: 'a-alice-2' })).toEqual({ revoked: true });
+    expect(w.events).toEqual([{ folderId: f, agentIds: ['a-alice-2'] }]);
+    expect(await w.call('alice', 'shared-folders:revoke', { folderId: f, agentId: 'a-alice-2' })).toEqual({ revoked: false });
+    expect(w.events).toHaveLength(1);
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+  });
+
+  it("the target agent's manager can take it out of a folder they don't manage", async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'viewer' });
+    extraManagers.set('a-alice-2', 'delegate');
+    expect(await w.call('delegate', 'shared-folders:revoke', { folderId: f, agentId: 'a-alice-2' })).toEqual({ revoked: true });
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+  });
+
+  it('refuses a person who manages neither, including a non-admin team member and a workspace admin', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'tadmin', 'a-team-1');
+    await w.call('tadmin', 'shared-folders:grant', { folderId: f, agentId: 'a-team-2', role: 'editor' });
+    for (const actor of ['tmember', 'wsadmin', 'bob']) {
+      await expectRefused(w, actor, 'shared-folders:revoke', { folderId: f, agentId: 'a-team-2' }, 'cannot-manage-folder-or-target');
+    }
+  });
+
+  it('refuses revoking the owner', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await expectRefused(w, 'alice', 'shared-folders:revoke', { folderId: f, agentId: 'a-alice-1' }, 'target-is-owner');
+  });
+});
+
+describe('delete + cleanup', () => {
+  it('tombstones, fires access-reduced for every former grantee, calls the provider and removes the row', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-3', role: 'viewer' });
+    expect(await w.call('alice', 'shared-folders:delete', { folderId: f })).toEqual({ deleted: true });
+    expect(w.events).toHaveLength(1);
+    expect(w.events[0]!.folderId).toBe(f);
+    expect([...w.events[0]!.agentIds].sort()).toEqual(['a-alice-1', 'a-alice-2', 'a-alice-3']);
+    expect(providerCalls).toEqual([f]);
+    expect(await folderRow(f)).toBeUndefined();
+    expect(await grantsOf(f)).toEqual({});
+  });
+
+  it('refuses a non-manager (team member, workspace admin) and writes nothing', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'tadmin', 'a-team-1');
+    for (const actor of ['tmember', 'wsadmin']) {
+      await expectRefused(w, actor, 'shared-folders:delete', { folderId: f }, 'cannot-manage-folder');
+    }
+    expect(providerCalls).toEqual([]);
+  });
+
+  it('a failed provider delete keeps the tombstone with backoff; the sweep retries once due and removes it', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    providerMode = 'fail';
+    expect(await w.call('alice', 'shared-folders:delete', { folderId: f })).toEqual({ deleted: true });
+    const row = await folderRow(f);
+    expect(row).toMatchObject({ cleanup_attempts: 1 });
+    expect(row!.deleted_at).not.toBeNull();
+    expect((row!.next_cleanup_at as Date).getTime()).toBeGreaterThan(Date.now());
+    expect(await grantsOf(f)).toEqual({});
+    expect(w.logs.some((l) => l.msg === 'shared_folders_cleanup_failed' && l.folderId === f)).toBe(true);
+
+    // Not due yet → the sweep leaves it alone.
+    providerMode = 'ok';
+    expect(await w.plugin.sweep(new Date())).toEqual({ attempted: 0, removed: 0 });
+    expect(await folderRow(f)).toBeDefined();
+
+    // Due → retried and removed.
+    expect(await w.plugin.sweep(new Date(Date.now() + 2 * 60 * 60 * 1000))).toEqual({ attempted: 1, removed: 1 });
+    expect(await folderRow(f)).toBeUndefined();
+    expect(providerCalls).toEqual([f, f]);
+  });
+
+  it('backoff grows with each failure', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    providerMode = 'fail';
+    await w.call('alice', 'shared-folders:delete', { folderId: f });
+    const first = (await folderRow(f))!.next_cleanup_at as Date;
+    const t = new Date(first.getTime() + 1);
+    await w.plugin.sweep(t);
+    const r = (await folderRow(f))!;
+    expect(r.cleanup_attempts).toBe(2);
+    expect((r.next_cleanup_at as Date).getTime() - t.getTime()).toBeGreaterThan(first.getTime() - Date.now());
+  });
+
+  it('with no provider loaded the tombstone stays (and the sweep keeps it)', async () => {
+    const w = await makeWorld({ provider: false });
+    const f = await create(w, 'alice', 'a-alice-1');
+    expect(await w.call('alice', 'shared-folders:delete', { folderId: f })).toEqual({ deleted: true });
+    expect((await folderRow(f))!.deleted_at).not.toBeNull();
+    await w.plugin.sweep(new Date(Date.now() + 2 * 60 * 60 * 1000));
+    expect((await folderRow(f))!.deleted_at).not.toBeNull();
+    expect(w.logs.some((l) => l.msg === 'shared_folders_cleanup_failed' && l.reason === 'no-provider')).toBe(true);
+  });
+
+  it('the interval sweep runs on its own and removes a due tombstone', async () => {
+    const w = await makeWorld({ sweepIntervalMs: 50 });
+    const f = await create(w, 'alice', 'a-alice-1');
+    providerMode = 'fail';
+    await w.call('alice', 'shared-folders:delete', { folderId: f });
+    providerMode = 'ok';
+    await q(`UPDATE shared_folders_v1_folders SET next_cleanup_at = NOW() - INTERVAL '1 minute' WHERE folder_id = $1`, [f]);
+    const deadline = Date.now() + 10_000;
+    while ((await folderRow(f)) !== undefined && Date.now() < deadline) await sleep(50);
+    expect(await folderRow(f)).toBeUndefined();
+  });
+
+  it('a tombstoned folder cannot be granted, revoked, deleted again, mounted or listed', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    providerMode = 'fail';
+    await w.call('alice', 'shared-folders:delete', { folderId: f });
+    await expectRefused(w, 'alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' }, 'folder-unavailable');
+    await expectRefused(w, 'alice', 'shared-folders:revoke', { folderId: f, agentId: 'a-alice-2' }, 'folder-unavailable');
+    await expectRefused(w, 'alice', 'shared-folders:delete', { folderId: f }, 'folder-unavailable');
+    // Even a grant row that somehow survived must not authorize a mount.
+    await q(`INSERT INTO shared_folders_v1_grants (folder_id, agent_id, role, granted_by_user) VALUES ($1, 'a-alice-2', 'editor', 'x')`, [f]);
+    expect(await w.call('system', 'shared-folders:authorize-mounts', { agentId: 'a-alice-2', folderIds: [f] })).toEqual({ folders: [] });
+    expect(await w.call('alice', 'shared-folders:list', { agentId: 'a-alice-2' })).toEqual({ folders: [] });
+  });
+});
+
+describe('authorize-mounts', () => {
+  it('returns only live grants on the requested folders; viewer → readOnly; drops invalid ids', async () => {
+    const w = await makeWorld();
+    const fEdit = await create(w, 'alice', 'a-alice-1');
+    const fView = await create(w, 'alice', 'a-alice-1');
+    const fNone = await create(w, 'alice', 'a-alice-1');
+    const fNotRequested = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: fEdit, agentId: 'a-alice-2', role: 'editor' });
+    await w.call('alice', 'shared-folders:grant', { folderId: fView, agentId: 'a-alice-2', role: 'viewer' });
+    await w.call('alice', 'shared-folders:grant', { folderId: fNotRequested, agentId: 'a-alice-2', role: 'editor' });
+    const out = await w.call<{ folders: { folderId: string; readOnly: boolean }[] }>(
+      // No person on purpose: authorize-mounts is host-internal and person-less.
+      'system',
+      'shared-folders:authorize-mounts',
+      { agentId: 'a-alice-2', folderIds: [fEdit, fView, fNone, '../etc', 'sf_unknown', `${fEdit}/..`] },
+    );
+    const byId = Object.fromEntries(out.folders.map((x) => [x.folderId, x.readOnly]));
+    expect(byId).toEqual({ [fEdit]: false, [fView]: true });
+    // The owner holds an owner grant → writable.
+    expect(
+      await w.call('system', 'shared-folders:authorize-mounts', { agentId: 'a-alice-1', folderIds: [fNone] }),
+    ).toEqual({ folders: [{ folderId: fNone, readOnly: false }] });
+  });
+});
+
+describe('list', () => {
+  it('lists an agent’s live folders with its role; requires use access, not manage access', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'tadmin', 'a-team-1');
+    await w.call('tadmin', 'shared-folders:grant', { folderId: f, agentId: 'a-team-2', role: 'viewer' });
+    // A plain team member can USE the team agent → may list.
+    const out = await w.call<{ folders: { folderId: string; role: string }[] }>('tmember', 'shared-folders:list', { agentId: 'a-team-2' });
+    expect(out.folders.map((x) => [x.folderId, x.role])).toEqual([[f, 'viewer']]);
+    await expectRefused(w, 'bob', 'shared-folders:list', { agentId: 'a-team-2' }, 'cannot-use-agent');
+    await expectRefused(w, 'system', 'shared-folders:list', { agentId: 'a-team-2' }, 'no-actor');
+  });
+});
+
+describe('agents:deleted', () => {
+  async function fireDeleted(w: World, agentId: string): Promise<void> {
+    const a = AGENTS[agentId]!;
+    await w.h.bus.fire('agents:deleted', w.h.ctx(), { agentId, ownerId: a.ownerId, ownerType: a.ownerType });
+  }
+  async function rowsMentioning(agentId: string): Promise<number> {
+    return (await q('SELECT 1 FROM shared_folders_v1_grants WHERE agent_id = $1', [agentId])).length;
+  }
+
+  it('ownership passes to the OLDEST editor — never to an older viewer', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    // Order matters: the viewer is the oldest grant overall, and the oldest
+    // editor sorts AFTER the newer one by id, so neither a "oldest grant" nor
+    // an "id order" implementation passes.
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-4', role: 'viewer' });
+    await sleep(5);
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-3', role: 'editor' });
+    await sleep(5);
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    await fireDeleted(w, 'a-alice-1');
+    expect(await grantsOf(f)).toEqual({ 'a-alice-3': 'owner', 'a-alice-2': 'editor', 'a-alice-4': 'viewer' });
+    expect(await rowsMentioning('a-alice-1')).toBe(0);
+    expect(w.events).toEqual([{ folderId: f, agentIds: ['a-alice-1'] }]);
+    expect((await folderRow(f))!.deleted_at).toBeNull();
+    expect(providerCalls).toEqual([]);
+  });
+
+  it('with no editor the folder is deleted: viewers lose access, the provider is called, the row goes', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'viewer' });
+    await fireDeleted(w, 'a-alice-1');
+    expect(await grantsOf(f)).toEqual({});
+    expect(w.events).toHaveLength(1);
+    expect([...w.events[0]!.agentIds].sort()).toEqual(['a-alice-1', 'a-alice-2']);
+    // Cleanup is not awaited by the subscriber; wait for it.
+    const deadline = Date.now() + 10_000;
+    while ((await folderRow(f)) !== undefined && Date.now() < deadline) await sleep(25);
+    expect(await folderRow(f)).toBeUndefined();
+    expect(providerCalls).toEqual([f]);
+    expect(await rowsMentioning('a-alice-1')).toBe(0);
+  });
+
+  it('a deleted grantee just loses its grant, and access-reduced fires', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    await fireDeleted(w, 'a-alice-2');
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+    expect(w.events).toEqual([{ folderId: f, agentIds: ['a-alice-2'] }]);
+  });
+
+  it('a malformed payload is logged and swallowed', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    await w.h.bus.fire('agents:deleted', w.h.ctx(), { agentId: '' });
+    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+  });
+});
