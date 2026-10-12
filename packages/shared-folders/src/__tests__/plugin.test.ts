@@ -566,6 +566,61 @@ describe('agents:deleted', () => {
     expect(w.events).toEqual([{ folderId: f, agentIds: ['a-alice-2'] }]);
   });
 
+  it('a heir whose grant is revoked mid-deletion is skipped: the next editor inherits, never a live ownerless folder', async () => {
+    const w = await makeWorld();
+    const f = await create(w, 'alice', 'a-alice-1');
+    // B (a-alice-2) is the oldest editor, so it is the heir the deletion
+    // picks first; C (a-alice-3) is the one that must end up owning.
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-2', role: 'editor' });
+    await sleep(5);
+    await w.call('alice', 'shared-folders:grant', { folderId: f, agentId: 'a-alice-3', role: 'editor' });
+
+    // A concurrent revoke of B, held open in a raw transaction: it takes the
+    // folder row lock FIRST (exactly like `revokeGrant`), then deletes B's
+    // grant, and stays uncommitted while the agent deletion runs.
+    //
+    // Why this fails on the old code: `deleteAllForAgent` never locked the
+    // folder row on the transfer branch. Its plain SELECT of the heir does not
+    // block and cannot see the uncommitted delete, so it picks B; the UPDATE
+    // that promotes B then blocks on B's row lock and, once the raw
+    // transaction commits, re-checks the row, finds it gone and matches ZERO
+    // rows — yet the old code recorded the transfer anyway. Result: a LIVE
+    // folder with no owner grant. With the fix, the deletion queues on the
+    // folder row lock up front, so it only ever picks a heir that exists.
+    const raw = new pg.Client({ connectionString });
+    await raw.connect();
+    let deletion: Promise<void> | undefined;
+    try {
+      await raw.query('BEGIN');
+      await raw.query('SELECT 1 FROM shared_folders_v1_folders WHERE folder_id = $1 FOR UPDATE', [f]);
+      await raw.query('DELETE FROM shared_folders_v1_grants WHERE folder_id = $1 AND agent_id = $2', [f, 'a-alice-2']);
+      deletion = fireDeleted(w, 'a-alice-1');
+      // Not awaited: it must be mid-flight (blocked on a lock) when the raw
+      // transaction commits. Give it time to reach that point.
+      await sleep(300);
+      await raw.query('COMMIT');
+    } catch (err) {
+      await raw.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      await raw.end().catch(() => {});
+    }
+    await deletion;
+
+    // The invariant: the folder is tombstoned or has exactly one owner grant…
+    expect((await folderRow(f))!.deleted_at).toBeNull();
+    expect(await grantsOf(f)).toEqual({ 'a-alice-3': 'owner' });
+    // …and, database-wide, there is never a live folder without an owner.
+    const ownerless = await q(
+      `SELECT f.folder_id FROM shared_folders_v1_folders f
+         LEFT JOIN shared_folders_v1_grants g ON g.folder_id = f.folder_id AND g.role = 'owner'
+        WHERE f.deleted_at IS NULL AND g.agent_id IS NULL`,
+    );
+    expect(ownerless).toEqual([]);
+    expect(await rowsMentioning('a-alice-1')).toBe(0);
+    expect(providerCalls).toEqual([]);
+  });
+
   it('a malformed payload is logged and swallowed', async () => {
     const w = await makeWorld();
     const f = await create(w, 'alice', 'a-alice-1');

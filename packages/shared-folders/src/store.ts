@@ -14,6 +14,9 @@ const PLUGIN_NAME = '@ax/shared-folders';
 const BACKOFF_BASE_MS = 30_000;
 const BACKOFF_MAX_MS = 60 * 60 * 1000;
 
+/** Bound on heir re-selection in `promoteOldestEditor` (defensive; the folder lock makes 1 the norm). */
+const MAX_HEIR_ATTEMPTS = 5;
+
 export function cleanupBackoffMs(attempts: number): number {
   // Clamp the exponent so 2^n never overflows into Infinity on a folder that
   // has failed for months.
@@ -102,6 +105,42 @@ async function lockLiveFolder(trx: Db, folderId: string): Promise<boolean> {
     .forUpdate()
     .executeTakeFirst();
   return row !== undefined;
+}
+
+/**
+ * Promote the folder's oldest EDITOR to owner and return its agent id, or null
+ * when no editor remains. The promotion is only reported once the UPDATE
+ * actually matched the heir's row; if it matched nothing (the candidate's grant
+ * vanished between the SELECT and the UPDATE) the next candidate is chosen
+ * instead. Callers hold the folder row lock, so this is a defensive bound, not
+ * an expected path.
+ */
+async function promoteOldestEditor(trx: Db, folderId: string): Promise<string | null> {
+  for (let attempt = 0; attempt < MAX_HEIR_ATTEMPTS; attempt++) {
+    const heir = await trx
+      .selectFrom('shared_folders_v1_grants')
+      .select('agent_id')
+      .where('folder_id', '=', folderId)
+      .where('role', '=', 'editor')
+      .orderBy('created_at', 'asc')
+      .orderBy('agent_id', 'asc')
+      .limit(1)
+      .executeTakeFirst();
+    if (heir === undefined) return null;
+    const res = await trx
+      .updateTable('shared_folders_v1_grants')
+      .set({ role: 'owner' })
+      .where('folder_id', '=', folderId)
+      .where('agent_id', '=', heir.agent_id)
+      .where('role', '=', 'editor')
+      .executeTakeFirst();
+    if (res.numUpdatedRows === 1n) return heir.agent_id;
+  }
+  throw new PluginError({
+    code: 'unknown',
+    plugin: PLUGIN_NAME,
+    message: `could not promote an heir for folder ${folderId}: candidate grants kept disappearing`,
+  });
 }
 
 export function createSharedFoldersStore(db: Kysely<SharedFoldersDatabase>): SharedFoldersStore {
@@ -308,6 +347,25 @@ export function createSharedFoldersStore(db: Kysely<SharedFoldersDatabase>): Sha
       }
       return db.transaction().execute(async (trx): Promise<AgentDeletedResult> => {
         const now = new Date();
+        // Lock every folder row the agent holds a grant on BEFORE touching any
+        // grant, in a consistent (folder_id) order. This is the same
+        // folder-then-grant lock order grant / revoke / delete use, so
+        // concurrent changes to these folders serialize against this
+        // transaction instead of racing it — and two overlapping agent
+        // deletions cannot deadlock, because both walk the folders in the same
+        // order. Without it, an heir picked by a plain SELECT could lose its
+        // grant to a concurrent revoke before the promotion lands, leaving a
+        // live folder with no owner.
+        await trx
+          .selectFrom('shared_folders_v1_folders')
+          .select('folder_id')
+          .where('folder_id', 'in', (eb) =>
+            eb.selectFrom('shared_folders_v1_grants').select('folder_id').where('agent_id', '=', agentId),
+          )
+          .orderBy('folder_id', 'asc')
+          .forUpdate()
+          .execute();
+
         const removed = await trx
           .deleteFrom('shared_folders_v1_grants')
           .where('agent_id', '=', agentId)
@@ -323,23 +381,9 @@ export function createSharedFoldersStore(db: Kysely<SharedFoldersDatabase>): Sha
           if (grant.role === 'owner') {
             // Oldest EDITOR inherits. Viewers are never candidates: promoting
             // one would widen its access (§3.7).
-            const heir = await trx
-              .selectFrom('shared_folders_v1_grants')
-              .select('agent_id')
-              .where('folder_id', '=', grant.folder_id)
-              .where('role', '=', 'editor')
-              .orderBy('created_at', 'asc')
-              .orderBy('agent_id', 'asc')
-              .limit(1)
-              .executeTakeFirst();
-            if (heir !== undefined) {
-              await trx
-                .updateTable('shared_folders_v1_grants')
-                .set({ role: 'owner' })
-                .where('folder_id', '=', grant.folder_id)
-                .where('agent_id', '=', heir.agent_id)
-                .execute();
-              transferred.push({ folderId: grant.folder_id, newOwnerAgentId: heir.agent_id });
+            const heirAgentId = await promoteOldestEditor(trx, grant.folder_id);
+            if (heirAgentId !== null) {
+              transferred.push({ folderId: grant.folder_id, newOwnerAgentId: heirAgentId });
             } else {
               const isLive = await lockLiveFolder(trx, grant.folder_id);
               if (isLive) {
