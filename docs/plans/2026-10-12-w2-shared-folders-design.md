@@ -288,9 +288,74 @@ anything that isn't an absolute path.
 - **Subprocess (dev only).** `mkdir -p` the `hostPath`. Read-only isn't
   enforced; that's an existing limit of this provider, which isn't a security
   boundary.
-- **Shared pool (disabled).** Until its node helper can bind shared folders, a
-  pool session asked to mount one **fails to open with a clear error**. Enabling
-  shared folders in pool mode is a follow-up on the pool's acceptance checklist.
+- **Shared pool.** Almost every agent will mount a project folder, and the
+  pool is on in production, so pooled sessions bind shared folders too (§3.8.1).
+
+#### 3.8.1 Shared folders on the shared warm pool
+
+A pooled pod is started before anyone claims it, so its volumes are fixed. The
+pool already late-binds `/files` and `/memory` through the trusted node helper
+(`packages/sandbox-k8s/src/storage-node/`): the helper bind-mounts each source
+under the pod's memory-backed `ax-late` emptyDir, and the bind reaches the gVisor
+pod through `Bidirectional` (helper) → host → `HostToContainer` plus the
+force-shared annotation (runner). Shared folders use the same path. Nothing
+about the standby pod spec changes.
+
+1. **Host, mount check** (`shared-pool.ts`). A `shared-folder` mount is
+   accepted when its export is the pool's user-files export, its `subPath` is
+   `.shared/<folderId>` and its `mountPath` is `/shared/<folderId>`, with a
+   valid id. Anything else still throws. The host collects
+   `[{ folderId, readOnly }]`, sorted by id.
+2. **Host, the claim carries the list.** The SandboxClaim gets the annotation
+   `ax.io/shared-folders` with that list as canonical JSON, next to the
+   existing `ax.io/agent-id` label. The host is already the authority for the
+   agent's identity; the list comes from the resolver's
+   `shared-folders:authorize-mounts` answer for that agent.
+3. **Host, the assignment carries the list.** `storage.assign` gains an
+   optional `sharedFolders: [{ folderId, readOnly }]` (at most 16). It's
+   omitted when empty, so a session without shared folders sends what it sends
+   today.
+4. **Helper, authorization.** Besides today's checks, the request's
+   `sharedFolders` must equal the claim's annotation exactly (both empty when
+   the annotation is absent). A mismatch is refused like an agent-id mismatch.
+5. **Helper, the source path comes from the id, never from the request.** For
+   each folder the helper opens `.shared/<folderId>` under the user-files
+   backing export, pinning each component with `O_NOFOLLOW` (the existing
+   confined-directory code), creating `.shared` and the folder if missing.
+   A writable folder is chowned to the runner uid, as `/files` is; a viewer's
+   isn't.
+6. **Helper, the bind.** Target `ax-late/shared/<folderId>`. Viewers get the
+   same second `remount,bind,ro` that `/memory` gets. All binds happen before
+   the bootstrap file is published, so the runner never starts without them.
+7. **Helper, ledger and release.** The ledger record and the recovery
+   annotation carry the folder list (both stay under their 8 KiB caps at 16
+   folders). Release and recovery unmount every shared target and verify it in
+   `mountinfo`, the same way as `/files` and `/memory`.
+8. **Runner bootstrap.** `AX_SHARED_FOLDERS` joins the bootstrap control names.
+   Its value must be a JSON list of at most 16 `{ id, path, readOnly }` with
+   `path` exactly `/shared/<id>`; anything else rejects the assignment.
+9. **Image.** `/ax/late/shared` exists and `/shared` is a symlink to it, next
+   to the existing `/files` and `/memory` links.
+10. **Open-session.** The `shared-folders-unsupported-in-pool` refusal goes.
+    The pool's existing cold-pod fallback (service sidecars, a binary with no
+    pool class) is unchanged.
+
+**What stays the same.** The helper still has no database and checks no
+grants: the host decides which folders an agent may mount, exactly as it
+decides which agent a claim is for, and the helper refuses anything the claim
+doesn't name. `backingProfile` is unchanged because the export is the same.
+
+**Before the squash: a GKE acceptance run.** `/files` and `/memory` bind one
+level below the `ax-late` root; shared folders bind two levels below
+(`ax-late/shared/<id>`). Propagation into gVisor at that depth is covered by
+unit tests with simulated mounts only, so `deploy/SHARED-POOL-ACCEPTANCE.md`
+gets an item, and the squash waits for it: on GKE, a pooled editor session
+writes a file another agent's pooled session reads, and a pooled viewer's write
+fails.
+
+**Rollout order.** The helper DaemonSet uses `OnDelete`, and an old helper
+rejects an assignment with an unknown field. The image (runner and helper)
+rolls first, then the helper pods, then the host.
 
 ### 3.9 Not in W2
 
@@ -555,11 +620,10 @@ the text above:
    authority refusals. A payload that fails the strict schema
    (`invalid-payload`, e.g. `role: 'owner'` on grant) is rejected before any
    authority check and writes no audit line.
-10. **The pool refuses shared folders, and the pool is on in production.** §3.8's
-    "disabled" was wrong when written. A pooled session with a shared-folder
-    mount fails with `shared-folders-unsupported-in-pool`. Once W3a sets
-    `sharedFolderIds`, that is most project chats, so pool support is now part
-    of this stack (§3.8, revised separately).
+10. **The pool was refusing shared folders, and the pool is on in production.**
+    §3.8's "disabled" was wrong when written. Once W3a sets `sharedFolderIds`,
+    a refusal would hit most project chats, so pool support is now part of this
+    stack (§3.8.1).
 
 **Details the text above leaves out** (all deliberate, all tested):
 
