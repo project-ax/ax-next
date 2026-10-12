@@ -61,6 +61,16 @@ export type {
   BlobHolding,
   BlobRef,
 } from './blob-collect-refs.js';
+export {
+  SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
+  SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
+  SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SystemPromptAugmentOutputSchema,
+} from './system-prompt-augment.js';
+export type {
+  SystemPromptAugmentInput,
+  SystemPromptAugmentOutput,
+} from './system-prompt-augment.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
   Bytes,
