@@ -658,12 +658,12 @@ export const AgentConfigSchema = z.object({
   /** The agent's display name — the runner's fallback identity, used only when
    * the agent has no `.ax/IDENTITY.md` of its own (TASK-142). */
   displayName: z.string(),
-  /** The host `system-prompt:augment` contribution (e.g. @ax/memory's
+  /** The joined host `system-prompt:augment:*` contributions (e.g. @ax/memory's
    * memory block), prepended on top of the composed system prompt in normal mode.
-   * Empty string when no augment provider is registered. */
+   * Empty string when no augment provider contributes (or a required one failed). */
   systemPromptAugment: z.string(),
-  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
-   * only the person's own Rules) that the runner prepends in bootstrap mode.
+  /** The `rules` section of the host `system-prompt:augment:*` contributions
+   * (the person's own Rules) that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Flows into the LLM prompt like
    * `systemPromptAugment`; the runner must NOT interpolate it into shell

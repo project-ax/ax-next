@@ -401,9 +401,9 @@ describe('the rules file is outside every automatic writer', () => {
     await writeRules(h, 'Never guess.');
     const block = await h.bus.call<
       Record<string, never>,
-      { contributions: Array<{ source: string; body: string }> }
-    >('system-prompt:augment', h.ctx(), {});
-    const text = block.contributions.map((c) => c.body).join('\n\n');
+      { rules?: string; recall?: string }
+    >('system-prompt:augment:required:memory', h.ctx(), {});
+    const text = [block.rules, block.recall].filter(Boolean).join('\n\n');
     expect(text).toContain('## Rules From Your User');
     expect(text).toContain('Never guess.');
   });

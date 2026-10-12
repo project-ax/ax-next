@@ -27,12 +27,12 @@ export interface AgentConfig {
    * agent has no `.ax/IDENTITY.md` of its own (TASK-142). Intended destination
    * is the LLM prompt. */
   displayName: string;
-  /** The host `system-prompt:augment` contribution (e.g. @ax/memory's
+  /** The joined host `system-prompt:augment:*` contributions (e.g. @ax/memory's
    * memory block), prepended on top of the composed system prompt. Empty when no
-   * augment provider is registered. Intended destination is the LLM prompt. */
+   * augment provider contributes. Intended destination is the LLM prompt. */
   systemPromptAugment: string;
-  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
-   * only the person's own Rules) that the runner prepends in bootstrap mode.
+  /** The `rules` section of the host `system-prompt:augment:*` contributions
+   * (the person's own Rules) that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Intended destination is the
    * LLM prompt, same untrusted-string handling as `systemPromptAugment`. */

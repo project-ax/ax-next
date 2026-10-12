@@ -120,14 +120,14 @@ export function createChatOrchestratorPlugin(
       // orchestrator without a conversation context, so they don't need
       // the peers loaded.
       //
-      // Phase 2B adds `system-prompt:augment` to this same category. The
-      // hook is registered by @ax/memory (its always-injected memory block)
-      // and any future personalization / tenant-policy provider. Listing it
-      // in `calls` would force every preset wiring the orchestrator to also
-      // wire a provider — but the CLI canary, the single-tenant preset,
-      // and any deploy that doesn't load @ax/memory MUST stay functional
-      // without one. The orchestrator gates with `bus.hasService(...)` and
-      // no-ops when absent.
+      // The system-prompt contribution family (W1) —
+      // `system-prompt:augment:required:<name>` / `…:optional:<name>` — is
+      // discovered at spawn time with `bus.listServices()`, the same way
+      // `credentials:login:*` is, so it stays out of `calls` AND
+      // `optionalCalls`: its names are only known at runtime, and boot must
+      // not require them. @ax/memory registers the required one; the CLI
+      // canary, the single-tenant preset and any deploy without memory stay
+      // functional with none registered (no augment).
       //
       // We gate each call with `bus.hasService(...)` at runtime to keep
       // the orchestrator usable in those non-channel-web presets. Failing

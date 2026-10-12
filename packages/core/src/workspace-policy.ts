@@ -81,7 +81,7 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
 // THE HOLE THIS CLOSES. `memory/system/rules.md` is the human-owned memory
 // tier — @ax/memory's Rules (`rules.ts`, read through `memory:rules:read`,
 // written by `memory:rules:write`). It materializes into the runner's sandbox
-// at `/agent/memory/system/rules.md`, and @ax/memory's `system-prompt:augment`
+// at `/agent/memory/system/rules.md`, and @ax/memory's `system-prompt:augment:required:memory`
 // (`augment.ts`) puts it FIRST in the injected memory block, never dropped by
 // the budget, under "## Rules From Your User". So a sentence that lands in that
 // file is a standing top-of-prompt instruction for every future turn. (The tier

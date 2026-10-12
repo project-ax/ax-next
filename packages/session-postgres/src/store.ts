@@ -24,11 +24,11 @@ export interface AgentConfig {
   /** The agent's display name — the runner's fallback identity when the agent
    * has no `.ax/IDENTITY.md` (TASK-142). */
   displayName: string;
-  /** The host `system-prompt:augment` contribution, prepended on top of the
-   * composed prompt. Empty when no augment provider is registered. */
+  /** The joined host `system-prompt:augment:*` contributions, prepended on top of the
+   * composed prompt. Empty when no augment provider contributes. */
   systemPromptAugment: string;
-  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
-   * only the person's own Rules) that the runner prepends in bootstrap mode.
+  /** The `rules` section of the host `system-prompt:augment:*` contributions
+   * (the person's own Rules) that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Same untrusted-string handling
    * as `systemPromptAugment` — flows into the LLM prompt only. */

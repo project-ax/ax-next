@@ -34,8 +34,8 @@ const ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 export const AgentConfigSchema = z.object({
   displayName: z.string(),
   systemPromptAugment: z.string(),
-  /** Bootstrap-safe subset of `system-prompt:augment` contributions (currently
-   * only the person's own Rules) that the runner prepends in bootstrap mode.
+  /** The `rules` section of the host `system-prompt:augment:*` contributions
+   * (the person's own Rules) that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Flows into the LLM prompt like
    * `systemPromptAugment`; never interpolate into shell/paths/HTML. */

@@ -288,7 +288,7 @@ function requireString(
 
 /** Like requireString but allows the empty string — for fields that are
  * legitimately empty (e.g. `systemPromptAugment`, '' when no
- * `system-prompt:augment` provider is registered). */
+ * `system-prompt:augment:*` provider contributes). */
 function requireStringAllowEmpty(
   value: unknown,
   field: string,

@@ -1217,7 +1217,7 @@ describe('chat-orchestrator', () => {
       // provider is registered in this test).
       displayName: 'Test',
       systemPromptAugment: '',
-      // TASK-524: and an EMPTY bootstrap-safe slice of it.
+      // TASK-524: and an EMPTY bootstrap (rules-only) slice of it.
       systemPromptBootstrapAugment: '',
       // TASK-51/76: this agent is non-wildcard (explicit tools + mcpConfigIds),
       // so the always-on broker tools (incl. skill_propose, TASK-76) are locked
@@ -7741,8 +7741,8 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   // measured the Rule never reaching that conversation. The Rules provider
   // fires `system-prompt:augment-changed { agentId }` from a HOST ctx (the
   // Memory tab's save route, not the session), and the next turn of every
-  // live session of that agent must re-spawn so `system-prompt:augment` runs
-  // again.
+  // live session of that agent must re-spawn so the required memory provider
+  // (`system-prompt:augment:required:memory`) runs again.
   // -------------------------------------------------------------------------
   async function fireAugmentChanged(bus: HookBus, payload: unknown) {
     await bus.fire(
@@ -7772,14 +7772,14 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     const service: ServiceHandler = async () => {
       calls.n += 1;
       await onCall();
-      return { contributions: [{ source: 'test', body: `rules v${calls.n}`, bootstrapSafe: true }] };
+      return { rules: `rules v${calls.n}` };
     };
     return { calls, service };
   }
 
   it('re-spawns at the next turn after the agent\'s Rules change, then stays warm (TASK-612)', async () => {
     const augment = countingAugment();
-    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment:required:memory': augment.service });
 
     await turn(h, 'req-1');
     expect(counters.opens).toBe(1);
@@ -7800,7 +7800,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
   it('a Rules change for a DIFFERENT agent leaves this session warm', async () => {
     const augment = countingAugment();
-    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment:required:memory': augment.service });
 
     await turn(h, 'req-1');
     await fireAugmentChanged(h.bus, { agentId: 'someone-elses-agent' });
@@ -7812,7 +7812,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
   it('ignores a malformed change event rather than re-spawning on it', async () => {
     const augment = countingAugment();
-    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment:required:memory': augment.service });
 
     await turn(h, 'req-1');
     await fireAugmentChanged(h.bus, {});
@@ -7838,7 +7838,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         await fireAugmentChanged(bus.current, { agentId: 'test-agent' });
       }
     });
-    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment': augment.service });
+    const { h, counters } = await makeKeepaliveHarness({ 'system-prompt:augment:required:memory': augment.service });
     bus.current = h.bus;
 
     await turn(h, 'req-1');

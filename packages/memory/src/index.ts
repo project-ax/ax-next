@@ -77,8 +77,6 @@ export type {
 } from './rules.js';
 export type {
   MemoryBlockConfig,
-  SystemPromptAugmentInput,
-  SystemPromptAugmentOutput,
   BlockPart,
   AssembledBlock,
 } from './augment.js';

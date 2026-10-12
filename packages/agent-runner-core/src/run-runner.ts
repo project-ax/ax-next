@@ -1534,9 +1534,9 @@ async function runRunnerInner(
   // bootstrap mode (BOOTSTRAP.md verbatim) or normal mode (safety floor + the
   // agent's IDENTITY/SOUL/AGENTS files + evolution guidance + operational
   // notes; a file-less agent falls back to its displayName identity line).
-  // `agentConfig.systemPromptAugment` carries the host `system-prompt:augment`
-  // contribution, prepended on top in normal mode (and its bootstrap-safe
-  // slice, `systemPromptBootstrapAugment`, is prepended in bootstrap mode); `agentConfig.displayName` is
+  // `agentConfig.systemPromptAugment` carries the host `system-prompt:augment:*`
+  // contributions, prepended on top in normal mode (and their `rules`
+  // section, `systemPromptBootstrapAugment`, is prepended in bootstrap mode); `agentConfig.displayName` is
   // the host-controlled fallback identity used when no IDENTITY.md exists. Both
   // are intended for the LLM and never interpolated into shell, paths, or HTML.
   // The `.ax/` files are agent-authored (untrusted): the hardcoded safety floor
