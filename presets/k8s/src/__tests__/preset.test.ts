@@ -264,6 +264,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
+        '@ax/shared-folders',
         '@ax/skill-broker',
         '@ax/skills',
         '@ax/storage-postgres',
@@ -680,6 +681,24 @@ describe('@ax/preset-k8s wiring', () => {
       'host-grants:list-for-user',
       'host-grants:revoke',
     ]);
+  });
+
+  it('loads @ax/shared-folders and registers the shared-folders:* hooks (W2)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const sf = plugins.find((p) => p.manifest.name === '@ax/shared-folders');
+    expect(sf).toBeDefined();
+    expect(sf!.manifest.registers).toEqual([
+      'shared-folders:create',
+      'shared-folders:grant',
+      'shared-folders:revoke',
+      'shared-folders:delete',
+      'shared-folders:list',
+      'shared-folders:authorize-mounts',
+    ]);
+    // The agent-deleted fan-out is what removes an agent's grants; if the
+    // subscription is dropped the whole-schema cleanup check goes red, but
+    // pin it here so the preset test names the cause.
+    expect(sf!.manifest.subscribes).toContain('agents:deleted');
   });
 
   // -------------------------------------------------------------------------

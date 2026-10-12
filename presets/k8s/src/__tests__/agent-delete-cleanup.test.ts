@@ -18,6 +18,7 @@ import { createAgentsPlugin } from '@ax/agents';
 import { createConversationsPlugin } from '@ax/conversations';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
+import { createSharedFoldersPlugin } from '@ax/shared-folders';
 import type { AgentInput, CreateOutput as AgentCreateOutput } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,14 @@ import type { AgentInput, CreateOutput as AgentCreateOutput } from '@ax/agents';
 // row that belongs to the deleted agent, so a table nobody thought to list is
 // caught too. A second agent (same user) is seeded alongside, and its rows must
 // all survive: a delete that removed too much would otherwise pass.
+//
+// W2 adds @ax/shared-folders: its grants table is keyed on agent_id with no FK
+// (cross-plugin FKs are banned), so the whole-schema walk below is what proves
+// the `agents:deleted` subscriber really removes the doomed agent's grants. Its
+// folders table deliberately has NO agent column, so a tombstoned folder's row
+// (which stays until a sandbox provider removes the bytes — none is loaded
+// here) carries no agent id; that is asserted explicitly, since the walk cannot
+// see it.
 //
 // What this does not do: run the k8s reclaim pod (needs a cluster; the script is
 // covered by sandbox-k8s' shell tests) or load the plugins whose own tests cover
@@ -83,6 +92,48 @@ interface Seeded {
   agentId: string;
   conversationIds: string[];
   sessionIds: string[];
+}
+
+/** The four shared folders `seedSharedFolders` creates, by what must happen to them. */
+interface SeededFolders {
+  /** Owned by the doomed agent, no editor: tombstoned when it is deleted. */
+  tombstoned: string;
+  /** Owned by the doomed agent, the control agent is an editor: ownership moves to the control. */
+  transferred: string;
+  /** Owned by the control agent, the doomed agent is a viewer: only the viewer grant goes. */
+  controlOwned: string;
+  /** Owned by the control agent alone: untouched. */
+  controlOnly: string;
+}
+
+/**
+ * Seed shared folders through the real hooks. `USER` owns both agents, so the
+ * `agents:can-manage-sharing` / same-owner checks the plugin makes pass for
+ * real — no raw SQL, so the rows are exactly what the product writes.
+ */
+async function seedSharedFolders(
+  h: TestHarness,
+  doomed: Seeded,
+  control: Seeded,
+): Promise<SeededFolders> {
+  const ctx = h.ctx({ userId: USER });
+  const create = async (ownerAgentId: string): Promise<string> =>
+    (
+      await h.bus.call<unknown, { folderId: string }>('shared-folders:create', ctx, {
+        ownerAgentId,
+      })
+    ).folderId;
+  const grant = async (folderId: string, agentId: string, role: 'editor' | 'viewer'): Promise<void> => {
+    await h.bus.call('shared-folders:grant', ctx, { folderId, agentId, role });
+  };
+
+  const tombstoned = await create(doomed.agentId);
+  const transferred = await create(doomed.agentId);
+  await grant(transferred, control.agentId, 'editor');
+  const controlOwned = await create(control.agentId);
+  await grant(controlOwned, doomed.agentId, 'viewer');
+  const controlOnly = await create(control.agentId);
+  return { tombstoned, transferred, controlOwned, controlOnly };
 }
 
 /** Everything one agent owns across the seven tables the walk found rows in. */
@@ -212,12 +263,16 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
         createConversationsPlugin(),
         createAttachmentsPlugin({ janitorIntervalSeconds: 3600 }),
         createSessionPostgresPlugin({ connectionString }),
+        // No timer: the sweep must not retry a tombstone mid-assertion. No
+        // sandbox provider is loaded either, so the tombstone row stays.
+        createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
       ],
     });
     const h = harness;
 
     const doomed = await seedAgent(h, 'Doomed');
     const control = await seedAgent(h, 'Control');
+    const folders = await seedSharedFolders(h, doomed, control);
 
     const client = new pg.Client({ connectionString });
     await client.connect();
@@ -244,6 +299,8 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
         'session_postgres_v1_sessions.session_id',
         'session_postgres_v1_inbox.session_id',
         'session_postgres_v2_session_agent.session_id',
+        // W2: the doomed agent owns two folders and views a third.
+        'shared_folders_v1_grants.agent_id',
       ];
       const before = await rowsMentioning(client, doomedIds);
       const controlBefore = await rowsMentioning(client, controlIds);
@@ -264,6 +321,32 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
       // The other agent lost nothing, table for table.
       const controlAfter = await rowsMentioning(client, controlIds);
       expect(controlAfter).toEqual(controlBefore);
+
+      // Shared folders, folder by folder. The walk above counts rows; this
+      // pins WHICH rows, including the one table it cannot see.
+      const folderRows = await client.query<{ folder_id: string; deleted: boolean }>(
+        'SELECT folder_id, deleted_at IS NOT NULL AS deleted FROM shared_folders_v1_folders ORDER BY folder_id',
+      );
+      const deletedByFolder = new Map(folderRows.rows.map((r) => [r.folder_id, r.deleted]));
+      // The unowned folder is tombstoned (no sandbox provider here, so the row
+      // stays), and nothing of it — no grant, no agent id — is left behind.
+      expect(deletedByFolder.get(folders.tombstoned)).toBe(true);
+      for (const live of [folders.transferred, folders.controlOwned, folders.controlOnly]) {
+        expect(deletedByFolder.get(live), `folder ${live} must stay live`).toBe(false);
+      }
+      const grantRows = await client.query<{ folder_id: string; agent_id: string; role: string }>(
+        'SELECT folder_id, agent_id, role FROM shared_folders_v1_grants ORDER BY folder_id, agent_id',
+      );
+      const grantsOf = (folderId: string): string[] =>
+        grantRows.rows
+          .filter((g) => g.folder_id === folderId)
+          .map((g) => `${g.agent_id}:${g.role}`);
+      expect(grantsOf(folders.tombstoned)).toEqual([]);
+      // The editor inherits; the doomed agent is gone from the folder.
+      expect(grantsOf(folders.transferred)).toEqual([`${control.agentId}:owner`]);
+      // The doomed agent's viewer grant went; the control's ownership did not.
+      expect(grantsOf(folders.controlOwned)).toEqual([`${control.agentId}:owner`]);
+      expect(grantsOf(folders.controlOnly)).toEqual([`${control.agentId}:owner`]);
     } finally {
       await client.end().catch(() => {});
     }

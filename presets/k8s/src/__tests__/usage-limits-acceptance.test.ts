@@ -107,6 +107,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/skills',
   '@ax/skill-broker',
   '@ax/host-grants',
+  // Shared folders (W2): hard-calls agents:can-manage-sharing + agents:resolve,
+  // which @ax/agents (dropped above) provides. Not on this canary's path.
+  '@ax/shared-folders',
   '@ax/decisions',
   '@ax/tool-policy',
   '@ax/llm-anthropic',

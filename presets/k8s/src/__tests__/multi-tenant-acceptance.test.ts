@@ -188,6 +188,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // (exactly like the dropped @ax/skills). Not on this ACL canary's path;
   // static wiring is pinned in preset.test.ts.
   '@ax/host-grants',
+  // Shared folders (W2): postgres-backed (database:get-instance) and this
+  // canary swaps postgres out. Not on this ACL canary's path; static wiring is
+  // pinned in preset.test.ts.
+  '@ax/shared-folders',
   // Decisions + tool policy (TASK-224/TASK-225): @ax/decisions is postgres-
   // backed (calls database:get-instance in init) and this canary swaps
   // postgres out. Its `tool:pre-call` gate fails CLOSED when

@@ -240,6 +240,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // grant→list→revoke reachability are pinned in preset.test.ts + the
   // @ax/host-grants package canary.
   '@ax/host-grants',
+  // Shared folders (W2): postgres-backed (calls database:get-instance in
+  // init) and hard-calls agents:can-manage-sharing / agents:resolve from
+  // @ax/agents, which is dropped here too. No chat-path caller yet — the
+  // workspace resolvers reach it through a hasService-gated authorize-mounts
+  // call that is simply skipped when absent. Static wiring is pinned in
+  // preset.test.ts; the real-postgres boot in prod-bootstrap.test.ts.
+  '@ax/shared-folders',
   // Decisions (TASK-225): postgres-backed too — it calls database:get-instance
   // in init, and these canaries swap postgres out. Its `tool:pre-call`
   // subscriber is not on the chat-path canaries either: with @ax/tool-policy

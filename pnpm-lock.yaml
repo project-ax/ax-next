@@ -2964,6 +2964,9 @@ importers:
       '@ax/session-postgres':
         specifier: workspace:*
         version: link:../../packages/session-postgres
+      '@ax/shared-folders':
+        specifier: workspace:*
+        version: link:../../packages/shared-folders
       '@ax/skill-broker':
         specifier: workspace:*
         version: link:../../packages/skill-broker

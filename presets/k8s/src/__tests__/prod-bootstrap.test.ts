@@ -254,6 +254,11 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // TASK-777 — blob GC, report mode. The boot test below proves its
     // migration ran on the shared database next to everyone else's.
     '@ax/blob-gc',
+    // W2 — shared folders. The boot test below proves its migration ran on
+    // the shared database and that authorize-mounts is reachable in the full
+    // graph (agents:can-manage-sharing / agents:resolve satisfied by the real
+    // @ax/agents).
+    '@ax/shared-folders',
   ] as const;
 
   it(
@@ -350,6 +355,14 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.mcp_client_v1_tool_inventory')::text AS t",
           );
           expect(inventory.rows[0]?.t).toBe('mcp_client_v1_tool_inventory');
+          // W2: @ax/shared-folders' init ran against the shared database in
+          // the full production graph (both of its tables exist).
+          const folders = await probe.query<{ f: string | null; g: string | null }>(
+            "SELECT to_regclass('public.shared_folders_v1_folders')::text AS f, " +
+              "to_regclass('public.shared_folders_v1_grants')::text AS g",
+          );
+          expect(folders.rows[0]?.f).toBe('shared_folders_v1_folders');
+          expect(folders.rows[0]?.g).toBe('shared_folders_v1_grants');
         } finally {
           await probe.end();
         }
@@ -375,6 +388,8 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(created.agent).toMatchObject({ model: policy.default, runner: 'claude-sdk' });
 
         expect(bus.hasService('conversations:create')).toBe(true);
+        // W2: the workspace resolvers reach shared folders through this hook.
+        expect(bus.hasService('shared-folders:authorize-mounts')).toBe(true);
         // TASK-423: the facts engine's init ran against the real postgres —
         // it borrows the shared Kysely via `database:get-instance` and
         // creates `memory_facts_v1` + its indexes there. A migration that

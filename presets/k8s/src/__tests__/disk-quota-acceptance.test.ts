@@ -118,6 +118,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/skills',
   '@ax/skill-broker',
   '@ax/host-grants',
+  // Shared folders (W2): hard-calls agents:can-manage-sharing + agents:resolve,
+  // which @ax/agents (dropped above) provides. Same reasons as
+  // usage-limits-acceptance.test.ts' PLUGINS_TO_DROP.
+  '@ax/shared-folders',
   '@ax/decisions',
   '@ax/tool-policy',
   '@ax/llm-anthropic',
