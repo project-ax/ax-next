@@ -31,6 +31,8 @@ import { randomBytes } from 'node:crypto';
 import {
   CanManageRoutinesInputSchema,
   CanManageRoutinesOutputSchema,
+  CanManageSharingInputSchema,
+  CanManageSharingOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   ResolveOutputSchema,
 } from './types.js';
@@ -138,6 +140,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-manage-routines',
+        // W2 shared folders: management authority over an agent's shared folders
+        'agents:can-manage-sharing',
         'agents:can-manage-connectors',
         'agents:can-set-shared-credential',
         'agents:list-ids',
@@ -496,6 +500,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         const agent = await getForConnectorEdit(localStore, input.agentId, 'agents:can-manage-routines');
         return { allowed: await connectorsManageAllowed(agent, bus, ctx, { userId: ctx.userId, isAdmin: false }) };
       }, { returns: CanManageRoutinesOutputSchema });
+
+      // W2 shared folders: who may manage the shared folders attached to an
+      // agent. Same rule as routines (personal → owner, team → team admin,
+      // workspace-admin alone never grants it), and the actor is again the
+      // authenticated context, never the payload.
+      bus.registerService('agents:can-manage-sharing', PLUGIN_NAME, async (ctx, raw) => {
+        const input = CanManageSharingInputSchema.parse(raw);
+        const agent = await getForConnectorEdit(localStore, input.agentId, 'agents:can-manage-sharing');
+        return { allowed: await connectorsManageAllowed(agent, bus, ctx, { userId: ctx.userId, isAdmin: false }) };
+      }, { returns: CanManageSharingOutputSchema });
 
       // TASK-765 / TASK-798 — may this actor change this agent's connectors
       // (attach, detach, exclude)? Signing in ON the agent is a narrower

@@ -568,3 +568,13 @@ export const CanManageRoutinesInputSchema = z.object({ agentId: z.string().min(1
 export const CanManageRoutinesOutputSchema = z.object({ allowed: z.boolean() }).strict();
 export type CanManageRoutinesInput = z.infer<typeof CanManageRoutinesInputSchema>;
 export type CanManageRoutinesOutput = z.infer<typeof CanManageRoutinesOutputSchema>;
+
+// W2 shared folders: management authority over an agent's shared folders. Same
+// rule as `agents:can-manage-routines` (personal → owner, team → team admin,
+// workspace-admin never grants it), but its own schemas so the two hooks can
+// diverge without a silent coupling. The actor is `ctx.userId`, never the
+// payload — hence `.strict()` (a forged `isAdmin` / `userId` rejects).
+export const CanManageSharingInputSchema = z.object({ agentId: z.string().min(1).max(256) }).strict();
+export const CanManageSharingOutputSchema = z.object({ allowed: z.boolean() }).strict();
+export type CanManageSharingInput = z.infer<typeof CanManageSharingInputSchema>;
+export type CanManageSharingOutput = z.infer<typeof CanManageSharingOutputSchema>;
