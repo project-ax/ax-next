@@ -264,8 +264,11 @@ anything that isn't an absolute path.
    retries tombstoned folders with backoff: every 5 minutes, 50 per pass, and
    after the n-th failure the next try is 30 s × 2^(n−1) later, capped at 1 h.
    No cleanup depends on rows that have already been deleted.
-6. `shared-folders:delete` runs step 2 inline and awaits it; the agent-deletion
-   path starts it without awaiting (subscribers run one after another).
+6. Step 2 never runs inside the caller's request. `shared-folders:delete`
+   returns `{ deleted: true }` once the tombstone commits and `access-reduced`
+   fires, then starts the cleanup in the background (a k8s reclaim can take up
+   to 180 s). The agent-deletion path does the same. The sweep skips a folder
+   whose cleanup is already running.
 
 **When an agent is deleted** (`agents:deleted`), its grants are removed and
 `access-reduced` fires.
@@ -276,6 +279,11 @@ anything that isn't an absolute path.
   exactly one editor row.
 - If there's no editor, the folder is deleted through the steps above.
 - A viewer is never promoted to owner, because that would widen its access.
+- **If that purge fails** (its transaction rolls back and is logged), the sweep
+  heals it: each pass asks `agents:list-ids`, finds grants older than 60 s
+  whose agent no longer exists (at most 50 agents a pass), and runs the same
+  purge for them, with the same events. A failed or malformed `list-ids`
+  answer purges nothing.
 - `shared_folders_v1_grants.agent_id` (the only agent-keyed column) is covered
   by the whole-schema cleanup check and by `agent-keyed-tables-are-cleaned`.
 
@@ -284,7 +292,14 @@ anything that isn't an absolute path.
 - **k8s.** `shared-folder` mounts become inline `nfs` volumes with
   `subPath: .shared/<folderId>`. Writable ones get the same chown step as
   `user-files`, which runs through `prepareAgentSandboxMounts` under GKE Sandbox.
-  Viewer mounts are `readOnly: true` and get no chown.
+  A viewer's runner volume is read-only at the NFS level (`nfs.readOnly`) as
+  well as at the mount. Its folder is still created and chowned before the
+  runner starts, through a separate writable `-prep` volume that only the chown
+  init mounts (under GKE Sandbox only the prep pod gets it), so a viewer that
+  opens a folder before any editor sees a readable empty folder.
+- **A user-files mount's `subPath` must be one safe segment**
+  (`^[A-Za-z0-9_-]+$`), checked at realize, so a buggy resolver can't hand one
+  agent `.shared` as its `/files`.
 - **Subprocess (dev only).** `mkdir -p` the `hostPath`. Read-only isn't
   enforced; that's an existing limit of this provider, which isn't a security
   boundary.
@@ -323,14 +338,19 @@ about the standby pod spec changes.
    each folder the helper opens `.shared/<folderId>` under the user-files
    backing export, pinning each component with `O_NOFOLLOW` (the existing
    confined-directory code), creating `.shared` and the folder if missing.
-   A writable folder is chowned to the runner uid, as `/files` is; a viewer's
-   isn't.
+   The folder is chowned to the runner uid, as `/files` is, for viewers too
+   (the bind is still remounted read-only), so a viewer-first folder is
+   readable.
 6. **Helper, the bind.** Target `ax-late/shared/<folderId>`. Viewers get the
    same second `remount,bind,ro` that `/memory` gets. All binds happen before
    the bootstrap file is published, so the runner never starts without them.
    The helper creates `ax-late/shared` itself with mode `0755`: the pod's
    emptyDir hides the image's own `/ax/late/shared`, and nothing is mounted over
-   `shared`, so a root-only directory would lock the runner out.
+   `shared`, so a root-only directory would lock the runner out. It refuses the
+   assignment if that directory exists and isn't owned by root (the runner
+   created it), on a held descriptor, before any bind and again per folder. A
+   failed activation keeps its cause (redacted) instead of a bare
+   `storage activation failed`.
 7. **Helper, ledger and release.** The ledger record and the recovery
    annotation carry the folder list (both stay under their 8 KiB caps at 16
    folders). Release and recovery unmount every shared target and verify it in
@@ -663,8 +683,9 @@ is built yet; W2 leaves these points open for it:
     owner with no editor left). A folder that passed to an heir never appears
     there.
   Like `access-reduced`, it's fired after the commit with no outbox, so a crash
-  in between loses it. The tombstone sweep can re-fire it for every tombstone
-  it still sees; W3's subscriber is meant to be idempotent.
+  in between loses it. **W3a must therefore have the tombstone sweep re-fire
+  it for every tombstone it still sees** (W3's subscriber is meant to be
+  idempotent). Decided 2026-10-12: this lands with the event in W3a, not in W2.
 - **Replacing `sharedFolderIdsFor`** (W3 §4.5). Its one call site is
   `sharedFolderIdsForSpawn` in the orchestrator's open step, after the prompt
   augment. W3a moves the project lookup before the augment and hands
