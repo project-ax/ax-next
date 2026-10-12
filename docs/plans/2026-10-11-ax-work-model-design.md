@@ -25,7 +25,7 @@ clear home.
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
-  together in one docs PR (branch `docs/ax-work-model`).
+  together in docs PR #987 (branch `docs/ax-work-model`).
 
 ## Status
 
