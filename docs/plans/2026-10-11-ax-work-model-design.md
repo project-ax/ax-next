@@ -17,7 +17,7 @@ clear home.
 
 ## Resume here
 
-- **Now:** W1 is built (2026-10-12, standalone `/yolo-ship`, memory shard
+- **Now:** W1 is built and merged as #988 (2026-10-12, standalone `/yolo-ship`, memory shard
   `AXWM-2`) from the revised spec
   [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md);
   plan in [`2026-10-12-w1-prompt-contributions-plan.md`](2026-10-12-w1-prompt-contributions-plan.md).
@@ -29,8 +29,12 @@ clear home.
   (§5.2 now shows it too). **W2 doesn't merge alone:** it's
   developed as a PR stack and merged as one squash with W3's first slice (the
   orchestrator mounting a conversation's project), following #978.
+- **2026-10-12, later:** W2 was built ahead of re-review on branch
+  `feat/w2-shared-folders` (draft PR, do not merge). The spec's new §11 lists
+  where the build differs. W3's first slice stacks on that branch.
 - **Next, in order:**
-  1. Approve the W2 spec, write its plan, and put its cards on the board.
+  1. Re-review the W2 spec together with its as-built §11 and the draft PR
+     (memory shard `AXWM-3`).
   2. Write the W3 (projects) spec, starting with the first slice W2 merges
      with.
   3. Turn the goals design into a final spec, lined up with W1 and W13.
@@ -50,8 +54,8 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
-| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | built (PR pending, see Resume here) | — |
-| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | spec draft (revised after review 1) | — |
+| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
+| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | built on `feat/w2-shared-folders`, waiting for W3's slice (spec re-review pending) | — |
 | W3 | Projects | Projects | W1, W2 | — | no spec | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |

@@ -1,6 +1,8 @@
 # W2: shared folders (design)
 
-**Status:** draft, revised after review 1 (2026-10-12); see §10. **Owner:** Vinay.
+**Status:** draft, revised after review 1 (2026-10-12); see §10. Built on branch
+`feat/w2-shared-folders` (not merged — §4); §11 lists where the build differs
+from this text. **Owner:** Vinay.
 **Work item:** W2 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`,
 §5.1). It needs nothing, and it is merged together with W3's first production
 caller (§4).
@@ -92,12 +94,12 @@ vocabulary (invariant 1).
 
 - **`shared_folders_v1_folders`:**
   - `folder_id` (minted `sf_<base64url>`, a safe single path segment);
-  - `owner_agent_id`;
   - `created_by_user`, `created_at`;
   - `deleted_at` (a tombstone while files are being removed, §3.7).
 - **`shared_folders_v1_grants`:** `folder_id`, `agent_id`, `role`
   (`owner | editor | viewer`), `granted_by_user`, `created_at`. Exactly one
-  `owner` per folder, at most one grant per (folder, agent).
+  `owner` per folder, at most one grant per (folder, agent). The owner grant is
+  the only record of a folder's owner (no `owner_agent_id` column; §11).
 
 **Same owner only in W2.** Every grant goes to an agent with the same owner
 (the same person or the same team) as the folder's owner agent. Sharing across
@@ -199,10 +201,12 @@ anything that isn't an absolute path.
     `settingSources` stays `['user']`, and nothing in a shared folder is read as
     `CLAUDE.md`, `.claude/settings*.json` or `.claude/skills/`.
   - A test plants all three in a shared folder and checks that none is loaded.
-- **aisdk runner.** Add the shared paths to the tool policy's
-  `recognizedRoots` (`main.ts:219`). A `.ax/` or `.claude/` path inside a shared
-  folder is an ordinary project file: it's never re-rooted onto the agent's
-  governed `/agent` tree, and never loaded as a skill.
+- **aisdk runner.** Its file tools already accept any absolute path. The shared
+  paths are deliberately **not** added to the tool policy's `recognizedRoots`
+  (`main.ts:219`): that list is where a top-level `.ax/` or `.claude/` path is
+  re-rooted onto `/agent`, which is exactly what must not happen. A `.ax/` or
+  `.claude/` path inside a shared folder is an ordinary project file: it's never
+  re-rooted onto the agent's governed `/agent` tree, and never loaded as a skill.
 - **Read-only.** For a viewer, the k8s mount is read-only, so a write fails with
   `EROFS`. The runner's note says the folder is read-only, but the mount is
   what enforces it.
@@ -258,9 +262,8 @@ anything that isn't an absolute path.
 - If it owned a folder, ownership passes to the editor with the oldest grant.
 - If there's no editor, the folder is deleted through the steps above.
 - A viewer is never promoted to owner, because that would widen its access.
-- `shared_folders_v1_grants.agent_id` and `shared_folders_v1_folders.owner_agent_id`
-  are covered by the whole-schema cleanup check and added to
-  `agent-keyed-tables-are-cleaned`.
+- `shared_folders_v1_grants.agent_id` (the only agent-keyed column) is covered
+  by the whole-schema cleanup check and by `agent-keyed-tables-are-cleaned`.
 
 ### 3.8 Realizing the mounts
 
@@ -353,14 +356,16 @@ caller, following the sign-ins precedent (#978).
 - **`@ax/agent-runner-core`:** parse `AX_SHARED_FOLDERS`, and the prompt note.
 - **`@ax/agent-claude-sdk-runner`:** shared paths in `additionalDirectories`,
   never in settings or skill discovery.
-- **`@ax/agent-aisdk-runner`:** shared paths in `recognizedRoots`, with no
-  re-rooting.
+- **`@ax/agent-aisdk-runner`:** shared paths kept out of `recognizedRoots`,
+  so nothing in them is re-rooted.
 - **`@ax/chat-orchestrator`:**
   - remember each session's requested `sharedFolderIds`;
   - subscribe to `shared-folders:access-reduced` with the reap-idle-now and
     reap-active-at-turn-end lifecycle;
   - the caller itself arrives with the W3 slice.
-- **Presets:** load the plugin in both.
+- **Presets:** the k8s preset loads the plugin, and the memory preset gets it
+  through `createK8sPlugins`. The dev CLI preset can't: it has no Postgres and no
+  `@ax/agents` (§11).
 
 ## 6. Tests
 
@@ -492,3 +497,34 @@ A dependent stack, merged as one squash with W3's first slice (§4):
 6. **[P2] Naming the half-wired window didn't close it.** Resolved in §4 and §9:
    a dependent stack merged as one squash with W3's first production caller,
    following #978.
+
+## 11. As built (2026-10-12)
+
+Branch `feat/w2-shared-folders`; decisions in
+`.claude/memory/decisions/2026-10-12-AXWM-2.md`. Where the build differs from
+the text above:
+
+1. **aisdk `recognizedRoots`.** §3.6 originally said to add the shared paths.
+   That list is the re-rooting set, so adding them would have re-rooted
+   `/shared/<id>/.claude/...` onto `/agent`. They're left out, and a test pins it.
+2. **No `owner_agent_id`.** The owner lives only in the owner grant (invariant
+   4), which also means a tombstone never carries a deleted agent's id.
+3. **`sandbox:delete-shared-folder` is called undeclared** (guarded by
+   `hasService`). Declaring it closes a call-graph cycle (shared-folders →
+   provider → `sandbox:locate-shared-folder` → `shared-folders:authorize-mounts`),
+   which bootstrap rejects.
+4. **The dev CLI doesn't load the plugin** (Postgres-only); without it the
+   localdir resolver emits no shared mounts.
+5. **The Claude runner strips `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`**
+   from the SDK env. Measured against the pinned CLI, that flag alone loads
+   `CLAUDE.md` from every additional directory even with
+   `settingSources: ['user']`, and a credential-placeholder-shaped value could
+   carry it through the runner's env filter.
+6. **The subprocess provider stamps host paths** in `AX_SHARED_FOLDERS` (it has
+   no mount namespace); k8s stamps `/shared/<id>`.
+7. **Until W3, the orchestrator's folder list comes from a plugin option**
+   (`sharedFolderIdsFor`, default none). W3's first slice supplies it from the
+   conversation's project. The orchestrator records the requested folders
+   *before* the sandbox opens, so a reduction that lands mid-open still reaps
+   the session.
+
