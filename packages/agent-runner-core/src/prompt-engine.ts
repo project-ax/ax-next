@@ -22,20 +22,20 @@
 //      wakes up inside the bootstrap script; nothing else is injected (no
 //      floor, no notes, no identity files) EXCEPT, when cwd is not the governed
 //      root, a short path note (`bootstrapPathNote`), plus output-directory
-//      guidance when a user-files or scratch tier is wired — and the bootstrap-safe slice of
-//      the host augment (TASK-524): contributions a provider flagged
-//      `bootstrapSafe`, carried separately as
+//      guidance when a user-files or scratch tier is wired — and the `rules` section of
+//      the host augment (TASK-524, W1): bodies a required provider returned
+//      under `rules`, carried separately as
 //      `agentConfig.systemPromptBootstrapAugment` and prepended on top. Today
 //      that is only @ax/memory's `## Rules From Your User` — the person's own
 //      words, host-sourced, never agent-writable — because the Memory tab
 //      promises the agent reads them before EVERY run, including this one.
 //      Recalled / agent-derived memory (profile, recent, digest) is NOT
-//      bootstrap-safe and stays out: keeping it away from the identity
+//      `rules` and stays out: keeping it away from the identity
 //      conversation is what the exclusivity is for.
 //
 //   2. NORMAL mode     — no BOOTSTRAP.md (the ONLY other mode) → compose, in
 //      order:
-//        [augment prepend]                    (the host system-prompt:augment)
+//        [augment prepend]                    (the host system-prompt:augment:*)
 //        + [safety floor]                     (hardcoded, NOT editable)
 //        + [work + communication policy]      (hardcoded DEFAULTS, overridable
 //                                              by AGENTS.md below)
@@ -219,8 +219,8 @@ export async function readAxIdentityFiles(workspaceRoot: string): Promise<AxIden
 }
 
 export interface ComposeNormalModeInput {
-  /** Prepended on top of everything — carries the host `system-prompt:augment`
-   * contribution. Empty string => no prepend slot. */
+  /** Prepended on top of everything — carries the joined host `system-prompt:augment:*`
+   * contributions. Empty string => no prepend slot. */
   prepend?: string;
   /** `.ax/AGENTS.md` body, if present. */
   agents?: string;
@@ -287,10 +287,10 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  * @param displayName the agent's display name — the runner's FALLBACK identity,
  *   used in normal mode only when the agent has no `.ax/IDENTITY.md` of its own
  *   ("You are <displayName>, a helpful personal assistant."). Host-controlled.
- * @param augment the host `system-prompt:augment` contribution (e.g. the
+ * @param augment the joined host `system-prompt:augment:*` contributions (e.g. the
  *   @ax/memory block), prepended on top in normal mode. Empty string =>
  *   no prepend. NEVER used in bootstrap mode.
- * @param bootstrapAugment the bootstrap-safe SUBSET of that contribution
+ * @param bootstrapAugment the `rules`-section SUBSET of those contributions
  *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so
  *   normal mode ignores it (the full `augment` already carries it). Empty
  *   string => bootstrap prompt byte-identical to before TASK-524.
@@ -317,7 +317,7 @@ export async function buildSystemPrompt(
   const files = await readAxIdentityFiles(workspaceRoot);
 
   // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the prompt, plus
-  // filesystem guidance and the bootstrap-safe augment slice (TASK-524).
+  // filesystem guidance and the `rules` augment slice (TASK-524).
   //
   // TRUST NOTE (TASK-142, conversational-agent-identity Phase 3↔4): `.ax/` files
   // are agent-writable, but a re-created/forged `.ax/BOOTSTRAP.md` can no longer

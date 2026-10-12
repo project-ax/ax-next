@@ -411,7 +411,7 @@ async function commitBundleCore(
     // This handler is the ONE apply path a sandbox can originate, so it is the
     // one place the human-owned memory tier can be defended.
     // `/agent/memory/system/rules.md` is injected verbatim at the top of every
-    // prompt (@ax/memory's `system-prompt:augment`, "## Rules From Your User"), the
+    // prompt (@ax/memory's `system-prompt:augment:required:memory`, "## Rules From Your User"), the
     // runner's whole-tree stage picks it up, and `filterToPolicy` below does
     // NOT match it — so before this block existed, a change to it reached
     // `workspace:apply-bundle` without a single subscriber having seen it.
