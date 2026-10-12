@@ -189,6 +189,9 @@ export function createChatOrchestratorPlugin(
         'agents:deleted',
         // TASK-833 — fired by @ax/connectors after a delete purged the key.
         'connectors:deleted',
+        // W2 — fired by @ax/shared-folders when a folder's access is reduced
+        // (revoke, downgrade, delete, an agent's grants removed).
+        'shared-folders:access-reduced',
       ],
     },
     init({ bus }) {
@@ -367,6 +370,22 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           orch.onConnectorDeleted(ctx, payload);
+          return undefined;
+        },
+      );
+
+      // W2 — `shared-folders:access-reduced { folderId, agentIds }`. A warm
+      // sandbox keeps its shared-folder mount until it exits, so the sessions
+      // of those agents that requested the folder are reaped as soon as they
+      // are idle (proxy session closed first), reaped at turn end if a turn is
+      // running, and retired at routing if a message arrives first — the
+      // connector-delete path above. Observation-only: never vetoes, never
+      // throws (a malformed payload is logged and ignored).
+      bus.subscribe<unknown>(
+        'shared-folders:access-reduced',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          orch.onSharedFolderAccessReduced(ctx, payload);
           return undefined;
         },
       );

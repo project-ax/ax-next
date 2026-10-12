@@ -21,7 +21,7 @@ import {
 // imports across plugins are allowed (erased at compile time); this keeps the
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
-import { formatServiceDiagnosis } from '@ax/sandbox-protocol';
+import { formatServiceDiagnosis, isValidSharedFolderId } from '@ax/sandbox-protocol';
 import type { AgentConfig, ProxyConfig, ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
   skillCredentialEnvName,
@@ -235,7 +235,30 @@ export interface ChatOrchestratorConfig {
   /** System/built-in skills materialized into every session at LOWEST precedence
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
+  /**
+   * W2 (shared folders) — which shared folders a fresh session should mount.
+   * Asked once per spawn, host-side; the result goes to `sandbox:open-session`
+   * as `sharedFolderIds` (the mount resolver still checks the grants, so this
+   * picks folders, it never authorizes them). The model and the sandbox never
+   * reach it.
+   *
+   * This is a SEAM: W2 ships no real source (default: none, and the field is
+   * left off the open input). W3's first slice supplies it from the
+   * conversation's project.
+   *
+   * Ids are validated (`isValidSharedFolderId`), deduped and capped at
+   * {@link MAX_SHARED_FOLDERS_PER_SESSION}; an invalid one is dropped and
+   * logged. A throw fails the session open (fail closed): a turn never runs
+   * with a folder set we could not determine.
+   */
+  sharedFolderIdsFor?: (
+    ctx: AgentContext,
+    input: { agentId: string; conversationId?: string },
+  ) => Promise<readonly string[]> | readonly string[];
 }
+
+/** W2 — most shared folders one session mounts (matches the wire schema cap). */
+export const MAX_SHARED_FOLDERS_PER_SESSION = 16;
 
 // Slice 6 — the `chat:connectors-skipped` payload (built in connector-union).
 export type { ConnectorsSkippedPayload };
@@ -986,6 +1009,12 @@ interface OpenSessionInput {
    * until the S7 end-to-end canary closes it.
    */
   services?: ServiceDescriptorParsed[];
+  /**
+   * W2 — shared folders the host wants mounted (from `sharedFolderIdsFor`).
+   * A request only: the mount resolver filters it through the grants. Omitted
+   * when empty.
+   */
+  sharedFolderIds?: string[];
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -1486,6 +1515,7 @@ export function createOrchestrator(
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
   onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
   onConnectorDeleted(ctx: AgentContext, payload: unknown): void;
+  onSharedFolderAccessReduced(ctx: AgentContext, payload: unknown): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1703,6 +1733,7 @@ export function createOrchestrator(
     skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
     forgetSessionConnectors(sessionId);
+    forgetSessionSharedFolders(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -2148,9 +2179,40 @@ export function createOrchestrator(
   // proxy; a runner that wakes anyway reaches upstream without credentials.
   // Idempotent in credential-proxy, so the exit watcher's later close (and a
   // routing retire's) is a no-op. Fire-and-forget; never throws.
-  function closeProxyForDeletedConnector(ctx: AgentContext, sessionId: string): void {
+  //
+  // W2 — the same close for a session whose shared-folder access was reduced
+  // (`closeProxyForReap` with phase `'shared-folder-access-reduced'`).
+  function closeProxyForReap(
+    ctx: AgentContext,
+    sessionId: string,
+    phase: 'connector-deleted' | 'shared-folder-access-reduced',
+  ): void {
     if (!bus.hasService('proxy:close-session')) return;
-    void closeProxySession({ ...ctx, sessionId }, sessionId, 'connector-deleted');
+    void closeProxySession({ ...ctx, sessionId }, sessionId, phase);
+  }
+
+  /**
+   * TASK-833/877 + W2 — the reap a revocation applies to a warm session it
+   * marked. Idle (the reaper armed: a turn ended and none started) or in its
+   * grace window (a reap already under way) → close its proxy session now.
+   * Idle → re-arm the reaper with no delay. A session mid-turn is left alone:
+   * `onTurnEnd` reaps it. Returns whether a reap was started.
+   */
+  function reapMarkedIfIdle(
+    ctx: AgentContext,
+    sessionId: string,
+    phase: 'connector-deleted' | 'shared-folder-access-reduced',
+  ): boolean {
+    const entry = warmSessions.get(sessionId);
+    if (entry === undefined) return false;
+    if (entry.idleTimer !== null || entry.graceTimer !== null) {
+      closeProxyForReap(ctx, sessionId, phase);
+    }
+    if (entry.idleTimer !== null) {
+      armReapTimer({ ...ctx, sessionId }, 0);
+      return true;
+    }
+    return false;
   }
 
   // TASK-878 — every `proxy:close-session` this plugin makes goes through
@@ -2162,7 +2224,13 @@ export function createOrchestrator(
   async function closeProxySession(
     ctx: AgentContext,
     sessionId: string,
-    phase: 'retire' | 'connector-deleted' | 'open-failed' | 'runner-exit' | 'invoke-end',
+    phase:
+      | 'retire'
+      | 'connector-deleted'
+      | 'shared-folder-access-reduced'
+      | 'open-failed'
+      | 'runner-exit'
+      | 'invoke-end',
   ): Promise<void> {
     let timedOut = false;
     const close = bus
@@ -2236,20 +2304,129 @@ export function createOrchestrator(
       if (!sameConnector) continue;
       connectorDeletedSessions.add(sessionId);
       marked += 1;
-      const entry = warmSessions.get(sessionId);
       // Idle = the reaper is armed (a turn ended and none has started). A grace
       // timer already running means a reap is under way — the session is idle
       // too, so its proxy session is closed either way (TASK-877).
-      if (entry !== undefined && (entry.idleTimer !== null || entry.graceTimer !== null)) {
-        closeProxyForDeletedConnector(ctx, sessionId);
-      }
-      if (entry !== undefined && entry.idleTimer !== null) {
-        armReapTimer({ ...ctx, sessionId }, 0);
-        reaped += 1;
-      }
+      if (reapMarkedIfIdle(ctx, sessionId, 'connector-deleted')) reaped += 1;
     }
     if (marked > 0) {
       ctx.logger.info('connector_deleted_sessions_retired', { connectorId, marked, reaped });
+    }
+  }
+
+  // W2 (shared folders) — which folders each session REQUESTED at spawn
+  // (`sharedFolderIdsFor`), with its agent. Only sessions that requested at
+  // least one have an entry. Same lifetime as `connectorStateBySession`:
+  // forgotten at the same four sites.
+  interface SessionSharedFolderState {
+    agentId: string;
+    folderIds: Set<string>;
+  }
+  const sharedFolderStateBySession = new Map<string, SessionSharedFolderState>();
+
+  // W2 — sessions holding a folder whose access was REDUCED (revoke, downgrade,
+  // delete — `shared-folders:access-reduced`). A warm sandbox keeps its mount
+  // (a writable one, for an editor) until it exits, so a marked session is
+  // reaped exactly like a connector-deleted one (`connectorDeletedSessions`):
+  // idle → now, mid-turn → when the turn ends, beaten by a message → retired at
+  // routing. The next spawn mounts what the grants allow then.
+  const sharedFolderReducedSessions = new Set<string>();
+
+  function recordSessionSharedFolders(
+    sessionId: string,
+    agentId: string,
+    folderIds: readonly string[],
+  ): void {
+    if (folderIds.length === 0) return;
+    sharedFolderStateBySession.set(sessionId, { agentId, folderIds: new Set(folderIds) });
+  }
+
+  function forgetSessionSharedFolders(sessionId: string): void {
+    sharedFolderStateBySession.delete(sessionId);
+    sharedFolderReducedSessions.delete(sessionId);
+  }
+
+  /** A session marked by a revocation (connector deleted, folder access reduced). */
+  function accessRevoked(sessionId: string): 'connector-deleted' | 'shared-folder-access-reduced' | null {
+    if (connectorDeletedSessions.has(sessionId)) return 'connector-deleted';
+    if (sharedFolderReducedSessions.has(sessionId)) return 'shared-folder-access-reduced';
+    return null;
+  }
+
+  /**
+   * W2 — the folder ids a fresh spawn requests. Absent option → none. The
+   * source's result is untrusted-shaped (validated, deduped, capped); a throw
+   * (or a non-array) is logged and rethrown so the open fails closed.
+   */
+  async function sharedFolderIdsForSpawn(ctx: AgentContext, agentId: string): Promise<string[]> {
+    const source = config.sharedFolderIdsFor;
+    if (source === undefined) return [];
+    let raw: unknown;
+    try {
+      raw = await source(ctx, {
+        agentId,
+        ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
+      });
+      if (!Array.isArray(raw)) throw new Error('sharedFolderIdsFor returned a non-array');
+    } catch (err) {
+      ctx.logger.error('shared_folder_ids_for_failed', { agentId, ...errorLogFields(err) });
+      throw err;
+    }
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    let invalid = 0;
+    let overCap = 0;
+    for (const id of raw as unknown[]) {
+      if (!isValidSharedFolderId(id)) {
+        invalid += 1;
+        continue;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (ids.length >= MAX_SHARED_FOLDERS_PER_SESSION) {
+        overCap += 1;
+        continue;
+      }
+      ids.push(id);
+    }
+    if (invalid > 0 || overCap > 0) {
+      // Counts only — an invalid id is never echoed into the log.
+      ctx.logger.warn('shared_folder_ids_dropped', { agentId, invalid, overCap });
+    }
+    return ids;
+  }
+
+  // W2 — `shared-folders:access-reduced { folderId, agentIds }` (fired by
+  // @ax/shared-folders after a revoke, a downgrade, a delete, or an agent's
+  // grants being removed). Marks every live session of those agents that
+  // requested the folder and reaps the idle ones now — proxy session closed
+  // first — exactly as `onConnectorDeleted` does. A turn in flight is not
+  // interrupted (a mid-turn kill hangs the stream): `onTurnEnd` reaps it.
+  //
+  // Sync and never throws: the change has already committed. A malformed
+  // payload is logged and ignored.
+  function onSharedFolderAccessReduced(ctx: AgentContext, payload: unknown): void {
+    const p = payload as { folderId?: unknown; agentIds?: unknown } | null | undefined;
+    const folderId = typeof p === 'object' && p !== null ? p.folderId : undefined;
+    const agentIdsRaw = typeof p === 'object' && p !== null ? p.agentIds : undefined;
+    if (!isValidSharedFolderId(folderId) || !Array.isArray(agentIdsRaw)) {
+      ctx.logger.warn('shared_folder_access_reduced_malformed', {});
+      return;
+    }
+    const agentIds = new Set(
+      (agentIdsRaw as unknown[]).filter((a): a is string => typeof a === 'string' && a.length > 0),
+    );
+    if (agentIds.size === 0) return;
+    let marked = 0;
+    let reaped = 0;
+    for (const [sessionId, state] of sharedFolderStateBySession) {
+      if (!agentIds.has(state.agentId) || !state.folderIds.has(folderId)) continue;
+      sharedFolderReducedSessions.add(sessionId);
+      marked += 1;
+      if (reapMarkedIfIdle(ctx, sessionId, 'shared-folder-access-reduced')) reaped += 1;
+    }
+    if (marked > 0) {
+      ctx.logger.info('shared_folder_access_reduced_sessions_retired', { folderId, marked, reaped });
     }
   }
 
@@ -2558,6 +2735,10 @@ export function createOrchestrator(
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
+            // W2 — a folder this session requested had its access reduced
+            // (marked by `shared-folders:access-reduced`) and the reaper has
+            // not got to it yet.
+            const sharedFolderAccessReduced = sharedFolderReducedSessions.has(candidate);
             // TASK-811 — a connector attached / detached since this session
             // spawned. TASK-833 — or one it folded was deleted (marked by
             // `connectors:deleted`), or no longer resolves to what it folded
@@ -2572,6 +2753,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed
               ) &&
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
@@ -2581,6 +2763,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed ||
                 connectorsChanged
               ) && (await skippedConnectorSignedIn(ctx, candidate));
@@ -2594,6 +2777,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed ||
                 connectorsChanged ||
                 connectorSignedIn
@@ -2607,6 +2791,7 @@ export function createOrchestrator(
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
+              sharedFolderAccessReduced ||
               rotationFailed ||
               connectorsChanged ||
               connectorSignedIn
@@ -2638,6 +2823,10 @@ export function createOrchestrator(
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
+              //
+              // W2: and when a shared folder it requested had its access
+              // reduced and the reaper has not got to it yet. The fresh spawn
+              // mounts only what the grants allow now.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: routineRetire
@@ -2648,7 +2837,9 @@ export function createOrchestrator(
                       ? 'skills-proposed'
                       : augmentStale
                         ? 'system-prompt-augment-changed'
-                        : rotationFailed
+                        : sharedFolderAccessReduced
+                          ? 'shared-folder-access-reduced'
+                          : rotationFailed
                           ? 'credential-rotation-failed'
                           : connectorsChanged
                             ? 'connectors-changed'
@@ -2672,6 +2863,7 @@ export function createOrchestrator(
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
+              forgetSessionSharedFolders(candidate);
               // TASK-871 — revoke the retired session's credentials HERE, not
               // via terminate. A warm session's proxy close is otherwise
               // deferred to `handle.exited`; if session:terminate throws (or
@@ -3762,6 +3954,8 @@ export function createOrchestrator(
         ...installedSkillsForSandbox,
         ...connectorInstalledEntries.map(({ connectorId: _cid, headerBindings: _headers, ...e }) => e),
       ];
+      // W2 — inside this try so a failing source fails the open (closed).
+      const sharedFolderIds = await sharedFolderIdsForSpawn(ctx, agent.id);
       const sandboxInput: OpenSessionInput = {
         sessionId,
         workspaceRoot: ctx.workspace.rootPath,
@@ -3802,6 +3996,8 @@ export function createOrchestrator(
         // non-connector / CLI paths leave the field unset. Both backends render
         // it; the wire schema re-validates (digest-pin, caps, no smuggled vocab).
         ...(foldedServices.length > 0 ? { services: foldedServices } : {}),
+        // W2 — host-picked shared folders; key absent when there are none.
+        ...(sharedFolderIds.length > 0 ? { sharedFolderIds } : {}),
       };
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
@@ -3813,6 +4009,7 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
+      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds);
       // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
       // turns, slice 6) has a row, so re-asking presence would answer yes and
       // retire the session on every turn. Harmless: only a routine turn makes
@@ -3859,6 +4056,7 @@ export function createOrchestrator(
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
+            forgetSessionSharedFolders(sessionId);
             if (proxyOpened) {
               void closeProxySession(warmCtx, warmCtx.sessionId, 'runner-exit');
             }
@@ -4118,6 +4316,7 @@ export function createOrchestrator(
         skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
         forgetSessionConnectors(ctx.sessionId);
+        forgetSessionSharedFolders(ctx.sessionId);
       }
     }
   }
@@ -4212,8 +4411,10 @@ export function createOrchestrator(
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
       // TASK-833 — a session holding a since-deleted connector is reaped now,
       // and (TASK-877) its proxy session closed now rather than on runner exit.
-      if (connectorDeletedSessions.has(ctx.sessionId)) {
-        closeProxyForDeletedConnector(ctx, ctx.sessionId);
+      // W2 — likewise a session holding a shared folder whose access was reduced.
+      const revoked = accessRevoked(ctx.sessionId);
+      if (revoked !== null) {
+        closeProxyForReap(ctx, ctx.sessionId, revoked);
         armReapTimer(ctx, 0);
       } else {
         armReapTimer(ctx, idleWindowMs);
@@ -4516,6 +4717,7 @@ export function createOrchestrator(
     onSystemPromptAugmentChanged,
     onAgentDeleted,
     onConnectorDeleted,
+    onSharedFolderAccessReduced,
   };
 }
 
