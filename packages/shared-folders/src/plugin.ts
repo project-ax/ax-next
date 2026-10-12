@@ -55,6 +55,18 @@ const SWEEP_BATCH = 50;
  * (grant `created_at` is stamped by whichever host made it).
  */
 const ORPHAN_GRACE_MS = 60 * 1000;
+/**
+ * Sanity floor on a WELL-FORMED `agents:list-ids` answer. The orphan sweep
+ * only heals `agents:deleted` purges that FAILED (a normal deletion is purged
+ * by the subscriber), so stalling on a suspicious answer is safe — whereas
+ * trusting an empty or under-counting list would tombstone folders and delete
+ * their bytes. With at least ORPHAN_RATIO_MIN_CANDIDATES candidates, a pass
+ * that would orphan more than ORPHAN_RATIO_MAX of them is refused (logged at
+ * error for an operator) rather than acted on. Below the minimum the ratio is
+ * too noisy to judge, and an EMPTY answer is refused at any size.
+ */
+const ORPHAN_RATIO_MIN_CANDIDATES = 10;
+const ORPHAN_RATIO_MAX = 0.5;
 
 export interface SharedFoldersPluginOptions {
   /**
@@ -280,8 +292,28 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
         ctx.logger.error('shared_folders_orphan_sweep_failed', { reason: 'malformed agents:list-ids answer' });
         return;
       }
+      // Fail closed on a well-formed but implausible answer too (see ORPHAN_RATIO_MAX).
+      if (agentIds.length === 0) {
+        ctx.logger.error('shared_folders_orphan_sweep_refused', {
+          reason: 'empty agents:list-ids answer',
+          candidates: candidates.length,
+        });
+        return;
+      }
       const live = new Set<string>(agentIds);
-      orphans = candidates.filter((id) => !live.has(id)).slice(0, SWEEP_BATCH);
+      const allOrphans = candidates.filter((id) => !live.has(id));
+      if (
+        candidates.length >= ORPHAN_RATIO_MIN_CANDIDATES &&
+        allOrphans.length > candidates.length * ORPHAN_RATIO_MAX
+      ) {
+        ctx.logger.error('shared_folders_orphan_sweep_refused', {
+          reason: 'implausible orphan ratio',
+          candidates: candidates.length,
+          orphans: allOrphans.length,
+        });
+        return;
+      }
+      orphans = allOrphans.slice(0, SWEEP_BATCH);
     } catch (err) {
       ctx.logger.error('shared_folders_orphan_sweep_failed', {
         err: err instanceof Error ? err : new Error(String(err)),

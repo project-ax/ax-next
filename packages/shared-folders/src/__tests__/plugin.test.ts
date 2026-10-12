@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import {
   createTestHarness,
   type TestHarness,
@@ -55,6 +55,10 @@ const goneAgents = new Set<string>();
 let listIdsFails = false;
 /** When set, `agents:list-ids` answers with the wrong shape. */
 let listIdsMalformed = false;
+/** When set, `agents:list-ids` answers exactly these ids (a well-formed but possibly wrong answer). */
+let listIdsAnswer: string[] | undefined;
+/** Extra agents `agents:list-ids` reports as live (agents with no stub entry). */
+const extraLiveAgents = new Set<string>();
 let listIdsCalls = 0;
 
 function manages(userId: string, agentId: string): boolean {
@@ -111,7 +115,8 @@ const agentServices: Record<string, ServiceHandler> = {
     listIdsCalls++;
     if (listIdsFails) throw new Error('agents store unavailable');
     if (listIdsMalformed) return { ids: [] };
-    return { agentIds: Object.keys(AGENTS).filter((id) => !goneAgents.has(id)) };
+    if (listIdsAnswer !== undefined) return { agentIds: [...listIdsAnswer] };
+    return { agentIds: [...Object.keys(AGENTS), ...extraLiveAgents].filter((id) => !goneAgents.has(id)) };
   },
 };
 const providerService: Record<string, ServiceHandler> = {
@@ -243,6 +248,8 @@ afterEach(async () => {
   goneAgents.clear();
   listIdsFails = false;
   listIdsMalformed = false;
+  listIdsAnswer = undefined;
+  extraLiveAgents.clear();
   listIdsCalls = 0;
   await q('DROP TABLE IF EXISTS shared_folders_v1_grants');
   await q('DROP TABLE IF EXISTS shared_folders_v1_folders');
@@ -878,19 +885,29 @@ describe('sweep: orphaned grants (an agent gone without a successful purge)', ()
   it('bounds the agents purged per pass', async () => {
     const w = await makeWorld();
     const f = await create(w, 'alice', 'a-alice-1');
-    // 51 agents @ax/agents never heard of, each holding a viewer grant.
+    // 51 agents @ax/agents never heard of, each holding a viewer grant —
+    // alongside 52 live ones, so the orphan ratio stays under the sanity floor.
     for (let i = 0; i < 51; i++) {
       await q(
         `INSERT INTO shared_folders_v1_grants (folder_id, agent_id, role, granted_by_user) VALUES ($1, $2, 'viewer', 'x')`,
         [f, `ghost-${String(i).padStart(2, '0')}`],
       );
     }
+    for (let i = 0; i < 52; i++) {
+      const id = `live-${String(i).padStart(2, '0')}`;
+      extraLiveAgents.add(id);
+      await q(
+        `INSERT INTO shared_folders_v1_grants (folder_id, agent_id, role, granted_by_user) VALUES ($1, $2, 'viewer', 'x')`,
+        [f, id],
+      );
+    }
     await ageGrants();
     await w.plugin.sweep();
-    expect(Object.keys(await grantsOf(f))).toHaveLength(2); // owner + 1 ghost left
+    expect(Object.keys(await grantsOf(f))).toHaveLength(1 + 52 + 1); // owner + live + 1 ghost left
     expect(w.events).toHaveLength(50);
     await w.plugin.sweep();
-    expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+    expect(Object.keys(await grantsOf(f)).filter((id) => id.startsWith('ghost-'))).toEqual([]);
+    expect(Object.keys(await grantsOf(f))).toHaveLength(1 + 52);
   });
 
   it('never throws: a failing agents:list-ids is logged, nothing is purged, and tombstones are still retried', async () => {
@@ -918,5 +935,119 @@ describe('sweep: orphaned grants (an agent gone without a successful purge)', ()
     await w.plugin.sweep();
     expect(listIdsCalls).toBe(1);
     expect(await grantsOf(f)).toEqual({ 'a-alice-1': 'owner' });
+  });
+
+  // A WELL-FORMED answer can still be wrong: an empty or under-counting list
+  // (a bad replica, a filtered query) would read as "these agents are gone".
+  // This path only heals FAILED agents:deleted purges, so it refuses to act
+  // on an implausible answer rather than tombstone folders and delete bytes.
+  describe('fails closed on an implausible (but well-formed) agents:list-ids answer', () => {
+    /**
+     * One folder owned by a-alice-1 plus `n - 1` aged viewer grants, so there
+     * are exactly `n` candidate agents: a-alice-1, g-01 … g-(n-1).
+     */
+    async function seed(w: World, n: number): Promise<{ f: string; agents: string[] }> {
+      const f = await create(w, 'alice', 'a-alice-1');
+      const agents = ['a-alice-1'];
+      for (let i = 1; i < n; i++) {
+        const id = `g-${String(i).padStart(2, '0')}`;
+        agents.push(id);
+        await q(
+          `INSERT INTO shared_folders_v1_grants (folder_id, agent_id, role, granted_by_user) VALUES ($1, $2, 'viewer', 'x')`,
+          [f, id],
+        );
+      }
+      await ageGrants();
+      return { f, agents };
+    }
+    // The sweep logs through its own system context (default stdout writer),
+    // not the world's logger — capture stdout for the refusal line.
+    let stdoutLines: string[] = [];
+    beforeEach(() => {
+      stdoutLines = [];
+      const write = process.stdout.write.bind(process.stdout);
+      vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+        if (typeof chunk === 'string' && chunk.includes('shared_folders_orphan_sweep_refused')) {
+          stdoutLines.push(chunk);
+          return true;
+        }
+        return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stdout.write);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+    function sweepRefusals(_w: World): Record<string, unknown>[] {
+      return stdoutLines
+        .flatMap((c) => c.split('\n'))
+        .filter((l) => l.trim() !== '')
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((l) => l.msg === 'shared_folders_orphan_sweep_refused');
+    }
+
+    it('an empty { agentIds: [] } purges, tombstones and deletes nothing, and is logged', async () => {
+      const w = await makeWorld();
+      const { f } = await seed(w, 2);
+      const before = await counts();
+      listIdsAnswer = [];
+      await w.plugin.sweep();
+      expect(listIdsCalls).toBe(1);
+      expect((await counts()).snapshot).toBe(before.snapshot);
+      expect((await folderRow(f))!.deleted_at).toBeNull();
+      expect(w.events).toEqual([]);
+      await sleep(50); // no detached cleanup may have been started
+      expect(providerCalls).toEqual([]);
+      expect(sweepRefusals(w)).toEqual([
+        expect.objectContaining({ level: 'error', reason: 'empty agents:list-ids answer', candidates: 2 }),
+      ]);
+    });
+
+    it('an under-counting answer (3 of 12 candidates listed) is refused', async () => {
+      const w = await makeWorld();
+      const { f, agents } = await seed(w, 12);
+      const before = await counts();
+      listIdsAnswer = agents.slice(0, 3);
+      await w.plugin.sweep();
+      expect((await counts()).snapshot).toBe(before.snapshot);
+      expect((await folderRow(f))!.deleted_at).toBeNull();
+      expect(w.events).toEqual([]);
+      expect(providerCalls).toEqual([]);
+      expect(sweepRefusals(w)).toEqual([
+        expect.objectContaining({ level: 'error', reason: 'implausible orphan ratio', candidates: 12, orphans: 9 }),
+      ]);
+    });
+
+    it('ratio boundary: 10 candidates with 5 orphans are purged', async () => {
+      const w = await makeWorld();
+      const { f, agents } = await seed(w, 10);
+      listIdsAnswer = agents.slice(0, 5); // a-alice-1 (owner) stays live
+      await w.plugin.sweep();
+      expect(Object.keys(await grantsOf(f)).sort()).toEqual(agents.slice(0, 5).sort());
+      expect(w.events).toHaveLength(5);
+      expect(sweepRefusals(w)).toEqual([]);
+    });
+
+    it('ratio boundary: 10 candidates with 6 orphans are refused', async () => {
+      const w = await makeWorld();
+      const { agents } = await seed(w, 10);
+      const before = await counts();
+      listIdsAnswer = agents.slice(0, 4);
+      await w.plugin.sweep();
+      expect((await counts()).snapshot).toBe(before.snapshot);
+      expect(w.events).toEqual([]);
+      expect(sweepRefusals(w)).toEqual([
+        expect.objectContaining({ reason: 'implausible orphan ratio', candidates: 10, orphans: 6 }),
+      ]);
+    });
+
+    it('a small legit case (3 candidates, 1 orphan) still heals', async () => {
+      const w = await makeWorld();
+      const { f, agents } = await seed(w, 3);
+      listIdsAnswer = agents.slice(0, 2);
+      await w.plugin.sweep();
+      expect(Object.keys(await grantsOf(f)).sort()).toEqual(agents.slice(0, 2).sort());
+      expect(w.events).toEqual([{ folderId: f, agentIds: [agents[2]] }]);
+      expect(sweepRefusals(w)).toEqual([]);
+    });
   });
 });
