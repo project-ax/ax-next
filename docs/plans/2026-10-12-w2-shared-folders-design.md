@@ -203,7 +203,11 @@ host-controlled; the runner validates it like its other env and rejects
 anything that isn't an absolute path.
 
 - **Claude runner.** Add each shared path to `additionalDirectories` (`main.ts:516`),
-  so the native Read, Edit, Write, Glob and Grep tools can reach it.
+  so the native Read, Edit, Write, Glob and Grep tools can reach it. (Measured 2026-10-12: this list is the CLI's own directory check, and the
+  runner's PreToolUse hook skips it by answering `allow` for every call the host
+  approves. So the real bounds are the host's `tool.pre-call` verdict and the
+  sandbox's mounts, as they already were for `/files`; a real-SDK e2e drives
+  Read and Edit on a shared path.)
   - Shared folders must not become a source of settings, memory or skills:
     `settingSources` stays `['user']`, and nothing in a shared folder is read as
     `CLAUDE.md`, `.claude/settings*.json` or `.claude/skills/`.
