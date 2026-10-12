@@ -1682,6 +1682,165 @@ describe('@ax/preset-memory canary', () => {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // W2 shared folders — the pod spec, on the real assembly (design §4).
+  //
+  // The real @ax/shared-folders (loaded by the k8s base), the real @ax/agents
+  // and the real filestore resolver decide which folders mount; the fake k8s
+  // api records the pod. This proves the pod SPEC — NFS volume + subPath,
+  // writable + chowned for owner/editor, read-only + no chown for a viewer, and
+  // AX_SHARED_FOLDERS — not file access across agents (that's the
+  // sandbox-subprocess shared-folders canary). The canary runs the `pod`
+  // backend; the agent-sandbox preparation of the same chown inits is pinned in
+  // packages/sandbox-k8s/src/__tests__/agent-sandbox.test.ts, and the pool's
+  // refusal to open a shared-folder session in
+  // packages/sandbox-k8s/src/__tests__/shared-pool.test.ts.
+  //
+  // Runs after the `/memory` pod test above, which asserts it saw exactly one
+  // pod; every assertion here reads only the pods it created itself.
+  // -------------------------------------------------------------------------
+  describe('W2 shared folders: pod spec', () => {
+    type Pod = {
+      spec?: {
+        initContainers?: Array<{
+          name: string;
+          env?: Array<{ name: string; value?: string }>;
+          volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+        }>;
+        containers?: Array<{
+          volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean; subPath?: string }>;
+          env?: Array<{ name: string; value?: string }>;
+        }>;
+        volumes?: Array<{ name: string; nfs?: { server?: string; path?: string } }>;
+      };
+    };
+
+    let ownerAgent = '';
+    let memberAgent = '';
+    let folderId = '';
+    let seq = 0;
+
+    async function mkAgent(displayName: string): Promise<string> {
+      const out = await bus.call<
+        { actor: { userId: string; isAdmin: boolean }; input: Record<string, unknown> },
+        { agent: { id: string } }
+      >('agents:create', ctxFor('seed', ALICE), {
+        actor: { userId: ALICE, isAdmin: false },
+        input: {
+          displayName,
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          visibility: 'personal',
+        },
+      });
+      return out.agent.id;
+    }
+
+    /** Open a session for `agentId` requesting the folder; return the pod it created. */
+    async function openPod(agentId: string): Promise<Pod> {
+      const before = createdPods.length;
+      await bus.call('sandbox:open-session', ctxFor(agentId, ALICE), {
+        sessionId: `canary-sf-${++seq}`,
+        workspaceRoot: '/tmp/workspace',
+        runnerBinary: '/tmp/stub-runner.js',
+        proxyConfig: PROXY_CONFIG,
+        owner: {
+          userId: ALICE,
+          agentId,
+          agentConfig: {
+            displayName: 'shared-folder agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-6',
+            runner: 'claude-sdk',
+          },
+        },
+        sharedFolderIds: [folderId],
+      });
+      expect(createdPods.length).toBe(before + 1);
+      return createdPods[createdPods.length - 1]! as Pod;
+    }
+
+    /** The shared-folder pieces of a pod: runner mount, its volume, its chown init, the env. */
+    function sharedParts(pod: Pod) {
+      const c0 = pod.spec?.containers?.[0];
+      const mount = c0?.volumeMounts?.find((m) => m.mountPath === `/shared/${folderId}`);
+      const volume = pod.spec?.volumes?.find((v) => v.name === mount?.name);
+      const chown = pod.spec?.initContainers?.find((i) => i.name === `${mount?.name}-chown`);
+      const env = c0?.env?.find((e) => e.name === 'AX_SHARED_FOLDERS')?.value;
+      return { mount, volume, chown, env: env === undefined ? undefined : (JSON.parse(env) as unknown) };
+    }
+
+    beforeAll(async () => {
+      ownerAgent = await mkAgent('Shared owner');
+      memberAgent = await mkAgent('Shared member');
+      const created = await bus.call<{ ownerAgentId: string }, { folderId: string }>(
+        'shared-folders:create',
+        ctxFor(ownerAgent, ALICE),
+        { ownerAgentId: ownerAgent },
+      );
+      folderId = created.folderId;
+      await bus.call('shared-folders:grant', ctxFor(ownerAgent, ALICE), {
+        folderId,
+        agentId: memberAgent,
+        role: 'editor',
+      });
+    }, 60_000);
+
+    it('the preset loads @ax/shared-folders', () => {
+      expect(pluginNames).toContain('@ax/shared-folders');
+      expect(bus.hasService('shared-folders:authorize-mounts')).toBe(true);
+    });
+
+    it('owner and editor: a writable nfs volume on the filestore at .shared/<id>, chowned, listed in AX_SHARED_FOLDERS', async () => {
+      for (const agentId of [ownerAgent, memberAgent]) {
+        const { mount, volume, chown, env } = sharedParts(await openPod(agentId));
+        expect(mount, `${agentId} has /shared/<id>`).toBeDefined();
+        expect(mount?.name).toMatch(/^ax-mount-\d+$/);
+        expect(mount?.subPath).toBe(`.shared/${folderId}`);
+        expect(mount?.readOnly).toBe(false);
+        // The SAME filestore export as /files — just a subtree no agent id can name.
+        expect(volume?.nfs).toEqual({ server: 'filestore.example.invalid', path: '/exports/ax-user-files' });
+        expect(chown, `${agentId} has a chown init for the shared volume`).toBeDefined();
+        expect(chown?.env).toContainEqual({ name: 'AX_CHOWN_TARGET', value: `/shared/${folderId}` });
+        expect(chown?.volumeMounts).toEqual([
+          { name: mount!.name, mountPath: `/shared/${folderId}`, subPath: `.shared/${folderId}`, readOnly: false },
+        ]);
+        expect(env).toEqual([{ id: folderId, path: `/shared/${folderId}`, readOnly: false }]);
+      }
+    });
+
+    it('a viewer (after a downgrade): read-only mount, no chown, readOnly in AX_SHARED_FOLDERS', async () => {
+      await bus.call('shared-folders:grant', ctxFor(ownerAgent, ALICE), {
+        folderId,
+        agentId: memberAgent,
+        role: 'viewer',
+      });
+      const pod = await openPod(memberAgent);
+      const { mount, volume, chown, env } = sharedParts(pod);
+      expect(mount?.subPath).toBe(`.shared/${folderId}`);
+      expect(mount?.readOnly).toBe(true);
+      expect(volume?.nfs).toEqual({ server: 'filestore.example.invalid', path: '/exports/ax-user-files' });
+      expect(chown, 'a viewer mount gets no chown (that would be a write)').toBeUndefined();
+      expect(env).toEqual([{ id: folderId, path: `/shared/${folderId}`, readOnly: true }]);
+      // Its own /files is still writable and still chowned.
+      const files = pod.spec?.containers?.[0]?.volumeMounts?.find((m) => m.mountPath === '/files');
+      expect(files?.readOnly).toBe(false);
+      expect(pod.spec?.initContainers?.some((i) => i.name === `${files?.name}-chown`)).toBe(true);
+    });
+
+    it('after a revoke: no shared volume, no AX_SHARED_FOLDERS', async () => {
+      await bus.call('shared-folders:revoke', ctxFor(ownerAgent, ALICE), { folderId, agentId: memberAgent });
+      const pod = await openPod(memberAgent);
+      const { mount, env } = sharedParts(pod);
+      expect(mount).toBeUndefined();
+      expect(env).toBeUndefined();
+      expect(pod.spec?.volumes?.some((v) => v.nfs?.path === '/exports/ax-user-files')).toBe(true); // /files stays
+    });
+  });
 });
 
 // TASK-576: the NFS export volume is optional. Without it the assembly still
