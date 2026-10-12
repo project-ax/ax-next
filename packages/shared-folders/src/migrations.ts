@@ -7,7 +7,7 @@ import { sql, type Kysely } from 'kysely';
  *
  * shared_folders_v1_folders — one row per folder. There is deliberately NO
  * owner column: ownership is the single `role = 'owner'` grant (one source of
- * truth; decision AXWM-2). `deleted_at` is the tombstone set while the
+ * truth; decision AXWM-3). `deleted_at` is the tombstone set while the
  * folder's bytes are being removed; `cleanup_attempts` / `next_cleanup_at`
  * drive the sweep's backoff.
  *

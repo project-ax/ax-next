@@ -11,7 +11,7 @@ import type { RunnerEnv } from '@ax/agent-runner-core';
  * other agents share; listing the folder here would silently redirect it onto
  * this agent's own governed tier — the opposite of what a shared folder is.
  * The aisdk file tools already accept any absolute path (`builtins.ts`
- * `resolvePath`), so a shared folder needs no grant at all. (Decision AXWM-2;
+ * `resolvePath`), so a shared folder needs no grant at all. (Decision AXWM-3;
  * the spec §3.6 wording was corrected.)
  */
 export function policyRecognizedRoots(

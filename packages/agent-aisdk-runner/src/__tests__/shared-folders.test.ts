@@ -14,7 +14,7 @@ import { buildBuiltinTools } from '../tools/builtins.js';
 import { policyRecognizedRoots } from '../policy-roots.js';
 
 // ---------------------------------------------------------------------------
-// W2 shared folders in the aisdk runner (spec §3.6, decision AXWM-2).
+// W2 shared folders in the aisdk runner (spec §3.6, decision AXWM-3).
 //
 // A shared folder is a file-tool root ONLY. The aisdk file tools already take
 // any absolute path, so nothing has to be granted. What must NOT happen is the

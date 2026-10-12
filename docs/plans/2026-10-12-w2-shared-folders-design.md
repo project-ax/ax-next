@@ -501,7 +501,7 @@ A dependent stack, merged as one squash with W3's first slice (§4):
 ## 11. As built (2026-10-12)
 
 Branch `feat/w2-shared-folders`; decisions in
-`.claude/memory/decisions/2026-10-12-AXWM-2.md`. Where the build differs from
+`.claude/memory/decisions/2026-10-12-AXWM-3.md`. Where the build differs from
 the text above:
 
 1. **aisdk `recognizedRoots`.** §3.6 originally said to add the shared paths.
