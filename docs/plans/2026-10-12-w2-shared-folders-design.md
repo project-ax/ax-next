@@ -576,3 +576,39 @@ the text above:
   directory.
 - The `access-reduced` event for a delete includes the owner agent.
 
+
+## 12. What W3a adds to this stack
+
+W3a (W3 spec §4.2, §4.5; not yet approved) stacks on this branch. Nothing here
+is built yet; W2 leaves these points open for it:
+
+- **`shared-folders:get { folderId } → { folderId, members }`** (W3 §4.2). One
+  new store query over `shared_folders_v1_grants` joined to live folders; no
+  schema change. Authorization is W3's rule (the actor can use at least one
+  member agent; otherwise `not-found`).
+- **`shared-folders:deleted { folderId }`** (W3 §4.2). It fires at the two
+  tombstone points that already exist:
+  - `shared-folders:delete`, right after the tombstone commits and before the
+    byte cleanup. A delete that loses a race with another delete returns before
+    this point, so the event fires once.
+  - The `agents:deleted` path, for each folder in its `tombstoned` list (an
+    owner with no editor left). A folder that passed to an heir never appears
+    there.
+  Like `access-reduced`, it's fired after the commit with no outbox, so a crash
+  in between loses it. The tombstone sweep can re-fire it for every tombstone
+  it still sees; W3's subscriber is meant to be idempotent.
+- **Replacing `sharedFolderIdsFor`** (W3 §4.5). Its one call site is
+  `sharedFolderIdsForSpawn` in the orchestrator's open step, after the prompt
+  augment. W3a moves the project lookup before the augment and hands
+  `[folderId]` to the same open step; record-before-open, the reap lifecycle and
+  the resolver's grant check stay as they are. `shared-folders-access-reduced.test.ts`
+  re-points from the option to the new source. (W3 §4.5 cites
+  `orchestrator.ts:2902` and `:3760`; on this branch they're about `:3094` and
+  `:3958`.)
+- **No call cycle.** W2's declared edges: `@ax/shared-folders` →
+  `database:get-instance`, `agents:can-manage-sharing`, `agents:resolve`
+  (`sandbox:delete-shared-folder` undeclared, §11); resolvers →
+  `shared-folders:authorize-mounts` (optional); providers →
+  `sandbox:resolve-mounts`, `sandbox:locate-shared-folder` (optional). None of
+  them reaches `@ax/conversations` or a future `@ax/projects`, so W3's
+  conversations → projects → shared-folders direction adds no loop.
