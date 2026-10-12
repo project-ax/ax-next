@@ -286,6 +286,113 @@ describe('resolveUserFilesMount — shared folders', () => {
       expect(await exists(path.join(root, 'agt_abc'))).toBe(false);
     });
 
+    // F10 — realization must never FOLLOW a link out of the root. `mkdir -p`
+    // resolves symlinks, so a `.shared` (or `.shared/<id>`) that is a symlink
+    // would make the provider create, and then hand the runner, a directory
+    // somewhere else entirely. The delete path already refuses these shapes;
+    // the open path now does too, BEFORE any mkdir and before anything is stamped.
+    describe('refuses a symlinked or non-directory .shared / folder dir (nothing is created)', () => {
+      let outside: string;
+      beforeEach(async () => {
+        outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-sf-mounts-outside-'));
+      });
+      afterEach(async () => {
+        await fs.rm(outside, { recursive: true, force: true }).catch(() => undefined);
+      });
+
+      async function expectRefused(requested: string[]): Promise<void> {
+        const { bus } = busWithResolver([userFiles(), shared(F1), shared(F2)]);
+        const mkdir = vi.fn(async () => undefined);
+        const caught = await resolveUserFilesMount(
+          ctx(),
+          bus,
+          OWNER,
+          PLUGIN,
+          mkdir,
+          requested,
+        ).catch((e: unknown) => e);
+        expect(caught).toBeInstanceOf(PluginError);
+        expect((caught as PluginError).code).toBe('mount-resolve-failed');
+        expect((caught as PluginError).plugin).toBe(PLUGIN);
+        // Validation + confinement precede every mkdir — including the agent's own files.
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(await exists(path.join(root, 'agt_abc'))).toBe(false);
+      }
+
+      it('a symlinked .shared: refused, and the symlink target is untouched (real mkdir)', async () => {
+        await fs.symlink(outside, path.join(root, '.shared'));
+        const { bus } = busWithResolver([userFiles(), shared(F1)]);
+        const caught = await resolveUserFilesMount(
+          ctx(),
+          bus,
+          OWNER,
+          PLUGIN,
+          undefined, // the default, real, recursive mkdir
+          [F1],
+        ).catch((e: unknown) => e);
+        expect(caught).toBeInstanceOf(PluginError);
+        expect((caught as PluginError).code).toBe('mount-resolve-failed');
+        // Nothing was created through the link, and nothing else was realized.
+        expect(await fs.readdir(outside)).toEqual([]);
+        expect((await fs.lstat(path.join(root, '.shared'))).isSymbolicLink()).toBe(true);
+        expect(await exists(path.join(root, 'agt_abc'))).toBe(false);
+      });
+
+      it('a dangling symlinked .shared: refused too (mkdir -p would create its target)', async () => {
+        await fs.symlink(path.join(outside, 'not-yet'), path.join(root, '.shared'));
+        await expectRefused([F1, F2]);
+        expect(await exists(path.join(outside, 'not-yet'))).toBe(false);
+      });
+
+      it('a symlinked folder directory: refused, and the symlink target is untouched (real mkdir)', async () => {
+        await fs.mkdir(path.join(root, '.shared'));
+        await fs.mkdir(path.join(outside, 'target'));
+        await fs.symlink(path.join(outside, 'target'), path.join(root, '.shared', F1));
+        const { bus } = busWithResolver([userFiles(), shared(F1)]);
+        const caught = await resolveUserFilesMount(
+          ctx(),
+          bus,
+          OWNER,
+          PLUGIN,
+          undefined,
+          [F1],
+        ).catch((e: unknown) => e);
+        expect(caught).toBeInstanceOf(PluginError);
+        expect((caught as PluginError).code).toBe('mount-resolve-failed');
+        expect(await fs.readdir(path.join(outside, 'target'))).toEqual([]);
+        expect((await fs.lstat(path.join(root, '.shared', F1))).isSymbolicLink()).toBe(true);
+      });
+
+      it('one folder is a symlink among clean siblings: the whole open is refused', async () => {
+        await fs.mkdir(path.join(root, '.shared'));
+        await fs.symlink(outside, path.join(root, '.shared', F2));
+        await expectRefused([F1, F2]);
+        expect(await exists(path.join(root, '.shared', F1))).toBe(false);
+      });
+
+      it('.shared as a regular file: refused', async () => {
+        await fs.writeFile(path.join(root, '.shared'), 'i am a file');
+        await expectRefused([F1, F2]);
+        expect(await fs.readFile(path.join(root, '.shared'), 'utf-8')).toBe('i am a file');
+      });
+
+      it('a folder directory that is a regular file: refused', async () => {
+        await fs.mkdir(path.join(root, '.shared'));
+        await fs.writeFile(path.join(root, '.shared', F1), 'i am a file');
+        await expectRefused([F1, F2]);
+        expect(await fs.readFile(path.join(root, '.shared', F1), 'utf-8')).toBe('i am a file');
+      });
+
+      it('control — real directories (and nothing yet) are realized exactly as before', async () => {
+        await fs.mkdir(path.join(root, '.shared', F1), { recursive: true });
+        const { bus } = busWithResolver([userFiles(), shared(F1), shared(F2)]);
+        const res = await resolveUserFilesMount(ctx(), bus, OWNER, PLUGIN, undefined, [F1, F2]);
+        expect(res.sharedFolders?.map((f) => f.id)).toEqual([F1, F2]);
+        expect((await fs.lstat(path.join(root, '.shared', F1))).isDirectory()).toBe(true);
+        expect((await fs.lstat(path.join(root, '.shared', F2))).isDirectory()).toBe(true);
+      });
+    });
+
     it('an nfs shared-folder mount is unrealizable here (never a silent skip)', async () => {
       const nfs: MountSpec = {
         kind: 'nfs',

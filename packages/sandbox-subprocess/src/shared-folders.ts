@@ -134,6 +134,54 @@ export function validateSharedFolderMounts(
   return entries;
 }
 
+/**
+ * Refuse to realize a shared folder through a link. `mkdir -p` FOLLOWS symlinks:
+ * a `.shared` (or `.shared/<id>`) that is a symlink would make the provider
+ * create the folder wherever the link points — and then hand that path to the
+ * runner as the shared folder. So, before any mkdir and before anything is
+ * stamped, `lstat` both components of an already-validated shared `hostPath`
+ * ({@link checkSharedFolderMount}): each must either not exist yet (mkdir will
+ * make a real directory) or be a REAL directory. A symlink (dangling or not), a
+ * regular file or anything else fails the open closed with `mount-resolve-failed`
+ * — the same two shapes {@link deleteSharedFolder} refuses. A component we
+ * cannot `lstat` (EACCES, EIO, ...) is also a refusal: unproven is not safe.
+ *
+ * Same caveat as the delete path: lstat → mkdir is not atomic. This provider is a
+ * single-host dev tool whose agents already share the host's uid; the check
+ * closes the realistic mistake (a stray link), not a concurrent attacker.
+ */
+export async function assertSharedFolderConfined(
+  hostPath: string,
+  folderId: string,
+  pluginName: string,
+): Promise<void> {
+  const refuse = (reason: string, cause?: unknown): PluginError =>
+    new PluginError({
+      code: 'mount-resolve-failed',
+      plugin: pluginName,
+      hookName: RESOLVE_HOOK,
+      message:
+        `refusing to realize shared folder '${folderId}': ${reason}. ` +
+        `Nothing was created and the session was not opened.`,
+      ...(cause !== undefined ? { cause } : {}),
+    });
+  const sharedDir = path.dirname(hostPath);
+  for (const [dir, label] of [
+    [sharedDir, SHARED_FOLDERS_DIR],
+    [hostPath, `${SHARED_FOLDERS_DIR}/${folderId}`],
+  ] as const) {
+    let stat: Stats | undefined;
+    try {
+      stat = await lstatOrUndefined(dir);
+    } catch (cause) {
+      throw refuse(`could not inspect '${label}'`, cause);
+    }
+    if (stat !== undefined && !stat.isDirectory()) {
+      throw refuse(`'${label}' is a symlink or not a directory`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // sandbox:delete-shared-folder
 // ---------------------------------------------------------------------------

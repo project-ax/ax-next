@@ -254,6 +254,79 @@ describe('sandbox:open-session — shared folders', () => {
     ).toEqual([F1, F2]);
   });
 
+  // F10 — through the real open path (real localdir resolver): a `.shared` or
+  // `.shared/<id>` that is a symlink / not a directory must fail the open
+  // closed. `mkdir -p` would otherwise follow the link and the runner would be
+  // handed (and write into) a path outside `<root>/.shared`.
+  describe('fails the session open when .shared or the folder dir is a symlink or not a directory', () => {
+    let outside: string;
+    beforeEach(async () => {
+      outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-sf-open-outside-'));
+    });
+    afterEach(async () => {
+      await fs.rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    });
+
+    async function expectOpenRefused(sessionId: string): Promise<void> {
+      const { h } = await localdirHarness(grantAll);
+      const caught = await open(h, sessionId, { sharedFolderIds: [F1, F2] }).catch(
+        (e: unknown) => e,
+      );
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('mount-resolve-failed');
+      // No runner was spawned, no session minted, and the agent's own dir was not realized.
+      await expect(
+        h.bus.call('session:is-alive', h.ctx(), { sessionId }),
+      ).resolves.toMatchObject({ alive: false });
+      expect(await exists(path.join(root, AGENT))).toBe(false);
+    }
+
+    it('a symlinked .shared: the open fails and the symlink target is untouched', async () => {
+      await fs.writeFile(path.join(outside, 'precious.txt'), 'precious');
+      await fs.symlink(outside, path.join(root, '.shared'));
+
+      await expectOpenRefused('sf-link-shared');
+
+      expect(await fs.readdir(outside)).toEqual(['precious.txt']);
+      expect(await fs.readFile(path.join(outside, 'precious.txt'), 'utf-8')).toBe('precious');
+    });
+
+    it('a symlinked folder directory: the open fails and the symlink target is untouched', async () => {
+      await fs.mkdir(path.join(root, '.shared'));
+      await fs.writeFile(path.join(outside, 'precious.txt'), 'precious');
+      await fs.symlink(outside, path.join(root, '.shared', F1));
+
+      await expectOpenRefused('sf-link-folder');
+
+      expect(await fs.readdir(outside)).toEqual(['precious.txt']);
+      // The clean sibling was not realized either: all-or-nothing.
+      expect(await exists(path.join(root, '.shared', F2))).toBe(false);
+    });
+
+    it('.shared as a regular file: the open fails', async () => {
+      await fs.writeFile(path.join(root, '.shared'), 'i am a file');
+      await expectOpenRefused('sf-file-shared');
+      expect(await fs.readFile(path.join(root, '.shared'), 'utf-8')).toBe('i am a file');
+    });
+
+    it('a folder directory that is a regular file: the open fails', async () => {
+      await fs.mkdir(path.join(root, '.shared'));
+      await fs.writeFile(path.join(root, '.shared', F1), 'i am a file');
+      await expectOpenRefused('sf-file-folder');
+      expect(await fs.readFile(path.join(root, '.shared', F1), 'utf-8')).toBe('i am a file');
+    });
+
+    it('control — pre-existing real directories open normally and are stamped', async () => {
+      await fs.mkdir(path.join(root, '.shared', F1), { recursive: true });
+      const { h } = await localdirHarness(grantAll);
+      const env = await openAndReadEnv(h, 'sf-real-dirs', { sharedFolderIds: [F1, F2] });
+      expect(JSON.parse(env.AX_SHARED_FOLDERS!)).toEqual([
+        { id: F1, path: path.join(root, '.shared', F1), readOnly: false },
+        { id: F2, path: path.join(root, '.shared', F2), readOnly: false },
+      ]);
+    });
+  });
+
   describe('fails the session open (fail closed) on malformed resolver output', () => {
     const cases: Array<[string, () => MountSpec[]]> = [
       [

@@ -76,6 +76,11 @@ const agentServices: Record<string, ServiceHandler> = {
     }
     return { agent: { id: agentId, ...a } };
   },
+  // @ax/shared-folders declares `agents:list-ids` in `calls` (its orphan sweep
+  // asks which agents still exist), so boot refuses without a provider. The
+  // sweep itself is off in this suite (`sweepIntervalMs: 0`); this answers the
+  // same table the other stubs read.
+  'agents:list-ids': async () => ({ agentIds: Object.keys(AGENTS) }),
 };
 
 function owner(agentId: string) {
@@ -138,6 +143,21 @@ async function exists(p: string): Promise<boolean> {
   );
 }
 
+/**
+ * Poll `check` until it is true, up to `timeoutMs`. `shared-folders:delete`
+ * starts the byte cleanup detached and returns immediately, so "the folder is
+ * gone" is eventually true rather than true on return. A bounded poll (not a
+ * fixed sleep) keeps a slow machine green and a broken cleanup red.
+ */
+async function waitUntil(check: () => Promise<boolean>, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await check()) return;
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for: ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 interface World {
   h: TestHarness;
   root: string;
@@ -162,8 +182,9 @@ async function makeWorld(): Promise<World> {
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      // sweepIntervalMs: 0 — no background sweep; cleanup runs only inline in
-      // `shared-folders:delete`, so a passing delete case proves THAT path.
+      // sweepIntervalMs: 0 — no background sweep; the only cleanup is the one
+      // `shared-folders:delete` starts itself (detached: it returns as soon as the
+      // tombstone is committed), so a passing delete case proves THAT path.
       createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
       createSessionInmemoryPlugin(),
       createIpcServerPlugin(),
@@ -373,13 +394,20 @@ describe('shared-folders canary (subprocess + localDir + real @ax/shared-folders
 
     await w.asAlice('shared-folders:delete', { folderId });
 
-    // Bytes removed through the real sandbox:delete-shared-folder →
-    // sandbox:locate-shared-folder path (no sweep is running).
+    // The delete returns once the tombstone is committed; the bytes go in a
+    // cleanup it started detached, through the real sandbox:delete-shared-folder
+    // → sandbox:locate-shared-folder path (no sweep is running). So wait for it.
+    await waitUntil(async () => !(await exists(dir)), `${dir} to be removed`);
+    // Not merely tombstoned: cleanup succeeded, so the row is removed too (the
+    // provider call returns first, the row delete follows — wait for that too).
+    await waitUntil(
+      async () => (await q('SELECT 1 FROM shared_folders_v1_folders WHERE folder_id = $1', [folderId])).length === 0,
+      'the folder row to be removed',
+    );
     expect(await exists(dir)).toBe(false);
-    // Not merely tombstoned: cleanup succeeded, so the row is removed too.
     expect(await q('SELECT 1 FROM shared_folders_v1_folders WHERE folder_id = $1', [folderId])).toEqual([]);
     expect(await q('SELECT 1 FROM shared_folders_v1_grants WHERE folder_id = $1', [folderId])).toEqual([]);
-    // Former grantees were told.
+    // Former grantees were told (inline, before the delete returned).
     expect(w.reduced).toEqual([{ folderId, agentIds: [A, B].sort() }]);
 
     expect(await fs.readFile(path.join(w.root, A, 'mine.txt'), 'utf-8')).toBe('a');

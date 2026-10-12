@@ -11,6 +11,7 @@ import type {
   ResolveMountsOutput,
 } from '@ax/sandbox-mount-protocol';
 import {
+  assertSharedFolderConfined,
   validateSharedFolderMounts,
   type SharedFolderEnvEntry,
 } from './shared-folders.js';
@@ -78,6 +79,9 @@ export interface ResolvedUserFilesMount {
  * - A malformed `shared-folder` mount (wrong path/mountPath/folderId, an
  *   unrequested or duplicate folder) → throws `PluginError('mount-resolve-failed')`
  *   BEFORE anything is created: every mount is validated first, then realized.
+ * - A `.shared` or `.shared/<id>` that already exists as a symlink (or anything
+ *   but a directory) → the same `mount-resolve-failed`, also before anything is
+ *   created: `mkdir -p` would follow the link out of the root.
  */
 export async function resolveUserFilesMount(
   ctx: AgentContext,
@@ -120,6 +124,12 @@ export async function resolveUserFilesMount(
     }
   }
   const sharedFolders = validateSharedFolderMounts(sharedMounts, requested, pluginName);
+  // Still pass 1: `mkdir -p` follows symlinks, so prove `<root>/.shared` and
+  // `<root>/.shared/<id>` are real directories (or absent) BEFORE anything —
+  // the agent's own files included — is created. lstat only; nothing is touched.
+  for (const entry of sharedFolders) {
+    await assertSharedFolderConfined(entry.path, entry.id, pluginName);
+  }
 
   // Pass 2 — realize.
   const result: ResolvedUserFilesMount = {};
