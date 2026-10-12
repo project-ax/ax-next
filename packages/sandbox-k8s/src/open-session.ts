@@ -210,7 +210,15 @@ export function createOpenSession(deps: OpenSessionDeps) {
         const resolved = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
           'sandbox:resolve-mounts',
           ctx,
-          { owner: input.owner },
+          {
+            owner: input.owner,
+            // W2 shared folders: the host's REQUEST, filtered by the resolver
+            // through shared-folders:authorize-mounts. Spread-when-present so a
+            // session without shared folders sends the same input as before.
+            ...(input.sharedFolderIds !== undefined && input.sharedFolderIds.length > 0
+              ? { sharedFolderIds: input.sharedFolderIds }
+              : {}),
+          },
         );
         mounts = resolved.mounts;
       } catch (err) {
@@ -283,6 +291,33 @@ export function createOpenSession(deps: OpenSessionDeps) {
           .catch(() => undefined);
         throw err;
       }
+    }
+
+    // 2c. W2 shared folders vs the shared warm pool. The pool's node helper
+    //     binds only the user-files + memory roles, so a pooled session cannot
+    //     carry a shared-folder mount yet (design §3.8). Refuse BEFORE building
+    //     or creating anything, with a clear error, and roll back the session
+    //     like every other open failure. Non-pooled sessions are unaffected.
+    const pooled = deps.config.sharedPool !== undefined &&
+      Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
+      (input.services?.length ?? 0) === 0;
+    if (pooled && mounts.some((m) => m.role === 'shared-folder')) {
+      podLog.error('shared_folders_unsupported_in_pool', {});
+      await deps.bus
+        .call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate',
+          ctx,
+          { sessionId: created.sessionId },
+        )
+        .catch(() => undefined);
+      throw new PluginError({
+        code: 'shared-folders-unsupported-in-pool',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message:
+          'shared folders are not supported for sessions on the shared warm pool yet; ' +
+          'this session asked to mount one, so it was not started',
+      });
     }
 
     // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
@@ -389,9 +424,6 @@ export function createOpenSession(deps: OpenSessionDeps) {
     });
 
     try {
-      const pooled = deps.config.sharedPool &&
-        Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
-        (input.services?.length ?? 0) === 0;
       if (deps.config.backend === 'agent-sandbox' && !pooled) {
         podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);
       }

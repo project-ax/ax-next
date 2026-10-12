@@ -16,7 +16,11 @@
 
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { buildGitCredentialEnv, type ServiceDescriptorParsed } from '@ax/sandbox-protocol';
+import {
+  buildGitCredentialEnv,
+  isValidSharedFolderId,
+  type ServiceDescriptorParsed,
+} from '@ax/sandbox-protocol';
 import type { MountSpec } from '@ax/sandbox-mount-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 
@@ -390,7 +394,13 @@ interface RealizedMounts {
   userFilesRoot?: string;
   memoryRoot?: string;
   /**
-   * Root chown init containers — one per WRITABLE `role:'user-files'` mount —
+   * W2 shared folders — one entry per realized `role:'shared-folder'` mount,
+   * in mount order. Stamped as `AX_SHARED_FOLDERS` (JSON) only when non-empty.
+   */
+  sharedFolders: Array<{ id: string; path: string; readOnly: boolean }>;
+  /**
+   * Root chown init containers — one per WRITABLE `role:'user-files'` or
+   * `role:'shared-folder'` mount —
    * that align the kubelet-created per-agent `subPath` dir to the runner
    * uid/gid so the non-root runner can write it. Empty when no writable
    * user-files mount was yielded. See `buildUserFilesChownInit`.
@@ -488,12 +498,74 @@ function validNfsSubPath(subPath: string): boolean {
   return !subPath.split('/').some((seg) => seg === '' || seg === '.' || seg === '..');
 }
 
+// W2 shared folders — where a folder lives on the user-files export and where
+// it appears in the sandbox. Local copies of @ax/sandbox-mount-protocol's
+// `SHARED_FOLDERS_DIR` / `SHARED_FOLDERS_MOUNT_BASE` (plugins may import that
+// package type-only — eslint I2); the values are part of the contract.
+const SHARED_FOLDERS_DIR = '.shared';
+const SHARED_FOLDERS_MOUNT_BASE = '/shared';
+
+/**
+ * Fail closed on a `role:'shared-folder'` nfs mount that is not EXACTLY the
+ * shape the contract promises: a valid folder id, `subPath` `.shared/<id>` and
+ * `mountPath` `/shared/<id>`. The resolver already builds these from the id;
+ * this is the provider's own lock on the same door, so a buggy or hostile
+ * resolver can't point a shared mount at another agent's subtree or mount it
+ * over an agent-controlled directory.
+ */
+function assertSharedFolderMount(mount: Extract<MountSpec, { kind: 'nfs' }>): string {
+  const folderId = mount.folderId;
+  if (!isValidSharedFolderId(folderId)) {
+    throw new Error("a role:'shared-folder' mount must carry a valid folderId");
+  }
+  if (!validNfsSubPath(mount.subPath) || mount.subPath !== `${SHARED_FOLDERS_DIR}/${folderId}`) {
+    throw new Error(
+      `a role:'shared-folder' mount subPath must be ${SHARED_FOLDERS_DIR}/<folderId>`,
+    );
+  }
+  if (mount.mountPath !== `${SHARED_FOLDERS_MOUNT_BASE}/${folderId}`) {
+    throw new Error(
+      `a role:'shared-folder' mount must mount at ${SHARED_FOLDERS_MOUNT_BASE}/<folderId>`,
+    );
+  }
+  return folderId;
+}
+
 function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
-  const out: RealizedMounts = { volumes: [], volumeMounts: [], chownInits: [] };
+  const out: RealizedMounts = {
+    volumes: [],
+    volumeMounts: [],
+    sharedFolders: [],
+    chownInits: [],
+  };
+  const sharedFolderIds = new Set<string>();
   mounts.forEach((mount, i) => {
     switch (mount.kind) {
       case 'nfs': {
         const name = `ax-mount-${i}`;
+        if (mount.role !== 'shared-folder' && mount.folderId !== undefined) {
+          throw new Error("only a role:'shared-folder' mount may carry a folderId");
+        }
+        if (mount.role === 'shared-folder') {
+          const folderId = assertSharedFolderMount(mount);
+          if (sharedFolderIds.has(folderId)) {
+            throw new Error(`shared folder ${folderId} is mounted more than once`);
+          }
+          sharedFolderIds.add(folderId);
+          out.sharedFolders.push({
+            id: folderId,
+            path: mount.mountPath,
+            readOnly: mount.readOnly,
+          });
+          // Same reason as user-files below: the kubelet creates the subPath
+          // root-owned. A viewer (read-only) mount has nothing to write, so it
+          // gets no chown — and must not, since chown would be a write.
+          if (!mount.readOnly) {
+            out.chownInits.push(
+              buildUserFilesChownInit(name, mount.mountPath, mount.subPath, image),
+            );
+          }
+        }
         out.volumes.push({
           name,
           nfs: { server: mount.server, path: mount.exportPath },
@@ -570,6 +642,19 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
       if (isPathOverlap(memorySource, nfsSourcePath(writable.exportPath, writable.subPath))) {
         throw new Error(
           `role:'memory' mount aliases a writable NFS export (${writable.exportPath}/${writable.subPath})`,
+        );
+      }
+    }
+  }
+  // A shared folder mounts at a fixed top-level path; it must never sit over or
+  // under any other mount (e.g. a resolver that put /files at /shared).
+  for (const shared of mounts) {
+    if (shared.role !== 'shared-folder') continue;
+    for (const other of mounts) {
+      if (other === shared) continue;
+      if (isPathOverlap(normalizeContainerPath(shared.mountPath), normalizeContainerPath(other.mountPath))) {
+        throw new Error(
+          `role:'shared-folder' mount path ${shared.mountPath} overlaps another mount at ${other.mountPath}`,
         );
       }
     }
@@ -850,6 +935,12 @@ export function buildPodSpec(
   }
   if (realizedMounts.memoryRoot !== undefined) {
     env.push({ name: 'AX_MEMORY_ROOT', value: realizedMounts.memoryRoot });
+  }
+  // W2 shared folders — the runner's only view of which shared folders it has
+  // and which are read-only. Absent when none were realized, so a pod with no
+  // shared folders is byte-identical to before.
+  if (realizedMounts.sharedFolders.length > 0) {
+    env.push({ name: 'AX_SHARED_FOLDERS', value: JSON.stringify(realizedMounts.sharedFolders) });
   }
 
   const spec: Record<string, unknown> = {

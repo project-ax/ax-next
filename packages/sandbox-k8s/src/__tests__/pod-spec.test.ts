@@ -1554,4 +1554,166 @@ describe('buildPodSpec', () => {
       ).not.toThrow();
     });
   });
+  // W2 shared folders (design §3.6 / §3.8 / §4 pod-spec checks).
+  describe('shared-folder mounts (role:shared-folder realization)', () => {
+    const userFiles = {
+      kind: 'nfs' as const,
+      mountPath: '/files',
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: 'agent-abc',
+      readOnly: false,
+      role: 'user-files' as const,
+    };
+    const editor = {
+      kind: 'nfs' as const,
+      mountPath: '/shared/sf_x',
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: '.shared/sf_x',
+      readOnly: false,
+      role: 'shared-folder' as const,
+      folderId: 'sf_x',
+    };
+    const viewer = {
+      ...editor,
+      mountPath: '/shared/sf_y',
+      subPath: '.shared/sf_y',
+      readOnly: true,
+      folderId: 'sf_y',
+    };
+
+    type Spec = ReturnType<typeof buildPodSpec>;
+    const vols = (spec: Spec) =>
+      ((spec.spec as { volumes?: Array<Record<string, unknown>> }).volumes ?? []);
+    const runner = (spec: Spec) =>
+      (
+        spec.spec as {
+          containers: Array<{
+            env: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+          }>;
+        }
+      ).containers[0]!;
+    const inits = (spec: Spec) =>
+      (
+        spec.spec as {
+          initContainers: Array<{
+            name: string;
+            env?: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+          }>;
+        }
+      ).initContainers;
+    const env = (spec: Spec) => Object.fromEntries(runner(spec).env.map((e) => [e.name, e.value]));
+
+    it('realizes an editor mount as an nfs volume + writable subPath mount with a chown init', () => {
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [userFiles, editor] }, baseResolved());
+      expect(vols(spec).find((v) => v.name === 'ax-mount-1')!.nfs).toEqual({
+        server: '10.0.0.2',
+        path: '/vol1/agents',
+      });
+      expect(runner(spec).volumeMounts!.find((m) => m.name === 'ax-mount-1')).toEqual({
+        name: 'ax-mount-1',
+        mountPath: '/shared/sf_x',
+        subPath: '.shared/sf_x',
+        readOnly: false,
+      });
+      const chown = inits(spec).find((c) => c.name === 'ax-mount-1-chown');
+      expect(chown).toBeDefined();
+      expect(chown!.volumeMounts).toEqual([
+        { name: 'ax-mount-1', mountPath: '/shared/sf_x', subPath: '.shared/sf_x', readOnly: false },
+      ]);
+      expect(chown!.env?.find((e) => e.name === 'AX_CHOWN_TARGET')?.value).toBe('/shared/sf_x');
+    });
+
+    it('realizes a viewer mount read-only with NO chown init', () => {
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [userFiles, viewer] }, baseResolved());
+      expect(runner(spec).volumeMounts!.find((m) => m.name === 'ax-mount-1')).toMatchObject({
+        mountPath: '/shared/sf_y',
+        subPath: '.shared/sf_y',
+        readOnly: true,
+      });
+      expect(inits(spec).find((c) => c.name === 'ax-mount-1-chown')).toBeUndefined();
+      // The user-files chown is still there — only the viewer is skipped.
+      expect(inits(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeDefined();
+    });
+
+    it('stamps AX_SHARED_FOLDERS with the exact JSON list, and AX_USERFILES_ROOT from the user-files mount only', () => {
+      // Shared mounts FIRST: user-files detection must match on role, never position.
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [editor, viewer, userFiles] },
+        baseResolved(),
+      );
+      expect(env(spec).AX_SHARED_FOLDERS).toBe(
+        '[{"id":"sf_x","path":"/shared/sf_x","readOnly":false},{"id":"sf_y","path":"/shared/sf_y","readOnly":true}]',
+      );
+      expect(env(spec).AX_USERFILES_ROOT).toBe('/files');
+    });
+
+    it('stamps no AX_SHARED_FOLDERS and leaves the pod spec unchanged when no shared mounts are yielded', () => {
+      const withShared = buildPodSpec('m', { ...baseInput, mounts: [userFiles] }, baseResolved());
+      const again = buildPodSpec('m', { ...baseInput, mounts: [userFiles] }, baseResolved());
+      expect(env(withShared).AX_SHARED_FOLDERS).toBeUndefined();
+      expect(env(buildPodSpec('m', baseInput, baseResolved())).AX_SHARED_FOLDERS).toBeUndefined();
+      expect(withShared).toEqual(again);
+      expect(env(withShared).AX_USERFILES_ROOT).toBe('/files');
+    });
+
+    it('does not set AX_USERFILES_ROOT from a shared-folder mount when there is no user-files mount', () => {
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [editor] }, baseResolved());
+      expect(env(spec).AX_USERFILES_ROOT).toBeUndefined();
+      expect(env(spec).AX_SHARED_FOLDERS).toBeDefined();
+    });
+
+    it.each([
+      ['a missing folderId', { ...editor, folderId: undefined }],
+      ['an invalid folderId', { ...editor, folderId: '../x', subPath: '.shared/../x', mountPath: '/shared/../x' }],
+      ['a folderId without the sf_ prefix', { ...editor, folderId: 'x', subPath: '.shared/x', mountPath: '/shared/x' }],
+      ['a subPath for a different folder', { ...editor, subPath: '.shared/sf_other' }],
+      ['a subPath outside .shared', { ...editor, subPath: 'agent-abc' }],
+      ['a subPath with ..', { ...editor, subPath: '.shared/sf_x/..' }],
+      ['a subPath naming the .shared parent', { ...editor, subPath: '.shared' }],
+      ['a mountPath inside /files', { ...editor, mountPath: '/files/sf_x' }],
+      ['a mountPath for a different folder', { ...editor, mountPath: '/shared/sf_other' }],
+    ])('rejects a shared-folder mount with %s (fail closed)', (_label, bad) => {
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [userFiles, bad as typeof editor] }, baseResolved()),
+      ).toThrow(/shared-folder/);
+    });
+
+    it('rejects the same folder mounted twice', () => {
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [editor, { ...editor, readOnly: true }] }, baseResolved()),
+      ).toThrow(/more than once/);
+    });
+
+    it('rejects a folderId on a mount that is not role:shared-folder', () => {
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [{ ...userFiles, folderId: 'sf_x' }] }, baseResolved()),
+      ).toThrow(/folderId/);
+    });
+
+    it('rejects another mount overlapping a shared-folder path', () => {
+      expect(() =>
+        buildPodSpec('m', { ...baseInput, mounts: [{ ...userFiles, mountPath: '/shared' }, editor] }, baseResolved()),
+      ).toThrow(/overlaps/);
+    });
+
+    it('keeps the memory-mount checks passing alongside shared mounts on the user-files export', () => {
+      const memory = {
+        kind: 'nfs' as const,
+        mountPath: '/memory',
+        server: '10.0.0.3',
+        exportPath: '/vol1/memory',
+        subPath: 'deadbeef/permanent/memory/facts',
+        readOnly: true,
+        role: 'memory' as const,
+      };
+      const spec = buildPodSpec('m', { ...baseInput, mounts: [userFiles, memory, editor, viewer] }, baseResolved());
+      expect(env(spec).AX_MEMORY_ROOT).toBe('/memory');
+      expect(JSON.parse(env(spec).AX_SHARED_FOLDERS!)).toHaveLength(2);
+    });
+  });
 });

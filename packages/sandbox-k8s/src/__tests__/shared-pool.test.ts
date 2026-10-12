@@ -264,6 +264,37 @@ describe('shared Agent Sandbox pool', () => {
       await result.handle.kill(); expect(f.storage.release).toHaveBeenCalledTimes(1);
     } finally { await h.close(); }
   });
+  // W2 shared folders §3.8: the pool's node helper cannot bind a shared folder
+  // yet, so a pooled session that would carry one refuses to open — clearly,
+  // and before any claim, storage assignment or pod exists.
+  it('refuses a pooled session with a shared-folder mount before creating anything', async () => {
+    const f = fixture();
+    const resolver: Plugin = { manifest: { name: 'fixture-resolver', version: '0', registers: ['sandbox:resolve-mounts'], calls: [], subscribes: [] },
+      init({ bus }) { bus.registerService('sandbox:resolve-mounts', 'fixture-resolver', async () => ({ mounts: [
+        { kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: 'agent-a', mountPath: '/files', readOnly: false },
+        { kind: 'nfs', role: 'shared-folder', folderId: 'sf_x', server: '10.0.0.9', exportPath: '/files', subPath: '.shared/sf_x',
+          mountPath: '/shared/sf_x', readOnly: false },
+      ] })); } };
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin(), resolver,
+      createSandboxK8sPlugin({ ...config, api: f.pods, sandboxApi: f.custom, storageClient: f.storage })] });
+    try {
+      const claimCreatesBefore = vi.mocked(f.custom.createNamespacedCustomObject).mock.calls
+        .filter(([req]) => req.plural === 'sandboxclaims').length;
+      await expect(h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 's-shared', workspaceRoot: '/agent', runnerBinary: '/runner.js', sharedFolderIds: ['sf_x'],
+        proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {}, proxyAuthToken: 'e'.repeat(32) }, owner: {
+          userId: 'user-a', agentId: 'agent-a', agentConfig: { displayName: 'A', systemPromptAugment: '',
+            allowedTools: [], mcpConfigIds: [], model: 'model', runner: 'claude-sdk' },
+        },
+      })).rejects.toMatchObject({ code: 'shared-folders-unsupported-in-pool' });
+      expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls
+        .filter(([req]) => req.plural === 'sandboxclaims')).toHaveLength(claimCreatesBefore);
+      expect(f.storage.assign).not.toHaveBeenCalled();
+      expect(f.pods.creates).toHaveLength(0);
+      // Rolled back like any other open failure: no live token left behind.
+      expect(await h.bus.call('session:is-alive', h.ctx(), { sessionId: 's-shared' })).toEqual({ alive: false });
+    } finally { await h.close(); }
+  });
 });
 
 

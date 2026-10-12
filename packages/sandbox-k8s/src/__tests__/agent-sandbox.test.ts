@@ -238,6 +238,34 @@ describe('Agent Sandbox mount preparation', () => {
     expect(api.deletes).toHaveLength(1);
   });
 
+  // W2 shared folders §3.8: a writable shared folder needs the same ownership
+  // step as /files, and GKE Sandbox forbids root init containers — so it must
+  // be prepared by a host-managed pod too. A viewer mount gets none.
+  it('prepares a writable shared-folder mount like /files, and never a read-only one', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses({ status: { phase: 'Succeeded', containerStatuses: [{ name: 'ownership', state: { terminated: { exitCode: 0 } } }] } });
+    const pod = buildPodSpec('test', { sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
+      authToken: 'session-secret', runnerEndpoint: config.hostIpcUrl,
+      mounts: [
+        { kind: 'nfs', role: 'user-files', server: '10.1.1.1', exportPath: '/files', mountPath: '/files', subPath: 'agent-one', readOnly: false },
+        { kind: 'nfs', role: 'shared-folder', folderId: 'sf_x', server: '10.1.1.1', exportPath: '/files',
+          mountPath: '/shared/sf_x', subPath: '.shared/sf_x', readOnly: false },
+        { kind: 'nfs', role: 'shared-folder', folderId: 'sf_y', server: '10.1.1.1', exportPath: '/files',
+          mountPath: '/shared/sf_y', subPath: '.shared/sf_y', readOnly: true },
+      ],
+    }, config);
+    const prepared = await prepareAgentSandboxMounts(api, pod, config, log);
+    const mounted = api.creates.map((c) =>
+      (c.body as { spec: { containers: Array<{ volumeMounts: unknown }> } }).spec.containers[0]!.volumeMounts);
+    expect(mounted).toEqual([
+      [{ name: 'ax-mount-0', mountPath: '/files', subPath: 'agent-one', readOnly: false }],
+      [{ name: 'ax-mount-1', mountPath: '/shared/sf_x', subPath: '.shared/sf_x', readOnly: false }],
+    ]);
+    expect(JSON.stringify(api.creates)).not.toContain('session-secret');
+    expect((prepared.spec.initContainers as Array<{ name: string }>).map((init) => init.name)).toEqual(['sdk-scaffold']);
+    expect(api.deletes).toHaveLength(2);
+  });
+
   it.each([null, 1])('fails closed on an unknown or failed ownership exit (%s) and deletes the preparation pod', async (code) => {
     const api = makeMockK8sApi();
     api.setReadResponses({ status: { phase: 'Succeeded', containerStatuses: code === null ? [] : [{ name: 'ownership', state: { terminated: { exitCode: code } } }] } });

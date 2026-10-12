@@ -5,7 +5,12 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
+import { isValidSharedFolderId } from '@ax/sandbox-protocol';
 import type {
+  DeleteSharedFolderInput,
+  DeleteSharedFolderOutput,
+  LocateSharedFolderInput,
+  LocateSharedFolderOutput,
   MountSpec,
   NfsMountSpec,
   ReadUserFilesInput,
@@ -426,6 +431,33 @@ export function buildCleanupCommand(): string {
 }
 
 /**
+ * Run the reclaim pod: mount the export read-WRITE and `rm -rf` ONLY
+ * `/export/$SUBPATH`. The CALLER must already have confined `mount.subPath`
+ * (`assertSafeSubPath` for an agent, `assertSharedFolderSubPath` for a shared
+ * folder). SUBPATH rides in an env var (never spliced into the shell word), so
+ * neither traversal nor injection is reachable. Throws on any failure.
+ */
+async function runReclaimPod(
+  api: K8sCoreApi,
+  config: ResolvedSandboxK8sConfig,
+  mount: NfsMountSpec,
+  podName: string,
+  log: Logger,
+): Promise<void> {
+  const pod = buildOneshotPod({
+    podName,
+    mount,
+    exportReadOnly: false,
+    command: buildCleanupCommand(),
+    securityContext: RECLAIM_CONTAINER_SECURITY,
+    config,
+  });
+  await runOneshotPod(api, pod, podName, config.namespace, log.child({ podName }), {
+    requireExitCode: true,
+  });
+}
+
+/**
  * Realize the `agents:deleted` cleanup for the k8s provider: run a one-shot pod
  * that mounts the export read-WRITE and `rm -rf`s ONLY `/export/$SUBPATH`.
  * Best-effort: a resolve failure / unrealizable kind / pod failure is logged,
@@ -455,21 +487,7 @@ export async function cleanupUserFiles(
   try {
     assertSafeSubPath(mount.subPath);
     podName = `ax-userfiles-rm-${randomUUID().slice(0, 8)}`;
-    const cleanupLog = log.child({ podName });
-    // See `buildCleanupCommand`: SUBPATH is an env var (never spliced into the
-    // word) AND already validated as one safe segment, so neither traversal nor
-    // injection is reachable.
-    const pod = buildOneshotPod({
-      podName,
-      mount,
-      exportReadOnly: false,
-      command: buildCleanupCommand(),
-      securityContext: RECLAIM_CONTAINER_SECURITY,
-      config,
-    });
-    await runOneshotPod(api, pod, podName, config.namespace, cleanupLog, {
-      requireExitCode: true,
-    });
+    await runReclaimPod(api, config, mount, podName, log);
     log.info('user_files_cleanup_done', { agentId: owner.agentId });
   } catch (err) {
     // ERROR, not warn (TASK-718). By the time this runs the agent row is gone
@@ -485,6 +503,110 @@ export async function cleanupUserFiles(
       err: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:delete-shared-folder (W2 shared folders, design §3.7) — remove one
+// shared folder's bytes with the same reclaim pod the agent cleanup uses.
+//
+// The location comes from the mount resolver's `sandbox:locate-shared-folder`
+// (it owns the backing-store config), and is then confined HERE to EXACTLY
+// `.shared/<folderId>` for the id we were asked about — a resolver that
+// answered with any other subtree (another folder, an agent's `/files`, the
+// `.shared` parent) is refused before a pod exists. This is a separate check
+// from `assertSafeSubPath`, which stays single-segment for agents.
+//
+// Unlike `cleanupUserFiles` this THROWS on every failure: the caller
+// (`@ax/shared-folders`) keeps its tombstone and retries, so a delete that did
+// not happen must never look like one that did.
+// ---------------------------------------------------------------------------
+
+const LOCATE_SHARED_FOLDER_HOOK = 'sandbox:locate-shared-folder';
+// Local copy of @ax/sandbox-mount-protocol's SHARED_FOLDERS_DIR (type-only
+// import rule, I2).
+const SHARED_FOLDERS_DIR = '.shared';
+
+/** Exactly `.shared/<folderId>` — two clean segments, the second the id. */
+function assertSharedFolderSubPath(subPath: string, folderId: string): void {
+  const segments = subPath.split('/');
+  if (
+    !isValidSharedFolderId(folderId) ||
+    subPath !== `${SHARED_FOLDERS_DIR}/${folderId}` ||
+    segments.length !== 2 ||
+    segments[0] !== SHARED_FOLDERS_DIR ||
+    !SAFE_SEGMENT_RE.test(segments[1]!)
+  ) {
+    throw new PluginError({
+      code: 'unsafe-subpath',
+      plugin: PLUGIN_NAME,
+      message: `refusing to delete a shared folder outside ${SHARED_FOLDERS_DIR}/<folderId>: ${JSON.stringify(subPath)}`,
+    });
+  }
+}
+
+export async function deleteSharedFolder(
+  ctx: AgentContext,
+  bus: HookBus,
+  api: K8sCoreApi,
+  config: ResolvedSandboxK8sConfig,
+  input: DeleteSharedFolderInput,
+  log: Logger,
+): Promise<DeleteSharedFolderOutput> {
+  const folderId = (input as { folderId?: unknown } | null)?.folderId;
+  if (!isValidSharedFolderId(folderId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'sandbox:delete-shared-folder',
+      message: 'invalid shared folder id',
+    });
+  }
+  if (!bus.hasService(LOCATE_SHARED_FOLDER_HOOK)) {
+    throw new PluginError({
+      code: 'no-mount-resolver',
+      plugin: PLUGIN_NAME,
+      hookName: 'sandbox:delete-shared-folder',
+      message: 'no mount resolver is loaded, so the shared folder cannot be located for deletion',
+    });
+  }
+  const located = await bus.call<LocateSharedFolderInput, LocateSharedFolderOutput>(
+    LOCATE_SHARED_FOLDER_HOOK,
+    ctx,
+    { folderId },
+  );
+  const mount = (located as { mount?: unknown } | null)?.mount as MountSpec | undefined;
+  if (mount === undefined || mount === null || typeof mount !== 'object') {
+    throw new PluginError({
+      code: 'invalid-return',
+      plugin: PLUGIN_NAME,
+      hookName: 'sandbox:delete-shared-folder',
+      message: 'sandbox:locate-shared-folder returned no mount',
+    });
+  }
+  if (mount.kind !== 'nfs') throw unrealizable(String(mount.kind));
+  if (typeof mount.subPath !== 'string') {
+    throw new PluginError({
+      code: 'unsafe-subpath',
+      plugin: PLUGIN_NAME,
+      message: 'refusing to delete a shared folder with no subPath',
+    });
+  }
+  assertSharedFolderSubPath(mount.subPath, folderId);
+  const podName = `ax-shared-rm-${randomUUID().slice(0, 8)}`;
+  try {
+    await runReclaimPod(api, config, mount, podName, log);
+  } catch (err) {
+    log.error('shared_folder_delete_failed', {
+      folderId,
+      subPath: mount.subPath,
+      exportPath: mount.exportPath,
+      podName,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+  log.info('shared_folder_deleted', { folderId });
+  return { deleted: true };
 }
 
 // ---------------------------------------------------------------------------
