@@ -5,10 +5,15 @@ import {
   type HookBus,
 } from '@ax/core';
 import type {
+  LocalDirMountSpec,
   MountSpec,
   ResolveMountsInput,
   ResolveMountsOutput,
 } from '@ax/sandbox-mount-protocol';
+import {
+  validateSharedFolderMounts,
+  type SharedFolderEnvEntry,
+} from './shared-folders.js';
 
 // ---------------------------------------------------------------------------
 // resolve-user-files-mount — the subprocess provider's realization of the
@@ -41,17 +46,38 @@ export interface ResolvedUserFilesMount {
    * returned no user-files mount (graceful no-mount).
    */
   userFilesRoot?: string;
+  /**
+   * W2 shared folders: one `{ id, path, readOnly }` per realized
+   * `role:'shared-folder'` mount, in resolver order — the value to stamp (as
+   * JSON) into `AX_SHARED_FOLDERS`. `path` is the HOST path (the subprocess
+   * runner sees the host filesystem, exactly as it does for `AX_USERFILES_ROOT`).
+   * Absent — not `[]` — when the session mounts no shared folder.
+   */
+  sharedFolders?: SharedFolderEnvEntry[];
 }
 
 /**
- * Resolve + realize this session's durable per-agent mounts via the optional
+ * Resolve + realize this session's durable mounts via the optional
  * `sandbox:resolve-mounts` hook. For the subprocess provider, realization is
  * `mkdir -p` of each `localDir` mount's `hostPath`. Returns the `AX_USERFILES_ROOT`
- * value (the realized path of the `role:'user-files'` mount), if any.
+ * value (the realized path of the `role:'user-files'` mount), if any, and the
+ * realized shared folders.
+ *
+ * `sharedFolderIds` (W2) is the HOST's request for which shared folders to
+ * mount; it is forwarded to the resolver as-is, and the resolver (via
+ * `shared-folders:authorize-mounts`) decides which of them actually mount. The
+ * key is left off the resolver input when nothing is requested.
+ *
+ * Every mount is matched on `role` — NEVER by position. The shared-folder
+ * mounts come after the user-files mount today, but "the first mount" is not a
+ * contract any consumer may rely on.
  *
  * - No resolver loaded → `{}` (no durable mount; pre-existing behavior).
  * - Resolver returns `[]` (e.g. anonymous, no agentId) → `{}`.
  * - An unrealizable `kind` (anything but `localDir`) → throws PluginError.
+ * - A malformed `shared-folder` mount (wrong path/mountPath/folderId, an
+ *   unrequested or duplicate folder) → throws `PluginError('mount-resolve-failed')`
+ *   BEFORE anything is created: every mount is validated first, then realized.
  */
 export async function resolveUserFilesMount(
   ctx: AgentContext,
@@ -61,29 +87,29 @@ export async function resolveUserFilesMount(
   mkdir: (path: string) => Promise<void> = async (p) => {
     await fs.mkdir(p, { recursive: true, mode: 0o700 });
   },
+  sharedFolderIds?: readonly string[],
 ): Promise<ResolvedUserFilesMount> {
   if (!bus.hasService(HOOK_NAME)) return {};
 
+  const requested = sharedFolderIds ?? [];
   const { mounts } = await bus.call<ResolveMountsInput, ResolveMountsOutput>(
     HOOK_NAME,
     ctx,
-    { owner },
+    { owner, ...(requested.length > 0 ? { sharedFolderIds: requested } : {}) },
   );
 
-  const result: ResolvedUserFilesMount = {};
+  // Pass 1 — classify + validate, touching nothing. Narrow on `kind` and accept
+  // the kinds this provider supports; reject anything else EXPLICITLY (design
+  // §4/§10). The `never` default forces a compile error if a future MountSpec
+  // member is added without teaching the subprocess provider how to handle (or
+  // explicitly reject) it.
+  const localDirs: LocalDirMountSpec[] = [];
+  const sharedMounts: LocalDirMountSpec[] = [];
   for (const mount of mounts) {
-    // Narrow on `kind` and realize the kinds this provider supports; reject
-    // anything else EXPLICITLY (design §4/§10). The `never` default forces a
-    // compile error if a future MountSpec member is added without teaching the
-    // subprocess provider how to handle (or explicitly reject) it.
     switch (mount.kind) {
       case 'localDir':
-        await mkdir(mount.hostPath);
-        if (mount.role === 'user-files') {
-          // The subprocess shares the host FS — the realized path the runner
-          // sees IS the `localDir` hostPath, not the logical `mountPath`.
-          result.userFilesRoot = mount.hostPath;
-        }
+        localDirs.push(mount);
+        if (mount.role === 'shared-folder') sharedMounts.push(mount);
         break;
       case 'nfs':
         throw unrealizable(mount.kind, pluginName);
@@ -93,6 +119,19 @@ export async function resolveUserFilesMount(
       }
     }
   }
+  const sharedFolders = validateSharedFolderMounts(sharedMounts, requested, pluginName);
+
+  // Pass 2 — realize.
+  const result: ResolvedUserFilesMount = {};
+  for (const mount of localDirs) {
+    await mkdir(mount.hostPath);
+    if (mount.role === 'user-files') {
+      // The subprocess shares the host FS — the realized path the runner
+      // sees IS the `localDir` hostPath, not the logical `mountPath`.
+      result.userFilesRoot = mount.hostPath;
+    }
+  }
+  if (sharedFolders.length > 0) result.sharedFolders = sharedFolders;
   return result;
 }
 
