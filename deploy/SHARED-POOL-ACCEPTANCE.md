@@ -284,6 +284,40 @@ Gitleaks scanned the PR history with one exact historical test-log checksum
 exception and no remaining findings. These checks supplement the isolated GKE
 evidence; production activation still requires the reviewed rollout image.
 
+### W2 shared folders on the pool
+
+**Gates the W2+W3a squash ([PR #989](https://github.com/project-ax/ax-next/pull/989)).**
+Nothing here has run yet. `/files` and `/memory` bind one level below the
+`ax-late` root. Shared folders bind **two** levels below it
+(`ax-late/shared/<id>`), and nobody has seen that depth propagate into gVisor.
+Unit tests only simulate the mounts, so the real answer has to come from GKE.
+The design is [section 3.8.1 of the shared-folders plan](../docs/plans/2026-10-12-w2-shared-folders-design.md).
+
+Use the same isolated release, fresh namespaces, and synthetic Filestore as the
+other gates, on an image that has `/ax/late/shared` and the `/shared` link, with
+the helper pods restarted onto it (see the rollout order in
+[SHARED-POOL.md](SHARED-POOL.md#shared-folders-w2)). Every session below must be
+a **pooled** one; check the claim, not just the chat.
+
+- [ ] **Editors share a folder.** On GKE with gVisor, a pooled editor session
+  for agent A writes `/shared/<id>/x`. A pooled editor session for agent B, with
+  the same folder, reads that file back. An independent read of the Filestore
+  export finds it at `.shared/<id>/x`.
+- [ ] **Viewers cannot write.** A pooled viewer session's write to
+  `/shared/<id>` fails with `EROFS`, even though the source permissions would
+  allow it. The same viewer can still read what the editors wrote.
+- [ ] **Release leaves nothing behind.** After each session ends, `mountinfo`
+  on the helper shows no `ax-late/shared/<id>` bind for it, the ledger record is
+  gone, and the file the editor wrote is still on Filestore.
+- [ ] **Cold pods still mount through the link.** A non-pooled (cold) gVisor
+  session with an editor folder writes `/shared/<id>/y`, and the file lands at
+  `.shared/<id>/y` on Filestore. The kubelet mounts at `/shared/<id>`, which now
+  resolves through the image's `/shared -> /ax/late/shared` link, the same way
+  `/files` does; this checks that it really does for `/shared`.
+
+Record the date, image digest, and a relative link to sanitized evidence, as
+for the other gates. Never put bootstrap files, tokens, or keys in the evidence.
+
 ## Evidence and observed results
 
 | Record | Scope and result |
