@@ -314,7 +314,8 @@ about the standby pod spec changes.
 3. **Host, the assignment carries the list.** `storage.assign` gains an
    optional `sharedFolders: [{ folderId, readOnly }]` (at most 16). It's
    omitted when empty, so a session without shared folders sends what it sends
-   today.
+   today. An empty list is refused on the wire, so "no folders" has one
+   form.
 4. **Helper, authorization.** Besides today's checks, the request's
    `sharedFolders` must equal the claim's annotation exactly (both empty when
    the annotation is absent). A mismatch is refused like an agent-id mismatch.
@@ -327,6 +328,9 @@ about the standby pod spec changes.
 6. **Helper, the bind.** Target `ax-late/shared/<folderId>`. Viewers get the
    same second `remount,bind,ro` that `/memory` gets. All binds happen before
    the bootstrap file is published, so the runner never starts without them.
+   The helper creates `ax-late/shared` itself with mode `0755`: the pod's
+   emptyDir hides the image's own `/ax/late/shared`, and nothing is mounted over
+   `shared`, so a root-only directory would lock the runner out.
 7. **Helper, ledger and release.** The ledger record and the recovery
    annotation carry the folder list (both stay under their 8 KiB caps at 16
    folders). Release and recovery unmount every shared target and verify it in
