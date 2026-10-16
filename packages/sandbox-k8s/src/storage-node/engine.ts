@@ -63,6 +63,8 @@ export interface StorageNodeIo {
   directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
   /** The owning uid of a held directory. */
   owner(fd: number): number;
+  /** The inode of a held directory (the NFS fileid; equal across two mounts of one export). */
+  inode(fd: number): number;
   /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
   report(message: string): void;
 }
@@ -77,6 +79,7 @@ export class StorageNodeEngine {
       chown: fd => fchownSync(fd, 1000, 1000),
       isTmpfs: path => statfsSync(path).type === 0x01021994,
       owner: fd => fstatSync(fd).uid,
+      inode: fd => fstatSync(fd).ino,
       report: message => { process.stderr.write(`${message}\n`); },
     }) {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
@@ -195,6 +198,12 @@ export class StorageNodeEngine {
             if (folder.readOnly) {
               assertReadOnlyMount(this.io.mountInfo(), this.config.userFilesReadOnlyRoot);
               readOnlySource = this.io.directory(this.config.userFilesReadOnlyRoot, sharedFolderSourceParts(folder.folderId));
+              // Two walks, so prove they reached the folder just chowned. Today
+              // nothing can swap it (`.shared` is root 0700), but this keeps the
+              // viewer path as tight as the editor's single descriptor.
+              if (this.io.inode(readOnlySource.fd) !== this.io.inode(source.fd)) {
+                throw new Error('read-only shared folder source does not match');
+              }
             }
             const [dir, leaf] = sharedFolderTargetParts(folder.folderId) as [string, string];
             // Re-proved per folder on a fresh descriptor: the late-bind volume

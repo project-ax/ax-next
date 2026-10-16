@@ -68,6 +68,7 @@ function engineFixture(data = input()) {
   const reports: string[] = [];
   const io = { directory, chown: vi.fn((fd: number) => { chowned.push(fds.get(fd)); }), isTmpfs: vi.fn(() => true),
     owner: vi.fn((fd: number) => foreignOwned.has(fds.get(fd)!) ? 1000 : 0),
+    inode: vi.fn((fd: number) => fstatSync(fd).ino),
     report: vi.fn((message: string) => { reports.push(message); }),
     mountInfo: () => [...(readOnlyRootOptions === null ? [] : [`1 2 0:1 / ${config.userFilesReadOnlyRoot} ${readOnlyRootOptions} - nfs source rw`]),
       ...[...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`)].join('\n') };
@@ -297,6 +298,13 @@ describe('storage-node shared folders', () => {
       expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.some(x => x.includes('sf_b')))).toBe(false);
       expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
     });
+  it('refuses a viewer whose read-only source is not the folder it chowned', async () => {
+    const f = engineFixture(withShared());
+    let calls = 0; f.io.inode.mockImplementation(() => ++calls);
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.some(x => x.includes('sf_b')))).toBe(false);
+    expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
+  });
   it('never binds an editor from the read-only root', async () => {
     const f = engineFixture(withShared(input(), [{ folderId: 'sf_a', readOnly: false }])); f.readOnlyRootOptions('rw');
     await f.make().assign(f.data);
@@ -589,6 +597,11 @@ describe('assertReadOnlyMount', () => {
     ['only a prefix match', line('/backing/files-ro-other', 'ro')],
   ])('refuses a mount that is %s', (_label, info) => {
     expect(() => assertReadOnlyMount(info, '/backing/files-ro')).toThrow('not mounted read-only');
+  });
+  it('reads past optional fields on a shared or slave mount', () => {
+    const info = '36 25 0:52 / /backing/files-ro ro,relatime shared:7 master:3 - nfs 10.0.0.1:/vol1 rw';
+    expect(() => assertReadOnlyMount(info, '/backing/files-ro')).not.toThrow();
+    expect(() => assertReadOnlyMount(info.replace(' ro,', ' rw,'), '/backing/files-ro')).toThrow();
   });
   it('reads per-mount options, not superblock options', () => {
     expect(() => assertReadOnlyMount('36 25 0:52 / /backing/files-ro rw - nfs src ro', '/backing/files-ro')).toThrow();

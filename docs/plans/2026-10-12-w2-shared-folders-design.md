@@ -668,6 +668,10 @@ the text above:
     viewer created landed on Filestore. The fix (§3.8.1 step 6) binds viewers
     from a read-only second mount of the export and fails closed if that mount
     isn't read-only. Cold viewers were never affected (`nfs.readOnly` volume).
+    The viewer's source is opened twice (rw to create and chown, ro to bind),
+    so the helper checks both reach the same inode before binding. A folder a
+    viewer is first to touch is created on one mount and looked up on the other;
+    if NFS caching ever hid it, activation fails closed and the open retries.
 
 **Details the text above leaves out** (all deliberate, all tested):
 
