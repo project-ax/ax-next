@@ -287,7 +287,17 @@ evidence; production activation still requires the reviewed rollout image.
 ### W2 shared folders on the pool
 
 **Gates the W2+W3a squash ([PR #989](https://github.com/project-ax/ax-next/pull/989)).**
-Nothing here has run yet. `/files` and `/memory` bind one level below the
+**Passed on 2026-10-16** (after one fix), on an isolated release with a
+dedicated tainted gVisor node; see [the evidence](gke/w2-shared-folders-acceptance-2026-10-16.json).
+The first run found that **a pooled viewer could write**: the helper bound rw
+and then ran `remount,bind,ro`, which changes only its own namespace's copy, so
+gVisor's copy stayed writable. The fix binds viewers from a read-only second
+mount of the export, as `/memory` always did. A re-run on the fixed image passed.
+Because W2 has no production caller yet, the fixture image set the orchestrator's
+folder list from a host env var and the grants were inserted into the fixture
+database; W3a's own acceptance covers the real path.
+
+`/files` and `/memory` bind one level below the
 `ax-late` root. Shared folders bind **two** levels below it
 (`ax-late/shared/<id>`), and nobody has seen that depth propagate into gVisor.
 Unit tests only simulate the mounts, so the real answer has to come from GKE.
@@ -299,17 +309,17 @@ the helper pods restarted onto it (see the rollout order in
 [SHARED-POOL.md](SHARED-POOL.md#shared-folders-w2)). Every session below must be
 a **pooled** one; check the claim, not just the chat.
 
-- [ ] **Editors share a folder.** On GKE with gVisor, a pooled editor session
+- [x] **Editors share a folder.** On GKE with gVisor, a pooled editor session
   for agent A writes `/shared/<id>/x`. A pooled editor session for agent B, with
   the same folder, reads that file back. An independent read of the Filestore
   export finds it at `.shared/<id>/x`.
-- [ ] **Viewers cannot write.** A pooled viewer session's write to
+- [x] **Viewers cannot write.** A pooled viewer session's write to
   `/shared/<id>` fails with `EROFS`, even though the source permissions would
   allow it. The same viewer can still read what the editors wrote.
-- [ ] **Release leaves nothing behind.** After each session ends, `mountinfo`
+- [x] **Release leaves nothing behind.** After each session ends, `mountinfo`
   on the helper shows no `ax-late/shared/<id>` bind for it, the ledger record is
   gone, and the file the editor wrote is still on Filestore.
-- [ ] **Cold pods still mount through the link.** A non-pooled (cold) gVisor
+- [x] **Cold pods still mount through the link.** A non-pooled (cold) gVisor
   session with an editor folder writes `/shared/<id>/y`, and the file lands at
   `.shared/<id>/y` on Filestore. The kubelet mounts at `/shared/<id>`, which now
   resolves through the image's `/shared -> /ax/late/shared` link, the same way

@@ -1,0 +1,93 @@
+{
+ "date": "2026-10-16",
+ "result": "passed-after-fix",
+ "clusterContext": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+ "gates": "deploy/SHARED-POOL-ACCEPTANCE.md#w2-shared-folders-on-the-pool",
+ "fixture": {
+  "release": "ax-w2acc",
+  "hostNamespace": "ax-w2acc",
+  "runnerNamespace": "ax-w2acc-runners",
+  "storageNamespace": "ax-w2acc-storage",
+  "poolPrefix": "ax-w2acc",
+  "ledgerPath": "/var/lib/ax-shared-storage/ax-w2acc",
+  "dedicatedNodePool": "ax-w2-accept-20261016 (1 x e2-standard-4, --sandbox type=gvisor, extra taint ax.io/acceptance=w2:NoSchedule)",
+  "database": "embedded PostgreSQL (chart subchart), own PVCs",
+  "syntheticFilestoreRoot": "/vol1/_acceptance/ax-w2acc",
+  "hostPlacement": "existing default-pool; production release untouched",
+  "provider": "real Anthropic claude-sonnet-4-6; key from the local walk env, never printed",
+  "trustedFixtureOverrides": [
+   "placement: GKE_SANDBOX_NODE_PLACEMENT and one-shot pods select/tolerate ax.io/acceptance=w2; helper DaemonSet gets the same via a Helm post-renderer",
+   "AX_FIXTURE_SHARED_FOLDERS: the k8s preset sets the orchestrator's sharedFolderIdsFor from a host env map (W2 has no production caller until W3a)",
+   "AX_FIXTURE_COLD_AGENTS: named agents take the cold (non-pooled) path",
+   "folders and grants inserted directly into the fixture database"
+  ],
+  "fixtureCommitNeverPushed": "2aff55cbc on top of 79e2e3dc"
+ },
+ "agents": {
+  "A": "owner, claude-sdk, pooled",
+  "B": "editor, aisdk, pooled",
+  "C": "viewer, claude-sdk, pooled (later forced cold)",
+  "D": "editor, claude-sdk, forced cold"
+ },
+ "run1": {
+  "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:w2fixture-2aff55cb@sha256:ff6d5b7088d4c9128d899ec8c49c9012d46675d7712acff2c645fa72cae74671",
+  "sourceCommit": "79e2e3dc3628aa569e8b5089f86ace728fbd678b + fixture",
+  "editorsShare": {
+   "passed": true,
+   "detail": "A (pooled, claim annotated readOnly:false) wrote x in 11.7 s; B (pooled, other runner class) read x and wrote b in 9.7 s; independent Filestore read found both under .shared/sf_w2acc1; helper mountinfo showed ax-late/shared/sf_w2acc1 rw"
+  },
+  "viewersCannotWrite": {
+   "passed": false,
+   "detail": "pooled viewer C (claim annotated readOnly:true): touch exited 0 and an O_CREAT open succeeded; viewer-try and v2 landed on Filestore. Helper's own mountinfo showed the viewer bind ro,relatime. Root cause: remount,bind,ro after a rw bind does not propagate to the copy gVisor's gofer uses"
+  },
+  "coldViewer": {
+   "passed": true,
+   "detail": "C forced cold: touch failed 'Read-only file system'; file absent on Filestore"
+  },
+  "releaseLeavesNothing": {
+   "passed": true,
+   "detail": "after idle reap: 0 claims, 0 ax-late binds in helper mountinfo, ledger holds only daemon.lock, all files still on Filestore"
+  },
+  "coldThroughLink": {
+   "passed": true,
+   "detail": "D on its own Sandbox (no claim): /shared -> /ax/late/shared, wrote y, read x; y on Filestore"
+  }
+ },
+ "fix": {
+  "commit": "8ed34e8c2 (feat/w2-shared-folders)",
+  "summary": "viewer folders bind from a read-only second mount of the export (/backing/files-ro); helper refuses to start, and refuses each viewer bind, unless that mount is read-only"
+ },
+ "run2": {
+  "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:w2fixture-e3ad5134@sha256:9d10b17f6538a5267a7bdbedc4c600084bade0a22de11498ee8b1a0060ae52c4",
+  "sourceCommit": "8ed34e8c2 + fixture",
+  "helperMounts": {
+   "/backing/files": "rw,relatime",
+   "/backing/files-ro": "ro,relatime"
+  },
+  "viewersCannotWrite": {
+   "passed": true,
+   "detail": "pooled viewer C: create, append and rm each failed 'Read-only file system'; reads of x and y succeeded; Filestore unchanged"
+  },
+  "editorsStillWrite": {
+   "passed": true,
+   "detail": "pooled A wrote z in 7.4 s; independent Filestore read matched"
+  },
+  "releaseLeavesNothing": {
+   "passed": true,
+   "detail": "after idle reap: 0 claims, 0 binds, ledger holds only daemon.lock"
+  }
+ },
+ "teardown": {
+  "syntheticFilestoreRootAbsent": true,
+  "releaseUninstalled": true,
+  "threeNamespacesDeleted": true,
+  "fixturePvcsDeletePolicy": "Delete (removed with the host namespace)",
+  "nodePoolDeleted": "ax-w2-accept-20261016",
+  "fixtureTlsAndCookiesDeletedLocally": true
+ },
+ "production": {
+  "release": "ax-next",
+  "revisionBeforeAndAfter": 42,
+  "touched": false
+ }
+}

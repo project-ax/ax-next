@@ -345,10 +345,16 @@ about the standby pod spec changes.
    backing export, pinning each component with `O_NOFOLLOW` (the existing
    confined-directory code), creating `.shared` and the folder if missing.
    The folder is chowned to the runner uid, as `/files` is, for viewers too
-   (the bind is still remounted read-only), so a viewer-first folder is
-   readable.
-6. **Helper, the bind.** Target `ax-late/shared/<folderId>`. Viewers get the
-   same second `remount,bind,ro` that `/memory` gets. All binds happen before
+   (the bind is still read-only), so a viewer-first folder is readable.
+6. **Helper, the bind.** Target `ax-late/shared/<folderId>`. An editor binds
+   from the user-files export. **A viewer binds from a second, read-only mount
+   of the same export** (`/backing/files-ro`), so the bind is read-only before
+   it propagates; the extra `remount,bind,ro` stays as a second guard. A remount
+   alone does not work: propagation carries new mounts, not later flag changes,
+   so gVisor's copy stays writable (the GKE run measured exactly that, §11 item
+   11). `/memory` was always safe for the same reason: its source volume is
+   read-only. The helper refuses to start, and refuses each viewer bind, unless
+   `/backing/files-ro` really is mounted read-only. All binds happen before
    the bootstrap file is published, so the runner never starts without them.
    The helper creates `ax-late/shared` itself with mode `0755`: the pod's
    emptyDir hides the image's own `/ax/late/shared`, and nothing is mounted over
@@ -381,7 +387,8 @@ level below the `ax-late` root; shared folders bind two levels below
 unit tests with simulated mounts only, so `deploy/SHARED-POOL-ACCEPTANCE.md`
 gets an item, and the squash waits for it: on GKE, a pooled editor session
 writes a file another agent's pooled session reads, and a pooled viewer's write
-fails.
+fails. **Passed on 2026-10-16** after one fix (§11 item 11); evidence in
+`deploy/gke/w2-shared-folders-acceptance-2026-10-16.json`.
 
 **Rollout order.** The helper DaemonSet uses `OnDelete`, and an old helper
 rejects an assignment with an unknown field. The image (runner and helper)
@@ -654,6 +661,13 @@ the text above:
     §3.8's "disabled" was wrong when written. Once W3a sets `sharedFolderIds`,
     a refusal would hit most project chats, so pool support is now part of this
     stack (§3.8.1).
+11. **Pooled viewers bind from a read-only mount (2026-10-16).** The GKE
+    acceptance run found a pooled viewer could write: the helper bound rw, then
+    ran `remount,bind,ro`, and its own `mountinfo` said `ro`, but the copy
+    gVisor uses stayed `rw` because a remount doesn't propagate. Two files a
+    viewer created landed on Filestore. The fix (§3.8.1 step 6) binds viewers
+    from a read-only second mount of the export and fails closed if that mount
+    isn't read-only. Cold viewers were never affected (`nfs.readOnly` volume).
 
 **Details the text above leaves out** (all deliberate, all tested):
 
