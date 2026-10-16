@@ -249,8 +249,10 @@ and the orchestrator already reads the chat on every turn. The changes:
     and refuses on any failure;
   - if `@ax/projects` isn't loaded, a `projectId` is refused, not dropped;
 - `conversations:list { agentId?, projectId? }` filters by project;
-- a subscriber on `projects:deleted { projectId }` sets `project_id` to null on
-  every user's rows.
+- a subscriber on `projects:deleted { projectId }` **purges** that project's
+  chats for every user, the same way `agents:deleted` does (TASK-718): one
+  transaction that includes soft-deleted and hidden rows, then
+  `conversations:purged` in chunks, so attachments go too (Q1, decided).
 
 **No call cycle.** Conversations calls projects. Projects never calls
 conversations: the project page's chat list is read by the channel-web route
@@ -347,8 +349,9 @@ instructions or your person's Rules.
   1. `projects:delete` calls `shared-folders:delete`. W2 tombstones the folder,
      reaps sessions through `access-reduced`, and removes the files with retries.
   2. The project row is deleted, and `projects:deleted` fires.
-  3. Conversations clears `project_id` on that project's chats. They stay in
-     each person's chat list as ordinary chats (open question Q1).
+  3. Conversations purges that project's chats for every user, including
+     chats other people started (Q1, decided). A chat whose session is
+     mid-turn was already reaped in step 1, as with agent deletion.
 
   If step 2 fails after step 1, the `shared-folders:deleted` handler removes the
   row and fires the event. That handler is idempotent.
@@ -378,8 +381,8 @@ only (invariant 6, `shadcn` skill):
   on?" (the name) and "What are you trying to get done?" (the description,
   optional).
   - The project is owned by an agent the person manages. Until W8 marks a
-    primary agent, the default is the one they used most recently (open
-    question Q5).
+    primary agent, the default is the one they used most recently (Q5,
+    decided).
   - A quiet `Select` appears only if they manage more than one agent.
 - **`/workspace/projects/:projectId`** (frame 4, chats side):
   - the name and description;
@@ -391,10 +394,11 @@ only (invariant 6, `shadcn` skill):
 - **Chat in a project** (frame 7): the normal chat view, with
   "Q4 launch ›" in the header as a `Breadcrumb` that links back. In the agent
   rail's Chats tab, project chats carry a small project label, so nothing
-  disappears from where people already look (Q6).
+  disappears from where people already look (Q6, decided).
 - **Project settings** (from ⋯, frame 11): name, description and Delete. Delete
-  confirms in an `AlertDialog` (added with the shadcn CLI), saying "Its chats
-  stay in your chat list."
+  confirms in an `AlertDialog` (added with the shadcn CLI), saying "This deletes
+  the project's files and every chat in it, including chats other people
+  started. You can't undo this."
 - **Routes** (in `channel-web/src/server`, each calling the hooks above):
   - `GET/POST /api/workspace/projects`;
   - `GET/PATCH/DELETE /api/workspace/projects/:projectId`;
@@ -431,8 +435,9 @@ checks:
 4. The prompt for 1 and 2 has the project block; the prompt for 3 doesn't.
 5. A chat in P whose agent has no grant ends `project-unavailable`, and no
    sandbox opens.
-6. Deleting P: the folder's directory is gone, chats 1 and 2 have no project,
-   and their next turn runs with no folder.
+6. Deleting P: the folder's directory is gone, chats 1 and 2 are purged
+   (`conversations:get` answers `not-found`, and `conversations:purged` fired
+   with both ids), and chat 3 is untouched.
 
 **Routes:** the memory preset canary covers the project routes over real HTTP:
 create, list, get, rename and delete. A foreign caller gets 404, an
@@ -895,7 +900,9 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   - the read-only line appears only for a viewer;
   - `{}` without a project.
 - Lifecycle:
-  - deleting a project clears its chats' projects;
+  - deleting a project purges its chats for every user, including hidden and
+    soft-deleted ones, and fires `conversations:purged`; chats outside it are
+    untouched;
   - a folder deleted through agent deletion removes the project;
   - a rename fires `augment-changed` for each member.
 - The call graph has no cycle: conversations → projects, and never back.
@@ -1079,11 +1086,14 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
 
 ## 15. Open questions
 
-Each has a recommendation, so it can be answered with a yes.
+Each has a recommendation, so it can be answered with a yes. Q1, Q5 and Q6 were
+answered on 2026-10-16.
 
-1. **Deleting a project: keep its chats or delete them?** *Recommend: keep
-   them*, as ordinary chats. Nothing a person typed is lost, and the dialog says
-   so.
+1. **Deleting a project: keep its chats or delete them?** *Decided
+   (2026-10-16): delete them*, for every user, like agent deletion (TASK-718).
+   We recommended keeping them; the call went the other way because a project
+   chat without its folder points at files that no longer exist. The dialog
+   says the chats go too and that it can't be undone.
 2. **An automatic "update project memory" step at the end of a chat?** Chats
    don't have an end; the closest moment is the idle reaper retiring a session,
    and an extra hidden turn there costs tokens on every project chat.
@@ -1096,11 +1106,11 @@ Each has a recommendation, so it can be answered with a yes.
    the agent's private memory and can be recalled in other projects.
    *Recommend: unchanged in W3* (same owner, same person), and listed as a W4
    blocker (§13).
-5. **Which agent owns a new project before W8?** *Recommend: the agent the
-   person used most recently among those they manage*, with a quiet picker only
-   when there's more than one.
-6. **Project chats in the agent rail's Chats list?** *Recommend: yes, with a
-   project label*, so moving a chat into a project never makes it disappear from
+5. **Which agent owns a new project before W8?** *Decided (2026-10-16): the
+   agent the person used most recently among those they manage*, with a quiet
+   picker only when there's more than one.
+6. **Project chats in the agent rail's Chats list?** *Decided (2026-10-16):
+   yes, with a project label*, so moving a chat into a project never makes it disappear from
    where people already look.
 
 ## 16. Review log
