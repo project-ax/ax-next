@@ -26,7 +26,7 @@ clear home.
   re-review:
   [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
   It mounts shared folders at `/shared/<folderId>` rather than inside `/files`
-  (§5.2 below still shows the older path). **W2 doesn't merge alone:** it's
+  (§5.2 now shows it too). **W2 doesn't merge alone:** it's
   developed as a PR stack and merged as one squash with W3's first slice (the
   orchestrator mounting a conversation's project), following #978.
 - **Next, in order:**
@@ -37,6 +37,12 @@ clear home.
   4. Write the W13 (agent tasks) spec.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
   together in docs PR #987 (branch `docs/ax-work-model`).
+- **2026-10-12, W3:** the W3 spec was revised after review 1 (7 findings) and
+  is waiting for re-review:
+  [`2026-10-12-w3-projects-design.md`](2026-10-12-w3-projects-design.md). It cuts
+  W3 into six slices. **W3a** (create a project, chat in it, the session mounts
+  it) is the caller W2 merges with, as one squash. Its §15 has six open
+  questions, each with a recommendation.
 
 ## Status
 
@@ -111,7 +117,7 @@ change independently, each with exactly one source of truth.
 |---|---|---|---|
 | Why | What are we trying to achieve? | Goals | Hierarchical: company → team → individual |
 | Who | Who does the work? | Agents | A primary agent per person, digital employees, temporary workers |
-| Where | Where does the work's context live? | Projects | Flat shared folders at `/files/projects/<id>`, linked from goals |
+| Where | Where does the work's context live? | Projects | Flat shared folders at `/shared/<folderId>`, linked from goals |
 | Know | What have we learned? | Knowledge | Three tiers: agent memory (private) → project memory (members) → company brain (everyone) |
 
 ## 3. Agent or project? The rule people need to know
@@ -218,8 +224,9 @@ that list.
   filestore, not inside the owner's agent folder. It survives if the owner is
   deleted: ownership passes to the next editor, and if there are no other
   members the folder is deleted.
-- **Same path for everyone.** Every member sees it at `/files/projects/<id>`, so a
-  path cited in a note works for all of them.
+- **Same path for everyone.** Every member sees it at `/shared/<folderId>`, so a
+  path cited in a note works for all of them. (W2 moved it out of `/files`, which
+  is the agent's own writable subtree; see W2 spec §3.4.)
 - **Grants** are `(folderId, agentId, role)`, where role is owner, editor or
   viewer. A viewer gets a read-only mount.
 - **Revoking access** unmounts the folder at the next session and retires live
@@ -228,7 +235,7 @@ that list.
 ### 5.2 A project is a convention on top
 
 ```
-/files/projects/<id>/
+/shared/<folderId>/
   instructions.md      # what it's for, member roles; read first
   memory/              # what agents learned, shared by all
     status.md          # where things stand; any member edits it
@@ -372,7 +379,7 @@ picks first, then runs the chosen work in parallel.
 3. **Work: one fresh session for each project and task, in parallel.**
    - Prompt: identity + `instructions.md` + the goal + the memory index + the task
    - Tools: the agent's own, narrowed by the project
-   - Mount: `/files/projects/<id>` only
+   - Mount: `/shared/<folderId>` only
 4. **Write back:** memory, task status, a goal check-in, and approvals.
    Approvals go to the Today queue. The next session starts from memory, so no
    long chat history builds up and nothing has to be compacted.
@@ -559,7 +566,7 @@ goals, tasks and memory each add their own block without importing one another.
 **W2. Shared folders.**
 - Neutral storage at `shared/<id>` and a grants table with owner, editor and
   viewer roles.
-- Members see the folder at `/files/projects/<id>` through
+- Members see the folder at `/shared/<folderId>` through
   `sandbox:resolve-mounts`, and viewers get a read-only mount.
 - Cleanup on `agents:deleted`, ownership transfer, and revocation that retires
   live sessions.
@@ -583,6 +590,10 @@ goals, tasks and memory each add their own block without importing one another.
   browser with preview and Edit, and moving a chat into a project.
 - Which project a session is for comes from the host, never from the model (see
   the W1 spec, §3.6).
+- The [W3 spec](2026-10-12-w3-projects-design.md) cuts this into six slices:
+  W3a chat in a project (merges with W2), W3b files read-only, W3c editing,
+  W3d history and undo, W3e moving chats and adding your other agents, W3f
+  narrowing and routines in a project.
 
 *Needs:* W1, W2. *Unblocks:* W4, W5, W7, W10.
 *Packages:* new `@ax/projects`, `@ax/conversations`, `@ax/routines`,
