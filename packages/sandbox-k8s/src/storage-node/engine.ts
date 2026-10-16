@@ -20,6 +20,31 @@ export interface StorageAuthority {
 export interface StorageNodeConfig {
   backingProfile: string;
   kubeletPodsRoot: string; ledgerRoot: string; userFilesRoot: string; memoryRoot?: string;
+  /**
+   * The same user-files export, mounted read-only. Viewer folders bind from here.
+   * A later `remount,bind,ro` changes only this namespace's copy: mount
+   * propagation carries new mounts, not flag changes, so the bind gVisor sees
+   * would stay writable (measured on GKE, 2026-10-16). A bind cloned from a
+   * read-only mount is read-only before it propagates, which is why `/memory`
+   * was always safe.
+   */
+  userFilesReadOnlyRoot: string;
+}
+
+/**
+ * Refuse unless the topmost mount at `path` is read-only for this namespace.
+ * The viewer guarantee rests on it, so a chart that drops `readOnly` must fail
+ * closed instead of quietly handing viewers a writable folder.
+ */
+export function assertReadOnlyMount(mountInfo: string, path: string): void {
+  let options: string | undefined;
+  for (const line of mountInfo.split('\n')) {
+    const fields = line.split(' ');
+    if (fields[4] === path) options = fields[5]; // last match = topmost mount
+  }
+  if (options === undefined || !options.split(',').includes('ro')) {
+    throw new Error(`read-only source ${path} is not mounted read-only`);
+  }
 }
 const targetName = (role: 'user-files' | 'memory') => role === 'user-files' ? 'files' : 'memory';
 /**
@@ -159,24 +184,31 @@ export class StorageNodeEngine {
         for (const folder of input.sharedFolders ?? []) {
           const source = this.io.directory(this.config.userFilesRoot, sharedFolderSourceParts(folder.folderId), true);
           const volume = this.volume(record);
-          let parent, target;
+          let parent, target, readOnlySource;
           try {
             // Every folder belongs to the runner uid, as /files does. A viewer may
             // be the first to touch a folder (created root 0700 above); without
             // this it could not read it. Its bind is still remounted read-only.
             this.io.chown(source.fd);
+            // A viewer binds from the read-only mount of the same export, never
+            // from the writable one (see `userFilesReadOnlyRoot`).
+            if (folder.readOnly) {
+              assertReadOnlyMount(this.io.mountInfo(), this.config.userFilesReadOnlyRoot);
+              readOnlySource = this.io.directory(this.config.userFilesReadOnlyRoot, sharedFolderSourceParts(folder.folderId));
+            }
             const [dir, leaf] = sharedFolderTargetParts(folder.folderId) as [string, string];
             // Re-proved per folder on a fresh descriptor: the late-bind volume
             // itself may be runner-writable, so `shared` could be swapped since.
             parent = this.sharedStaging(volume, dir);
             target = this.io.directory(parent, [leaf], true);
-            this.command('mount', ['--no-canonicalize', '--bind', source.path, target.path]);
+            this.command('mount', ['--no-canonicalize', '--bind', (readOnlySource ?? source).path, target.path]);
             if (folder.readOnly) {
+              // Belt and braces: this copy is already read-only; keep it explicit.
               const mounted = this.io.directory(parent, [leaf]);
               try { this.command('mount', ['--no-canonicalize', '-o', 'remount,bind,ro', mounted.path]); }
               finally { mounted.close(); }
             }
-          } finally { target?.close(); parent?.close(); volume.close(); source.close(); }
+          } finally { target?.close(); parent?.close(); readOnlySource?.close(); volume.close(); source.close(); }
         }
         const volume = this.volume(record);
         const directory = this.io.directory(volume, ['bootstrap'], true);

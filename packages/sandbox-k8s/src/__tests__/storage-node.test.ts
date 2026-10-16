@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
-import { StorageNodeEngine, STORAGE_REQUEST_MAX_BYTES, type StorageAuthority } from '../storage-node/engine.js';
+import { StorageNodeEngine, STORAGE_REQUEST_MAX_BYTES, assertReadOnlyMount, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from '../storage-node/authority.js';
 import { StorageAssignmentSchema, StorageRecordSchema, StorageRecoverySchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
@@ -25,9 +25,13 @@ const identity = ({ podUid, podName, claimUid, claimName, sandboxUid, sandboxNam
 // exercise the ledger and bootstrap; only privileged mount operations are simulated.
 function engineFixture(data = input()) {
   const root = mkdtempSync(join(tmpdir(), 'ax-storage-test-')); roots.push(root);
-  const config = { backingProfile: data.backingProfile, kubeletPodsRoot: join(root, 'pods'), ledgerRoot: join(root, 'ledger'), userFilesRoot: join(root, 'files') };
+  const config = { backingProfile: data.backingProfile, kubeletPodsRoot: join(root, 'pods'), ledgerRoot: join(root, 'ledger'),
+    userFilesRoot: join(root, 'files'), userFilesReadOnlyRoot: join(root, 'files-ro') };
   const volume = join(config.kubeletPodsRoot, data.podUid, 'volumes/kubernetes.io~empty-dir/ax-late');
   mkdirSync(volume, { recursive: true }); mkdirSync(config.userFilesRoot);
+  // The read-only root is a second mount of the same export; a link stands in for it.
+  symlinkSync(config.userFilesRoot, config.userFilesReadOnlyRoot);
+  let readOnlyRootOptions: string | null = 'ro';
   const fds = new Map<number, string>();
   const directory: typeof openDirectory = (base, parts, create) => {
     const parent = typeof base === 'string' ? base : fds.get(base.fd)!;
@@ -65,10 +69,11 @@ function engineFixture(data = input()) {
   const io = { directory, chown: vi.fn((fd: number) => { chowned.push(fds.get(fd)); }), isTmpfs: vi.fn(() => true),
     owner: vi.fn((fd: number) => foreignOwned.has(fds.get(fd)!) ? 1000 : 0),
     report: vi.fn((message: string) => { reports.push(message); }),
-    mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
+    mountInfo: () => [...(readOnlyRootOptions === null ? [] : [`1 2 0:1 / ${config.userFilesReadOnlyRoot} ${readOnlyRootOptions} - nfs source rw`]),
+      ...[...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`)].join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
     failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, chowned,
-    foreignOwned, reports };
+    foreignOwned, reports, readOnlyRootOptions: (v: string | null) => { readOnlyRootOptions = v; } };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -258,13 +263,16 @@ describe('storage-node activation failure reporting', () => {
 const SHARED = [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }];
 const withShared = (data = input(), sharedFolders = SHARED): StorageAssignment => ({ ...data, sharedFolders });
 describe('storage-node shared folders', () => {
-  it('binds .shared/<id> to ax-late/shared/<id>, ro-remounts viewers and chowns every source, all before publishing', async () => {
+  it('binds .shared/<id> to ax-late/shared/<id>, viewers from the read-only root, and chowns every source, all before publishing', async () => {
     const f = engineFixture(withShared()); await f.make().assign(f.data);
     const files = f.config.userFilesRoot;
     expect(f.command.mock.calls.filter(([p]) => p === 'mount').map(([, a]) => a)).toEqual([
       ['--no-canonicalize', '--bind', join(files, 'agent-a'), join(f.volume, 'files')],
+      // An editor binds from the writable export.
       ['--no-canonicalize', '--bind', join(files, '.shared/sf_a'), join(f.volume, 'shared/sf_a')],
-      ['--no-canonicalize', '--bind', join(files, '.shared/sf_b'), join(f.volume, 'shared/sf_b')],
+      // A viewer binds from the read-only mount, so the bind is read-only before
+      // it propagates. The remount below alone never reaches the runner's copy.
+      ['--no-canonicalize', '--bind', join(f.config.userFilesReadOnlyRoot, '.shared/sf_b'), join(f.volume, 'shared/sf_b')],
       ['--no-canonicalize', '-o', 'remount,bind,ro', join(f.volume, 'shared/sf_b')],
     ]);
     expect(f.chowned).toContain(join(files, '.shared/sf_a'));
@@ -280,6 +288,19 @@ describe('storage-node shared folders', () => {
     const ledger = JSON.parse(readFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), 'utf8'));
     expect(ledger.sharedFolders).toEqual(SHARED);
     expect(f.authority.protect).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sharedFolders: SHARED }));
+  });
+  it.each([['rw', 'rw,relatime'], ['missing', null]])(
+    'refuses a viewer when the read-only root is %s, binding no viewer folder and publishing nothing', async (_label, options) => {
+      const f = engineFixture(withShared());
+      f.readOnlyRootOptions(options);
+      await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+      expect(f.command.mock.calls.some(([p, a]) => p === 'mount' && a.some(x => x.includes('sf_b')))).toBe(false);
+      expect(existsSync(join(f.volume, 'bootstrap/session.json'))).toBe(false);
+    });
+  it('never binds an editor from the read-only root', async () => {
+    const f = engineFixture(withShared(input(), [{ folderId: 'sf_a', readOnly: false }])); f.readOnlyRootOptions('rw');
+    await f.make().assign(f.data);
+    expect(f.command.mock.calls.some(([, a]) => a.some(x => x.startsWith(f.config.userFilesReadOnlyRoot)))).toBe(false);
   });
   it('binds a shared folder for a session with no other storage role', async () => {
     const f = engineFixture(withShared({ ...input(), roles: [] }, [{ folderId: 'sf_a', readOnly: true }]));
@@ -554,4 +575,22 @@ it('does not equate an uncertain terminal Pod with stopped containers on the cur
     await vi.advanceTimersByTimeAsync(90001);await assertion;
     expect(f.api.patchFinalizers).not.toHaveBeenCalled();expect(f.api.deleteClaim).not.toHaveBeenCalled();
   } finally {vi.useRealTimers();}
+});
+
+describe('assertReadOnlyMount', () => {
+  const line = (path: string, options: string) => `36 25 0:52 / ${path} ${options} - nfs 10.0.0.1:/vol1 rw`;
+  it('accepts a read-only mount', () => {
+    expect(() => assertReadOnlyMount(line('/backing/files-ro', 'ro,relatime'), '/backing/files-ro')).not.toThrow();
+  });
+  it.each([
+    ['writable', line('/backing/files-ro', 'rw,relatime')],
+    ['absent', line('/backing/files', 'ro,relatime')],
+    ['covered by a writable mount', [line('/backing/files-ro', 'ro'), line('/backing/files-ro', 'rw')].join('\n')],
+    ['only a prefix match', line('/backing/files-ro-other', 'ro')],
+  ])('refuses a mount that is %s', (_label, info) => {
+    expect(() => assertReadOnlyMount(info, '/backing/files-ro')).toThrow('not mounted read-only');
+  });
+  it('reads per-mount options, not superblock options', () => {
+    expect(() => assertReadOnlyMount('36 25 0:52 / /backing/files-ro rw - nfs src ro', '/backing/files-ro')).toThrow();
+  });
 });

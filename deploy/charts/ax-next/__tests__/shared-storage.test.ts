@@ -33,7 +33,11 @@ describe('shared storage deployment', () => {
       '/var/lib/kubelet/pods', '/var/lib/ax-shared-storage/ax-shared', '/sys/class/dmi/id/product_uuid',
     ]);
     expect(pod.volumes.find(v => v.name === 'tls')!.secret!.secretName).toBe('storage-tls');
-    const host = docs.find(d => d.kind === 'Deployment' && d.metadata.name.endsWith('-host'))!.spec.template.spec;
+    // W2: viewer folders bind from a READ-ONLY mount of the export; a remount
+    // after the bind never reaches the runner's propagated copy (GKE, 2026-10-16).
+    expect(pod.containers[0].volumeMounts).toContainEqual({ name: 'user-files', mountPath: '/backing/files-ro', readOnly: true });
+    expect(pod.containers[0].volumeMounts).toContainEqual({ name: 'user-files', mountPath: '/backing/files' });
+    const host =docs.find(d => d.kind === 'Deployment' && d.metadata.name.endsWith('-host'))!.spec.template.spec;
     expect(host.containers[0].volumeMounts).toContainEqual({ name: 'storage-client-tls', mountPath: '/var/run/ax-storage-tls', readOnly: true });
     expect(host.volumes.find(v => v.name === 'storage-client-tls')!.secret!.secretName).toBe('controller-tls');
     expect(host.containers[0].env).toContainEqual({ name: 'K8S_SHARED_POOL_REPLICAS', value: '1' });
