@@ -23,8 +23,10 @@ export function sourceParts(agentId: string, role: 'user-files' | 'memory'): str
  */
 export function sharedFolderSourceParts(folderId: string): string[] {
   if (!isValidSharedFolderId(folderId)) throw new Error('invalid shared folder id');
-  return ['.shared', folderId];
+  return [SHARED_FOLDERS_ROOT, folderId];
 }
+/** The directory on the user-files export that holds every shared folder. */
+export const SHARED_FOLDERS_ROOT = '.shared';
 /** Where a shared folder binds under the pod's late-bind volume. */
 export function sharedFolderTargetParts(folderId: string): string[] {
   return ['shared', ...sharedFolderSourceParts(folderId).slice(1)];

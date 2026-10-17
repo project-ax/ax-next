@@ -427,3 +427,89 @@ export interface DeleteSharedFolderInput {
 export interface DeleteSharedFolderOutput {
   deleted: true;
 }
+
+// ---------------------------------------------------------------------------
+// `sandbox:read-shared-folder` (host-internal service hook) — W3b
+//
+//   sandbox:read-shared-folder (ctx, { folderId, relPath?, limitBytes, maxEntries? })
+//     → ReadSharedFolderOutput
+//
+// The host's READ-ONLY view of one shared folder, so a project's files can be
+// shown in the web UI and summarized for an agent without entering a sandbox.
+// Registered by the sandbox provider that owns mount realization
+// (`@ax/sandbox-k8s`, `@ax/sandbox-subprocess`).
+//
+// THIS HOOK DOES NO GRANT CHECK. Like `sandbox:locate-shared-folder` it takes
+// a bare `folderId` and answers for it. The ONLY caller is `@ax/projects`, and
+// only AFTER it has checked that the person can use the project the folder
+// belongs to. Anything else that wants a folder's bytes goes through
+// `@ax/projects` (or grows its own check) — never straight here.
+//
+// HOST-INTERNAL, never an IPC action: no wire schema, no sandbox reach. The
+// `relPath` IS untrusted, though — the folder is written by agents, so a
+// realization MUST confine every read to the folder without following a
+// symlink at ANY component, at any moment (a check-then-open is not enough:
+// the agent can swap a directory for a link in between). The k8s and
+// subprocess realizations walk component by component with O_NOFOLLOW.
+// ---------------------------------------------------------------------------
+
+/**
+ * Input to `sandbox:read-shared-folder`. `folderId` must pass
+ * `isValidSharedFolderId` (a realization rejects anything else). `relPath` is
+ * relative to the folder root; omit it (or pass `''`) for the root. Absolute
+ * paths and `''` / `.` / `..` segments are rejected. `limitBytes` bounds one
+ * file read (a longer file comes back as a prefix with `truncated: true`);
+ * `maxEntries` bounds one listing (the realization picks a default).
+ */
+export interface ReadSharedFolderInput {
+  folderId: string;
+  /** Path relative to the folder root. Default: the root itself. */
+  relPath?: string;
+  /** Most bytes of a file returned. Required: every read is bounded. */
+  limitBytes: number;
+  /** Most entries in a listing. Default chosen by the realization. */
+  maxEntries?: number;
+}
+
+/**
+ * One entry in a `sandbox:read-shared-folder` listing: a `UserFileDirEntry`
+ * plus, for files, size and last-modified time (so a file browser can show
+ * them without opening each file). Symlinks, sockets, FIFOs and devices are
+ * omitted, never named.
+ */
+export interface SharedFolderDirEntry extends UserFileDirEntry {
+  /** Bytes on disk (files only). */
+  size?: number;
+  /** Last modification, ISO-8601 (files only). */
+  updatedAt?: string;
+}
+
+/**
+ * Output of `sandbox:read-shared-folder`. Same four answers as
+ * `ReadUserFilesOutput`, with the same rules:
+ *
+ * - `file` — `truncated` says whether `contents` is a prefix; `size` is the
+ *   file's full size on disk, so a caller can show "12 MB" without fetching it.
+ * - `dir` — immediate children only; `truncated` when the listing hit
+ *   `maxEntries`.
+ * - `absent` — the folder or the path isn't there, or a component is a symlink
+ *   or not a directory. Deliberately ONE answer: telling "a link" from
+ *   "missing" would be an oracle over an agent-written tree.
+ * - `unavailable` — this deployment can't read shared folders at all (no host
+ *   read root configured, the storage won't let the host traverse it, or the
+ *   platform can't do a confined walk). Decided before the path matters.
+ *
+ * A read that FAILED (EIO, ESTALE, an unexpected EACCES deeper in) THROWS. It
+ * is neither `absent` nor `unavailable` (TASK-403).
+ */
+export type ReadSharedFolderOutput =
+  | { kind: 'file'; contents: Uint8Array; truncated: boolean; size: number }
+  | { kind: 'dir'; entries: SharedFolderDirEntry[]; truncated: boolean }
+  | { kind: 'absent' }
+  | { kind: 'unavailable' };
+
+/**
+ * The full `sandbox:read-shared-folder` handler signature — satisfied via
+ * `registerService<ReadSharedFolderInput, ReadSharedFolderOutput>`.
+ */
+export type ReadSharedFolderHandler = ServiceHandler<ReadSharedFolderInput, ReadSharedFolderOutput>;

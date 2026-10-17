@@ -7,6 +7,8 @@ import type {
   DeleteSharedFolderOutput,
   LocateSharedFolderInput,
   LocateSharedFolderOutput,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
@@ -288,6 +290,41 @@ describe('createSandboxK8sPlugin — sandbox:delete-shared-folder wiring', () =>
         spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
       };
       expect(pod.spec.containers[0]!.env).toEqual([{ name: 'SUBPATH', value: '.shared/sf_abc' }]);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// W3b — sandbox:read-shared-folder is registered and reachable through the bus.
+// Without a host read root the deployment answers `unavailable` for any folder.
+describe('createSandboxK8sPlugin — sandbox:read-shared-folder wiring', () => {
+  const pluginOpts = {
+    namespace: 'ax-test',
+    hostIpcUrl: TEST_HOST_IPC_URL,
+    orphanSweepIntervalMs: 0,
+    orphanSweepTerminalAgeMs: 600_000,
+  };
+
+  it('declares the service in registers', () => {
+    const { manifest } = createSandboxK8sPlugin({ api: makeMockK8sApi(), ...pluginOpts });
+    expect(manifest.registers).toContain('sandbox:read-shared-folder');
+  });
+
+  it('answers unavailable through the bus when no host read root is configured', async () => {
+    const api = makeMockK8sApi();
+    const h = await createTestHarness({
+      plugins: [createSessionInmemoryPlugin(), createSandboxK8sPlugin({ api, ...pluginOpts })],
+    });
+    try {
+      const out = await h.bus.call<ReadSharedFolderInput, ReadSharedFolderOutput>(
+        'sandbox:read-shared-folder',
+        h.ctx(),
+        { folderId: 'sf_abc', limitBytes: 1024 },
+      );
+      expect(out).toEqual({ kind: 'unavailable' });
+      // Never a pod per read.
+      expect(api.creates).toHaveLength(0);
     } finally {
       await h.close();
     }

@@ -18,6 +18,10 @@ import type {
   LocateSharedFolderOutput,
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
+  ReadSharedFolderHandler,
+  SharedFolderDirEntry,
 } from '../index.js';
 import { SHARED_FOLDERS_DIR, SHARED_FOLDERS_MOUNT_BASE } from '../index.js';
 
@@ -472,5 +476,63 @@ describe('shared-folder service-hook contracts (W2)', () => {
     // @ts-expect-error — `deleted` is the literal `true`; a failed delete throws instead.
     const bad: DeleteSharedFolderOutput = { deleted: false };
     expect(bad).toBeDefined();
+  });
+});
+
+describe('sandbox:read-shared-folder signature (W3b)', () => {
+  it('input: folderId + optional relPath + a byte cap + an optional entry cap', () => {
+    const root: ReadSharedFolderInput = { folderId: 'sf_a', limitBytes: 1024 };
+    expect(root.relPath).toBeUndefined();
+    expect(root.maxEntries).toBeUndefined();
+    const nested: ReadSharedFolderInput = {
+      folderId: 'sf_a',
+      relPath: 'memory/status.md',
+      limitBytes: 1024,
+      maxEntries: 60,
+    };
+    expect(nested.relPath).toBe('memory/status.md');
+    // @ts-expect-error — limitBytes is required: every read is bounded.
+    const unbounded: ReadSharedFolderInput = { folderId: 'sf_a' };
+    expect(unbounded).toBeDefined();
+  });
+
+  it('output: file (with truncated + size) | dir (with truncated) | absent | unavailable', () => {
+    const entries: SharedFolderDirEntry[] = [
+      { name: 'a.txt', kind: 'file', size: 3, updatedAt: '2026-10-17T00:00:00.000Z' },
+      { name: 'sub', kind: 'dir' },
+    ];
+    const describe1 = (o: ReadSharedFolderOutput): string => {
+      switch (o.kind) {
+        case 'file':
+          return `file:${o.contents.length}/${o.size}:${o.truncated}`;
+        case 'dir':
+          return `dir:${o.entries.length}:${o.truncated}`;
+        case 'absent':
+          return 'absent';
+        case 'unavailable':
+          return 'unavailable';
+        default: {
+          const _exhaustive: never = o;
+          return _exhaustive;
+        }
+      }
+    };
+    expect(
+      describe1({ kind: 'file', contents: new Uint8Array([1]), truncated: true, size: 9 }),
+    ).toBe('file:1/9:true');
+    expect(describe1({ kind: 'dir', entries, truncated: false })).toBe('dir:2:false');
+    expect(describe1({ kind: 'absent' })).toBe('absent');
+    expect(describe1({ kind: 'unavailable' })).toBe('unavailable');
+    // @ts-expect-error — `truncated` and `size` are required on a file answer.
+    const noSize: ReadSharedFolderOutput = { kind: 'file', contents: new Uint8Array() };
+    expect(noSize).toBeDefined();
+  });
+
+  it('ReadSharedFolderHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<ReadSharedFolderInput, ReadSharedFolderOutput> = async () => ({
+      kind: 'unavailable',
+    });
+    const handler: ReadSharedFolderHandler = raw;
+    expect(typeof handler).toBe('function');
   });
 });
