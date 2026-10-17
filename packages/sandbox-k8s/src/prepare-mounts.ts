@@ -65,5 +65,18 @@ export async function prepareAgentSandboxMounts(
       await killPod({ api, podName: name, namespace: config.namespace, podLog: log }).catch(() => undefined);
     }
   }
-  return { ...pod, spec: { ...pod.spec, initContainers: inits.filter((init) => !ownershipInits.includes(init)) } };
+  const initContainers = inits.filter((init) => !ownershipInits.includes(init));
+  // A viewer shared folder's writable `-prep` volume exists only for its
+  // ownership step. Once that ran out-of-band, no Sandbox container mounts it:
+  // drop every volume the removed inits used that nothing remaining references,
+  // so the Sandbox never even declares a writable volume it does not need.
+  const stillUsed = new Set(
+    [...(pod.spec.containers as Array<Record<string, unknown>>), ...initContainers]
+      .flatMap((c) => ((c.volumeMounts ?? []) as Array<{ name: string }>).map((m) => m.name)),
+  );
+  const prepOnly = new Set(ownershipInits
+    .flatMap((init) => (init.volumeMounts as Array<{ name: string }>).map((m) => m.name))
+    .filter((name) => !stillUsed.has(name)));
+  const volumes = (pod.spec.volumes as Array<{ name: string }> | undefined)?.filter((v) => !prepOnly.has(v.name));
+  return { ...pod, spec: { ...pod.spec, initContainers, ...(volumes ? { volumes } : {}) } };
 }

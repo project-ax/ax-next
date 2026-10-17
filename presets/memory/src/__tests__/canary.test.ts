@@ -1682,6 +1682,352 @@ describe('@ax/preset-memory canary', () => {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // W2 shared folders — the pod spec, on the real assembly (design §4).
+  //
+  // The real @ax/shared-folders (loaded by the k8s base), the real @ax/agents
+  // and the real filestore resolver decide which folders mount; the fake k8s
+  // api records the pod. This proves the pod SPEC — NFS volume + subPath,
+  // writable + chowned for owner/editor, a read-only volume for a viewer (its
+  // folder is created and chowned through a separate prep volume), and
+  // AX_SHARED_FOLDERS — not file access across agents (that's the
+  // sandbox-subprocess shared-folders canary). The canary runs the `pod`
+  // backend; the agent-sandbox preparation of the same chown inits is pinned in
+  // packages/sandbox-k8s/src/__tests__/agent-sandbox.test.ts, and the pool's
+  // refusal to open a shared-folder session in
+  // packages/sandbox-k8s/src/__tests__/shared-pool.test.ts.
+  //
+  // Runs after the `/memory` pod test above, which asserts it saw exactly one
+  // pod; every assertion here reads only the pods it created itself.
+  // -------------------------------------------------------------------------
+  describe('W2 shared folders: pod spec', () => {
+    type Pod = {
+      spec?: {
+        initContainers?: Array<{
+          name: string;
+          env?: Array<{ name: string; value?: string }>;
+          volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+        }>;
+        containers?: Array<{
+          volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean; subPath?: string }>;
+          env?: Array<{ name: string; value?: string }>;
+        }>;
+        volumes?: Array<{ name: string; nfs?: { server?: string; path?: string } }>;
+      };
+    };
+
+    let ownerAgent = '';
+    let memberAgent = '';
+    let folderId = '';
+    let seq = 0;
+
+    async function mkAgent(displayName: string): Promise<string> {
+      const out = await bus.call<
+        { actor: { userId: string; isAdmin: boolean }; input: Record<string, unknown> },
+        { agent: { id: string } }
+      >('agents:create', ctxFor('seed', ALICE), {
+        actor: { userId: ALICE, isAdmin: false },
+        input: {
+          displayName,
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          visibility: 'personal',
+        },
+      });
+      return out.agent.id;
+    }
+
+    /** Open a session for `agentId` requesting the folder; return the pod it created. */
+    async function openPod(agentId: string): Promise<Pod> {
+      const before = createdPods.length;
+      await bus.call('sandbox:open-session', ctxFor(agentId, ALICE), {
+        sessionId: `canary-sf-${++seq}`,
+        workspaceRoot: '/tmp/workspace',
+        runnerBinary: '/tmp/stub-runner.js',
+        proxyConfig: PROXY_CONFIG,
+        owner: {
+          userId: ALICE,
+          agentId,
+          agentConfig: {
+            displayName: 'shared-folder agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-6',
+            runner: 'claude-sdk',
+          },
+        },
+        sharedFolderIds: [folderId],
+      });
+      expect(createdPods.length).toBe(before + 1);
+      return createdPods[createdPods.length - 1]! as Pod;
+    }
+
+    /** The shared-folder pieces of a pod: runner mount, its volume, its chown init, the env. */
+    function sharedParts(pod: Pod) {
+      const c0 = pod.spec?.containers?.[0];
+      const mount = c0?.volumeMounts?.find((m) => m.mountPath === `/shared/${folderId}`);
+      const volume = pod.spec?.volumes?.find((v) => v.name === mount?.name);
+      const chown = pod.spec?.initContainers?.find((i) => i.name === `${mount?.name}-chown`);
+      const env = c0?.env?.find((e) => e.name === 'AX_SHARED_FOLDERS')?.value;
+      return { mount, volume, chown, env: env === undefined ? undefined : (JSON.parse(env) as unknown) };
+    }
+
+    beforeAll(async () => {
+      ownerAgent = await mkAgent('Shared owner');
+      memberAgent = await mkAgent('Shared member');
+      const created = await bus.call<{ ownerAgentId: string }, { folderId: string }>(
+        'shared-folders:create',
+        ctxFor(ownerAgent, ALICE),
+        { ownerAgentId: ownerAgent },
+      );
+      folderId = created.folderId;
+      await bus.call('shared-folders:grant', ctxFor(ownerAgent, ALICE), {
+        folderId,
+        agentId: memberAgent,
+        role: 'editor',
+      });
+    }, 60_000);
+
+    it('the preset loads @ax/shared-folders', () => {
+      expect(pluginNames).toContain('@ax/shared-folders');
+      expect(bus.hasService('shared-folders:authorize-mounts')).toBe(true);
+    });
+
+    it('owner and editor: a writable nfs volume on the filestore at .shared/<id>, chowned, listed in AX_SHARED_FOLDERS', async () => {
+      for (const agentId of [ownerAgent, memberAgent]) {
+        const { mount, volume, chown, env } = sharedParts(await openPod(agentId));
+        expect(mount, `${agentId} has /shared/<id>`).toBeDefined();
+        expect(mount?.name).toMatch(/^ax-mount-\d+$/);
+        expect(mount?.subPath).toBe(`.shared/${folderId}`);
+        expect(mount?.readOnly).toBe(false);
+        // The SAME filestore export as /files — just a subtree no agent id can name.
+        expect(volume?.nfs).toEqual({ server: 'filestore.example.invalid', path: '/exports/ax-user-files' });
+        expect(chown, `${agentId} has a chown init for the shared volume`).toBeDefined();
+        expect(chown?.env).toContainEqual({ name: 'AX_CHOWN_TARGET', value: `/shared/${folderId}` });
+        expect(chown?.volumeMounts).toEqual([
+          { name: mount!.name, mountPath: `/shared/${folderId}`, subPath: `.shared/${folderId}`, readOnly: false },
+        ]);
+        expect(env).toEqual([{ id: folderId, path: `/shared/${folderId}`, readOnly: false }]);
+      }
+    });
+
+    it('a viewer (after a downgrade): read-only volume and mount, chowned only through a prep volume, readOnly in AX_SHARED_FOLDERS', async () => {
+      await bus.call('shared-folders:grant', ctxFor(ownerAgent, ALICE), {
+        folderId,
+        agentId: memberAgent,
+        role: 'viewer',
+      });
+      const pod = await openPod(memberAgent);
+      const { mount, volume, chown, env } = sharedParts(pod);
+      expect(mount?.subPath).toBe(`.shared/${folderId}`);
+      expect(mount?.readOnly).toBe(true);
+      expect(volume?.nfs).toEqual({
+        server: 'filestore.example.invalid',
+        path: '/exports/ax-user-files',
+        readOnly: true,
+      });
+      // The folder is created + chowned by an init that mounts a SEPARATE
+      // writable prep volume; the runner never mounts that volume.
+      const prepName = `${mount?.name}-prep`;
+      expect(chown?.volumeMounts?.map((m) => m.name)).toEqual([prepName]);
+      expect(pod.spec?.volumes?.find((v) => v.name === prepName)?.nfs?.readOnly).not.toBe(true);
+      expect(pod.spec?.containers?.[0]?.volumeMounts?.some((m) => m.name === prepName)).toBe(false);
+      expect(env).toEqual([{ id: folderId, path: `/shared/${folderId}`, readOnly: true }]);
+      // Its own /files is still writable and still chowned.
+      const files = pod.spec?.containers?.[0]?.volumeMounts?.find((m) => m.mountPath === '/files');
+      expect(files?.readOnly).toBe(false);
+      expect(pod.spec?.initContainers?.some((i) => i.name === `${files?.name}-chown`)).toBe(true);
+    });
+
+    it('after a revoke: no shared volume, no AX_SHARED_FOLDERS', async () => {
+      await bus.call('shared-folders:revoke', ctxFor(ownerAgent, ALICE), { folderId, agentId: memberAgent });
+      const pod = await openPod(memberAgent);
+      const { mount, env } = sharedParts(pod);
+      expect(mount).toBeUndefined();
+      expect(env).toBeUndefined();
+      expect(pod.spec?.volumes?.some((v) => v.nfs?.path === '/exports/ax-user-files')).toBe(true); // /files stays
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // W3a — the project routes over real HTTP, real Postgres and the real
+  // @ax/projects / @ax/shared-folders / @ax/conversations (W3 §4.9 "Routes").
+  // Alice admins the team; Bob is a plain member; Eve is a stranger.
+  // -------------------------------------------------------------------------
+  describe('W3a projects: routes', () => {
+    // An earlier case removes Bob from the team (team-member revocation);
+    // these cases need him back as a plain, non-admin member.
+    beforeAll(async () => {
+      try {
+        await bus.call('teams:add-member', ctxFor('seed', ALICE), {
+          actor: { userId: ALICE },
+          teamId,
+          userId: BOB,
+          role: 'member',
+        });
+      } catch (err) {
+        // Already a member (the cases ran in isolation) is fine.
+        if (!(err instanceof PluginError)) throw err;
+      }
+    });
+
+    async function status(method: string, p: string, user: string | null, body?: unknown): Promise<number> {
+      const r = await fetch(url(p), {
+        method,
+        ...http(user),
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      await r.arrayBuffer();
+      return r.status;
+    }
+
+    it('the preset loads @ax/projects', () => {
+      expect(pluginNames).toContain('@ax/projects');
+      expect(bus.hasService('projects:create')).toBe(true);
+    });
+
+    it('create, list, get, rename, chat in it, and delete (which purges its chats)', async () => {
+      // Owner candidates: the agents Alice manages, never Bob's.
+      const cands = await apiJson('GET', '/api/workspace/projects/owner-candidates', ALICE);
+      expect(cands.status).toBe(200);
+      const candIds = (cands.json.agents as Array<{ agentId: string }>).map((a) => a.agentId);
+      expect(candIds).toEqual(expect.arrayContaining([aliceAgentId, teamAgentId]));
+      expect(candIds).not.toContain(bobAgentId);
+
+      const created = await apiJson('POST', '/api/workspace/projects', ALICE, {
+        name: '  Q4 launch  ',
+        description: 'Ship the thing',
+        ownerAgentId: teamAgentId,
+      });
+      expect(created.status).toBe(201);
+      const projectId = created.json.projectId as string;
+      expect(projectId).toMatch(/^prj_/);
+      expect(Object.keys(created.json)).toEqual(['projectId']);
+
+      const list = await apiJson('GET', '/api/workspace/projects', ALICE);
+      expect(list.status).toBe(200);
+      const row = (list.json.projects as Array<Record<string, unknown>>).find((p) => p.projectId === projectId);
+      expect(row).toMatchObject({
+        name: 'Q4 launch',
+        description: 'Ship the thing',
+        members: [{ agentId: teamAgentId, role: 'owner' }],
+      });
+
+      const got = await apiJson('GET', `/api/workspace/projects/${projectId}`, ALICE);
+      expect(got.status).toBe(200);
+      expect(got.json).toMatchObject({
+        projectId,
+        name: 'Q4 launch',
+        canManage: true,
+        members: [{ agentId: teamAgentId, role: 'owner', displayName: 'Team agent' }],
+      });
+      expect(JSON.stringify(got.json)).not.toContain('folder');
+
+      const renamed = await apiJson('PATCH', `/api/workspace/projects/${projectId}`, ALICE, { name: 'Q4 launch v2' });
+      expect(renamed.status).toBe(200);
+      expect(renamed.json.name).toBe('Q4 launch v2');
+
+      // A chat started in the project, through the real conversations gate.
+      const chat = await apiJson('POST', '/api/chat/conversations', ALICE, { agentId: teamAgentId, projectId });
+      expect(chat.status).toBe(201);
+      const conversationId = chat.json.conversationId as string;
+      const inProject = await apiJson('GET', `/api/workspace/projects/${projectId}/conversations`, ALICE);
+      expect(inProject.status).toBe(200);
+      expect((inProject.json.conversations as Array<{ conversationId: string }>).map((c) => c.conversationId)).toEqual([
+        conversationId,
+      ]);
+      const listed = await fetch(url('/api/chat/conversations'), http(ALICE));
+      const convs = (await listed.json()) as Array<{ conversationId: string; projectId: string | null }>;
+      expect(convs.find((c) => c.conversationId === conversationId)?.projectId).toBe(projectId);
+      // The rail labels it.
+      const detail = await apiJson('GET', `/api/workspace/agents/${teamAgentId}`, ALICE);
+      expect(detail.json.project).toEqual({ projectId, name: 'Q4 launch v2' });
+
+      // A project id beside an existing conversation is refused.
+      const mixed = await apiJson('POST', '/api/chat/messages', ALICE, {
+        conversationId,
+        agentId: teamAgentId,
+        contentBlocks: [{ type: 'text', text: 'hi' }],
+        projectId,
+      });
+      expect(mixed.status).toBe(400);
+
+      expect(await status('DELETE', `/api/workspace/projects/${projectId}`, ALICE)).toBe(204);
+      expect((await apiJson('GET', `/api/workspace/projects/${projectId}`, ALICE)).status).toBe(404);
+      const after = await apiJson('GET', '/api/workspace/projects', ALICE);
+      expect((after.json.projects as Array<{ projectId: string }>).some((p) => p.projectId === projectId)).toBe(false);
+      // Q1: deleting a project deletes its chats.
+      expect((await apiJson('GET', `/api/chat/conversations/${conversationId}`, ALICE)).status).toBe(404);
+    });
+
+    it('a team member can use but not create, rename or delete; a stranger gets the same 404 as a missing id', async () => {
+      const created = await apiJson('POST', '/api/workspace/projects', ALICE, {
+        name: 'Team plans',
+        ownerAgentId: teamAgentId,
+      });
+      expect(created.status).toBe(201);
+      const projectId = created.json.projectId as string;
+
+      // Bob (member, not admin): uses the team agent, so he can see it…
+      const bobGet = await apiJson('GET', `/api/workspace/projects/${projectId}`, BOB);
+      expect(bobGet.status).toBe(200);
+      expect(bobGet.json.canManage).toBe(false);
+      const bobList = await apiJson('GET', '/api/workspace/projects', BOB);
+      expect((bobList.json.projects as Array<{ projectId: string }>).map((p) => p.projectId)).toContain(projectId);
+      // …but managing the team agent is the admin's.
+      expect(
+        (await apiJson('POST', '/api/workspace/projects', BOB, { name: 'Mine', ownerAgentId: teamAgentId })).status,
+      ).toBe(403);
+      expect((await apiJson('PATCH', `/api/workspace/projects/${projectId}`, BOB, { name: 'Bob was here' })).status).toBe(
+        403,
+      );
+      expect(await status('DELETE', `/api/workspace/projects/${projectId}`, BOB)).toBe(403);
+      const bobCands = await apiJson('GET', '/api/workspace/projects/owner-candidates', BOB);
+      // His own agents only (earlier cases gave him more than one); never the team's.
+      const bobCandIds = (bobCands.json.agents as Array<{ agentId: string }>).map((a) => a.agentId);
+      expect(bobCandIds).toContain(bobAgentId);
+      expect(bobCandIds).not.toContain(teamAgentId);
+
+      // Eve: foreign and missing are indistinguishable.
+      const foreign = await apiJson('GET', `/api/workspace/projects/${projectId}`, EVE);
+      const missing = await apiJson('GET', '/api/workspace/projects/prj_doesnotexist', EVE);
+      expect(foreign).toEqual({ status: 404, json: { error: 'project-not-found' } });
+      expect(missing).toEqual(foreign);
+      expect((await apiJson('PATCH', `/api/workspace/projects/${projectId}`, EVE, { name: 'Eve' })).status).toBe(404);
+      expect(await status('DELETE', `/api/workspace/projects/${projectId}`, EVE)).toBe(404);
+      expect((await apiJson('GET', `/api/workspace/projects/${projectId}/conversations`, EVE)).status).toBe(404);
+      expect((await apiJson('GET', '/api/workspace/projects', EVE)).json).toEqual({ projects: [] });
+      // Eve can't start a chat in it either (her own agent can't use it).
+      const eveChat = await apiJson('POST', '/api/chat/conversations', EVE, { agentId: aliceAgentId, projectId });
+      expect(eveChat.status).toBe(404);
+
+      // Unauthenticated: 401 everywhere.
+      expect((await apiJson('GET', '/api/workspace/projects', null)).status).toBe(401);
+      expect((await apiJson('GET', `/api/workspace/projects/${projectId}`, null)).status).toBe(401);
+      expect((await apiJson('POST', '/api/workspace/projects', null, { name: 'X', ownerAgentId: teamAgentId })).status).toBe(
+        401,
+      );
+
+      // No CSRF header (and no Origin): every write is refused before the handler.
+      for (const [method, p, body] of [
+        ['POST', '/api/workspace/projects', { name: 'Sneaky', ownerAgentId: teamAgentId }],
+        ['PATCH', `/api/workspace/projects/${projectId}`, { name: 'Sneaky' }],
+        ['DELETE', `/api/workspace/projects/${projectId}`, undefined],
+      ] as const) {
+        const r = await fetch(url(p), {
+          method,
+          headers: { 'content-type': 'application/json', 'x-test-user': ALICE },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        });
+        expect(r.status, `${method} ${p}`).toBe(403);
+      }
+      const still = await apiJson('GET', `/api/workspace/projects/${projectId}`, ALICE);
+      expect(still.json.name).toBe('Team plans');
+    });
+  });
 });
 
 // TASK-576: the NFS export volume is optional. Without it the assembly still

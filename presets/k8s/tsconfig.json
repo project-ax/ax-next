@@ -48,6 +48,8 @@
     { "path": "../../packages/skills-parser" },
     { "path": "../../packages/skill-broker" },
     { "path": "../../packages/host-grants" },
+    { "path": "../../packages/shared-folders" },
+    { "path": "../../packages/projects" },
     { "path": "../../packages/tool-policy" },
     { "path": "../../packages/decisions" },
     { "path": "../../packages/http-server" },

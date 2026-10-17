@@ -13,6 +13,7 @@ import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
 import { makeRememberedSitesHandlers } from './routes-remembered-sites.js';
+import { registerProjectsRoutes } from './routes-projects.js';
 import { registerWorkspaceRoutes } from './routes-workspace.js';
 import {
   createBufferFillSubscriber,
@@ -646,6 +647,40 @@ export function createChannelWebServerPlugin(
           degradation:
             'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
         },
+        // W3a — projects (W3 spec §4.8). @ax/projects is Postgres-only, so a
+        // preset without it still boots; each route below says what it does
+        // instead. Every call runs on a ctx whose userId is the authenticated
+        // person (the hooks take their actor from ctx.userId).
+        {
+          hook: 'projects:list',
+          degradation:
+            'GET /api/workspace/projects answers an empty list, and chats carry no project label in the agent detail',
+        },
+        {
+          hook: 'projects:create',
+          degradation: 'POST /api/workspace/projects answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:get',
+          degradation:
+            'GET /api/workspace/projects/:projectId and its /conversations answer 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:update',
+          degradation: 'PATCH /api/workspace/projects/:projectId answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:delete',
+          degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
+        },
+        {
+          // "May this person manage this agent's sharing?" — who may own a new
+          // project, and whether the project page offers rename/delete. The
+          // hooks re-check; this only decides what to offer.
+          hook: 'agents:can-manage-sharing',
+          degradation:
+            'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',
+        },
       ],
       subscribes: [
         'chat:stream-chunk',
@@ -980,6 +1015,12 @@ export function createChannelWebServerPlugin(
         buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);
+
+      // W3a — the project routes (GET/POST /api/workspace/projects, …).
+      // Always mounted, like the workspace routes: without @ax/projects they
+      // answer an empty list or 503 (see the manifest's degradations).
+      const projectsRouteUnregisters = await registerProjectsRoutes(bus, initCtx);
+      for (const u of projectsRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

@@ -128,6 +128,17 @@ export interface AgentContext {
    * model, and never recoverable after the fact once the turn has started.
    */
   readonly triggerLabel?: string;
+  /**
+   * The project this work runs in (W3), or unset for work outside any project.
+   * **Host-set only**, like `source`: the orchestrator sets it from the chat's
+   * row after `projects:resolve` has checked the agent's grant, and nothing
+   * crossing the sandbox boundary may supply or change it. The model never
+   * names a project. Prompt providers read it to decide whether to contribute
+   * a project block.
+   *
+   * An opaque id with no transport/storage vocabulary (Invariant 1).
+   */
+  readonly projectId?: string;
   readonly logger: Logger;
   readonly state: Map<string, unknown>;
   readonly workspace: WorkspaceContext;
@@ -144,6 +155,8 @@ export interface MakeAgentContextOptions {
   source?: 'routine' | 'user';
   /** Optional. See `AgentContext.triggerLabel`. */
   triggerLabel?: string;
+  /** Optional. See `AgentContext.projectId`. Host-set only. */
+  projectId?: string;
   logger?: Logger;
   // Optional for dev ergonomics — defaults to process.cwd(). Real callers
   // (CLI boot, runner) should supply an explicit workspace.
@@ -164,6 +177,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
       : {}),
     ...(opts.source !== undefined ? { source: opts.source } : {}),
     ...(opts.triggerLabel !== undefined ? { triggerLabel: opts.triggerLabel } : {}),
+    ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
     logger,
     state: new Map(),
     workspace,

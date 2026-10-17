@@ -65,6 +65,16 @@ describe('@ax/conversations plugin manifest', () => {
         'agents:resolve',
         'database:get-instance',
       ],
+      // W3a (§4.4): conversations:create checks a chat's projectId with
+      // projects:resolve. Optional: without @ax/projects any projectId is
+      // refused (never dropped). Conversations calls projects, never back.
+      optionalCalls: [
+        {
+          hook: 'projects:resolve',
+          degradation:
+            'chats cannot be created in a project; conversations:create refuses any projectId',
+        },
+      ],
       // chat:turn-end subscriber bumps last_activity_at AND persists the
       // turn's display frame (TASK-66). session:terminate clears bound rows
       // (Task 14). chat:turn-error + chat:permission-request persist the
@@ -76,6 +86,8 @@ describe('@ax/conversations plugin manifest', () => {
         'chat:turn-error',
         'chat:permission-request',
         'agents:deleted',
+        // W3a (§4.7, Q1): deleting a project purges its chats for every user.
+        'projects:deleted',
       ],
     });
   });

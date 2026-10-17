@@ -425,7 +425,15 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     is the source of truth for the (b) split above. If a future
           //     refactor adds CLAUDE_CONFIG_DIR after the spread it would
           //     break I-P0-1.
-          env: {
+          // W2: `withoutSharedFolderLoaders` drops the one var that would make the
+          // bundled CLI load `CLAUDE.md` from every additionalDirectories entry —
+          // i.e. from shared folders other agents write (measured against the
+          // pinned CLI: the flag ALONE does it, even with settingSources
+          // ['user']; see shared-folders-real-sdk.e2e.test.ts). proxy-startup's
+          // allowlist excludes it by name, but its credential-placeholder rule
+          // forwards ANY key holding an `ax-cred:<hex>` value, which is truthy.
+          // So strip it unconditionally, last.
+          env: withoutSharedFolderLoaders({
             // TASK-26: terminal-hint env for the Bash tool's detached,
             // no-controlling-TTY child shell. TTY-detecting CLIs (cliffy/Deno
             // e.g. @schpet/linear-cli, ink, chalk, CI-aware tools) emit ZERO
@@ -481,7 +489,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               sdkHome,
               pythonVenvEnv.PATH ?? proxyStartup.providerEnv.PATH,
             ),
-          },
+          }),
           // filestore-user-files Phase 2 (TASK-164): cwd is the agent's working
           // frame — `sdkHome` (= /files when a durable mount is wired, else
           // /agent). Relative-path file work, builds, and `git clone .` default to
@@ -489,9 +497,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // pulls `.ax/**`+`.claude/**` back there (see the hook below, §14).
           cwd: sdkHome,
           // Directories the SDK's file tools may reach BEYOND `cwd` (cwd is always
-          // granted implicitly). The SDK bounds file tools to cwd + this list, so
-          // any tier the agent legitimately needs and that isn't the cwd must be
-          // listed here — else writes there fail.
+          // granted implicitly). This is the CLI's OWN directory check, and it is
+          // NOT the boundary: the PreToolUse hook below answers `allow` for every
+          // call the host's `tool.pre-call` approves, and an `allow` from a hook
+          // skips the CLI's directory check entirely (measured 2026-10-12 against
+          // the pinned CLI: shared-folders-tools-real-sdk.e2e.test.ts). The real
+          // bounds are the host verdict and the sandbox's mounts. List every tier
+          // the agent legitimately uses anyway, so a call the CLI does check
+          // itself isn't refused.
           //
           // The set, deduped (cwd is excluded; the SDK already grants it):
           //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
@@ -509,6 +522,16 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     (`/files`) — in Phase 2 this is the cwd, so it dedups out; we
           //     still list it defensively for the (transitional) case where it's
           //     wired but not the cwd. Omitted when no durable mount was wired.
+          //   - The read-only memory export `env.memoryRoot`, when mounted.
+          //   - W2: each shared folder in `env.sharedFolders` (AX_SHARED_FOLDERS).
+          //     A shared folder is a FILE-TOOL ROOT ONLY. It is never cwd/HOME and
+          //     never a settings/memory/skills source: `settingSources` stays
+          //     ['user'] (the SDK reads `.claude/settings*.json` and
+          //     `.claude/skills/` from added dirs only under 'project'), and the
+          //     bundled CLI loads `CLAUDE.md` from added dirs only when
+          //     CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD is truthy — which the
+          //     SDK env above never carries (`withoutSharedFolderLoaders`).
+          //     Viewer folders are read-only at the mount; the SDK isn't told.
           //
           // Each entry is host-controlled env (never model/user input); omitted
           // entries grant no phantom directory. The matching system-prompt notes
@@ -520,6 +543,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               env.ephemeralRoot,
               env.userFilesRoot,
               env.memoryRoot,
+              ...(env.sharedFolders ?? []).map((f) => f.path),
             ]) {
               if (dir !== undefined && dir !== sdkHome && !extra.includes(dir)) {
                 extra.push(dir);
@@ -1130,6 +1154,19 @@ export async function main(): Promise<number> {
   });
 }
 
+/**
+ * W2: env vars that would turn an `additionalDirectories` entry (a shared
+ * folder) into a source of instructions for the bundled CLI. Removed from the
+ * SDK subprocess env unconditionally — see the call site in `main`.
+ */
+const SHARED_FOLDER_LOADER_ENV = ['CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'] as const;
+
+function withoutSharedFolderLoaders<T extends Record<string, string | undefined>>(env: T): T {
+  const out = { ...env };
+  for (const key of SHARED_FOLDER_LOADER_ENV) delete out[key];
+  return out;
+}
+
 // ESM main-module guard. `require.main === module` doesn't work in ESM.
 // Compare URLs to detect "was this file invoked directly".
 if (
@@ -1145,3 +1182,4 @@ if (
       process.exit(2);
     });
 }
+

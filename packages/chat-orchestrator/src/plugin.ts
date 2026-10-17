@@ -99,6 +99,15 @@ export function createChatOrchestratorPlugin(
           degradation:
             'a routine whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
         },
+        {
+          // W3a — a fresh spawn of a chat in a project resolves it (as the
+          // person, for this agent) and mounts its folder. The chat's
+          // `projectId` comes from `conversations:get-metadata`, an undeclared
+          // hasService-gated peer like the other conversations:* reads below.
+          hook: 'projects:resolve',
+          degradation:
+            'a chat in a project is refused (project-unavailable) rather than run without its project; chats outside a project are unaffected',
+        },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //
@@ -189,6 +198,9 @@ export function createChatOrchestratorPlugin(
         'agents:deleted',
         // TASK-833 — fired by @ax/connectors after a delete purged the key.
         'connectors:deleted',
+        // W2 — fired by @ax/shared-folders when a folder's access is reduced
+        // (revoke, downgrade, delete, an agent's grants removed).
+        'shared-folders:access-reduced',
       ],
     },
     init({ bus }) {
@@ -367,6 +379,22 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           orch.onConnectorDeleted(ctx, payload);
+          return undefined;
+        },
+      );
+
+      // W2 — `shared-folders:access-reduced { folderId, agentIds }`. A warm
+      // sandbox keeps its shared-folder mount until it exits, so the sessions
+      // of those agents that requested the folder are reaped as soon as they
+      // are idle (proxy session closed first), reaped at turn end if a turn is
+      // running, and retired at routing if a message arrives first — the
+      // connector-delete path above. Observation-only: never vetoes, never
+      // throws (a malformed payload is logged and ignored).
+      bus.subscribe<unknown>(
+        'shared-folders:access-reduced',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          orch.onSharedFolderAccessReduced(ctx, payload);
           return undefined;
         },
       );

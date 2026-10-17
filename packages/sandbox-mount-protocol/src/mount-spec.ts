@@ -25,7 +25,7 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // the abstraction. (Mirrors exactly what ARCH-3 did for the git-vocabulary
 // bundle types in @ax/workspace-bundle-protocol.)
 //
-// Pure TS types, NO zod: this is consumed only as an in-process hook-bus
+// Pure TS types (plus two plain string constants), NO zod: this is consumed only as an in-process hook-bus
 // generic (`bus.call<In, Out>` / `registerService<In, Out>`), where the TS
 // type IS the whole contract. `sandbox:resolve-mounts` is host-internal — it
 // is called by the provider during pod construction and NEVER crosses the
@@ -59,6 +59,19 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // expose as `AX_USERFILES_ROOT` in the runner env; `role: 'memory'` marks the
 // TASK-494 facts-export projection, which the provider exposes as
 // `AX_MEMORY_ROOT` and realizes read-only only.
+//
+// `role: 'shared-folder'` (W2 shared folders) marks ONE folder shared between
+// agents. A session can carry zero or many of them, so — unlike the single
+// `user-files` / `memory` mounts — it is never exposed as a lone root env var.
+// The provider instead lists every realized `shared-folder` mount, in the one
+// runner env var `AX_SHARED_FOLDERS`: a JSON array of
+// `{ id, path, readOnly }` built from each mount's `folderId`, its path (the
+// `mountPath` inside a sandbox, the host path for a shared-FS provider) and its
+// `readOnly`. A `shared-folder` mount ALWAYS carries a `folderId`; a consumer
+// that needs the folder id reads `folderId`, never parses it out of
+// `mountPath`/`subPath`. Because a provider may hold several, a consumer
+// looking up the `user-files` (or `memory`) mount MUST match on `role` and
+// never take "the first mount" — the shared-folder mounts come AFTER it.
 // ---------------------------------------------------------------------------
 
 /**
@@ -82,8 +95,14 @@ export interface NfsMountSpec {
   subPath: string;
   /** Mount the export read-only. The runner uses `false`; a future host-read realization uses `true`. */
   readOnly: boolean;
-  /** When set, the provider exports this mount's path as `AX_USERFILES_ROOT` (`user-files`) or `AX_MEMORY_ROOT` (`memory`). */
-  role?: 'user-files' | 'memory';
+  /**
+   * When set, the provider exports this mount's path as `AX_USERFILES_ROOT`
+   * (`user-files`), `AX_MEMORY_ROOT` (`memory`), or lists it in
+   * `AX_SHARED_FOLDERS` (`shared-folder`).
+   */
+  role?: 'user-files' | 'memory' | 'shared-folder';
+  /** The shared folder's id. Set IFF `role` is `'shared-folder'`; absent otherwise. */
+  folderId?: string;
 }
 
 /**
@@ -102,8 +121,13 @@ export interface LocalDirMountSpec {
   hostPath: string;
   /** Mount the directory read-only. The runner uses `false`. */
   readOnly: boolean;
-  /** When set, the provider exports this mount's path as `AX_USERFILES_ROOT`. */
-  role?: 'user-files';
+  /**
+   * When set, the provider exports this mount's path as `AX_USERFILES_ROOT`
+   * (`user-files`) or lists it in `AX_SHARED_FOLDERS` (`shared-folder`).
+   */
+  role?: 'user-files' | 'shared-folder';
+  /** The shared folder's id. Set IFF `role` is `'shared-folder'`; absent otherwise. */
+  folderId?: string;
 }
 
 /**
@@ -150,6 +174,16 @@ export interface ResolveMountsInput {
    * EVERY mount it emits; it never widens write access, only narrows it.
    */
   readOnly?: boolean;
+  /**
+   * W2 shared folders: the folders the HOST wants mounted into this session
+   * (copied from `OpenSessionInput.sharedFolderIds`). A REQUEST, not a grant —
+   * the resolver filters it through `shared-folders:authorize-mounts` and emits
+   * a `role: 'shared-folder'` mount only for each folder that comes back
+   * (read-only for a viewer). Ids that are invalid or not authorized are
+   * dropped (and logged), never an error. Absent/empty → no shared-folder
+   * mounts, the session-open path unchanged.
+   */
+  sharedFolderIds?: readonly string[];
 }
 
 /**
@@ -297,3 +331,99 @@ export type ReadUserFilesOutput =
  * invokes via `bus.call<ReadUserFilesInput, ReadUserFilesOutput>`.
  */
 export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput>;
+
+// ---------------------------------------------------------------------------
+// Shared folders (W2) — constants + the three host-internal service contracts
+//
+// Like everything else in this file these are HOST-INTERNAL: they never cross
+// the untrusted sandbox edge and are deliberately NOT IPC actions, so there is
+// no wire to validate. They live HERE (types only) so a mount resolver can
+// import the `shared-folders:authorize-mounts` contract without importing the
+// `@ax/shared-folders` plugin (invariant I2 — no cross-plugin imports; the hook
+// bus is the inter-plugin API).
+// ---------------------------------------------------------------------------
+
+/**
+ * Directory, at the root of the per-agent backing store, that holds every
+ * shared folder: `.shared/<folderId>` (an NFS `subPath`; a localdir
+ * `<root>/.shared/<folderId>`). The leading dot is load-bearing: no valid agent
+ * id can equal `.shared`, so no agent's `/files` subtree can ever be the parent
+ * of the shared folders, and a per-agent `rm -rf <agentId>` can never reach them.
+ */
+export const SHARED_FOLDERS_DIR = '.shared';
+
+/**
+ * Where a shared folder appears inside a sandbox: `/shared/<folderId>`. Outside
+ * `/files` on purpose — `/files` is the agent's own writable subtree, so the
+ * agent would control the mount target there.
+ */
+export const SHARED_FOLDERS_MOUNT_BASE = '/shared';
+
+/**
+ * Input to `shared-folders:authorize-mounts` (registered by `@ax/shared-folders`,
+ * called by the mount resolvers during session open). There is NO actor: this is
+ * a person-less, host-internal filter, never reachable from a sandbox. It only
+ * narrows `folderIds` down to the folders `agentId` currently holds a live grant on.
+ */
+export interface AuthorizeMountsInput {
+  /** The agent the session belongs to (`owner.agentId`). */
+  agentId: string;
+  /** The folders the host requested to mount. */
+  folderIds: readonly string[];
+}
+
+/**
+ * Output of `shared-folders:authorize-mounts`: the requested folders `agentId`
+ * holds a live grant on, in no promised order. A folder the agent has no grant
+ * on, a tombstoned (being-deleted) folder, and an unknown id are all simply
+ * ABSENT — never an error, and the absence reveals nothing about which.
+ */
+export interface AuthorizeMountsOutput {
+  folders: {
+    folderId: string;
+    /** `true` for a viewer grant: the resolver MUST realize the mount read-only. */
+    readOnly: boolean;
+  }[];
+}
+
+/**
+ * Input to `sandbox:locate-shared-folder` (registered by the mount resolver —
+ * `@ax/workspace-filestore`, `@ax/workspace-localdir`). Asks where a folder's
+ * bytes live, for DELETION only (`sandbox:delete-shared-folder`). It performs NO
+ * grant check — by the time a folder is being deleted its grants are already
+ * gone — so it must never be used to read or mount anything on someone's behalf.
+ * A resolver rejects an id that fails `isValidSharedFolderId`.
+ */
+export interface LocateSharedFolderInput {
+  folderId: string;
+}
+
+/**
+ * Output of `sandbox:locate-shared-folder`: a WRITABLE `role: 'shared-folder'`
+ * `MountSpec` for the folder (the same location a session mount would use), so
+ * the provider that owns realization can remove it. Opaque to every caller
+ * except that provider — branch on `kind` like any other `MountSpec`.
+ */
+export interface LocateSharedFolderOutput {
+  mount: MountSpec;
+}
+
+/**
+ * Input to `sandbox:delete-shared-folder` (registered by the sandbox provider
+ * that owns mount realization; called by `@ax/shared-folders` when a folder is
+ * deleted). The provider resolves the location via
+ * `sandbox:locate-shared-folder` and removes the folder's bytes.
+ */
+export interface DeleteSharedFolderInput {
+  folderId: string;
+}
+
+/**
+ * Output of `sandbox:delete-shared-folder`. The literal `true`: a delete that
+ * did not happen THROWS rather than returning `false`, so a caller cannot
+ * forget a case and drop a tombstone over bytes that are still there. Deleting
+ * an already-absent folder is a success (idempotent).
+ */
+export interface DeleteSharedFolderOutput {
+  deleted: true;
+}

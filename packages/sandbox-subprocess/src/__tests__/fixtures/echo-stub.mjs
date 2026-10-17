@@ -32,6 +32,11 @@ const env = {
   // in the IPC socket dir). Echoed so open-session.test.ts can assert the
   // child saw it and that it points at a real on-disk directory.
   AX_EPHEMERAL_ROOT: process.env.AX_EPHEMERAL_ROOT ?? null,
+  // Durable per-agent user-files root + W2 shared folders (a JSON string —
+  // echoed RAW so a test can assert the exact bytes the runner would parse).
+  // Both are stamped only when a mount resolver contributed the mounts.
+  AX_USERFILES_ROOT: process.env.AX_USERFILES_ROOT ?? null,
+  AX_SHARED_FOLDERS: process.env.AX_SHARED_FOLDERS ?? null,
   // credential-proxy env (set only when proxyConfig was passed to
   // sandbox:open-session).
   AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,

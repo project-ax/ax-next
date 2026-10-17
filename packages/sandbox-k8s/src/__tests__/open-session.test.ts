@@ -892,6 +892,95 @@ describe('sandbox:open-session (k8s)', () => {
       expect(api.creates).toHaveLength(0);
       await h.close();
     });
+
+    // W2 shared folders (design §3.5): the host's request rides through to the
+    // resolver, which decides what to mount.
+    async function harnessCapturingResolver(api: MockK8sApi, mounts: unknown) {
+      const seen: unknown[] = [];
+      const h = await createTestHarness({
+        services: {
+          'sandbox:resolve-mounts': async (_ctx: unknown, input: unknown) => {
+            seen.push(input);
+            return { mounts };
+          },
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+      return { h, seen };
+    }
+
+    it('passes sharedFolderIds through to sandbox:resolve-mounts and realizes the shared mount (non-pooled)', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const { h, seen } = await harnessCapturingResolver(api, [
+        {
+          kind: 'nfs',
+          mountPath: '/files',
+          server: '10.0.0.2',
+          exportPath: '/vol1/agents',
+          subPath: 'agent-abc',
+          readOnly: false,
+          role: 'user-files',
+        },
+        {
+          kind: 'nfs',
+          mountPath: '/shared/sf_x',
+          server: '10.0.0.2',
+          exportPath: '/vol1/agents',
+          subPath: '.shared/sf_x',
+          readOnly: false,
+          role: 'shared-folder',
+          folderId: 'sf_x',
+        },
+      ]);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-shared',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+        owner: OWNER,
+        sharedFolderIds: ['sf_x', 'sf_y'],
+      });
+      expect(seen).toEqual([{ owner: OWNER, sharedFolderIds: ['sf_x', 'sf_y'] }]);
+      const body = api.creates[0]!.body as {
+        spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      };
+      const env = Object.fromEntries(body.spec.containers[0]!.env.map((e) => [e.name, e.value]));
+      expect(env.AX_SHARED_FOLDERS).toBe('[{"id":"sf_x","path":"/shared/sf_x","readOnly":false}]');
+      expect(env.AX_USERFILES_ROOT).toBe('/files');
+      await h.close();
+    });
+
+    it('sends no sharedFolderIds key when the session asks for none', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod(), readyPod());
+      const { h, seen } = await harnessCapturingResolver(api, []);
+      for (const [sessionId, extra] of [
+        ['sess-none', {}],
+        ['sess-empty', { sharedFolderIds: [] }],
+      ] as const) {
+        await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+          sessionId,
+          workspaceRoot: '/tmp/ws',
+          runnerBinary: '/opt/ax/runner.js',
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: OWNER,
+          ...extra,
+        });
+      }
+      expect(seen).toEqual([{ owner: OWNER }, { owner: OWNER }]);
+      await h.close();
+    });
   });
 
   describe('sandbox:memory-mounts realization', () => {

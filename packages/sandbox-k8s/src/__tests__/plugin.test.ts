@@ -3,6 +3,10 @@ import type { Plugin } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
+  DeleteSharedFolderInput,
+  DeleteSharedFolderOutput,
+  LocateSharedFolderInput,
+  LocateSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
@@ -212,5 +216,80 @@ describe('createSandboxK8sPlugin — §11 host-read + cleanup wiring', () => {
     if (out.kind !== 'file') throw new Error('expected file');
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('hello');
     await h.close();
+  });
+});
+
+// W2 shared folders §3.7 — sandbox:delete-shared-folder is a registered,
+// reachable service, and the locate hook it depends on is declared optional.
+describe('createSandboxK8sPlugin — sandbox:delete-shared-folder wiring', () => {
+  const pluginOpts = {
+    namespace: 'ax-test',
+    hostIpcUrl: TEST_HOST_IPC_URL,
+    orphanSweepIntervalMs: 0,
+    orphanSweepTerminalAgeMs: 600_000,
+  };
+
+  it('declares the service in registers and the locate hook in optionalCalls', () => {
+    const { manifest } = createSandboxK8sPlugin({ api: makeMockK8sApi(), ...pluginOpts });
+    expect(manifest.registers).toContain('sandbox:delete-shared-folder');
+    const locate = (manifest.optionalCalls ?? []).find(
+      (c) => c.hook === 'sandbox:locate-shared-folder',
+    );
+    expect(locate).toBeDefined();
+    expect(locate!.degradation).toMatch(/no-mount-resolver/);
+  });
+
+  it('deletes .shared/<folderId> through the bus via the located mount', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses({
+      status: {
+        phase: 'Succeeded',
+        containerStatuses: [{ name: 'userfiles', state: { terminated: { exitCode: 0 } } }],
+      },
+    });
+    const locator: Plugin = {
+      manifest: {
+        name: 'test-locator',
+        version: '0.0.0',
+        registers: ['sandbox:locate-shared-folder'],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService<LocateSharedFolderInput, LocateSharedFolderOutput>(
+          'sandbox:locate-shared-folder',
+          'test-locator',
+          async (_c, input) => ({
+            mount: {
+              kind: 'nfs',
+              mountPath: `/shared/${input.folderId}`,
+              server: '10.0.0.2',
+              exportPath: '/vol1/agents',
+              subPath: `.shared/${input.folderId}`,
+              readOnly: false,
+              role: 'shared-folder',
+              folderId: input.folderId,
+            },
+          }),
+        );
+      },
+    };
+    const h = await createTestHarness({
+      plugins: [createSessionInmemoryPlugin(), locator, createSandboxK8sPlugin({ api, ...pluginOpts })],
+    });
+    try {
+      const out = await h.bus.call<DeleteSharedFolderInput, DeleteSharedFolderOutput>(
+        'sandbox:delete-shared-folder',
+        h.ctx(),
+        { folderId: 'sf_abc' },
+      );
+      expect(out).toEqual({ deleted: true });
+      const pod = api.creates[0]!.body as {
+        spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      };
+      expect(pod.spec.containers[0]!.env).toEqual([{ name: 'SUBPATH', value: '.shared/sf_abc' }]);
+    } finally {
+      await h.close();
+    }
   });
 });

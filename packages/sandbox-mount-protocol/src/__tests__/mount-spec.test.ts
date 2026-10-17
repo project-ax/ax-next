@@ -12,7 +12,14 @@ import type {
   ReadUserFilesOutput,
   ReadUserFilesHandler,
   UserFileDirEntry,
+  AuthorizeMountsInput,
+  AuthorizeMountsOutput,
+  LocateSharedFolderInput,
+  LocateSharedFolderOutput,
+  DeleteSharedFolderInput,
+  DeleteSharedFolderOutput,
 } from '../index.js';
+import { SHARED_FOLDERS_DIR, SHARED_FOLDERS_MOUNT_BASE } from '../index.js';
 
 // This package is pure TS types — the contract IS the type (no zod, no runtime).
 // `sandbox:resolve-mounts` is a HOST-INTERNAL service hook consumed as a
@@ -237,7 +244,7 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     expect(nested.relPath).toBe('docs/notes.md');
   });
 
-  it('output is a discriminated union: file | dir | absent', () => {
+  it('output is a discriminated union: file | dir | absent | unavailable', () => {
     const file: ReadUserFilesOutput = {
       kind: 'file',
       contents: new Uint8Array([1, 2, 3]),
@@ -258,12 +265,15 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
           return `dir:${o.entries.length}`;
         case 'absent':
           return 'absent';
+        case 'unavailable':
+          return 'unavailable';
         default: {
           const _exhaustive: never = o;
           return _exhaustive;
         }
       }
     };
+    expect(describe1({ kind: 'unavailable' })).toBe('unavailable');
     expect(describe1(file)).toBe('file:3');
     expect(describe1(dir)).toBe('dir:2');
     expect(describe1(absent)).toBe('absent');
@@ -276,5 +286,191 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     const handler: ReadUserFilesHandler = raw;
     const back: ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput> = handler;
     expect(typeof back).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W2 shared folders — the `'shared-folder'` mount role, its `folderId`, and the
+// three new host-internal service-hook contracts.
+// ---------------------------------------------------------------------------
+
+describe('shared-folder mount role (W2)', () => {
+  it('nfs member carries role "shared-folder" + folderId', () => {
+    const nfs: NfsMountSpec = {
+      kind: 'nfs',
+      mountPath: `${SHARED_FOLDERS_MOUNT_BASE}/sf_abc`,
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: `${SHARED_FOLDERS_DIR}/sf_abc`,
+      readOnly: true,
+      role: 'shared-folder',
+      folderId: 'sf_abc',
+    };
+    expect(nfs.role).toBe('shared-folder');
+    expect(nfs.folderId).toBe('sf_abc');
+    expect(nfs.mountPath).toBe('/shared/sf_abc');
+    expect(nfs.subPath).toBe('.shared/sf_abc');
+  });
+
+  it('localDir member carries role "shared-folder" + folderId', () => {
+    const local: LocalDirMountSpec = {
+      kind: 'localDir',
+      mountPath: `${SHARED_FOLDERS_MOUNT_BASE}/sf_abc`,
+      hostPath: `/var/lib/ax/userfiles/${SHARED_FOLDERS_DIR}/sf_abc`,
+      readOnly: false,
+      role: 'shared-folder',
+      folderId: 'sf_abc',
+    };
+    expect(local.role).toBe('shared-folder');
+    expect(local.folderId).toBe('sf_abc');
+  });
+
+  it('folderId is optional (non-shared roles omit it)', () => {
+    const nfs: NfsMountSpec = {
+      kind: 'nfs',
+      mountPath: '/files',
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: 'agent-abc',
+      readOnly: false,
+      role: 'user-files',
+    };
+    const local: LocalDirMountSpec = {
+      kind: 'localDir',
+      mountPath: '/files',
+      hostPath: '/tmp/ax/agent-abc',
+      readOnly: false,
+    };
+    expect(nfs.folderId).toBeUndefined();
+    expect(local.folderId).toBeUndefined();
+  });
+
+  it('every role is exhaustively switchable on both members', () => {
+    // A future role makes the `never` assignment fail to compile, forcing every
+    // consumer that switches on `role` to handle it.
+    const roleOf = (spec: MountSpec): string => {
+      const role = spec.role;
+      switch (role) {
+        case 'user-files':
+          return 'user-files';
+        case 'memory':
+          // `memory` exists only on the nfs member.
+          return spec.kind === 'nfs' ? 'memory' : 'impossible';
+        case 'shared-folder':
+          return `shared-folder:${spec.folderId ?? ''}`;
+        case undefined:
+          return 'none';
+        default: {
+          const _exhaustive: never = role;
+          return _exhaustive;
+        }
+      }
+    };
+    expect(
+      roleOf({
+        kind: 'nfs',
+        mountPath: '/shared/sf_a',
+        server: 's',
+        exportPath: '/e',
+        subPath: '.shared/sf_a',
+        readOnly: false,
+        role: 'shared-folder',
+        folderId: 'sf_a',
+      }),
+    ).toBe('shared-folder:sf_a');
+    expect(
+      roleOf({
+        kind: 'localDir',
+        mountPath: '/files',
+        hostPath: '/tmp/x',
+        readOnly: false,
+        role: 'user-files',
+      }),
+    ).toBe('user-files');
+    expect(
+      roleOf({ kind: 'localDir', mountPath: '/files', hostPath: '/tmp/x', readOnly: false }),
+    ).toBe('none');
+  });
+
+  it('localDir does NOT allow role "memory" (memory is nfs-only)', () => {
+    const bad: LocalDirMountSpec = {
+      kind: 'localDir',
+      mountPath: '/memory',
+      hostPath: '/tmp/x',
+      readOnly: true,
+      // @ts-expect-error — 'memory' is an nfs-only role
+      role: 'memory',
+    };
+    expect(bad.kind).toBe('localDir');
+  });
+});
+
+describe('shared-folder constants', () => {
+  it('pins the backing-store dir and sandbox mount base', () => {
+    expect(SHARED_FOLDERS_DIR).toBe('.shared');
+    expect(SHARED_FOLDERS_MOUNT_BASE).toBe('/shared');
+  });
+});
+
+describe('sandbox:resolve-mounts sharedFolderIds (W2)', () => {
+  it('input carries an optional readonly sharedFolderIds list', () => {
+    const owner: NonNullable<OpenSessionInput['owner']> = {
+      userId: 'user-1',
+      agentId: 'agent-abc',
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+    };
+    const without: ResolveMountsInput = { owner };
+    expect(without.sharedFolderIds).toBeUndefined();
+    const ids: readonly string[] = ['sf_a', 'sf_b'];
+    const withIds: ResolveMountsInput = { owner, sharedFolderIds: ids };
+    expect(withIds.sharedFolderIds).toEqual(['sf_a', 'sf_b']);
+  });
+});
+
+describe('shared-folder service-hook contracts (W2)', () => {
+  it('shared-folders:authorize-mounts: { agentId, folderIds } -> { folders }', () => {
+    const input: AuthorizeMountsInput = { agentId: 'agent-abc', folderIds: ['sf_a', 'sf_b'] };
+    const output: AuthorizeMountsOutput = {
+      folders: [
+        { folderId: 'sf_a', readOnly: false },
+        { folderId: 'sf_b', readOnly: true },
+      ],
+    };
+    expect(input.folderIds).toHaveLength(2);
+    expect(output.folders.map((f) => f.readOnly)).toEqual([false, true]);
+    const empty: AuthorizeMountsOutput = { folders: [] };
+    expect(empty.folders).toEqual([]);
+  });
+
+  it('sandbox:locate-shared-folder: { folderId } -> { mount: MountSpec }', () => {
+    const input: LocateSharedFolderInput = { folderId: 'sf_a' };
+    const output: LocateSharedFolderOutput = {
+      mount: {
+        kind: 'localDir',
+        mountPath: '/shared/sf_a',
+        hostPath: '/root/.shared/sf_a',
+        readOnly: false,
+        role: 'shared-folder',
+        folderId: input.folderId,
+      },
+    };
+    expect(output.mount.kind).toBe('localDir');
+  });
+
+  it('sandbox:delete-shared-folder: { folderId } -> { deleted: true }', () => {
+    const input: DeleteSharedFolderInput = { folderId: 'sf_a' };
+    const output: DeleteSharedFolderOutput = { deleted: true };
+    expect(input.folderId).toBe('sf_a');
+    expect(output.deleted).toBe(true);
+    // @ts-expect-error — `deleted` is the literal `true`; a failed delete throws instead.
+    const bad: DeleteSharedFolderOutput = { deleted: false };
+    expect(bad).toBeDefined();
   });
 });

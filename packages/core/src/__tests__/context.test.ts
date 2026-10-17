@@ -176,6 +176,22 @@ describe('makeAgentContext', () => {
     // `triggerLabel` should not even be an own property when omitted.
     expect(Object.prototype.hasOwnProperty.call(ctx, 'triggerLabel')).toBe(false);
   });
+
+  // W3 — the host-set project.
+  it('carries an explicit projectId through', () => {
+    const ctx = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+      projectId: 'prj_abc',
+    });
+    expect(ctx.projectId).toBe('prj_abc');
+  });
+
+  it('leaves projectId absent when not supplied', () => {
+    const ctx = makeAgentContext({ sessionId: 'sess-1', agentId: 'agent-1', userId: 'user-1' });
+    expect(Object.prototype.hasOwnProperty.call(ctx, 'projectId')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

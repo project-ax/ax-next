@@ -17,7 +17,7 @@ clear home.
 
 ## Resume here
 
-- **Now:** W1 is built (2026-10-12, standalone `/yolo-ship`, memory shard
+- **Now:** W1 is built and merged as #988 (2026-10-12, standalone `/yolo-ship`, memory shard
   `AXWM-2`) from the revised spec
   [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md);
   plan in [`2026-10-12-w1-prompt-contributions-plan.md`](2026-10-12-w1-prompt-contributions-plan.md).
@@ -29,10 +29,16 @@ clear home.
   (§5.2 now shows it too). **W2 doesn't merge alone:** it's
   developed as a PR stack and merged as one squash with W3's first slice (the
   orchestrator mounting a conversation's project), following #978.
+- **2026-10-12, later:** W2 was built ahead of re-review on branch
+  `feat/w2-shared-folders` (draft PR, do not merge). The spec's new §11 lists
+  where the build differs. W3's first slice stacks on that branch.
+- **2026-10-16:** W2 passed GKE pool acceptance after one fix (pooled viewers
+  bind from a read-only mount). The W3 spec merged (#990) with Q1/Q5/Q6
+  answered. **W3a is built** on the same branch (draft PR #989); W3 spec §17
+  records how it was built. The stack lands as one squash once reviewed and green.
 - **Next, in order:**
-  1. Approve the W2 spec, write its plan, and put its cards on the board.
-  2. Write the W3 (projects) spec, starting with the first slice W2 merges
-     with.
+  1. Review and squash-merge W2 + W3a (#989); close TASK-896.
+  2. W3b (the project's files, read-only) and W3e (moving chats, other agents).
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
@@ -50,9 +56,9 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
-| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | built (PR pending, see Resume here) | — |
-| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | spec draft (revised after review 1) | — |
-| W3 | Projects | Projects | W1, W2 | — | no spec | — |
+| W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
+| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | built on `feat/w2-shared-folders`; GKE pool acceptance passed 2026-10-16; lands as one squash with W3a (#989) | — |
+| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a built on `feat/w2-shared-folders` (#989), lands with W2; W3b–W3f not started | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |
 | W13 | Agent tasks | Goals and delegation | W1 (the project view also needs W3) | — | no spec | — |

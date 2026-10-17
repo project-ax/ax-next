@@ -21,7 +21,7 @@ import {
 // imports across plugins are allowed (erased at compile time); this keeps the
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
-import { formatServiceDiagnosis } from '@ax/sandbox-protocol';
+import { formatServiceDiagnosis, isValidSharedFolderId } from '@ax/sandbox-protocol';
 import type { AgentConfig, ProxyConfig, ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
   skillCredentialEnvName,
@@ -986,6 +986,12 @@ interface OpenSessionInput {
    * until the S7 end-to-end canary closes it.
    */
   services?: ServiceDescriptorParsed[];
+  /**
+   * W2 — shared folders the host wants mounted (W3a: the chat's project
+   * folder, from `projects:resolve`). A request only: the mount resolver filters it through the grants. Omitted
+   * when empty.
+   */
+  sharedFolderIds?: string[];
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -1486,6 +1492,7 @@ export function createOrchestrator(
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
   onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
   onConnectorDeleted(ctx: AgentContext, payload: unknown): void;
+  onSharedFolderAccessReduced(ctx: AgentContext, payload: unknown): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1703,6 +1710,7 @@ export function createOrchestrator(
     skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
     forgetSessionConnectors(sessionId);
+    forgetSessionSharedFolders(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -2148,9 +2156,40 @@ export function createOrchestrator(
   // proxy; a runner that wakes anyway reaches upstream without credentials.
   // Idempotent in credential-proxy, so the exit watcher's later close (and a
   // routing retire's) is a no-op. Fire-and-forget; never throws.
-  function closeProxyForDeletedConnector(ctx: AgentContext, sessionId: string): void {
+  //
+  // W2 — the same close for a session whose shared-folder access was reduced
+  // (`closeProxyForReap` with phase `'shared-folder-access-reduced'`).
+  function closeProxyForReap(
+    ctx: AgentContext,
+    sessionId: string,
+    phase: 'connector-deleted' | 'shared-folder-access-reduced',
+  ): void {
     if (!bus.hasService('proxy:close-session')) return;
-    void closeProxySession({ ...ctx, sessionId }, sessionId, 'connector-deleted');
+    void closeProxySession({ ...ctx, sessionId }, sessionId, phase);
+  }
+
+  /**
+   * TASK-833/877 + W2 — the reap a revocation applies to a warm session it
+   * marked. Idle (the reaper armed: a turn ended and none started) or in its
+   * grace window (a reap already under way) → close its proxy session now.
+   * Idle → re-arm the reaper with no delay. A session mid-turn is left alone:
+   * `onTurnEnd` reaps it. Returns whether a reap was started.
+   */
+  function reapMarkedIfIdle(
+    ctx: AgentContext,
+    sessionId: string,
+    phase: 'connector-deleted' | 'shared-folder-access-reduced',
+  ): boolean {
+    const entry = warmSessions.get(sessionId);
+    if (entry === undefined) return false;
+    if (entry.idleTimer !== null || entry.graceTimer !== null) {
+      closeProxyForReap(ctx, sessionId, phase);
+    }
+    if (entry.idleTimer !== null) {
+      armReapTimer({ ...ctx, sessionId }, 0);
+      return true;
+    }
+    return false;
   }
 
   // TASK-878 — every `proxy:close-session` this plugin makes goes through
@@ -2162,7 +2201,13 @@ export function createOrchestrator(
   async function closeProxySession(
     ctx: AgentContext,
     sessionId: string,
-    phase: 'retire' | 'connector-deleted' | 'open-failed' | 'runner-exit' | 'invoke-end',
+    phase:
+      | 'retire'
+      | 'connector-deleted'
+      | 'shared-folder-access-reduced'
+      | 'open-failed'
+      | 'runner-exit'
+      | 'invoke-end',
   ): Promise<void> {
     let timedOut = false;
     const close = bus
@@ -2236,20 +2281,169 @@ export function createOrchestrator(
       if (!sameConnector) continue;
       connectorDeletedSessions.add(sessionId);
       marked += 1;
-      const entry = warmSessions.get(sessionId);
       // Idle = the reaper is armed (a turn ended and none has started). A grace
       // timer already running means a reap is under way — the session is idle
       // too, so its proxy session is closed either way (TASK-877).
-      if (entry !== undefined && (entry.idleTimer !== null || entry.graceTimer !== null)) {
-        closeProxyForDeletedConnector(ctx, sessionId);
-      }
-      if (entry !== undefined && entry.idleTimer !== null) {
-        armReapTimer({ ...ctx, sessionId }, 0);
-        reaped += 1;
-      }
+      if (reapMarkedIfIdle(ctx, sessionId, 'connector-deleted')) reaped += 1;
     }
     if (marked > 0) {
       ctx.logger.info('connector_deleted_sessions_retired', { connectorId, marked, reaped });
+    }
+  }
+
+  // W2 (shared folders) — which folders each session REQUESTED at spawn
+  // (W3a: its chat's project folder), with its agent. Only sessions that
+  // requested at least one have an entry. Same lifetime as
+  // `connectorStateBySession`: forgotten at the same four sites.
+  //
+  // W3a — `projectId` is the project the session was spawned for (spec §4.5
+  // step 5). It is recorded with the folders so it is forgotten with them.
+  // Today only the access-reduced log reads it; W3e compares it on the reuse
+  // path when a chat moves between projects.
+  interface SessionSharedFolderState {
+    agentId: string;
+    folderIds: Set<string>;
+    projectId: string | null;
+  }
+  const sharedFolderStateBySession = new Map<string, SessionSharedFolderState>();
+
+  // W2 — sessions holding a folder whose access was REDUCED (revoke, downgrade,
+  // delete — `shared-folders:access-reduced`). A warm sandbox keeps its mount
+  // (a writable one, for an editor) until it exits, so a marked session is
+  // reaped exactly like a connector-deleted one (`connectorDeletedSessions`):
+  // idle → now, mid-turn → when the turn ends, beaten by a message → retired at
+  // routing. The next spawn mounts what the grants allow then.
+  const sharedFolderReducedSessions = new Set<string>();
+
+  function recordSessionSharedFolders(
+    sessionId: string,
+    agentId: string,
+    folderIds: readonly string[],
+    projectId: string | null,
+  ): void {
+    if (folderIds.length === 0) return;
+    sharedFolderStateBySession.set(sessionId, { agentId, folderIds: new Set(folderIds), projectId });
+  }
+
+  function forgetSessionSharedFolders(sessionId: string): void {
+    sharedFolderStateBySession.delete(sessionId);
+    sharedFolderReducedSessions.delete(sessionId);
+  }
+
+  /** A session marked by a revocation (connector deleted, folder access reduced). */
+  function accessRevoked(sessionId: string): 'connector-deleted' | 'shared-folder-access-reduced' | null {
+    if (connectorDeletedSessions.has(sessionId)) return 'connector-deleted';
+    if (sharedFolderReducedSessions.has(sessionId)) return 'shared-folder-access-reduced';
+    return null;
+  }
+
+  /**
+   * W3a (spec §4.5) — the project a fresh spawn mounts, read from the chat row
+   * and checked by `projects:resolve`. Host-side only: the model never names a
+   * project; it comes from the conversation row, which only the person's
+   * authorized routes write.
+   *
+   * - No `conversationId`, or `@ax/conversations` not loaded → no project. A
+   *   preset without conversations (the CLI canary) can't have project chats.
+   * - A chat with a `projectId` resolves it as the person on `ctx` for
+   *   `agentId`. Anything that stops us knowing — or mounting — that project
+   *   throws {@link ProjectUnavailableError}: a failed metadata read, no
+   *   `projects:resolve` service, a refused resolve, an ill-formed folder id.
+   *   The caller ends the turn `project-unavailable`. Never a silent fallback
+   *   to a session without the project: the chat's history may already hold
+   *   project content, and a person who opens a project chat expects it.
+   */
+  async function resolveSpawnProject(
+    ctx: AgentContext,
+    agentId: string,
+  ): Promise<{ projectId: string; folderId: string } | null> {
+    if (ctx.conversationId === undefined || !bus.hasService('conversations:get-metadata')) {
+      return null;
+    }
+    let projectId: string | null;
+    try {
+      const md = await bus.call<
+        { conversationId: string; userId: string },
+        { projectId?: string | null }
+      >('conversations:get-metadata', ctx, {
+        conversationId: ctx.conversationId,
+        userId: ctx.userId,
+      });
+      projectId = typeof md.projectId === 'string' && md.projectId.length > 0 ? md.projectId : null;
+    } catch (err) {
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'conversations:get-metadata',
+        conversationId: ctx.conversationId,
+        ...errorLogFields(err),
+      });
+      throw new ProjectUnavailableError(err);
+    }
+    if (projectId === null) return null;
+    if (!bus.hasService('projects:resolve')) {
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, code: 'not-loaded',
+      });
+      throw new ProjectUnavailableError(new Error('projects:resolve is not registered'));
+    }
+    let folderId: unknown;
+    try {
+      const resolved = await bus.call<{ projectId: string; agentId: string }, { folderId?: unknown }>(
+        'projects:resolve',
+        ctx,
+        { projectId, agentId },
+      );
+      folderId = resolved.folderId;
+    } catch (err) {
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, ...errorLogFields(err),
+      });
+      throw new ProjectUnavailableError(err);
+    }
+    if (!isValidSharedFolderId(folderId)) {
+      // Never echo the bad value into the log.
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, code: 'invalid-folder-id',
+      });
+      throw new ProjectUnavailableError(new Error('projects:resolve returned an invalid folderId'));
+    }
+    return { projectId, folderId };
+  }
+
+  // W2 — `shared-folders:access-reduced { folderId, agentIds }` (fired by
+  // @ax/shared-folders after a revoke, a downgrade, a delete, or an agent's
+  // grants being removed). Marks every live session of those agents that
+  // requested the folder and reaps the idle ones now — proxy session closed
+  // first — exactly as `onConnectorDeleted` does. A turn in flight is not
+  // interrupted (a mid-turn kill hangs the stream): `onTurnEnd` reaps it.
+  //
+  // Sync and never throws: the change has already committed. A malformed
+  // payload is logged and ignored.
+  function onSharedFolderAccessReduced(ctx: AgentContext, payload: unknown): void {
+    const p = payload as { folderId?: unknown; agentIds?: unknown } | null | undefined;
+    const folderId = typeof p === 'object' && p !== null ? p.folderId : undefined;
+    const agentIdsRaw = typeof p === 'object' && p !== null ? p.agentIds : undefined;
+    if (!isValidSharedFolderId(folderId) || !Array.isArray(agentIdsRaw)) {
+      ctx.logger.warn('shared_folder_access_reduced_malformed', {});
+      return;
+    }
+    const agentIds = new Set(
+      (agentIdsRaw as unknown[]).filter((a): a is string => typeof a === 'string' && a.length > 0),
+    );
+    if (agentIds.size === 0) return;
+    let marked = 0;
+    let reaped = 0;
+    const projectIds = new Set<string>();
+    for (const [sessionId, state] of sharedFolderStateBySession) {
+      if (!agentIds.has(state.agentId) || !state.folderIds.has(folderId)) continue;
+      sharedFolderReducedSessions.add(sessionId);
+      marked += 1;
+      if (state.projectId !== null) projectIds.add(state.projectId);
+      if (reapMarkedIfIdle(ctx, sessionId, 'shared-folder-access-reduced')) reaped += 1;
+    }
+    if (marked > 0) {
+      ctx.logger.info('shared_folder_access_reduced_sessions_retired', {
+        folderId, marked, reaped, projectIds: [...projectIds],
+      });
     }
   }
 
@@ -2558,6 +2752,10 @@ export function createOrchestrator(
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
+            // W2 — a folder this session requested had its access reduced
+            // (marked by `shared-folders:access-reduced`) and the reaper has
+            // not got to it yet.
+            const sharedFolderAccessReduced = sharedFolderReducedSessions.has(candidate);
             // TASK-811 — a connector attached / detached since this session
             // spawned. TASK-833 — or one it folded was deleted (marked by
             // `connectors:deleted`), or no longer resolves to what it folded
@@ -2572,6 +2770,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed
               ) &&
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
@@ -2581,6 +2780,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed ||
                 connectorsChanged
               ) && (await skippedConnectorSignedIn(ctx, candidate));
@@ -2594,6 +2794,7 @@ export function createOrchestrator(
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
+                sharedFolderAccessReduced ||
                 rotationFailed ||
                 connectorsChanged ||
                 connectorSignedIn
@@ -2607,6 +2808,7 @@ export function createOrchestrator(
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
+              sharedFolderAccessReduced ||
               rotationFailed ||
               connectorsChanged ||
               connectorSignedIn
@@ -2638,6 +2840,10 @@ export function createOrchestrator(
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
+              //
+              // W2: and when a shared folder it requested had its access
+              // reduced and the reaper has not got to it yet. The fresh spawn
+              // mounts only what the grants allow now.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: routineRetire
@@ -2648,7 +2854,9 @@ export function createOrchestrator(
                       ? 'skills-proposed'
                       : augmentStale
                         ? 'system-prompt-augment-changed'
-                        : rotationFailed
+                        : sharedFolderAccessReduced
+                          ? 'shared-folder-access-reduced'
+                          : rotationFailed
                           ? 'credential-rotation-failed'
                           : connectorsChanged
                             ? 'connectors-changed'
@@ -2672,6 +2880,7 @@ export function createOrchestrator(
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
+              forgetSessionSharedFolders(candidate);
               // TASK-871 — revoke the retired session's credentials HERE, not
               // via terminate. A warm session's proxy close is otherwise
               // deferred to `handle.exited`; if session:terminate throws (or
@@ -2871,6 +3080,31 @@ export function createOrchestrator(
       return outcome;
     }
 
+    // W3a (spec §4.5) — the chat's project. Fresh-spawn path only, and FIRST:
+    // the prompt providers below need it, and a project we can't resolve ends
+    // the turn before anything else is assembled — no augment, no proxy
+    // session, no sandbox. (A routed turn reuses a session spawned for the
+    // chat's project; W3e compares the recorded projectId when chats move.)
+    let project: { projectId: string; folderId: string } | null;
+    try {
+      project = await resolveSpawnProject(ctx, agent.id);
+    } catch (err) {
+      // Coarse reason only; the cause stays on the audit outcome + host log.
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'project-unavailable',
+        error: err,
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireChatEvent('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    // The providers' context carries the project (host-set only, like
+    // `source`). Only the providers get it: everything else on this spawn
+    // keeps the request ctx.
+    const providerCtx: AgentContext =
+      project !== null ? { ...ctx, projectId: project.projectId } : ctx;
+
     // System-prompt contributions (W1). Fresh-spawn path only: a routed
     // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
     // baked into the runner at first spawn, and the runner never reloads it.
@@ -2901,7 +3135,7 @@ export function createOrchestrator(
     // success to an auxiliary, which is the wrong shape.
     const augment = await buildSystemPromptAugment(
       bus,
-      ctx,
+      providerCtx,
       augmentDeadlineMs,
       augmentUnknownClassLogged,
     );
@@ -3762,6 +3996,9 @@ export function createOrchestrator(
         ...installedSkillsForSandbox,
         ...connectorInstalledEntries.map(({ connectorId: _cid, headerBindings: _headers, ...e }) => e),
       ];
+      // W3a — the project's folder, resolved (and validated) before the
+      // augment above. No project → no folders, and the key stays absent.
+      const sharedFolderIds = project !== null ? [project.folderId] : [];
       const sandboxInput: OpenSessionInput = {
         sessionId,
         workspaceRoot: ctx.workspace.rootPath,
@@ -3802,7 +4039,14 @@ export function createOrchestrator(
         // non-connector / CLI paths leave the field unset. Both backends render
         // it; the wire schema re-validates (digest-pin, caps, no smuggled vocab).
         ...(foldedServices.length > 0 ? { services: foldedServices } : {}),
+        // W2/W3a — the chat's project folder; key absent when there is none.
+        ...(sharedFolderIds.length > 0 ? { sharedFolderIds } : {}),
       };
+      // W2 — record the requested folders BEFORE the open: the resolver
+      // authorizes the mounts inside it, so a reduction that commits while
+      // the open is in flight must already find (and mark) this session. A
+      // failed open forgets it in the catch below.
+      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds, project?.projectId ?? null);
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
@@ -3859,6 +4103,7 @@ export function createOrchestrator(
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
+            forgetSessionSharedFolders(sessionId);
             if (proxyOpened) {
               void closeProxySession(warmCtx, warmCtx.sessionId, 'runner-exit');
             }
@@ -3867,6 +4112,7 @@ export function createOrchestrator(
       }
     } catch (err) {
       unregisterWaiter(sessionId, ctx.reqId);
+      forgetSessionSharedFolders(sessionId);
       // Best-effort: terminate the session if sandbox-subprocess managed to
       // create it before the spawn failed. The sandbox plugin ALREADY tears
       // down in most failure modes, but belt-and-suspender for the case
@@ -4118,6 +4364,7 @@ export function createOrchestrator(
         skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
         forgetSessionConnectors(ctx.sessionId);
+        forgetSessionSharedFolders(ctx.sessionId);
       }
     }
   }
@@ -4212,8 +4459,10 @@ export function createOrchestrator(
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
       // TASK-833 — a session holding a since-deleted connector is reaped now,
       // and (TASK-877) its proxy session closed now rather than on runner exit.
-      if (connectorDeletedSessions.has(ctx.sessionId)) {
-        closeProxyForDeletedConnector(ctx, ctx.sessionId);
+      // W2 — likewise a session holding a shared folder whose access was reduced.
+      const revoked = accessRevoked(ctx.sessionId);
+      if (revoked !== null) {
+        closeProxyForReap(ctx, ctx.sessionId, revoked);
         armReapTimer(ctx, 0);
       } else {
         armReapTimer(ctx, idleWindowMs);
@@ -4516,7 +4765,18 @@ export function createOrchestrator(
     onSystemPromptAugmentChanged,
     onAgentDeleted,
     onConnectorDeleted,
+    onSharedFolderAccessReduced,
   };
+}
+
+// W3a — the chat's project could not be determined or resolved (spec §4.5).
+// Carries the underlying cause for the audit outcome; the turn ends with the
+// coarse `project-unavailable` reason.
+class ProjectUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('the chat\'s project is unavailable', { cause });
+    this.name = 'ProjectUnavailableError';
+  }
 }
 
 // A distinct error type so the runAgentInvoke finally block can tell "we timed out"

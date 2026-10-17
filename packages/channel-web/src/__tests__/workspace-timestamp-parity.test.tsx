@@ -362,6 +362,7 @@ describe('one event, two tabs', () => {
     const past = wire.past[0];
     if (past === undefined) throw new Error('no past conversation on the wire');
     expect(past.lastActivityAt).toBe(PAST_INSTANT);
-    expect(Object.keys(past).sort()).toEqual(['id', 'lastActivityAt', 'title']);
+    // W3a: plus the chat's project label (null here: no project).
+    expect(Object.keys(past).sort()).toEqual(['id', 'lastActivityAt', 'project', 'title']);
   });
 });

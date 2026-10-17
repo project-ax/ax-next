@@ -1,6 +1,8 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  DeleteSharedFolderInput,
+  DeleteSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -11,6 +13,7 @@ import {
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-host-ops.js';
+import { deleteSharedFolder } from './shared-folders.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
 
@@ -45,7 +48,16 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // host's READ-ONLY view of an agent's durable user-files mount, so the
       // web UI can serve those files without entering a live sandbox. Realized
       // by reading the resolved `localDir` hostPath read-only.
-      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
+      //
+      // `sandbox:delete-shared-folder` (W2 shared folders, design §3.7): remove
+      // a shared folder's bytes. Realized by locating the folder through the
+      // resolver's `sandbox:locate-shared-folder` and `rm -rf`ing exactly
+      // `<root>/.shared/<folderId>`.
+      registers: [
+        'sandbox:open-session',
+        'sandbox:read-user-files',
+        'sandbox:delete-shared-folder',
+      ],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
       // catch a missing producer at boot instead of first-call time.
@@ -71,8 +83,19 @@ export function createSandboxSubprocessPlugin(): Plugin {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
+            'no shared-folder mounts (AX_SHARED_FOLDERS unset); ' +
             'host-read returns unavailable (this deployment keeps no durable ' +
             'files) and agent-delete cleanup is a no-op',
+        },
+        // W2 shared folders: where a folder's bytes live, for deletion only
+        // (registered by the same resolver, grant-free). Optional so a preset
+        // without a resolver still boots; sessions never touch it.
+        {
+          hook: 'sandbox:locate-shared-folder',
+          degradation:
+            'sandbox:delete-shared-folder throws no-mount-resolver (nothing is ' +
+            'deleted, so the caller keeps its tombstone and retries); opening ' +
+            'sessions is unaffected',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -103,6 +126,16 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, PLUGIN_NAME, input),
+      );
+
+      // W2 shared folders: delete one folder's bytes. A delete that did not
+      // happen THROWS (no resolver, a located path that is not exactly
+      // `<root>/.shared/<folderId>`, a symlinked `.shared`) so the caller never
+      // drops its tombstone over bytes that are still there.
+      bus.registerService<DeleteSharedFolderInput, DeleteSharedFolderOutput>(
+        'sandbox:delete-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => deleteSharedFolder(ctx, bus, PLUGIN_NAME, input),
       );
 
       // §11 cleanup-on-agent-delete. rm -rf the agent's durable user-files

@@ -55,6 +55,8 @@ export const DEFAULT_SETTINGS_SECTION: AgentSettingsSection = 'instructions';
 export type WorkspaceRoute =
   | { kind: 'today' }
   | { kind: 'activity' }
+  | { kind: 'projects' }
+  | { kind: 'project'; id: string }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
 
@@ -83,7 +85,7 @@ function isAgentTab(segment: string): segment is AgentTab {
 }
 
 /**
- * Decode one path segment into an agent id, or `null` if it can't be one.
+ * Decode one path segment into an agent (or project) id, or `null` if it can't be one.
  *
  * Two refusals, both about a link someone else wrote:
  *
@@ -118,6 +120,14 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   const [, section, third, fourth, fifth] = segments;
   if (section === undefined) return TODAY;
   if (section === 'activity') return { kind: 'activity' };
+  if (section === 'projects') {
+    if (third === undefined) return { kind: 'projects' };
+    // Same refusals as an agent id: the project id is interpolated into
+    // `/api/workspace/projects/<id>` the same way. A malformed one falls
+    // back to the list, not Today — the person was clearly after projects.
+    const projectId = parseAgentId(third);
+    return projectId === null ? { kind: 'projects' } : { kind: 'project', id: projectId };
+  }
   if (section !== 'agents' || third === undefined) return TODAY;
 
   const id = parseAgentId(third);
@@ -153,6 +163,10 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       return WORKSPACE_ROOT_PATH;
     case 'activity':
       return `${WORKSPACE_ROOT_PATH}/activity`;
+    case 'projects':
+      return `${WORKSPACE_ROOT_PATH}/projects`;
+    case 'project':
+      return `${WORKSPACE_ROOT_PATH}/projects/${encodeURIComponent(route.id)}`;
     case 'agent': {
       const base = `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}`;
       return route.tab === DEFAULT_TAB ? base : `${base}/${route.tab}`;
@@ -160,4 +174,19 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
     case 'agent-settings':
       return `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}/settings/${route.section}`;
   }
+}
+
+/**
+ * Should a click on a workspace LINK navigate in place? Only a plain primary
+ * click: a middle click or a modifier is the reader asking their browser for
+ * a new tab or window, and the `href` is there to answer it.
+ */
+export function isPlainClick(e: {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 }

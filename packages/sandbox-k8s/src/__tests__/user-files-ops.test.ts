@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFINED_READ_LIMITS } from '@ax/user-files-read';
 import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import type {
+  LocateSharedFolderInput,
+  LocateSharedFolderOutput,
+  MountSpec,
   ResolveMountsInput,
   ResolveMountsOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -12,6 +15,7 @@ import { resolveConfig } from '../config.js';
 import {
   buildCleanupCommand,
   cleanupUserFiles,
+  deleteSharedFolder,
   ownerFromAgentId,
   parseReadOutput,
   readUserFiles,
@@ -785,5 +789,219 @@ describe('parseReadOutput (one-shot pod log → ReadUserFilesOutput)', () => {
   it('takes the LAST meaningful line (tolerates leading container noise)', () => {
     const raw = 'some startup noise\nABSENT';
     expect(parseReadOutput(raw)).toEqual({ kind: 'absent' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W2 shared folders — the user-files lookup must match on role, never take the
+// first mount: a resolver may list shared-folder mounts before /files.
+// ---------------------------------------------------------------------------
+
+function busWithSharedFirst(): HookBus {
+  const bus = new HookBus();
+  bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+    'sandbox:resolve-mounts',
+    'mock-filestore',
+    async (_c, input) => ({
+      mounts: [
+        {
+          kind: 'nfs' as const,
+          mountPath: '/shared/sf_x',
+          server: '10.0.0.2',
+          exportPath: '/vol1/agents',
+          subPath: '.shared/sf_x',
+          readOnly: input.readOnly === true,
+          role: 'shared-folder' as const,
+          folderId: 'sf_x',
+        },
+        {
+          kind: 'nfs' as const,
+          mountPath: '/files',
+          server: '10.0.0.2',
+          exportPath: '/vol1/agents',
+          subPath: input.owner.agentId,
+          readOnly: input.readOnly === true,
+          role: 'user-files' as const,
+        },
+      ],
+    }),
+  );
+  return bus;
+}
+
+describe('user-files lookup ignores shared-folder mounts (W2)', () => {
+  it('cleanup reclaims the agent subtree, not a shared folder listed first', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api);
+    await cleanupUserFiles(ctx(), busWithSharedFirst(), api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log);
+    expect(api.creates).toHaveLength(1);
+    const pod = api.creates[0]!.body as InspectablePod;
+    expect(pod.spec.containers[0]!.env).toEqual([{ name: 'SUBPATH', value: 'agent-abc' }]);
+  });
+
+  it('the one-shot host-read reads the agent subtree, not a shared folder listed first', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'ABSENT');
+    await readUserFiles(ctx(), busWithSharedFirst(), api, CONFIG, log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    const pod = api.creates[0]!.body as InspectablePod;
+    expect(pod.spec.containers[0]!.env).toEqual([
+      { name: 'SUBPATH', value: 'agent-abc' },
+      { name: 'RELPATH', value: '.' },
+    ]);
+  });
+
+  it('the host-mounted read reads the agent subtree, not a shared folder listed first', async () => {
+    const hostRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-k8s-sf-')));
+    try {
+      await fs.mkdir(path.join(hostRoot, 'agent-abc'), { recursive: true });
+      await fs.writeFile(path.join(hostRoot, 'agent-abc', 'mine.txt'), 'mine');
+      await fs.mkdir(path.join(hostRoot, '.shared', 'sf_x'), { recursive: true });
+      await fs.writeFile(path.join(hostRoot, '.shared', 'sf_x', 'shared.txt'), 'shared');
+      const api = makeMockK8sApi();
+      const out = await readUserFiles(
+        ctx(),
+        busWithSharedFirst(),
+        api,
+        resolveConfig({ hostIpcUrl: 'http://h:80', namespace: 'ax-test', userFilesHostReadRoot: hostRoot }),
+        log,
+        { owner: ownerFromAgentId('agent-abc', 'u1') },
+      );
+      if (out.kind !== 'dir') throw new Error('expected dir');
+      expect(out.entries.map((e) => e.name)).toEqual(['mine.txt']);
+    } finally {
+      await fs.rm(hostRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W2 shared folders §3.7 — sandbox:delete-shared-folder reuses the reclaim pod,
+// confined to EXACTLY `.shared/<folderId>`, and throws on every failure so the
+// caller keeps its tombstone.
+// ---------------------------------------------------------------------------
+
+describe('deleteSharedFolder (k8s reclaim pod for .shared/<folderId>)', () => {
+  function sharedMount(folderId: string, overrides: Partial<MountSpec> = {}): MountSpec {
+    return {
+      kind: 'nfs',
+      mountPath: `/shared/${folderId}`,
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: `.shared/${folderId}`,
+      readOnly: false,
+      role: 'shared-folder',
+      folderId,
+      ...overrides,
+    } as MountSpec;
+  }
+  function busLocating(answer: (folderId: string) => MountSpec) {
+    const bus = new HookBus();
+    const seen: LocateSharedFolderInput[] = [];
+    bus.registerService<LocateSharedFolderInput, LocateSharedFolderOutput>(
+      'sandbox:locate-shared-folder',
+      'mock-filestore',
+      async (_c, input) => {
+        seen.push(input);
+        return { mount: answer(input.folderId) };
+      },
+    );
+    return { bus, seen };
+  }
+
+  it('runs the reclaim pod against .shared/<folderId> and answers deleted:true', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api);
+    const { bus, seen } = busLocating((id) => sharedMount(id));
+    await expect(
+      deleteSharedFolder(ctx(), bus, api, CONFIG, { folderId: 'sf_x' }, log),
+    ).resolves.toEqual({ deleted: true });
+    expect(seen).toEqual([{ folderId: 'sf_x' }]);
+    expect(api.creates).toHaveLength(1);
+    const pod = api.creates[0]!.body as InspectablePod;
+    const c = pod.spec.containers[0]!;
+    expect(pod.metadata.labels['ax.io/plane']).toBe('execution');
+    expect(pod.spec.volumes[0]!.nfs).toEqual({ server: '10.0.0.2', path: '/vol1/agents' });
+    expect(c.volumeMounts[0]!.readOnly).toBe(false);
+    expect(c.env).toEqual([{ name: 'SUBPATH', value: '.shared/sf_x' }]);
+    expect(c.command).toEqual(['sh', '-c', buildCleanupCommand()]);
+    expect(c.securityContext.capabilities.add).toEqual(['DAC_OVERRIDE', 'FOWNER']);
+    expect(api.deletes).toHaveLength(1);
+  });
+
+  it.each([
+    ['a different folder', sharedMount('sf_other')],
+    ['an agent subtree', sharedMount('sf_x', { subPath: 'agent-abc' })],
+    ['the .shared parent', sharedMount('sf_x', { subPath: '.shared' })],
+    ['a nested path', sharedMount('sf_x', { subPath: '.shared/sf_x/sub' })],
+    ['a dot-dot escape', sharedMount('sf_x', { subPath: '.shared/sf_x/..' })],
+    ['a prefixed escape', sharedMount('sf_x', { subPath: '../.shared/sf_x' })],
+    ['an absolute path', sharedMount('sf_x', { subPath: '/.shared/sf_x' })],
+    ['a trailing slash', sharedMount('sf_x', { subPath: '.shared/sf_x/' })],
+  ])('refuses a located mount pointing at %s, and creates no pod', async (_label, located) => {
+    const api = makeMockK8sApi();
+    primeTerminal(api);
+    const { bus } = busLocating(() => located);
+    await expect(
+      deleteSharedFolder(ctx(), bus, api, CONFIG, { folderId: 'sf_x' }, log),
+    ).rejects.toMatchObject({ code: 'unsafe-subpath' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it.each(['', 'x', '../sf_x', 'sf_x/..', '.shared', 'sf_' + 'a'.repeat(65)])(
+    'rejects an invalid folder id %j before locating anything',
+    async (folderId) => {
+      const api = makeMockK8sApi();
+      const { bus, seen } = busLocating((id) => sharedMount(id));
+      await expect(
+        deleteSharedFolder(ctx(), bus, api, CONFIG, { folderId }, log),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+      expect(seen).toHaveLength(0);
+      expect(api.creates).toHaveLength(0);
+    },
+  );
+
+  it('throws no-mount-resolver when no locate service is loaded', async () => {
+    const api = makeMockK8sApi();
+    await expect(
+      deleteSharedFolder(ctx(), new HookBus(), api, CONFIG, { folderId: 'sf_x' }, log),
+    ).rejects.toMatchObject({ code: 'no-mount-resolver' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it('refuses a localDir location (no host-FS share in k8s)', async () => {
+    const api = makeMockK8sApi();
+    const { bus } = busLocating(() => ({
+      kind: 'localDir',
+      mountPath: '/shared/sf_x',
+      hostPath: '/tmp/.shared/sf_x',
+      readOnly: false,
+      role: 'shared-folder',
+      folderId: 'sf_x',
+    }));
+    await expect(
+      deleteSharedFolder(ctx(), bus, api, CONFIG, { folderId: 'sf_x' }, log),
+    ).rejects.toMatchObject({ code: 'unrealizable-mount-kind' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it('THROWS when the reclaim pod fails (never a silent success)', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, undefined, 1);
+    const { bus } = busLocating((id) => sharedMount(id));
+    const error = vi.spyOn(log, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(
+        deleteSharedFolder(ctx(), bus, api, CONFIG, { folderId: 'sf_x' }, log),
+      ).rejects.toThrow(/exited code=1/);
+      expect(error).toHaveBeenCalledWith(
+        'shared_folder_delete_failed',
+        expect.objectContaining({ folderId: 'sf_x', subPath: '.shared/sf_x' }),
+      );
+      expect(api.deletes).toHaveLength(1);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

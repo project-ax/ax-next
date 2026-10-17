@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
-import { BootstrapAssignmentSchema, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
+import { BootstrapAssignmentSchema, BOOTSTRAP_MAX_BYTES, isValidSharedFolderId } from '@ax/sandbox-protocol';
 import { buildPodSpec, type PodSpec } from './pod-spec.js';
 import { GKE_SANDBOX_NODE_PLACEMENT, type SandboxCustomApi } from './agent-sandbox.js';
 import type { K8sCoreApi, PodReadRequest } from './k8s-api.js';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { StorageClient } from './storage-client.js';
-import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, STANDBY_LABEL, LATE_VOLUME, type StorageIdentity } from './storage-node/protocol.js';
+import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, CLAIM_SHARED_FOLDERS_ANNOTATION, STANDBY_LABEL, LATE_VOLUME, SharedFoldersSchema,
+  canonicalSharedFolders, type SharedFolders, type StorageIdentity } from './storage-node/protocol.js';
 import { isNotFound } from './storage-node/authority.js';
-import { sourceParts, backingProfile } from './storage-node/sources.js';
+import { describeFailure, redactedError } from './storage-node/describe-failure.js';
+import { sourceParts, sharedFolderSourceParts, backingProfile } from './storage-node/sources.js';
 
 interface Resource {
   metadata?: { name?: string; uid?: string; deletionTimestamp?: string; creationTimestamp?: string; labels?: Record<string, string>;
@@ -172,8 +174,20 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       const env = Object.fromEntries(runner.env.filter(e => e.name !== 'AX_RUNNER_BINARY').map(e => [e.name, e.value!]));
       const nfs = pod.spec.volumes as { name: string; nfs?: { server: string; path: string } }[];
       const roles: ('user-files' | 'memory')[] = [];
+      const shared: { folderId: string; readOnly: boolean }[] = [];
       const agentId = pod.metadata.labels[CLAIM_AGENT_LABEL];
       for (const mount of runner.volumeMounts.filter(m => m.subPath)) {
+        // W2 §3.8.1 — a shared folder binds through the node helper too. It must
+        // sit exactly where its id says, on the pool's user-files export.
+        if (mount.mountPath.startsWith('/shared/')) {
+          const folderId = mount.mountPath.slice('/shared/'.length);
+          const source = nfs.find(v => v.name === mount.name)?.nfs;
+          if (!isValidSharedFolderId(folderId) || !source || source.server !== pool.userFiles.server ||
+              source.path !== pool.userFiles.exportPath || mount.subPath !== sharedFolderSourceParts(folderId).join('/') ||
+              shared.some(f => f.folderId === folderId)) throw new Error('shared storage configuration differs from mount resolver');
+          shared.push({ folderId, readOnly: mount.readOnly === true });
+          continue;
+        }
         const role = mount.mountPath === '/files' ? 'user-files' : mount.mountPath === '/memory' ? 'memory' : undefined;
         const source = nfs.find(v => v.name === mount.name)?.nfs;
         const expected = role === 'user-files' ? pool.userFiles : role === 'memory' ? pool.memory : undefined;
@@ -183,6 +197,22 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
         roles.push(role);
       }
       if (!agentId) throw new Error('shared session requires an agent storage identity');
+      let sharedFolders: SharedFolders | undefined;
+      if (shared.length > 0) {
+        const parsed = SharedFoldersSchema.safeParse(shared.sort((a, b) => a.folderId < b.folderId ? -1 : 1));
+        if (!parsed.success) throw new Error('shared storage configuration differs from mount resolver');
+        sharedFolders = parsed.data;
+      }
+      // The runner learns its folders from AX_SHARED_FOLDERS; it must describe exactly these binds.
+      const announced = env.AX_SHARED_FOLDERS === undefined ? undefined : (() => {
+        try { return (JSON.parse(env.AX_SHARED_FOLDERS) as { id: string; readOnly: boolean }[])
+          .map(f => ({ folderId: f.id, readOnly: f.readOnly })).sort((a, b) => a.folderId < b.folderId ? -1 : 1); }
+        catch { return null; }
+      })();
+      if ((announced === undefined) !== (sharedFolders === undefined) ||
+          (sharedFolders && (!Array.isArray(announced) || JSON.stringify(announced) !== canonicalSharedFolders(sharedFolders)))) {
+        throw new Error('shared storage configuration differs from mount resolver');
+      }
       // Validate before creating any resources; raw schema errors must never contain credentials.
       const draft = BootstrapAssignmentSchema.safeParse({ version: 1, assignmentId: randomUUID(), instanceId: 'pending',
         expiresAt: Date.now() + config.readinessTimeoutMs, env });
@@ -190,7 +220,9 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       const name = pod.metadata.name;
       const claim = await custom.createNamespacedCustomObject({ ...extension(req.namespace, 'sandboxclaims'), body: {
         apiVersion: 'extensions.agents.x-k8s.io/v1beta1', kind: 'SandboxClaim', metadata: { name, namespace: req.namespace,
-          labels: { [CLAIM_POOL_LABEL]: className, [CLAIM_AGENT_LABEL]: agentId } },
+          labels: { [CLAIM_POOL_LABEL]: className, [CLAIM_AGENT_LABEL]: agentId },
+          // The helper binds only the folders this annotation names (absent ⇔ none).
+          ...(sharedFolders ? { annotations: { [CLAIM_SHARED_FOLDERS_ANNOTATION]: canonicalSharedFolders(sharedFolders) } } : {}) },
         spec: { warmPoolRef: { name: className }, lifecycle: { shutdownTime: new Date(Date.now() + config.activeDeadlineSeconds * 1000).toISOString(),
           shutdownPolicy: 'DeleteForeground' } },
       } }) as Resource;
@@ -203,16 +235,24 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
         }
         live.set(key({ namespace: req.namespace, name }), assigned);
         const { node, ...id } = assigned;
-        await storage.assign(node, { ...id, agentId, roles, backingProfile: backingProfile(pool),
+        await storage.assign(node, { ...id, agentId, roles, ...(sharedFolders ? { sharedFolders } : {}), backingProfile: backingProfile(pool),
           bootstrap: { ...draft.data, instanceId: id.podUid } });
         while (!(await storage.status(node, id)).accepted) {
           if (Date.now() >= deadline) throw new Error('shared activation timed out'); await setTimeout(config.readinessPollMs);
         }
         return claim;
-      } catch {
-        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch(() => undefined); }
-        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch(() => undefined);
-        throw new Error('shared session activation failed');
+      } catch (cause) {
+        // Keep the cause (and any cleanup failure) in the message: the caller's
+        // pod_create_failed log reads only the message. Bootstrap values are
+        // redacted — an error that echoes one must never reach a log.
+        const env = draft.data.env;
+        const details = [describeFailure(cause, env)];
+        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch((e: unknown) => {
+          details.push(`release failed: ${describeFailure(e, env)}`); }); }
+        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch((e: unknown) => {
+          details.push(`claim delete failed: ${describeFailure(e, env)}`); });
+        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
+        throw new Error(`shared session activation failed: ${details.join('; ')}`, { cause: redactedError(cause, env) });
       }
     },
     readNamespacedPod: read,

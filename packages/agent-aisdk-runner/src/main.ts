@@ -25,6 +25,7 @@ import {
   type ModelMessage,
   type Tool,
 } from 'ai';
+import { policyRecognizedRoots } from './policy-roots.js';
 import {
   createCompactor,
   findContextWindowExceeded,
@@ -216,9 +217,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         client,
         workspaceRoot: env.workspaceRoot,
         broaden: homeDir !== env.workspaceRoot,
-        recognizedRoots: [homeDir, env.ephemeralRoot].filter(
-          (r): r is string => r !== undefined,
-        ),
+        // W2: shared folders are NOT recognized roots — a `.ax/`/`.claude/`
+        // path inside one must never be re-rooted onto /agent. See
+        // policyRecognizedRoots.
+        recognizedRoots: policyRecognizedRoots(homeDir, env),
         drainEgressBlocks: async () => {
           const r = (await client.call('proxy.drain-egress-blocks', {})) as {
             hosts: string[];

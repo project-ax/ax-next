@@ -103,6 +103,7 @@ interface ConvRow {
   activeReqId: string | null;
   createdAt: string;
   lastActivityAt: string | null;
+  projectId?: string | null;
 }
 
 function conv(over: Partial<ConvRow> & { conversationId: string }): ConvRow {
@@ -1736,7 +1737,102 @@ describe('channel-web agent-workspace BFF', () => {
     // `msgs: []` rendered as "an empty conversation" and `folded: 0` as
     // "0 messages were summarised". The excerpt now comes from a real re-read
     // through `?conversationId=`.
-    expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'lastActivityAt']);
+    // W3a adds the chat's project label (null: no project).
+    expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'lastActivityAt', 'project']);
+    expect((body.past[0] as { project?: unknown }).project).toBeNull();
+  });
+
+  // W3a (W3 §15 Q6): project chats carry a project label in the rail — named
+  // from ONE projects:list as the person; a project they can't use is null.
+  describe('project labels (W3a)', () => {
+    function seedProjectChats(): void {
+      conversations = [
+        conv({ conversationId: 'cur', projectId: 'prj_mine', lastActivityAt: '2026-08-05T10:00:00.000Z' }),
+        conv({ conversationId: 'p1', projectId: 'prj_mine', lastActivityAt: '2026-08-04T10:00:00.000Z' }),
+        conv({ conversationId: 'p2', projectId: 'prj_gone', lastActivityAt: '2026-08-03T10:00:00.000Z' }),
+        conv({ conversationId: 'p3', projectId: null, lastActivityAt: '2026-08-02T10:00:00.000Z' }),
+      ];
+    }
+
+    it('labels current and past chats from one projects:list AS the person; an unusable project is null', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedProjectChats();
+      const listCalls: Array<{ userId: string; input: unknown }> = [];
+      bus.registerService('projects:list', 'projects', async (ctx, input) => {
+        listCalls.push({ userId: ctx.userId, input });
+        return {
+          projects: [
+            { projectId: 'prj_mine', name: 'Q4 launch', description: null, updatedAt: '2026-08-05T10:00:00.000Z', members: [] },
+          ],
+        };
+      });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      expect(captured.statusCode).toBe(200);
+      const body = captured.body as {
+        project: unknown;
+        past: Array<{ id: string; project: unknown }>;
+      };
+      expect(body.project).toEqual({ projectId: 'prj_mine', name: 'Q4 launch' });
+      expect(body.past.map((p) => [p.id, p.project])).toEqual([
+        ['p1', { projectId: 'prj_mine', name: 'Q4 launch' }],
+        ['p2', null],
+        ['p3', null],
+      ]);
+      // One read per request, on the AUTHENTICATED person's ctx.
+      expect(listCalls).toEqual([{ userId: 'u1', input: {} }]);
+    });
+
+    it('a past conversation opened by ?conversationId= carries its own project', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedProjectChats();
+      bus.registerService('projects:list', 'projects', async () => ({
+        projects: [{ projectId: 'prj_mine', name: 'Q4 launch', description: null, updatedAt: 'x', members: [] }],
+      }));
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      const req = mkReq({ agentId: 'a1' });
+      (req.query as Record<string, string>)[CONVERSATION_ID_QUERY_KEY] = 'p3';
+      await h.agentDetail(req, res);
+      expect((captured.body as { conversationId: string; project: unknown }).conversationId).toBe('p3');
+      expect((captured.body as { project: unknown }).project).toBeNull();
+    });
+
+    it('no projects:list read when no chat is in a project', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      conversations = [conv({ conversationId: 'only' })];
+      let calls = 0;
+      bus.registerService('projects:list', 'projects', async () => {
+        calls += 1;
+        return { projects: [] };
+      });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      expect((captured.body as { project: unknown }).project).toBeNull();
+      expect(calls).toBe(0);
+    });
+
+    it('without @ax/projects, or when the read fails, every label is null and the panel still renders', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedProjectChats();
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const a = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), a.res);
+      expect(a.captured.statusCode).toBe(200);
+      expect((a.captured.body as { project: unknown }).project).toBeNull();
+
+      bus.registerService('projects:list', 'projects', async () => {
+        throw new Error('db down');
+      });
+      const b = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), b.res);
+      expect(b.captured.statusCode).toBe(200);
+      const body = b.captured.body as { project: unknown; past: Array<{ project: unknown }> };
+      expect(body.project).toBeNull();
+      expect(body.past.every((p) => p.project === null)).toBe(true);
+    });
   });
 
   it('fences a past conversation title like every other label out of this file', async () => {

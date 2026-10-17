@@ -252,3 +252,40 @@ describe('agent settings (TASK-888)', () => {
     expect(routeAgentId({ kind: 'activity' })).toBeNull();
   });
 });
+
+describe('projects (W3a)', () => {
+  it('parses the projects list and a project page', () => {
+    expect(parseWorkspaceRoute('/workspace/projects')).toEqual({ kind: 'projects' });
+    expect(parseWorkspaceRoute('/workspace/projects/')).toEqual({ kind: 'projects' });
+    expect(parseWorkspaceRoute('/workspace/projects/p1')).toEqual({ kind: 'project', id: 'p1' });
+    // A tail we don't understand is dropped, like everywhere else.
+    expect(parseWorkspaceRoute('/workspace/projects/p1/extra')).toEqual({
+      kind: 'project',
+      id: 'p1',
+    });
+  });
+
+  it('serializes both routes, one URL per view', () => {
+    expect(workspaceRoutePath({ kind: 'projects' })).toBe('/workspace/projects');
+    expect(workspaceRoutePath({ kind: 'project', id: 'p1' })).toBe('/workspace/projects/p1');
+  });
+
+  it('percent-encodes the project id and decodes it back', () => {
+    const route: WorkspaceRoute = { kind: 'project', id: 'p/1 x' };
+    expect(workspaceRoutePath(route)).toBe('/workspace/projects/p%2F1%20x');
+    expect(parseWorkspaceRoute(workspaceRoutePath(route))).toEqual(route);
+  });
+
+  it.each([
+    ['a malformed escape', '/workspace/projects/%E0%A4%A'],
+    ['a dot-segment', '/workspace/projects/..'],
+    ['a single dot', '/workspace/projects/.'],
+  ])('falls back to the projects list on %s', (_what, path) => {
+    expect(parseWorkspaceRoute(path)).toEqual({ kind: 'projects' });
+  });
+
+  it('is not about an agent', () => {
+    expect(routeAgentId({ kind: 'projects' })).toBeNull();
+    expect(routeAgentId({ kind: 'project', id: 'p1' })).toBeNull();
+  });
+});

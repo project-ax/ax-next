@@ -72,6 +72,8 @@
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },
     { "path": "packages/host-grants" },
+    { "path": "packages/shared-folders" },
+    { "path": "packages/projects" },
     { "path": "packages/sandbox-protocol" },
     { "path": "packages/sandbox-mount-protocol" },
     { "path": "packages/user-files-read" },

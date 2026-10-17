@@ -1,6 +1,8 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  DeleteSharedFolderInput,
+  DeleteSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -18,6 +20,7 @@ import {
 import { startOrphanSweeper, type OrphanSweeperHandle } from './sweep.js';
 import {
   cleanupUserFiles,
+  deleteSharedFolder,
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-ops.js';
@@ -74,7 +77,16 @@ export function createSandboxK8sPlugin(
       // the host pod (`userFilesHostReadRoot`) or, when that is unset, by a
       // short-lived pod that mounts the export read-only. Single-homed
       // registration either way — see user-files-ops.ts.
-      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
+      //
+      // `sandbox:delete-shared-folder` (W2 shared folders §3.7): removes one
+      // shared folder's bytes (`.shared/<folderId>` on the user-files export)
+      // with the same reclaim pod as the agent cleanup. Called by
+      // @ax/shared-folders after the folder's grants are gone.
+      registers: [
+        'sandbox:open-session',
+        'sandbox:read-user-files',
+        'sandbox:delete-shared-folder',
+      ],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
       // host-side hooks are subprocess-impl-specific. Once the pod-side
@@ -103,6 +115,12 @@ export function createSandboxK8sPlugin(
           degradation:
             'no read-only memory-export mount; AX_MEMORY_ROOT unset and the ' +
             'runner sees no /memory view',
+        },
+        {
+          hook: 'sandbox:locate-shared-folder',
+          degradation:
+            'sandbox:delete-shared-folder cannot locate a folder and throws ' +
+            'no-mount-resolver; @ax/shared-folders keeps the tombstone and retries',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -200,6 +218,16 @@ export function createSandboxK8sPlugin(
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, api, config, ctx.logger, input),
+        { timeoutMs: 180_000 },
+      );
+
+      // W2 §3.7 shared-folder delete. Throws on any failure (never a silent
+      // no-op) so @ax/shared-folders keeps its tombstone and retries. Same
+      // timeout budget as host-read: one short-lived pod.
+      bus.registerService<DeleteSharedFolderInput, DeleteSharedFolderOutput>(
+        'sandbox:delete-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => deleteSharedFolder(ctx, bus, api, config, input, ctx.logger),
         { timeoutMs: 180_000 },
       );
 
