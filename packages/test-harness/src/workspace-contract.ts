@@ -597,6 +597,7 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
           conversationId: 'conversation-alpha',
           source: 'user',
           triggerLabel: 'Alpha trigger',
+          projectId: 'project-alpha',
           workspace: { rootPath: '/tmp/contract-alpha' },
         });
         const two = callerVaryingEverything('user-beta', SHARED, {
@@ -604,6 +605,7 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
           conversationId: 'conversation-beta',
           source: 'routine',
           triggerLabel: 'Beta trigger',
+          projectId: 'project-beta',
           workspace: { rootPath: '/tmp/contract-beta' },
         });
         // Nothing but `agentId` is equal. This guards against the SHARE
