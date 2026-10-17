@@ -54,6 +54,18 @@ import { UserFilesReadError } from './confined-read.js';
 /** No more path components than this, root excluded. */
 export const MAX_WALK_PARTS = 32;
 
+/** Ceiling on `limitBytes`: the largest read any caller may ask for (a 10 MiB download plus slack). */
+export const MAX_WALK_LIMIT_BYTES = 16 * 1024 * 1024;
+/** Ceiling on `maxEntries`. */
+export const MAX_WALK_ENTRIES = 10_000;
+/**
+ * Entries a listing may skip (links, FIFOs, sockets, devices, entries deleted
+ * mid-listing) before it stops. Skipped entries don't count toward
+ * `maxEntries`, so without this a folder of a million symlinks would cost a
+ * million `lstat`s for one listing.
+ */
+export const MAX_WALK_SKIPPED = 1_000;
+
 /**
  * O_PATH is not in Node's `fs.constants`. Its value is 010000000 on every
  * architecture Node supports on Linux (x86_64, arm64, arm, ppc64, s390x,
@@ -171,6 +183,12 @@ export async function readConfinedByWalk(
 ): Promise<WalkReadOutput> {
   if (parts.length > MAX_WALK_PARTS) throw new WalkPathError('path is too deep');
   parts.forEach(assertSafePart);
+  if (!Number.isSafeInteger(opts.limitBytes) || opts.limitBytes < 0 || opts.limitBytes > MAX_WALK_LIMIT_BYTES) {
+    throw new RangeError(`limitBytes must be an integer from 0 to ${MAX_WALK_LIMIT_BYTES}`);
+  }
+  if (!Number.isSafeInteger(opts.maxEntries) || opts.maxEntries < 1 || opts.maxEntries > MAX_WALK_ENTRIES) {
+    throw new RangeError(`maxEntries must be an integer from 1 to ${MAX_WALK_ENTRIES}`);
+  }
   if (process.platform !== 'linux') {
     throw new WalkReadError('readConfinedByWalk needs Linux /proc', {
       code: 'unsupported-platform',
@@ -223,35 +241,60 @@ export async function readConfinedByWalk(
 }
 
 async function listDir(dirFd: number, maxEntries: number, depth: number): Promise<WalkReadOutput> {
-  const dir = fdPath(dirFd);
-  let names: string[];
+  const dirPath = fdPath(dirFd);
+  // Streamed, never `readdir`: a folder an agent filled with millions of
+  // names must not be loaded whole. Kept and skipped entries are both capped,
+  // so one listing costs at most maxEntries + MAX_WALK_SKIPPED stats.
+  let dir;
   try {
-    names = await fs.readdir(dir);
+    dir = await fs.opendir(dirPath, { bufferSize: 64 });
   } catch (err) {
     throw fail('could not list a directory', err, depth);
   }
   const entries: WalkDirEntry[] = [];
   let truncated = false;
-  for (const name of names) {
-    // lstat through the held descriptor: never follows `name`, so a symlink
-    // reports as a symlink and is dropped below. Nothing is opened.
-    let st;
-    try {
-      st = await fs.lstat(`${dir}/${name}`);
-    } catch (err) {
-      if (errnoOf(err) === 'ENOENT') continue; // deleted since readdir
-      throw fail('could not stat a directory entry', err, depth);
+  let skipped = 0;
+  try {
+    for (;;) {
+      let dirent;
+      try {
+        dirent = await dir.read();
+      } catch (err) {
+        throw fail('could not list a directory', err, depth);
+      }
+      if (dirent === null) break;
+      if (skipped >= MAX_WALK_SKIPPED) {
+        truncated = true;
+        break;
+      }
+      // lstat through the held descriptor: never follows the name, so a
+      // symlink reports as a symlink and is dropped below. Nothing is opened.
+      let st;
+      try {
+        st = await fs.lstat(`${dirPath}/${dirent.name}`);
+      } catch (err) {
+        if (errnoOf(err) === 'ENOENT') {
+          skipped++; // deleted since it was listed
+          continue;
+        }
+        throw fail('could not stat a directory entry', err, depth);
+      }
+      if (!st.isFile() && !st.isDirectory()) {
+        skipped++;
+        continue;
+      }
+      if (entries.length >= maxEntries) {
+        truncated = true;
+        break;
+      }
+      entries.push(
+        st.isFile()
+          ? { name: dirent.name, kind: 'file', size: st.size, updatedAt: st.mtime.toISOString() }
+          : { name: dirent.name, kind: 'dir' },
+      );
     }
-    if (!st.isFile() && !st.isDirectory()) continue;
-    if (entries.length >= maxEntries) {
-      truncated = true;
-      break;
-    }
-    entries.push(
-      st.isFile()
-        ? { name, kind: 'file', size: st.size, updatedAt: st.mtime.toISOString() }
-        : { name, kind: 'dir' },
-    );
+  } finally {
+    await dir.close().catch(() => undefined);
   }
   return { kind: 'dir', entries, truncated };
 }
@@ -264,12 +307,20 @@ async function readPrefix(
 ): Promise<WalkReadOutput> {
   // One byte over the cap is what tells "exactly the cap" from "longer"; read
   // until EOF or full, because NFS may return short reads mid-file.
+  // The buffer starts at the file's size (plus the probe byte), not at the
+  // cap, so a small file never costs a cap-sized allocation; it grows only if
+  // the file grew since fstat, and never past the probe.
   const probe = limitBytes + 1;
-  const buf = Buffer.allocUnsafe(probe);
+  let buf = Buffer.allocUnsafe(Math.min(probe, size + 1));
   let filled = 0;
   try {
     while (filled < probe) {
-      const { bytesRead } = await fh.read(buf, filled, probe - filled, filled);
+      if (filled === buf.length) {
+        const grown = Buffer.allocUnsafe(Math.min(probe, buf.length * 2));
+        buf.copy(grown, 0, 0, filled);
+        buf = grown;
+      }
+      const { bytesRead } = await fh.read(buf, filled, buf.length - filled, filled);
       if (bytesRead === 0) break;
       filled += bytesRead;
     }

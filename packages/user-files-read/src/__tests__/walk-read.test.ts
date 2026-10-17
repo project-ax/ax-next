@@ -4,7 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  MAX_WALK_ENTRIES,
+  MAX_WALK_LIMIT_BYTES,
   MAX_WALK_PARTS,
+  MAX_WALK_SKIPPED,
   WalkPathError,
   readConfinedByWalk,
   splitRelPath,
@@ -87,6 +90,19 @@ describe('readConfinedByWalk — lexical guard', () => {
     const parts = Array.from({ length: MAX_WALK_PARTS + 1 }, () => 'd');
     await expect(readConfinedByWalk('/nonexistent-root', parts, LIMITS)).rejects.toBeInstanceOf(
       WalkPathError,
+    );
+  });
+
+  // Resource caps: a caller can't ask for an unbounded read or listing.
+  it.each([
+    [{ limitBytes: -1, maxEntries: 10 }],
+    [{ limitBytes: 1.5, maxEntries: 10 }],
+    [{ limitBytes: MAX_WALK_LIMIT_BYTES + 1, maxEntries: 10 }],
+    [{ limitBytes: 10, maxEntries: 0 }],
+    [{ limitBytes: 10, maxEntries: MAX_WALK_ENTRIES + 1 }],
+  ])('refuses out-of-range limits %j before touching the disk', async (limits) => {
+    await expect(readConfinedByWalk('/nonexistent-root', ['a'], limits)).rejects.toBeInstanceOf(
+      RangeError,
     );
   });
 });
@@ -371,4 +387,51 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     },
     30_000,
   );
+});
+
+describe.skipIf(!ON_LINUX)(`readConfinedByWalk — resource caps (${SKIP_REASON})`, () => {
+  let tmp: string;
+  beforeEach(async () => {
+    tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-walk-caps-')));
+  });
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  it('stops a listing after MAX_WALK_SKIPPED skipped entries, flagged truncated', async () => {
+    const dir = path.join(tmp, 'links');
+    await fs.mkdir(dir);
+    for (let i = 0; i < MAX_WALK_SKIPPED + 50; i++) {
+      await fs.symlink('/etc/hostname', path.join(dir, `l${i}`));
+    }
+    const out = await readConfinedByWalk(tmp, ['links'], LIMITS);
+    expect(out).toMatchObject({ kind: 'dir', entries: [], truncated: true });
+  });
+
+  it('a few skipped entries do not truncate the listing', async () => {
+    const dir = path.join(tmp, 'mixed');
+    await fs.mkdir(dir);
+    await fs.writeFile(path.join(dir, 'a.md'), 'a');
+    await fs.symlink('/etc/hostname', path.join(dir, 'link'));
+    const out = await readConfinedByWalk(tmp, ['mixed'], LIMITS);
+    expect(out).toMatchObject({ kind: 'dir', truncated: false });
+    expect(out.kind === 'dir' && out.entries.map((e) => e.name)).toEqual(['a.md']);
+  });
+
+  it('a small file under a large limit reads whole and untruncated', async () => {
+    await fs.writeFile(path.join(tmp, 'small.txt'), 'hello');
+    const out = await readConfinedByWalk(tmp, ['small.txt'], {
+      limitBytes: MAX_WALK_LIMIT_BYTES,
+      maxEntries: 10,
+    });
+    expect(out).toMatchObject({ kind: 'file', truncated: false, size: 5 });
+    expect(out.kind === 'file' && Buffer.from(out.contents).toString()).toBe('hello');
+  });
+
+  it('a 3 MiB file under a 2 MiB limit is a 2 MiB prefix, truncated', async () => {
+    await fs.writeFile(path.join(tmp, 'big.bin'), Buffer.alloc(3 * 1024 * 1024, 7));
+    const out = await readConfinedByWalk(tmp, ['big.bin'], { limitBytes: 2 * 1024 * 1024, maxEntries: 10 });
+    expect(out).toMatchObject({ kind: 'file', truncated: true, size: 3 * 1024 * 1024 });
+    expect(out.kind === 'file' && out.contents.length).toBe(2 * 1024 * 1024);
+  });
 });
