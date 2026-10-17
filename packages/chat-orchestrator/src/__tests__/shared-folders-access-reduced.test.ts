@@ -292,10 +292,13 @@ describe('W3a: the chat\'s project picks the folder sandbox:open-session mounts'
     t.cleanup();
   });
 
-  it('a failed metadata read fails closed (the project cannot be known)', async () => {
+  it('a failed metadata read fails closed, with its own reason (not project-unavailable)', async () => {
+    // The project can't be known without the read, so the turn still stops —
+    // but the chat may have no project at all, so it must not say it lost one.
     const t = await setup({ metadataThrows: true });
     const out = await t.turn('s-1', 'req-1');
-    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'conversation-unavailable' });
+    expect(t.turnErrors).toEqual([expect.objectContaining({ reason: 'conversation-unavailable' })]);
     expect(t.opens).toBe(0);
     expect(t.resolveCalls).toHaveLength(0);
     t.cleanup();

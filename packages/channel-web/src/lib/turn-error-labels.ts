@@ -148,6 +148,10 @@ export const ERROR_LABELS: Record<string, string> = {
   // host refuses the turn before anything runs rather than run it without the
   // project. Static on purpose: the agent's name is already in the chat header.
   'project-unavailable': "This chat's project isn't available to this agent anymore.",
+  // The host couldn't read this chat's details (usually a passing database
+  // hiccup), so it can't tell whether the chat is in a project and stops rather
+  // than guess. Says nothing about projects: most chats don't have one.
+  'conversation-unavailable': "We couldn't load this chat just now. Try sending your message again.",
 };
 
 /**

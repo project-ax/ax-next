@@ -206,4 +206,13 @@ describe('turnErrorText — project unavailable (W3a)', () => {
     expect(turnErrorText('project-unavailable')).toBe(sentence);
     expect(turnErrorOpensConnectors('project-unavailable')).toBe(false);
   });
+
+  // The host couldn't read the chat's details (a transient failure), so it
+  // can't tell whether the chat is in a project. Says nothing about projects.
+  it('a failed chat lookup says to retry, and never mentions a project', () => {
+    const sentence = "We couldn't load this chat just now. Try sending your message again.";
+    expect(ERROR_LABELS['conversation-unavailable']).toBe(sentence);
+    expect(turnErrorText('conversation-unavailable')).toBe(sentence);
+    expect(turnErrorText('conversation-unavailable')).not.toMatch(/project/i);
+  });
 });

@@ -2349,7 +2349,10 @@ export function createOrchestrator(
    *   `agentId`. Anything that stops us knowing — or mounting — that project
    *   throws {@link ProjectUnavailableError}: a failed metadata read, no
    *   `projects:resolve` service, a refused resolve, an ill-formed folder id.
-   *   The caller ends the turn `project-unavailable`. Never a silent fallback
+   *   The caller ends the turn with the error's `reason`: `project-unavailable`,
+   *   except a failed metadata read, which is `conversation-unavailable` — the
+   *   chat may have no project at all, so it must not say it lost one. Never a
+   *   silent fallback
    *   to a session without the project: the chat's history may already hold
    *   project content, and a person who opens a project chat expects it.
    */
@@ -2376,7 +2379,7 @@ export function createOrchestrator(
         conversationId: ctx.conversationId,
         ...errorLogFields(err),
       });
-      throw new ProjectUnavailableError(err);
+      throw new ProjectUnavailableError(err, 'conversation-unavailable');
     }
     if (projectId === null) return null;
     if (!bus.hasService('projects:resolve')) {
@@ -3092,7 +3095,7 @@ export function createOrchestrator(
       // Coarse reason only; the cause stays on the audit outcome + host log.
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: 'project-unavailable',
+        reason: err instanceof ProjectUnavailableError ? err.reason : 'project-unavailable',
         error: err,
       };
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
@@ -4770,10 +4773,15 @@ export function createOrchestrator(
 }
 
 // W3a — the chat's project could not be determined or resolved (spec §4.5).
-// Carries the underlying cause for the audit outcome; the turn ends with the
-// coarse `project-unavailable` reason.
+// Carries the underlying cause for the audit outcome and the coarse reason the
+// turn ends with: `project-unavailable` when the chat's project can't be used,
+// `conversation-unavailable` when the chat itself couldn't be read (so we
+// can't tell whether it even has a project).
 class ProjectUnavailableError extends Error {
-  constructor(cause: unknown) {
+  constructor(
+    cause: unknown,
+    readonly reason: 'project-unavailable' | 'conversation-unavailable' = 'project-unavailable',
+  ) {
     super('the chat\'s project is unavailable', { cause });
     this.name = 'ProjectUnavailableError';
   }
