@@ -168,6 +168,28 @@ export async function runConversationsMigration<DB>(
       WHERE external_key IS NOT NULL AND deleted_at IS NULL
   `.execute(db);
 
+  // W3a (2026-10-16, W3 spec §4.4). The project this chat belongs to, or NULL
+  // for a chat outside any project. Set once, at create, after
+  // `projects:resolve` has checked the agent can use the project; moving a
+  // chat between projects is W3e. Additive and nullable, no backfill: every
+  // existing chat is outside any project. Idempotent (I11).
+  //
+  // An opaque id owned by @ax/projects. No foreign key: the projects table
+  // belongs to another plugin, and `projects:deleted` is how a deleted
+  // project's chats leave (purged, for every user, like agent deletion).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS project_id TEXT
+  `.execute(db);
+
+  // The project page lists one person's live chats in one project. Partial:
+  // most chats have no project, and tombstones never list.
+  await sql`
+    CREATE INDEX IF NOT EXISTS conversations_v1_conversations_project
+      ON conversations_v1_conversations (user_id, project_id)
+      WHERE deleted_at IS NULL AND project_id IS NOT NULL
+  `.execute(db);
+
   // Phase E (2026-05-09): drop the now-dead transcript table. Phase D
   // migrated readers to the workspace's runner-native jsonl; Phase E
   // drops the writer + the table. Idempotent (`IF EXISTS`) so a fresh
@@ -341,6 +363,8 @@ export interface ConversationsRow {
   // (drainSaveRefusals). NULL = none yet. BIGINT, so it may surface as a
   // string.
   save_refused_drained_seq: string | number | null;
+  // W3a. The chat's project (an opaque @ax/projects id), or NULL for none.
+  project_id: string | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

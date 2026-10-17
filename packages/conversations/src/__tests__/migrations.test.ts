@@ -229,6 +229,41 @@ describe('Phase B migration', () => {
     });
   });
 
+  it('adds a nullable project_id column and its partial (user_id, project_id) index, idempotently (W3a)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    await runConversationsMigration(db);
+
+    const col = await sql<{ is_nullable: string; data_type: string }>`
+      SELECT is_nullable, data_type FROM information_schema.columns
+       WHERE table_name = 'conversations_v1_conversations' AND column_name = 'project_id'
+    `.execute(db);
+    expect(col.rows).toEqual([{ is_nullable: 'YES', data_type: 'text' }]);
+
+    const idx = await sql<{ indexdef: string }>`
+      SELECT indexdef FROM pg_indexes
+       WHERE tablename = 'conversations_v1_conversations'
+         AND indexname = 'conversations_v1_conversations_project'
+    `.execute(db);
+    expect(idx.rows).toHaveLength(1);
+    const def = idx.rows[0]!.indexdef;
+    expect(def).toContain('(user_id, project_id)');
+    expect(def).toContain('deleted_at IS NULL');
+    expect(def).toContain('project_id IS NOT NULL');
+
+    // Existing and new rows default to "no project".
+    await db
+      .insertInto('conversations_v1_conversations')
+      .values({ conversation_id: 'c-no-project', user_id: 'u1', agent_id: 'a1' })
+      .execute();
+    const row = await db
+      .selectFrom('conversations_v1_conversations')
+      .select(['project_id'])
+      .where('conversation_id', '=', 'c-no-project')
+      .executeTakeFirstOrThrow();
+    expect(row.project_id).toBeNull();
+  });
+
   it('adds external_key column and the partial unique index excludes NULL keys (Phase A)', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);

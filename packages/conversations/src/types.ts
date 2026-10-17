@@ -132,6 +132,13 @@ export interface Conversation {
    * unique index — see migrations.ts.
    */
   externalKey: string | null;
+  /**
+   * W3a (2026-10-16, W3 spec §4.4). The project this chat belongs to, or null
+   * for a chat outside any project. An opaque id owned by `@ax/projects`. Set
+   * once at create, after `projects:resolve` has checked that the chat's
+   * agent can use the project. Deleting the project purges the chat.
+   */
+  projectId: string | null;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */
@@ -167,6 +174,13 @@ export interface CreateInput {
    * agent, which is why the ATTENDANCE read fails the other way.
    */
   origin?: ConversationOrigin;
+  /**
+   * W3a (§4.4). Start this chat in a project. Checked with
+   * `projects:resolve { projectId, agentId }` AS `userId` (not the caller's
+   * ctx) before anything is written; any failure refuses the create. When
+   * `@ax/projects` isn't loaded, any `projectId` is refused, never dropped.
+   */
+  projectId?: string;
 }
 export type CreateOutput = Conversation;
 
@@ -406,6 +420,12 @@ export interface ListInput {
    * owns; ACL is implicit via `user_id` filter.
    */
   agentId?: string;
+  /**
+   * W3a (§4.4). Optional filter — only the user's chats in this project.
+   * Combines with `agentId`. User-scoped like every list: it never returns
+   * another member's chats.
+   */
+  projectId?: string;
 }
 export type ListOutput = Conversation[];
 
@@ -536,6 +556,11 @@ export interface GetMetadataOutput {
    * Storage-agnostic: an opaque session handle, not a pod name or a socket path.
    */
   activeSessionId: string | null;
+  /**
+   * W3a (§4.4). The chat's project, or null. The orchestrator reads it here
+   * on every turn to mount the project's folder.
+   */
+  projectId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +595,9 @@ export const GetMetadataOutputSchema = z.object({
   // conversation, forever, with nothing failing loudly.
   origin: z.enum(['web', 'routine']),
   activeSessionId: z.string().nullable(),
+  // W3a. Same trap as `origin`: stripped here, every project chat would read
+  // as "no project" and run without its folder, with nothing failing.
+  projectId: z.string().nullable(),
 }) as unknown as ZodType<GetMetadataOutput>;
 
 /**
