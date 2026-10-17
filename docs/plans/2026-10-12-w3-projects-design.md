@@ -302,8 +302,8 @@ W1 schema as its `returns`.
 
 - **No `ctx.projectId`:** it returns `{}`.
 - **Otherwise:** it resolves the project (internally, not through the bus) and
-  returns one `context` body. In W3a the body is static text plus the name and
-  description:
+  returns one `brief` body (was `context`; see §17 item 12). In W3a the body is
+  static text plus the name and description:
 
 ```
 ## Project: Q4 launch
@@ -1038,7 +1038,9 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   - Approvals are tied to the project they were given in (§9.1).
 - **Untrusted content.** Everything in the folder, plus the name and
   description, is framed as information and quoted, so it can't pass as Rules
-  (W1 §3.6). Projects provide only `context`, never `rules`.
+  (W1 §3.6). Projects provide only `brief`, never `rules`. Agent-written
+  project text (memory files, later slices) must go in `context`, never
+  `brief`: `brief` reaches bootstrap mode, which has no safety floor.
 - **Host file access is kernel-confined.**
   - The host reaches shared folders only through a `.shared` mount with
     `nosymfollow`, behind lexical path checks, size caps, atomic writes and
@@ -1189,4 +1191,12 @@ or adds to, the text above:
     the check-5 chat, which is in the same project.
 11. **Carried to W4:** `shared-folders:get` and `projects:get` return every member
     to anyone who can use one of them; names don't reject bidi-override
-    characters; the length limits count UTF-16 units.
+    characters; the length limits count UTF-16 units; and the project block is
+    a `brief` that reaches bootstrap mode (item 12), which is safe only while
+    the person who edits the description is the one whose agent reads it.
+12. **The project block is a `brief`, not `context` (2026-10-17, after the kind
+    walk).** Bootstrap mode admits only `rules` and `brief`, so as `context` the
+    block never reached an agent still in its first-run chat, and every agent
+    the walk asked was. W1 §11 has the change and the trust argument. The same
+    walk moved the rail's project label to its own line under the chat title,
+    and dropped the breadcrumb's trailing chevron.

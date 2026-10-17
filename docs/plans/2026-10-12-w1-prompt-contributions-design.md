@@ -111,24 +111,26 @@ The input stays empty. Providers read the context (`userId`, `agentId`,
 ### 3.2 Sections set the order
 
 A provider returns one body per section:
-`{ rules?: string; context?: string; recall?: string }`.
+`{ rules?: string; brief?: string; context?: string; recall?: string }`
+(`brief` was added after W3a; see §11).
 
 | Section | What goes there | Today | Later | Bootstrap mode |
 |---|---|---|---|---|
 | `rules` | Text a person wrote that no agent can change (required providers only) | Memory's "Rules From Your User" | A tenant policy | Included |
+| `brief` | What this session is for, built only from what people wrote plus the provider's fixed text (§11) | The project block (W3) | | Included |
 | `context` | What this session is working on | (nothing) | Project instructions and memory index (W3), the goal (W6), open tasks (W13) | Left out |
 | `recall` | Things remembered from earlier sessions | Memory's recalled sections | | Left out |
 
 The orchestrator joins the bodies with a blank line:
-- in section order: `rules`, `context`, `recall`;
+- in section order: `rules`, `brief`, `context`, `recall`;
 - within a section, by service name.
 
 Empty bodies are skipped. The same inputs always produce the same bytes, which
 keeps the model's prompt cache warm.
 
-**The section replaces `bootstrapSafe`.** Only `rules` bodies reach bootstrap
-mode, and only required providers can produce them. That's one rule instead of
-a flag that has to agree with a section.
+**The section replaces `bootstrapSafe`.** Only `rules` and `brief` bodies reach
+bootstrap mode, and only required providers can produce `rules`. That's one
+rule instead of a flag that has to agree with a section.
 
 ### 3.3 Validation runs inside each provider's step
 
@@ -195,8 +197,11 @@ These are checked in each provider's review, because the orchestrator can't
 check who wrote a body:
 
 - **`rules` is only for content a person wrote and no agent can write.** That's
-  why only required providers may return it, and it's the only section that
-  reaches bootstrap mode.
+  why only required providers may return it. It reaches bootstrap mode.
+- **`brief` is only for what a session is for, built from text people wrote
+  that no agent can change, plus the provider's own fixed text.** It also
+  reaches bootstrap mode, which has no safety floor, so a provider that returns
+  it states in its review who can write that text (§11).
 - **Required is a strong commitment.** A required provider's outage removes the
   whole augment, so a plugin registers as required only if it carries `rules`.
   Projects, goals and tasks are optional.
@@ -365,3 +370,35 @@ One PR:
    around every provider call (§3.4). The deadline doesn't release a
    `callJoined` lifecycle lock held by a hung handler; that's documented as a
    known limit.
+
+---
+
+## 11. After W3a: the `brief` section (2026-10-17)
+
+**What went wrong.** The kind walk of W3a found that every agent still in its
+first-run chat (`.ax/BOOTSTRAP.md` present) answered a project chat as if there
+were no project. The project block was `context`, and bootstrap mode drops
+`context`. All three agents the walk asked were still in their first-run chat,
+so in practice a person's first project chats got no project at all, and
+nothing said why.
+
+**The change.** A fourth section, `brief`, between `rules` and `context`. Any
+provider may return it, and it reaches bootstrap mode as well as normal mode.
+`@ax/projects` returns its block as `brief`: the project's name and
+description, quoted, plus fixed text about the folder. Only the projects
+routes write those, for a person who can manage the project; no agent tool or
+IPC action reaches `projects:update`.
+
+**Trust.** Bootstrap mode has no safety floor, so `brief` is held to the same
+bar as `rules`: text no agent can change. Two differences, both accepted:
+
+- An optional provider can now put text into bootstrap mode. The orchestrator
+  can't check who wrote a body (§3.6), so the bar is enforced in each
+  provider's review, as it already is for `context`.
+- Today the only person who can edit a project's description is someone who
+  manages it, so it's their own words, like Rules. **W4 must revisit this:**
+  once people share projects across owners, one person's description would
+  reach another person's agent's first-run prompt. Listed in W3 §17 item 11.
+
+Memory-only prompts are unchanged, byte for byte, in both modes.
+
