@@ -1144,3 +1144,49 @@ answered on 2026-10-16.
    (`projects:read-file`, bounded and flagged) and download
    (`projects:download-file`, whole file up to 10 MiB, never truncated) are
    separate, and the 10 MiB limit matches uploads.
+
+## 17. As built: W3a (2026-10-16)
+
+Built on `feat/w2-shared-folders` (PR #989), to land as one squash with W2.
+Plan: `docs/plans/2026-10-16-w3a-projects-impl.md`; decisions in
+`.claude/memory/decisions/2026-10-12-AXWM-3.md`. Where the build differs from,
+or adds to, the text above:
+
+1. **The sweep re-fires `shared-folders:deleted`** for every due tombstone
+   before each cleanup attempt (W2 §12). Delivery is at least once; the
+   projects subscriber is idempotent. `projects:deleted` fires from whichever
+   path removes the row (`DELETE … RETURNING`), so it fires once.
+2. **Refusals are logged, not written to a table:** `projects_refused` (and
+   `shared_folders_refused`, `conversations_project_refused`) warn lines with
+   the hook and reason. There is no audit table to write them to.
+3. **The orchestrator fails closed whenever it can't know the project:** a
+   thrown `conversations:get-metadata` for a chat with an id, a `projectId`
+   with no `projects:resolve`, or an ill-formed `folderId` all end the turn
+   `project-unavailable`. With conversations not loaded at all, there are no
+   project chats and turns run normally.
+4. **`project-unavailable` reads "This chat's project isn't available to this
+   agent anymore."** The label table holds static strings, so the agent's name
+   isn't in it; the chat header already shows it.
+5. **The session's `projectId`** is recorded with its folder state and logged
+   when sessions are reaped. W3e compares it on the reuse path.
+6. **Owner candidates (Q5)** come from `GET /api/workspace/projects/owner-candidates`:
+   the agents the person can manage (`agents:can-manage-sharing`), ranked by
+   their latest chat activity with the same clock as `POST /api/workspace/route`;
+   agents with no chats follow, newest first.
+7. **A project's chats are listed only after `projects:get` succeeds**, so a
+   person who lost access sees a 404, not their old chats in it.
+8. **Without `@ax/projects`,** the projects list is empty and every other
+   project route answers 503; `conversations:create` refuses any `projectId`.
+9. **UI details the spec left open:** a project chat other than the agent's
+   newest opens read-only in the agent view, as past chats already do; a new
+   chat goes to the owner agent, or the first member agent the person can use;
+   the ⋯ menu (Settings, Delete) shows only to someone who can manage the
+   project; the description hint says the agent reads it at the start of every
+   chat.
+10. **The acceptance test** (`presets/k8s/src/__tests__/acceptance.test.ts`, the
+    W3a block) runs the six §4.9 checks through the orchestrator with real
+    Postgres, real files and an IPC runner fixture. Check 6's purge also takes
+    the check-5 chat, which is in the same project.
+11. **Carried to W4:** `shared-folders:get` and `projects:get` return every member
+    to anyone who can use one of them; names don't reject bidi-override
+    characters; the length limits count UTF-16 units.

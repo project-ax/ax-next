@@ -643,7 +643,8 @@ the text above:
 6. **The subprocess provider stamps host paths** in `AX_SHARED_FOLDERS` (it has
    no mount namespace); k8s stamps `/shared/<id>`.
 7. **Until W3, the orchestrator's folder list comes from a plugin option**
-   (`sharedFolderIdsFor`, default none). W3's first slice supplies it from the
+   (`sharedFolderIdsFor`, default none; **removed by W3a**, which looks the
+   project up from the chat instead). W3's first slice supplies it from the
    conversation's project. The orchestrator records the requested folders
    *before* the sandbox opens, so a reduction that lands mid-open still reaps
    the session.
@@ -691,8 +692,8 @@ the text above:
 
 ## 12. What W3a adds to this stack
 
-W3a (W3 spec §4.2, §4.5; not yet approved) stacks on this branch. Nothing here
-is built yet; W2 leaves these points open for it:
+W3a (W3 spec §4.2, §4.5) stacks on this branch. **All four points below are
+built (2026-10-16)**; the W3 spec's §17 records how. As written beforehand:
 
 - **`shared-folders:get { folderId } → { folderId, members }`** (W3 §4.2). One
   new store query over `shared_folders_v1_grants` joined to live folders; no
