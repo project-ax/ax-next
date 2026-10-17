@@ -713,9 +713,11 @@ function validatePurgeTarget(kind: unknown, targetId: unknown): void {
 
 /**
  * The one hard-delete: every conversation whose `column` equals `value`, with
- * its display events and transcript rows, in ONE transaction. Shared by
- * `purgeForAgent` (TASK-718) and `purgeForProject` (W3a), which validate
- * `value` first. Callers pass a column name from this closed union only.
+ * its display events and transcript rows, in ONE transaction. The deletion
+ * subscribers reach it through `purgeAndDequeue`, which also removes the
+ * pending-purge row in the same transaction; `purgeForAgent` (TASK-718) and
+ * `purgeForProject` (W3a) are the direct forms. Every caller validates `value`
+ * first and passes a column name from this closed union only.
  */
 async function purgeWhere(
   db: Kysely<ConversationDatabase>,

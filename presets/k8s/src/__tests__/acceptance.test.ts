@@ -1900,7 +1900,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-phasef.sqlite');
         const replacements: Plugin[] = [
           createDatabasePostgresPlugin({ connectionString }),
-          createConversationsPlugin(),
+          createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
           // llm-anthropic with a stub client — registers `llm:call`. The
           // conversation-titles subscriber calls into this. retryDelayMs: 0
           // keeps the test fast even if the stub ever throws transient.
@@ -2259,7 +2259,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         http,
         createDatabasePostgresPlugin({ connectionString }),
         createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
-        createConversationsPlugin(),
+        createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
         // TASK-68: attachments/artifacts ride the content-addressed blob store.
         // A tmpdir root so the fs backend's ensureRoot() succeeds.
         createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
@@ -2713,7 +2713,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         http,
         createDatabasePostgresPlugin({ connectionString }),
         createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
-        createConversationsPlugin(),
+        createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
         // TASK-68: attachments/artifacts ride the content-addressed blob store.
         // A tmpdir root so the fs backend's ensureRoot() succeeds.
         createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
@@ -3415,7 +3415,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         http,
         createDatabasePostgresPlugin({ connectionString }),
         createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
-        createConversationsPlugin(),
+        createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
         // channel-web hard-calls the attachments chain (uploads live on the
         // same surface). Not exercised here; present so bootstrap's static
         // verifyCalls walk passes.
@@ -3658,7 +3658,7 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       createDatabasePostgresPlugin({ connectionString }),
       createRouteStubPlugin(),
       createAgentsPlugin(),
-      createConversationsPlugin(),
+      createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
       // No timer: the deleted folder's bytes go through the detached cleanup
       // `shared-folders:delete` starts, which is what step 6 waits for.
       createSharedFoldersPlugin({ sweepIntervalMs: 0 }),

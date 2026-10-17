@@ -334,6 +334,25 @@ describe.each(KINDS)('durable purge — $kind', (k) => {
     expect([...announced[0]!].sort()).toEqual([...ids].sort());
   });
 
+  it('two hosts sweeping the same pending row at once purge it once and announce once', async () => {
+    // Two plugin instances on one database: the in-process single-flight can't
+    // help here, only the row locks inside the purge transaction can.
+    const one = await makeHarness();
+    const two = await makeHarness();
+    const { ids } = await seed(one.pool, k, target);
+    await one.pool.query(
+      `INSERT INTO conversations_v1_pending_purges (kind, target_id) VALUES ($1, $2)`,
+      [k.kind, target],
+    );
+    const now = new Date(Date.now() + 60 * SEC);
+    await Promise.all([one.plugin.sweepPendingPurges(now), two.plugin.sweepPendingPurges(now)]);
+    const all = [...one.announced, ...two.announced];
+    expect(all).toHaveLength(1);
+    expect([...all[0]!].sort()).toEqual([...ids].sort());
+    expect(await countConversations(one.pool, ids)).toBe(0);
+    expect(await pendingRows(one.pool)).toEqual([]);
+  });
+
   it('backoff doubles from 30 s per failed attempt and caps at one hour', async () => {
     const { plugin, pool, announced } = await makeHarness();
     const { ids } = await seed(pool, k, target);
