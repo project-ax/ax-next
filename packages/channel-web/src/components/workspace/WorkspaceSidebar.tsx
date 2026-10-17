@@ -2,6 +2,7 @@ import {
   Activity,
   Bot,
   ChevronDown,
+  FolderKanban,
   Inbox,
   PanelLeft,
   Plus,
@@ -18,13 +19,31 @@ import {
 import { cn } from '@/lib/utils';
 import { useRailPreference } from '@/lib/use-rail-preference';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
+import { SIDEBAR_RECENT_PROJECTS, byRecent } from '@/lib/workspace-projects';
+import type { ProjectSummary } from '@/wire/projects';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { StateDot, StateDotSlot, stateWord } from './bits';
 import { IconTooltip } from './IconTooltip';
 
+/**
+ * The Projects section (W3a, W3 spec §4.8): recent projects, "All projects",
+ * "New project". Optional only so roster-focused tests can leave it out; the
+ * shell always passes it.
+ */
+export interface SidebarProjects {
+  /** `null` until the first read lands. */
+  items: ProjectSummary[] | null;
+  activeId: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAll: () => void;
+  onOpen: (projectId: string) => void;
+  onNew: () => void;
+}
+
 interface Props {
   agents: WorkspaceAgent[];
-  route: 'today' | 'agent' | 'activity';
+  route: 'today' | 'agent' | 'activity' | 'projects' | 'project';
   activeAgentId: string | null;
   pendingCount: number;
   rosterOpen: boolean;
@@ -34,6 +53,7 @@ interface Props {
   onAgent: (id: string) => void;
   onOpenAdminSettings?: (() => void) | undefined;
   onCreateAgent?: (() => void) | undefined;
+  projects?: SidebarProjects | undefined;
 }
 
 interface NavProps extends Props {
@@ -54,6 +74,7 @@ export function WorkspaceSidebarNav({
   onAgent,
   onOpenAdminSettings,
   onCreateAgent,
+  projects,
   onNavigate,
   collapsed = false,
   onCollapse,
@@ -146,6 +167,13 @@ export function WorkspaceSidebarNav({
             },
             route === 'agent',
           )}
+          {projects &&
+            iconRow(
+              'Projects',
+              FolderKanban,
+              projects.onAll,
+              route === 'projects' || route === 'project',
+            )}
           {onCreateAgent && (
             <IconTooltip label="New agent" side="right">
               <Button
@@ -249,6 +277,58 @@ export function WorkspaceSidebarNav({
               <Plus data-icon="inline-start" aria-hidden="true" />
               New agent
             </Button>
+          )}
+          {projects && (
+            <>
+              <Collapsible
+                className="mt-3.5"
+                open={projects.open}
+                onOpenChange={projects.onOpenChange}
+              >
+                <CollapsibleTrigger asChild>
+                  <Button variant="navigation" className={row()}>
+                    <FolderKanban data-icon="inline-start" aria-hidden="true" />
+                    Projects
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={cn(
+                        'ml-auto transition-transform',
+                        !projects.open && '-rotate-90',
+                      )}
+                    />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="flex flex-col gap-0.5">
+                  {byRecent(projects.items ?? [])
+                    .slice(0, SIDEBAR_RECENT_PROJECTS)
+                    .map((p) => (
+                      <Button
+                        key={p.projectId}
+                        variant="navigation"
+                        data-active={route === 'project' && projects.activeId === p.projectId}
+                        onClick={go(() => projects.onOpen(p.projectId))}
+                        className="h-10 w-full gap-2.5 pl-8 pr-2 max-md:min-h-11"
+                      >
+                        <span className="truncate" title={p.name}>
+                          {p.name}
+                        </span>
+                      </Button>
+                    ))}
+                  <Button
+                    variant="navigation"
+                    data-active={route === 'projects'}
+                    onClick={go(projects.onAll)}
+                    className="h-10 w-full gap-2.5 pl-8 pr-2 text-muted-foreground max-md:min-h-11"
+                  >
+                    All projects
+                  </Button>
+                </CollapsibleContent>
+              </Collapsible>
+              <Button variant="navigation" onClick={go(projects.onNew)} className={row()}>
+                <Plus data-icon="inline-start" aria-hidden="true" />
+                New project
+              </Button>
+            </>
           )}
         </nav>
       )}

@@ -20,6 +20,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowRight, Menu } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
@@ -43,6 +50,7 @@ import {
   agentConversationTarget,
 } from '@/lib/new-agent-return-focus';
 import { relativeDay } from '@/lib/workspace-time';
+import { isPlainClick, workspaceRoutePath } from '@/lib/workspace-route';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import {
@@ -234,6 +242,15 @@ interface Props {
     hidden?: boolean;
   } | null;
   onPendingReplyConsumed?: () => void;
+  /**
+   * W3a — a conversation the project page asked to open. Opened the way the
+   * rail opens a past one (read-only unless it is the current conversation),
+   * then handed back through `onOpenConversationConsumed`.
+   */
+  openConversationId?: string | null;
+  onOpenConversationConsumed?: () => void;
+  /** W3a — the project breadcrumb's link. Without it the strip is not drawn. */
+  onOpenProject?: (projectId: string) => void;
 }
 
 /*
@@ -376,6 +393,9 @@ export function AgentView({
   onChanged,
   pendingReply = null,
   onPendingReplyConsumed,
+  openConversationId = null,
+  onOpenConversationConsumed,
+  onOpenProject,
 }: Props) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   /*
@@ -788,6 +808,19 @@ export function AgentView({
       cancelled = true;
     };
   }, [agentId, pastId, pastReload]);
+
+  /*
+    W3a — open the conversation the project page named, once the detail says
+    which one is current. The current one IS the live thread (pastId null); any
+    other goes through the rail's own door, `setPastId`.
+  */
+  const detailConversationId = detail?.conversationId;
+  const detailLoaded = detail !== null;
+  useEffect(() => {
+    if (openConversationId === null || !detailLoaded) return;
+    setPastId(openConversationId === detailConversationId ? null : openConversationId);
+    onOpenConversationConsumed?.();
+  }, [openConversationId, detailLoaded, detailConversationId, onOpenConversationConsumed]);
 
   /**
    * The approval notice's "Try again", for whichever read is behind it.
@@ -1590,6 +1623,13 @@ export function AgentView({
       : `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
 
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
+  /*
+    W3a (frame 7) — the project the conversation ON SCREEN belongs to: the
+    excerpt's own read for a past one (falling back to its rail row while that
+    read is in flight), else the current conversation's.
+  */
+  const shownProject =
+    past !== null ? (pastDetail?.project ?? past.project ?? null) : (detail.project ?? null);
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
   const approvalRead: ApprovalRead = excerptOpening
     ? 'ok'
@@ -1684,6 +1724,27 @@ export function AgentView({
           </header>}
           {!compactRail && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
           <h2 className="sr-only">Conversation</h2>
+          {shownProject !== null && onOpenProject && (
+            <Breadcrumb className="shrink-0 border-b border-border px-6 py-2" aria-label="Project">
+              <BreadcrumbList className="text-[12.5px]">
+                <BreadcrumbItem>
+                  <BreadcrumbLink
+                    href={workspaceRoutePath({ kind: 'project', id: shownProject.projectId })}
+                    onClick={(e) => {
+                      if (!isPlainClick(e)) return;
+                      e.preventDefault();
+                      onOpenProject(shownProject.projectId);
+                    }}
+                    className="max-w-[32ch] truncate"
+                    title={shownProject.name}
+                  >
+                    {shownProject.name}
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator />
+              </BreadcrumbList>
+            </Breadcrumb>
+          )}
 
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">

@@ -9,6 +9,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -399,6 +400,7 @@ export function AgentRailContent({
                       <span className="min-w-0 flex-1 text-left">
                         Current conversation
                       </span>
+                      {detail.project && <ProjectLabel name={detail.project.name} />}
                       <span className="w-[52px] shrink-0 text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                         Now
                       </span>
@@ -416,7 +418,9 @@ export function AgentRailContent({
                           date from being read twice in browse mode, since
                           the row already draws it. The #875 pattern. */}
                       <span id={`${pastDateId}-${i}`} hidden>
-                        {conversationDate(c.lastActivityAt)}
+                        {c.project
+                          ? `In ${c.project.name}, ${conversationDate(c.lastActivityAt)}`
+                          : conversationDate(c.lastActivityAt)}
                       </span>
                       <Button
                         variant="ghost"
@@ -434,6 +438,7 @@ export function AgentRailContent({
                         >
                           {c.title}
                         </span>
+                        {c.project && <ProjectLabel name={c.project.name} />}
                         <span className="w-[52px] shrink-0 whitespace-nowrap text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                           {conversationDate(c.lastActivityAt)}
                         </span>
@@ -683,5 +688,22 @@ function ThisWeek({
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/**
+ * W3a (W3 §15 Q6) — a project chat stays in the Chats list, wearing its
+ * project's name, so nothing disappears from where people already look.
+ */
+function ProjectLabel({ name }: { name: string }) {
+  return (
+    <Badge
+      variant="secondary"
+      size="compact"
+      className="max-w-[10ch] shrink-0 truncate"
+      title={name}
+    >
+      {name}
+    </Badge>
   );
 }

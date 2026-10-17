@@ -7,8 +7,8 @@
  * user, `/api/workspace/*` supplies the board, and sending a message goes to
  * the shipped chat wire.
  *
- * Views are addressable: `/workspace`, `/workspace/activity`, and
- * `/workspace/agents/<id>[/<tab>]`. The grammar lives in
+ * Views are addressable: `/workspace`, `/workspace/activity`,
+ * `/workspace/projects[/<id>]` and `/workspace/agents/<id>[/<tab>]`. The grammar lives in
  * `@/lib/workspace-route`; this file owns the history calls. No server route
  * backs those paths and none is needed — `@ax/static-files` serves the SPA on
  * any unclaimed path.
@@ -61,9 +61,13 @@ import {
   workspaceRoutePath,
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
+import { useProjects } from '@/lib/workspace-projects';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
+import { NewProjectDialog } from './ProjectDialogs';
+import { ProjectPage } from './ProjectPage';
+import { ProjectsPage } from './ProjectsPage';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 import { WorkspaceSidebar, WorkspaceSidebarNav } from './WorkspaceSidebar';
@@ -506,6 +510,22 @@ function Inner({
     hydrateTheme();
   }, []);
 
+  /*
+    W3a — projects (W3 spec §4.8). One read feeds the sidebar's recent list and
+    the grid; every create / rename / delete refreshes it.
+  */
+  const projects = useProjects();
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  /**
+   * A project chat the project page asked to open. The agent view opens it the
+   * way its rail opens a past conversation, then hands this back.
+   */
+  const [openConversation, setOpenConversation] = useState<{
+    agentId: string;
+    conversationId: string;
+  } | null>(null);
+
   const bump = () => setVersion((v) => v + 1);
 
   /**
@@ -530,7 +550,8 @@ function Inner({
       agentId: string,
       text: string,
       attachments?: readonly SendableAttachment[],
-      opts?: { hidden?: boolean },
+      // `projectId` (W3a): the new conversation starts in that project.
+      opts?: { hidden?: boolean; projectId?: string },
     ): Promise<void> => {
       const files = attachments ?? [];
       const { reqId, conversationId } = await workspaceApi.sendMessage({
@@ -540,6 +561,7 @@ function Inner({
         ...(files.length > 0
           ? { attachmentIds: files.map((a) => a.attachmentId) }
           : {}),
+        ...(opts?.projectId !== undefined ? { projectId: opts.projectId } : {}),
       });
       setPendingReply({
         agentId,
@@ -803,6 +825,15 @@ function Inner({
     agents: board.agents,
     route: route.kind === 'agent-settings' ? 'agent' : route.kind,
     activeAgentId: routeAgentId(route),
+    projects: {
+      items: projects.projects,
+      activeId: route.kind === 'project' ? route.id : null,
+      open: projectsOpen,
+      onOpenChange: setProjectsOpen,
+      onAll: () => navigate({ kind: 'projects' }),
+      onOpen: (id: string) => navigate({ kind: 'project', id }),
+      onNew: () => setNewProjectOpen(true),
+    },
     pendingCount: pending,
     rosterOpen,
     onRoster: setRosterOpen,
@@ -969,6 +1000,40 @@ function Inner({
             </>
           )}
 
+          {route.kind === 'projects' && (
+            <ProjectsPage
+              projects={projects.projects}
+              error={projects.error}
+              loading={projects.loading}
+              onRetry={() => void projects.refresh()}
+              onOpen={(id) => navigate({ kind: 'project', id })}
+              onNew={() => setNewProjectOpen(true)}
+              leading={navTrigger}
+            />
+          )}
+
+          {route.kind === 'project' && (
+            <ProjectPage
+              key={route.id}
+              projectId={route.id}
+              agents={board.agents}
+              leading={navTrigger}
+              onAllProjects={() => navigate({ kind: 'projects' })}
+              onOpenConversation={(agentId, conversationId) => {
+                setOpenConversation({ agentId, conversationId });
+                navigate({ kind: 'agent', id: agentId, tab: 'chat' });
+              }}
+              onStartChat={(agentId, text, attachments) =>
+                startTurn(agentId, text, attachments, { projectId: route.id })
+              }
+              onChanged={() => void projects.refresh()}
+              onDeleted={() => {
+                void projects.refresh();
+                navigate({ kind: 'projects' });
+              }}
+            />
+          )}
+
           {(route.kind === 'agent' || route.kind === 'agent-settings') && (
             <AgentView
               /*
@@ -1051,6 +1116,13 @@ function Inner({
                   : null
               }
               onPendingReplyConsumed={() => setPendingReply(null)}
+              openConversationId={
+                openConversation && openConversation.agentId === route.id
+                  ? openConversation.conversationId
+                  : null
+              }
+              onOpenConversationConsumed={() => setOpenConversation(null)}
+              onOpenProject={(id) => navigate({ kind: 'project', id })}
               onChanged={async () => {
                 await Promise.all([refresh(), queue.refresh()]);
                 bump();
@@ -1059,6 +1131,15 @@ function Inner({
           )}
         </main>
       </div>
+      <NewProjectDialog
+        open={newProjectOpen}
+        onOpenChange={setNewProjectOpen}
+        onCreated={(id) => {
+          setNewProjectOpen(false);
+          void projects.refresh();
+          navigate({ kind: 'project', id });
+        }}
+      />
     </div>
   );
 }
