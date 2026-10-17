@@ -680,8 +680,8 @@ interface SessionIsAliveOutput {
 //     Rules that govern them is the worst outcome. @ax/memory registers here.
 //     A required provider that returns no `rules`, or no required provider
 //     at all, is NOT a failure.
-//   - `system-prompt:augment:optional:<name>` — `context` and `recall` only.
-//     A failure drops just this provider's blocks.
+//   - `system-prompt:augment:optional:<name>` — `brief`, `context` and
+//     `recall`. A failure drops just this provider's blocks.
 //
 // A name under `system-prompt:augment:` with any other class segment is
 // ignored (logged once per orchestrator instance). The family is discovered
@@ -697,11 +697,13 @@ interface SessionIsAliveOutput {
 // "Failed" = threw, missed the deadline, or invalid output.
 //
 // Sections set the order: non-empty bodies join with a blank line in section
-// order `rules`, `context`, `recall`, and within a section by full service
-// name (plain code-unit compare, so the bytes never depend on locale or
-// registration order and the prompt cache stays warm). Only `rules` bodies
-// reach `agentConfig.systemPromptBootstrapAugment` (TASK-524: bootstrap mode
-// admits only person-written content no agent can change).
+// order `rules`, `brief`, `context`, `recall`, and within a section by full
+// service name (plain code-unit compare, so the bytes never depend on locale
+// or registration order and the prompt cache stays warm). Only `rules` and
+// `brief` bodies reach `agentConfig.systemPromptBootstrapAugment` (TASK-524:
+// bootstrap mode admits only person-written content no agent can change; a
+// project chat's brief is that, and without it an agent still in its first-run
+// chat answered as if there were no project).
 //
 // Known limit (spec §3.4): the deadline stops the WAIT, not the handler — bus
 // deadlines never cancel an effect. Under a `callJoined` caller (a routine
@@ -738,7 +740,9 @@ type AugmentFailureDetail =
 const AUGMENT_MAX_LOGGED_ISSUES = 5;
 
 const AUGMENT_FAMILY_PREFIX = 'system-prompt:augment:';
-const AUGMENT_SECTIONS = ['rules', 'context', 'recall'] as const;
+const AUGMENT_SECTIONS = ['rules', 'brief', 'context', 'recall'] as const;
+/** The sections bootstrap mode admits, in section order. */
+const BOOTSTRAP_SECTIONS = ['rules', 'brief'] as const;
 const AUGMENT_DEADLINE_MISSED: unique symbol = Symbol('augment-deadline-missed');
 
 /** One provider's isolated step: call → deadline → schema → class rule → size. */
@@ -863,7 +867,7 @@ async function buildSystemPromptAugment(
     });
   return {
     normal: AUGMENT_SECTIONS.flatMap(bodies).join('\n\n'),
-    bootstrap: bodies('rules').join('\n\n'),
+    bootstrap: BOOTSTRAP_SECTIONS.flatMap(bodies).join('\n\n'),
   };
 }
 
@@ -2640,8 +2644,8 @@ export function createOrchestrator(
       // Seeded empty; the system-prompt contribution step below sets it on
       // the fresh-spawn path (the runner prepends it on top in normal mode).
       systemPromptAugment: '',
-      // TASK-524: the `rules` section of the same augment alone, set below
-      // alongside it. The runner prepends THIS (never the full augment) in
+      // TASK-524: the `rules` and `brief` sections of the same augment alone,
+      // set below alongside it. The runner prepends THIS (never the full augment) in
       // bootstrap mode.
       systemPromptBootstrapAugment: '',
       // TASK-51 (JIT §P4): lock the always-on broker tools into every
@@ -3128,8 +3132,9 @@ export function createOrchestrator(
     // and section ordering live in `buildSystemPromptAugment` (see the comment
     // above it). The result lands on `agentConfig.systemPromptAugment` (its
     // own field since TASK-142; the runner prepends it on top of the composed
-    // `.ax/` identity prompt in normal mode), and the `rules` bodies alone on
-    // `agentConfig.systemPromptBootstrapAugment` (TASK-524), which is all the
+    // `.ax/` identity prompt in normal mode), and the `rules` and `brief`
+    // bodies alone on `agentConfig.systemPromptBootstrapAugment` (TASK-524),
+    // which is all the
     // runner prepends in bootstrap mode. A failed required provider leaves
     // both at their seeded `''`.
     //
