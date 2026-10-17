@@ -89,7 +89,7 @@ async function makeHarness(): Promise<{ harness: TestHarness; ws: BlobFakeState 
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createConversationsPlugin(),
+      createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
       createAttachmentsPlugin(),
     ],
   });

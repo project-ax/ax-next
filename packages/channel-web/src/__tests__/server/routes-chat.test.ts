@@ -587,7 +587,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
     // plugin registered. Empty mock workspace = no jsonl found =
     // empty turns, which is what these tests expect.
     workspacePlugin,
-    createConversationsPlugin(),
+    createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
     chatRunMockPlugin(chatRunCaptures, args.dispatchRejects === true),
     grantMockPlugin(grantCaptures),
   ];
