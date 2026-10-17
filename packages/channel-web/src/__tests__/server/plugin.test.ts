@@ -1025,6 +1025,33 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
         },
+        {
+          hook: 'projects:list',
+          degradation:
+            'GET /api/workspace/projects answers an empty list, and chats carry no project label in the agent detail',
+        },
+        {
+          hook: 'projects:create',
+          degradation: 'POST /api/workspace/projects answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:get',
+          degradation:
+            'GET /api/workspace/projects/:projectId and its /conversations answer 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:update',
+          degradation: 'PATCH /api/workspace/projects/:projectId answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:delete',
+          degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
+        },
+        {
+          hook: 'agents:can-manage-sharing',
+          degradation:
+            'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],
     });

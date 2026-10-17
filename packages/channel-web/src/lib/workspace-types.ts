@@ -44,6 +44,9 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
+import type { ProjectLabel } from '../wire/projects.js';
+
+export type { ProjectLabel };
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -976,6 +979,14 @@ export interface PastConversation {
    * `lib/workspace-time.ts`, now run on the reader's clock.
    */
   lastActivityAt: string;
+  /**
+   * W3a (W3 §15 Q6) — the project this chat belongs to, so a project chat
+   * carries a small label in the agent rail instead of disappearing from it.
+   * `null` for a chat outside any project, AND for one in a project this
+   * person can no longer use (its name is not theirs to see). Optional on
+   * read: an older host omits it.
+   */
+  project?: ProjectLabel | null;
 }
 
 /**

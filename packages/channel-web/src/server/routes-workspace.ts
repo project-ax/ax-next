@@ -153,6 +153,7 @@ import type {
   GrantRef,
   GrantRow,
   PastConversation,
+  ProjectLabel,
   PermissionRow,
   RailActivity,
   ThreadAttachment,
@@ -218,6 +219,7 @@ import {
 } from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
+import { activityStamp } from './recency.js';
 import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { workspaceFilePath } from './safe-path.js';
 import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
@@ -528,6 +530,8 @@ interface ConversationRow {
   activeSessionId: string | null;
   lastActivityAt?: string | null;
   createdAt: string;
+  /** W3a — the chat's project, or null (absent from an older producer). */
+  projectId?: string | null;
 }
 interface ConversationsListInput {
   userId: string;
@@ -1144,6 +1148,12 @@ export interface AgentDetail {
   decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
+  /**
+   * W3a — the project of the conversation `thread` was read from, or null
+   * (no conversation, a chat outside any project, or a project this person
+   * can no longer use). Same rule as `PastConversation.project`.
+   */
+  project: ProjectLabel | null;
   /**
    * The Memory tab, split by WHO OWNS IT (AW-13), each half carrying how its
    * read went.
@@ -2206,13 +2216,6 @@ async function resolveAgentOr404(
     }
     throw err;
   }
-}
-
-/** The instant a conversation was last touched, as a sortable epoch ms. */
-function activityStamp(c: ConversationRow): number {
-  const raw = c.lastActivityAt ?? c.createdAt;
-  const t = Date.parse(raw);
-  return Number.isNaN(t) ? 0 : t;
 }
 
 /** Newest first. */
@@ -3951,6 +3954,44 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       userId: callerUserId,
       workspace: initCtx.workspace,
     });
+  }
+
+  /**
+   * W3a (W3 §15 Q6) — names for the projects these conversations sit in, from
+   * ONE `projects:list` as the person (it lists only projects they can use).
+   * A project missing from that answer — deleted, or no longer theirs —
+   * labels as null: its name is not theirs to see. No list is read when no
+   * conversation is in a project. Without @ax/projects, or when the read
+   * fails, every label is null: a missing label is cosmetic, and the thread
+   * is still the person's to read, so this never fails the panel.
+   */
+  async function projectLabels(
+    userId: string,
+    convs: readonly ConversationRow[],
+  ): Promise<{ labelFor: (projectId: string | null | undefined) => ProjectLabel | null }> {
+    const names = new Map<string, string>();
+    const wanted = convs.some((c) => typeof c.projectId === 'string');
+    if (wanted && bus.hasService('projects:list')) {
+      try {
+        const out = await bus.call<Record<string, never>, { projects: Array<{ projectId: string; name: string }> }>(
+          'projects:list',
+          agentWorkspaceCtx('@ax/channel-web', userId),
+          {},
+        );
+        for (const p of out.projects) names.set(p.projectId, p.name);
+      } catch (err) {
+        initCtx.logger.warn('workspace_project_labels_unreadable', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return {
+      labelFor: (projectId) => {
+        if (typeof projectId !== 'string') return null;
+        const name = names.get(projectId);
+        return name === undefined ? null : { projectId, name };
+      },
+    };
   }
 
   /** TASK-739 — this agent's effective connector set, read under the caller. */
@@ -6451,6 +6492,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // A pointer per row, nothing more: the transcript arrives from a second
       // read through `?conversationId=`, and there is no fold count to ship.
       // See `PastConversation` for why both fields are gone.
+      // W3a: one projects:list per request names every project label below.
+      const projects = await projectLabels(userId, convs);
       const past: PastConversation[] = convs.slice(1).map((c) => ({
         id: c.conversationId,
         // Fenced like every other label out of this file — see
@@ -6459,6 +6502,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           fenceLine(c.title, CONVERSATION_TITLE_MAX_CHARS) ??
           'Untitled conversation',
         lastActivityAt: c.lastActivityAt ?? c.createdAt,
+        project: projects.labelFor(c.projectId),
       }));
 
       /*
@@ -6480,6 +6524,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
+      let threadProjectId: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
       // Read whether or not there is a thread yet: the live panel needs it for
       // the first turn too (TASK-744).
@@ -6529,6 +6574,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             return;
           }
           threadConversationId = got.conversation.conversationId;
+          threadProjectId = got.conversation.projectId ?? null;
           /*
             The still-open decisions raised in THIS conversation, as cards at
             the end of the thread. They go last because that is where they
@@ -6586,6 +6632,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread,
         decisions: { status: decisionsRead },
         past,
+        // A past conversation opened by `?conversationId=` may sit in a
+        // project none of the listed ones are in — but the list covers every
+        // conversation of this agent, so one map serves both.
+        project: projects.labelFor(threadProjectId),
         memory: await readMemory(agent, userId),
         connectorTools: connectorNamesToRows(connectors),
       } satisfies AgentDetail);

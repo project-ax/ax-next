@@ -136,6 +136,12 @@ interface ConversationsCreateInput {
    * conversation, which is what decides whether a held tool call is attended.
    */
   origin?: 'web' | 'routine';
+  /**
+   * W3a. Mirror of `CreateInput.projectId`: start the chat in this project.
+   * `@ax/conversations` checks it with `projects:resolve` AS `userId` and
+   * refuses (`forbidden` / `not-found`) on any failure.
+   */
+  projectId?: string;
 }
 interface ConversationsCreateOutput {
   conversationId: string;
@@ -151,6 +157,8 @@ interface ConversationSummary {
   activeReqId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** W3a — the chat's project, or null. */
+  projectId?: string | null;
 }
 
 interface TurnSummary {
@@ -434,6 +442,14 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         res.status(400).json({ error: 'invalid-payload' });
         return;
       }
+      // W3a: a chat's project is fixed when it is created. A projectId beside
+      // an existing conversation would otherwise be silently ignored — and a
+      // client that believes its message went into a project when it didn't
+      // is worse than a 400.
+      if (body.projectId !== undefined && body.conversationId !== null) {
+        res.status(400).json({ error: 'project-on-existing-conversation' });
+        return;
+      }
 
       // 3) agents:resolve gate. forbidden → 403, not-found → 404.
       try {
@@ -463,19 +479,39 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // (would defeat the orchestrator's J6 routing — see comment there).
       let existingActiveSessionId: string | null = null;
       if (body.conversationId === null) {
-        const created = await bus.call<
-          ConversationsCreateInput,
-          ConversationsCreateOutput
-        >('conversations:create', initCtx, {
-          userId,
-          agentId: body.agentId,
-          // AW-6: this is the one channel where a person is watching. A tool
-          // call held inside a turn on this conversation is ATTENDED — the
-          // agent parks on its inbox and the resolved decision comes back to it
-          // as the next message. Passed explicitly rather than relying on the
-          // default so the channel names itself.
-          origin: 'web',
-        });
+        let created: ConversationsCreateOutput;
+        try {
+          created = await bus.call<
+            ConversationsCreateInput,
+            ConversationsCreateOutput
+          >('conversations:create', initCtx, {
+            userId,
+            agentId: body.agentId,
+            // AW-6: this is the one channel where a person is watching. A tool
+            // call held inside a turn on this conversation is ATTENDED — the
+            // agent parks on its inbox and the resolved decision comes back to it
+            // as the next message. Passed explicitly rather than relying on the
+            // default so the channel names itself.
+            origin: 'web',
+            // W3a: checked by conversations with projects:resolve AS userId.
+            ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+          });
+        } catch (err) {
+          // W3a: a project this person's agent can't use — unknown, someone
+          // else's, no grant, or no @ax/projects at all — is ONE 404: the
+          // refusal never confirms that a guessed project id exists. Without
+          // a projectId the agent already passed agents:resolve above, so a
+          // refusal here stays what it always was (it propagates).
+          if (
+            body.projectId !== undefined &&
+            err instanceof PluginError &&
+            (err.code === 'forbidden' || err.code === 'not-found')
+          ) {
+            res.status(404).json({ error: 'project-not-found' });
+            return;
+          }
+          throw err;
+        }
         conversationId = created.conversationId;
       } else {
         try {
@@ -1146,12 +1182,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       catch { res.status(400).json({ error: 'invalid-payload' }); return; }
       try {
         const result = await bus.call<ConversationsCreateInput, ConversationsCreateOutput>(
-          'conversations:create', initCtx, { userId, agentId: body.agentId, origin: 'web' },
+          'conversations:create', initCtx, {
+            userId,
+            agentId: body.agentId,
+            origin: 'web',
+            // W3a: checked by conversations with projects:resolve AS userId.
+            ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+          },
         );
         res.status(201).json({ conversationId: result.conversationId });
       } catch (err) {
+        // Unknown and foreign collapse to one 404 — for the agent, and (W3a)
+        // for a project the agent can't use.
         if (err instanceof PluginError && (err.code === 'forbidden' || err.code === 'not-found')) {
-          res.status(404).json({ error: 'agent-not-found' }); return;
+          res.status(404).json({ error: body.projectId !== undefined ? 'project-not-found' : 'agent-not-found' }); return;
         }
         throw err;
       }

@@ -66,6 +66,15 @@ import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
 import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
+  CreateProjectResponse,
+  ListProjectsResponse,
+  OwnerCandidatesResponse,
+  ProjectConversationsResponse,
+  ProjectDetail,
+  ProjectLabel,
+  UpdateProjectResponse,
+} from '@/wire/projects';
+import type {
   ActivityEvent,
   AgentAbilitiesRead,
   AgentAbility,
@@ -281,6 +290,12 @@ export interface AgentDetail {
   decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
+  /**
+   * W3a — the project of the conversation `thread` was read from, or null
+   * (none, outside any project, or a project this person can't use any more).
+   * Optional on read: an older host omits it.
+   */
+  project?: ProjectLabel | null;
   /**
    * The Instructions section's rules tier, carrying how its read went.
    *
@@ -588,6 +603,12 @@ export interface SendMessageInput {
    * Omitted / empty = a plain text-only send, byte-identical to before.
    */
   attachmentIds?: readonly string[];
+  /**
+   * W3a — start the new conversation in this project. Only with
+   * `conversationId: null`; the server refuses it beside an existing one (400)
+   * and answers 404 for a project the agent can't use.
+   */
+  projectId?: string;
 }
 
 /** What a normally-ended turn can still have to say. See `StreamHandlers.onDone`. */
@@ -1331,6 +1352,43 @@ export const workspaceApi = {
    */
   route: (_text: string) => req<RouteProposal>('/route', { method: 'POST' }),
 
+  // ---- W3a: projects (W3 spec §4.8) ---------------------------------------
+
+  /** The projects this person can use, most recently updated first. */
+  listProjects: () => req<ListProjectsResponse>('/projects'),
+
+  /** Create a project owned by `ownerAgentId` (an agent they manage). */
+  createProject: (input: { name: string; description?: string; ownerAgentId: string }) =>
+    req<CreateProjectResponse>('/projects', { method: 'POST', body: input }),
+
+  /** One project: name, description, members, and whether they may manage it. */
+  getProject: (projectId: string) =>
+    req<ProjectDetail>(`/projects/${encodeURIComponent(projectId)}`),
+
+  /** Rename / re-describe. `description: null` (or blank) clears it. */
+  updateProject: (projectId: string, patch: { name?: string; description?: string | null }) =>
+    req<UpdateProjectResponse>(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH',
+      body: patch,
+    }),
+
+  /**
+   * Delete the project, its files and EVERY chat in it (anyone's). Answers
+   * 204 with no body, so this does not go through `req()` (which reads JSON).
+   */
+  deleteProject: async (projectId: string): Promise<void> => {
+    const path = `/projects/${encodeURIComponent(projectId)}`;
+    const res = await httpFetch(`/api/workspace${path}`, { method: 'DELETE', headers: writeHeaders });
+    if (!res.ok) throw new WorkspaceApiError(path, res.status);
+  },
+
+  /** This person's chats in the project, newest first. */
+  listProjectConversations: (projectId: string) =>
+    req<ProjectConversationsResponse>(`/projects/${encodeURIComponent(projectId)}/conversations`),
+
+  /** Agents that may own a new project, most recently used first — the first is the default. */
+  ownerCandidates: () => req<OwnerCandidatesResponse>('/projects/owner-candidates'),
+
   /**
    * One page of the activity collection (design §7). `agentId` scopes to one
    * agent's rows; `before` pages backward through older ones; `nextBefore` in
@@ -1360,6 +1418,7 @@ export const workspaceApi = {
     conversationId,
     text,
     attachmentIds = [],
+    projectId,
   }: SendMessageInput): Promise<PostMessageResponse> {
     const res = await httpFetch('/api/chat/messages', {
       method: 'POST',
@@ -1371,6 +1430,9 @@ export const workspaceApi = {
           { type: 'text', text },
           ...attachmentIds.map((id) => attachmentRefBlock(id)),
         ],
+        // Omitted, not `undefined`/null, when there is none — byte-identical
+        // to a send from before projects.
+        ...(projectId !== undefined ? { projectId } : {}),
       }),
     });
     if (!res.ok) {
