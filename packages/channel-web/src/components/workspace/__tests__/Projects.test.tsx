@@ -54,6 +54,8 @@ vi.mock('@/lib/workspace-api', async () => {
       deleteProject: vi.fn(),
       listProjectConversations: vi.fn(),
       ownerCandidates: vi.fn(),
+      projectFiles: vi.fn(),
+      downloadProjectFile: vi.fn(),
     },
   };
 });
@@ -136,6 +138,7 @@ beforeEach(() => {
   api.getProject.mockResolvedValue(detail());
   api.listProjectConversations.mockResolvedValue({ conversations: [] });
   api.ownerCandidates.mockResolvedValue({ agents: [{ agentId: 'a-quill', displayName: 'Quill' }] });
+  api.projectFiles.mockResolvedValue({ kind: 'dir', path: '', name: '', entries: [], truncated: false });
 });
 
 afterEach(clearViewport);
@@ -357,8 +360,10 @@ describe('project page', () => {
     const members = screen.getByRole('list', { name: 'Members' });
     expect(members).toHaveTextContent('Quill');
     expect(members).toHaveTextContent('Owner');
-    // No placeholder for W3b's files.
-    expect(screen.queryByText(/files/i)).toBeNull();
+    // W3b: the files card sits between the chats and the members.
+    const files = await screen.findByRole('list', { name: 'Project files' });
+    expect(chats.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(files.compareDocumentPosition(members) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('opens a chat in the agent view, on that conversation', async () => {

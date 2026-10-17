@@ -67,6 +67,7 @@ import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
 import { NewProjectDialog } from './ProjectDialogs';
 import { ProjectPage } from './ProjectPage';
+import { ProjectFilesPage } from './ProjectFiles';
 import { ProjectsPage } from './ProjectsPage';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
@@ -823,11 +824,17 @@ function Inner({
   */
   const navProps = {
     agents: board.agents,
-    route: route.kind === 'agent-settings' ? 'agent' : route.kind,
+    route:
+      route.kind === 'agent-settings'
+        ? 'agent'
+        : route.kind === 'project-files'
+          ? 'project'
+          : route.kind,
     activeAgentId: routeAgentId(route),
     projects: {
       items: projects.projects,
-      activeId: route.kind === 'project' ? route.id : null,
+      // The files browser is part of its project: the project stays lit.
+      activeId: route.kind === 'project' || route.kind === 'project-files' ? route.id : null,
       open: projectsOpen,
       onOpenChange: setProjectsOpen,
       onAll: () => navigate({ kind: 'projects' }),
@@ -1031,6 +1038,19 @@ function Inner({
                 void projects.refresh();
                 navigate({ kind: 'projects' });
               }}
+              onOpenFiles={(path) => navigate({ kind: 'project-files', id: route.id, path })}
+            />
+          )}
+
+          {route.kind === 'project-files' && (
+            <ProjectFilesPage
+              key={route.id}
+              projectId={route.id}
+              path={route.path}
+              leading={navTrigger}
+              onNavigate={(path) => navigate({ kind: 'project-files', id: route.id, path })}
+              onOpenProject={() => navigate({ kind: 'project', id: route.id })}
+              onAllProjects={() => navigate({ kind: 'projects' })}
             />
           )}
 

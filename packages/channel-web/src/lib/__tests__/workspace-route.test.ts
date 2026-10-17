@@ -289,3 +289,68 @@ describe('projects (W3a)', () => {
     expect(routeAgentId({ kind: 'project', id: 'p1' })).toBeNull();
   });
 });
+
+describe('project files (W3b)', () => {
+  it('parses the browser at the folder root, with or without a trailing slash', () => {
+    expect(parseWorkspaceRoute('/workspace/projects/p1/files')).toEqual({
+      kind: 'project-files',
+      id: 'p1',
+      path: '',
+    });
+    expect(parseWorkspaceRoute('/workspace/projects/p1/files/')).toEqual({
+      kind: 'project-files',
+      id: 'p1',
+      path: '',
+    });
+    expect(workspaceRoutePath({ kind: 'project-files', id: 'p1', path: '' })).toBe(
+      '/workspace/projects/p1/files',
+    );
+  });
+
+  it('parses every segment after /files into one raw path', () => {
+    expect(parseWorkspaceRoute('/workspace/projects/p1/files/work/drafts/plan.md')).toEqual({
+      kind: 'project-files',
+      id: 'p1',
+      path: 'work/drafts/plan.md',
+    });
+  });
+
+  it.each([
+    ['a plain nested path', 'work/drafts/plan.md'],
+    ['a name with spaces', 'sources/Q4 plan (final).md'],
+    ['unicode', 'memory/café — 日本語.md'],
+    ['a percent sign and a hash', 'work/100% done #2.md'],
+    ['a question mark', 'work/why?.md'],
+  ])('round-trips %s', (_what, path) => {
+    const route: WorkspaceRoute = { kind: 'project-files', id: 'p 1', path };
+    const url = workspaceRoutePath(route);
+    // One encoded segment per folder: the slashes between them stay slashes.
+    expect(url.split('/').length).toBe(5 + path.split('/').length);
+    expect(url).not.toMatch(/[ #?]/);
+    expect(parseWorkspaceRoute(url)).toEqual(route);
+  });
+
+  it('decodes each segment exactly once', () => {
+    // `%252e%252e` is the text `%2e%2e`, not a dot-segment.
+    expect(parseWorkspaceRoute('/workspace/projects/p1/files/%252e%252e')).toEqual({
+      kind: 'project-files',
+      id: 'p1',
+      path: '%2e%2e',
+    });
+  });
+
+  it.each([
+    ['a dot-dot segment', '/workspace/projects/p1/files/work/..'],
+    ['an encoded dot-dot', '/workspace/projects/p1/files/%2E%2E/secret'],
+    ['a single dot', '/workspace/projects/p1/files/./work'],
+    ['an encoded slash', '/workspace/projects/p1/files/work%2F..%2Fx'],
+    ['a malformed escape', '/workspace/projects/p1/files/%E0%A4%A'],
+    ['a NUL', '/workspace/projects/p1/files/a%00b'],
+  ])('falls back to the project page on %s', (_what, path) => {
+    expect(parseWorkspaceRoute(path)).toEqual({ kind: 'project', id: 'p1' });
+  });
+
+  it('is not about an agent', () => {
+    expect(routeAgentId({ kind: 'project-files', id: 'p1', path: '' })).toBeNull();
+  });
+});

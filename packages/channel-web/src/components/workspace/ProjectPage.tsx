@@ -5,7 +5,8 @@
  * Settings and Delete live behind ⋯ (frame 11), only for someone who manages
  * the owner agent.
  *
- * W3b adds the files card. Nothing here stands in for it.
+ * W3b's files card sits between the chats and the members; the full folder
+ * opens in its own page (`ProjectFiles.tsx`).
  *
  * The shell keys this on the project id, so another project is a fresh mount
  * and never flashes the last one's data.
@@ -39,7 +40,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
-import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
+import { logRequestFailure } from '@/lib/http';
 import { toReadOutcome, type ReadOutcome } from '@/lib/read-register';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
@@ -54,13 +55,9 @@ import { AgentTile } from './bits';
 import { HomeComposer } from './HomeComposer';
 import { DeleteProjectDialog, ProjectSettingsDialog } from './ProjectDialogs';
 import { inPlaceClick } from './ProjectsPage';
+import { ProjectFilesCard } from './ProjectFiles';
+import { ProjectLoadFailure } from './ProjectLoadFailure';
 import { WorkspaceHeader } from './WorkspaceHeader';
-
-const LOAD_COPY: Record<ReadOutcome, string> = {
-  expired: HTTP_SESSION_ENDED,
-  gone: 'We couldn’t open this project. It may have been deleted, or it isn’t shared with you.',
-  failed: 'We couldn’t load this project just now. Nothing was lost.',
-};
 
 const ROLE_LABEL: Record<ProjectMemberRole, string> = {
   owner: 'Owner',
@@ -78,6 +75,7 @@ export function ProjectPage({
   onStartChat,
   onChanged,
   onDeleted,
+  onOpenFiles,
   leading,
 }: {
   projectId: string;
@@ -94,6 +92,8 @@ export function ProjectPage({
   /** The project's name or description changed — refresh the list. */
   onChanged: () => void;
   onDeleted: () => void;
+  /** Open the project's files browser at a raw path; `''` is the root. */
+  onOpenFiles: (path: string) => void;
   leading?: ReactNode;
 }) {
   const [data, setData] = useState<Loaded | null>(null);
@@ -130,28 +130,12 @@ export function ProjectPage({
 
   if (error !== null && data === null) {
     return (
-      <>
-        <WorkspaceHeader title="Project" leading={leading} />
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
-            <Alert variant={error === 'failed' ? 'destructive' : 'default'}>
-              <AlertDescription className="flex flex-wrap items-center gap-3">
-                <span className="min-w-0">{LOAD_COPY[error]}</span>
-                <span className="ml-auto flex gap-2">
-                  {error === 'failed' && (
-                    <Button variant="secondary" size="sm" onClick={() => setReload((n) => n + 1)}>
-                      Try again
-                    </Button>
-                  )}
-                  <Button variant="outline" size="sm" onClick={onAllProjects}>
-                    All projects
-                  </Button>
-                </span>
-              </AlertDescription>
-            </Alert>
-          </div>
-        </div>
-      </>
+      <ProjectLoadFailure
+        error={error}
+        leading={leading}
+        onRetry={() => setReload((n) => n + 1)}
+        onAllProjects={onAllProjects}
+      />
     );
   }
 
@@ -268,6 +252,8 @@ export function ProjectPage({
               )}
             </CardContent>
           </Card>
+
+          <ProjectFilesCard projectId={project.projectId} onOpen={onOpenFiles} />
 
           <Card>
             <CardHeader>
