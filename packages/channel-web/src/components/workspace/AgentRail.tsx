@@ -384,7 +384,7 @@ export function AgentRailContent({
               )}
               {active === 'chat' && (
                 <div className="flex flex-col gap-0.5">
-                  <div className="group relative flex h-9 items-center rounded-sm max-md:h-11">
+                  <div className="group relative flex min-h-9 items-center rounded-sm">
                     <Button
                       variant="ghost"
                       onClick={() => onOpenPast(null)}
