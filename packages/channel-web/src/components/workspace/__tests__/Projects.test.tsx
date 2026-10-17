@@ -454,6 +454,9 @@ describe('a project chat in the agent view', () => {
     const crumb = await screen.findByRole('navigation', { name: 'Project' });
     const link = within(crumb).getByRole('link', { name: 'Q4 launch' });
     expect(link).toHaveAttribute('href', '/workspace/projects/p1');
+    // Kind walk, 2026-10-17: a separator after the only item drew a dangling
+    // chevron pointing at nothing.
+    expect(crumb.querySelectorAll('li')).toHaveLength(1);
     fireEvent.click(link);
     expect(window.location.pathname).toBe('/workspace/projects/p1');
   });

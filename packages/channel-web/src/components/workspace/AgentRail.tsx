@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import {
   Activity,
   Folder,
+  FolderKanban,
   MessageSquare,
   MoreHorizontal,
   PanelRight,
@@ -9,7 +10,6 @@ import {
   Settings,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -390,6 +390,7 @@ export function AgentRailContent({
                       onClick={() => onOpenPast(null)}
                       className={cn(
                         'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
+                        detail.project && 'h-auto min-h-9 py-1.5',
                         openPastId === null && 'bg-primary-soft text-primary',
                       )}
                     >
@@ -397,10 +398,10 @@ export function AgentRailContent({
                         aria-hidden="true"
                         className="size-1.5 shrink-0 rounded-full bg-primary"
                       />
-                      <span className="min-w-0 flex-1 text-left">
-                        Current conversation
+                      <span className="flex min-w-0 flex-1 flex-col text-left">
+                        <span>Current conversation</span>
+                        {detail.project && <ProjectLabel name={detail.project.name} />}
                       </span>
-                      {detail.project && <ProjectLabel name={detail.project.name} />}
                       <span className="w-[52px] shrink-0 text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                         Now
                       </span>
@@ -429,16 +430,19 @@ export function AgentRailContent({
                         onClick={() => onOpenPast(c.id)}
                         className={cn(
                           'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
+                          c.project && 'h-auto min-h-9 py-1.5',
                           openPastId === c.id && 'bg-primary-soft text-primary',
                         )}
                       >
-                        <span
-                          className="conversation-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
-                          title={c.title}
-                        >
-                          {c.title}
+                        <span className="flex min-w-0 flex-1 flex-col text-left">
+                          <span
+                            className="conversation-title-fade overflow-hidden whitespace-nowrap"
+                            title={c.title}
+                          >
+                            {c.title}
+                          </span>
+                          {c.project && <ProjectLabel name={c.project.name} />}
                         </span>
-                        {c.project && <ProjectLabel name={c.project.name} />}
                         <span className="w-[52px] shrink-0 whitespace-nowrap text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                           {conversationDate(c.lastActivityAt)}
                         </span>
@@ -693,17 +697,17 @@ function ThisWeek({
 
 /**
  * W3a (W3 §15 Q6) — a project chat stays in the Chats list, wearing its
- * project's name, so nothing disappears from where people already look.
+ * project's name, so nothing disappears from where people already look. The
+ * name sits on its own line under the title, so neither truncates the other
+ * in the narrow rail (kind walk, 2026-10-17).
  */
 function ProjectLabel({ name }: { name: string }) {
   return (
-    <Badge
-      variant="secondary"
-      size="compact"
-      className="max-w-[10ch] shrink-0 truncate"
-      title={name}
-    >
-      {name}
-    </Badge>
+    <span className="flex min-w-0 items-center gap-1 text-[11.5px] text-muted-foreground">
+      <FolderKanban aria-hidden="true" className="size-3 shrink-0" />
+      <span className="truncate" title={name}>
+        {name}
+      </span>
+    </span>
   );
 }
