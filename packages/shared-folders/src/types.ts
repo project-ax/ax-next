@@ -69,6 +69,24 @@ export const ListOutputSchema = z.object({
   ),
 });
 
+export const GetInputSchema = z.object({ folderId: SharedFolderIdSchema }).strict();
+export type SharedFoldersGetInput = z.infer<typeof GetInputSchema>;
+export interface SharedFoldersGetOutput {
+  folderId: string;
+  /** Owner first, then by grant `createdAt` (oldest first). */
+  members: { agentId: string; role: 'owner' | 'editor' | 'viewer'; createdAt: string }[];
+}
+export const GetOutputSchema = z.object({
+  folderId: SharedFolderIdSchema,
+  members: z.array(
+    z.object({
+      agentId: z.string(),
+      role: z.enum(['owner', 'editor', 'viewer']),
+      createdAt: z.string(),
+    }),
+  ),
+});
+
 /**
  * `folderIds` entries are NOT shape-checked by the schema: a malformed id is
  * dropped by the handler (the contract says an unknown/invalid id is simply
@@ -92,4 +110,16 @@ export const AuthorizeMountsOutputSchema = z.object({
 export interface SharedFoldersAccessReducedEvent {
   folderId: string;
   agentIds: string[];
+}
+
+/**
+ * Payload of `shared-folders:deleted`, fired AFTER a folder's tombstone
+ * commits: by `shared-folders:delete`, by an owner agent's deletion that left
+ * no editor to inherit the folder, and again by the tombstone sweep for every
+ * tombstone it still sees. Delivery is at-least-once (there is no outbox, so a
+ * crash between the commit and the fire loses the first one; the sweep is what
+ * re-delivers it), so a subscriber MUST be idempotent.
+ */
+export interface SharedFoldersDeletedEvent {
+  folderId: string;
 }

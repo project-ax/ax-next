@@ -25,6 +25,8 @@ import {
   CreateOutputSchema,
   DeleteInputSchema,
   DeleteOutputSchema,
+  GetInputSchema,
+  GetOutputSchema,
   GrantInputSchema,
   GrantOutputSchema,
   ListInputSchema,
@@ -33,7 +35,9 @@ import {
   RevokeOutputSchema,
   type SharedFoldersAccessReducedEvent,
   type SharedFoldersCreateOutput,
+  type SharedFoldersDeletedEvent,
   type SharedFoldersDeleteOutput,
+  type SharedFoldersGetOutput,
   type SharedFoldersGrantOutput,
   type SharedFoldersListOutput,
   type SharedFoldersRevokeOutput,
@@ -42,6 +46,12 @@ import {
 const PLUGIN_NAME = '@ax/shared-folders';
 
 export const ACCESS_REDUCED_HOOK = 'shared-folders:access-reduced';
+/**
+ * Fired once a folder is tombstoned (see `SharedFoldersDeletedEvent`).
+ * AT-LEAST-ONCE: the tombstone sweep fires it again for every tombstone it
+ * still sees, so every subscriber must be idempotent.
+ */
+export const DELETED_HOOK = 'shared-folders:deleted';
 // See the comment at the call site for why this is NOT in the manifest.
 const DELETE_PROVIDER_HOOK = 'sandbox:delete-shared-folder';
 
@@ -104,6 +114,21 @@ function parseInput<T>(schema: ZodType<T>, hookName: string, raw: unknown): T {
   return parsed.data;
 }
 
+/** The audit line every refusal writes, whichever error code the caller sees. */
+function logRefusal(
+  ctx: AgentContext,
+  hookName: string,
+  reason: string,
+  fields: { folderId?: string; agentId?: string },
+): void {
+  ctx.logger.warn('shared_folders_refused', {
+    hook: hookName,
+    reason,
+    actor: ctx.userId,
+    ...fields,
+  });
+}
+
 /** A refused call: audited as a structured warning, then thrown as `forbidden`. Writes nothing. */
 function refuse(
   ctx: AgentContext,
@@ -111,12 +136,7 @@ function refuse(
   reason: string,
   fields: { folderId?: string; agentId?: string } = {},
 ): never {
-  ctx.logger.warn('shared_folders_refused', {
-    hook: hookName,
-    reason,
-    actor: ctx.userId,
-    ...fields,
-  });
+  logRefusal(ctx, hookName, reason, fields);
   throw new PluginError({
     code: 'forbidden',
     plugin: PLUGIN_NAME,
@@ -124,6 +144,28 @@ function refuse(
     // One message for every reason: a refused caller learns nothing about
     // which check failed (e.g. whether a folder exists). The log has it.
     message: `${hookName}: not allowed`,
+  });
+}
+
+/**
+ * Same audit line as `refuse`, but thrown as `not-found`. For a read keyed on
+ * a folder id, where even "you may not see this" would confirm the folder
+ * exists: an unknown folder, a tombstoned one and one the actor has no use
+ * access to must be indistinguishable to the caller (same code, same message).
+ * The log keeps the real reason.
+ */
+function refuseNotFound(
+  ctx: AgentContext,
+  hookName: string,
+  reason: string,
+  fields: { folderId?: string; agentId?: string } = {},
+): never {
+  logRefusal(ctx, hookName, reason, fields);
+  throw new PluginError({
+    code: 'not-found',
+    plugin: PLUGIN_NAME,
+    hookName,
+    message: `${hookName}: not found`,
   });
 }
 
@@ -193,6 +235,23 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
     if (agentIds.length === 0) return;
     const payload: SharedFoldersAccessReducedEvent = { folderId, agentIds: [...new Set(agentIds)] };
     await bus!.fire(ACCESS_REDUCED_HOOK, ctx, payload);
+  }
+
+  /**
+   * Tell subscribers a folder is deleted. Always called AFTER the tombstone
+   * has committed, and BEFORE the byte cleanup it precedes. A subscriber that
+   * throws can't break the caller: `HookBus.fire` isolates subscriber errors
+   * (it reports them and moves on), so there is deliberately no try/catch here.
+   *
+   * At-least-once, not exactly-once: this fires from three places — the
+   * delete, an agent deletion that tombstones, and EVERY sweep pass over a
+   * tombstone that is still due — so a subscriber MUST be idempotent. The
+   * sweep's re-fire is what covers a crash between the tombstone commit and
+   * the first fire (there is no outbox).
+   */
+  async function fireDeleted(ctx: AgentContext, folderId: string): Promise<void> {
+    const payload: SharedFoldersDeletedEvent = { folderId };
+    await bus!.fire(DELETED_HOOK, ctx, payload);
   }
 
   /**
@@ -267,6 +326,10 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
   async function purgeAgent(ctx: AgentContext, agentId: string): Promise<AgentDeletedResult> {
     const res = await store!.deleteAllForAgent(agentId);
     for (const r of res.reduced) await fireAccessReduced(ctx, r.folderId, r.agentIds);
+    // Only folders the deleted owner left with no editor are tombstoned; a
+    // folder that passed to an heir is not in `tombstoned`, so it fires nothing.
+    // This is also the path `reconcileOrphans` takes. At-least-once: see `fireDeleted`.
+    for (const folderId of res.tombstoned) await fireDeleted(ctx, folderId);
     const sys = systemCtx();
     for (const folderId of res.tombstoned) startCleanup(sys, folderId);
     return res;
@@ -345,6 +408,11 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
     const due = (await store!.dueTombstones(now, SWEEP_BATCH)).filter((id) => !cleaning.has(id));
     let removed = 0;
     for (const folderId of due) {
+      // Re-fire BEFORE each attempt, for every tombstone still on the books
+      // (W2 §12): the first fire (from the delete / agent deletion) may have
+      // been lost to a crash, and a subscriber that failed then gets another
+      // go. At-least-once, so subscribers must be idempotent — see `fireDeleted`.
+      await fireDeleted(ctx, folderId);
       if (await cleanup(ctx, folderId)) removed++;
     }
     await reconcileOrphans(ctx);
@@ -372,6 +440,7 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
         'shared-folders:revoke',
         'shared-folders:delete',
         'shared-folders:list',
+        'shared-folders:get',
         'shared-folders:authorize-mounts',
       ],
       // `agents:list-ids` backs the orphan sweep. @ax/agents calls nothing of
@@ -505,6 +574,9 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
           if (res === null) return { deleted: true };
           ctx.logger.info('shared_folders_deleted', { ...ids, actor: ctx.userId });
           await fireAccessReduced(ctx, input.folderId, res.formerGrantees);
+          // Fires once per delete: a delete that lost a race returned above.
+          // At-least-once overall (the sweep re-fires it): see `fireDeleted`.
+          await fireDeleted(ctx, input.folderId);
           // The tombstone is committed and the folder can no longer be
           // mounted or granted, so the delete is done from the caller's view.
           // Byte removal runs detached: a k8s reclaim pod can outlast the
@@ -529,6 +601,37 @@ export function createSharedFoldersPlugin(opts: SharedFoldersPluginOptions = {})
           return { folders: await s.listForAgent(input.agentId) };
         },
         { returns: ListOutputSchema },
+      );
+
+      // ---- get ----------------------------------------------------------
+      // Allowed when the actor can USE (`agents:resolve`) at least one member
+      // agent of a LIVE folder. Every other outcome — unknown folder,
+      // tombstoned folder, an actor who can use no member — is the same
+      // `not-found` (never `forbidden`), so the answer can't be used to learn
+      // that a folder exists. The reason goes to the audit log only.
+      b.registerService<unknown, SharedFoldersGetOutput>(
+        'shared-folders:get',
+        PLUGIN_NAME,
+        async (ctx, raw) => {
+          const hook = 'shared-folders:get';
+          const input = parseInput(GetInputSchema, hook, raw);
+          requireActor(ctx, hook);
+          const ids = { folderId: input.folderId };
+          const members = await s.listMembers(input.folderId);
+          if (members === null) refuseNotFound(ctx, hook, 'folder-unavailable', ids);
+          // Owner first, so the common case (the actor uses the owner agent) is
+          // one `agents:resolve` call; stop at the first member the actor can use.
+          let allowed = false;
+          for (const m of members) {
+            if ((await resolveAgent(ctx, m.agentId)) !== null) {
+              allowed = true;
+              break;
+            }
+          }
+          if (!allowed) refuseNotFound(ctx, hook, 'cannot-use-any-member', ids);
+          return { folderId: input.folderId, members };
+        },
+        { returns: GetOutputSchema },
       );
 
       // ---- authorize-mounts --------------------------------------------

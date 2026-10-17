@@ -5,7 +5,7 @@
  * accepts no grants, and every multi-row change is one transaction.
  */
 import { PluginError } from '@ax/core';
-import type { Kysely, Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { SharedFolderRole, SharedFoldersDatabase } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/shared-folders';
@@ -63,6 +63,14 @@ export interface SharedFoldersStore {
   /** Tombstone a live folder and remove all its grants. Null if not live. */
   tombstone(folderId: string): Promise<{ formerGrantees: string[] } | null>;
   listForAgent(agentId: string): Promise<{ folderId: string; role: SharedFolderRole; createdAt: string }[]>;
+  /**
+   * Every grant on a LIVE folder: owner first, then oldest grant first (agent
+   * id breaks ties). Null when the folder does not exist or is tombstoned — the
+   * store does not say which; callers must not either.
+   */
+  listMembers(
+    folderId: string,
+  ): Promise<{ agentId: string; role: SharedFolderRole; createdAt: string }[] | null>;
   authorize(agentId: string, folderIds: string[]): Promise<{ folderId: string; readOnly: boolean }[]>;
   /** Remove a TOMBSTONED folder's row once its bytes are gone. */
   removeTombstone(folderId: string): Promise<boolean>;
@@ -277,6 +285,30 @@ export function createSharedFoldersStore(db: Kysely<SharedFoldersDatabase>): Sha
         .execute();
       return rows.map((r) => ({
         folderId: r.folder_id,
+        role: r.role,
+        createdAt: r.created_at.toISOString(),
+      }));
+    },
+
+    async listMembers(folderId) {
+      // One statement, so the liveness check and the member list are one
+      // snapshot: a tombstone committing between two reads can't hand back
+      // members of a folder that no longer has any.
+      const rows = await db
+        .selectFrom('shared_folders_v1_grants as g')
+        .innerJoin('shared_folders_v1_folders as f', 'f.folder_id', 'g.folder_id')
+        .select(['g.agent_id', 'g.role', 'g.created_at'])
+        .where('g.folder_id', '=', folderId)
+        .where('f.deleted_at', 'is', null)
+        .orderBy(sql`(g.role = 'owner')`, 'desc')
+        .orderBy('g.created_at', 'asc')
+        .orderBy('g.agent_id', 'asc')
+        .execute();
+      // A live folder always has its owner grant, so an empty answer means
+      // absent or tombstoned.
+      if (rows.length === 0) return null;
+      return rows.map((r) => ({
+        agentId: r.agent_id,
         role: r.role,
         createdAt: r.created_at.toISOString(),
       }));

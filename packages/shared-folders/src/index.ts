@@ -8,6 +8,7 @@ export {
 export {
   createSharedFoldersPlugin,
   ACCESS_REDUCED_HOOK,
+  DELETED_HOOK,
   type SharedFoldersPlugin,
   type SharedFoldersPluginOptions,
 } from './plugin.js';
@@ -17,6 +18,9 @@ export type {
   SharedFoldersCreateOutput,
   SharedFoldersDeleteInput,
   SharedFoldersDeleteOutput,
+  SharedFoldersDeletedEvent,
+  SharedFoldersGetInput,
+  SharedFoldersGetOutput,
   SharedFoldersGrantInput,
   SharedFoldersGrantOutput,
   SharedFoldersListInput,
