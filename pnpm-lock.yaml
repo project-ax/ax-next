@@ -3010,6 +3010,9 @@ importers:
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding
+      '@ax/projects':
+        specifier: workspace:*
+        version: link:../../packages/projects
       '@ax/routines':
         specifier: workspace:*
         version: link:../../packages/routines
@@ -3083,6 +3086,9 @@ importers:
       '@ax/ipc-core':
         specifier: workspace:*
         version: link:../../packages/ipc-core
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../../packages/ipc-protocol
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../../packages/ipc-server

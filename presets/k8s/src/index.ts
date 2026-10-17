@@ -35,6 +35,7 @@ import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createSharedFoldersPlugin } from '@ax/shared-folders';
+import { createProjectsPlugin } from '@ax/projects';
 import { createToolPolicyPlugin } from '@ax/tool-policy';
 import { createDecisionsPlugin } from '@ax/decisions';
 import { createAttachmentsPlugin } from '@ax/attachments';
@@ -1148,9 +1149,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // tombstone-cleanup paths. Needs database:get-instance, so it is loaded
   // here (and via createMemoryPlugins, which wraps this function) but NOT in
   // the sqlite dev CLI preset — without it the resolvers emit no shared
-  // mounts. The first production caller (a conversation's project resolving
-  // its folders) arrives with W3's slice; W2 and W3 merge as one squash.
+  // mounts. Its production caller is @ax/projects just below (a chat's
+  // project mounts the project's folder at spawn); W2 and W3a are one squash.
   plugins.push(createSharedFoldersPlugin());
+
+  // ----- 8a-W3. projects ----------------------------------------------------
+  // @ax/projects — a project is a W2 folder plus a name (W3 §4.1). Calls
+  // shared-folders and agents only; conversations calls `projects:resolve` on
+  // chat create and the orchestrator at spawn, so projects must NEVER call
+  // conversations:* or sandbox:* (that would close a call cycle — preset.test
+  // pins the direction). Postgres-only like shared-folders: not in the dev CLI.
+  plugins.push(createProjectsPlugin());
 
   // ----- 8a'''. tool policy ----------------------------------------------
   // @ax/tool-policy — THE policy rule table (agent-workspace design §4.3,

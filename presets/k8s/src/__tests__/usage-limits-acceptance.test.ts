@@ -110,6 +110,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Shared folders (W2): hard-calls agents:can-manage-sharing + agents:resolve,
   // which @ax/agents (dropped above) provides. Not on this canary's path.
   '@ax/shared-folders',
+  // Projects (W3a): hard-calls shared-folders:* (dropped just above) and
+  // agents:*. Not on this canary's path; static wiring is pinned in
+  // preset.test.ts and the real boot in prod-bootstrap.test.ts.
+  '@ax/projects',
   '@ax/decisions',
   '@ax/tool-policy',
   '@ax/llm-anthropic',

@@ -19,6 +19,8 @@ import { createConversationsPlugin } from '@ax/conversations';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createSharedFoldersPlugin } from '@ax/shared-folders';
+import { createProjectsPlugin } from '@ax/projects';
+import type { Plugin } from '@ax/core';
 import type { AgentInput, CreateOutput as AgentCreateOutput } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,12 @@ import type { AgentInput, CreateOutput as AgentCreateOutput } from '@ax/agents';
 // (which stays until a sandbox provider removes the bytes — none is loaded
 // here) carries no agent id; that is asserted explicitly, since the walk cannot
 // see it.
+//
+// W3a adds @ax/projects: a project is a folder plus a name, with NO agent
+// column, so the walk can't see it either. A project whose folder the doomed
+// agent owned alone must go (W2 tombstones the folder, fires
+// `shared-folders:deleted`, projects drops the row and fires
+// `projects:deleted`); one whose folder had an editor survives, owned by it.
 //
 // What this does not do: run the k8s reclaim pod (needs a cluster; the script is
 // covered by sandbox-k8s' shell tests) or load the plugins whose own tests cover
@@ -134,6 +142,45 @@ async function seedSharedFolders(
   await grant(controlOwned, doomed.agentId, 'viewer');
   const controlOnly = await create(control.agentId);
   return { tombstoned, transferred, controlOwned, controlOnly };
+}
+
+/** The two projects `seedProjects` creates, both owned by the doomed agent. */
+interface SeededProjects {
+  /** No editor: removed with its folder when the doomed agent goes. */
+  removed: string;
+  /** The control agent is an editor: survives, owned by the control. */
+  survives: string;
+}
+
+async function seedProjects(h: TestHarness, doomed: Seeded, control: Seeded): Promise<SeededProjects> {
+  const ctx = h.ctx({ userId: USER });
+  const create = async (name: string): Promise<{ projectId: string; folderId: string }> =>
+    h.bus.call<unknown, { projectId: string; folderId: string }>('projects:create', ctx, {
+      ownerAgentId: doomed.agentId,
+      name,
+    });
+  const removed = await create('Doomed alone');
+  const survives = await create('Shared with control');
+  await h.bus.call('shared-folders:grant', ctx, {
+    folderId: survives.folderId,
+    agentId: control.agentId,
+    role: 'editor',
+  });
+  return { removed: removed.projectId, survives: survives.projectId };
+}
+
+/** Records every `projects:deleted` payload. */
+function projectsDeletedRecorder(seen: string[]): Plugin {
+  const name = '@ax/preset-k8s/test/projects-deleted-recorder';
+  return {
+    manifest: { name, version: '0.0.0', registers: [], calls: [], subscribes: ['projects:deleted'] },
+    init({ bus }) {
+      bus.subscribe<{ projectId: string }>('projects:deleted', name, async (_ctx, payload) => {
+        seen.push(payload.projectId);
+        return undefined;
+      });
+    },
+  };
 }
 
 /** Everything one agent owns across the seven tables the walk found rows in. */
@@ -245,6 +292,7 @@ async function rowsMentioning(
 
 describe('deleting an agent through agents:delete leaves nothing of it in the database (TASK-718)', () => {
   it('removes every row keyed on the agent, its conversations and its sessions, and touches nothing else', async () => {
+    const projectsDeleted: string[] = [];
     harness = await createTestHarness({
       services: {
         // @ax/agents mounts admin routes; this test drives the bus directly.
@@ -266,6 +314,8 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
         // No timer: the sweep must not retry a tombstone mid-assertion. No
         // sandbox provider is loaded either, so the tombstone row stays.
         createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
+        createProjectsPlugin(),
+        projectsDeletedRecorder(projectsDeleted),
       ],
     });
     const h = harness;
@@ -273,6 +323,7 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
     const doomed = await seedAgent(h, 'Doomed');
     const control = await seedAgent(h, 'Control');
     const folders = await seedSharedFolders(h, doomed, control);
+    const projects = await seedProjects(h, doomed, control);
 
     const client = new pg.Client({ connectionString });
     await client.connect();
@@ -347,6 +398,24 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
       // The doomed agent's viewer grant went; the control's ownership did not.
       expect(grantsOf(folders.controlOwned)).toEqual([`${control.agentId}:owner`]);
       expect(grantsOf(folders.controlOnly)).toEqual([`${control.agentId}:owner`]);
+
+      // W3a: the project on the doomed agent's unshared folder went with it —
+      // row gone, `projects:get` answers not-found, `projects:deleted` fired
+      // exactly once for it. The project whose folder had an editor survives.
+      const projectRows = await client.query<{ project_id: string }>(
+        'SELECT project_id FROM projects_v1_projects ORDER BY project_id',
+      );
+      expect(projectRows.rows.map((r) => r.project_id)).toEqual([projects.survives]);
+      await expect(
+        h.bus.call('projects:get', h.ctx({ userId: USER }), { projectId: projects.removed }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(projectsDeleted).toEqual([projects.removed]);
+      const survivor = await h.bus.call<unknown, { members: { agentId: string; role: string }[] }>(
+        'projects:get',
+        h.ctx({ userId: USER }),
+        { projectId: projects.survives },
+      );
+      expect(survivor.members).toEqual([{ agentId: control.agentId, role: 'owner' }]);
     } finally {
       await client.end().catch(() => {});
     }

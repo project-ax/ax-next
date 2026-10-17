@@ -1,6 +1,6 @@
 import { createDecisionsPlugin } from '@ax/decisions';
 import { createToolPolicyPlugin } from '@ax/tool-policy';
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
@@ -89,8 +89,13 @@ import type {
   SkillsUpsertOutput,
 } from '@ax/skills';
 import { createRoutinesPlugin } from '@ax/routines';
+import { createSharedFoldersPlugin } from '@ax/shared-folders';
+import { createProjectsPlugin } from '@ax/projects';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
+
+/** The W3a acceptance runner: IPC + real file I/O in one turn (see the file). */
+const PROJECT_RUNNER_PATH = path.join(import.meta.dirname, 'fixtures', 'project-runner.mjs');
 
 // ---------------------------------------------------------------------------
 // Phase 6.6 Task 9 — preset-k8s acceptance canary (Invariant I_R4).
@@ -247,6 +252,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // call that is simply skipped when absent. Static wiring is pinned in
   // preset.test.ts; the real-postgres boot in prod-bootstrap.test.ts.
   '@ax/shared-folders',
+  // Projects (W3a): postgres-backed and hard-calls shared-folders:* (dropped
+  // just above). The "W3a projects" describe block at the end of this file
+  // loads it — with shared-folders, conversations and workspace-localdir — on a
+  // real postgres and drives turns through the orchestrator.
+  '@ax/projects',
   // Decisions (TASK-225): postgres-backed too — it calls database:get-instance
   // in init, and these canaries swap postgres out. Its `tool:pre-call`
   // subscriber is not on the chat-path canaries either: with @ax/tool-policy
@@ -3549,6 +3559,295 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           () => undefined,
         );
       }
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// W3a — projects you can chat in, through the orchestrator, with real files
+// (W3 spec §4.9: the acceptance W2 + W3a land as one squash on).
+//
+// Real postgres; the REAL @ax/agents, @ax/conversations, @ax/shared-folders,
+// @ax/projects and @ax/workspace-localdir; the preset's own chat-orchestrator;
+// the subprocess sandbox standing in for k8s. The runner is
+// `fixtures/project-runner.mjs`: it speaks IPC like a real runner (so the
+// prompt augment it reports is what the host built for THAT session) and
+// writes / reads the project's folder on disk (so bytes really cross chats).
+//
+// Each chat is its own conversation, so each turn is a fresh spawn — exactly
+// the path the orchestrator's project lookup runs on.
+// ---------------------------------------------------------------------------
+describe('W3a projects through the orchestrator (real postgres, real files)', () => {
+  const USER = 'w3a-user';
+  const PROJECT_NAME = 'Q4 launch';
+  const PROJECT_DESCRIPTION = 'Ship the Q4 launch on time.';
+  const HELLO = 'hello from chat one\n';
+
+  let pgContainer: StartedPostgreSqlContainer | null = null;
+  let tmp = '';
+  let filesRoot = '';
+  let spawnDir = '';
+  let planPath = '';
+  let originalCredKey: string | undefined;
+  let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+  let bus: HookBus;
+  let proxyOpens = 0;
+  const purgedIds: string[] = [];
+  const projectsDeleted: string[] = [];
+
+  /** `http:register-route` / `auth:require-user` for @ax/agents' admin routes — never exercised (no listener). */
+  function createRouteStubPlugin(): Plugin {
+    const name = '@ax/preset-k8s/test/w3a-route-stub';
+    return {
+      manifest: { name, version: '0.0.0', registers: ['http:register-route', 'auth:require-user'], calls: [], subscribes: [] },
+      init({ bus: b }) {
+        b.registerService('http:register-route', name, async () => ({ unregister: () => {} }));
+        b.registerService('auth:require-user', name, async () => {
+          throw new Error('auth:require-user is not exercised by this test');
+        });
+      },
+    };
+  }
+
+  function createRecorderPlugin(): Plugin {
+    const name = '@ax/preset-k8s/test/w3a-recorder';
+    return {
+      manifest: { name, version: '0.0.0', registers: [], calls: [], subscribes: ['conversations:purged', 'projects:deleted'] },
+      init({ bus: b }) {
+        b.subscribe<{ conversationIds: string[] }>('conversations:purged', name, async (_ctx, p) => {
+          purgedIds.push(...p.conversationIds);
+          return undefined;
+        });
+        b.subscribe<{ projectId: string }>('projects:deleted', name, async (_ctx, p) => {
+          projectsDeleted.push(p.projectId);
+          return undefined;
+        });
+      },
+    };
+  }
+
+  beforeAll(async () => {
+    pgContainer = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
+    const connectionString = pgContainer.getConnectionUri();
+    tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-preset-k8s-w3a-')));
+    filesRoot = path.join(tmp, 'files');
+    spawnDir = path.join(tmp, 'spawns');
+    planPath = path.join(tmp, 'plan.json');
+    await fs.mkdir(filesRoot);
+    await fs.mkdir(spawnDir);
+    await fs.writeFile(planPath, '{}');
+    originalCredKey = process.env.AX_CREDENTIALS_KEY;
+    process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
+
+    const presetConfig: K8sPresetConfig = {
+      database: { connectionString },
+      eventbus: { connectionString: 'postgres://stub:5432/stub' },
+      session: { connectionString: 'postgres://stub:5432/stub' },
+      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo-stub') },
+      blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+      sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+      ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+      chat: { runnerBinaries: { 'claude-sdk': PROJECT_RUNNER_PATH }, chatTimeoutMs: 60_000 },
+      http: { host: '127.0.0.1', port: 0, cookieKey: '0'.repeat(64), allowedOrigins: [] },
+    };
+    const kept = createK8sPlugins(presetConfig).filter((p) => !PLUGINS_TO_DROP.has(p.manifest.name));
+    // The chat-orchestrator under test is the preset's own.
+    expect(kept.map((p) => p.manifest.name)).toContain('@ax/chat-orchestrator');
+
+    const replacements: Plugin[] = [
+      createDatabasePostgresPlugin({ connectionString }),
+      createRouteStubPlugin(),
+      createAgentsPlugin(),
+      createConversationsPlugin(),
+      // No timer: the deleted folder's bytes go through the detached cleanup
+      // `shared-folders:delete` starts, which is what step 6 waits for.
+      createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
+      createProjectsPlugin(),
+      // The mount resolver: `<filesRoot>/.shared/<folderId>` for each folder
+      // `shared-folders:authorize-mounts` allows. The k8s preset loads the
+      // filestore resolver instead (config.filestore), which needs a cluster.
+      createWorkspaceLocaldirPlugin({ root: filesRoot }),
+      createStorageSqlitePlugin({ databasePath: path.join(tmp, 'w3a.sqlite') }),
+      createSessionInmemoryPlugin(),
+      createSandboxSubprocessPlugin(),
+      createIpcServerPlugin(),
+      createDispatcherDepsStubPlugin(['workspace:read']),
+      createTestProxyPlugin({
+        script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+        envExtra: { AX_TEST_PROJECT_PLAN: planPath, AX_TEST_RUNNER_SPAWN_DIR: spawnDir },
+        onOpenSession: () => {
+          proxyOpens += 1;
+        },
+      }),
+      createMcpClientPlugin(),
+      createRecorderPlugin(),
+    ];
+    bus = new HookBus();
+    handle = await bootstrap({ bus, plugins: [...kept, ...replacements], config: {} });
+  }, 180_000);
+
+  afterAll(async () => {
+    if (handle !== null) await handle.shutdown();
+    if (pgContainer !== null) await pgContainer.stop();
+    if (originalCredKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+    else process.env.AX_CREDENTIALS_KEY = originalCredKey;
+    if (tmp !== '') await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  const userCtx = (): AgentContext => makeAgentContext({ sessionId: 'w3a-setup', agentId: 'w3a-setup', userId: USER });
+
+  async function createAgent(displayName: string): Promise<string> {
+    const out = await bus.call<AgentsCreateInput, AgentsCreateOutput>('agents:create', userCtx(), {
+      actor: { userId: USER, isAdmin: false },
+      input: {
+        displayName,
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-opus-4-7',
+        visibility: 'personal',
+      },
+    });
+    return out.agent.id;
+  }
+
+  async function createChat(agentId: string, projectId?: string): Promise<string> {
+    const out = await bus.call<ConversationsCreateInput & { projectId?: string }, ConversationsCreateOutput>(
+      'conversations:create',
+      userCtx(),
+      { userId: USER, agentId, ...(projectId !== undefined ? { projectId } : {}) },
+    );
+    return out.conversationId;
+  }
+
+  type Step = { op: 'write'; path: string; content: string } | { op: 'read'; path: string };
+  async function plan(steps: Record<string, Step>): Promise<void> {
+    await fs.writeFile(planPath, JSON.stringify(steps));
+  }
+
+  async function turn(conversationId: string, agentId: string): Promise<AgentOutcome> {
+    const ctx = makeAgentContext({
+      sessionId: `w3a-${conversationId}`,
+      agentId,
+      userId: USER,
+      conversationId,
+      workspace: { rootPath: tmp },
+    });
+    return bus.call<unknown, AgentOutcome>('agent:invoke', ctx, { message: { role: 'user', content: 'go' } });
+  }
+
+  interface RunnerSummary {
+    sessionId: string;
+    conversationId: string | null;
+    op: string;
+    sharedFolders: { id: string; path: string; readOnly: boolean }[] | null;
+    wrote: boolean;
+    readContent: string | null;
+    error: string | null;
+    augmentHasProjectBlock: boolean;
+    augment: string;
+  }
+  function summaryOf(outcome: AgentOutcome): RunnerSummary {
+    if (outcome.kind !== 'complete') throw new Error(`expected complete, got ${JSON.stringify(outcome)}`);
+    const last = [...outcome.messages].reverse().find((m) => m.role === 'assistant');
+    return JSON.parse(String(last?.content)) as RunnerSummary;
+  }
+  const spawnCount = async (): Promise<number> => (await fs.readdir(spawnDir)).length;
+
+  it(
+    'mounts the project folder for project chats only, refuses a chat whose agent lost its grant, and deleting the project removes its files and chats',
+    { timeout: 180_000 },
+    async () => {
+      const owner = await createAgent('Project owner');
+      const revoked = await createAgent('Loses its grant');
+      const project = await bus.call<unknown, { projectId: string; folderId: string }>('projects:create', userCtx(), {
+        ownerAgentId: owner,
+        name: PROJECT_NAME,
+        description: PROJECT_DESCRIPTION,
+      });
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+
+      const chat1 = await createChat(owner, project.projectId);
+      const chat2 = await createChat(owner, project.projectId);
+      const chat3 = await createChat(owner);
+      // Check 5's chat: conversations:create refuses a project the agent has no
+      // grant on, so create it while the grant exists, then take the grant away.
+      await bus.call('shared-folders:grant', userCtx(), { folderId: project.folderId, agentId: revoked, role: 'editor' });
+      const chat5 = await createChat(revoked, project.projectId);
+      await bus.call('shared-folders:revoke', userCtx(), { folderId: project.folderId, agentId: revoked });
+
+      await plan({
+        [chat1]: { op: 'write', path: 'work/hello.md', content: HELLO },
+        [chat2]: { op: 'read', path: 'work/hello.md' },
+        [chat3]: { op: 'read', path: 'work/hello.md' },
+      });
+
+      // 1. A chat in P: the runner gets the folder and writes work/hello.md.
+      const s1 = summaryOf(await turn(chat1, owner));
+      expect(s1.conversationId).toBe(chat1);
+      expect(s1.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: false }]);
+      expect(s1.error).toBeNull();
+      expect(s1.wrote).toBe(true);
+      expect(await fs.readFile(path.join(folderDir, 'work', 'hello.md'), 'utf-8')).toBe(HELLO);
+
+      // 2. A second chat in P, its own session: the runner reads the bytes the
+      //    first chat wrote. They crossed two chats through the orchestrator.
+      const s2 = summaryOf(await turn(chat2, owner));
+      expect(s2.conversationId).toBe(chat2);
+      expect(s2.sessionId).not.toBe(s1.sessionId);
+      expect(s2.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: false }]);
+      expect(s2.error).toBeNull();
+      expect(s2.readContent).toBe(HELLO);
+
+      // 3. A chat outside P: no AX_SHARED_FOLDERS, so it has no folder to read.
+      const s3 = summaryOf(await turn(chat3, owner));
+      expect(s3.conversationId).toBe(chat3);
+      expect(s3.sharedFolders).toBeNull();
+      expect(s3.readContent).toBeNull();
+      expect(s3.error).toMatch(/no shared folder/);
+      expect(s3.augment).not.toContain(project.folderId);
+
+      // 4. The prompt for 1 and 2 carries the project block (name on one line,
+      //    description quoted, the folder's path); the prompt for 3 doesn't.
+      for (const s of [s1, s2]) {
+        expect(s.augmentHasProjectBlock).toBe(true);
+        expect(s.augment).toContain(`## Project: ${PROJECT_NAME}`);
+        expect(s.augment).toContain(`> ${PROJECT_DESCRIPTION}`);
+        expect(s.augment).toContain(`/shared/${project.folderId}`);
+      }
+      expect(s3.augmentHasProjectBlock).toBe(false);
+
+      // 5. A chat in P whose agent has no grant: the turn ends
+      //    project-unavailable before any proxy session or sandbox opens.
+      const spawnsBefore = await spawnCount();
+      const opensBefore = proxyOpens;
+      expect(spawnsBefore).toBe(3);
+      const refused = await turn(chat5, revoked);
+      expect(refused).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+      expect(await spawnCount()).toBe(spawnsBefore);
+      expect(proxyOpens).toBe(opensBefore);
+
+      // 6. Deleting P: the folder's directory goes (in the background), every
+      //    chat in P is purged and announced, and the chat outside P stays.
+      await bus.call('projects:delete', userCtx(), { projectId: project.projectId });
+      expect(projectsDeleted).toEqual([project.projectId]);
+      await vi.waitFor(() => expect(existsSync(folderDir)).toBe(false), { timeout: 30_000, interval: 100 });
+      await vi.waitFor(
+        () => expect([...purgedIds].sort()).toEqual([chat1, chat2, chat5].sort()),
+        { timeout: 10_000, interval: 50 },
+      );
+      for (const gone of [chat1, chat2]) {
+        await expect(
+          bus.call<ConversationsGetInput, ConversationsGetOutput>('conversations:get', userCtx(), {
+            conversationId: gone,
+            userId: USER,
+          }),
+        ).rejects.toMatchObject({ code: 'not-found' });
+      }
+      const kept3 = await bus.call<ConversationsGetInput, ConversationsGetOutput>('conversations:get', userCtx(), {
+        conversationId: chat3,
+        userId: USER,
+      });
+      expect(kept3.conversation.conversationId).toBe(chat3);
     },
   );
 });

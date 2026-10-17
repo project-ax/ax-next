@@ -58,6 +58,7 @@
     "@ax/memory-facts-postgres": "workspace:*",
     "@ax/model-policy": "workspace:*",
     "@ax/onboarding": "workspace:*",
+    "@ax/projects": "workspace:*",
     "@ax/routines": "workspace:*",
     "@ax/routines-admin-routes": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
@@ -84,6 +85,7 @@
   },
   "devDependencies": {
     "@ax/ipc-core": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/workspace-localdir": "workspace:*",

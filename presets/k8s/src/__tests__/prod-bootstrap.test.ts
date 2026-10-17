@@ -259,6 +259,10 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // graph (agents:can-manage-sharing / agents:resolve satisfied by the real
     // @ax/agents).
     '@ax/shared-folders',
+    // W3a — projects (a W2 folder plus a name). The boot test below proves its
+    // migration ran on the shared database and that projects:resolve is
+    // reachable in the full graph (conversations + orchestrator call it).
+    '@ax/projects',
   ] as const;
 
   it(
@@ -363,6 +367,11 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
           );
           expect(folders.rows[0]?.f).toBe('shared_folders_v1_folders');
           expect(folders.rows[0]?.g).toBe('shared_folders_v1_grants');
+          // W3a: @ax/projects' init ran against the shared database too.
+          const projects = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.projects_v1_projects')::text AS t",
+          );
+          expect(projects.rows[0]?.t).toBe('projects_v1_projects');
         } finally {
           await probe.end();
         }
@@ -390,6 +399,9 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('conversations:create')).toBe(true);
         // W2: the workspace resolvers reach shared folders through this hook.
         expect(bus.hasService('shared-folders:authorize-mounts')).toBe(true);
+        // W3a: conversations:create and the orchestrator's spawn both resolve a
+        // chat's project through this hook.
+        expect(bus.hasService('projects:resolve')).toBe(true);
         // TASK-423: the facts engine's init ran against the real postgres —
         // it borrows the shared Kysely via `database:get-instance` and
         // creates `memory_facts_v1` + its indexes there. A migration that

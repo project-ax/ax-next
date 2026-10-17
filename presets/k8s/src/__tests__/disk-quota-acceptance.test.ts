@@ -122,6 +122,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // which @ax/agents (dropped above) provides. Same reasons as
   // usage-limits-acceptance.test.ts' PLUGINS_TO_DROP.
   '@ax/shared-folders',
+  // Projects (W3a): hard-calls shared-folders:* (dropped just above) and
+  // agents:*. Not on this canary's path; static wiring is pinned in
+  // preset.test.ts and the real boot in prod-bootstrap.test.ts.
+  '@ax/projects',
   '@ax/decisions',
   '@ax/tool-policy',
   '@ax/llm-anthropic',

@@ -260,6 +260,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/model-policy',
         '@ax/onboarding',
         '@ax/preset-k8s/retire-strata-index',
+        '@ax/projects',
         '@ax/routines',
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
@@ -693,12 +694,49 @@ describe('@ax/preset-k8s wiring', () => {
       'shared-folders:revoke',
       'shared-folders:delete',
       'shared-folders:list',
+      'shared-folders:get',
       'shared-folders:authorize-mounts',
     ]);
     // The agent-deleted fan-out is what removes an agent's grants; if the
     // subscription is dropped the whole-schema cleanup check goes red, but
     // pin it here so the preset test names the cause.
     expect(sf!.manifest.subscribes).toContain('agents:deleted');
+  });
+
+  it('loads @ax/projects and registers the projects:* hooks + the project block (W3a)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const pj = plugins.find((p) => p.manifest.name === '@ax/projects');
+    expect(pj).toBeDefined();
+    expect(pj!.manifest.registers).toEqual([
+      'projects:create',
+      'projects:list',
+      'projects:get',
+      'projects:update',
+      'projects:delete',
+      'projects:resolve',
+      'system-prompt:augment:optional:projects',
+    ]);
+    // A tombstoned folder takes its project row with it (W3 §4.7).
+    expect(pj!.manifest.subscribes).toContain('shared-folders:deleted');
+  });
+
+  // W3 §4.4: the call direction is conversations → projects (and the
+  // orchestrator → projects), NEVER projects → conversations / sandbox.
+  // Bootstrap rejects cycles even through optionalCalls, so one stray edge
+  // would fail every production boot; pin the direction here, by name, so the
+  // failure says which rule broke rather than just "cycle".
+  it('pins the projects call direction: conversations/orchestrator call projects, projects never calls conversations:* or sandbox:*', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const byName = new Map(plugins.map((p) => [p.manifest.name, p.manifest]));
+    const hooksOf = (name: string): string[] => {
+      const m = byName.get(name);
+      expect(m, name).toBeDefined();
+      return [...m!.calls, ...(m!.optionalCalls ?? []).map((c) => c.hook)];
+    };
+    const projectsCalls = hooksOf('@ax/projects');
+    expect(projectsCalls.filter((h) => h.startsWith('conversations:') || h.startsWith('sandbox:'))).toEqual([]);
+    expect(hooksOf('@ax/conversations')).toContain('projects:resolve');
+    expect(hooksOf('@ax/chat-orchestrator')).toContain('projects:resolve');
   });
 
   // -------------------------------------------------------------------------
