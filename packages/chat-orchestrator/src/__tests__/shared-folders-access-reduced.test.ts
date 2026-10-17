@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
-  HookBus, makeAgentContext, createLogger,
+  HookBus, PluginError, makeAgentContext, createLogger,
   type AgentContext, type AgentOutcome, type ServiceHandler,
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
 
-// W2 (shared folders) — the orchestrator asks `sharedFolderIdsFor` which
-// shared folders a session should mount, passes them to `sandbox:open-session`,
-// and remembers them per session. `shared-folders:access-reduced` (a revoke,
+// W2 (shared folders) + W3a (projects) — on a fresh spawn the orchestrator
+// reads the chat's project (`conversations:get-metadata`), resolves it
+// (`projects:resolve`), passes the project's folder to `sandbox:open-session`,
+// and remembers it per session. `shared-folders:access-reduced` (a revoke,
 // a downgrade, a delete) then follows the TASK-833/877 connector-delete
 // precedent: an idle session holding that folder is reaped at once (proxy
 // session closed first), a session mid-turn is reaped when the turn ends, and a
@@ -46,13 +47,32 @@ function fireTurnEnd(bus: HookBus, sessionId: string, reqId: string) {
   });
 }
 
-type FolderSource = (
+type ResolveImpl = (
   ctx: AgentContext,
-  input: { agentId: string; conversationId?: string },
-) => Promise<readonly string[]> | readonly string[];
+  input: { projectId: string; agentId: string },
+) => Promise<unknown> | unknown;
 
 async function setup(opts: {
-  sharedFolderIdsFor?: FolderSource;
+  /**
+   * W3a — the chat's project folder. Set → `conversations:get-metadata` reports
+   * `projectId: 'prj-1'` and `projects:resolve` answers with this folder.
+   * Absent → the chat is in no project.
+   */
+  folderId?: string;
+  /** Overrides the metadata's `projectId` (wins over `folderId`'s default). */
+  projectId?: string | null;
+  /** Overrides `projects:resolve`. */
+  resolve?: ResolveImpl;
+  /** `projects:resolve` is not registered at all. */
+  noResolveService?: boolean;
+  /** `conversations:get-metadata` throws. */
+  metadataThrows?: boolean;
+  /** `conversations:get-metadata` is not registered at all. */
+  noMetadataService?: boolean;
+  /** The turn's ctx has no conversationId. */
+  noConversationId?: boolean;
+  /** An optional augment provider that records the ctx it was called with. */
+  captureProviderCtx?: AgentContext[];
   runnerExitsOnKill?: boolean;
   idleWindowMs?: number;
   idleGraceMs?: number;
@@ -73,6 +93,11 @@ async function setup(opts: {
   const terminated: string[] = [];
   const proxyCloses: string[] = [];
   const logs: Array<Record<string, unknown>> = [];
+  const metadataCalls: Array<Record<string, unknown>> = [];
+  const resolveCalls: Array<{ input: Record<string, unknown>; userId: string }> = [];
+  const turnErrors: Array<Record<string, unknown>> = [];
+  const projectId =
+    opts.projectId !== undefined ? opts.projectId : opts.folderId !== undefined ? 'prj-1' : null;
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
@@ -118,18 +143,58 @@ async function setup(opts: {
       return {};
     },
   };
+  if (opts.noMetadataService !== true) {
+    services['conversations:get-metadata'] = async (_c, input: unknown) => {
+      const i = input as { conversationId: string; userId: string };
+      metadataCalls.push(i);
+      if (opts.metadataThrows === true) {
+        throw new PluginError({ code: 'not-found', plugin: 'stub-conversations', message: 'gone' });
+      }
+      return {
+        conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+        runnerType: null, runnerSessionId: null, workspaceRef: null, title: null,
+        lastActivityAt: null, createdAt: '2026-10-16T00:00:00.000Z', origin: 'web',
+        activeSessionId: conv.activeSessionId, projectId,
+      };
+    };
+  }
+  if (opts.noResolveService !== true) {
+    services['projects:resolve'] = async (c, input: unknown) => {
+      const i = input as { projectId: string; agentId: string };
+      resolveCalls.push({ input: i, userId: c.userId });
+      if (opts.resolve !== undefined) return opts.resolve(c, i);
+      if (opts.folderId === undefined) {
+        throw new PluginError({ code: 'not-found', plugin: 'stub-projects', message: 'no project' });
+      }
+      return {
+        projectId: i.projectId, name: 'Q4 launch', description: '',
+        folderId: opts.folderId, readOnly: false,
+      };
+    };
+  }
+  if (opts.captureProviderCtx !== undefined) {
+    const sink = opts.captureProviderCtx;
+    services['system-prompt:augment:optional:test-projects'] = async (c) => {
+      sink.push(c);
+      return {};
+    };
+  }
 
   const plugin = createChatOrchestratorPlugin({
     runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
     keepAlive: true, idleWindowMs: opts.idleWindowMs ?? 60_000, idleGraceMs: opts.idleGraceMs ?? 5,
-    ...(opts.sharedFolderIdsFor !== undefined ? { sharedFolderIdsFor: opts.sharedFolderIdsFor } : {}),
   });
   const h = await createTestHarness({ services, plugins: [plugin] });
+  h.bus.subscribe('chat:turn-error', 'test-capture', async (_c, payload) => {
+    turnErrors.push(payload as Record<string, unknown>);
+    return undefined;
+  });
 
   const mkCtx = (sessionId: string, reqId: string) =>
     makeAgentContext({
       sessionId, agentId: 'test-agent', userId: 'test-user',
-      conversationId: 'conv-1', reqId,
+      ...(opts.noConversationId === true ? {} : { conversationId: 'conv-1' }),
+      reqId,
       logger: createLogger({
         reqId,
         writer: (line: string) => { logs.push(JSON.parse(line) as Record<string, unknown>); },
@@ -160,66 +225,126 @@ async function setup(opts: {
   return {
     plugin, h, handles, turn, reduce, settle, cancels, userMessages,
     get opens() { return opens; },
-    openInputs, queued, terminated, proxyCloses, logs,
+    openInputs, queued, terminated, proxyCloses, logs, metadataCalls, resolveCalls, turnErrors,
     cleanup: () => { for (const hk of handles) hk.forceExit(); },
   };
 }
 
-const withFolders = (ids: readonly string[]): FolderSource => () => ids;
-
-describe('W2: sharedFolderIdsFor reaches sandbox:open-session', () => {
-  it('passes the folder ids the source returns', async () => {
-    const seen: Array<{ agentId: string; conversationId?: string }> = [];
-    const t = await setup({
-      sharedFolderIdsFor: (_ctx, input) => { seen.push(input); return ['sf_a']; },
-    });
+describe('W3a: the chat\'s project picks the folder sandbox:open-session mounts', () => {
+  it('a project chat passes exactly the project\'s folder', async () => {
+    const t = await setup({ folderId: 'sf_a' });
     await t.turn('s-1', 'req-1');
     expect(t.openInputs[0]!.sharedFolderIds).toEqual(['sf_a']);
-    expect(seen).toEqual([{ agentId: 'test-agent', conversationId: 'conv-1' }]);
+    expect(t.metadataCalls).toEqual([{ conversationId: 'conv-1', userId: 'test-user' }]);
+    // The actor is the person on the context; the agent is the resolved one.
+    expect(t.resolveCalls).toEqual([
+      { input: { projectId: 'prj-1', agentId: 'test-agent' }, userId: 'test-user' },
+    ]);
     t.cleanup();
   });
 
-  it('without the option the field is absent', async () => {
+  it('a chat outside a project passes no folders and never calls projects:resolve', async () => {
     const t = await setup();
     await t.turn('s-1', 'req-1');
     expect('sharedFolderIds' in t.openInputs[0]!).toBe(false);
+    expect(t.metadataCalls).toHaveLength(1);
+    expect(t.resolveCalls).toHaveLength(0);
     t.cleanup();
   });
 
-  it('an empty list sends no field', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders([]) });
+  it('no conversationId → no lookup at all, no folders', async () => {
+    const t = await setup({ noConversationId: true });
     await t.turn('s-1', 'req-1');
+    expect(t.metadataCalls).toHaveLength(0);
+    expect(t.resolveCalls).toHaveLength(0);
     expect('sharedFolderIds' in t.openInputs[0]!).toBe(false);
     t.cleanup();
   });
 
-  it('drops invalid ids, dedupes, and caps at 16', async () => {
-    const many = Array.from({ length: 20 }, (_, i) => `sf_n${i}`);
-    const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a', '../etc', 'sf_a', 'sf_b/c', '', ...many]),
-    });
-    await t.turn('s-1', 'req-1');
-    const ids = t.openInputs[0]!.sharedFolderIds as string[];
-    expect(ids).toEqual(['sf_a', ...many.slice(0, 15)]);
-    expect(t.logs.some((l) => l.msg === 'shared_folder_ids_dropped')).toBe(true);
-    t.cleanup();
-  });
-
-  it('only invalid ids → no field', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders(['nope', '..']) });
-    await t.turn('s-1', 'req-1');
+  it('without @ax/conversations loaded the chat runs with no project', async () => {
+    const t = await setup({ noMetadataService: true });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out.kind).not.toBe('terminated');
+    expect(t.opens).toBe(1);
     expect('sharedFolderIds' in t.openInputs[0]!).toBe(false);
+    expect(t.resolveCalls).toHaveLength(0);
     t.cleanup();
   });
 
-  it('a throwing source fails the session open (fail closed)', async () => {
+  it('a projects:resolve failure ends the turn project-unavailable and opens no sandbox', async () => {
     const t = await setup({
-      sharedFolderIdsFor: async () => { throw new Error('boom'); },
+      projectId: 'prj-gone',
+      resolve: () => { throw new PluginError({ code: 'forbidden', plugin: 'stub-projects', message: 'no' }); },
     });
     const out = await t.turn('s-1', 'req-1');
-    expect(out).toMatchObject({ kind: 'terminated', reason: 'sandbox-open-failed' });
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
     expect(t.opens).toBe(0);
-    expect(t.logs.some((l) => l.msg === 'shared_folder_ids_for_failed')).toBe(true);
+    expect(t.turnErrors).toEqual([expect.objectContaining({ reason: 'project-unavailable' })]);
+    t.cleanup();
+  });
+
+  it('a projectId with no projects:resolve service fails closed', async () => {
+    const t = await setup({ projectId: 'prj-1', noResolveService: true });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+    expect(t.opens).toBe(0);
+    expect(t.turnErrors).toEqual([expect.objectContaining({ reason: 'project-unavailable' })]);
+    t.cleanup();
+  });
+
+  it('a failed metadata read fails closed (the project cannot be known)', async () => {
+    const t = await setup({ metadataThrows: true });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+    expect(t.opens).toBe(0);
+    expect(t.resolveCalls).toHaveLength(0);
+    t.cleanup();
+  });
+
+  it('an ill-formed folderId from projects:resolve fails closed', async () => {
+    const t = await setup({
+      projectId: 'prj-1',
+      resolve: (_c, i) => ({ projectId: i.projectId, name: 'x', description: '', folderId: '../etc', readOnly: false }),
+    });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+    expect(t.opens).toBe(0);
+    t.cleanup();
+  });
+
+  it('a project-unavailable turn assembles no prompt augment', async () => {
+    const seen: AgentContext[] = [];
+    const t = await setup({ projectId: 'prj-1', noResolveService: true, captureProviderCtx: seen });
+    await t.turn('s-1', 'req-1');
+    expect(seen).toHaveLength(0);
+    t.cleanup();
+  });
+
+  it('prompt providers see ctx.projectId on a project chat', async () => {
+    const seen: AgentContext[] = [];
+    const t = await setup({ folderId: 'sf_a', captureProviderCtx: seen });
+    await t.turn('s-1', 'req-1');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.projectId).toBe('prj-1');
+    expect(seen[0]!.conversationId).toBe('conv-1');
+    t.cleanup();
+  });
+
+  it('prompt providers see no projectId outside a project', async () => {
+    const seen: AgentContext[] = [];
+    const t = await setup({ captureProviderCtx: seen });
+    await t.turn('s-1', 'req-1');
+    expect(seen).toHaveLength(1);
+    expect('projectId' in seen[0]!).toBe(false);
+    t.cleanup();
+  });
+
+  it('manifest: projects:resolve is optional; get-metadata stays undeclared', async () => {
+    const t = await setup();
+    expect(t.plugin.manifest.optionalCalls?.map((o) => o.hook)).toContain('projects:resolve');
+    // `conversations:get-metadata` follows the hasService convention.
+    expect(t.plugin.manifest.calls).not.toContain('conversations:get-metadata');
+    expect(t.plugin.manifest.calls).not.toContain('projects:resolve');
     t.cleanup();
   });
 });
@@ -232,7 +357,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
   });
 
   it('reaps an IDLE session that requested the folder at once, and the next turn spawns fresh', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders(['sf_a']) });
+    const t = await setup({ folderId: 'sf_a' });
     await t.turn('s-1', 'req-1');
     expect(t.proxyCloses).not.toContain('s-1');
 
@@ -243,7 +368,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     expect(t.handles[0]!.state.kills).toBeGreaterThanOrEqual(1);
     expect(t.proxyCloses).toContain('s-1');
     expect(t.logs.find((l) => l.msg === 'shared_folder_access_reduced_sessions_retired'))
-      .toMatchObject({ folderId: 'sf_a', marked: 1, reaped: 1 });
+      .toMatchObject({ folderId: 'sf_a', marked: 1, reaped: 1, projectIds: ['prj-1'] });
 
     await t.turn('s-2', 'req-2');
     expect(t.opens).toBe(2);
@@ -253,7 +378,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
 
   it('closes an idle session\'s proxy even if the runner does not exit', async () => {
     const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a']), runnerExitsOnKill: false, idleGraceMs: 60_000,
+      folderId: 'sf_a', runnerExitsOnKill: false, idleGraceMs: 60_000,
     });
     await t.turn('s-1', 'req-1');
     await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
@@ -266,7 +391,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
 
   it('a session mid-turn keeps its proxy until the turn ends, then is reaped', async () => {
     const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a']), runnerExitsOnKill: false, idleGraceMs: 60_000,
+      folderId: 'sf_a', runnerExitsOnKill: false, idleGraceMs: 60_000,
     });
     let closedMidTurn: boolean | undefined;
     let cancelledMidTurn: number | undefined;
@@ -289,7 +414,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     // The resolver authorized the mount inside sandbox:open-session; a revoke
     // that commits before the open returns must not be missed.
     const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a']), runnerExitsOnKill: false, idleGraceMs: 60_000,
+      folderId: 'sf_a', runnerExitsOnKill: false, idleGraceMs: 60_000,
       duringOpen: async (fire) => { await fire({ folderId: 'sf_a', agentIds: ['test-agent'] }); },
     });
     await t.turn('s-1', 'req-1');
@@ -301,7 +426,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
 
   it('a session already in its grace window has its proxy closed', async () => {
     const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a']),
+      folderId: 'sf_a',
       runnerExitsOnKill: false, idleWindowMs: 5, idleGraceMs: 60_000,
     });
     await t.turn('s-1', 'req-1');
@@ -316,7 +441,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
   });
 
   it('leaves a session of another agent untouched', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders(['sf_a']) });
+    const t = await setup({ folderId: 'sf_a' });
     await t.turn('s-1', 'req-1');
     await t.reduce({ folderId: 'sf_a', agentIds: ['other-agent'] });
     await t.settle();
@@ -328,7 +453,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
   });
 
   it('leaves a session that did not request the folder untouched', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders(['sf_b']) });
+    const t = await setup({ folderId: 'sf_b' });
     await t.turn('s-1', 'req-1');
     await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
     await t.settle();
@@ -343,7 +468,7 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     // The runner ignores the cancel and the grace kill is far off, so the
     // session is still warm + alive when the next message arrives.
     const t = await setup({
-      sharedFolderIdsFor: withFolders(['sf_a']), runnerExitsOnKill: false, idleGraceMs: 60_000,
+      folderId: 'sf_a', runnerExitsOnKill: false, idleGraceMs: 60_000,
     });
     await t.turn('s-1', 'req-1');
     await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
@@ -358,8 +483,22 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     t.cleanup();
   });
 
+  it('a failed open forgets the folders it recorded', async () => {
+    const t = await setup({
+      folderId: 'sf_a',
+      duringOpen: async () => { throw new Error('open boom'); },
+    });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'sandbox-open-failed' });
+    expect(t.openInputs[0]!.sharedFolderIds).toEqual(['sf_a']);
+    await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
+    await t.settle();
+    expect(t.logs.some((l) => l.msg === 'shared_folder_access_reduced_sessions_retired')).toBe(false);
+    t.cleanup();
+  });
+
   it('ignores a malformed payload', async () => {
-    const t = await setup({ sharedFolderIdsFor: withFolders(['sf_a']) });
+    const t = await setup({ folderId: 'sf_a' });
     await t.turn('s-1', 'req-1');
     for (const bad of [
       null, 'sf_a', {}, { folderId: 'sf_a' }, { folderId: 'sf_a', agentIds: 'test-agent' },

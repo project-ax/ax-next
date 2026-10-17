@@ -192,3 +192,18 @@ describe('turnErrorText — the runner failed to boot (TASK-784)', () => {
     expect(turnErrorText('runner-boot-failed')).not.toContain('runner-boot-failed');
   });
 });
+
+/*
+  W3a — a chat in a project whose project the agent can no longer use (deleted,
+  access removed). The host refuses the turn before anything runs, with the
+  reason `project-unavailable`. Static copy: the agent's name is already in the
+  chat header, and the label table holds no templates.
+*/
+describe('turnErrorText — project unavailable (W3a)', () => {
+  it('says the authored sentence, not the generic line', () => {
+    const sentence = "This chat's project isn't available to this agent anymore.";
+    expect(ERROR_LABELS['project-unavailable']).toBe(sentence);
+    expect(turnErrorText('project-unavailable')).toBe(sentence);
+    expect(turnErrorOpensConnectors('project-unavailable')).toBe(false);
+  });
+});

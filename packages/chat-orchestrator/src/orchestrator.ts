@@ -235,30 +235,7 @@ export interface ChatOrchestratorConfig {
   /** System/built-in skills materialized into every session at LOWEST precedence
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
-  /**
-   * W2 (shared folders) — which shared folders a fresh session should mount.
-   * Asked once per spawn, host-side; the result goes to `sandbox:open-session`
-   * as `sharedFolderIds` (the mount resolver still checks the grants, so this
-   * picks folders, it never authorizes them). The model and the sandbox never
-   * reach it.
-   *
-   * This is a SEAM: W2 ships no real source (default: none, and the field is
-   * left off the open input). W3's first slice supplies it from the
-   * conversation's project.
-   *
-   * Ids are validated (`isValidSharedFolderId`), deduped and capped at
-   * {@link MAX_SHARED_FOLDERS_PER_SESSION}; an invalid one is dropped and
-   * logged. A throw fails the session open (fail closed): a turn never runs
-   * with a folder set we could not determine.
-   */
-  sharedFolderIdsFor?: (
-    ctx: AgentContext,
-    input: { agentId: string; conversationId?: string },
-  ) => Promise<readonly string[]> | readonly string[];
 }
-
-/** W2 — most shared folders one session mounts (matches the wire schema cap). */
-export const MAX_SHARED_FOLDERS_PER_SESSION = 16;
 
 // Slice 6 — the `chat:connectors-skipped` payload (built in connector-union).
 export type { ConnectorsSkippedPayload };
@@ -1010,8 +987,8 @@ interface OpenSessionInput {
    */
   services?: ServiceDescriptorParsed[];
   /**
-   * W2 — shared folders the host wants mounted (from `sharedFolderIdsFor`).
-   * A request only: the mount resolver filters it through the grants. Omitted
+   * W2 — shared folders the host wants mounted (W3a: the chat's project
+   * folder, from `projects:resolve`). A request only: the mount resolver filters it through the grants. Omitted
    * when empty.
    */
   sharedFolderIds?: string[];
@@ -2315,12 +2292,18 @@ export function createOrchestrator(
   }
 
   // W2 (shared folders) — which folders each session REQUESTED at spawn
-  // (`sharedFolderIdsFor`), with its agent. Only sessions that requested at
-  // least one have an entry. Same lifetime as `connectorStateBySession`:
-  // forgotten at the same four sites.
+  // (W3a: its chat's project folder), with its agent. Only sessions that
+  // requested at least one have an entry. Same lifetime as
+  // `connectorStateBySession`: forgotten at the same four sites.
+  //
+  // W3a — `projectId` is the project the session was spawned for (spec §4.5
+  // step 5). It is recorded with the folders so it is forgotten with them.
+  // Today only the access-reduced log reads it; W3e compares it on the reuse
+  // path when a chat moves between projects.
   interface SessionSharedFolderState {
     agentId: string;
     folderIds: Set<string>;
+    projectId: string | null;
   }
   const sharedFolderStateBySession = new Map<string, SessionSharedFolderState>();
 
@@ -2336,9 +2319,10 @@ export function createOrchestrator(
     sessionId: string,
     agentId: string,
     folderIds: readonly string[],
+    projectId: string | null,
   ): void {
     if (folderIds.length === 0) return;
-    sharedFolderStateBySession.set(sessionId, { agentId, folderIds: new Set(folderIds) });
+    sharedFolderStateBySession.set(sessionId, { agentId, folderIds: new Set(folderIds), projectId });
   }
 
   function forgetSessionSharedFolders(sessionId: string): void {
@@ -2354,46 +2338,75 @@ export function createOrchestrator(
   }
 
   /**
-   * W2 — the folder ids a fresh spawn requests. Absent option → none. The
-   * source's result is untrusted-shaped (validated, deduped, capped); a throw
-   * (or a non-array) is logged and rethrown so the open fails closed.
+   * W3a (spec §4.5) — the project a fresh spawn mounts, read from the chat row
+   * and checked by `projects:resolve`. Host-side only: the model never names a
+   * project; it comes from the conversation row, which only the person's
+   * authorized routes write.
+   *
+   * - No `conversationId`, or `@ax/conversations` not loaded → no project. A
+   *   preset without conversations (the CLI canary) can't have project chats.
+   * - A chat with a `projectId` resolves it as the person on `ctx` for
+   *   `agentId`. Anything that stops us knowing — or mounting — that project
+   *   throws {@link ProjectUnavailableError}: a failed metadata read, no
+   *   `projects:resolve` service, a refused resolve, an ill-formed folder id.
+   *   The caller ends the turn `project-unavailable`. Never a silent fallback
+   *   to a session without the project: the chat's history may already hold
+   *   project content, and a person who opens a project chat expects it.
    */
-  async function sharedFolderIdsForSpawn(ctx: AgentContext, agentId: string): Promise<string[]> {
-    const source = config.sharedFolderIdsFor;
-    if (source === undefined) return [];
-    let raw: unknown;
+  async function resolveSpawnProject(
+    ctx: AgentContext,
+    agentId: string,
+  ): Promise<{ projectId: string; folderId: string } | null> {
+    if (ctx.conversationId === undefined || !bus.hasService('conversations:get-metadata')) {
+      return null;
+    }
+    let projectId: string | null;
     try {
-      raw = await source(ctx, {
-        agentId,
-        ...(ctx.conversationId !== undefined ? { conversationId: ctx.conversationId } : {}),
+      const md = await bus.call<
+        { conversationId: string; userId: string },
+        { projectId?: string | null }
+      >('conversations:get-metadata', ctx, {
+        conversationId: ctx.conversationId,
+        userId: ctx.userId,
       });
-      if (!Array.isArray(raw)) throw new Error('sharedFolderIdsFor returned a non-array');
+      projectId = typeof md.projectId === 'string' && md.projectId.length > 0 ? md.projectId : null;
     } catch (err) {
-      ctx.logger.error('shared_folder_ids_for_failed', { agentId, ...errorLogFields(err) });
-      throw err;
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'conversations:get-metadata',
+        conversationId: ctx.conversationId,
+        ...errorLogFields(err),
+      });
+      throw new ProjectUnavailableError(err);
     }
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    let invalid = 0;
-    let overCap = 0;
-    for (const id of raw as unknown[]) {
-      if (!isValidSharedFolderId(id)) {
-        invalid += 1;
-        continue;
-      }
-      if (seen.has(id)) continue;
-      seen.add(id);
-      if (ids.length >= MAX_SHARED_FOLDERS_PER_SESSION) {
-        overCap += 1;
-        continue;
-      }
-      ids.push(id);
+    if (projectId === null) return null;
+    if (!bus.hasService('projects:resolve')) {
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, code: 'not-loaded',
+      });
+      throw new ProjectUnavailableError(new Error('projects:resolve is not registered'));
     }
-    if (invalid > 0 || overCap > 0) {
-      // Counts only — an invalid id is never echoed into the log.
-      ctx.logger.warn('shared_folder_ids_dropped', { agentId, invalid, overCap });
+    let folderId: unknown;
+    try {
+      const resolved = await bus.call<{ projectId: string; agentId: string }, { folderId?: unknown }>(
+        'projects:resolve',
+        ctx,
+        { projectId, agentId },
+      );
+      folderId = resolved.folderId;
+    } catch (err) {
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, ...errorLogFields(err),
+      });
+      throw new ProjectUnavailableError(err);
     }
-    return ids;
+    if (!isValidSharedFolderId(folderId)) {
+      // Never echo the bad value into the log.
+      ctx.logger.warn('project_lookup_failed', {
+        step: 'projects:resolve', projectId, agentId, code: 'invalid-folder-id',
+      });
+      throw new ProjectUnavailableError(new Error('projects:resolve returned an invalid folderId'));
+    }
+    return { projectId, folderId };
   }
 
   // W2 — `shared-folders:access-reduced { folderId, agentIds }` (fired by
@@ -2419,14 +2432,18 @@ export function createOrchestrator(
     if (agentIds.size === 0) return;
     let marked = 0;
     let reaped = 0;
+    const projectIds = new Set<string>();
     for (const [sessionId, state] of sharedFolderStateBySession) {
       if (!agentIds.has(state.agentId) || !state.folderIds.has(folderId)) continue;
       sharedFolderReducedSessions.add(sessionId);
       marked += 1;
+      if (state.projectId !== null) projectIds.add(state.projectId);
       if (reapMarkedIfIdle(ctx, sessionId, 'shared-folder-access-reduced')) reaped += 1;
     }
     if (marked > 0) {
-      ctx.logger.info('shared_folder_access_reduced_sessions_retired', { folderId, marked, reaped });
+      ctx.logger.info('shared_folder_access_reduced_sessions_retired', {
+        folderId, marked, reaped, projectIds: [...projectIds],
+      });
     }
   }
 
@@ -3063,6 +3080,31 @@ export function createOrchestrator(
       return outcome;
     }
 
+    // W3a (spec §4.5) — the chat's project. Fresh-spawn path only, and FIRST:
+    // the prompt providers below need it, and a project we can't resolve ends
+    // the turn before anything else is assembled — no augment, no proxy
+    // session, no sandbox. (A routed turn reuses a session spawned for the
+    // chat's project; W3e compares the recorded projectId when chats move.)
+    let project: { projectId: string; folderId: string } | null;
+    try {
+      project = await resolveSpawnProject(ctx, agent.id);
+    } catch (err) {
+      // Coarse reason only; the cause stays on the audit outcome + host log.
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'project-unavailable',
+        error: err,
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireChatEvent('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    // The providers' context carries the project (host-set only, like
+    // `source`). Only the providers get it: everything else on this spawn
+    // keeps the request ctx.
+    const providerCtx: AgentContext =
+      project !== null ? { ...ctx, projectId: project.projectId } : ctx;
+
     // System-prompt contributions (W1). Fresh-spawn path only: a routed
     // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
     // baked into the runner at first spawn, and the runner never reloads it.
@@ -3093,7 +3135,7 @@ export function createOrchestrator(
     // success to an auxiliary, which is the wrong shape.
     const augment = await buildSystemPromptAugment(
       bus,
-      ctx,
+      providerCtx,
       augmentDeadlineMs,
       augmentUnknownClassLogged,
     );
@@ -3954,8 +3996,9 @@ export function createOrchestrator(
         ...installedSkillsForSandbox,
         ...connectorInstalledEntries.map(({ connectorId: _cid, headerBindings: _headers, ...e }) => e),
       ];
-      // W2 — inside this try so a failing source fails the open (closed).
-      const sharedFolderIds = await sharedFolderIdsForSpawn(ctx, agent.id);
+      // W3a — the project's folder, resolved (and validated) before the
+      // augment above. No project → no folders, and the key stays absent.
+      const sharedFolderIds = project !== null ? [project.folderId] : [];
       const sandboxInput: OpenSessionInput = {
         sessionId,
         workspaceRoot: ctx.workspace.rootPath,
@@ -3996,14 +4039,14 @@ export function createOrchestrator(
         // non-connector / CLI paths leave the field unset. Both backends render
         // it; the wire schema re-validates (digest-pin, caps, no smuggled vocab).
         ...(foldedServices.length > 0 ? { services: foldedServices } : {}),
-        // W2 — host-picked shared folders; key absent when there are none.
+        // W2/W3a — the chat's project folder; key absent when there is none.
         ...(sharedFolderIds.length > 0 ? { sharedFolderIds } : {}),
       };
       // W2 — record the requested folders BEFORE the open: the resolver
       // authorizes the mounts inside it, so a reduction that commits while
       // the open is in flight must already find (and mark) this session. A
       // failed open forgets it in the catch below.
-      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds);
+      recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds, project?.projectId ?? null);
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
@@ -4724,6 +4767,16 @@ export function createOrchestrator(
     onConnectorDeleted,
     onSharedFolderAccessReduced,
   };
+}
+
+// W3a — the chat's project could not be determined or resolved (spec §4.5).
+// Carries the underlying cause for the audit outcome; the turn ends with the
+// coarse `project-unavailable` reason.
+class ProjectUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('the chat\'s project is unavailable', { cause });
+    this.name = 'ProjectUnavailableError';
+  }
 }
 
 // A distinct error type so the runAgentInvoke finally block can tell "we timed out"

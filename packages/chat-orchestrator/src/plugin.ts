@@ -99,6 +99,15 @@ export function createChatOrchestratorPlugin(
           degradation:
             'a routine whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
         },
+        {
+          // W3a — a fresh spawn of a chat in a project resolves it (as the
+          // person, for this agent) and mounts its folder. The chat's
+          // `projectId` comes from `conversations:get-metadata`, an undeclared
+          // hasService-gated peer like the other conversations:* reads below.
+          hook: 'projects:resolve',
+          degradation:
+            'a chat in a project is refused (project-unavailable) rather than run without its project; chats outside a project are unaffected',
+        },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //

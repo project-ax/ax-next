@@ -2,8 +2,9 @@
  * Every terminated turn surfaces itself (TASK-498).
  *
  * WHY THIS IS A SOURCE SCAN, WHICH IS NOT THIS REPO'S HABIT AND NEEDS AN
- * ARGUMENT. `runAgentInvoke` has fifteen places where it builds a `terminated`
- * outcome and fires `chat:end`, one per way a turn can fail before or during
+ * ARGUMENT. `runAgentInvoke` has sixteen places (W3a added
+ * `project-unavailable`) where it builds a `terminated` outcome and fires
+ * `chat:end`, one per way a turn can fail before or during
  * the run. Each is supposed to call `fireTurnError` first, because `chat:end`
  * is the AUDIT record and `chat:turn-error` is the only thing the browser ever
  * sees — without it the person gets "Thinking…" until the keepalives give up,
@@ -118,7 +119,7 @@ describe('terminated turns surface themselves', () => {
       the whole point.
     */
     const all = exits();
-    expect(all.length).toBe(15);
+    expect(all.length).toBe(16);
     expect(all.every((e) => e.terminated)).toBe(true);
   });
 });
