@@ -490,8 +490,8 @@ export function createConversationsPlugin(): Plugin {
 
       // W3a (§4.7): a project was deleted — purge its chats for every user,
       // exactly as agents:deleted does. @ax/projects fires `{ projectId }`
-      // once the row is gone; delivery is at-least-once (the W2 sweep may
-      // re-fire), and a repeat finds nothing. MUST NOT throw.
+      // once, after the row is gone; a repeat would find nothing. MUST NOT
+      // throw. A purge that fails is logged and NOT retried (see below).
       bus.subscribe<ProjectDeletedPayload>(
         'projects:deleted',
         PLUGIN_NAME,
@@ -655,9 +655,11 @@ async function purgeConversationsForDeletedAgent(
  * and same never-throw contract as `purgeConversationsForDeletedAgent`: purge
  * in one transaction, then announce outside it.
  *
- * Idempotent: delivery is at-least-once (the W2 deferred sweep re-fires
- * `shared-folders:deleted`, which re-fires this), and a second fire purges
- * nothing and announces nothing.
+ * Idempotent: a second fire purges nothing and announces nothing. NOT
+ * retried: @ax/projects fires this once, after its row is gone, so W2's
+ * sweep re-firing `shared-folders:deleted` finds no row and never re-fires
+ * it. A purge that fails here leaves that project's chats behind (still
+ * scoped to their own users), the same limitation `agents:deleted` has.
  */
 async function purgeConversationsForDeletedProject(
   store: ConversationStore,
