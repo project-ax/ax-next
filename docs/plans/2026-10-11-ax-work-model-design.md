@@ -17,30 +17,24 @@ clear home.
 
 ## Resume here
 
-- **Now:** W1 is built and merged as #988 (2026-10-12, standalone `/yolo-ship`, memory shard
-  `AXWM-2`) from the revised spec
-  [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md);
-  plan in [`2026-10-12-w1-prompt-contributions-plan.md`](2026-10-12-w1-prompt-contributions-plan.md).
-  W3, W6 and W13 can now register `system-prompt:augment:optional:<name>`.
-- **Also now:** the W2 spec was revised after review 1 and is waiting for
-  re-review:
-  [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
-  It mounts shared folders at `/shared/<folderId>` rather than inside `/files`
-  (§5.2 now shows it too). **W2 doesn't merge alone:** it's
-  developed as a PR stack and merged as one squash with W3's first slice (the
-  orchestrator mounting a conversation's project), following #978.
-- **2026-10-12, later:** W2 was built ahead of re-review on branch
-  `feat/w2-shared-folders` (draft PR, do not merge). The spec's new §11 lists
-  where the build differs. W3's first slice stacks on that branch.
-- **2026-10-16:** W2 passed GKE pool acceptance after one fix (pooled viewers
-  bind from a read-only mount). The W3 spec merged (#990) with Q1/Q5/Q6
-  answered. **W3a is built** on the same branch (draft PR #989); W3 spec §17
-  records how it was built. The stack lands as one squash once reviewed and green.
+- **Now:** W1 (#988), W2 + W3a (#989, one squash) and the purge-retry follow-up
+  (#991) are on main. W2 passed GKE pool acceptance on 2026-10-16; W3 spec §17
+  records how W3a was built. W1 is in
+  [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md),
+  W2 in [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
+- **2026-10-17:** the kind browser walk of the projects UI passed except for one
+  bug: an agent still in its first-run chat never saw the project. Fixed by a
+  new `brief` prompt section that reaches bootstrap mode (W1 §11, W3 §17
+  item 12), with two small UI fixes from the same walk.
 - **Next, in order:**
-  1. Review and squash-merge W2 + W3a (#989); close TASK-896.
+  1. Production deploy of W2 + W3a: Helm upgrade (image and chart), then delete
+     the storage-helper pods (the DaemonSet is OnDelete), then the host rolls.
+     Migrations only add tables and columns.
   2. W3b (the project's files, read-only) and W3e (moving chats, other agents).
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
+  5. W4 (sharing across owners) waits on TASK-897's six decisions; W3 §17
+     item 11 lists what it inherits.
 - **2026-10-12:** this file, the W1 spec and the goals-design rewrite landed
   together in docs PR #987 (branch `docs/ax-work-model`).
 - **2026-10-12, W3:** the W3 spec was revised after review 1 (7 findings) and
@@ -57,8 +51,8 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 | W | Work item | Phase | Needs | Spec | Status | Cards |
 |---|---|---|---|---|---|---|
 | W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
-| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | built on `feat/w2-shared-folders`; GKE pool acceptance passed 2026-10-16; lands as one squash with W3a (#989) | — |
-| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a built on `feat/w2-shared-folders` (#989), lands with W2; W3b–W3f not started | — |
+| W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | merged with W3a (#989); GKE pool acceptance passed 2026-10-16 | — |
+| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a merged (#989, #991); kind UI walk 2026-10-17; W3b–W3f not started | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |
 | W13 | Agent tasks | Goals and delegation | W1 (the project view also needs W3) | — | no spec | — |
@@ -752,6 +746,7 @@ building cards must know also go into a `.claude/memory/decisions/` shard.
 | 2026-10-11 | Proposed | One primary agent per person is the default. Digital employees cover separate identities. Workers handle delegation. |
 | 2026-10-11 | Proposed | Projects are flat, and goals hold the hierarchy. |
 | 2026-10-11 | Proposed | Defaults: a Fellow series copies the last three months, then each new meeting. Switching off a connector that keeps a source in sync leaves the last copy and shows "Can't refresh". No project-wide rules from the owner in v1. |
+| 2026-10-17 | Decided | A fourth prompt section, `brief` (person-written, no agent can change it), reaches an agent's first-run chat; the project block moves from `context` to `brief`. Option A over filing a card, chosen after the kind walk. W4 revisits it for cross-owner projects (W1 §11). |
 
 ## 15. Open questions
 

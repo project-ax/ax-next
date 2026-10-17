@@ -1580,8 +1580,8 @@ describe('system-prompt:augment:required:memory — shared team agents', () => {
 // ---------------------------------------------------------------------------
 // TASK-524 / W1 — the result is `{ rules, recall }`.
 //
-// The orchestrator puts both in the normal-mode augment and only `rules` in
-// the bootstrap augment. So what is pinned here is the SPLIT: Rules alone go
+// The orchestrator puts both in the normal-mode augment and, of these two,
+// only `rules` in the bootstrap augment. So what is pinned here is the SPLIT: Rules alone go
 // in `rules`, every store-derived section goes in `recall`, an empty half is
 // OMITTED, and the two joined are still byte-identical to the old single block.
 // ---------------------------------------------------------------------------

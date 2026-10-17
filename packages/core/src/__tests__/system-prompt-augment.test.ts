@@ -16,9 +16,10 @@ describe('system-prompt augment contract (W1)', () => {
   it.each([
     ['nothing', {}],
     ['rules', { rules: 'r' }],
+    ['brief', { brief: 'b' }],
     ['context', { context: 'c' }],
     ['recall', { recall: 'm' }],
-    ['every section, empty bodies included', { rules: '', context: 'c', recall: '' }],
+    ['every section, empty bodies included', { rules: '', brief: '', context: 'c', recall: '' }],
   ])('accepts %s', (_label, value) => {
     expect(SystemPromptAugmentOutputSchema.safeParse(value).success).toBe(true);
   });
@@ -30,6 +31,7 @@ describe('system-prompt augment contract (W1)', () => {
     ['an array', [{ rules: 'r' }]],
     ['a null body', { recall: null }],
     ['a number body', { context: 7 }],
+    ['a null brief', { brief: null }],
     ['an unknown key', { recall: 'm', extra: 'x' }],
     ['the retired list shape', { contributions: [{ source: 'memory', body: 'b' }] }],
   ])('rejects %s', (_label, value) => {

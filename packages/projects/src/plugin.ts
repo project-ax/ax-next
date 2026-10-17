@@ -528,9 +528,13 @@ export function createProjectsPlugin(): Plugin {
       );
 
       // ---- the project block ---------------------------------------------
-      // Optional provider: `context` only, never `rules`. Any failure is `{}`
-      // — W2's runner note (one line per mounted folder) is the floor, so the
-      // model still learns where the folder is.
+      // Optional provider: `brief` only, never `rules`. The block is the
+      // project's name and description — written by people through the
+      // projects routes, never by an agent — plus fixed text, so it is a
+      // `brief` and reaches bootstrap mode too: an agent still in its first-run
+      // chat otherwise answered a project chat as if there were no project.
+      // Any failure is `{}` — W2's runner note (one line per mounted folder)
+      // is the floor, so the model still learns where the folder is.
       b.registerService<SystemPromptAugmentInput, SystemPromptAugmentOutput>(
         PROJECTS_BLOCK_HOOK,
         PLUGIN_NAME,
@@ -547,7 +551,7 @@ export function createProjectsPlugin(): Plugin {
               ctx.logger.warn('projects_block_skipped', { projectId, reason: 'malformed-folder-id' });
               return {};
             }
-            return { context: renderProjectBlock(res.value) };
+            return { brief: renderProjectBlock(res.value) };
           } catch (err) {
             ctx.logger.warn('projects_block_skipped', { projectId, reason: 'error', err: errOf(err) });
             return {};

@@ -1,11 +1,12 @@
 /**
- * The project block (W3 spec §4.6): one `context` body, static text plus the
- * project's name and description.
+ * The project block (W3 spec §4.6): one `brief` body, static text plus the
+ * project's name and description. Only people write those (the projects
+ * routes), so it is a `brief` and reaches bootstrap mode as well.
  *
  * Framing (W1 §3.6): the name is a single line by validation, and the
  * description is quoted line by line with `> `, so a heading a member typed
  * into it (say `## Rules From Your User`) stays inside the quote and can't
- * pass as a section of its own. This block is `context`, never `rules`.
+ * pass as a section of its own. This block is `brief`, never `rules`.
  */
 export interface ProjectBlockInput {
   name: string;
