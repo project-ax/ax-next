@@ -20,8 +20,8 @@ import { AUGMENT_DEADLINE_MS } from '../orchestrator.js';
 // `system-prompt:augment:required:<name>` / `…:optional:<name>`, calls them in
 // parallel, and gives each its own step: call → orchestrator deadline → schema
 // → class rule → size. Bodies join with "\n\n" in section order (rules,
-// context, recall), and within a section by full service name. Only `rules`
-// reaches `systemPromptBootstrapAugment`. A failed REQUIRED provider skips the
+// brief, context, recall), and within a section by full service name. Only
+// `rules` and `brief` reach `systemPromptBootstrapAugment`. A failed REQUIRED provider skips the
 // whole augment; a failed OPTIONAL provider drops only its own blocks.
 // ---------------------------------------------------------------------------
 

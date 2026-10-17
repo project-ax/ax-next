@@ -275,7 +275,7 @@ check who wrote a body:
 **Orchestrator: ordering and landing**
 - A required and an optional provider both land, in section order, and the
   order doesn't depend on registration order.
-- Bootstrap gets only `rules`.
+- Bootstrap gets only `rules` and `brief` (§11).
 - Zero providers is a no-op.
 - A routed turn still makes no calls.
 - `augment-changed` still restarts the session at its next turn.
@@ -337,8 +337,9 @@ check who wrote a body:
   - person-written `rules` always come first;
   - a failed Rules provider removes everything rather than letting context run
     without Rules;
-  - only required providers can produce `rules`, and only `rules` reach
-    bootstrap mode;
+  - only required providers can produce `rules`, and only `rules` and `brief`
+    reach bootstrap mode; `brief` is held to the same no-agent-writes bar,
+    checked in each provider's review (§11);
   - providers must frame untrusted text (§3.6);
   - one provider can't alter another's block (§3.1);
   - results are validated and size-capped per provider (§3.3).

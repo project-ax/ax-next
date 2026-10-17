@@ -390,7 +390,7 @@ export function AgentRailContent({
                       onClick={() => onOpenPast(null)}
                       className={cn(
                         'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
-                        detail.project && 'h-auto min-h-9 py-1.5',
+                        detail.project && 'h-auto min-h-9 py-1.5 max-md:h-auto',
                         openPastId === null && 'bg-primary-soft text-primary',
                       )}
                     >
@@ -430,7 +430,7 @@ export function AgentRailContent({
                         onClick={() => onOpenPast(c.id)}
                         className={cn(
                           'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
-                          c.project && 'h-auto min-h-9 py-1.5',
+                          c.project && 'h-auto min-h-9 py-1.5 max-md:h-auto',
                           openPastId === c.id && 'bg-primary-soft text-primary',
                         )}
                       >
