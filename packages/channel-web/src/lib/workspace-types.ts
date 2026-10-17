@@ -912,6 +912,14 @@ export interface UserFileEntry {
   path: string;
   name: string;
   kind: 'file' | 'dir';
+  /**
+   * Bytes on disk, files only — present when the server's reader reports it
+   * (a project's folder does; an agent's user-files tier does not yet).
+   * Absent means unknown, never zero.
+   */
+  size?: number;
+  /** ISO-8601 last-modified time, under the same rule as `size`. */
+  updatedAt?: string;
 }
 
 /**
@@ -936,6 +944,15 @@ export type UserFilesAnswer =
       name: string;
       body: string | null;
       clipped: 'binary' | 'too-large' | null;
+      /** The whole file's size in bytes, when the server knows it (project files). */
+      size?: number;
+      /**
+       * Will the download route serve it? Set only where the server knows
+       * (project files: `size` ≤ 10 MiB) — `false` means show the size and no
+       * download button. Absent means "offer it"; a 413 is still possible and
+       * the download route remains the gate.
+       */
+      downloadable?: boolean;
     };
 
 /** One file's text, as the server is willing to show it. */

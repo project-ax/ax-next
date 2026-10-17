@@ -1048,6 +1048,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
         },
         {
+          hook: 'projects:read-file',
+          degradation:
+            'GET /api/workspace/projects/:projectId/files[/*] answers 503 projects-unavailable (never an empty listing)',
+        },
+        {
+          hook: 'projects:download-file',
+          degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
+        },
+        {
           hook: 'agents:can-manage-sharing',
           degradation:
             'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',

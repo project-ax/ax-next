@@ -82,4 +82,33 @@ describe('workspaceApi — projects', () => {
     await workspaceApi.sendMessage({ agentId: 'a1', conversationId: null, text: 'hi' });
     expect(Object.keys(lastCall().body as object)).not.toContain('projectId');
   });
+
+  it('projectFiles GETs the folder root, or one path encoded whole', async () => {
+    mockJson(200, { kind: 'dir', path: '', name: '', entries: [], truncated: false });
+    await workspaceApi.projectFiles('prj/1', '');
+    expect(lastCall()).toMatchObject({ url: '/api/workspace/projects/prj%2F1/files', method: 'GET' });
+
+    mockJson(200, { kind: 'file', path: 'work/a b.md', name: 'a b.md', body: 'x', clipped: null, size: 1, downloadable: true });
+    const out = await workspaceApi.projectFiles('prj_1', 'work/a b.md');
+    expect(lastCall().url).toBe('/api/workspace/projects/prj_1/files/work%2Fa%20b.md');
+    expect(out).toMatchObject({ kind: 'file', size: 1, downloadable: true });
+  });
+
+  it('downloadProjectFile GETs the bytes and reads the filename from the header', async () => {
+    const blob = new Blob(['hi']);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      blob: async () => blob,
+      headers: new Headers({ 'content-disposition': 'attachment; filename="a b.md"' }),
+    } as unknown as Response);
+    const out = await workspaceApi.downloadProjectFile('prj_1', 'work/a b.md');
+    expect(lastCall()).toMatchObject({ url: '/api/workspace/projects/prj_1/download/work%2Fa%20b.md', method: 'GET' });
+    expect(out).toEqual({ blob, filename: 'a b.md' });
+  });
+
+  it('downloadProjectFile throws with the status on a refusal (413 too big)', async () => {
+    mockJson(413, { error: 'file-too-large' });
+    await expect(workspaceApi.downloadProjectFile('prj_1', 'huge.log')).rejects.toMatchObject({ status: 413 });
+  });
 });

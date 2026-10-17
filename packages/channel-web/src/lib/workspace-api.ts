@@ -1390,6 +1390,36 @@ export const workspaceApi = {
   ownerCandidates: () => req<OwnerCandidatesResponse>('/projects/owner-candidates'),
 
   /**
+   * W3b — one path in the project's folder: a directory listing or a file's
+   * text preview, in the same `UserFilesAnswer` shape as `userFiles` (so one
+   * browser reads both). `''` is the folder root. Project files also carry
+   * `size` / `updatedAt` on entries and `size` / `downloadable` on a file.
+   *
+   * `path` is encoded WHOLE — slashes included — as `userFiles` does it: the
+   * server receives one splat and decodes it exactly once.
+   */
+  projectFiles: (projectId: string, path: string) =>
+    req<UserFilesAnswer>(
+      `/projects/${encodeURIComponent(projectId)}/files` + (path === '' ? '' : `/${encodeURIComponent(path)}`),
+    ),
+
+  /**
+   * W3b — the BYTES of one file in the project's folder (≤ 10 MiB), as
+   * `downloadFile` does it. A non-ok answer throws a `WorkspaceApiError`
+   * carrying its status: 413 too big, 404 gone (or no such project), 400 a
+   * folder, 503 this deployment can't read project files.
+   */
+  downloadProjectFile: async (projectId: string, path: string): Promise<{ blob: Blob; filename: string }> => {
+    const route = `/projects/${encodeURIComponent(projectId)}/download/` + encodeURIComponent(path);
+    const res = await httpFetch(`/api/workspace${route}`);
+    if (!res.ok) throw new WorkspaceApiError(route, res.status);
+    return {
+      blob: await res.blob(),
+      filename: filenameFromContentDisposition(res.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME,
+    };
+  },
+
+  /**
    * One page of the activity collection (design §7). `agentId` scopes to one
    * agent's rows; `before` pages backward through older ones; `nextBefore` in
    * the response is `null` exactly when there is nothing older to page into.

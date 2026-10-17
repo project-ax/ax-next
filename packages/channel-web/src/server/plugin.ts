@@ -674,6 +674,18 @@ export function createChannelWebServerPlugin(
           degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
         },
         {
+          // W3b — a project's files, read-only. Registered by @ax/projects;
+          // without it (or with an @ax/projects that predates W3b) the routes
+          // say so rather than list nothing.
+          hook: 'projects:read-file',
+          degradation:
+            'GET /api/workspace/projects/:projectId/files[/*] answers 503 projects-unavailable (never an empty listing)',
+        },
+        {
+          hook: 'projects:download-file',
+          degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
+        },
+        {
           // "May this person manage this agent's sharing?" — who may own a new
           // project, and whether the project page offers rename/delete. The
           // hooks re-check; this only decides what to offer.
