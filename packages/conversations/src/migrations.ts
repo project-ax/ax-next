@@ -331,6 +331,33 @@ export async function runConversationsMigration<DB>(
     CREATE INDEX IF NOT EXISTS conversations_v1_transcripts_by_conv
       ON conversations_v1_transcripts (conversation_id, seq)
   `.execute(db);
+
+  // Durable chat purge — the outbox behind the agents:deleted and
+  // projects:deleted subscribers. Each of those events fires ONCE, after the
+  // source row is gone, so a purge that fails (or a crash part-way through)
+  // would otherwise strand that agent's / project's chats for good. The
+  // subscriber records `(kind, target_id)` here FIRST; the purge transaction
+  // deletes the row as it commits (success and dequeue are atomic); a failure
+  // leaves it with `attempts`/`next_attempt_at` set for the plugin's retry
+  // sweep. `target_id` is the deleted agent's or project's id — a generic name
+  // on purpose, since the row is keyed on whichever kind went away.
+  // `last_error` is the error MESSAGE only, truncated, for an operator.
+  await sql`
+    CREATE TABLE IF NOT EXISTS conversations_v1_pending_purges (
+      kind TEXT NOT NULL CHECK (kind IN ('agent', 'project')),
+      target_id TEXT NOT NULL,
+      attempts INT NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_error TEXT NULL,
+      PRIMARY KEY (kind, target_id)
+    )
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS conversations_v1_pending_purges_due
+      ON conversations_v1_pending_purges (next_attempt_at)
+  `.execute(db);
 }
 
 /**
@@ -405,8 +432,22 @@ export interface ConversationTranscriptRow {
   created_at?: Date;
 }
 
+/**
+ * A purge still owed for a deleted agent or project (see the migration). The
+ * defaulted columns are optional so an insert can omit them.
+ */
+export interface ConversationPendingPurgeRow {
+  kind: 'agent' | 'project';
+  target_id: string;
+  attempts?: number;
+  next_attempt_at?: Date;
+  created_at?: Date;
+  last_error?: string | null;
+}
+
 export interface ConversationDatabase {
   conversations_v1_conversations: ConversationsRow;
   conversations_v1_events: ConversationEventsRow;
   conversations_v1_transcripts: ConversationTranscriptRow;
+  conversations_v1_pending_purges: ConversationPendingPurgeRow;
 }

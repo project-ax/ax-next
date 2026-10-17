@@ -191,6 +191,7 @@ afterEach(async () => {
   const cleanup = new pg.Client({ connectionString });
   await cleanup.connect();
   try {
+    await cleanup.query('DROP TABLE IF EXISTS conversations_v1_pending_purges');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_transcripts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_events');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
