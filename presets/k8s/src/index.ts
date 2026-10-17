@@ -1155,10 +1155,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // ----- 8a-W3. projects ----------------------------------------------------
   // @ax/projects — a project is a W2 folder plus a name (W3 §4.1). Calls
-  // shared-folders and agents only; conversations calls `projects:resolve` on
-  // chat create and the orchestrator at spawn, so projects must NEVER call
-  // conversations:* or sandbox:* (that would close a call cycle — preset.test
-  // pins the direction). Postgres-only like shared-folders: not in the dev CLI.
+  // shared-folders and agents, plus (optionally) exactly one sandbox hook,
+  // `sandbox:read-shared-folder` — the host's confined read of the folder for
+  // the project's file pages and the block's context (W3b). conversations calls
+  // `projects:resolve` on chat create and the orchestrator at spawn, so
+  // projects must NEVER call conversations:* or any other sandbox:* (that could
+  // close a call cycle — preset.test pins the direction). Postgres-only like
+  // shared-folders: not in the dev CLI.
   plugins.push(createProjectsPlugin());
 
   // ----- 8a'''. tool policy ----------------------------------------------

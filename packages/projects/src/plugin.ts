@@ -13,17 +13,35 @@ import {
 import { isValidSharedFolderId } from '@ax/sandbox-protocol';
 import { sql, type Kysely } from 'kysely';
 import type { ZodType, ZodTypeDef } from 'zod';
-import { renderProjectBlock } from './block.js';
+import {
+  CONTEXT_INSTRUCTIONS_MAX_CHARS,
+  CONTEXT_STATUS_MAX_CHARS,
+  CONTEXT_TREE_MAX_LINES,
+  INSTRUCTIONS_PATH,
+  renderProjectBlock,
+  renderProjectContext,
+  STATUS_PATH,
+  type ContextFilePart,
+  type ContextTreeEntry,
+  type ContextTreePart,
+} from './block.js';
 import { runProjectsMigration, type ProjectRow, type ProjectsDatabase } from './migrations.js';
 import {
   CreateInputSchema,
   CreateOutputSchema,
   DeleteInputSchema,
   DeleteOutputSchema,
+  DOWNLOAD_FILE_MAX_BYTES,
+  DownloadFileInputSchema,
+  DownloadFileOutputSchema,
   GetInputSchema,
   GetOutputSchema,
   ListInputSchema,
   ListOutputSchema,
+  READ_FILE_MAX_ENTRIES,
+  READ_FILE_PREVIEW_MAX_BYTES,
+  ReadFileInputSchema,
+  ReadFileOutputSchema,
   ResolveInputSchema,
   ResolveOutputSchema,
   UpdateInputSchema,
@@ -32,8 +50,11 @@ import {
   type ProjectsCreateOutput,
   type ProjectsDeletedEvent,
   type ProjectsDeleteOutput,
+  type ProjectsDownloadFileOutput,
+  type ProjectsDownloadRefusal,
   type ProjectsGetOutput,
   type ProjectsListOutput,
+  type ProjectsReadFileOutput,
   type ProjectsResolveOutput,
   type ProjectsUpdateOutput,
 } from './types.js';
@@ -67,6 +88,38 @@ interface SharedFoldersListOut {
 interface AuthorizeMountsOut {
   folders: { folderId: string; readOnly: boolean }[];
 }
+/**
+ * `sandbox:read-shared-folder` (the sandbox provider's confined, read-only,
+ * grant-free reader — so it is called only after `loadUsable` /
+ * `resolveProject`). Declared locally, like the slices above.
+ */
+const READ_SHARED_FOLDER_HOOK = 'sandbox:read-shared-folder';
+interface ReadSharedFolderIn {
+  folderId: string;
+  relPath?: string;
+  limitBytes: number;
+  maxEntries?: number;
+}
+type ReadSharedFolderOut =
+  | { kind: 'file'; contents: Uint8Array; truncated: boolean; size: number }
+  | {
+      kind: 'dir';
+      entries: { name: string; kind: 'file' | 'dir'; size?: number; updatedAt?: string }[];
+      truncated: boolean;
+    }
+  | { kind: 'absent' }
+  | { kind: 'unavailable' };
+
+/**
+ * The project block's file reads all finish inside this, or the block goes
+ * without its `context` (the `brief` still lands). Well inside the
+ * orchestrator's 15 s per-provider deadline, which would drop the brief too.
+ */
+const CONTEXT_READ_DEADLINE_MS = 5_000;
+/** The block expands at most this many top-level folders one level down. */
+const CONTEXT_TREE_EXPAND_MAX_DIRS = 10;
+/** UTF-8 is at most 4 bytes a character, so this many bytes always hold the cap. */
+const BYTES_PER_CHAR = 4;
 
 type RefusalFields = { projectId?: string; agentId?: string };
 
@@ -109,6 +162,23 @@ function refuse(
     hookName,
     message: code === 'forbidden' ? `${hookName}: not allowed` : `${hookName}: not found`,
   });
+}
+
+/**
+ * A download that can't be served. `not-found` here (no file at the path)
+ * carries the SAME message as `refuse`'s, so it can't be told from an unknown
+ * or foreign project. Not a security event, so no `projects_refused` line.
+ */
+function fileRefusal(hookName: string, code: ProjectsDownloadRefusal): PluginError {
+  const message =
+    code === 'not-found'
+      ? `${hookName}: not found`
+      : code === 'too-large'
+        ? `${hookName}: this file is too big to download here`
+        : code === 'not-a-file'
+          ? `${hookName}: not a file`
+          : `${hookName}: project files can't be read on this deployment`;
+  return new PluginError({ code, plugin: PLUGIN_NAME, hookName, message });
 }
 
 /** A person, or nothing: empty, `system` and owner-less session ids are not actors. */
@@ -269,6 +339,104 @@ export function createProjectsPlugin(): Plugin {
     return deleted.map((r) => r.project_id);
   }
 
+  /** One confined read of a project's folder. Only after the person passed `loadUsable` / `resolveProject`. */
+  async function readFolder(
+    ctx: AgentContext,
+    folderId: string,
+    relPath: string,
+    limitBytes: number,
+    maxEntries: number,
+  ): Promise<ReadSharedFolderOut> {
+    if (!bus!.hasService(READ_SHARED_FOLDER_HOOK)) return { kind: 'unavailable' };
+    return bus!.call<ReadSharedFolderIn, ReadSharedFolderOut>(READ_SHARED_FOLDER_HOOK, ctx, {
+      folderId,
+      relPath,
+      limitBytes,
+      maxEntries,
+    });
+  }
+
+  /**
+   * The project block's `context`: instructions.md, a short tree, and
+   * memory/status.md, read in parallel. `undefined` when this deployment
+   * can't read the folder, or the reads don't finish in time. Never throws: a
+   * read that fails becomes a one-line "couldn't be read" for that part only.
+   */
+  async function projectContext(ctx: AgentContext, folderId: string): Promise<string | undefined> {
+    if (!bus!.hasService(READ_SHARED_FOLDER_HOOK)) return undefined;
+    let unavailable = false;
+    const filePart = async (relPath: string, maxChars: number): Promise<ContextFilePart> => {
+      try {
+        const out = await readFolder(ctx, folderId, relPath, maxChars * BYTES_PER_CHAR, 1);
+        if (out.kind === 'unavailable') unavailable = true;
+        if (out.kind !== 'file') return { kind: 'absent' };
+        return { kind: 'file', contents: out.contents, truncated: out.truncated };
+      } catch (err) {
+        ctx.logger.warn('projects_context_read_failed', { relPath, err: errOf(err) });
+        return { kind: 'failed' };
+      }
+    };
+    const treePart = async (): Promise<ContextTreePart> => {
+      try {
+        const top = await readFolder(ctx, folderId, '', 1, CONTEXT_TREE_MAX_LINES + 1);
+        if (top.kind === 'unavailable') unavailable = true;
+        if (top.kind !== 'dir') return { kind: 'tree', entries: [], truncated: false };
+        const sorted = [...top.entries].sort((a, z) => (a.name < z.name ? -1 : a.name > z.name ? 1 : 0));
+        const expand = new Set(
+          sorted
+            .filter((e) => e.kind === 'dir')
+            .slice(0, CONTEXT_TREE_EXPAND_MAX_DIRS)
+            .map((e) => e.name),
+        );
+        const entries = await Promise.all(
+          sorted.map(async (e): Promise<ContextTreeEntry> => {
+            if (!expand.has(e.name)) return { name: e.name, kind: e.kind };
+            const sub = await readFolder(ctx, folderId, e.name, 1, CONTEXT_TREE_MAX_LINES);
+            if (sub.kind !== 'dir') return { name: e.name, kind: e.kind };
+            return {
+              name: e.name,
+              kind: e.kind,
+              children: [...sub.entries]
+                .sort((a, z) => (a.name < z.name ? -1 : a.name > z.name ? 1 : 0))
+                .map((c) => ({ name: c.name, kind: c.kind })),
+              childrenTruncated: sub.truncated,
+            };
+          }),
+        );
+        return { kind: 'tree', entries, truncated: top.truncated };
+      } catch (err) {
+        ctx.logger.warn('projects_context_read_failed', { relPath: '', err: errOf(err) });
+        return { kind: 'failed' };
+      }
+    };
+
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<'deadline'>((resolve) => {
+      timer = setTimeout(() => resolve('deadline'), CONTEXT_READ_DEADLINE_MS);
+      timer.unref();
+    });
+    try {
+      const parts = await Promise.race([
+        Promise.all([
+          filePart(INSTRUCTIONS_PATH, CONTEXT_INSTRUCTIONS_MAX_CHARS),
+          treePart(),
+          filePart(STATUS_PATH, CONTEXT_STATUS_MAX_CHARS),
+        ]),
+        deadline,
+      ]);
+      if (parts === 'deadline') {
+        ctx.logger.warn('projects_context_skipped', { reason: 'deadline' });
+        return undefined;
+      }
+      // Decided before any path matters, so one `unavailable` means all.
+      if (unavailable) return undefined;
+      const [instructions, tree, status] = parts;
+      return renderProjectContext({ instructions, tree, status });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -280,12 +448,17 @@ export function createProjectsPlugin(): Plugin {
         'projects:update',
         'projects:delete',
         'projects:resolve',
+        'projects:read-file',
+        'projects:download-file',
         PROJECTS_BLOCK_HOOK,
       ],
-      // NEVER conversations:* or sandbox:*: conversations calls projects
-      // (`projects:resolve` on chat create), and the sandbox path reaches
-      // shared-folders, so either edge would close a call-graph cycle, which
-      // bootstrap rejects (W3 §4.4).
+      // NEVER conversations:*, and no sandbox:* except exactly
+      // `sandbox:read-shared-folder` (an optional call, below). conversations
+      // calls projects (`projects:resolve` on chat create), and bootstrap
+      // rejects a plugin call-graph cycle (W3 §4.4), so every edge out of here
+      // must never lead back. The sandbox providers' own calls (sessions, IPC,
+      // the mount resolver → shared-folders) don't; preset.test pins the rule
+      // and prod-bootstrap / boot-graph prove the real graph has no cycle.
       calls: [
         'database:get-instance',
         'agents:can-manage-sharing',
@@ -302,6 +475,11 @@ export function createProjectsPlugin(): Plugin {
           hook: 'teams:list-for-user',
           degradation:
             'projects:list cannot find team agents without the actor’s team ids, so it lists only projects of their personal agents.',
+        },
+        {
+          hook: READ_SHARED_FOLDER_HOOK,
+          degradation:
+            "no host reader for project folders: projects:read-file answers unavailable, projects:download-file refuses 'unavailable', and the project block carries no file context (its brief still lands).",
         },
       ],
       subscribes: [SHARED_FOLDERS_DELETED_HOOK],
@@ -527,12 +705,82 @@ export function createProjectsPlugin(): Plugin {
         { returns: ResolveOutputSchema },
       );
 
+      // ---- read-file (W3b) ----------------------------------------------
+      // A preview: a listing (≤ 500 entries) or a file's first 1 MiB, flagged
+      // `truncated`. The person must be able to use the project (`loadUsable`,
+      // so unknown and foreign are the same `not-found`) BEFORE any read.
+      // Rebuilt field by field, so nothing the reader adds reaches the caller.
+      b.registerService<unknown, ProjectsReadFileOutput>(
+        'projects:read-file',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:read-file';
+          const input = parseInput(ReadFileInputSchema, hook, rawInput);
+          requireActor(ctx, hook);
+          const { row } = await loadUsable(ctx, hook, input.projectId);
+          const out = await readFolder(ctx, row.folder_id, input.path, READ_FILE_PREVIEW_MAX_BYTES, READ_FILE_MAX_ENTRIES);
+          switch (out.kind) {
+            case 'dir':
+              return {
+                kind: 'dir',
+                entries: out.entries.slice(0, READ_FILE_MAX_ENTRIES).map((e) => ({
+                  name: e.name,
+                  kind: e.kind,
+                  ...(e.size !== undefined ? { size: e.size } : {}),
+                  ...(e.updatedAt !== undefined ? { updatedAt: e.updatedAt } : {}),
+                })),
+                truncated: out.truncated || out.entries.length > READ_FILE_MAX_ENTRIES,
+              };
+            case 'file': {
+              const truncated = out.truncated || out.contents.length > READ_FILE_PREVIEW_MAX_BYTES;
+              return {
+                kind: 'file',
+                contents: out.contents.subarray(0, READ_FILE_PREVIEW_MAX_BYTES),
+                truncated,
+                size: out.size,
+              };
+            }
+            case 'absent':
+              return { kind: 'absent' };
+            default:
+              return { kind: 'unavailable' };
+          }
+        },
+        { returns: ReadFileOutputSchema },
+      );
+
+      // ---- download-file (W3b) ------------------------------------------
+      // The whole file, up to 10 MiB, or a refusal (`ProjectsDownloadRefusal`):
+      // a bigger file is `too-large` and NEVER returned truncated. Same gate as
+      // read-file.
+      b.registerService<unknown, ProjectsDownloadFileOutput>(
+        'projects:download-file',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:download-file';
+          const input = parseInput(DownloadFileInputSchema, hook, rawInput);
+          requireActor(ctx, hook);
+          const { row } = await loadUsable(ctx, hook, input.projectId);
+          const out = await readFolder(ctx, row.folder_id, input.path, DOWNLOAD_FILE_MAX_BYTES, 1);
+          if (out.kind === 'unavailable') throw fileRefusal(hook, 'unavailable');
+          if (out.kind === 'absent') throw fileRefusal(hook, 'not-found');
+          if (out.kind === 'dir') throw fileRefusal(hook, 'not-a-file');
+          if (out.truncated || out.contents.length > DOWNLOAD_FILE_MAX_BYTES || out.size > DOWNLOAD_FILE_MAX_BYTES) {
+            throw fileRefusal(hook, 'too-large');
+          }
+          return { contents: out.contents, size: out.contents.length };
+        },
+        { returns: DownloadFileOutputSchema },
+      );
+
       // ---- the project block ---------------------------------------------
-      // Optional provider: `brief` only, never `rules`. The block is the
-      // project's name and description — written by people through the
-      // projects routes, never by an agent — plus fixed text, so it is a
-      // `brief` and reaches bootstrap mode too: an agent still in its first-run
-      // chat otherwise answered a project chat as if there were no project.
+      // Optional provider, never `rules`. `brief` is the project's name and
+      // description — written by people through the projects routes, never by
+      // an agent — plus fixed text, so it reaches bootstrap mode too: an agent
+      // still in its first-run chat otherwise answered a project chat as if
+      // there were no project. `context` (W3b) is what's in the folder —
+      // AGENT-WRITTEN, so never in `brief` — quoted (block.ts); it is left out
+      // when the folder can't be read here, and a failed part says so.
       // Any failure is `{}` — W2's runner note (one line per mounted folder)
       // is the floor, so the model still learns where the folder is.
       b.registerService<SystemPromptAugmentInput, SystemPromptAugmentOutput>(
@@ -551,7 +799,15 @@ export function createProjectsPlugin(): Plugin {
               ctx.logger.warn('projects_block_skipped', { projectId, reason: 'malformed-folder-id' });
               return {};
             }
-            return { brief: renderProjectBlock(res.value) };
+            const brief = renderProjectBlock(res.value);
+            // Agent-written file text: `context`, never `brief` (W3 §13).
+            let context: string | undefined;
+            try {
+              context = await projectContext(ctx, res.value.folderId);
+            } catch (err) {
+              ctx.logger.warn('projects_context_skipped', { projectId, reason: 'error', err: errOf(err) });
+            }
+            return context === undefined ? { brief } : { brief, context };
           } catch (err) {
             ctx.logger.warn('projects_block_skipped', { projectId, reason: 'error', err: errOf(err) });
             return {};
