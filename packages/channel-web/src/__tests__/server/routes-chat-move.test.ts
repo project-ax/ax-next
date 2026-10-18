@@ -30,15 +30,22 @@ type Refusal =
   | 'invalid-payload'
   | 'fault';
 
-const conversationsError = (code: string, message: string, cause?: unknown) =>
-  new PluginError({ code, plugin: '@ax/conversations', hookName: 'conversations:set-project', message, ...(cause !== undefined ? { cause } : {}) });
+const conversationsError = (code: string, message: string, cause?: unknown, reasonCode?: string) =>
+  new PluginError({
+    code,
+    plugin: '@ax/conversations',
+    hookName: 'conversations:set-project',
+    message,
+    ...(cause !== undefined ? { cause } : {}),
+    ...(reasonCode !== undefined ? { reasonCode } : {}),
+  });
 
 function refusalFor(refusal: Refusal): Error {
   switch (refusal) {
     case 'chat-not-found':
       return conversationsError('not-found', "conversation 'c' not found");
     case 'routine':
-      return conversationsError('forbidden', "a routine's chat can't be moved");
+      return conversationsError('forbidden', "a routine's chat can't be moved", undefined, 'routine-conversation');
     case 'agent-forbidden':
     case 'agent-not-found': {
       const code = refusal === 'agent-forbidden' ? 'forbidden' : 'not-found';
@@ -50,7 +57,7 @@ function refusalFor(refusal: Refusal): Error {
       return conversationsError(code, 'project', new PluginError({ code, plugin: '@ax/projects', hookName: 'projects:resolve', message: 'projects:resolve: not found' }));
     }
     case 'projects-unavailable':
-      return conversationsError('forbidden', 'projects are not available');
+      return conversationsError('forbidden', 'projects are not available', undefined, 'projects-unavailable');
     case 'invalid-payload':
       return conversationsError('invalid-payload', 'projectId must be a project id or null');
     case 'fault':
@@ -169,6 +176,14 @@ describe('PUT /api/chat/conversations/:id/project (W3e)', () => {
   it('moving out of a routine chat is still the routine 409 (projects not needed to move out)', async () => {
     const h = harness({ refusal: 'routine', projectsLoaded: false });
     await h.handlers.setConversationProject(h.req({ projectId: null }), h.res);
+    expect(h.result).toEqual({ status: 409, body: { error: 'cannot-move-routine-chat' } });
+  });
+
+  // Review, 2026-10-18: the route used to read "no cause + no projects" as
+  // 503, so a routine chat moved INTO a project there got 503, not 409.
+  it("a routine's chat moved into a project without @ax/projects is still the routine 409", async () => {
+    const h = harness({ refusal: 'routine', projectsLoaded: false });
+    await h.handlers.setConversationProject(h.req({ projectId: 'prj_1' }), h.res);
     expect(h.result).toEqual({ status: 409, body: { error: 'cannot-move-routine-chat' } });
   });
 

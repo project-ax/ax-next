@@ -2849,7 +2849,7 @@ export function createOrchestrator(
               augmentStale ||
               hostSessionMissing ||
               sharedFolderAccessReduced ||
-                projectChanged ||
+              projectChanged ||
               rotationFailed ||
               connectorsChanged ||
               connectorSignedIn

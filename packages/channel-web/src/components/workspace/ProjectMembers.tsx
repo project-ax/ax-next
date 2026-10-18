@@ -100,10 +100,11 @@ export function removeMemberCopy(agentName: string): string {
 /** A member change that didn't go through, in words a person can act on. */
 function memberChangeError(e: unknown, context: string): string {
   logRequestFailure(e, context);
-  // 403: the owner agent, a project they can't manage, or an agent of
-  // someone else's (W2 allows only the same owner).
+  // 403: the owner agent, a project they can't manage, or an agent with a
+  // different owner than the project's (W2 allows only the same owner). The
+  // route can't say which, so the copy names the rules.
   if (e instanceof HttpError && e.status === 403) {
-    return 'Only agents you look after can be added or changed here.';
+    return 'That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add or change it.';
   }
   return 'We couldn’t change that just now. Nothing changed — try again in a moment.';
 }

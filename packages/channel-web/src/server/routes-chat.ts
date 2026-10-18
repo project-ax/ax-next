@@ -1287,12 +1287,14 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           res.status(404).json({ error: 'project-not-found' });
           return;
         }
-        if (err.code === 'forbidden' && cause === undefined) {
-          if (body.projectId !== null && !bus.hasService('projects:resolve')) {
-            res.status(503).json({ error: 'projects-unavailable' });
-            return;
-          }
+        // The hook names its own refusals with a reasonCode, so a routine's
+        // chat is 409 whether or not projects are loaded.
+        if (err.reasonCode === 'routine-conversation') {
           res.status(409).json({ error: 'cannot-move-routine-chat' });
+          return;
+        }
+        if (err.reasonCode === 'projects-unavailable') {
+          res.status(503).json({ error: 'projects-unavailable' });
           return;
         }
         res.status(404).json({ error: 'conversation-not-found' });

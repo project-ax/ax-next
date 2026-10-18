@@ -1573,6 +1573,7 @@ async function assertProjectResolvable(
       plugin: PLUGIN_NAME,
       hookName,
       message: 'projects are not available',
+      reasonCode: 'projects-unavailable',
     });
   }
   const actorCtx: AgentContext = { ...ctx, userId: args.userId };
@@ -1671,6 +1672,7 @@ async function setConversationProject(
       plugin: PLUGIN_NAME,
       hookName,
       message: "a routine's chat can't be moved; set the project on the routine",
+      reasonCode: 'routine-conversation',
     });
   }
 

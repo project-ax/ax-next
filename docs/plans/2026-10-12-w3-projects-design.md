@@ -1286,10 +1286,13 @@ Plan: `docs/plans/2026-10-17-w3e-move-chats-members-impl.md`; decisions in
 4. **Removing a member leaves its chats in the project.** Their next turn ends
    `project-unavailable` ("This chat's project isn't available to this agent
    anymore."), and "Remove from project" is always allowed. The confirm dialog
-   says so. A newly added agent defaults to Can edit.
+   says so. A newly added agent defaults to Can edit. The route can't tell the
+   member refusals apart (owner, can't manage, different owner), so the error
+   copy names the rules.
 5. **The project composer** offers only member agents the person can use, with
    no Auto: "Chat with ‹agent› ▾", defaulting to the agent of the person's most
-   recent chat in the project, else the owner.
+   recent chat in the project, else the first member they can use (the owner
+   first, when they can use it).
 6. **Known window:** a project deleted between `projects:resolve` and the write
    can leave a chat pointing at it (`create` has the same window). The
    orchestrator fails closed, and "Remove from project" recovers the chat.

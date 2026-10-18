@@ -581,7 +581,7 @@ describe('conversations:set-project (W3e §8)', () => {
     const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
     await expect(
       setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: PRJ }),
-    ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/conversations' });
+    ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/conversations', reasonCode: 'projects-unavailable' });
     expect((await readRow(pool, conv.conversationId)).projectId).toBeNull();
     await expect(
       setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: null }),
@@ -625,6 +625,8 @@ describe('conversations:set-project (W3e §8)', () => {
       code: 'forbidden',
       plugin: '@ax/conversations',
       hookName: 'conversations:set-project',
+      // The route keys its 409 on this, not on the absence of a cause.
+      reasonCode: 'routine-conversation',
     });
     expect(resolveCalls).toEqual([]);
     expect(await readRow(pool, conv.conversationId)).toEqual(before);
