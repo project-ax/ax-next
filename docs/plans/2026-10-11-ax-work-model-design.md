@@ -25,15 +25,15 @@ clear home.
 - **2026-10-17:** the kind walk of the projects UI found that an agent still in
   its first-run chat never saw the project; fixed by a `brief` prompt section
   (#992, W1 §11). W2 + W3a went to production that day (Helm rev 43).
-- **2026-10-17, later: W3b is built** on `feat/w3b-project-files` (the project's
-  files, read-only). `nosymfollow` didn't survive into the pod on kind, so host
-  reads use a per-component walk (W3 spec §18); a race test on real NFS leaked
-  nothing in 40,000 reads where a plain read leaked 1,121 times in 20,000.
+- **2026-10-17/18:** W3b (#993) merged and deployed (Helm rev 44); host reads
+  use a per-component walk, not `nosymfollow` (W3 spec §18).
+- **2026-10-18: W3e is built** on `feat/w3e-move-chats-members`: move chats in
+  and out of a project, add your other agents as Can edit / Can view, and the
+  project composer's agent chip (W3 spec §19).
 - **Next, in order:**
-  1. Review and merge W3b; deploy (no chart change; the storage-helper pod must
-     be deleted again so `.shared` becomes `0711`).
-  2. W3e (moving chats, other agents), and W3c (people edit files: the same
-     walk, for writes).
+  1. Review and merge W3e; deploy (no migrations, no chart change).
+  2. W3c (people edit project files: the same walk, for writes), then W3d
+     (history and undo), then W3f.
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
   5. W4 (sharing across owners) waits on TASK-897's six decisions; W3 §17
@@ -55,7 +55,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 |---|---|---|---|---|---|---|
 | W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
 | W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | merged with W3a (#989); GKE pool acceptance passed 2026-10-16 | — |
-| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a merged (#989, #991, #992) and in prod (rev 43); W3b built on `feat/w3b-project-files`; W3c–W3f not started | — |
+| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a + W3b merged and in prod (rev 44); W3e built on `feat/w3e-move-chats-members`; W3c, W3d, W3f not started | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |
 | W13 | Agent tasks | Goals and delegation | W1 (the project view also needs W3) | — | no spec | — |
