@@ -1,7 +1,8 @@
 /**
  * `/workspace/projects/:projectId` — one project (W3a, W3 spec §4.8 frame 4,
  * the chats side): its name and description, this person's chats in it, a
- * composer that starts a new one with the project's agent, and a Members card.
+ * composer that starts a new one with one of the project's agents ("Chat with
+ * ‹agent› ▾", W3e), and a Members card (`ProjectMembers.tsx`).
  * Settings and Delete live behind ⋯ (frame 11), only for someone who manages
  * the owner agent.
  *
@@ -14,7 +15,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -24,13 +24,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,24 +40,14 @@ import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import { workspaceRoutePath } from '@/lib/workspace-route';
 import { timeAgo } from '@/lib/workspace-time';
-import type {
-  ProjectConversation,
-  ProjectDetail,
-  ProjectMemberRole,
-} from '@/wire/projects';
-import { AgentTile } from './bits';
+import type { ProjectConversation, ProjectDetail } from '@/wire/projects';
 import { HomeComposer } from './HomeComposer';
 import { DeleteProjectDialog, ProjectSettingsDialog } from './ProjectDialogs';
 import { inPlaceClick } from './ProjectsPage';
 import { ProjectFilesCard } from './ProjectFiles';
 import { ProjectLoadFailure } from './ProjectLoadFailure';
+import { ProjectMembersCard } from './ProjectMembers';
 import { WorkspaceHeader } from './WorkspaceHeader';
-
-const ROLE_LABEL: Record<ProjectMemberRole, string> = {
-  owner: 'Owner',
-  editor: 'Can edit',
-  viewer: 'Can view',
-};
 
 type Loaded = { project: ProjectDetail; conversations: ProjectConversation[] };
 
@@ -152,14 +136,21 @@ export function ProjectPage({
 
   const { project, conversations } = data;
   /*
-    WHO A NEW CHAT GOES TO. The owner agent when this person can talk to it,
-    else the first member they can. `members` is owner-first and lists only
-    agents this person can use, and the board is the list they can open.
+    WHO A NEW CHAT CAN GO TO (W3e): the members this person can talk to —
+    members that are on their board. `members` is owner-first, so the owner
+    leads when it's one of them.
+
+    WHO IT GOES TO BY DEFAULT: the agent of their most recent chat here, else
+    the owner, else the first member they can use. The composer offers the
+    rest behind "Chat with ‹agent› ▾".
   */
-  const chatAgent =
-    project.members
-      .map((m) => agents.find((a) => a.id === m.agentId))
-      .find((a): a is WorkspaceAgent => a !== undefined) ?? null;
+  const chatAgents = project.members
+    .map((m) => agents.find((a) => a.id === m.agentId))
+    .filter((a): a is WorkspaceAgent => a !== undefined);
+  const latest = [...conversations]
+    .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+    .find((c) => chatAgents.some((a) => a.id === c.agentId));
+  const defaultChatAgentId = latest?.agentId ?? chatAgents[0]?.id;
   const showAgentOnRows = new Set(conversations.map((c) => c.agentId)).size > 1;
 
   return (
@@ -255,34 +246,27 @@ export function ProjectPage({
 
           <ProjectFilesCard projectId={project.projectId} onOpen={onOpenFiles} />
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-[15px]">Members</CardTitle>
-              <CardDescription>The agents working in this project.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ul className="flex flex-col gap-2" aria-label="Members">
-                {project.members.map((m) => {
-                  const name = m.displayName ?? nameOf(m.agentId) ?? 'An agent you can’t see';
-                  return (
-                    <li key={m.agentId} className="flex items-center gap-2.5 text-[13px]">
-                      <AgentTile agent={{ name }} size={22} />
-                      <span className="min-w-0 flex-1 truncate" title={name}>
-                        {name}
-                      </span>
-                      <Badge variant="secondary" size="compact">
-                        {ROLE_LABEL[m.role]}
-                      </Badge>
-                    </li>
-                  );
-                })}
-              </ul>
-            </CardContent>
-          </Card>
+          <ProjectMembersCard
+            projectId={project.projectId}
+            projectName={project.name}
+            members={project.members}
+            canManage={project.canManage}
+            nameOf={nameOf}
+            onMembers={(members) =>
+              setData((prev) =>
+                prev === null ? prev : { ...prev, project: { ...prev.project, members } },
+              )
+            }
+          />
         </div>
       </div>
-      {chatAgent !== null ? (
-        <HomeComposer agents={[chatAgent]} onSend={onStartChat} />
+      {chatAgents.length > 0 ? (
+        <HomeComposer
+          agents={chatAgents}
+          autoRoute={false}
+          {...(defaultChatAgentId !== undefined ? { defaultAgentId: defaultChatAgentId } : {})}
+          onSend={onStartChat}
+        />
       ) : (
         <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
           <Alert>

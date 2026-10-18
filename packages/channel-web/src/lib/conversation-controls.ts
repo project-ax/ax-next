@@ -37,6 +37,15 @@ export const conversationControls = {
       headers: writeHeaders,
       body: JSON.stringify({ projectId }),
     }),
+  /**
+   * W3e — the projects a chat with `agentId` can move into: the person's
+   * projects that agent is a member of (the server refuses the rest, the same
+   * rule as starting a chat in one), most recently updated first.
+   */
+  moveTargets: async (agentId: string) => {
+    const { projects } = await workspaceApi.listProjects();
+    return projects.filter((p) => p.members.some((m) => m.agentId === agentId));
+  },
   export: async (agentId: string, id: string) => {
     const detail = await workspaceApi.agent(agentId, id);
     const body = detail.thread
