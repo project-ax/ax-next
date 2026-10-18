@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import { isValidSharedFolderId } from '@ax/sandbox-protocol';
 import type {
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput,
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
   LocalDirMountSpec,
@@ -12,8 +14,10 @@ import type {
   ReadSharedFolderOutput,
 } from '@ax/sandbox-mount-protocol';
 import {
+  changeConfinedByWalk,
   readConfinedByWalk,
   splitRelPath,
+  WalkChangeError,
   WalkPathError,
   WalkReadError,
 } from '@ax/user-files-read';
@@ -46,6 +50,7 @@ const RESOLVE_HOOK = 'sandbox:resolve-mounts';
 const LOCATE_HOOK = 'sandbox:locate-shared-folder';
 const DELETE_HOOK = 'sandbox:delete-shared-folder';
 const READ_HOOK = 'sandbox:read-shared-folder';
+const CHANGE_HOOK = 'sandbox:change-shared-folder';
 
 /** One entry of the runner's `AX_SHARED_FOLDERS` JSON list (key order is part of the contract). */
 export interface SharedFolderEnvEntry {
@@ -438,6 +443,214 @@ export async function readSharedFolder(
     // passed splitRelPath can still be too deep. Same answer as k8s.
     if (err instanceof WalkPathError) {
       throw readError('invalid-payload', pluginName, `invalid relPath: ${err.message}`, err);
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:change-shared-folder (W3c)
+// ---------------------------------------------------------------------------
+
+// LOCAL copies of `SHARED_FOLDER_CHANGE_MAX_*` from `@ax/sandbox-mount-protocol`
+// (type-only imports from that package, like `SHARED_FOLDERS_DIR` above).
+// `__tests__/shared-folders-change.test.ts` pins them to the protocol constants.
+export const CHANGE_MAX_CHANGES = 64;
+export const CHANGE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const CHANGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+
+/** Mode of a `.shared` this path creates: the same `0700` session open uses. */
+const SHARED_DIR_MODE = 0o700;
+
+function changeError(
+  code: string,
+  pluginName: string,
+  message: string,
+  extra: { cause?: unknown; reasonCode?: string } = {},
+): PluginError {
+  return new PluginError({
+    code,
+    plugin: pluginName,
+    hookName: CHANGE_HOOK,
+    message,
+    ...(extra.cause !== undefined ? { cause: extra.cause } : {}),
+    ...(extra.reasonCode !== undefined ? { reasonCode: extra.reasonCode } : {}),
+  });
+}
+
+/**
+ * The checks that need no disk and no other plugin: the folder id, the shape
+ * of `changes`, the three caps, and every path. The walk repeats all of this
+ * (it is the authority); we run it first so a bad call never reaches the
+ * resolver or creates `.shared`.
+ */
+function precheckChange(input: ChangeSharedFolderInput, pluginName: string): string {
+  const raw = input as Partial<ChangeSharedFolderInput> | undefined;
+  const folderId: unknown = raw?.folderId;
+  if (!isValidSharedFolderId(folderId)) {
+    throw changeError('invalid-payload', pluginName, 'folderId is not a valid shared-folder id');
+  }
+  const refuse = (reasonCode: string, message: string, cause?: unknown): PluginError =>
+    changeError('invalid-payload', pluginName, message, { reasonCode, cause });
+  const changes: unknown = raw?.changes;
+  if (!Array.isArray(changes)) throw refuse('invalid-change', 'changes must be an array');
+  if (changes.length > CHANGE_MAX_CHANGES) {
+    throw refuse('too-many-changes', `more than ${CHANGE_MAX_CHANGES} changes`);
+  }
+  let total = 0;
+  for (const change of changes as Array<Partial<{ path: unknown; content: unknown }> | null>) {
+    if (typeof change?.path !== 'string') throw refuse('invalid-change', 'a change needs a path');
+    try {
+      splitRelPath(change.path);
+    } catch (err) {
+      if (err instanceof WalkPathError) {
+        throw refuse(err.code, `invalid change path: ${err.message}`, err);
+      }
+      throw err;
+    }
+    if (change.content instanceof Uint8Array) {
+      if (change.content.length > CHANGE_MAX_FILE_BYTES) throw refuse('too-large', 'a file is too large');
+      total += change.content.length;
+      if (total > CHANGE_MAX_TOTAL_BYTES) throw refuse('too-large', 'the changes are too large');
+    }
+  }
+  return folderId;
+}
+
+/**
+ * Realize `sandbox:change-shared-folder` for the subprocess provider: the
+ * host's WRITE path into one folder (a person saving, creating or deleting a
+ * project file; `@ax/projects` seeding a new project). NO GRANT CHECK — the
+ * only caller, `@ax/projects`, checks the person may edit the project first.
+ *
+ * Where: exactly as {@link readSharedFolder} — the resolver's
+ * `sandbox:locate-shared-folder` answer, which must be exactly
+ * `<root>/.shared/<the requested id>` ({@link checkSharedFolderMount}).
+ * How: `changeConfinedByWalk` from `<root>` with NO chown (the dev provider
+ * runs as the agent's uid already). Every component below `<root>` is opened
+ * relative to the previous descriptor with O_NOFOLLOW, so a symlink the agent
+ * planted anywhere in the folder is refused, never written through.
+ *
+ * `createFolder`: a missing `.shared` is made with `mkdir -p`, mode 0700, the
+ * same thing session open does — and, like session open, only after `lstat`
+ * proves `.shared` is a real directory or absent (`mkdir -p` follows links).
+ * The folder directory itself is made by the walk (`createBase`, 0700,
+ * O_NOFOLLOW). Without `createFolder`, a missing folder throws the walk's
+ * `WalkReadError` (`code: 'ENOENT'`), as the contract says.
+ *
+ * Answers:
+ * - `unavailable` when no resolver is loaded, or off Linux (the walk needs
+ *   /proc). Off Linux a `createFolder` call may still have made an empty
+ *   `.shared`, exactly as session open there would.
+ * - `done` with one result per applied change. A `conflict` is a RESULT (the
+ *   last one), never an error.
+ * - A REFUSAL throws `PluginError` code `invalid-payload` with `reasonCode` =
+ *   the walk's code: `invalid-path` (WalkPathError), or WalkChangeError's
+ *   `too-large` | `too-many-changes` | `invalid-change` | `link-or-not-dir` |
+ *   `not-empty` | `is-directory`. W3b maps `WalkPathError` to
+ *   `invalid-payload` too. The walk error is the `cause`; a WalkChangeError
+ *   cause carries `applied` (the changes that took effect before the refusal).
+ * - A storage failure (`WalkReadError`: EACCES, EIO, a missing folder) throws
+ *   unchanged, as the read does.
+ *
+ * `walk` is injectable for tests only.
+ */
+export async function changeSharedFolder(
+  ctx: AgentContext,
+  bus: HookBus,
+  pluginName: string,
+  input: ChangeSharedFolderInput,
+  walk: typeof changeConfinedByWalk = changeConfinedByWalk,
+): Promise<ChangeSharedFolderOutput> {
+  if (!bus.hasService(LOCATE_HOOK)) return { kind: 'unavailable' };
+  const folderId = precheckChange(input, pluginName);
+
+  const { mount } = await bus.call<LocateSharedFolderInput, LocateSharedFolderOutput>(
+    LOCATE_HOOK,
+    ctx,
+    { folderId },
+  );
+  if (mount.kind !== 'localDir') {
+    throw changeError(
+      'unrealizable-mount-kind',
+      pluginName,
+      `subprocess sandbox cannot change a '${String(mount.kind)}' shared folder. Load ` +
+        `@ax/workspace-localdir for the subprocess/CLI preset instead of @ax/workspace-filestore.`,
+    );
+  }
+  const checked = checkSharedFolderMount(mount, folderId);
+  if ('problem' in checked) {
+    throw changeError(
+      'unsafe-shared-folder-location',
+      pluginName,
+      `refusing to change shared folder '${folderId}': the located path is not ` +
+        `<root>/${SHARED_FOLDERS_DIR}/${folderId} (${checked.problem}). Nothing was changed.`,
+    );
+  }
+  // Proven `<root>/.shared/<folderId>`.
+  const sharedDir = path.dirname(mount.hostPath);
+  const root = path.dirname(sharedDir);
+  const createFolder = input.createFolder === true;
+
+  if (createFolder) {
+    let stat: Stats | undefined;
+    try {
+      stat = await lstatOrUndefined(sharedDir);
+    } catch (cause) {
+      throw changeError(
+        'unsafe-shared-folder-location',
+        pluginName,
+        `refusing to create shared folder '${folderId}': could not inspect '${SHARED_FOLDERS_DIR}'`,
+        { cause },
+      );
+    }
+    if (stat === undefined) {
+      await fs.mkdir(sharedDir, { recursive: true, mode: SHARED_DIR_MODE });
+    } else if (!stat.isDirectory()) {
+      throw changeError(
+        'unsafe-shared-folder-location',
+        pluginName,
+        `refusing to create shared folder '${folderId}': '${SHARED_FOLDERS_DIR}' is a symlink or ` +
+          `not a directory. Nothing was changed.`,
+      );
+    }
+  }
+
+  try {
+    const results = walk(root, [SHARED_FOLDERS_DIR, folderId], input.changes, {
+      ...(createFolder ? { createBase: true } : {}),
+      maxChanges: CHANGE_MAX_CHANGES,
+      maxFileBytes: CHANGE_MAX_FILE_BYTES,
+      maxTotalBytes: CHANGE_MAX_TOTAL_BYTES,
+    });
+    ctx.logger.info('shared_folder_changed', {
+      folderId,
+      changes: input.changes.length,
+      applied: results.length,
+      conflict: results.at(-1)?.outcome === 'conflict',
+    });
+    return { kind: 'done', results };
+  } catch (err) {
+    if (err instanceof WalkReadError && err.code === 'unsupported-platform') {
+      return { kind: 'unavailable' };
+    }
+    if (err instanceof WalkChangeError) {
+      ctx.logger.info('shared_folder_change_refused', {
+        folderId,
+        reasonCode: err.code,
+        index: err.index,
+        applied: err.applied.length,
+      });
+      throw changeError('invalid-payload', pluginName, `change refused: ${err.message}`, {
+        cause: err,
+        reasonCode: err.code,
+      });
+    }
+    if (err instanceof WalkPathError) {
+      throw changeError('invalid-payload', pluginName, `invalid change path: ${err.message}`, {
+        cause: err,
+        reasonCode: err.code,
+      });
     }
     throw err;
   }

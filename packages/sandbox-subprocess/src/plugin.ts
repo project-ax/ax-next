@@ -1,6 +1,8 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput,
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
   ReadSharedFolderInput,
@@ -15,7 +17,11 @@ import {
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-host-ops.js';
-import { deleteSharedFolder, readSharedFolder } from './shared-folders.js';
+import {
+  changeSharedFolder,
+  deleteSharedFolder,
+  readSharedFolder,
+} from './shared-folders.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
 
@@ -60,11 +66,18 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // shared folder, walked from `<root>` with no symlink followed (Linux
       // only; `unavailable` elsewhere). No grant check — @ax/projects checks
       // the person first.
+      //
+      // `sandbox:change-shared-folder` (W3c): the host's WRITE path into one
+      // shared folder (write / mkdir / delete, optionally creating the folder),
+      // through the same locate + shape check and `changeConfinedByWalk` with
+      // no chown (Linux only; `unavailable` elsewhere). No grant check —
+      // @ax/projects checks the person first.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
         'sandbox:read-shared-folder',
+        'sandbox:change-shared-folder',
       ],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
@@ -95,7 +108,7 @@ export function createSandboxSubprocessPlugin(): Plugin {
             'host-read returns unavailable (this deployment keeps no durable ' +
             'files) and agent-delete cleanup is a no-op',
         },
-        // W2 shared folders: where a folder's bytes live, for deletion only
+        // W2 shared folders: where a folder's bytes live, for delete, read and change
         // (registered by the same resolver, grant-free). Optional so a preset
         // without a resolver still boots; sessions never touch it.
         {
@@ -103,7 +116,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           degradation:
             'sandbox:delete-shared-folder throws no-mount-resolver (nothing is ' +
             'deleted, so the caller keeps its tombstone and retries); ' +
-            'sandbox:read-shared-folder answers unavailable; opening ' +
+            'sandbox:read-shared-folder and sandbox:change-shared-folder ' +
+            'answer unavailable; opening ' +
             'sessions is unaffected',
         },
       ],
@@ -153,6 +167,17 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:read-shared-folder',
         PLUGIN_NAME,
         async (ctx, input) => readSharedFolder(ctx, bus, PLUGIN_NAME, input),
+        { timeoutMs: 30_000 },
+      );
+
+      // W3c: change one shared folder — no symlink followed at any depth, each
+      // write a temp file + rename. A refusal is PluginError('invalid-payload')
+      // with the walk's code as `reasonCode`; a conflict is a result, not an
+      // error. Up to 25 MiB to a local disk, so the read's timeout is plenty.
+      bus.registerService<ChangeSharedFolderInput, ChangeSharedFolderOutput>(
+        'sandbox:change-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => changeSharedFolder(ctx, bus, PLUGIN_NAME, input),
         { timeoutMs: 30_000 },
       );
 
