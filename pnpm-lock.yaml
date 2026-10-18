@@ -1898,12 +1898,18 @@ importers:
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
+      '@ax/sandbox-subprocess':
+        specifier: workspace:*
+        version: link:../sandbox-subprocess
       '@ax/shared-folders':
         specifier: workspace:*
         version: link:../shared-folders
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/workspace-localdir':
+        specifier: workspace:*
+        version: link:../workspace-localdir
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0

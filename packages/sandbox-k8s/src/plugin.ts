@@ -3,6 +3,8 @@ import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -22,6 +24,7 @@ import {
   cleanupUserFiles,
   deleteSharedFolder,
   ownerFromAgentId,
+  readSharedFolder,
   readUserFiles,
 } from './user-files-ops.js';
 
@@ -82,10 +85,17 @@ export function createSandboxK8sPlugin(
       // shared folder's bytes (`.shared/<folderId>` on the user-files export)
       // with the same reclaim pod as the agent cleanup. Called by
       // @ax/shared-folders after the folder's grants are gone.
+      //
+      // `sandbox:read-shared-folder` (W3b): the host's read-only view of one
+      // shared folder (`.shared/<folderId>` under `userFilesHostReadRoot`),
+      // walked component by component with no symlink followed. No grant
+      // check here — @ax/projects checks the person first. Without the host
+      // read root it answers `unavailable`.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
+        'sandbox:read-shared-folder',
       ],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
@@ -229,6 +239,16 @@ export function createSandboxK8sPlugin(
         PLUGIN_NAME,
         async (ctx, input) => deleteSharedFolder(ctx, bus, api, config, input, ctx.logger),
         { timeoutMs: 180_000 },
+      );
+
+      // W3b shared-folder read. A direct, read-only, no-follow walk of the
+      // host-mounted export — milliseconds, never a pod — so the timeout is a
+      // modest backstop for a slow NFS server, not a pod budget.
+      bus.registerService<ReadSharedFolderInput, ReadSharedFolderOutput>(
+        'sandbox:read-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => readSharedFolder(config, input, ctx.logger),
+        { timeoutMs: 30_000 },
       );
 
       // §11 cleanup-on-agent-delete. A short-lived mount-and-rm pod removes

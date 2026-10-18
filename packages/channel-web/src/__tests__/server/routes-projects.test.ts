@@ -453,7 +453,7 @@ describe('project routes (W3a)', () => {
     await expect(makeProjectsHandlers({ bus: faulty, initCtx }).getProject(mkReq({ projectId: 'prj_1' }), res)).rejects.toThrow();
   });
 
-  it('registers the seven routes, owner-candidates as an exact path, PATCH included', async () => {
+  it('registers the ten routes, owner-candidates as an exact path, PATCH included, the file splats last', async () => {
     const reg = new HookBus();
     const routes: Array<{ method: string; path: string }> = [];
     reg.registerService('http:register-route', 'http', async (_c, input) => {
@@ -462,7 +462,7 @@ describe('project routes (W3a)', () => {
       return { unregister: () => {} };
     });
     const unregs = await registerProjectsRoutes(reg, initCtx);
-    expect(unregs).toHaveLength(7);
+    expect(unregs).toHaveLength(10);
     expect(routes).toEqual([
       { method: 'GET', path: '/api/workspace/projects' },
       { method: 'POST', path: '/api/workspace/projects' },
@@ -471,6 +471,9 @@ describe('project routes (W3a)', () => {
       { method: 'PATCH', path: '/api/workspace/projects/:projectId' },
       { method: 'DELETE', path: '/api/workspace/projects/:projectId' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/conversations' },
+      { method: 'GET', path: '/api/workspace/projects/:projectId/files' },
+      { method: 'GET', path: '/api/workspace/projects/:projectId/files/*' },
+      { method: 'GET', path: '/api/workspace/projects/:projectId/download/*' },
     ]);
   });
 });

@@ -74,6 +74,11 @@ prompt of every member agent, so we treat them as untrusted:
 
 - No agent tool or IPC action reaches any `projects:*` hook. Nothing here is
   callable from inside a sandbox.
-- The plugin never calls `conversations:*` or `sandbox:*`. Conversations calls
-  us, so either edge would make a call cycle, which bootstrap rejects.
+- The plugin never calls `conversations:*`: conversations calls us, so that
+  edge would make a call cycle, which bootstrap rejects.
+- It declares no `sandbox:*` edge, but it does **call `sandbox:read-shared-folder`
+  undeclared** (guarded by `hasService`): a declared edge closed a boot cycle
+  through the subprocess provider (W3 spec §18). That hook does no grant check
+  of its own; this plugin is its only caller, and it calls it only after
+  `loadUsable` has checked that the person can use the project.
 - No new npm dependencies.

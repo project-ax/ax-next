@@ -714,6 +714,8 @@ describe('@ax/preset-k8s wiring', () => {
       'projects:update',
       'projects:delete',
       'projects:resolve',
+      'projects:read-file',
+      'projects:download-file',
       'system-prompt:augment:optional:projects',
     ]);
     // A tombstoned folder takes its project row with it (W3 §4.7).
@@ -721,11 +723,14 @@ describe('@ax/preset-k8s wiring', () => {
   });
 
   // W3 §4.4: the call direction is conversations → projects (and the
-  // orchestrator → projects), NEVER projects → conversations / sandbox.
-  // Bootstrap rejects cycles even through optionalCalls, so one stray edge
-  // would fail every production boot; pin the direction here, by name, so the
-  // failure says which rule broke rather than just "cycle".
-  it('pins the projects call direction: conversations/orchestrator call projects, projects never calls conversations:* or sandbox:*', () => {
+  // orchestrator → projects), NEVER projects → conversations. Projects declares
+  // no sandbox:* edge either: W3b's host read, `sandbox:read-shared-folder`, is
+  // called undeclared (hasService-guarded), because declaring it closed
+  // sandbox-subprocess → ipc-server → conversations → projects → sandbox-subprocess.
+  // Bootstrap rejects cycles even through optionalCalls, so one stray edge would
+  // fail a boot; pin the direction here, by name, so the failure says which rule
+  // broke rather than just "cycle".
+  it('pins the projects call direction: conversations/orchestrator call projects; projects never calls conversations:* and declares no sandbox:* edge', () => {
     const plugins = createK8sPlugins(stubConfig);
     const byName = new Map(plugins.map((p) => [p.manifest.name, p.manifest]));
     const hooksOf = (name: string): string[] => {
@@ -734,7 +739,8 @@ describe('@ax/preset-k8s wiring', () => {
       return [...m!.calls, ...(m!.optionalCalls ?? []).map((c) => c.hook)];
     };
     const projectsCalls = hooksOf('@ax/projects');
-    expect(projectsCalls.filter((h) => h.startsWith('conversations:') || h.startsWith('sandbox:'))).toEqual([]);
+    expect(projectsCalls.filter((h) => h.startsWith('conversations:'))).toEqual([]);
+    expect(projectsCalls.filter((h) => h.startsWith('sandbox:'))).toEqual([]);
     expect(hooksOf('@ax/conversations')).toContain('projects:resolve');
     expect(hooksOf('@ax/chat-orchestrator')).toContain('projects:resolve');
   });

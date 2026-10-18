@@ -341,6 +341,44 @@ describe('storage-node shared folders', () => {
     expect(f.authority.finish).toHaveBeenCalledTimes(1);
     expect(f.reports.join('\n')).toMatch(/staging/);
   });
+  // W3b — the host (uid 1000) reads a folder whose id it knows through the
+  // read-only export mount. `.shared` stays root-owned; 0711 lets anyone
+  // traverse it to a known name, and nobody but root list or create in it.
+  it('makes .shared traverse-only (0711) on a prepare that touches shared folders, creating it if needed', async () => {
+    const f = engineFixture(withShared()); await f.make().assign(f.data);
+    const shared = join(f.config.userFilesRoot, '.shared');
+    expect(statSync(shared).mode & 0o777).toBe(0o711);
+    expect(f.chowned).not.toContain(shared);
+    // The folders themselves are unchanged: created 0700, chowned to the runner.
+    expect(statSync(join(shared, 'sf_a')).mode & 0o777).toBe(0o700);
+  });
+  it('re-applies 0711 on every prepare, so a .shared someone tightened is loosened again', async () => {
+    const f = engineFixture(withShared()); const engine = f.make();
+    const shared = join(f.config.userFilesRoot, '.shared');
+    mkdirSync(shared, { mode: 0o700 }); chmodSync(shared, 0o700);
+    await engine.assign(f.data);
+    expect(statSync(shared).mode & 0o777).toBe(0o711);
+  });
+  it('leaves .shared alone on a prepare with no shared folders', async () => {
+    const f = engineFixture(); await f.make().assign(f.data);
+    expect(existsSync(join(f.config.userFilesRoot, '.shared'))).toBe(false);
+  });
+  it('makes an existing .shared 0711 at startup, without creating one that is missing', () => {
+    const f = engineFixture();
+    const shared = join(f.config.userFilesRoot, '.shared');
+    f.make();
+    expect(existsSync(shared)).toBe(false);
+    mkdirSync(shared, { mode: 0o700 }); chmodSync(shared, 0o700);
+    f.make();
+    expect(statSync(shared).mode & 0o777).toBe(0o711);
+    expect(f.reports).toEqual([]);
+  });
+  it('starts anyway when .shared cannot be opened at startup, and says so', () => {
+    const f = engineFixture();
+    symlinkSync(f.config.ledgerRoot, join(f.config.userFilesRoot, '.shared'));
+    expect(() => f.make()).not.toThrow();
+    expect(f.reports.join('\n')).toMatch(/\.shared/);
+  });
   it('accepts a root-owned pre-existing staging shared directory', async () => {
     const f = engineFixture(withShared()); mkdirSync(join(f.volume, 'shared'), { mode: 0o700 });
     await f.make().assign(f.data);

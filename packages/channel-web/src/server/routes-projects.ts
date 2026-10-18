@@ -19,8 +19,20 @@ import {
   type ProjectSummary,
   type UpdateProjectResponse,
 } from '../wire/projects.js';
+import {
+  basenameOf,
+  decodeFileBody,
+  FILE_LABEL_MAX_CHARS,
+  sendFileDownload,
+  toUserFileEntry,
+  UNREADABLE_FILE_NAME,
+  USER_FILES_ENTRIES_MAX,
+  type AgentUserFilesResponse,
+  type DownloadRouteResponse,
+} from './file-serving.js';
 import { latestActivityByAgent, rankByRecentUse, activityStamp } from './recency.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
+import { workspaceFilePath } from './safe-path.js';
 
 // ---------------------------------------------------------------------------
 // @ax/channel-web project routes (W3a, W3 spec §4.8).
@@ -32,6 +44,9 @@ import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './rou
 //   PATCH  /api/workspace/projects/:projectId               projects:update
 //   DELETE /api/workspace/projects/:projectId               projects:delete
 //   GET    /api/workspace/projects/:projectId/conversations projects:get, then conversations:list
+//   GET    /api/workspace/projects/:projectId/files         projects:read-file (the folder root)
+//   GET    /api/workspace/projects/:projectId/files/*       projects:read-file
+//   GET    /api/workspace/projects/:projectId/download/*    projects:download-file
 //
 // THE ACTOR. Every `projects:*` hook (and `agents:can-manage-sharing`) takes
 // its actor from `ctx.userId`, never from the payload. So each call here runs
@@ -54,10 +69,42 @@ import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './rou
 // empty list (true — there are no projects), owner-candidates still answers
 // (it doesn't need projects), and every other route answers 503
 // `projects-unavailable` — never a 404 that would read as "you lost access".
+//
+// THE FILE ROUTES (W3b) answer in the agent user-files shape
+// (`AgentUserFilesResponse`, built by the same file-serving helpers), so one
+// browser component reads both. The folder's id never reaches them — the hooks
+// don't return it, and the handlers rebuild every response field by field.
+// Order: auth → project id → hook loaded → path → hook. The path check runs
+// BEFORE anything looks the project up, so its 400 is a function of the URL
+// string alone — identical for a project you use, someone else's, and one that
+// doesn't exist — and can't be used to probe for projects. (The agent routes
+// check access first because there the access check lives in the route; here
+// it lives in the hook, which takes the project and the path together and
+// answers `not-found` for both kinds of missing project.)
+//
+//   read-file                      download-file
+//   ---------                      -------------
+//   dir / file    → 200 JSON       bytes         → 200 octet-stream attachment
+//   absent        → 404 file-not-found            not-found  → 404 file-not-found
+//   not-found     → 404 project-not-found         not-a-file → 400 not-a-file
+//   unavailable   → 503 project-files-unavailable too-large  → 413 file-too-large
+//   forbidden     → 403, invalid-payload → 400    unavailable → 503 project-files-unavailable
+//
+// A download's `not-found` covers an unknown project, someone else's and a
+// missing file alike (the hook can't tell them apart on purpose), hence one
+// 404 body there.
 // ---------------------------------------------------------------------------
 
 const ACTOR_AGENT_ID = '@ax/channel-web';
 const PROJECT_CONVERSATION_TITLE_MAX_CHARS = 120;
+/** `@ax/projects`' bound on a file path (its `RelPathSchema`); longer is a 400 here. */
+const PROJECT_FILE_PATH_MAX_CHARS = 4096;
+/**
+ * Mirrors `@ax/projects`' `DOWNLOAD_FILE_MAX_BYTES` (no cross-plugin import).
+ * Only decides the `downloadable` HINT on a file answer; the download hook
+ * stays the gate and answers `too-large` (413) on its own.
+ */
+const PROJECT_FILE_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
 
 // --- duck-typed hook payloads (invariant 2 — no cross-plugin import) -------
 
@@ -98,6 +145,19 @@ interface ProjectsUpdateOutput {
 }
 interface AgentsListForUserOutput {
   agents: Array<{ id: string; displayName: string; createdAt?: unknown }>;
+}
+type ProjectsReadFileOutput =
+  | {
+      kind: 'dir';
+      entries: Array<{ name: string; kind: 'file' | 'dir'; size?: number; updatedAt?: string }>;
+      truncated: boolean;
+    }
+  | { kind: 'file'; contents: Uint8Array; truncated: boolean; size: number }
+  | { kind: 'absent' }
+  | { kind: 'unavailable' };
+interface ProjectsDownloadFileOutput {
+  contents: Uint8Array;
+  size: number;
 }
 interface ConversationRow {
   conversationId: string;
@@ -158,6 +218,50 @@ function projectRefused(res: RouteResponse, err: unknown): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * Map a `projects:download-file` refusal onto a status (the table at the top).
+ * False for anything else — the caller rethrows it.
+ */
+function downloadRefused(res: RouteResponse, err: unknown): boolean {
+  if (!(err instanceof PluginError)) return false;
+  switch (err.code) {
+    case 'not-found':
+      res.status(404).json({ error: 'file-not-found' });
+      return true;
+    case 'not-a-file':
+      res.status(400).json({ error: 'not-a-file' });
+      return true;
+    case 'too-large':
+      res.status(413).json({ error: 'file-too-large' });
+      return true;
+    case 'unavailable':
+      res.status(503).json({ error: 'project-files-unavailable' });
+      return true;
+    case 'forbidden':
+      res.status(403).json({ error: 'forbidden' });
+      return true;
+    case 'invalid-payload':
+      res.status(400).json({ error: 'invalid-payload' });
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * The splat → a folder-relative path, or `null` (the caller answers 400).
+ * `rawSplat` arrives undecoded; `workspaceFilePath` owns the single decode and
+ * refuses traversal, absolute paths, empty/dot segments, NUL and bad escapes.
+ * `''` is the folder root, allowed only where `allowRoot` says so (a listing,
+ * not a download).
+ */
+function projectFilePath(rawSplat: string, allowRoot: boolean): string | null {
+  if (rawSplat.length === 0) return allowRoot ? '' : null;
+  const decoded = workspaceFilePath(rawSplat);
+  if (decoded === null || decoded.length > PROJECT_FILE_PATH_MAX_CHARS) return null;
+  return decoded;
 }
 
 function isDenial(err: unknown): boolean {
@@ -232,6 +336,67 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
 
   async function getProject(userId: string, projectId: string): Promise<ProjectsGetOutput> {
     return bus.call<{ projectId: string }, ProjectsGetOutput>('projects:get', actorCtx(userId), { projectId });
+  }
+
+  /**
+   * The body behind both listing routes (root and splat) — one security order,
+   * written once. See THE FILE ROUTES at the top for the order and mapping.
+   */
+  async function readProjectFilesPath(req: RouteRequest, res: RouteResponse, rawSplat: string): Promise<void> {
+    const userId = await authOr401(bus, initCtx, req, res);
+    if (userId === null) return;
+    const projectId = projectIdParam(req, res);
+    if (projectId === null) return;
+    if (!projectsLoaded(res, bus.hasService('projects:read-file'))) return;
+    const relPath = projectFilePath(rawSplat, true);
+    if (relPath === null) {
+      res.status(400).json({ error: 'invalid-path' });
+      return;
+    }
+    let out: ProjectsReadFileOutput;
+    try {
+      out = await bus.call<{ projectId: string; path: string }, ProjectsReadFileOutput>(
+        'projects:read-file',
+        actorCtx(userId),
+        { projectId, path: relPath },
+      );
+    } catch (err) {
+      if (projectRefused(res, err)) return;
+      throw err;
+    }
+    if (out.kind === 'unavailable') {
+      // A fact about the deployment, not the folder — never an empty listing.
+      res.status(503).json({ error: 'project-files-unavailable' });
+      return;
+    }
+    if (out.kind === 'absent') {
+      res.status(404).json({ error: 'file-not-found' });
+      return;
+    }
+    const name = relPath === '' ? '' : (fenceLine(basenameOf(relPath), FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME);
+    if (out.kind === 'dir') {
+      res.status(200).json({
+        kind: 'dir',
+        path: relPath,
+        name,
+        entries: out.entries.slice(0, USER_FILES_ENTRIES_MAX).map((e) => toUserFileEntry(relPath, e)),
+        truncated: out.truncated || out.entries.length > USER_FILES_ENTRIES_MAX,
+      } satisfies AgentUserFilesResponse);
+      return;
+    }
+    const decoded = decodeFileBody(out.contents);
+    res.status(200).json({
+      kind: 'file',
+      path: relPath,
+      name,
+      body: decoded.body,
+      // The hook's preview (1 MiB) is longer than ours (128 KiB), so a clipped
+      // preview is already `too-large` here; this only keeps "the whole file"
+      // honest if those two bounds ever cross.
+      clipped: decoded.clipped === null && out.truncated ? 'too-large' : decoded.clipped,
+      size: out.size,
+      downloadable: out.size <= PROJECT_FILE_DOWNLOAD_MAX_BYTES,
+    } satisfies AgentUserFilesResponse);
   }
 
   return {
@@ -430,6 +595,48 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
         }));
       res.status(200).json({ conversations } satisfies ProjectConversationsResponse);
     },
+
+    /** GET /api/workspace/projects/:projectId/files — the folder root. */
+    async projectFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await readProjectFilesPath(req, res, '');
+    },
+
+    /** GET /api/workspace/projects/:projectId/files/* — a folder listing or a file preview. */
+    async projectFile(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await readProjectFilesPath(req, res, req.params['*'] ?? '');
+    },
+
+    /**
+     * GET /api/workspace/projects/:projectId/download/* — one file's bytes,
+     * whole (≤ 10 MiB) or not at all, with the same headers as every download
+     * on this surface (`sendFileDownload`: octet-stream, attachment with a
+     * sanitized name, nosniff). The folder is agent-written, so its bytes
+     * never decide how a browser treats them.
+     */
+    async projectFileDownload(req: RouteRequest, res: DownloadRouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const projectId = projectIdParam(req, res);
+      if (projectId === null) return;
+      if (!projectsLoaded(res, bus.hasService('projects:download-file'))) return;
+      const relPath = projectFilePath(req.params['*'] ?? '', false);
+      if (relPath === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+      let out: ProjectsDownloadFileOutput;
+      try {
+        out = await bus.call<{ projectId: string; path: string }, ProjectsDownloadFileOutput>(
+          'projects:download-file',
+          actorCtx(userId),
+          { projectId, path: relPath },
+        );
+      } catch (err) {
+        if (downloadRefused(res, err)) return;
+        throw err;
+      }
+      sendFileDownload(res, relPath, out.contents);
+    },
   };
 }
 
@@ -449,6 +656,21 @@ export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext
     { method: 'PATCH', path: '/api/workspace/projects/:projectId', handler: h.updateProject },
     { method: 'DELETE', path: '/api/workspace/projects/:projectId', handler: h.deleteProject },
     { method: 'GET', path: '/api/workspace/projects/:projectId/conversations', handler: h.projectConversations },
+    // The splats are a bare `*` as the FINAL segment — the only spelling
+    // @ax/http-server's router recognises — and the remainder arrives under
+    // `req.params['*']` UNDECODED (`projectFilePath` decodes it once). The
+    // router tries every exact pattern before any splat, so `/files` is never
+    // swallowed by `/files/*`. `download` is its own segment, not a name under
+    // `files/`, so no file in the folder can collide with it.
+    { method: 'GET', path: '/api/workspace/projects/:projectId/files', handler: h.projectFiles },
+    { method: 'GET', path: '/api/workspace/projects/:projectId/files/*', handler: h.projectFile },
+    {
+      method: 'GET',
+      path: '/api/workspace/projects/:projectId/download/*',
+      // The download writes bytes through the real `HttpResponse`, a superset
+      // of `RouteResponse` (the agent download routes are registered the same way).
+      handler: h.projectFileDownload as unknown as RouteHandler,
+    },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

@@ -13,13 +13,21 @@ import type {
   LocateSharedFolderOutput,
   MountSpec,
   NfsMountSpec,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
   ResolveMountsOutput,
   UserFileDirEntry,
 } from '@ax/sandbox-mount-protocol';
-import { readConfinedUserFiles } from '@ax/user-files-read';
+import {
+  readConfinedByWalk,
+  readConfinedUserFiles,
+  splitRelPath,
+  WalkPathError,
+  WalkReadError,
+} from '@ax/user-files-read';
 import * as path from 'node:path';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
@@ -607,6 +615,99 @@ export async function deleteSharedFolder(
   }
   log.info('shared_folder_deleted', { folderId });
   return { deleted: true };
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:read-shared-folder (W3b) — the host's read-only view of ONE shared
+// folder, for @ax/projects (which checks the person can use the project
+// first; this hook does no grant check, like sandbox:locate-shared-folder).
+//
+// Only the host-mounted realization exists: `<userFilesHostReadRoot>` is the
+// user-files export mounted read-only into the host pod, and the folder is at
+// `.shared/<folderId>` on it (the same layout constant the delete path above
+// confines to — no need to ask the resolver). No pod-per-call fallback: every
+// deployment that runs projects sets the root, and one without it answers
+// `unavailable` (W3b plan, YAGNI).
+//
+// The read is `readConfinedByWalk`: the root is trusted configuration, and
+// `.shared`, `<folderId>` and every caller component are opened one at a time
+// relative to the previous descriptor with O_NOFOLLOW. A folder is written by
+// agents, so a symlink at any depth, swapped in at any moment, is `absent` —
+// never followed. Intermediates are opened O_PATH, which is what lets the host
+// (uid 1000) pass through a root-owned `.shared` that the storage node keeps
+// at 0711 (searchable, not listable).
+// ---------------------------------------------------------------------------
+
+const READ_SHARED_FOLDER_HOOK = 'sandbox:read-shared-folder';
+const SHARED_READ_MAX_ENTRIES = READ_MAX_DIR_ENTRIES;
+
+function invalidSharedRead(message: string, cause?: unknown): PluginError {
+  return new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    hookName: READ_SHARED_FOLDER_HOOK,
+    message,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+/**
+ * Realize `sandbox:read-shared-folder` for the k8s provider. `walk` is
+ * injectable for tests only (the real one needs Linux /proc).
+ */
+export async function readSharedFolder(
+  config: ResolvedSandboxK8sConfig,
+  input: ReadSharedFolderInput,
+  log: Logger,
+  walk: typeof readConfinedByWalk = readConfinedByWalk,
+): Promise<ReadSharedFolderOutput> {
+  // Decided before the path is consulted, so it is the same answer for every
+  // folder and path and discloses nothing.
+  if (config.userFilesHostReadRoot.length === 0) return { kind: 'unavailable' };
+  const folderId: unknown = (input as { folderId?: unknown } | null)?.folderId;
+  if (!isValidSharedFolderId(folderId)) throw invalidSharedRead('invalid shared folder id');
+  let rel: string[];
+  try {
+    rel = splitRelPath(input.relPath ?? '');
+  } catch (err) {
+    if (err instanceof WalkPathError) throw invalidSharedRead(`invalid relPath: ${err.message}`, err);
+    throw err;
+  }
+  const parts = [SHARED_FOLDERS_DIR, folderId, ...rel];
+  try {
+    const out = await walk(config.userFilesHostReadRoot, parts, {
+      limitBytes: input.limitBytes,
+      maxEntries: input.maxEntries ?? SHARED_READ_MAX_ENTRIES,
+    });
+    if (out.kind === 'absent') {
+      // The reason is for us; the caller gets one undifferentiated absence
+      // (a link vs. missing split would be an oracle over an agent's tree).
+      log.debug('shared_folder_read_absent', { folderId, reason: out.reason });
+      return { kind: 'absent' };
+    }
+    return out;
+  } catch (err) {
+    if (err instanceof WalkPathError) throw invalidSharedRead(`invalid path: ${err.message}`, err);
+    if (err instanceof WalkReadError) {
+      if (err.code === 'unsupported-platform') return { kind: 'unavailable' };
+      // depth 0 opens `.shared` (search on the export root), depth 1 opens the
+      // folder (search on `.shared`). EACCES there is the deployment, not the
+      // folder: the same answer for every folder, so it is safe to say.
+      if (err.code === 'EACCES' && (err.depth === 0 || err.depth === 1)) {
+        log.warn('shared_folder_read_unavailable', {
+          folderId,
+          depth: err.depth,
+          fix:
+            `the host cannot traverse ${SHARED_FOLDERS_DIR} on the user-files export. The ` +
+            `storage node sets ${SHARED_FOLDERS_DIR} to 0711 (on startup and on every ` +
+            `prepare that mounts a shared folder); without the shared pool ` +
+            `(sharedPool.enabled: false) nothing does, and project files stay unavailable.`,
+        });
+        return { kind: 'unavailable' };
+      }
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,15 @@ import type {
   LocalDirMountSpec,
   LocateSharedFolderInput,
   LocateSharedFolderOutput,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
 } from '@ax/sandbox-mount-protocol';
+import {
+  readConfinedByWalk,
+  splitRelPath,
+  WalkPathError,
+  WalkReadError,
+} from '@ax/user-files-read';
 
 // ---------------------------------------------------------------------------
 // shared-folders — the subprocess provider's realization of W2 shared folders
@@ -37,6 +45,7 @@ export const SHARED_FOLDERS_MOUNT_BASE = '/shared';
 const RESOLVE_HOOK = 'sandbox:resolve-mounts';
 const LOCATE_HOOK = 'sandbox:locate-shared-folder';
 const DELETE_HOOK = 'sandbox:delete-shared-folder';
+const READ_HOOK = 'sandbox:read-shared-folder';
 
 /** One entry of the runner's `AX_SHARED_FOLDERS` JSON list (key order is part of the contract). */
 export interface SharedFolderEnvEntry {
@@ -327,4 +336,109 @@ async function removeConfined(
     return;
   }
   await fs.rm(hostPath, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:read-shared-folder (W3b)
+// ---------------------------------------------------------------------------
+
+/** Most entries in one listing when the caller does not say (matches k8s). */
+const READ_MAX_ENTRIES = 5000;
+
+function readError(code: string, pluginName: string, message: string, cause?: unknown): PluginError {
+  return new PluginError({
+    code,
+    plugin: pluginName,
+    hookName: READ_HOOK,
+    message,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+/**
+ * Realize `sandbox:read-shared-folder` for the subprocess provider: the host's
+ * read-only view of one folder. NO GRANT CHECK — the only caller,
+ * `@ax/projects`, checks the person can use the project first.
+ *
+ * Where: the resolver's `sandbox:locate-shared-folder` answer, which must be
+ * exactly `<root>/.shared/<the requested id>` ({@link checkSharedFolderMount}).
+ * How: `readConfinedByWalk` from `<root>` — the one path opened by name, and
+ * only after the shape check — then `.shared`, `<id>` and each caller
+ * component opened relative to the previous descriptor with O_NOFOLLOW. A
+ * symlink the agent planted at any depth is `absent`, never followed, even
+ * one swapped in mid-read. (Unlike the delete path above, this one is not
+ * check-then-use: there is no window.)
+ *
+ * `unavailable` when no resolver is loaded, or off Linux (the walk needs
+ * /proc). A read that failed throws. `walk` is injectable for tests only.
+ */
+export async function readSharedFolder(
+  ctx: AgentContext,
+  bus: HookBus,
+  pluginName: string,
+  input: ReadSharedFolderInput,
+  walk: typeof readConfinedByWalk = readConfinedByWalk,
+): Promise<ReadSharedFolderOutput> {
+  if (!bus.hasService(LOCATE_HOOK)) return { kind: 'unavailable' };
+  const folderId: unknown = (input as { folderId?: unknown } | undefined)?.folderId;
+  if (!isValidSharedFolderId(folderId)) {
+    throw readError('invalid-payload', pluginName, 'folderId is not a valid shared-folder id');
+  }
+  let rel: string[];
+  try {
+    rel = splitRelPath(input.relPath ?? '');
+  } catch (err) {
+    if (err instanceof WalkPathError) {
+      throw readError('invalid-payload', pluginName, `invalid relPath: ${err.message}`, err);
+    }
+    throw err;
+  }
+
+  const { mount } = await bus.call<LocateSharedFolderInput, LocateSharedFolderOutput>(
+    LOCATE_HOOK,
+    ctx,
+    { folderId },
+  );
+  if (mount.kind !== 'localDir') {
+    throw readError(
+      'unrealizable-mount-kind',
+      pluginName,
+      `subprocess sandbox cannot read a '${String(mount.kind)}' shared folder. Load ` +
+        `@ax/workspace-localdir for the subprocess/CLI preset instead of @ax/workspace-filestore.`,
+    );
+  }
+  const checked = checkSharedFolderMount(mount, folderId);
+  if ('problem' in checked) {
+    throw readError(
+      'unsafe-shared-folder-location',
+      pluginName,
+      `refusing to read shared folder '${folderId}': the located path is not ` +
+        `<root>/${SHARED_FOLDERS_DIR}/${folderId} (${checked.problem})`,
+    );
+  }
+  // Proven `<root>/.shared/<folderId>`, so this is `<root>`.
+  const root = path.dirname(path.dirname(mount.hostPath));
+
+  try {
+    const out = await walk(root, [SHARED_FOLDERS_DIR, folderId, ...rel], {
+      limitBytes: input.limitBytes,
+      maxEntries: input.maxEntries ?? READ_MAX_ENTRIES,
+    });
+    if (out.kind === 'absent') {
+      // The reason is for our log only (a link-vs-missing split is an oracle).
+      ctx.logger.debug('shared_folder_read_absent', { folderId, reason: out.reason });
+      return { kind: 'absent' };
+    }
+    return out;
+  } catch (err) {
+    if (err instanceof WalkReadError && err.code === 'unsupported-platform') {
+      return { kind: 'unavailable' };
+    }
+    // The walk adds `.shared/<id>` to the caller's parts, so a relPath that
+    // passed splitRelPath can still be too deep. Same answer as k8s.
+    if (err instanceof WalkPathError) {
+      throw readError('invalid-payload', pluginName, `invalid relPath: ${err.message}`, err);
+    }
+    throw err;
+  }
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
 import { describeFailure, redactedError } from './describe-failure.js';
-import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts } from './sources.js';
+import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts, SHARED_FOLDERS_ROOT } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
@@ -59,6 +59,13 @@ const targetParts = (record: StorageRecord): string[][] => [
 
 /** The helper's own uid. Only it may own the late-bind staging directories. */
 const HELPER_UID = 0;
+/**
+ * `.shared` is root-owned and traverse-only: anyone may open a folder whose id
+ * they know (the host, uid 1000, reads one through the read-only export mount —
+ * W3b), and nobody but root can list `.shared` or create in it. Runners never
+ * mount `.shared` itself, only the folders they hold a grant on.
+ */
+const SHARED_ROOT_MODE = 0o711;
 export interface StorageNodeIo {
   directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
   /** The owning uid of a held directory. */
@@ -85,6 +92,19 @@ export class StorageNodeEngine {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
     const root = this.io.directory(config.ledgerRoot, []);
     try { fchmodSync(root.fd, 0o700); } finally { root.close(); }
+    // Fix an existing `.shared` now, so the host can read folders before the
+    // next prepare. Never fatal: the export may be unreachable at startup, and
+    // every prepare that touches a shared folder re-applies the mode anyway.
+    try { this.traverseOnlySharedRoot(false); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.io.report(`could not set ${SHARED_FOLDERS_ROOT} to 0711 at startup (the host cannot read shared folders until the next prepare): ${describeFailure(e, {})}`);
+      }
+    }
+  }
+  /** Open (or create) `.shared` on the writable export, pinned, and make it 0711. */
+  private traverseOnlySharedRoot(create: boolean) {
+    const shared = this.io.directory(this.config.userFilesRoot, [SHARED_FOLDERS_ROOT], create);
+    try { fchmodSync(shared.fd, SHARED_ROOT_MODE); } finally { shared.close(); }
   }
   private serial<T>(uid: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.pending.get(uid) ?? Promise.resolve();
@@ -162,6 +182,8 @@ export class StorageNodeEngine {
           const volume = this.volume(record);
           try { this.sharedStaging(volume, sharedFolderTargetParts(input.sharedFolders[0]!.folderId)[0]!).close(); }
           finally { volume.close(); }
+          // Before any folder below creates `.shared` 0700 (see SHARED_ROOT_MODE).
+          this.traverseOnlySharedRoot(true);
         }
         for (const role of input.roles) {
           const backing = role === 'user-files' ? this.config.userFilesRoot : this.config.memoryRoot;
@@ -199,8 +221,9 @@ export class StorageNodeEngine {
               assertReadOnlyMount(this.io.mountInfo(), this.config.userFilesReadOnlyRoot);
               readOnlySource = this.io.directory(this.config.userFilesReadOnlyRoot, sharedFolderSourceParts(folder.folderId));
               // Two walks, so prove they reached the folder just chowned. Today
-              // nothing can swap it (`.shared` is root 0700), but this keeps the
-              // viewer path as tight as the editor's single descriptor.
+              // nothing can swap it (`.shared` is still root-owned; 0711 is
+              // traverse-only, so nobody but root can list or create in it), but
+              // this keeps the viewer path as tight as the editor's single descriptor.
               if (this.io.inode(readOnlySource.fd) !== this.io.inode(source.fd)) {
                 throw new Error('read-only shared folder source does not match');
               }

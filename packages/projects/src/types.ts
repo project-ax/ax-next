@@ -147,3 +147,64 @@ export type ProjectsResolveOutput = z.infer<typeof ResolveOutputSchema>;
 export interface ProjectsDeletedEvent {
   projectId: string;
 }
+
+// ---- read-file / download-file (W3b §5.1) ----------------------------------
+// Host-internal (channel-web's project routes call them; never an IPC action).
+// `path` is relative to the project's folder ('' = the folder itself). It is
+// caller-supplied and the folder is agent-written: the sandbox provider's
+// confined walk rejects `..`, absolute paths and symlinks at any depth. The
+// folder's id NEVER appears in an output — the browser has no use for it, and
+// it is the key the grant-free sandbox read takes.
+
+/** Most bytes of a file `projects:read-file` returns (a preview). */
+export const READ_FILE_PREVIEW_MAX_BYTES = 1_048_576;
+/** Most entries in one `projects:read-file` listing (channel-web's `USER_FILES_ENTRIES_MAX`). */
+export const READ_FILE_MAX_ENTRIES = 500;
+/** Largest file `projects:download-file` returns; bigger is `too-large`, never truncated. */
+export const DOWNLOAD_FILE_MAX_BYTES = 10_485_760;
+
+const RelPathSchema = z.string().max(4096);
+/** Bytes (a Buffer is one too). `z.custom`, not `z.instanceof`, to keep the `ArrayBufferLike` type. */
+const BytesSchema = z.custom<Uint8Array>((v) => v instanceof Uint8Array, 'expected bytes');
+
+export const ReadFileInputSchema = z.object({ projectId: ProjectIdSchema, path: RelPathSchema }).strict();
+export type ProjectsReadFileInput = z.input<typeof ReadFileInputSchema>;
+const FileEntrySchema = z.object({
+  name: z.string(),
+  kind: z.enum(['file', 'dir']),
+  size: z.number().optional(),
+  updatedAt: z.string().optional(),
+});
+export type ProjectFileEntry = z.infer<typeof FileEntrySchema>;
+export const ReadFileOutputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('dir'), entries: z.array(FileEntrySchema), truncated: z.boolean() }),
+  z.object({
+    kind: z.literal('file'),
+    contents: BytesSchema,
+    /** `contents` is the first 1 MiB of a longer file. */
+    truncated: z.boolean(),
+    /** The whole file's size in bytes. */
+    size: z.number(),
+  }),
+  z.object({ kind: z.literal('absent') }),
+  /** This deployment can't read project folders on the host (no reader, or no mount). */
+  z.object({ kind: z.literal('unavailable') }),
+]);
+export type ProjectsReadFileOutput = z.infer<typeof ReadFileOutputSchema>;
+
+export const DownloadFileInputSchema = z.object({ projectId: ProjectIdSchema, path: RelPathSchema }).strict();
+export type ProjectsDownloadFileInput = z.input<typeof DownloadFileInputSchema>;
+export const DownloadFileOutputSchema = z.object({ contents: BytesSchema, size: z.number() });
+export type ProjectsDownloadFileOutput = z.infer<typeof DownloadFileOutputSchema>;
+
+/**
+ * The `PluginError` codes `projects:download-file` refuses with (besides
+ * `invalid-payload`). Each maps to one HTTP answer:
+ * - `not-found` — no such project, one the person can't use, OR no file at
+ *   that path. One code and one message for all three, so a download can't
+ *   probe for projects.
+ * - `not-a-file` — the path is a folder.
+ * - `too-large` — over {@link DOWNLOAD_FILE_MAX_BYTES}. No bytes are returned.
+ * - `unavailable` — this deployment can't read project folders on the host.
+ */
+export type ProjectsDownloadRefusal = 'not-found' | 'not-a-file' | 'too-large' | 'unavailable';

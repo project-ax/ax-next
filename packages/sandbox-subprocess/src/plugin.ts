@@ -3,6 +3,8 @@ import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
+  ReadSharedFolderInput,
+  ReadSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -13,7 +15,7 @@ import {
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-host-ops.js';
-import { deleteSharedFolder } from './shared-folders.js';
+import { deleteSharedFolder, readSharedFolder } from './shared-folders.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
 
@@ -53,10 +55,16 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // a shared folder's bytes. Realized by locating the folder through the
       // resolver's `sandbox:locate-shared-folder` and `rm -rf`ing exactly
       // `<root>/.shared/<folderId>`.
+      //
+      // `sandbox:read-shared-folder` (W3b): the host's read-only view of one
+      // shared folder, walked from `<root>` with no symlink followed (Linux
+      // only; `unavailable` elsewhere). No grant check — @ax/projects checks
+      // the person first.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
+        'sandbox:read-shared-folder',
       ],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
@@ -94,7 +102,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           hook: 'sandbox:locate-shared-folder',
           degradation:
             'sandbox:delete-shared-folder throws no-mount-resolver (nothing is ' +
-            'deleted, so the caller keeps its tombstone and retries); opening ' +
+            'deleted, so the caller keeps its tombstone and retries); ' +
+            'sandbox:read-shared-folder answers unavailable; opening ' +
             'sessions is unaffected',
         },
       ],
@@ -136,6 +145,15 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:delete-shared-folder',
         PLUGIN_NAME,
         async (ctx, input) => deleteSharedFolder(ctx, bus, PLUGIN_NAME, input),
+      );
+
+      // W3b: read one shared folder, read-only, no symlink followed at any
+      // depth. A local-disk walk, so a modest timeout is plenty.
+      bus.registerService<ReadSharedFolderInput, ReadSharedFolderOutput>(
+        'sandbox:read-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => readSharedFolder(ctx, bus, PLUGIN_NAME, input),
+        { timeoutMs: 30_000 },
       );
 
       // §11 cleanup-on-agent-delete. rm -rf the agent's durable user-files
