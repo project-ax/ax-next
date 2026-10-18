@@ -154,6 +154,9 @@ export function createChannelWebServerPlugin(
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
+        // W3e: PUT /api/chat/conversations/:id/project. Registered by the
+        // same plugin as set-title, so a hard dep like it.
+        'conversations:set-project',
         'agent:invoke',
         // JIT (TASK-36) — the permission-decision endpoint applies a
         // user-approved capability grant via the orchestrator. Orchestrator +
@@ -684,6 +687,21 @@ export function createChannelWebServerPlugin(
         {
           hook: 'projects:download-file',
           degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
+        },
+        {
+          // W3e — add one of your agents to a project, change its role, or
+          // remove it. @ax/projects maps the project to its folder itself.
+          hook: 'projects:set-member',
+          degradation:
+            'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
+        },
+        {
+          // W3e — only probed, never called: conversations:set-project calls
+          // it. Tells "projects aren't loaded" apart from a routine chat's
+          // refusal, both a bare forbidden from the hook.
+          hook: 'projects:resolve',
+          degradation:
+            'PUT /api/chat/conversations/:id/project answers 503 projects-unavailable for a move into a project (moving out still works)',
         },
         {
           // "May this person manage this agent's sharing?" — who may own a new

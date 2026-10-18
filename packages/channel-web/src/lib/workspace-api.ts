@@ -72,6 +72,7 @@ import type {
   ProjectConversationsResponse,
   ProjectDetail,
   ProjectLabel,
+  SetProjectMemberResponse,
   UpdateProjectResponse,
 } from '@/wire/projects';
 import type {
@@ -1381,6 +1382,25 @@ export const workspaceApi = {
     const res = await httpFetch(`/api/workspace${path}`, { method: 'DELETE', headers: writeHeaders });
     if (!res.ok) throw new WorkspaceApiError(path, res.status);
   },
+
+  /**
+   * W3e — add one of the person's agents to the project, or change its role.
+   * Answers the members after the change. 403 for the owner agent, a project
+   * they can't manage, or an agent they can't add; 404 for a project they
+   * can't use.
+   */
+  setProjectMember: (projectId: string, agentId: string, role: 'editor' | 'viewer') =>
+    req<SetProjectMemberResponse>(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(agentId)}`,
+      { method: 'PUT', body: { role } },
+    ),
+
+  /** W3e — remove an agent from the project. Its chats stay; the members after. */
+  removeProjectMember: (projectId: string, agentId: string) =>
+    req<SetProjectMemberResponse>(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(agentId)}`,
+      { method: 'DELETE' },
+    ),
 
   /** This person's chats in the project, newest first. */
   listProjectConversations: (projectId: string) =>
