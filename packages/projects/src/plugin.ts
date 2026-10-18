@@ -91,7 +91,8 @@ interface AuthorizeMountsOut {
 /**
  * `sandbox:read-shared-folder` (the sandbox provider's confined, read-only,
  * grant-free reader — so it is called only after `loadUsable` /
- * `resolveProject`). Declared locally, like the slices above.
+ * `resolveProject`). Declared locally, like the slices above. Called
+ * undeclared in the manifest (a declared edge is a boot cycle; see there).
  */
 const READ_SHARED_FOLDER_HOOK = 'sandbox:read-shared-folder';
 interface ReadSharedFolderIn {
@@ -452,13 +453,20 @@ export function createProjectsPlugin(): Plugin {
         'projects:download-file',
         PROJECTS_BLOCK_HOOK,
       ],
-      // NEVER conversations:*, and no sandbox:* except exactly
-      // `sandbox:read-shared-folder` (an optional call, below). conversations
+      // NEVER conversations:*, and no declared sandbox:* edge. conversations
       // calls projects (`projects:resolve` on chat create), and bootstrap
-      // rejects a plugin call-graph cycle (W3 §4.4), so every edge out of here
-      // must never lead back. The sandbox providers' own calls (sessions, IPC,
-      // the mount resolver → shared-folders) don't; preset.test pins the rule
-      // and prod-bootstrap / boot-graph prove the real graph has no cycle.
+      // rejects a plugin call-graph cycle (W3 §4.4) even through
+      // optionalCalls, so every declared edge out of here must never lead back.
+      //
+      // `sandbox:read-shared-folder` (W3b) is therefore called UNDECLARED,
+      // `bus.hasService`-guarded (`readFolder` / `projectContext`): declaring
+      // it closed `@ax/sandbox-subprocess → @ax/ipc-server (ipc:start) →
+      // @ax/conversations → @ax/projects → @ax/sandbox-subprocess`, and the
+      // W3a acceptance stack failed to boot. Same precedent as shared-folders →
+      // `sandbox:delete-shared-folder`. Without a reader: projects:read-file
+      // answers unavailable, projects:download-file refuses 'unavailable', and
+      // the project block carries no file context (its brief still lands).
+      // preset.test and this package's manifest test pin the rule.
       calls: [
         'database:get-instance',
         'agents:can-manage-sharing',
@@ -475,11 +483,6 @@ export function createProjectsPlugin(): Plugin {
           hook: 'teams:list-for-user',
           degradation:
             'projects:list cannot find team agents without the actor’s team ids, so it lists only projects of their personal agents.',
-        },
-        {
-          hook: READ_SHARED_FOLDER_HOOK,
-          degradation:
-            "no host reader for project folders: projects:read-file answers unavailable, projects:download-file refuses 'unavailable', and the project block carries no file context (its brief still lands).",
         },
       ],
       subscribes: [SHARED_FOLDERS_DELETED_HOOK],

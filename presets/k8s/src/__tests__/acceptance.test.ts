@@ -3745,6 +3745,8 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
     error: string | null;
     augmentHasProjectBlock: boolean;
     augment: string;
+    /** What bootstrap mode would prepend (`rules` + `brief` only); null when the host set none. */
+    bootstrapAugment: string | null;
   }
   function summaryOf(outcome: AgentOutcome): RunnerSummary {
     if (outcome.kind !== 'complete') throw new Error(`expected complete, got ${JSON.stringify(outcome)}`);
@@ -3850,4 +3852,165 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       expect(kept3.conversation.conversationId).toBe(chat3);
     },
   );
+
+  // -------------------------------------------------------------------------
+  // W3b — the project's files, read-only (W3b plan task 6).
+  //
+  // The host reads a project folder through `sandbox:read-shared-folder`, which
+  // walks every path component with O_NOFOLLOW through /proc/self/fd. That walk
+  // exists on Linux only; elsewhere sandbox-subprocess answers `unavailable` and
+  // @ax/projects degrades: the block keeps its brief and drops its context,
+  // read-file answers `unavailable`, download refuses `unavailable`. CI runs on
+  // Linux (ubuntu-latest), so the real walk is what CI checks; a macOS run
+  // checks the documented degradation instead.
+  // -------------------------------------------------------------------------
+  const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
+  const INSTRUCTIONS = 'Ship the launch checklist before Friday. INSTR-MARKER-7f3a';
+  const STATUS = 'Blocked on legal review. STATUS-MARKER-91c2';
+  const SECRET = 'OTHER-AGENT-SECRET-5d1e';
+  const MiB = 1024 * 1024;
+
+  /** A project with instructions.md + memory/status.md planted on disk, and one turn in it. */
+  async function w3bProject(label: string): Promise<{
+    projectId: string;
+    folderDir: string;
+    summary: RunnerSummary;
+  }> {
+    const owner = await createAgent(`W3b owner ${label}`);
+    const project = await bus.call<unknown, { projectId: string; folderId: string }>('projects:create', userCtx(), {
+      ownerAgentId: owner,
+      name: `${PROJECT_NAME} ${label}`,
+      description: PROJECT_DESCRIPTION,
+    });
+    const folderDir = path.join(filesRoot, '.shared', project.folderId);
+    await fs.mkdir(path.join(folderDir, 'memory'), { recursive: true });
+    await fs.writeFile(path.join(folderDir, 'instructions.md'), `${INSTRUCTIONS}\n`);
+    await fs.writeFile(path.join(folderDir, 'memory', 'status.md'), `${STATUS}\n`);
+    const chat = await createChat(owner, project.projectId);
+    await plan({});
+    const summary = summaryOf(await turn(chat, owner));
+    expect(summary.conversationId).toBe(chat);
+    expect(summary.error).toBeNull();
+    return { projectId: project.projectId, folderDir, summary };
+  }
+
+  /** The brief is person-written only, and bootstrap mode gets exactly it, never folder text. */
+  function expectBriefOnlyInBootstrap(s: RunnerSummary, label: string): string {
+    const bootstrap = s.bootstrapAugment;
+    expect(bootstrap).not.toBeNull();
+    expect(bootstrap).toContain(`## Project: ${PROJECT_NAME} ${label}`);
+    expect(bootstrap).toContain(`> ${PROJECT_DESCRIPTION}`);
+    expect(bootstrap).not.toContain('INSTR-MARKER');
+    expect(bootstrap).not.toContain('STATUS-MARKER');
+    expect(bootstrap).not.toContain("What's in the project folder");
+    // Sections join in order rules, brief, context, recall: the normal augment
+    // opens with exactly the bootstrap text, so the brief is unchanged by W3b.
+    expect(s.augment.startsWith(bootstrap!)).toBe(true);
+    return bootstrap!;
+  }
+
+  it.skipIf(!ON_LINUX)(
+    'W3b (Linux): the block carries quoted instructions + status as context (never in bootstrap), a planted symlink is neither listed nor followed, and downloads are whole up to 10 MiB',
+    { timeout: 120_000 },
+    async () => {
+      const { projectId, folderDir, summary } = await w3bProject('linux');
+
+      // 1. The augment the runner got carries the folder's files, quoted, in
+      //    the context part after the brief; bootstrap mode never sees them.
+      const bootstrap = expectBriefOnlyInBootstrap(summary, 'linux');
+      const context = summary.augment.slice(bootstrap.length);
+      expect(context).toContain("### What's in the project folder");
+      expect(context).toContain(`instructions.md:\n> ${INSTRUCTIONS}`);
+      expect(context).toContain(`memory/status.md:\n> ${STATUS}`);
+
+      // 2. A symlink in the folder pointing at another agent's private files.
+      const other = await createAgent('W3b neighbour');
+      const otherFiles = path.join(filesRoot, other);
+      await fs.mkdir(otherFiles, { recursive: true });
+      await fs.writeFile(path.join(otherFiles, 'secret.md'), SECRET);
+      await fs.symlink(path.join(otherFiles, 'secret.md'), path.join(folderDir, 'leak.md'));
+      await fs.symlink(otherFiles, path.join(folderDir, 'leakdir'));
+
+      const listing = await bus.call<unknown, { kind: string; entries: { name: string }[] }>(
+        'projects:read-file',
+        userCtx(),
+        { projectId, path: '' },
+      );
+      expect(listing.kind).toBe('dir');
+      expect(listing.entries.map((e) => e.name).sort()).toEqual(['instructions.md', 'memory']);
+      for (const p of ['leak.md', 'leakdir/secret.md']) {
+        const out = await bus.call<unknown, unknown>('projects:read-file', userCtx(), { projectId, path: p });
+        expect(out).toEqual({ kind: 'absent' });
+        expect(JSON.stringify(out)).not.toContain(SECRET);
+        await expect(
+          bus.call('projects:download-file', userCtx(), { projectId, path: p }),
+        ).rejects.toMatchObject({ code: 'not-found' });
+      }
+      const real = await bus.call<unknown, { kind: string; contents: Uint8Array }>('projects:read-file', userCtx(), {
+        projectId,
+        path: 'memory/status.md',
+      });
+      expect(real.kind).toBe('file');
+      expect(new TextDecoder().decode(real.contents)).toBe(`${STATUS}\n`);
+
+      // 3. Downloads: 2 MiB comes back whole; 11 MiB is refused, never truncated.
+      const twoMiB = randomBytes(2 * MiB);
+      await fs.mkdir(path.join(folderDir, 'work'), { recursive: true });
+      await fs.writeFile(path.join(folderDir, 'work', 'two.bin'), twoMiB);
+      await fs.writeFile(path.join(folderDir, 'work', 'eleven.bin'), Buffer.alloc(11 * MiB, 7));
+      const got = await bus.call<unknown, { contents: Uint8Array; size: number }>(
+        'projects:download-file',
+        userCtx(),
+        { projectId, path: 'work/two.bin' },
+      );
+      expect(got.size).toBe(2 * MiB);
+      expect(Buffer.from(got.contents).equals(twoMiB)).toBe(true);
+      await expect(
+        bus.call('projects:download-file', userCtx(), { projectId, path: 'work/eleven.bin' }),
+      ).rejects.toMatchObject({ code: 'too-large' });
+    },
+  );
+
+  it.skipIf(ON_LINUX)(
+    'W3b (off Linux, degraded): no host walk here, so the block keeps its brief and drops its context, and file reads answer unavailable',
+    { timeout: 120_000 },
+    async () => {
+      const { projectId, summary } = await w3bProject('degraded');
+      expectBriefOnlyInBootstrap(summary, 'degraded');
+      expect(summary.augment).not.toContain("What's in the project folder");
+      expect(summary.augment).not.toContain('INSTR-MARKER');
+      expect(summary.augment).not.toContain('STATUS-MARKER');
+      await expect(
+        bus.call('projects:read-file', userCtx(), { projectId, path: 'instructions.md' }),
+      ).resolves.toEqual({ kind: 'unavailable' });
+      await expect(
+        bus.call('projects:download-file', userCtx(), { projectId, path: 'instructions.md' }),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+    },
+  );
+
+  it('W3b: a person who cannot use the project gets not-found from projects:read-file and projects:download-file', async () => {
+    const owner = await createAgent('W3b private owner');
+    const project = await bus.call<unknown, { projectId: string; folderId: string }>('projects:create', userCtx(), {
+      ownerAgentId: owner,
+      name: `${PROJECT_NAME} private`,
+      description: PROJECT_DESCRIPTION,
+    });
+    const folderDir = path.join(filesRoot, '.shared', project.folderId);
+    await fs.mkdir(folderDir, { recursive: true });
+    await fs.writeFile(path.join(folderDir, 'instructions.md'), INSTRUCTIONS);
+    const stranger = makeAgentContext({ sessionId: 'w3b-stranger', agentId: 'w3b-stranger', userId: 'w3b-stranger' });
+    for (const p of ['', 'instructions.md']) {
+      await expect(
+        bus.call('projects:read-file', stranger, { projectId: project.projectId, path: p }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+    }
+    await expect(
+      bus.call('projects:download-file', stranger, { projectId: project.projectId, path: 'instructions.md' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    // An unknown project answers the same.
+    await expect(
+      bus.call('projects:read-file', stranger, { projectId: 'prj_doesnotexist', path: '' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
 });

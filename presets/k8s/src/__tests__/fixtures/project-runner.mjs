@@ -11,7 +11,8 @@
 //      so the test can prove a refused turn never opened a sandbox;
 //   2. calls `session.get-config` over IPC — the conversation id picks this
 //      turn's instruction out of the plan file (AX_TEST_PROJECT_PLAN), and the
-//      prompt augment is what the host built for this session;
+//      prompt augments (normal and bootstrap) are what the host built for this
+//      session;
 //   3. reads AX_SHARED_FOLDERS (host-stamped `[{ id, path, readOnly }]`) and,
 //      in the first folder, writes or reads the planned relative path;
 //   4. ends the turn with `event.chat-end { kind: 'complete' }` whose one
@@ -39,6 +40,10 @@ async function run() {
   const config = await client.call('session.get-config', {});
   const conversationId = config.conversationId;
   const augment = config.agentConfig.systemPromptAugment;
+  // W3b: what the runner would prepend in bootstrap mode (`rules` + `brief`
+  // only). Reported so the test can prove agent-written folder text never
+  // reaches it. Absent when the host set nothing.
+  const bootstrapAugment = config.agentConfig.systemPromptBootstrapAugment ?? null;
 
   const plan = JSON.parse(await fs.readFile(need('AX_TEST_PROJECT_PLAN'), 'utf-8'));
   const step = (conversationId !== null && plan[conversationId]) || { op: 'none' };
@@ -75,6 +80,7 @@ async function run() {
     error,
     augmentHasProjectBlock: augment.includes('## Project:'),
     augment,
+    bootstrapAugment,
   };
   await client.event('event.chat-end', {
     outcome: { kind: 'complete', messages: [{ role: 'assistant', content: JSON.stringify(summary) }] },

@@ -317,7 +317,7 @@ afterAll(async () => {
 });
 
 describe('@ax/projects manifest', () => {
-  it('declares its surface; never calls conversations:*, and no sandbox:* but read-shared-folder', () => {
+  it('declares its surface; never calls conversations:*, and declares no sandbox:* edge', () => {
     const m = createProjectsPlugin().manifest;
     expect(m.name).toBe('@ax/projects');
     expect(m.registers).toEqual([
@@ -342,13 +342,43 @@ describe('@ax/projects manifest', () => {
       'shared-folders:list',
       'shared-folders:authorize-mounts',
     ]);
-    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user', 'sandbox:read-shared-folder']);
+    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user']);
     expect(m.subscribes).toEqual(['shared-folders:deleted']);
     const edges = [...m.calls, ...(m.optionalCalls ?? []).map((c) => c.hook)];
     expect(edges.filter((h) => h.startsWith('conversations:'))).toEqual([]);
-    expect(edges.filter((h) => h.startsWith('sandbox:'))).toEqual(['sandbox:read-shared-folder']);
-    // Optional, never required: a deployment without a host reader still boots.
-    expect(m.calls).not.toContain('sandbox:read-shared-folder');
+    // `sandbox:read-shared-folder` is called UNDECLARED (hasService-guarded):
+    // a declared edge closes a boot cycle through sandbox-subprocess (below).
+    expect(edges.filter((h) => h.startsWith('sandbox:'))).toEqual([]);
+  });
+
+  // Regression (W3b acceptance): declaring `sandbox:read-shared-folder` as an
+  // optional call made bootstrap refuse the W3a acceptance stack with
+  // `plugin call cycle detected: @ax/sandbox-subprocess → @ax/ipc-server →
+  // @ax/conversations → @ax/projects → @ax/sandbox-subprocess`. The stand-in
+  // below is that provider, with its path back collapsed into one declared
+  // `projects:resolve` call. It must boot, and the reader must still be used.
+  it('boots beside a reader whose own calls lead back to projects, and still reads through it', async () => {
+    const provider: Plugin = {
+      manifest: {
+        name: 'test/sandbox-provider-leading-back',
+        version: '0.0.0',
+        registers: ['sandbox:read-shared-folder'],
+        calls: ['projects:resolve'],
+        subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService('sandbox:read-shared-folder', 'test/sandbox-provider-leading-back', readSharedFolderStub);
+      },
+    };
+    const w = await makeWorld({ reader: false, extraPlugins: [provider] });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'instructions.md', 'Through the provider.');
+    const out = await w.call<{ kind: string; contents: Uint8Array }>('alice', 'projects:read-file', {
+      projectId,
+      path: 'instructions.md',
+    });
+    expect(out.kind).toBe('file');
+    expect(new TextDecoder().decode(out.contents)).toBe('Through the provider.');
   });
 });
 
