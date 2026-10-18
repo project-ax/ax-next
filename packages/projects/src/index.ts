@@ -34,6 +34,8 @@ export type {
   ProjectsReadFileOutput,
   ProjectsResolveInput,
   ProjectsResolveOutput,
+  ProjectsSetMemberInput,
+  ProjectsSetMemberOutput,
   ProjectsUpdateInput,
   ProjectsUpdateOutput,
 } from './types.js';

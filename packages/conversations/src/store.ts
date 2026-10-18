@@ -453,6 +453,17 @@ export interface ConversationStore {
     ifNull?: boolean;
   }): Promise<boolean>;
   /**
+   * W3e (§8). Set a chat's project (null = none). Scoped by
+   * `(conversation_id, user_id, deleted_at IS NULL)` like `setTitle`; the
+   * plugin layer has already validated the id and run every gate. Returns
+   * true iff a row was updated.
+   */
+  setProject(args: {
+    conversationId: string;
+    userId: string;
+    projectId: string | null;
+  }): Promise<boolean>;
+  /**
    * Phase A (routines foundation, 2026-05-14). Set `hidden = true`. Filtered
    * by `deleted_at IS NULL` so tombstoned rows can't be re-hidden into
    * limbo. Returns true if a row matched (idempotent for already-hidden
@@ -1061,6 +1072,17 @@ export function createConversationStore(
         q = q.where('title', 'is', null);
       }
       const result = await q.executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async setProject({ conversationId, userId, projectId }) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ project_id: projectId, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 

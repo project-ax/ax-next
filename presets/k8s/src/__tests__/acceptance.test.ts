@@ -20,6 +20,7 @@ import {
   makeAgentContext,
   type AgentContext,
   type AgentOutcome,
+  type Logger,
   type Plugin,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
@@ -3587,6 +3588,7 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
   let tmp = '';
   let filesRoot = '';
   let spawnDir = '';
+  let reportDir = '';
   let planPath = '';
   let originalCredKey: string | undefined;
   let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
@@ -3632,9 +3634,11 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
     tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-preset-k8s-w3a-')));
     filesRoot = path.join(tmp, 'files');
     spawnDir = path.join(tmp, 'spawns');
+    reportDir = path.join(tmp, 'reports');
     planPath = path.join(tmp, 'plan.json');
     await fs.mkdir(filesRoot);
     await fs.mkdir(spawnDir);
+    await fs.mkdir(reportDir);
     await fs.writeFile(planPath, '{}');
     originalCredKey = process.env.AX_CREDENTIALS_KEY;
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
@@ -3674,7 +3678,11 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       createDispatcherDepsStubPlugin(['workspace:read']),
       createTestProxyPlugin({
         script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
-        envExtra: { AX_TEST_PROJECT_PLAN: planPath, AX_TEST_RUNNER_SPAWN_DIR: spawnDir },
+        envExtra: {
+          AX_TEST_PROJECT_PLAN: planPath,
+          AX_TEST_RUNNER_SPAWN_DIR: spawnDir,
+          AX_TEST_RUNNER_REPORT_DIR: reportDir,
+        },
         onOpenSession: () => {
           proxyOpens += 1;
         },
@@ -3745,6 +3753,8 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
     error: string | null;
     augmentHasProjectBlock: boolean;
     augment: string;
+    /** W3e warm mode: which turn of its session this was (1 = the spawn turn). */
+    turnIndex?: number;
     /** What bootstrap mode would prepend (`rules` + `brief` only); null when the host set none. */
     bootstrapAugment: string | null;
   }
@@ -4013,4 +4023,314 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       bus.call('projects:read-file', stranger, { projectId: 'prj_doesnotexist', path: '' }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
+
+  // -------------------------------------------------------------------------
+  // W3e — moving chats, and your other agents (W3e plan task 6, spec §8).
+  //
+  // These chats run WARM (`warm: true` in the plan): the runner stays alive
+  // between turns like a real keep-alive runner, so the orchestrator's reuse
+  // path — where `project-changed` and W2's reap live — is what a second turn
+  // takes. Each turn gets its own session id, as channel-web mints one per
+  // request; a turn routed into a live session reports THAT session's id.
+  // The orchestrator's log lines are read off a recording logger on the ctx.
+  // -------------------------------------------------------------------------
+  interface LogLine {
+    level: string;
+    msg: string;
+    bindings: Record<string, unknown>;
+  }
+  const logLines: LogLine[] = [];
+  function recordingLogger(base: Record<string, unknown> = {}): Logger {
+    const at =
+      (level: string) =>
+      (msg: string, bindings?: Record<string, unknown>): void => {
+        logLines.push({ level, msg, bindings: { ...base, ...(bindings ?? {}) } });
+      };
+    return {
+      debug: at('debug'),
+      info: at('info'),
+      warn: at('warn'),
+      error: at('error'),
+      child: (b) => recordingLogger({ ...base, ...b }),
+    };
+  }
+  const loggedCtx = (): AgentContext =>
+    makeAgentContext({ sessionId: 'w3e-setup', agentId: 'w3e-setup', userId: USER, logger: recordingLogger() });
+  const respawnsOf = (sessionId: string): unknown[] =>
+    logLines
+      .filter((l) => l.msg === 'stale_session_respawn' && l.bindings.sessionId === sessionId)
+      .map((l) => l.bindings.reason);
+
+  async function warmPlan(...conversationIds: string[]): Promise<void> {
+    const current = JSON.parse(await fs.readFile(planPath, 'utf-8')) as Record<string, unknown>;
+    for (const id of conversationIds) current[id] = { op: 'none', warm: true };
+    await fs.writeFile(planPath, JSON.stringify(current));
+  }
+
+  async function reportsOf(conversationId: string): Promise<RunnerSummary[]> {
+    const file = path.join(reportDir, `${conversationId}.jsonl`);
+    if (!existsSync(file)) return [];
+    return (await fs.readFile(file, 'utf-8'))
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as RunnerSummary);
+  }
+
+  /** One warm turn under a fresh session id; returns what the runner that served it reported. */
+  async function warmTurn(
+    conversationId: string,
+    agentId: string,
+  ): Promise<{ sessionId: string; outcome: AgentOutcome; report: RunnerSummary | null }> {
+    const sessionId = `w3e-${randomBytes(6).toString('hex')}`;
+    const before = (await reportsOf(conversationId)).length;
+    const ctx = makeAgentContext({
+      sessionId,
+      agentId,
+      userId: USER,
+      conversationId,
+      workspace: { rootPath: tmp },
+      logger: recordingLogger(),
+    });
+    const outcome = await bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'go' },
+    });
+    const after = await reportsOf(conversationId);
+    if (outcome.kind !== 'complete') return { sessionId, outcome, report: null };
+    // Exactly one turn ran, and its report is the one this call produced.
+    expect(after.length).toBe(before + 1);
+    return { sessionId, outcome, report: after[after.length - 1]! };
+  }
+
+  async function isAlive(sessionId: string): Promise<boolean> {
+    const out = await bus.call<{ sessionId: string }, { alive: boolean }>('session:is-alive', userCtx(), { sessionId });
+    return out.alive;
+  }
+
+  async function chatProject(conversationId: string): Promise<string | null> {
+    const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>('conversations:get', userCtx(), {
+      conversationId,
+      userId: USER,
+    });
+    return (got.conversation as { projectId?: string | null }).projectId ?? null;
+  }
+
+  async function setProject(conversationId: string, projectId: string | null): Promise<{ projectId: string | null }> {
+    return bus.call<unknown, { projectId: string | null }>('conversations:set-project', loggedCtx(), {
+      conversationId,
+      userId: USER,
+      projectId,
+    });
+  }
+
+  async function createProject(ownerAgentId: string, name: string): Promise<{ projectId: string; folderId: string }> {
+    return bus.call<unknown, { projectId: string; folderId: string }>('projects:create', userCtx(), {
+      ownerAgentId,
+      name,
+      description: PROJECT_DESCRIPTION,
+    });
+  }
+
+  it(
+    'W3e: moving a chat into a project retires its live session and the next turn mounts the folder; moving it out mounts none',
+    { timeout: 180_000 },
+    async () => {
+      const owner = await createAgent('W3e mover');
+      // Created BEFORE the first turn: a project's create re-labels its owner's
+      // prompt, and that retire reason would outrank `project-changed`.
+      const project = await createProject(owner, 'W3e move');
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+      const chat = await createChat(owner);
+      await warmPlan(chat);
+
+      // A chat in no project, with a live session.
+      const t1 = await warmTurn(chat, owner);
+      expect(t1.report!.sessionId).toBe(t1.sessionId);
+      expect(t1.report!.sharedFolders).toBeNull();
+      expect(t1.report!.augmentHasProjectBlock).toBe(false);
+      expect(await isAlive(t1.sessionId)).toBe(true);
+      // Nothing changed: the next turn reuses that session (the harness really
+      // exercises the reuse path the move is checked on).
+      const t2 = await warmTurn(chat, owner);
+      expect(t2.report!.sessionId).toBe(t1.sessionId);
+      expect(t2.report!.turnIndex).toBe(2);
+      expect(respawnsOf(t1.sessionId)).toEqual([]);
+
+      // Move it into P.
+      await expect(setProject(chat, project.projectId)).resolves.toEqual({ projectId: project.projectId });
+      expect(await chatProject(chat)).toBe(project.projectId);
+
+      // The next turn retires the old session (project-changed) and the fresh
+      // spawn carries P's block and mounts P's folder.
+      const t3 = await warmTurn(chat, owner);
+      expect(respawnsOf(t1.sessionId)).toEqual(['project-changed']);
+      expect(t3.report!.sessionId).toBe(t3.sessionId);
+      expect(t3.report!.sessionId).not.toBe(t1.sessionId);
+      expect(t3.report!.turnIndex).toBe(1);
+      expect(t3.report!.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: false }]);
+      expect(t3.report!.augment).toContain('## Project: W3e move');
+      expect(t3.report!.augment).toContain(`/shared/${project.folderId}`);
+      await vi.waitFor(async () => expect(await isAlive(t1.sessionId)).toBe(false), { timeout: 15_000, interval: 100 });
+
+      // Move it out: the next turn has no project block and no shared mount.
+      await expect(setProject(chat, null)).resolves.toEqual({ projectId: null });
+      expect(await chatProject(chat)).toBeNull();
+      const t4 = await warmTurn(chat, owner);
+      expect(respawnsOf(t3.sessionId)).toEqual(['project-changed']);
+      expect(t4.report!.sessionId).toBe(t4.sessionId);
+      expect(t4.report!.sharedFolders).toBeNull();
+      expect(t4.report!.augmentHasProjectBlock).toBe(false);
+      expect(t4.report!.augment).not.toContain(project.folderId);
+      await vi.waitFor(async () => expect(await isAlive(t3.sessionId)).toBe(false), { timeout: 15_000, interval: 100 });
+    },
+  );
+
+  it(
+    "W3e: moving a chat into a project its agent isn't a member of is refused, and the chat keeps its project and its session",
+    { timeout: 120_000 },
+    async () => {
+      const owner = await createAgent('W3e stays');
+      const stranger = await createAgent('W3e other owner');
+      const p = await createProject(owner, 'W3e home');
+      const q = await createProject(stranger, 'W3e elsewhere');
+      const chat = await createChat(owner, p.projectId);
+      await warmPlan(chat);
+
+      const t1 = await warmTurn(chat, owner);
+      expect(t1.report!.augment).toContain('## Project: W3e home');
+      expect(t1.report!.sharedFolders).toEqual([
+        { id: p.folderId, path: path.join(filesRoot, '.shared', p.folderId), readOnly: false },
+      ]);
+
+      // Q's members are its owner only: the move is refused as projects:resolve
+      // refuses it (not-found — the project's existence isn't confirmed).
+      await expect(setProject(chat, q.projectId)).rejects.toMatchObject({ code: 'not-found' });
+      expect(
+        logLines.some(
+          (l) =>
+            l.msg === 'conversations_project_refused' &&
+            l.bindings.hook === 'conversations:set-project' &&
+            l.bindings.projectId === q.projectId,
+        ),
+      ).toBe(true);
+      expect(await chatProject(chat)).toBe(p.projectId);
+
+      // Nothing changed: the next turn goes to the same session, still in P.
+      const t2 = await warmTurn(chat, owner);
+      expect(t2.report!.sessionId).toBe(t1.sessionId);
+      expect(t2.report!.turnIndex).toBe(2);
+      expect(t2.report!.augment).toContain('## Project: W3e home');
+      expect(t2.report!.augment).not.toContain('W3e elsewhere');
+      expect(respawnsOf(t1.sessionId)).toEqual([]);
+    },
+  );
+
+  it("W3e: a routine's chat can't be moved into a project", async () => {
+    const owner = await createAgent('W3e routine agent');
+    const p = await createProject(owner, 'W3e routine target');
+    // Made the way @ax/routines makes a fire's chat (packages/routines/src/fire.ts).
+    const routineChat = await bus.call<unknown, ConversationsCreateOutput>('conversations:create', userCtx(), {
+      userId: USER,
+      agentId: owner,
+      title: `W3e routine @ ${new Date().toISOString()}`,
+      hidden: true,
+      origin: 'routine',
+    });
+    await expect(setProject(routineChat.conversationId, p.projectId)).rejects.toMatchObject({ code: 'forbidden' });
+    expect(
+      logLines.some(
+        (l) =>
+          l.msg === 'conversations_project_refused' &&
+          l.bindings.reason === 'routine-conversation' &&
+          l.bindings.conversationId === routineChat.conversationId,
+      ),
+    ).toBe(true);
+    expect(await chatProject(routineChat.conversationId)).toBeNull();
+  });
+
+  it(
+    'W3e: adding one of your agents as a viewer mounts the folder read-only; downgrading or removing it reaps its live session, and after removal its project chat ends project-unavailable',
+    { timeout: 180_000 },
+    async () => {
+      const owner = await createAgent('W3e members owner');
+      const helper = await createAgent('W3e helper');
+      const project = await createProject(owner, 'W3e members');
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+      const setMember = (role: 'editor' | 'viewer' | null) =>
+        bus.call<unknown, { members: { agentId: string; role: string }[] }>('projects:set-member', loggedCtx(), {
+          projectId: project.projectId,
+          agentId: helper,
+          role,
+        });
+
+      // Before: the helper can't resolve the project, so can't have a chat in it.
+      await expect(
+        bus.call('projects:resolve', userCtx(), { projectId: project.projectId, agentId: helper }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+
+      // 1. Add as viewer.
+      const added = await setMember('viewer');
+      expect(added.members).toEqual(
+        expect.arrayContaining([
+          { agentId: owner, role: 'owner' },
+          { agentId: helper, role: 'viewer' },
+        ]),
+      );
+      await expect(
+        bus.call('projects:resolve', userCtx(), { projectId: project.projectId, agentId: helper }),
+      ).resolves.toBeDefined();
+      const chat = await createChat(helper, project.projectId);
+      await warmPlan(chat);
+      const t1 = await warmTurn(chat, helper);
+      expect(t1.report!.sessionId).toBe(t1.sessionId);
+      expect(t1.report!.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: true }]);
+      expect(t1.report!.augment).toContain('## Project: W3e members');
+      expect(t1.report!.augment).toContain("For you it's read-only.");
+
+      // 2. Upgrade to editor: not a reduction, so nothing is reaped; the prompt
+      //    changed, so the next turn re-spawns and mounts read-write.
+      await setMember('editor');
+      expect(await isAlive(t1.sessionId)).toBe(true);
+      const t2 = await warmTurn(chat, helper);
+      expect(respawnsOf(t1.sessionId)).toEqual(['system-prompt-augment-changed']);
+      expect(t2.report!.sessionId).toBe(t2.sessionId);
+      expect(t2.report!.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: false }]);
+      expect(t2.report!.augment).not.toContain("For you it's read-only.");
+
+      // 3. Downgrade to viewer: W2 reaps the idle session now (no turn needed).
+      await setMember('viewer');
+      await vi.waitFor(async () => expect(await isAlive(t2.sessionId)).toBe(false), { timeout: 30_000, interval: 100 });
+      expect(
+        logLines.some(
+          (l) =>
+            l.msg === 'shared_folder_access_reduced_sessions_retired' &&
+            l.bindings.folderId === project.folderId &&
+            l.bindings.reaped === 1,
+        ),
+      ).toBe(true);
+      const t3 = await warmTurn(chat, helper);
+      expect(t3.report!.sessionId).toBe(t3.sessionId);
+      expect(t3.report!.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: true }]);
+      expect(t3.report!.augment).toContain("For you it's read-only.");
+
+      // 4. Remove: reaped again, the project no longer resolves for it, and the
+      //    chat (left in the project) ends project-unavailable before any spawn.
+      const reapedBefore = logLines.filter((l) => l.msg === 'shared_folder_access_reduced_sessions_retired').length;
+      const removed = await setMember(null);
+      expect(removed.members.map((m) => m.agentId)).not.toContain(helper);
+      await vi.waitFor(async () => expect(await isAlive(t3.sessionId)).toBe(false), { timeout: 30_000, interval: 100 });
+      expect(
+        logLines.filter((l) => l.msg === 'shared_folder_access_reduced_sessions_retired').length,
+      ).toBe(reapedBefore + 1);
+      await expect(
+        bus.call('projects:resolve', userCtx(), { projectId: project.projectId, agentId: helper }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(await chatProject(chat)).toBe(project.projectId);
+      const spawnsBefore = await spawnCount();
+      const opensBefore = proxyOpens;
+      const t4 = await warmTurn(chat, helper);
+      expect(t4.outcome).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+      expect(await spawnCount()).toBe(spawnsBefore);
+      expect(proxyOpens).toBe(opensBefore);
+    },
+  );
 });

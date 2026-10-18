@@ -90,6 +90,7 @@ function conversationsMockPlugin(args: {
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
+        'conversations:set-project',
       ],
       calls: [],
       subscribes: [],
@@ -162,6 +163,13 @@ function conversationsMockPlugin(args: {
           code: 'not-implemented',
           plugin: 'mock-conversations',
           message: 'conversations:set-title stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService('conversations:set-project', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:set-project stub (not exercised by this suite)',
         });
       });
       bus.registerService('conversations:delete', 'mock-conversations', async () => {
@@ -708,6 +716,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
+        'conversations:set-project',
         'agent:invoke',
         'agent:apply-capability-grant',
         'attachments:store-temp',
@@ -1055,6 +1064,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'projects:download-file',
           degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:set-member',
+          degradation:
+            'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
         },
         {
           hook: 'agents:can-manage-sharing',

@@ -25,7 +25,11 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuPortal,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -34,6 +38,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CompactSurfaceContext } from '@/lib/use-compact';
 import { cn } from '@/lib/utils';
 import { conversationControls } from '@/lib/conversation-controls';
+import { HttpError, logRequestFailure } from '@/lib/http';
 import { conversationDate } from '@/lib/workspace-time';
 import { useAgentRail } from '@/lib/workspace-rail';
 import {
@@ -42,6 +47,7 @@ import {
   type AgentTab,
 } from '@/lib/workspace-route';
 import type { AgentRailData, AgentDetail, GrantRow, GrantRef } from '@/lib/workspace-api';
+import type { ProjectSummary } from '@/wire/projects';
 import {
   AgentTile,
   Elapsed,
@@ -50,6 +56,21 @@ import {
   stateWord,
 } from './bits';
 import { IconTooltip } from './IconTooltip';
+
+const ACTION_FAILED = 'We couldn’t finish that just now. Please try again.';
+/** W3e — a move refused because the agent can't use that project (404). */
+export const MOVE_PROJECT_UNAVAILABLE = 'That project isn’t available to this agent.';
+
+/**
+ * W3e — the projects a chat's "Move to project ›" submenu can offer. Read
+ * when a row's menu opens, never on mount: most visits to the rail never open
+ * one, and a list read at mount would be stale by the time someone did.
+ */
+type MoveTargets =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'failed' }
+  | { kind: 'ready'; projects: ProjectSummary[] };
 
 export const RAIL_TABS = {
   activity: { label: 'Activity', Icon: Activity },
@@ -158,7 +179,42 @@ export function AgentRailContent({
     kind: 'rename' | 'delete';
   } | null>(null);
   const [title, setTitle] = useState('');
+  const [moveTargets, setMoveTargets] = useState<MoveTargets>({ kind: 'idle' });
   const pastDateId = useId();
+
+  /*
+    Re-read on every open, but keep the last good list on screen while it
+    loads: the submenu never flashes "Loading…" for a list it already has.
+  */
+  async function loadMoveTargets() {
+    setMoveTargets((prev) => (prev.kind === 'ready' ? prev : { kind: 'loading' }));
+    try {
+      const projects = await conversationControls.moveTargets(agent.id);
+      setMoveTargets({ kind: 'ready', projects });
+    } catch (e) {
+      logRequestFailure(e, 'rail-move-targets');
+      setMoveTargets((prev) => (prev.kind === 'ready' ? prev : { kind: 'failed' }));
+    }
+  }
+
+  /** Move a chat into a project, or out of one (`null`). */
+  async function moveTo(id: string, projectId: string | null) {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await conversationControls.setProject(id, projectId);
+      onChanged?.();
+    } catch (e) {
+      logRequestFailure(e, 'rail-move-chat');
+      setActionError(
+        projectId !== null && e instanceof HttpError && e.status === 404
+          ? MOVE_PROJECT_UNAVAILABLE
+          : ACTION_FAILED,
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   async function act(action: () => Promise<void>) {
     setActionBusy(true);
@@ -166,7 +222,7 @@ export function AgentRailContent({
     try {
       await action();
     } catch {
-      setActionError('We couldn’t finish that just now. Please try again.');
+      setActionError(ACTION_FAILED);
     } finally {
       setActionBusy(false);
     }
@@ -176,9 +232,21 @@ export function AgentRailContent({
     else setLocalTab(next);
     if (collapsed) onCollapse?.();
   }
-  function menu(id: string, name: string) {
+  function menu(id: string, name: string, projectId: string | null) {
+    /*
+      Only projects this agent is a member of (`moveTargets` filters): the
+      server refuses the rest, and a list of choices that mostly fail is worse
+      than a short one. The chat's own project is left out — moving it there
+      is nothing.
+    */
+    const targets = moveTargets.kind === 'ready' ? moveTargets.projects : [];
+    const others = targets.filter((p) => p.projectId !== projectId);
     return (
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (open) void loadMoveTargets();
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
@@ -218,6 +286,51 @@ export function AgentRailContent({
             >
               Export as text
             </DropdownMenuItem>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
+              <DropdownMenuPortal>
+                <DropdownMenuSubContent className="max-w-[260px] shadow-popover">
+                  <DropdownMenuGroup>
+                    {moveTargets.kind === 'ready' && others.length > 0 ? (
+                      others.map((p) => (
+                        <DropdownMenuItem
+                          key={p.projectId}
+                          onSelect={() => void moveTo(id, p.projectId)}
+                        >
+                          <FolderKanban aria-hidden="true" />
+                          <span className="truncate" title={p.name}>
+                            {p.name}
+                          </span>
+                        </DropdownMenuItem>
+                      ))
+                    ) : (
+                      /*
+                        Shown disabled rather than hidden: an empty submenu,
+                        or a Move item that vanishes, leaves the person
+                        wondering where moving went. One line says why.
+                      */
+                      <DropdownMenuItem disabled>
+                        {moveTargets.kind === 'failed'
+                          ? 'Couldn’t load projects'
+                          : moveTargets.kind !== 'ready'
+                            ? 'Loading…'
+                            : targets.length === 0
+                              ? 'No projects for this agent yet'
+                              : 'No other projects for this agent'}
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuPortal>
+            </DropdownMenuSub>
+            {projectId !== null && (
+              <DropdownMenuItem onSelect={() => void moveTo(id, null)}>
+                Remove from project
+              </DropdownMenuItem>
+            )}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
@@ -407,7 +520,11 @@ export function AgentRailContent({
                       </span>
                     </Button>
                     {detail.conversationId &&
-                      menu(detail.conversationId, 'Current conversation')}
+                      menu(
+                        detail.conversationId,
+                        'Current conversation',
+                        detail.project?.projectId ?? null,
+                      )}
                   </div>
                   {past.map((c, i) => (
                     <div
@@ -447,7 +564,7 @@ export function AgentRailContent({
                           {conversationDate(c.lastActivityAt)}
                         </span>
                       </Button>
-                      {menu(c.id, c.title)}
+                      {menu(c.id, c.title, c.project?.projectId ?? null)}
                     </div>
                   ))}
 

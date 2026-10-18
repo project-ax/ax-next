@@ -685,6 +685,37 @@ export interface SetTitleOutput {
 }
 
 /**
+ * W3e (W3 spec §8). Move a chat into a project, to another one, or out
+ * (`projectId: null`).
+ *
+ * ACL: owner-only — `(conversation_id, user_id)` pre-filter, so a foreign,
+ * missing or deleted chat is `not-found` before any gate runs. Then:
+ *   - a routine's conversation is refused (`forbidden`): its project is set on
+ *     the routine;
+ *   - `agents:resolve(agent_id, user_id)`, as every hook here;
+ *   - into a project: `projects:resolve { projectId, agentId }` AS `userId`,
+ *     the same rule as `conversations:create`. Out is always allowed: it only
+ *     narrows.
+ * Setting the project the chat is already in is a no-op. No event fires: the
+ * orchestrator reads the chat's project on its next turn and retires a session
+ * that opened with a different one.
+ */
+export interface SetProjectInput {
+  conversationId: string;
+  userId: string;
+  projectId: string | null;
+}
+export interface SetProjectOutput {
+  /** The chat's project after the call. */
+  projectId: string | null;
+}
+
+/** Runtime `returns` contract for `conversations:set-project`. */
+export const SetProjectOutputSchema = z
+  .object({ projectId: z.string().nullable() })
+  .strict() as unknown as ZodType<SetProjectOutput>;
+
+/**
  * Phase A (routines foundation, 2026-05-14). Mark a conversation hidden
  * so it disappears from list-style queries but remains readable by id.
  * Used by the routines plugin to suppress silenced routine fires without

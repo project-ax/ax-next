@@ -7,16 +7,20 @@ import {
 } from '@ax/core';
 import { fenceLine } from '../lib/fence-line.js';
 import {
+  AgentIdSchema,
   CreateProjectRequest,
   ProjectIdSchema,
+  SetProjectMemberRequest,
   UpdateProjectRequest,
   type CreateProjectResponse,
   type ListProjectsResponse,
   type OwnerCandidatesResponse,
   type ProjectConversationsResponse,
   type ProjectDetail,
+  type ProjectMember,
   type ProjectMemberRole,
   type ProjectSummary,
+  type SetProjectMemberResponse,
   type UpdateProjectResponse,
 } from '../wire/projects.js';
 import {
@@ -44,6 +48,8 @@ import { workspaceFilePath } from './safe-path.js';
 //   PATCH  /api/workspace/projects/:projectId               projects:update
 //   DELETE /api/workspace/projects/:projectId               projects:delete
 //   GET    /api/workspace/projects/:projectId/conversations projects:get, then conversations:list
+//   PUT    /api/workspace/projects/:projectId/members/:agentId projects:set-member (W3e)
+//   DELETE /api/workspace/projects/:projectId/members/:agentId projects:set-member, role null (W3e)
 //   GET    /api/workspace/projects/:projectId/files         projects:read-file (the folder root)
 //   GET    /api/workspace/projects/:projectId/files/*       projects:read-file
 //   GET    /api/workspace/projects/:projectId/download/*    projects:download-file
@@ -62,7 +68,15 @@ import { workspaceFilePath } from './safe-path.js';
 // that is a 403. `invalid-payload` is a 400. Anything else is a fault and
 // propagates (500), never dressed up as a refusal.
 //
-// CSRF: POST/PATCH/DELETE are gated by @ax/http-server's `http:request`
+// MEMBERS (W3e). `projects:set-member` refuses `forbidden` for the owner agent
+// (target-is-owner), for a project the person can use but not manage, and for
+// any change W2's shared folders refuse (an agent with a different owner, one
+// the person doesn't manage) — all a 403 here, by the mapping above. The
+// answer is the members after the change, named the way GET /:projectId names
+// them; the hook never returns the folder, and the route rebuilds each member
+// field by field regardless.
+//
+// CSRF: POST/PUT/PATCH/DELETE are gated by @ax/http-server's `http:request`
 // subscriber before any handler runs; nothing here re-implements it.
 //
 // WITHOUT @ax/projects (a preset that doesn't load it): the list answers an
@@ -131,6 +145,9 @@ interface ProjectsGetOutput {
   folderId: string;
   createdAt: string;
   updatedAt: string;
+  members: ProjectMemberRow[];
+}
+interface ProjectsSetMemberOutput {
   members: ProjectMemberRow[];
 }
 interface ProjectsCreateOutput {
@@ -302,6 +319,64 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       return null;
     }
     return parsed.data;
+  }
+
+  /**
+   * `:agentId`, bounded like every agent id here, or a 400. Not a 404: the
+   * agent is what the person is ASKING to add, and the hook's own bound
+   * answers `invalid-payload` for the same input.
+   */
+  function agentIdParam(req: RouteRequest, res: RouteResponse): string | null {
+    const parsed = AgentIdSchema.safeParse(req.params.agentId);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid-payload' });
+      return null;
+    }
+    return parsed.data;
+  }
+
+  /** Members as the project page shows them: names only for agents this person can see. */
+  async function namedMembers(userId: string, members: ProjectMemberRow[]): Promise<ProjectMember[]> {
+    const names = new Map((await listAgents(userId)).map((a) => [a.id, a.displayName]));
+    return members.map((m) => {
+      const displayName = names.get(m.agentId);
+      return { agentId: m.agentId, role: m.role, ...(displayName !== undefined ? { displayName } : {}) };
+    });
+  }
+
+  /**
+   * The body behind PUT (add / re-role) and DELETE (remove) on a member.
+   * Order: auth → project id → agent id → body → hook loaded → hook.
+   */
+  async function setMember(req: RouteRequest, res: RouteResponse, remove: boolean): Promise<void> {
+    const userId = await authOr401(bus, initCtx, req, res);
+    if (userId === null) return;
+    const projectId = projectIdParam(req, res);
+    if (projectId === null) return;
+    const agentId = agentIdParam(req, res);
+    if (agentId === null) return;
+    let role: 'editor' | 'viewer' | null = null;
+    if (!remove) {
+      const parsed = SetProjectMemberRequest.safeParse(readJson(req));
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+      role = parsed.data.role;
+    }
+    if (!projectsLoaded(res, bus.hasService('projects:set-member'))) return;
+    let out: ProjectsSetMemberOutput;
+    try {
+      out = await bus.call<{ projectId: string; agentId: string; role: 'editor' | 'viewer' | null }, ProjectsSetMemberOutput>(
+        'projects:set-member',
+        actorCtx(userId),
+        { projectId, agentId, role },
+      );
+    } catch (err) {
+      if (projectRefused(res, err)) return;
+      throw err;
+    }
+    res.status(200).json({ members: await namedMembers(userId, out.members) } satisfies SetProjectMemberResponse);
   }
 
   async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
@@ -494,7 +569,6 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       }
       // Names only for agents this person can see in their own list; an agent
       // they can't see stays an id (never a name they couldn't look up).
-      const names = new Map((await listAgents(userId)).map((a) => [a.id, a.displayName]));
       const owner = project.members.find((m) => m.role === 'owner');
       const detail: ProjectDetail = {
         projectId: project.projectId,
@@ -502,10 +576,7 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
         description: project.description,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
-        members: project.members.map((m) => {
-          const displayName = names.get(m.agentId);
-          return { agentId: m.agentId, role: m.role, ...(displayName !== undefined ? { displayName } : {}) };
-        }),
+        members: await namedMembers(userId, project.members),
         canManage: owner !== undefined && (await canManage(userId, owner.agentId)),
       };
       res.status(200).json(detail);
@@ -596,6 +667,16 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       res.status(200).json({ conversations } satisfies ProjectConversationsResponse);
     },
 
+    /** PUT /api/workspace/projects/:projectId/members/:agentId — add, or change the role. */
+    async setProjectMember(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await setMember(req, res, false);
+    },
+
+    /** DELETE /api/workspace/projects/:projectId/members/:agentId — remove. */
+    async removeProjectMember(req: RouteRequest, res: RouteResponse): Promise<void> {
+      await setMember(req, res, true);
+    },
+
     /** GET /api/workspace/projects/:projectId/files — the folder root. */
     async projectFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
       await readProjectFilesPath(req, res, '');
@@ -648,7 +729,7 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
 export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext): Promise<Array<() => void>> {
   const h = makeProjectsHandlers({ bus, initCtx });
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  const routes: Array<{ method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; handler: RouteHandler }> = [
+  const routes: Array<{ method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; path: string; handler: RouteHandler }> = [
     { method: 'GET', path: '/api/workspace/projects', handler: h.listProjects },
     { method: 'POST', path: '/api/workspace/projects', handler: h.createProject },
     { method: 'GET', path: '/api/workspace/projects/owner-candidates', handler: h.ownerCandidates },
@@ -656,6 +737,8 @@ export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext
     { method: 'PATCH', path: '/api/workspace/projects/:projectId', handler: h.updateProject },
     { method: 'DELETE', path: '/api/workspace/projects/:projectId', handler: h.deleteProject },
     { method: 'GET', path: '/api/workspace/projects/:projectId/conversations', handler: h.projectConversations },
+    { method: 'PUT', path: '/api/workspace/projects/:projectId/members/:agentId', handler: h.setProjectMember },
+    { method: 'DELETE', path: '/api/workspace/projects/:projectId/members/:agentId', handler: h.removeProjectMember },
     // The splats are a bare `*` as the FINAL segment — the only spelling
     // @ax/http-server's router recognises — and the remainder arrives under
     // `req.params['*']` UNDECODED (`projectFilePath` decodes it once). The

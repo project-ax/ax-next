@@ -20,6 +20,17 @@
 //
 // Plan file: `{ [conversationId]: { op: 'write', path, content } | { op: 'read', path } | { op: 'none' } }`.
 // The test writes it before each turn; a conversation with no entry is `none`.
+//
+// W3e — WARM mode. A plan entry with `warm: true` makes this runner behave like
+// a real keep-alive runner instead of a one-shot: it pulls each user message
+// from `session.next-message` (the first one included), runs the step, appends
+// the summary as one JSON line to `<AX_TEST_RUNNER_REPORT_DIR>/<conversationId>.jsonl`,
+// and ends the turn with `event.turn-end` (stamped with the message's reqId)
+// while staying alive for the next message, until the host queues `cancel`
+// (the idle / reap path) or kills it. A keep-alive turn resolves with no
+// messages, which is why the summary goes to a file. The augment and mounts in
+// the summary are the ones this session was SPAWNED with, so a later turn
+// routed into the same session reports the same project as its first turn.
 // ---------------------------------------------------------------------------
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
@@ -31,27 +42,8 @@ function need(name) {
   return v;
 }
 
-async function run() {
-  const sessionId = need('AX_SESSION_ID');
-  const spawnDir = need('AX_TEST_RUNNER_SPAWN_DIR');
-  await fs.writeFile(path.join(spawnDir, `${sessionId}.spawned`), '');
-
-  const client = createIpcClient({ runnerEndpoint: need('AX_RUNNER_ENDPOINT'), token: need('AX_AUTH_TOKEN') });
-  const config = await client.call('session.get-config', {});
-  const conversationId = config.conversationId;
-  const augment = config.agentConfig.systemPromptAugment;
-  // W3b: what the runner would prepend in bootstrap mode (`rules` + `brief`
-  // only). Reported so the test can prove agent-written folder text never
-  // reaches it. Absent when the host set nothing.
-  const bootstrapAugment = config.agentConfig.systemPromptBootstrapAugment ?? null;
-
-  const plan = JSON.parse(await fs.readFile(need('AX_TEST_PROJECT_PLAN'), 'utf-8'));
-  const step = (conversationId !== null && plan[conversationId]) || { op: 'none' };
-
-  const rawFolders = process.env.AX_SHARED_FOLDERS;
-  const sharedFolders = rawFolders === undefined ? null : JSON.parse(rawFolders);
-  const folder = sharedFolders?.[0];
-
+/** One planned step against the first mounted folder. */
+async function doStep(step, folder) {
   let wrote = false;
   let readContent = null;
   let error = null;
@@ -69,6 +61,72 @@ async function run() {
   } catch (err) {
     error = String(err);
   }
+  return { wrote, readContent, error };
+}
+
+async function runWarm({ client, sessionId, conversationId, augment, bootstrapAugment, sharedFolders, readStep }) {
+  const reportDir = need('AX_TEST_RUNNER_REPORT_DIR');
+  let cursor = 0;
+  let turnIndex = 0;
+  for (;;) {
+    const resp = await client.callGet('session.next-message', { cursor: String(cursor) });
+    if (resp.type === 'timeout') continue;
+    cursor = resp.cursor;
+    if (resp.type === 'cancel') return;
+    if (resp.type !== 'user-message') continue;
+    turnIndex += 1;
+    const step = await readStep();
+    const result = await doStep(step, sharedFolders?.[0]);
+    const summary = {
+      sessionId,
+      conversationId,
+      turnIndex,
+      op: step.op,
+      sharedFolders,
+      ...result,
+      augmentHasProjectBlock: augment.includes('## Project:'),
+      augment,
+      bootstrapAugment,
+    };
+    await fs.appendFile(path.join(reportDir, `${conversationId}.jsonl`), `${JSON.stringify(summary)}\n`);
+    await client.event('event.turn-end', {
+      reason: 'user-message-wait',
+      role: 'assistant',
+      ...(typeof resp.reqId === 'string' ? { reqId: resp.reqId } : {}),
+    });
+  }
+}
+
+async function run() {
+  const sessionId = need('AX_SESSION_ID');
+  const spawnDir = need('AX_TEST_RUNNER_SPAWN_DIR');
+  await fs.writeFile(path.join(spawnDir, `${sessionId}.spawned`), '');
+
+  const client = createIpcClient({ runnerEndpoint: need('AX_RUNNER_ENDPOINT'), token: need('AX_AUTH_TOKEN') });
+  const config = await client.call('session.get-config', {});
+  const conversationId = config.conversationId;
+  const augment = config.agentConfig.systemPromptAugment;
+  // W3b: what the runner would prepend in bootstrap mode (`rules` + `brief`
+  // only). Reported so the test can prove agent-written folder text never
+  // reaches it. Absent when the host set nothing.
+  const bootstrapAugment = config.agentConfig.systemPromptBootstrapAugment ?? null;
+
+  const readStep = async () => {
+    const plan = JSON.parse(await fs.readFile(need('AX_TEST_PROJECT_PLAN'), 'utf-8'));
+    return (conversationId !== null && plan[conversationId]) || { op: 'none' };
+  };
+  const step = await readStep();
+
+  const rawFolders = process.env.AX_SHARED_FOLDERS;
+  const sharedFolders = rawFolders === undefined ? null : JSON.parse(rawFolders);
+  const folder = sharedFolders?.[0];
+
+  if (step.warm === true) {
+    await runWarm({ client, sessionId, conversationId, augment, bootstrapAugment, sharedFolders, readStep });
+    return;
+  }
+
+  const { wrote, readContent, error } = await doStep(step, folder);
 
   const summary = {
     sessionId,

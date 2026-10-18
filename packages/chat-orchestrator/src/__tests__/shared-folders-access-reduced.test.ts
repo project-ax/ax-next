@@ -63,6 +63,11 @@ async function setup(opts: {
   projectId?: string | null;
   /** Overrides `projects:resolve`. */
   resolve?: ResolveImpl;
+  /**
+   * W3e — folder per project for the default `projects:resolve`, so a chat can
+   * be moved between projects mid-test (`setChatProject`).
+   */
+  projectFolders?: Record<string, string>;
   /** `projects:resolve` is not registered at all. */
   noResolveService?: boolean;
   /** `conversations:get-metadata` throws. */
@@ -96,7 +101,8 @@ async function setup(opts: {
   const metadataCalls: Array<Record<string, unknown>> = [];
   const resolveCalls: Array<{ input: Record<string, unknown>; userId: string }> = [];
   const turnErrors: Array<Record<string, unknown>> = [];
-  const projectId =
+  // W3e — mutable: `setChatProject` moves the chat, as conversations:set-project would.
+  let projectId: string | null =
     opts.projectId !== undefined ? opts.projectId : opts.folderId !== undefined ? 'prj-1' : null;
 
   const services: Record<string, ServiceHandler> = {
@@ -119,7 +125,7 @@ async function setup(opts: {
       const i = input as { conversationId: string; userId: string };
       return { conversation: {
         conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
-        activeSessionId: conv.activeSessionId, activeReqId: null,
+        activeSessionId: conv.activeSessionId, activeReqId: null, projectId,
       } };
     },
     'conversations:bind-session': async (_c, input: unknown) => {
@@ -163,6 +169,10 @@ async function setup(opts: {
       const i = input as { projectId: string; agentId: string };
       resolveCalls.push({ input: i, userId: c.userId });
       if (opts.resolve !== undefined) return opts.resolve(c, i);
+      const moved = opts.projectFolders?.[i.projectId];
+      if (moved !== undefined) {
+        return { projectId: i.projectId, name: 'Moved', description: '', folderId: moved, readOnly: false };
+      }
       if (opts.folderId === undefined) {
         throw new PluginError({ code: 'not-found', plugin: 'stub-projects', message: 'no project' });
       }
@@ -226,6 +236,7 @@ async function setup(opts: {
     plugin, h, handles, turn, reduce, settle, cancels, userMessages,
     get opens() { return opens; },
     openInputs, queued, terminated, proxyCloses, logs, metadataCalls, resolveCalls, turnErrors,
+    setChatProject: (p: string | null) => { projectId = p; },
     cleanup: () => { for (const hk of handles) hk.forceExit(); },
   };
 }
@@ -515,6 +526,82 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
     expect(t.logs.some((l) => l.msg === 'shared_folder_access_reduced_malformed')).toBe(true);
     await t.turn('s-2', 'req-2');
     expect(t.opens).toBe(1);
+    t.cleanup();
+  });
+});
+
+describe('W3e: a chat moved between projects retires its live session at the next turn', () => {
+  const respawns = (logs: Array<Record<string, unknown>>) =>
+    logs.filter((l) => l.msg === 'stale_session_respawn');
+
+  it('no project → P: retired with project-changed; the next spawn mounts P\'s folder', async () => {
+    const t = await setup({ projectFolders: { 'prj-p': 'sf_p' } });
+    await t.turn('s-1', 'req-1');
+    expect('sharedFolderIds' in t.openInputs[0]!).toBe(false);
+
+    t.setChatProject('prj-p');
+    await t.turn('s-2', 'req-2');
+    expect(respawns(t.logs)).toEqual([
+      expect.objectContaining({ sessionId: 's-1', reason: 'project-changed' }),
+    ]);
+    expect(t.terminated).toContain('s-1');
+    expect(t.proxyCloses).toContain('s-1');
+    expect(t.opens).toBe(2);
+    expect(t.openInputs[1]!.sharedFolderIds).toEqual(['sf_p']);
+    expect(t.userMessages('s-1')).toHaveLength(1);
+    t.cleanup();
+  });
+
+  it('P → none: retired with project-changed; the next spawn mounts no folder', async () => {
+    const t = await setup({ folderId: 'sf_a' });
+    await t.turn('s-1', 'req-1');
+    expect(t.openInputs[0]!.sharedFolderIds).toEqual(['sf_a']);
+
+    t.setChatProject(null);
+    await t.turn('s-2', 'req-2');
+    expect(respawns(t.logs)).toEqual([
+      expect.objectContaining({ sessionId: 's-1', reason: 'project-changed' }),
+    ]);
+    expect(t.opens).toBe(2);
+    expect('sharedFolderIds' in t.openInputs[1]!).toBe(false);
+    t.cleanup();
+  });
+
+  it('P → Q: retired with project-changed; the next spawn mounts Q\'s folder', async () => {
+    const t = await setup({ folderId: 'sf_a', projectFolders: { 'prj-q': 'sf_q' } });
+    await t.turn('s-1', 'req-1');
+    expect(t.openInputs[0]!.sharedFolderIds).toEqual(['sf_a']);
+
+    t.setChatProject('prj-q');
+    await t.turn('s-2', 'req-2');
+    expect(respawns(t.logs)).toEqual([
+      expect.objectContaining({ sessionId: 's-1', reason: 'project-changed' }),
+    ]);
+    expect(t.opens).toBe(2);
+    expect(t.openInputs[1]!.sharedFolderIds).toEqual(['sf_q']);
+    t.cleanup();
+  });
+
+  it('an unchanged project keeps the session (P and none)', async () => {
+    for (const opts of [{ folderId: 'sf_a' }, {}]) {
+      const t = await setup(opts);
+      await t.turn('s-1', 'req-1');
+      await t.turn('s-2', 'req-2');
+      expect(respawns(t.logs)).toEqual([]);
+      expect(t.opens).toBe(1);
+      expect(t.userMessages('s-1')).toHaveLength(2);
+      t.cleanup();
+    }
+  });
+
+  it('a session retired for project-changed is forgotten: a later reduction of the old folder marks nothing', async () => {
+    const t = await setup({ folderId: 'sf_a' });
+    await t.turn('s-1', 'req-1');
+    t.setChatProject(null);
+    await t.turn('s-2', 'req-2');
+    await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
+    await t.settle();
+    expect(t.logs.some((l) => l.msg === 'shared_folder_access_reduced_sessions_retired')).toBe(false);
     t.cleanup();
   });
 });

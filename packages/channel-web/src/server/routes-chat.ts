@@ -12,6 +12,8 @@ import {
   ApproveAuthoredSkillRequest,
   CreateConversationRequest,
   RenameConversationRequest,
+  SetConversationProjectRequest,
+  type SetConversationProjectResponse,
   extractText,
   GetConversationQuery,
   ListConversationsQuery,
@@ -27,11 +29,12 @@ import {
 //   - GET    /api/chat/conversations         — list user's conversations (Task 10)
 //   - GET    /api/chat/conversations/:id     — load with turns (Task 11)
 //   - DELETE /api/chat/conversations/:id     — soft delete (Task 12, J5)
+//   - PUT    /api/chat/conversations/:id/project — move a chat between projects (W3e)
 //   - POST   /api/chat/conversations/:id/interrupt — Stop the in-flight turn (TASK-688)
 //   - GET    /api/chat/agents                — list user's agents (Task 13)
 //
 // All endpoints require auth (auth:require-user → 401 on rejection). All
-// state-changing endpoints (POST + DELETE) are CSRF-gated by the
+// state-changing endpoints (POST, PUT, PATCH, DELETE) are CSRF-gated by the
 // http-server's `http:request` subscriber automatically; handlers don't
 // re-implement CSRF.
 //
@@ -146,6 +149,13 @@ interface ConversationsCreateInput {
 interface ConversationsCreateOutput {
   conversationId: string;
   agentId: string;
+}
+
+/** W3e. Mirror of `@ax/conversations`' `SetProjectInput` (invariant 2). */
+interface ConversationsSetProjectInput {
+  conversationId: string;
+  userId: string;
+  projectId: string | null;
 }
 
 interface ConversationSummary {
@@ -442,10 +452,11 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         res.status(400).json({ error: 'invalid-payload' });
         return;
       }
-      // W3a: a chat's project is fixed when it is created. A projectId beside
-      // an existing conversation would otherwise be silently ignored — and a
-      // client that believes its message went into a project when it didn't
-      // is worse than a 400.
+      // W3a: a send only sets the project of a chat it CREATES. A projectId
+      // beside an existing conversation would otherwise be silently ignored —
+      // and a client that believes its message went into a project when it
+      // didn't is worse than a 400. Moving an existing chat is its own route
+      // (W3e, PUT /api/chat/conversations/:id/project).
       if (body.projectId !== undefined && body.conversationId !== null) {
         res.status(400).json({ error: 'project-on-existing-conversation' });
         return;
@@ -1220,6 +1231,78 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
     },
 
+    /**
+     * PUT /api/chat/conversations/:id/project — W3e (W3 §8). Move a chat into
+     * a project, to another one, or out (`projectId: null`).
+     * `conversations:set-project` owns every rule (owner-only, routine chats
+     * refused, the agent must still be reachable, projects:resolve AS the
+     * person going in). The route maps its refusals:
+     *
+     *   invalid-payload                         → 400 invalid-payload
+     *   chat foreign / missing / deleted        → 404 conversation-not-found
+     *   chat's agent unreachable (agents:resolve) → 404 conversation-not-found
+     *   projects:resolve refused (either code)  → 404 project-not-found
+     *   routine chat                            → 409 cannot-move-routine-chat
+     *   into a project, @ax/projects not loaded → 503 projects-unavailable
+     *
+     * Telling them apart: `@ax/conversations` rethrows a gate's refusal as its
+     * own PluginError with the gate's error as `cause`, and `@ax/projects`
+     * names its hook on every refusal — so a `cause` whose hookName is
+     * `projects:resolve` is the project saying no. The hook tags its own
+     * refusals with a `reasonCode` (`routine-conversation`,
+     * `projects-unavailable`), and the route keys on that — never on the
+     * absence of a cause, which once read a routine chat moved into a project
+     * without @ax/projects as a 503. Unknown and
+     * foreign collapse to one 404 per subject, so neither a chat nor a project
+     * can be probed through here.
+     */
+    async setConversationProject(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const conversationId = req.params.id;
+      if (!conversationId) { res.status(400).json({ error: 'missing-conversation-id' }); return; }
+      let body: SetConversationProjectRequest;
+      try {
+        const parsed = SetConversationProjectRequest.safeParse(JSON.parse(req.body.toString('utf8')));
+        if (!parsed.success) { res.status(400).json({ error: 'invalid-payload' }); return; }
+        body = parsed.data;
+      } catch {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+      try {
+        const out = await bus.call<ConversationsSetProjectInput, SetConversationProjectResponse>(
+          'conversations:set-project',
+          initCtx,
+          { conversationId, userId, projectId: body.projectId },
+        );
+        res.status(200).json({ projectId: out.projectId } satisfies SetConversationProjectResponse);
+      } catch (err) {
+        if (!(err instanceof PluginError)) throw err;
+        if (err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-payload' });
+          return;
+        }
+        if (err.code !== 'forbidden' && err.code !== 'not-found') throw err;
+        const cause = err.cause;
+        if (cause instanceof PluginError && cause.hookName === 'projects:resolve') {
+          res.status(404).json({ error: 'project-not-found' });
+          return;
+        }
+        // The hook names its own refusals with a reasonCode, so a routine's
+        // chat is 409 whether or not projects are loaded.
+        if (err.reasonCode === 'routine-conversation') {
+          res.status(409).json({ error: 'cannot-move-routine-chat' });
+          return;
+        }
+        if (err.reasonCode === 'projects-unavailable') {
+          res.status(503).json({ error: 'projects-unavailable' });
+          return;
+        }
+        res.status(404).json({ error: 'conversation-not-found' });
+      }
+    },
+
     /** DELETE /api/chat/conversations/:id — soft delete (J5). */
     async deleteConversation(
       req: RouteRequest,
@@ -1472,7 +1555,7 @@ export async function registerChatRoutes(
   // up the narrower-optional-fields surface.
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
   const routes: Array<{
-    method: 'GET' | 'POST' | 'DELETE' | 'PATCH';
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
     path: string;
     handler: RouteHandler;
   }> = [
@@ -1515,6 +1598,11 @@ export async function registerChatRoutes(
       method: 'PATCH',
       path: '/api/chat/conversations/:id',
       handler: handlers.renameConversation,
+    },
+    {
+      method: 'PUT',
+      path: '/api/chat/conversations/:id/project',
+      handler: handlers.setConversationProject,
     },
     {
       method: 'POST',

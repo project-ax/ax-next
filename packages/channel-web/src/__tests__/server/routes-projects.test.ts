@@ -130,6 +130,22 @@ describe('project routes (W3a)', () => {
       projects.delete(projectId);
       return { deleted: true };
     });
+    // W3e: behaves like @ax/projects' set-member — can't use → not-found, can't
+    // manage → forbidden, the owner agent → forbidden, an agent the person
+    // doesn't manage (W2's "same owner only") → forbidden.
+    bus.registerService('projects:set-member', 'projects', async (ctx, input) => {
+      record('projects:set-member', ctx, input);
+      const { projectId, agentId, role } = input as { projectId: string; agentId: string; role: 'editor' | 'viewer' | null };
+      if (!canUse(ctx.userId, projectId)) throw err('not-found', 'projects:set-member');
+      if (!canManageProject(ctx.userId, projectId)) throw err('forbidden', 'projects:set-member');
+      const p = projects.get(projectId)!;
+      if (p.members.some((m) => m.role === 'owner' && m.agentId === agentId)) throw err('forbidden', 'projects:set-member');
+      if (!(MANAGES[ctx.userId] ?? []).includes(agentId)) throw err('forbidden', 'projects:set-member');
+      p.members = p.members.filter((m) => m.agentId !== agentId);
+      if (role !== null) p.members.push({ agentId, role });
+      // A stray field the route must not pass through.
+      return { members: p.members.map((m) => ({ ...m, folderId: 'fld_secret' })) };
+    });
   }
 
   beforeEach(() => {
@@ -409,6 +425,120 @@ describe('project routes (W3a)', () => {
     });
   });
 
+  describe('members (W3e)', () => {
+    beforeEach(() => {
+      // Alice manages a-team (the owner) and a-alice; both hers, same owner.
+      projects.get('prj_1')!.members.push({ agentId: 'a-hidden', role: 'viewer' });
+    });
+
+    it('PUT adds one of the person\u2019s agents as the person, answering members with names and no folder id', async () => {
+      const { res, captured } = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-alice' }, { role: 'editor' }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({
+        members: [
+          { agentId: 'a-team', role: 'owner', displayName: 'Team agent' },
+          { agentId: 'a-hidden', role: 'viewer' },
+          { agentId: 'a-alice', role: 'editor', displayName: 'Alice personal' },
+        ],
+      });
+      expect(JSON.stringify(captured.body)).not.toContain('fld_secret');
+      expect(JSON.stringify(captured.body)).not.toContain('folderId');
+      expect(calls.filter((c) => c.hook === 'projects:set-member')).toEqual([
+        { hook: 'projects:set-member', userId: 'u-alice', input: { projectId: 'prj_1', agentId: 'a-alice', role: 'editor' } },
+      ]);
+    });
+
+    it('PUT changes a role; DELETE removes with role null', async () => {
+      projects.get('prj_1')!.members.push({ agentId: 'a-alice', role: 'editor' });
+      const change = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-alice' }, { role: 'viewer' }), change.res);
+      expect(change.captured.statusCode).toBe(200);
+      expect(projects.get('prj_1')!.members.find((m) => m.agentId === 'a-alice')?.role).toBe('viewer');
+
+      const remove = mkRes();
+      await h().removeProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-alice' }), remove.res);
+      expect(remove.captured.statusCode).toBe(200);
+      expect((remove.captured.body as { members: Array<{ agentId: string }> }).members.map((m) => m.agentId)).toEqual([
+        'a-team',
+        'a-hidden',
+      ]);
+      expect(calls.filter((c) => c.hook === 'projects:set-member').at(-1)?.input).toEqual({
+        projectId: 'prj_1',
+        agentId: 'a-alice',
+        role: null,
+      });
+    });
+
+    it('the owner agent is refused 403', async () => {
+      const put = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-team' }, { role: 'viewer' }), put.res);
+      expect(put.captured).toMatchObject({ statusCode: 403, body: { error: 'forbidden' } });
+      const del = mkRes();
+      await h().removeProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-team' }), del.res);
+      expect(del.captured).toMatchObject({ statusCode: 403, body: { error: 'forbidden' } });
+      expect(projects.get('prj_1')!.members[0]).toEqual({ agentId: 'a-team', role: 'owner' });
+    });
+
+    it('a member who can use but not manage the project gets 403', async () => {
+      user = 'u-bob';
+      const { res, captured } = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-bob' }, { role: 'editor' }), res);
+      expect(captured).toMatchObject({ statusCode: 403, body: { error: 'forbidden' } });
+      expect(projects.get('prj_1')!.members.some((m) => m.agentId === 'a-bob')).toBe(false);
+    });
+
+    it('an agent the person does not manage (W2 refusal) is a 403', async () => {
+      const { res, captured } = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-bob' }, { role: 'editor' }), res);
+      expect(captured).toMatchObject({ statusCode: 403, body: { error: 'forbidden' } });
+    });
+
+    it('foreign, missing and oversized projects are the same 404, for PUT and DELETE', async () => {
+      user = 'u-eve';
+      for (const pick of [(x: ReturnType<typeof h>) => x.setProjectMember, (x: ReturnType<typeof h>) => x.removeProjectMember]) {
+        const outs = [];
+        for (const projectId of ['prj_1', 'prj_nope', 'p'.repeat(500)]) {
+          const { res, captured } = mkRes();
+          await pick(h())(mkReq({ projectId, agentId: 'a-alice' }, { role: 'editor' }), res);
+          outs.push(captured);
+        }
+        for (const c of outs) expect(c).toEqual({ statusCode: 404, body: { error: 'project-not-found' }, ended: false });
+      }
+    });
+
+    it.each([
+      ['no role', {}],
+      ['role owner', { role: 'owner' }],
+      ['role null on PUT (DELETE removes)', { role: null }],
+      ['an extra field (strict)', { role: 'editor', userId: 'u-bob' }],
+    ])('PUT: 400 for %s, before any hook', async (_n, body) => {
+      const { res, captured } = mkRes();
+      await h().setProjectMember(mkReq({ projectId: 'prj_1', agentId: 'a-alice' }, body), res);
+      expect(captured).toEqual({ statusCode: 400, body: { error: 'invalid-payload' }, ended: false });
+      expect(calls).toEqual([]);
+    });
+
+    it.each([[''], ['a'.repeat(257)]])('a malformed agent id (%j) is a 400, before any hook', async (agentId) => {
+      for (const pick of [(x: ReturnType<typeof h>) => x.setProjectMember, (x: ReturnType<typeof h>) => x.removeProjectMember]) {
+        const { res, captured } = mkRes();
+        await pick(h())(mkReq({ projectId: 'prj_1', agentId }, { role: 'editor' }), res);
+        expect(captured).toEqual({ statusCode: 400, body: { error: 'invalid-payload' }, ended: false });
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it('401 with no hook call past auth', async () => {
+      user = null;
+      for (const pick of [(x: ReturnType<typeof h>) => x.setProjectMember, (x: ReturnType<typeof h>) => x.removeProjectMember]) {
+        const { res, captured } = mkRes();
+        await pick(h())(mkReq({ projectId: 'prj_1', agentId: 'a-alice' }, { role: 'editor' }), res);
+        expect(captured).toMatchObject({ statusCode: 401, body: { error: 'unauthenticated' } });
+      }
+      expect(calls).toEqual([]);
+    });
+  });
+
   describe('without @ax/projects', () => {
     let bare: HookBus;
     beforeEach(() => {
@@ -428,6 +558,8 @@ describe('project routes (W3a)', () => {
       ['update', mkReq({ projectId: 'prj_1' }, { name: 'Y' })],
       ['delete', mkReq({ projectId: 'prj_1' })],
       ['conversations', mkReq({ projectId: 'prj_1' })],
+      ['set-member', mkReq({ projectId: 'prj_1', agentId: 'a-alice' }, { role: 'editor' })],
+      ['remove-member', mkReq({ projectId: 'prj_1', agentId: 'a-alice' })],
     ] as const)('%s answers 503 projects-unavailable', async (which, req) => {
       const x = makeProjectsHandlers({ bus: bare, initCtx });
       const fn = {
@@ -436,6 +568,8 @@ describe('project routes (W3a)', () => {
         update: x.updateProject,
         delete: x.deleteProject,
         conversations: x.projectConversations,
+        'set-member': x.setProjectMember,
+        'remove-member': x.removeProjectMember,
       }[which];
       const { res, captured } = mkRes();
       await fn(req, res);
@@ -453,7 +587,7 @@ describe('project routes (W3a)', () => {
     await expect(makeProjectsHandlers({ bus: faulty, initCtx }).getProject(mkReq({ projectId: 'prj_1' }), res)).rejects.toThrow();
   });
 
-  it('registers the ten routes, owner-candidates as an exact path, PATCH included, the file splats last', async () => {
+  it('registers the twelve routes, owner-candidates as an exact path, PATCH included, the file splats last', async () => {
     const reg = new HookBus();
     const routes: Array<{ method: string; path: string }> = [];
     reg.registerService('http:register-route', 'http', async (_c, input) => {
@@ -462,7 +596,7 @@ describe('project routes (W3a)', () => {
       return { unregister: () => {} };
     });
     const unregs = await registerProjectsRoutes(reg, initCtx);
-    expect(unregs).toHaveLength(10);
+    expect(unregs).toHaveLength(12);
     expect(routes).toEqual([
       { method: 'GET', path: '/api/workspace/projects' },
       { method: 'POST', path: '/api/workspace/projects' },
@@ -471,6 +605,8 @@ describe('project routes (W3a)', () => {
       { method: 'PATCH', path: '/api/workspace/projects/:projectId' },
       { method: 'DELETE', path: '/api/workspace/projects/:projectId' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/conversations' },
+      { method: 'PUT', path: '/api/workspace/projects/:projectId/members/:agentId' },
+      { method: 'DELETE', path: '/api/workspace/projects/:projectId/members/:agentId' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/files' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/files/*' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/download/*' },

@@ -50,6 +50,8 @@ export type {
   GetOutput,
   ListInput,
   ListOutput,
+  SetProjectInput,
+  SetProjectOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,

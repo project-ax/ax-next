@@ -111,4 +111,25 @@ describe('workspaceApi — projects', () => {
     mockJson(413, { error: 'file-too-large' });
     await expect(workspaceApi.downloadProjectFile('prj_1', 'huge.log')).rejects.toMatchObject({ status: 413 });
   });
+
+  it('setProjectMember PUTs { role }; removeProjectMember DELETEs; both answer { members } with the CSRF header', async () => {
+    mockJson(200, { members: [{ agentId: 'a1', role: 'owner' }, { agentId: 'a 2', role: 'viewer' }] });
+    const put = await workspaceApi.setProjectMember('prj/1', 'a 2', 'viewer');
+    expect(put.members).toHaveLength(2);
+    const p = lastCall();
+    expect(p).toMatchObject({ url: '/api/workspace/projects/prj%2F1/members/a%202', method: 'PUT', body: { role: 'viewer' } });
+    expect(p.headers['x-requested-with']).toBe('ax-admin');
+
+    mockJson(200, { members: [{ agentId: 'a1', role: 'owner' }] });
+    const del = await workspaceApi.removeProjectMember('prj_1', 'a2');
+    expect(del).toEqual({ members: [{ agentId: 'a1', role: 'owner' }] });
+    const d = lastCall();
+    expect(d).toMatchObject({ url: '/api/workspace/projects/prj_1/members/a2', method: 'DELETE', body: undefined });
+    expect(d.headers['x-requested-with']).toBe('ax-admin');
+  });
+
+  it('setProjectMember throws with the status on a refusal (403 owner)', async () => {
+    mockJson(403, { error: 'forbidden' });
+    await expect(workspaceApi.setProjectMember('prj_1', 'a-owner', 'editor')).rejects.toMatchObject({ status: 403 });
+  });
 });

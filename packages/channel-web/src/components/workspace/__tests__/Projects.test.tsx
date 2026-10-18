@@ -17,6 +17,7 @@ import { WorkspaceShell } from '../WorkspaceShell';
 import { WorkspaceSidebarNav } from '../WorkspaceSidebar';
 import { ProjectsPage } from '../ProjectsPage';
 import { DELETE_PROJECT_COPY, NewProjectDialog } from '../ProjectDialogs';
+import { removeMemberCopy } from '../ProjectMembers';
 import { rail as railFixture } from './rail-fixture';
 import { clearViewport } from './viewport';
 
@@ -54,6 +55,8 @@ vi.mock('@/lib/workspace-api', async () => {
       deleteProject: vi.fn(),
       listProjectConversations: vi.fn(),
       ownerCandidates: vi.fn(),
+      setProjectMember: vi.fn(),
+      removeProjectMember: vi.fn(),
       projectFiles: vi.fn(),
       downloadProjectFile: vi.fn(),
     },
@@ -73,6 +76,8 @@ const QUILL = {
   startedAt: null,
   stoppedReason: null,
 };
+
+const SCRIBE = { ...QUILL, id: 'a-scribe', name: 'Scribe' };
 
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
 
@@ -488,5 +493,197 @@ describe('a project chat in the agent view', () => {
     expect(within(projectRow).getByText('Q4 launch')).toBeTruthy();
     expect(projectRow).toHaveAccessibleDescription(/^In Q4 launch, /);
     expect(within(plainRow).queryByText('Q4 launch')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * W3e (W3 spec §8) — the Members card: add one of your agents, change its
+ * role, remove it. Every change answers the members after it, and the card
+ * draws those — no reload of the page.
+ */
+describe('project members (W3e)', () => {
+  const withScribe = () =>
+    detail({
+      members: [
+        { agentId: 'a-quill', role: 'owner', displayName: 'Quill' },
+        { agentId: 'a-scribe', role: 'editor', displayName: 'Scribe' },
+      ],
+    });
+
+  beforeEach(() => {
+    api.board.mockResolvedValue({ agents: [QUILL, SCRIBE] } as never);
+    api.ownerCandidates.mockResolvedValue({
+      agents: [
+        { agentId: 'a-quill', displayName: 'Quill' },
+        { agentId: 'a-scribe', displayName: 'Scribe' },
+      ],
+    });
+  });
+
+  async function openMemberMenu(name: string) {
+    fireEvent.pointerDown(await screen.findByRole('button', { name: `Options for ${name}` }), { button: 0, ctrlKey: false });
+  }
+
+  it('adds one of your agents with the role you pick', async () => {
+    api.setProjectMember.mockResolvedValue({
+      members: [
+        { agentId: 'a-quill', role: 'owner', displayName: 'Quill' },
+        { agentId: 'a-scribe', role: 'viewer', displayName: 'Scribe' },
+      ],
+    });
+    renderAt('/workspace/projects/p1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Add one of your agents' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add one of your agents' });
+    // Only agents not already in the project; the first is the default.
+    expect(await within(dialog).findByLabelText('Agent')).toHaveTextContent('Scribe');
+    expect(within(dialog).getByRole('radio', { name: /Can edit/ })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Can view/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(api.setProjectMember).toHaveBeenCalledWith('p1', 'a-scribe', 'viewer'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add one of your agents' })).toBeNull());
+    const members = screen.getByRole('list', { name: 'Members' });
+    expect(within(members).getByText('Scribe')).toBeTruthy();
+    expect(within(members).getByText('Can view')).toBeTruthy();
+    // Drawn from the answer, not a reload.
+    expect(api.getProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('says so when every agent of yours is already here', async () => {
+    api.getProject.mockResolvedValue(withScribe());
+    renderAt('/workspace/projects/p1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Add one of your agents' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add one of your agents' });
+    expect(await within(dialog).findByText('All of your agents are already in this project.')).toBeTruthy();
+    expect(within(dialog).queryByRole('button', { name: 'Add' })).toBeNull();
+  });
+
+  it('keeps the dialog open and says why when the add is refused', async () => {
+    const { HttpError } = await import('@/lib/http');
+    api.setProjectMember.mockRejectedValue(new HttpError('/api/workspace/projects/p1/members/a-scribe', 403));
+    renderAt('/workspace/projects/p1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Add one of your agents' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add one of your agents' });
+    await within(dialog).findByLabelText('Agent');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    expect(await within(dialog).findByText('That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add, change or remove it.')).toBeTruthy();
+  });
+
+  it('changes a member’s role from its menu', async () => {
+    api.getProject.mockResolvedValue(withScribe());
+    api.setProjectMember.mockResolvedValue({
+      members: [
+        { agentId: 'a-quill', role: 'owner', displayName: 'Quill' },
+        { agentId: 'a-scribe', role: 'viewer', displayName: 'Scribe' },
+      ],
+    });
+    renderAt('/workspace/projects/p1');
+    await openMemberMenu('Scribe');
+    expect(await screen.findByRole('menuitemradio', { name: 'Can edit' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Can view' }));
+    await waitFor(() => expect(api.setProjectMember).toHaveBeenCalledWith('p1', 'a-scribe', 'viewer'));
+    const members = screen.getByRole('list', { name: 'Members' });
+    await waitFor(() => expect(within(members).getByText('Can view')).toBeTruthy());
+  });
+
+  it('shows a refused role change in the card', async () => {
+    const { HttpError } = await import('@/lib/http');
+    api.getProject.mockResolvedValue(withScribe());
+    api.setProjectMember.mockRejectedValue(new HttpError('/api/workspace/projects/p1/members/a-scribe', 500));
+    renderAt('/workspace/projects/p1');
+    await openMemberMenu('Scribe');
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Can view' }));
+    expect(await screen.findByText('We couldn’t change that just now. Nothing changed — try again in a moment.')).toBeTruthy();
+    expect(within(screen.getByRole('list', { name: 'Members' })).getByText('Can edit')).toBeTruthy();
+  });
+
+  it('removes a member after saying what happens to its chats', async () => {
+    api.getProject.mockResolvedValue(withScribe());
+    api.removeProjectMember.mockResolvedValue({
+      members: [{ agentId: 'a-quill', role: 'owner', displayName: 'Quill' }],
+    });
+    renderAt('/workspace/projects/p1');
+    await openMemberMenu('Scribe');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove from project' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Remove Scribe from Q4 launch?' });
+    expect(confirm).toHaveTextContent(
+      "Scribe won't be able to use this project's files. Its chats in this project will stop working until you move them out.",
+    );
+    expect(removeMemberCopy('Scribe')).toBe(
+      "Scribe won't be able to use this project's files. Its chats in this project will stop working until you move them out.",
+    );
+    expect(api.removeProjectMember).not.toHaveBeenCalled();
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(api.removeProjectMember).toHaveBeenCalledWith('p1', 'a-scribe'));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(within(screen.getByRole('list', { name: 'Members' })).queryByText('Scribe')).toBeNull();
+  });
+
+  it('gives the owner no menu, and someone who can’t manage no controls at all', async () => {
+    api.getProject.mockResolvedValue(withScribe());
+    const { unmount } = renderAt('/workspace/projects/p1');
+    await screen.findByRole('button', { name: 'Options for Scribe' });
+    expect(screen.queryByRole('button', { name: 'Options for Quill' })).toBeNull();
+    unmount();
+
+    api.getProject.mockResolvedValue({ ...withScribe(), canManage: false });
+    renderAt('/workspace/projects/p1');
+    await screen.findByRole('heading', { name: 'Q4 launch' });
+    await screen.findByRole('list', { name: 'Members' });
+    expect(screen.queryByRole('button', { name: 'Add one of your agents' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Options for/ })).toBeNull();
+  });
+});
+
+/**
+ * W3e — the project page's composer picks among the member agents the person
+ * can use: their latest chat's agent here by default, else the owner.
+ */
+describe('project composer agent chip (W3e)', () => {
+  beforeEach(() => {
+    api.board.mockResolvedValue({ agents: [QUILL, SCRIBE] } as never);
+    api.getProject.mockResolvedValue(
+      detail({
+        members: [
+          { agentId: 'a-quill', role: 'owner', displayName: 'Quill' },
+          { agentId: 'a-scribe', role: 'editor', displayName: 'Scribe' },
+          // On no board of theirs: never offered.
+          { agentId: 'a-hidden', role: 'viewer' },
+        ],
+      }),
+    );
+  });
+
+  it('defaults to the agent of their most recent chat in the project', async () => {
+    api.listProjectConversations.mockResolvedValue({
+      conversations: [
+        { conversationId: 'c1', agentId: 'a-quill', title: 'Older', lastActivityAt: hoursAgo(9) },
+        { conversationId: 'c2', agentId: 'a-scribe', title: 'Newer', lastActivityAt: hoursAgo(1) },
+      ],
+    });
+    renderAt('/workspace/projects/p1');
+    expect(await screen.findByRole('button', { name: 'Chat with Scribe' })).toBeTruthy();
+  });
+
+  it('defaults to the owner with no chats yet, and switches on request', async () => {
+    api.sendMessage.mockResolvedValue({ reqId: 'r1', conversationId: 'c-new' } as never);
+    renderAt('/workspace/projects/p1');
+    const chip = await screen.findByRole('button', { name: 'Chat with Quill' });
+    fireEvent.pointerDown(chip, { button: 0, pointerType: 'mouse' });
+    const options = await screen.findAllByRole('menuitemradio');
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('Quill'), expect.stringContaining('Scribe')]);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Scribe/ }));
+    const input = await screen.findByPlaceholderText(/^Ask Scribe/);
+    fireEvent.change(input, { target: { value: 'Draft the launch email' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(api.sendMessage).toHaveBeenCalledWith({
+        agentId: 'a-scribe',
+        conversationId: null,
+        text: 'Draft the launch email',
+        projectId: 'p1',
+      }),
+    );
   });
 });

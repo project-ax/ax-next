@@ -5,7 +5,8 @@
  * `projectId` to `conversations:create`, which checks it with
  * `projects:resolve` as the person. These tests pin the route's half: the id
  * is passed through, refused 404 without a leak, and refused 400 beside an
- * existing conversation (a chat's project is fixed when it is created).
+ * existing conversation (a send only sets the project of a chat it creates;
+ * moving one is PUT ./project, routes-chat-move.test.ts).
  */
 import { describe, expect, it } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';

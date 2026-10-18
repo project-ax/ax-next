@@ -36,6 +36,7 @@ import {
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
+  SetProjectOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
@@ -71,6 +72,8 @@ import type {
   HideOutput,
   ListInput,
   ListOutput,
+  SetProjectInput,
+  SetProjectOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,
@@ -262,6 +265,9 @@ export function createConversationsPlugin(
         // auto-title pipeline (caller is @ax/conversation-titles' Phase
         // F chat:turn-end subscriber) plus future user-driven rename UI.
         'conversations:set-title',
+        // W3e (W3 spec §8): move a chat into a project, to another, or out.
+        // Caller: channel-web's PUT /api/chat/conversations/:id/project.
+        'conversations:set-project',
         // Phase A (routines foundation, 2026-05-14): mark a conversation
         // hidden so it disappears from list queries but remains readable
         // by id. Half-wired window OPEN: caller lands in Phase B
@@ -324,7 +330,7 @@ export function createConversationsPlugin(
         {
           hook: 'projects:resolve',
           degradation:
-            'chats cannot be created in a project; conversations:create refuses any projectId',
+            'chats cannot be created in or moved into a project; conversations:create and conversations:set-project refuse any projectId (moving out still works)',
         },
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
@@ -453,6 +459,15 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           setConversationTitle(localStore, bus, ctx, input),
+      );
+
+      // W3e (§8). Move a chat between projects. Same ACL posture as
+      // set-title, plus the projects:resolve gate create uses.
+      bus.registerService<SetProjectInput, SetProjectOutput>(
+        'conversations:set-project',
+        PLUGIN_NAME,
+        async (ctx, input) => setConversationProject(localStore, bus, ctx, input),
+        { returns: SetProjectOutputSchema },
       );
 
       // Phase A (routines foundation, 2026-05-14). Same ACL posture as
@@ -1503,7 +1518,7 @@ async function createConversation(
   // AFTER the agent gate (an unreachable agent is the more basic refusal) and
   // BEFORE the insert, so a refusal writes nothing.
   if (projectId !== undefined) {
-    await assertProjectResolvable(bus, ctx, {
+    await assertProjectResolvable(bus, ctx, 'conversations:create', {
       projectId,
       agentId: input.agentId,
       userId: input.userId,
@@ -1545,17 +1560,11 @@ async function createConversation(
 async function assertProjectResolvable(
   bus: HookBus,
   ctx: AgentContext,
+  hookName: 'conversations:create' | 'conversations:set-project',
   args: { projectId: string; agentId: string; userId: string },
 ): Promise<void> {
-  const hookName = 'conversations:create';
   const refuse = (reason: string): void => {
-    ctx.logger.warn('conversations_project_refused', {
-      hook: hookName,
-      reason,
-      actor: args.userId,
-      projectId: args.projectId,
-      agentId: args.agentId,
-    });
+    logProjectRefused(ctx, hookName, reason, args);
   };
   if (!bus.hasService('projects:resolve')) {
     refuse('projects-unavailable');
@@ -1564,6 +1573,7 @@ async function assertProjectResolvable(
       plugin: PLUGIN_NAME,
       hookName,
       message: 'projects are not available',
+      reasonCode: 'projects-unavailable',
     });
   }
   const actorCtx: AgentContext = { ...ctx, userId: args.userId };
@@ -1586,6 +1596,106 @@ async function assertProjectResolvable(
     refuse('resolve-failed');
     throw err;
   }
+}
+
+/** One warn line for every project refusal (W3a as-built item 2: logged, not tabled). */
+function logProjectRefused(
+  ctx: AgentContext,
+  hookName: string,
+  reason: string,
+  args: { projectId: string | null; agentId: string; userId: string; conversationId?: string },
+): void {
+  ctx.logger.warn('conversations_project_refused', {
+    hook: hookName,
+    reason,
+    actor: args.userId,
+    projectId: args.projectId,
+    agentId: args.agentId,
+    ...(args.conversationId === undefined ? {} : { conversationId: args.conversationId }),
+  });
+}
+
+/**
+ * W3e (§8). Move a chat into a project, to another one, or out of one.
+ *
+ * Order, each step before any write:
+ *   1. validate `projectId` (a string or null — absent is a confused caller);
+ *   2. load the row with the owner pre-filter: foreign / missing / deleted all
+ *      read `not-found`, before any gate, so no gate leaks existence;
+ *   3. a routine's conversation → `forbidden` (its project is set on the
+ *      routine; review 1, finding 5);
+ *   4. `agents:resolve` — the person must still reach the chat's agent;
+ *   5. into a project: `projects:resolve` AS the chat's owner, the same rule
+ *      as create. Out (null) is always allowed: it only narrows;
+ *   6. unchanged → no write.
+ *
+ * Fires nothing. The orchestrator compares the chat's project with the one
+ * its live session opened with on the next turn (`project-changed`).
+ */
+async function setConversationProject(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: SetProjectInput,
+): Promise<SetProjectOutput> {
+  const hookName = 'conversations:set-project';
+  const raw: unknown = (input as { projectId?: unknown }).projectId;
+  if (raw === undefined) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: 'projectId must be a project id or null',
+    });
+  }
+  const projectId = raw === null ? null : (validateOptionalProjectId(raw, 'projectId') ?? null);
+  const notFound = (): PluginError =>
+    new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) throw notFound();
+
+  if (conv.origin === 'routine') {
+    logProjectRefused(ctx, hookName, 'routine-conversation', {
+      projectId,
+      agentId: conv.agentId,
+      userId: input.userId,
+      conversationId: input.conversationId,
+    });
+    throw new PluginError({
+      code: 'forbidden',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: "a routine's chat can't be moved; set the project on the routine",
+      reasonCode: 'routine-conversation',
+    });
+  }
+
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+
+  if (projectId !== null) {
+    await assertProjectResolvable(bus, ctx, hookName, {
+      projectId,
+      agentId: conv.agentId,
+      userId: input.userId,
+    });
+  }
+
+  if ((conv.projectId ?? null) === projectId) return { projectId };
+
+  const updated = await store.setProject({
+    conversationId: input.conversationId,
+    userId: input.userId,
+    projectId,
+  });
+  // No match means the row went away (or was deleted) after the load above.
+  if (!updated) throw notFound();
+  return { projectId };
 }
 
 async function setConversationTitle(

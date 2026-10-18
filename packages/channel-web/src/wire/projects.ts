@@ -25,12 +25,14 @@ export const PROJECT_ID_MAX_CHARS = 128;
 const TEXT_MAX_CHARS = 4096;
 
 export const ProjectIdSchema = z.string().min(1).max(PROJECT_ID_MAX_CHARS);
+/** The bound agent ids carry everywhere on this surface (`@ax/agents`' own). */
+export const AgentIdSchema = z.string().min(1).max(256);
 
 export const CreateProjectRequest = z
   .object({
     name: z.string().max(TEXT_MAX_CHARS),
     description: z.string().max(TEXT_MAX_CHARS).optional(),
-    ownerAgentId: z.string().min(1).max(256),
+    ownerAgentId: AgentIdSchema,
   })
   .strict();
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
@@ -47,7 +49,26 @@ export const UpdateProjectRequest = z
   });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
+/**
+ * W3e — `PUT /api/workspace/projects/:projectId/members/:agentId`: add one of
+ * the person's agents, or change its role. Removing is `DELETE` on the same
+ * path, so `role` here is never null and never `owner` (the owner is fixed).
+ */
+export const SetProjectMemberRequest = z.object({ role: z.enum(['editor', 'viewer']) }).strict();
+export type SetProjectMemberRequest = z.infer<typeof SetProjectMemberRequest>;
+
 export type ProjectMemberRole = 'owner' | 'editor' | 'viewer';
+
+/**
+ * One member as the project page shows it. `displayName` is present only for
+ * agents this person can see in their own agent list — an agent they can't
+ * see is never named.
+ */
+export interface ProjectMember {
+  agentId: string;
+  role: ProjectMemberRole;
+  displayName?: string;
+}
 
 /** `GET /api/workspace/projects` — one row per project the person can use. */
 export interface ProjectSummary {
@@ -74,13 +95,18 @@ export interface ProjectDetail {
   description: string | null;
   createdAt: string;
   updatedAt: string;
-  /**
-   * Owner first. `displayName` is present only for agents this person can
-   * see in their own agent list — an agent they can't see is never named.
-   */
-  members: Array<{ agentId: string; role: ProjectMemberRole; displayName?: string }>;
+  /** Owner first. See `ProjectMember` for when a name is present. */
+  members: ProjectMember[];
   /** May this person rename or delete it (manage the owner agent)? */
   canManage: boolean;
+}
+
+/**
+ * W3e — `PUT` / `DELETE /api/workspace/projects/:projectId/members/:agentId`:
+ * the project's members after the change, in `ProjectDetail`'s shape.
+ */
+export interface SetProjectMemberResponse {
+  members: ProjectMember[];
 }
 
 /** `PATCH /api/workspace/projects/:projectId`. */

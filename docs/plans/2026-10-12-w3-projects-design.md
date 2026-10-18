@@ -1262,3 +1262,44 @@ Plan: `docs/plans/2026-10-17-w3b-project-files-impl.md`; decisions in
 9. **Still owed:** the `/files` reader (`readConfinedUserFiles`) keeps its
    intermediate-directory race (§13); the walk can replace it (TASK-899, Backlog).
 
+## 19. As built: W3e (2026-10-18)
+
+Plan: `docs/plans/2026-10-17-w3e-move-chats-members-impl.md`; decisions in
+`.claude/memory/decisions/2026-10-17-AXWM-3.md`. Where the build differs from
+§8, or adds to it:
+
+1. **Members go through `@ax/projects`:** `projects:set-member { projectId,
+   agentId, role: 'editor' | 'viewer' | null }` runs `loadManaged`, then W2's
+   `shared-folders:grant` / `revoke` with the person's ctx, so W2's rules (same
+   owner only; the owner can't be changed) and its reaping apply unchanged.
+   The browser never sees a folder id. Routes: `PUT` / `DELETE
+   /api/workspace/projects/:projectId/members/:agentId`.
+2. **`conversations:set-project`** (route `PUT /api/chat/conversations/:id/project`):
+   owner only; a routine's chat is refused (409 `cannot-move-routine-chat`);
+   into a project needs `projects:resolve` for the chat's agent, as the
+   person; out is always allowed. No event fires: the orchestrator reads the
+   chat's project on the reuse path, and the UI refetches.
+3. **Every session records its spawn project, including none.** W3a recorded
+   it only when there was a folder, so a move from no project into one would
+   have gone unnoticed. A changed project retires the session with
+   `project-changed`; the next spawn mounts the new folder, or none.
+4. **Removing a member leaves its chats in the project.** Their next turn ends
+   `project-unavailable` ("This chat's project isn't available to this agent
+   anymore."), and "Remove from project" is always allowed. The confirm dialog
+   says so. A newly added agent defaults to Can edit. The route can't tell the
+   member refusals apart (owner, can't manage, different owner), so the error
+   copy names the rules.
+5. **The project composer** offers only member agents the person can use, with
+   no Auto: "Chat with ‹agent› ▾", defaulting to the agent of the person's most
+   recent chat in the project, else the first member they can use (the owner
+   first, when they can use it).
+6. **Known window:** a project deleted between `projects:resolve` and the write
+   can leave a chat pointing at it (`create` has the same window). The
+   orchestrator fails closed, and "Remove from project" recovers the chat.
+7. **Kind walk (2026-10-18):** moved an existing chat in (the live session was
+   retired with `project-changed` and the new prompt carried the project);
+   added Wren as Can view (Wren's prompt said read-only) and chatted with it
+   through the chip; removed Wren (its next turn ended `project-unavailable`;
+   "Remove from project" recovered it); moved chats out before deleting the
+   project. Deleting a project deletes the chats in it, as decided (Q1).
+
