@@ -557,6 +557,11 @@ Frames 4, 17, 18, 19, 20 and 21:
 
 ### 6.1 Writing a shared folder on the host
 
+> **As built (§20):** writes on k8s don't use a host mount. They go through a
+> new mTLS route on the storage helper, using the same per-component walk W3b
+> uses for reads. The `nosymfollow` plan below was dropped once W3b showed the
+> flag doesn't reach the pod.
+
 - **A new `sandbox:change-shared-folder { folderId, changes: [{ path, op: 'write' | 'delete' | 'mkdir', content? }] }`**,
   registered by the providers.
   - At most 10 MiB per file and 25 MiB per call.
@@ -1302,4 +1307,105 @@ Plan: `docs/plans/2026-10-17-w3e-move-chats-members-impl.md`; decisions in
    through the chip; removed Wren (its next turn ended `project-unavailable`;
    "Remove from project" recovered it); moved chats out before deleting the
    project. Deleting a project deletes the chats in it, as decided (Q1).
+
+## 20. As built: W3c (2026-10-18)
+
+Plan: `docs/plans/2026-10-18-w3c-edit-project-files-impl.md`. Decisions are in
+`.claude/memory/decisions/2026-10-17-AXWM-3.md`. Where the build differs from
+§6, or adds to it:
+
+1. **On k8s, writes go through the storage helper (the person's choice).**
+   Three facts ruled out a host mount:
+   - the host's export mount is read-only, and the chart relies on that;
+   - `.shared` is root `0711`, so the host can't create a folder to seed;
+   - files must end up owned by `1000:1000` so agents can edit them.
+
+   A new route, `/change-shared`, does the writes. It's mTLS 1.3 and accepts
+   only a client certificate from the deployment's own CA, and any Ready
+   helper can serve it, since the export is one NFS volume. Its limits:
+   - 64 changes and 25 MiB per call, 10 MiB per file;
+   - its own body cap, with at most two bodies read at once (the helper has a
+     512 MiB memory limit);
+   - one folder's changes run one at a time on a node.
+
+   The chart didn't change. A deploy must delete the `ax-next-storage` pod.
+2. **One write helper:** `changeConfinedByWalk` (`@ax/user-files-read`).
+   - It opens each component relative to the last one with `O_NOFOLLOW`
+     (`O_PATH` for directories it only passes through), and creates missing
+     directories one level at a time.
+   - It writes a temp file in the target directory, fsyncs it, then renames
+     it into place.
+   - `ifMatch` (sha256) is checked right before the rename. `ifAbsent` uses
+     `link()`, so it can never overwrite.
+   - Delete removes a file or an empty directory only.
+
+   The storage helper chowns what it creates to `1000:1000`. The subprocess
+   provider doesn't need to. On macOS (no `/proc`), the subprocess provider
+   answers `unavailable` for writes, as it does for reads.
+3. **Evidence on real NFS with real mTLS**
+   (`deploy/kind/w3c-storage-write-2026-10-18.json`):
+   - **Seeding:** `.shared` came out `711` root, the folder `700` and
+     everything inside it `1000:1000`.
+   - **Editing:** an agent pod (uid 1000) edited and deleted a file a person
+     wrote.
+   - **Guards:** a stale `ifMatch` gave `conflict` and `ifAbsent` gave
+     `exists`; neither changed the file.
+   - **Symlinks:** planted links, a link in place of the folder, and a
+     directory swapped for a link were all refused.
+   - **Race:** an agent swapped a directory for a symlink to a sibling folder
+     3,997 times while 3,869 writes ran: 1,842 written, 1,961 refused, **0
+     reached the sibling folder**. 66 more failed as storage errors (`ESTALE`
+     or `ENOENT` on a directory the agent deleted mid-walk) and wrote nothing.
+   - **TLS:** no client certificate, or one from another CA, was refused.
+4. **The rules live in `@ax/projects`, not just the UI:**
+   - writing needs a member agent with the editor or owner role that the
+     person can use; a viewer-only person gets `forbidden`, a stranger
+     `not-found`;
+   - `instructions.md` and `memory/status.md` can't be deleted
+     (`protected-path`);
+   - `sources/` can't be changed (`read-only-path`).
+
+   Edits to `instructions.md` or `memory/status.md` fire
+   `system-prompt:augment-changed` for each member agent. Every change logs
+   `project_file_changed` (who, project, path, op, outcome); W3d records the
+   content. Hooks:
+   - `projects:write-file { projectId, path, content, baseHash?, ifAbsent? }`
+     → `{ sha256 }`;
+   - `projects:delete-file`;
+   - `projects:create-folder`;
+   - `projects:read-file` now returns `sha256`, but only when the preview is
+     exactly the file's bytes.
+5. **Seeding and the lazy layout.**
+   - `projects:create` seeds the layout. A refusal or failure rolls back the
+     row, the folder's bytes and the folder.
+   - With no file storage at all, the project is created without files (W3b).
+   - Older projects get the layout the first time their files are listed or
+     changed, with `ifAbsent` only, at most once per project per process.
+     There's no boot-time sweep, so boot doesn't depend on the storage helper.
+   - A change may create the folder (a W3a folder exists only once a session
+     mounted it). So after a change, the project's row is checked again; if
+     the project was deleted in the meantime, the folder is reaped and the
+     answer is `not-found`. Found by the background security review.
+6. **Routes:** all three are CSRF-gated.
+   - `PUT /api/workspace/projects/:projectId/files/*` takes a raw body up to
+     10 MiB. `If-Match: "<sha256>"` makes it a conditional save and
+     `If-None-Match: *` makes it create-only.
+   - `DELETE …/files/*` and `POST …/folders/*` answer 204.
+
+   Refusals map to 400, 403 (`forbidden`, `protected-path`, `read-only-path`),
+   404, 409 (`conflict`, `exists`), 413 and 503. Project previews now carry up
+   to 1 MiB of text, so the 1 MiB edit rule is reachable.
+7. **UI:**
+   - **Edit** (Textarea) for text files up to 1 MiB that come with a `sha256`.
+     A conflict asks "Someone changed this file. Reload, or save over it?"
+   - **The Add menu:** Upload files, New text file, New folder. The target is
+     `work/` unless you're already in `work/`, `memory/` or `playbooks/`. A
+     new text file isn't written until Save.
+   - **Delete** with a confirm, hidden for protected paths and `sources/`.
+   - Viewers see no edit controls. Upload results show in an inline Alert.
+8. **Not walked in a browser before merge.** Kind has no shared storage pool,
+   so every write there answers "unavailable". The person chose the
+   real-NFS container test (item 3) plus a production smoke test after
+   deploy: seed, edit in the UI, an agent edits the same file, delete the
+   project.
 
