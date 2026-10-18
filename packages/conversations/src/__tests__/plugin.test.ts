@@ -30,6 +30,8 @@ describe('@ax/conversations plugin manifest', () => {
         // Phase F (2026-05-03): post-creation title update for the
         // auto-title pipeline + future user-driven rename UI.
         'conversations:set-title',
+        // W3e (§8): move a chat between projects.
+        'conversations:set-project',
         // Phase A (routines foundation, 2026-05-14): mark a conversation
         // hidden so it disappears from list queries but remains readable
         // by id. Half-wired window OPEN: caller lands in Phase B
@@ -72,7 +74,7 @@ describe('@ax/conversations plugin manifest', () => {
         {
           hook: 'projects:resolve',
           degradation:
-            'chats cannot be created in a project; conversations:create refuses any projectId',
+            'chats cannot be created in or moved into a project; conversations:create and conversations:set-project refuse any projectId (moving out still works)',
         },
       ],
       // chat:turn-end subscriber bumps last_activity_at AND persists the

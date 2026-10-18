@@ -18,7 +18,7 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import pg from 'pg';
 import { createConversationsPlugin } from '../plugin.js';
-import { GetMetadataOutputSchema } from '../types.js';
+import { GetMetadataOutputSchema, SetProjectOutputSchema } from '../types.js';
 import type {
   ConversationsPurgedEvent,
   CreateInput,
@@ -32,6 +32,8 @@ import type {
   HideInput,
   ListInput,
   ListOutput,
+  SetProjectInput,
+  SetProjectOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -479,5 +481,206 @@ describe('projects:deleted subscriber (W3a §4.7, Q1)', () => {
     expect(logRecords.filter((r) => r.msg === 'hook_subscriber_failed')).toEqual([]);
     expect(fires).toEqual([]);
     expect((await countRows(pool, [c])).conversations).toBe(1);
+  });
+});
+
+describe('conversations:set-project (W3e §8)', () => {
+  async function setProject(
+    h: TestHarness,
+    input: SetProjectInput,
+    ctx: AgentContext = h.ctx({ userId: 'system' }),
+  ): Promise<SetProjectOutput> {
+    return h.bus.call<SetProjectInput, SetProjectOutput>('conversations:set-project', ctx, input);
+  }
+
+  async function readRow(
+    pool: pg.Pool,
+    conversationId: string,
+  ): Promise<{ projectId: string | null; updatedAt: string }> {
+    const r = await pool.query(
+      'SELECT project_id, updated_at FROM conversations_v1_conversations WHERE conversation_id = $1',
+      [conversationId],
+    );
+    const row = r.rows[0] as { project_id: string | null; updated_at: Date };
+    return { projectId: row.project_id, updatedAt: row.updated_at.toISOString() };
+  }
+
+  it('moves a chat into a project its agent can use, resolving AS the chat\'s owner', async () => {
+    const { h, resolveCalls } = await makeHarness(ALICE_CAN_USE_PRJ);
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    const before = await readRow(pool, conv.conversationId);
+    // channel-web calls with a host ctx and names the person in the payload.
+    const out = await setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: PRJ });
+    expect(out).toEqual({ projectId: PRJ });
+    expect(resolveCalls).toEqual([{ actor: 'alice', projectId: PRJ, agentId: 'agt_a' }]);
+    const after = await readRow(pool, conv.conversationId);
+    expect(after.projectId).toBe(PRJ);
+    expect(after.updatedAt > before.updatedAt).toBe(true);
+    const md = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
+      h.ctx({ userId: 'alice' }),
+      { conversationId: conv.conversationId, userId: 'alice' },
+    );
+    expect(md.projectId).toBe(PRJ);
+  });
+
+  it('refuses a project the chat\'s agent is not a member of, and writes nothing', async () => {
+    const projects = new Map([[PRJ, new Set(['alice|agt_other'])]]);
+    const { h, resolveCalls } = await makeHarness(projects);
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    const before = await readRow(pool, conv.conversationId);
+    await expect(
+      setProject(
+        h,
+        { conversationId: conv.conversationId, userId: 'alice', projectId: PRJ },
+        capturingCtx('system'),
+      ),
+    ).rejects.toMatchObject({
+      code: 'not-found',
+      plugin: '@ax/conversations',
+      hookName: 'conversations:set-project',
+    });
+    expect(resolveCalls).toEqual([{ actor: 'alice', projectId: PRJ, agentId: 'agt_a' }]);
+    expect(await readRow(pool, conv.conversationId)).toEqual(before);
+    const refused = logRecords.filter((r) => r.msg === 'conversations_project_refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.rec).toMatchObject({ hook: 'conversations:set-project', reason: 'not-found' });
+  });
+
+  it('moves a chat from one project to another', async () => {
+    const projects = new Map([
+      [PRJ, new Set(['alice|agt_a'])],
+      ['prj_q', new Set(['alice|agt_a'])],
+    ]);
+    const { h } = await makeHarness(projects);
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a', projectId: PRJ });
+    const out = await setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: 'prj_q' });
+    expect(out).toEqual({ projectId: 'prj_q' });
+    expect((await readRow(pool, conv.conversationId)).projectId).toBe('prj_q');
+  });
+
+  it('moving out is always allowed — even after the agent lost the project — and never calls projects:resolve', async () => {
+    const allowed = new Set(['alice|agt_a']);
+    const { h, resolveCalls } = await makeHarness(new Map([[PRJ, allowed]]));
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a', projectId: PRJ });
+    allowed.clear();
+    resolveCalls.length = 0;
+    const out = await setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: null });
+    expect(out).toEqual({ projectId: null });
+    expect(resolveCalls).toEqual([]);
+    expect((await readRow(pool, conv.conversationId)).projectId).toBeNull();
+  });
+
+  it('moving out works with no projects:resolve service; moving in is refused', async () => {
+    const { h } = await makeHarness(null);
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    await expect(
+      setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: PRJ }),
+    ).rejects.toMatchObject({ code: 'forbidden', plugin: '@ax/conversations' });
+    expect((await readRow(pool, conv.conversationId)).projectId).toBeNull();
+    await expect(
+      setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId: null }),
+    ).resolves.toEqual({ projectId: null });
+  });
+
+  it('an unchanged project is a no-op: nothing written', async () => {
+    const { h } = await makeHarness(ALICE_CAN_USE_PRJ);
+    const pool = makePool();
+    const inP = await create(h, { userId: 'alice', agentId: 'agt_a', projectId: PRJ });
+    const outside = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    const beforeIn = await readRow(pool, inP.conversationId);
+    const beforeOut = await readRow(pool, outside.conversationId);
+    await expect(
+      setProject(h, { conversationId: inP.conversationId, userId: 'alice', projectId: PRJ }),
+    ).resolves.toEqual({ projectId: PRJ });
+    await expect(
+      setProject(h, { conversationId: outside.conversationId, userId: 'alice', projectId: null }),
+    ).resolves.toEqual({ projectId: null });
+    expect(await readRow(pool, inP.conversationId)).toEqual(beforeIn);
+    expect(await readRow(pool, outside.conversationId)).toEqual(beforeOut);
+  });
+
+  it.each([
+    ['into a project', PRJ as string | null],
+    ['out of a project', null],
+  ])('refuses a routine\'s conversation (%s): forbidden, logged, nothing written', async (_label, projectId) => {
+    const { h, resolveCalls } = await makeHarness(ALICE_CAN_USE_PRJ);
+    const pool = makePool();
+    const conv = await create(h, {
+      userId: 'alice',
+      agentId: 'agt_a',
+      origin: 'routine',
+      ...(projectId === null ? { projectId: PRJ } : {}),
+    });
+    resolveCalls.length = 0;
+    const before = await readRow(pool, conv.conversationId);
+    await expect(
+      setProject(h, { conversationId: conv.conversationId, userId: 'alice', projectId }, capturingCtx('system')),
+    ).rejects.toMatchObject({
+      code: 'forbidden',
+      plugin: '@ax/conversations',
+      hookName: 'conversations:set-project',
+    });
+    expect(resolveCalls).toEqual([]);
+    expect(await readRow(pool, conv.conversationId)).toEqual(before);
+    const refused = logRecords.filter((r) => r.msg === 'conversations_project_refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.rec).toMatchObject({
+      hook: 'conversations:set-project',
+      reason: 'routine-conversation',
+    });
+  });
+
+  it('a foreign, missing or deleted chat is not-found, before any gate', async () => {
+    const projects = new Map([[PRJ, new Set(['alice|agt_a', 'bob|agt_a'])]]);
+    const { h, resolveCalls } = await makeHarness(projects);
+    const pool = makePool();
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    const gone = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    await h.bus.call<DeleteInput, DeleteOutput>('conversations:delete', h.ctx({ userId: 'alice' }), {
+      conversationId: gone.conversationId,
+      userId: 'alice',
+    });
+    for (const input of [
+      { conversationId: conv.conversationId, userId: 'bob', projectId: PRJ },
+      { conversationId: conv.conversationId, userId: 'bob', projectId: null },
+      { conversationId: 'cnv_missing', userId: 'alice', projectId: PRJ },
+      { conversationId: gone.conversationId, userId: 'alice', projectId: PRJ },
+    ]) {
+      await expect(setProject(h, input)).rejects.toMatchObject({
+        code: 'not-found',
+        plugin: '@ax/conversations',
+      });
+    }
+    expect(resolveCalls).toEqual([]);
+    expect((await readRow(pool, conv.conversationId)).projectId).toBeNull();
+  });
+
+  it.each([
+    ['a missing projectId', undefined],
+    ['an empty string', ''],
+    ['a number', 42],
+    ['an oversized string', 'p'.repeat(300)],
+  ])('rejects %s with invalid-payload before any call', async (_label, projectId) => {
+    const { h, resolveCalls } = await makeHarness(ALICE_CAN_USE_PRJ);
+    const conv = await create(h, { userId: 'alice', agentId: 'agt_a' });
+    const input = { conversationId: conv.conversationId, userId: 'alice' } as Record<string, unknown>;
+    if (projectId !== undefined) input.projectId = projectId;
+    await expect(setProject(h, input as unknown as SetProjectInput)).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+    expect(resolveCalls).toEqual([]);
+  });
+
+  it('the return schema keeps projectId (string and null) and rejects anything else', () => {
+    expect(SetProjectOutputSchema.parse({ projectId: PRJ })).toEqual({ projectId: PRJ });
+    expect(SetProjectOutputSchema.parse({ projectId: null })).toEqual({ projectId: null });
+    expect(SetProjectOutputSchema.safeParse({}).success).toBe(false);
+    expect(SetProjectOutputSchema.safeParse({ projectId: 7 }).success).toBe(false);
   });
 });
