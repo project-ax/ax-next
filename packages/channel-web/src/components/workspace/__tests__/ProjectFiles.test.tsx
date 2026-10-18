@@ -340,6 +340,27 @@ describe('the files browser', () => {
     expect(within(main()).queryByRole('button', { name: 'instructions.md' })).toBeNull();
   });
 
+  // Review, 2026-10-17: while a file loads, or if it fails to, the viewer fell
+  // back to the RAW path's last segment, which may carry bidi controls. It
+  // must fall back to the listing's fenced name instead.
+  it('SECURITY: never draws the raw name while a file loads or after it fails', async () => {
+    const raw = 'inv\u202Eoice.md';
+    serveFolder({
+      ...FOLDER,
+      work: dir('work', [fileEntry(`work/${raw}`, { name: 'inv?oice.md' })]),
+    });
+    const real = api.projectFiles.getMockImplementation()!;
+    api.projectFiles.mockImplementation(async (projectId: string, path: string) => {
+      if (path === `work/${raw}`) throw new WorkspaceApiError(`/projects/p1/files/${path}`, 500);
+      return real(projectId, path);
+    });
+    await openAt('/workspace/projects/p1/files/work');
+    fireEvent.click(await within(main()).findByRole('button', { name: 'inv?oice.md' }));
+    await waitFor(() => expect(api.projectFiles).toHaveBeenCalledWith('p1', `work/${raw}`));
+    await waitFor(() => expect(within(main()).getAllByText('inv?oice.md').length).toBeGreaterThan(1));
+    expect(within(main()).queryByText(raw)).toBeNull();
+  });
+
   it('names the open file once in the viewer, not twice (kind walk, 2026-10-17)', async () => {
     await openAt('/workspace/projects/p1/files/work/plan.md');
     await within(main()).findByRole('heading', { name: 'Launch plan' });

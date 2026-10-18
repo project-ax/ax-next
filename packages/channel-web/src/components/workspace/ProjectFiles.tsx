@@ -27,6 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { projectDownloadFailureMessage } from '@/lib/file-download';
+import { fenceLine } from '@/lib/fence-line';
 import { logRequestFailure } from '@/lib/http';
 import { toReadOutcome, type ReadOutcome } from '@/lib/read-register';
 import { useFileTree, type FileTreeState } from '@/lib/user-files';
@@ -378,22 +379,25 @@ export function ProjectFilesPage({
             {segments.map((seg, i) => {
               const at = segments.slice(0, i + 1).join('/');
               const last = i === segments.length - 1;
+              // Segments come from the URL: raw, agent-written names that may
+              // carry bidi or control characters. Fence them for display.
+              const label = fenceLine(seg, 120) ?? '…';
               return (
                 <Fragment key={at}>
                   <BreadcrumbSeparator />
                   <BreadcrumbItem>
                   {last ? (
-                    <BreadcrumbPage className="max-w-[24ch] truncate" title={seg}>
-                      {seg}
+                    <BreadcrumbPage className="max-w-[24ch] truncate" title={label}>
+                      {label}
                     </BreadcrumbPage>
                   ) : (
                     <BreadcrumbLink
                       className="max-w-[16ch] truncate"
-                      title={seg}
+                      title={label}
                       href={filesHref(at)}
                       onClick={(e) => inPlaceClick(e, () => onNavigate(at))}
                     >
-                      {seg}
+                      {label}
                     </BreadcrumbLink>
                   )}
                   </BreadcrumbItem>

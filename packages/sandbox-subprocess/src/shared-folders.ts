@@ -434,6 +434,11 @@ export async function readSharedFolder(
     if (err instanceof WalkReadError && err.code === 'unsupported-platform') {
       return { kind: 'unavailable' };
     }
+    // The walk adds `.shared/<id>` to the caller's parts, so a relPath that
+    // passed splitRelPath can still be too deep. Same answer as k8s.
+    if (err instanceof WalkPathError) {
+      throw readError('invalid-payload', pluginName, `invalid relPath: ${err.message}`, err);
+    }
     throw err;
   }
 }

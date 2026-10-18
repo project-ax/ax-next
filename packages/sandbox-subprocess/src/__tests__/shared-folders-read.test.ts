@@ -10,7 +10,7 @@ import type {
   ReadSharedFolderInput,
   ReadSharedFolderOutput,
 } from '@ax/sandbox-mount-protocol';
-import { WalkReadError } from '@ax/user-files-read';
+import { WalkPathError, WalkReadError } from '@ax/user-files-read';
 import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import { readSharedFolder } from '../shared-folders.js';
@@ -111,6 +111,25 @@ describe('readSharedFolder (subprocess)', () => {
       expect(walk).not.toHaveBeenCalled();
     },
   );
+
+  // Review, 2026-10-17: a relPath of 31–32 segments passes splitRelPath, but
+  // the walk adds `.shared/<id>` and refuses it as too deep. That must be the
+  // same invalid-payload k8s answers, not a raw error (a 500 at the route).
+  it('a path the walk itself refuses as too deep is invalid-payload, as on k8s', async () => {
+    const walk = vi.fn(async () => {
+      throw new WalkPathError('path is too deep');
+    });
+    const relPath = Array.from({ length: 32 }, () => 'd').join('/');
+    const err = await readSharedFolder(
+      ctx(),
+      busLocating(sharedMount),
+      PLUGIN,
+      { folderId: F1, relPath, limitBytes: 1 },
+      walk,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('invalid-payload');
+  });
 
   it('walks .shared/<id>/<rel> from the root above .shared, with the caller limits', async () => {
     const walk = vi.fn(async () => fileOut);

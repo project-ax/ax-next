@@ -507,7 +507,10 @@ export function FileBrowser({
           {selected !== null ? (
             <FileViewer
               key={`${treeKey}:${selected}`}
-              label={tree.file?.name ?? basename(selected)}
+              // The fenced name only: the loaded file's, else the listing's
+              // entry. Never `selected` (the raw, agent-written path) — it may
+              // carry bidi or control characters.
+              label={tree.file?.name ?? tree.entries.find((e) => e.path === selected)?.name ?? ''}
               badge={viewerBadge}
               loading={tree.fileLoading}
               failed={tree.fileError !== null}
