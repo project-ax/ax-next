@@ -644,6 +644,11 @@ interface ConversationsGetOutput {
     agentId: string;
     activeSessionId: string | null;
     activeReqId: string | null;
+    /**
+     * W3e — the chat's project now (null = none). Compared on the reuse path
+     * with the one the live session opened with (`project-changed`).
+     */
+    projectId?: string | null;
   };
 }
 interface ConversationsBindSessionInput {
@@ -2301,15 +2306,22 @@ export function createOrchestrator(
   // `connectorStateBySession`: forgotten at the same four sites.
   //
   // W3a — `projectId` is the project the session was spawned for (spec §4.5
-  // step 5). It is recorded with the folders so it is forgotten with them.
-  // Today only the access-reduced log reads it; W3e compares it on the reuse
-  // path when a chat moves between projects.
+  // step 5), for the access-reduced log. W3e keeps every session's spawn
+  // project — "none" included — in `spawnProjectBySession` below, since only
+  // sessions with folders have an entry here.
   interface SessionSharedFolderState {
     agentId: string;
     folderIds: Set<string>;
     projectId: string | null;
   }
   const sharedFolderStateBySession = new Map<string, SessionSharedFolderState>();
+
+  // W3e (spec §8) — the project EVERY session opened with, null for none. The
+  // reuse path compares it with the chat's project now and retires the session
+  // on a difference (`project-changed`), so a chat moved into, out of, or
+  // between projects mounts the new one (or none) at its next turn. Recorded
+  // and forgotten with the folder state above.
+  const spawnProjectBySession = new Map<string, string | null>();
 
   // W2 — sessions holding a folder whose access was REDUCED (revoke, downgrade,
   // delete — `shared-folders:access-reduced`). A warm sandbox keeps its mount
@@ -2325,13 +2337,25 @@ export function createOrchestrator(
     folderIds: readonly string[],
     projectId: string | null,
   ): void {
+    spawnProjectBySession.set(sessionId, projectId);
     if (folderIds.length === 0) return;
     sharedFolderStateBySession.set(sessionId, { agentId, folderIds: new Set(folderIds), projectId });
   }
 
   function forgetSessionSharedFolders(sessionId: string): void {
+    spawnProjectBySession.delete(sessionId);
     sharedFolderStateBySession.delete(sessionId);
     sharedFolderReducedSessions.delete(sessionId);
+  }
+
+  /**
+   * W3e — true when the chat's project differs from the one this session
+   * opened with. A session this host never recorded (it didn't spawn it) has
+   * nothing to compare; `host-session-lost` retires those under keep-alive.
+   */
+  function projectChangedSinceSpawn(sessionId: string, chatProjectId: string | null | undefined): boolean {
+    if (!spawnProjectBySession.has(sessionId)) return false;
+    return spawnProjectBySession.get(sessionId) !== (chatProjectId ?? null);
   }
 
   /** A session marked by a revocation (connector deleted, folder access reduced). */
@@ -2763,6 +2787,12 @@ export function createOrchestrator(
             // (marked by `shared-folders:access-reduced`) and the reaper has
             // not got to it yet.
             const sharedFolderAccessReduced = sharedFolderReducedSessions.has(candidate);
+            // W3e — the chat moved into, out of, or between projects since
+            // this session opened. The fresh spawn re-resolves the project.
+            const projectChanged = projectChangedSinceSpawn(
+              candidate,
+              conv.conversation.projectId,
+            );
             // TASK-811 — a connector attached / detached since this session
             // spawned. TASK-833 — or one it folded was deleted (marked by
             // `connectors:deleted`), or no longer resolves to what it folded
@@ -2778,6 +2808,7 @@ export function createOrchestrator(
                 augmentStale ||
                 hostSessionMissing ||
                 sharedFolderAccessReduced ||
+                projectChanged ||
                 rotationFailed
               ) &&
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
@@ -2788,6 +2819,7 @@ export function createOrchestrator(
                 augmentStale ||
                 hostSessionMissing ||
                 sharedFolderAccessReduced ||
+                projectChanged ||
                 rotationFailed ||
                 connectorsChanged
               ) && (await skippedConnectorSignedIn(ctx, candidate));
@@ -2802,6 +2834,7 @@ export function createOrchestrator(
                 augmentStale ||
                 hostSessionMissing ||
                 sharedFolderAccessReduced ||
+                projectChanged ||
                 rotationFailed ||
                 connectorsChanged ||
                 connectorSignedIn
@@ -2816,6 +2849,7 @@ export function createOrchestrator(
               augmentStale ||
               hostSessionMissing ||
               sharedFolderAccessReduced ||
+                projectChanged ||
               rotationFailed ||
               connectorsChanged ||
               connectorSignedIn
@@ -2851,6 +2885,9 @@ export function createOrchestrator(
               // W2: and when a shared folder it requested had its access
               // reduced and the reaper has not got to it yet. The fresh spawn
               // mounts only what the grants allow now.
+              //
+              // W3e: and when the chat moved into, out of, or between projects.
+              // The fresh spawn mounts the new project's folder, or none.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: routineRetire
@@ -2863,6 +2900,8 @@ export function createOrchestrator(
                         ? 'system-prompt-augment-changed'
                         : sharedFolderAccessReduced
                           ? 'shared-folder-access-reduced'
+                          : projectChanged
+                          ? 'project-changed'
                           : rotationFailed
                           ? 'credential-rotation-failed'
                           : connectorsChanged
