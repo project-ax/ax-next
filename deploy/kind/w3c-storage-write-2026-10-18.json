@@ -1,0 +1,71 @@
+{
+  "date": "2026-10-18",
+  "subject": "W3c /change-shared on the storage node, end to end on real NFS + real mTLS",
+  "branch_head": "181e1f2f6 (feat/w3c-edit-project-files)",
+  "image": "ax-next/agent:w3c-test sha256:dca5c3ae92de (built from the worktree, container/agent/Dockerfile)",
+  "cluster": "kind-ax-next-dev (OrbStack kernel 7.2.9), dev NFS server 10.96.200.49, fresh export dir /w3c-test (no_root_squash confirmed via exportfs -v), NFSv4.2",
+  "setup": {
+    "namespace": "w3c-nfs-test (deleted afterwards; /exports/w3c-test removed; image removed from the kind node)",
+    "storage_pod": "root, privileged; REAL StorageNodeEngine + createStorageServer from the image's @ax/sandbox-k8s dist, default io (real fchown 1000:1000, real changeConfinedByWalk); only the k8s StorageAuthority stubbed (main.ts needs KubeConfig + node fence, unused by /change-shared). Export mounted RW at /backing/files and RO at /backing/files-ro; assertReadOnlyMount passed. Root FS left writable so an escape into /etc would be visible.",
+    "client_pod": "uid 1000, client cert; drives the REAL plugin function changeSharedFolder -> createStorageClient(stub listNamespacedPod returning the storage pod IP).changeShared over mTLS (TLSv1.3, servername ax-sandbox-storage.ax-sandbox-system.svc)",
+    "agent_pod": "uid/gid 1000, export subPath .shared/sf_w3c_a mounted RW at /proj",
+    "tls": "throwaway P-256 CA, server cert (serverAuth, SAN = serverName), client cert (clientAuth), plus a second CA + client cert"
+  },
+  "a_seed_createFolder": {
+    "pass": true,
+    "results": "work, memory, sources created; instructions.md, memory/status.md, work/notes/hello.md (nested parent created), work/todelete.md created",
+    "modes": {".": "755 0:0 (export root)", ".shared": "711 0:0", ".shared/sf_w3c_a": "700 1000:1000", "dirs": "755 1000:1000", "files": "644 1000:1000"},
+    "contents_sha256_match_client": true,
+    "reseed_ifAbsent": "work=exists, instructions.md=exists (not overwritten)",
+    "missing_folder_without_createFolder": "shared-folder-missing / missing-folder"
+  },
+  "b_agent_edits_person_files": {
+    "pass": true,
+    "agent_uid1000": "appended to work/notes/hello.md, rewrote instructions.md, deleted work/todelete.md, created work/agent-new.md and work/agentdir/y",
+    "person_write_with_ifMatch_of_agent_bytes": "written; file stays 644 1000:1000; agent appended again afterwards",
+    "delete_nonempty_dir": "refused not-empty, applied []",
+    "delete_file_then_empty_dir_then_absent": "deleted, deleted, absent"
+  },
+  "c_stale_ifMatch": {"pass": true, "outcome": "conflict (batch stopped: the following write was not applied)", "file_sha256_before_after_equal": true},
+  "d_ifAbsent_existing": {"pass": true, "outcome": "exists", "file_sha256_before_after_equal": true},
+  "e_planted_symlinks": {
+    "pass": true,
+    "work/evil -> /etc: write evil/x, evil/w3c-new/x, overwrite evil/hostname, mkdir evil/w3c-dir": "all refused link-or-not-dir",
+    "work/evil2 -> ../../sf_w3c_other: write x, overwrite keep.md, delete keep.md": "all refused link-or-not-dir",
+    "dir replaced by symlink (work/sw: write ok as dir, then agent rm -rf + ln -s ../../sf_w3c_other)": "write sw/b and overwrite sw/keep.md refused link-or-not-dir",
+    "ordered batch ok1, sw/c, ok2": "refused link-or-not-dir, applied [work/ok1 created]; ok2 not written",
+    "leaf symlink work/leaf -> /etc/hostname": "ifMatch=sha(/etc/hostname) -> conflict; ifAbsent -> exists; plain write -> written, leaf is now a regular 644 1000:1000 file; /etc/hostname unchanged",
+    "delete leaf symlink work/leaf2 -> /etc/hosts": "deleted (the link); /etc/hosts present and unchanged",
+    "paths '../sf_w3c_other/x' and '/etc/x'": "invalid-path",
+    "root-planted .shared/sf_w3c_link -> /etc (folder itself a link), with and without createFolder": "refused link-or-not-dir",
+    "storage pod /etc": "listing hash, /etc/hostname, /etc/hosts identical before/after; 0 files in /etc newer than server start; no /etc/x, /etc/w3c-new, /etc/w3c-dir",
+    "sibling folder sf_w3c_other": "still only keep.md"
+  },
+  "f_swap_race": {
+    "pass": true,
+    "agent": "python loop, 13 s: work/d swapped dir <-> symlink ../../sf_w3c_other (~0.5 ms each state); 3997 link plants",
+    "client": "10 s loop writing work/d/f through the real plugin + client",
+    "writes": 3869,
+    "ok_written": 1841,
+    "ok_created": 1,
+    "refused_link_or_not_dir": 1961,
+    "failed_storage_error": 66,
+    "storage_error_causes": "51 ESTALE (-116) on fchmod/fchown of a directory the walk had just re-created and the agent then rm -rf'd; 12 ENOENT creating the temp file; 3 ENOENT on rename (held directory deleted under the walk) -> hook error shared-folder-change-failed; nothing written",
+    "files_in_sibling_folder_after": 0,
+    "files_in_etc_after": 0,
+    "note": "while the agent had renamed d away, the walk re-created work/d (mkdir of a missing parent), as designed; writes then landed in that directory inside the folder"
+  },
+  "g_caps_and_tls": {
+    "pass": true,
+    "10MiB_hook": "created, 10485760 bytes 644 1000:1000",
+    "10MiB_plus_1_hook": "refused too-large in the plugin (never sent)",
+    "10MiB_plus_1_raw_to_node": "node answered 409 -> client 'storage operation rejected'; no file",
+    "25MiB_plus_1_total_raw_to_node": "409; nothing written (the following exact-25MiB call reported all three files 'created')",
+    "25MiB_total_hook": "created x3",
+    "no_client_cert": "TLS alert 116 certificate required (ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED)",
+    "client_cert_from_other_CA": "connection reset during handshake (socket hang up), no HTTP response",
+    "good_cert_empty_changes": "200 {kind: done, results: []}",
+    "GET /assign with good cert": "404"
+  },
+  "h_leftovers": {"pass": true, "ax_tmp_files": 0, "nfs_silly_rename_files": 0, "entries_under_.shared_not_1000:1000": 0, "files_not_0644": 0}
+}
