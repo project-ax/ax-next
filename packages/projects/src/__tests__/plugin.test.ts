@@ -1587,6 +1587,37 @@ describe('the lazy layout sweep (ensureLayout)', () => {
 });
 
 describe('projects:write-file / delete-file / create-folder (W3c)', () => {
+  // Security review, 2026-10-18: a change that may create the folder
+  // (createFolder) raced with a project delete would bring the reaped folder
+  // back with nobody left to clean it. The row is checked again after the
+  // change; a project gone mid-change is reaped and answered not-found.
+  it('a project deleted during a change is reaped, not resurrected, and the save is not-found', async () => {
+    const reaped: unknown[] = [];
+    const w = await makeWorld({
+      writer: true,
+      extraServices: {
+        'sandbox:delete-shared-folder': async (_c, raw) => {
+          reaped.push(raw);
+          return { deleted: true };
+        },
+        'sandbox:change-shared-folder': async (c, raw) => {
+          const input = raw as StubChangeCall;
+          // The person's own write: the project is deleted while it's in flight.
+          if (input.changes.some((ch) => ch.path === 'work/late.md')) {
+            await q('DELETE FROM projects_v1_projects WHERE folder_id = $1', [input.folderId]);
+          }
+          return changeSharedFolderStub(c, raw);
+        },
+      },
+    });
+    const { folderId, projectId } = await createProject(w, 'alice', 'a-alice-1');
+    reaped.length = 0;
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/late.md', content: enc('x') }),
+    ).rejects.toMatchObject({ code: 'not-found', hookName: 'projects:write-file' });
+    expect(reaped).toEqual([{ folderId }]);
+  });
+
   it('an owner saves: sha256 back, the change sent, and read-file returns the same hash', async () => {
     const w = await makeWorld({ writer: true });
     const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');

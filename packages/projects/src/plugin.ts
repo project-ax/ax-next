@@ -466,19 +466,44 @@ export function createProjectsPlugin(): Plugin {
     });
   }
 
-  /** One confined change of a project's folder. Only after `loadEditable`, or on a folder `projects:create` just made. */
+  /**
+   * One confined change of a project's folder. Only after `loadEditable`, or on
+   * a folder `projects:create` just made.
+   *
+   * `createFor` creates the folder when it's missing (a W3a folder exists on
+   * disk only once a session mounted it). That opens a window: the project can
+   * be deleted, and its folder reaped, between our row check and the write,
+   * which would bring the folder back with nobody left to clean it. So after
+   * the change we look at the row again; if the project (or its folder) is
+   * gone, we reap what we may have made and answer not-found. A delete that
+   * lands after this check reaps our bytes itself.
+   */
   async function changeFolder(
     ctx: AgentContext,
     folderId: string,
     changes: LayoutChange[],
-    createFolder?: true,
+    createFor?: { projectId: string; hookName: string },
   ): Promise<ChangeSharedFolderOut> {
     if (!bus!.hasService(CHANGE_SHARED_FOLDER_HOOK)) return { kind: 'unavailable' };
-    return bus!.call<ChangeSharedFolderIn, ChangeSharedFolderOut>(CHANGE_SHARED_FOLDER_HOOK, ctx, {
+    const out = await bus!.call<ChangeSharedFolderIn, ChangeSharedFolderOut>(CHANGE_SHARED_FOLDER_HOOK, ctx, {
       folderId,
       changes,
-      ...(createFolder === true ? { createFolder } : {}),
+      ...(createFor !== undefined ? { createFolder: true as const } : {}),
     });
+    if (createFor !== undefined && out.kind === 'done') {
+      const row = await getRow(createFor.projectId);
+      if (row === undefined || row.folder_id !== folderId) {
+        if (bus!.hasService(DELETE_SHARED_FOLDER_HOOK)) {
+          try {
+            await bus!.call(DELETE_SHARED_FOLDER_HOOK, ctx, { folderId });
+          } catch (err) {
+            ctx.logger.error('projects_change_reap_failed', { projectId: createFor.projectId, folderId, err: errOf(err) });
+          }
+        }
+        refuse(ctx, createFor.hookName, 'not-found', 'deleted-during-change', { projectId: createFor.projectId });
+      }
+    }
+    return out;
   }
 
   /**
@@ -505,7 +530,7 @@ export function createProjectsPlugin(): Plugin {
       }).filter((c) => c.path !== skipPath);
       // `createFolder`: a W3a project's folder exists on disk only once a
       // session mounted it. The row was just loaded, so the id is live.
-      const out = await changeFolder(ctx, row.folder_id, changes, true);
+      const out = await changeFolder(ctx, row.folder_id, changes, { projectId: row.project_id, hookName: 'projects:ensure-layout' });
       if (out.kind === 'unavailable') return false;
       const created = out.results.filter((r) => r.outcome === 'created').map((r) => r.path);
       if (created.length > 0) ctx.logger.info('projects_layout_ensured', { projectId: row.project_id, created });
@@ -555,7 +580,7 @@ export function createProjectsPlugin(): Plugin {
     await ensureLayout(ctx, row, change.path);
     let out: ChangeSharedFolderOut;
     try {
-      out = await changeFolder(ctx, row.folder_id, [change], true);
+      out = await changeFolder(ctx, row.folder_id, [change], { projectId, hookName });
     } catch (err) {
       // A refusal from the walk (a symlink or a file in the way, a non-empty
       // folder) or a storage failure. Passed through as is.
@@ -818,7 +843,7 @@ export function createProjectsPlugin(): Plugin {
               description,
               logLine: await creatorLogLine(ctx, actor),
             });
-            const out = await changeFolder(ctx, folderId, changes, true);
+            const out = await changeFolder(ctx, folderId, changes, { projectId, hookName: 'projects:create' });
             if (out.kind === 'unavailable') {
               ctx.logger.info('projects_layout_skipped', { projectId, reason: 'files-unavailable' });
             } else {
