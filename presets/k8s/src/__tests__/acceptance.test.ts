@@ -4249,7 +4249,7 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
 
   it(
     'W3e: adding one of your agents as a viewer mounts the folder read-only; downgrading or removing it reaps its live session, and after removal its project chat ends project-unavailable',
-    { timeout: 240_000 },
+    { timeout: 180_000 },
     async () => {
       const owner = await createAgent('W3e members owner');
       const helper = await createAgent('W3e helper');
