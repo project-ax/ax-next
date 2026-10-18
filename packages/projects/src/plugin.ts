@@ -470,6 +470,9 @@ export function createProjectsPlugin(): Plugin {
    * One confined change of a project's folder. Only after `loadEditable`, or on
    * a folder `projects:create` just made.
    *
+   * Every caller here passes `createFor`, so the provider's "folder missing"
+   * refusal (`createFolder` unset) has no caller in projects today.
+   *
    * `createFor` creates the folder when it's missing (a W3a folder exists on
    * disk only once a session mounted it). That opens a window: the project can
    * be deleted, and its folder reaped, between our row check and the write,

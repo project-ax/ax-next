@@ -38,7 +38,13 @@ export function createStorageClient(api: K8sCoreApi, config: SharedPoolConfig,
         servername: config.serverName, ...tls, rejectUnauthorized: true, minVersion: 'TLSv1.3',
         agent: false, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, res => {
         let bytes = 0; const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > responseMax) res.destroy(); else chunks.push(chunk); });
+        res.on('data', (chunk: Buffer) => {
+          bytes += chunk.length;
+          // destroy() without an error emits neither 'error' nor 'end': reject
+          // here, or the caller waits for the request timeout.
+          if (bytes > responseMax) { reject(new Error('storage response too large')); res.destroy(); req.destroy(); }
+          else chunks.push(chunk);
+        });
         res.on('error', () => reject(new Error('storage response failed')));
         res.on('end', () => {
           if (res.statusCode !== 200) { reject(new Error('storage operation rejected')); return; }

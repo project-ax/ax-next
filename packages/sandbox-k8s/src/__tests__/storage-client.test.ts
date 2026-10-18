@@ -87,6 +87,21 @@ describe('storage client: shared-folder changes (W3c)', () => {
     transport(JSON.stringify({ kind: 'done', results: [{ path: 'x'.repeat(300 * 1024), outcome: 'created' }] }));
     await expect(createStorageClient(api, config).changeShared(change)).rejects.toThrow(/storage response/);
   });
+  // Review, 2026-10-18: a real `res.destroy()` with no error emits neither
+  // 'error' nor 'end', so an oversize reply used to hang until the request
+  // timeout (55 s) instead of failing at once.
+  it('rejects an oversize reply at once, even when destroy() is silent', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
+    const req = Object.assign(new EventEmitter(), { setTimeout: vi.fn(), destroy: vi.fn(), end: vi.fn() });
+    state.request.mockImplementation((_options: unknown, callback: (res: EventEmitter & { statusCode: number }) => void) => {
+      req.end.mockImplementation(() => {
+        const res = Object.assign(new EventEmitter(), { statusCode: 200, destroy: vi.fn() });
+        callback(res); res.emit('data', Buffer.alloc(300 * 1024));
+      }); return req;
+    });
+    await expect(createStorageClient(api, config).changeShared(change)).rejects.toThrow('storage response too large');
+    expect(req.destroy).toHaveBeenCalled();
+  });
   it('refuses a request over the route cap before connecting', async () => {
     const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
     state.request.mockClear();
