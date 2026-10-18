@@ -1,6 +1,8 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput,
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
   ReadSharedFolderInput,
@@ -14,6 +16,7 @@ import { createDefaultK8sApi, createDefaultSandboxApi, type K8sCoreApi } from '.
 import { createAgentSandboxSessionApi, SANDBOX_SELECTOR, type SandboxCustomApi } from './agent-sandbox.js';
 import { createSharedPoolSessionApi, retireSharedClaims } from './shared-pool.js';
 import { createStorageClient, type StorageClient } from './storage-client.js';
+import { changeSharedFolder } from './change-shared-folder.js';
 import {
   createOpenSession,
   makePidGenerator,
@@ -91,11 +94,19 @@ export function createSandboxK8sPlugin(
       // walked component by component with no symlink followed. No grant
       // check here — @ax/projects checks the person first. Without the host
       // read root it answers `unavailable`.
+      //
+      // `sandbox:change-shared-folder` (W3c): the host's writes into one
+      // shared folder, sent to the privileged storage node's `/change-shared`
+      // route (mTLS), which walks the writable export with no symlink
+      // followed and chowns what it creates to the runner uid. No grant check
+      // here — @ax/projects checks the person first. Without the shared pool
+      // it answers `unavailable`.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
         'sandbox:read-shared-folder',
+        'sandbox:change-shared-folder',
       ],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
@@ -169,10 +180,11 @@ export function createSandboxK8sPlugin(
       let sessionApi = config.backend === 'agent-sandbox'
         ? createAgentSandboxSessionApi(api, custom!, config)
         : api;
+      // One storage client for the pool's session API and the W3c writes.
+      const storage = config.sharedPool ? storageClient ?? createStorageClient(api, config.sharedPool) : undefined;
       if (config.sharedPool) {
         await retireSharedClaims(custom!, config);
-        sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi,
-          storageClient ?? createStorageClient(api, config.sharedPool), config);
+        sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi, storage!, config);
       }
 
       // I5: warn loudly when an operator opts out of gVisor. The
@@ -249,6 +261,19 @@ export function createSandboxK8sPlugin(
         PLUGIN_NAME,
         async (ctx, input) => readSharedFolder(config, input, ctx.logger),
         { timeoutMs: 30_000 },
+      );
+
+      // W3c shared-folder write. One mTLS request to any Ready storage helper,
+      // which applies the changes with a no-follow walk of the writable export
+      // and chowns what it creates to 1000. Up to 25 MiB of content per call,
+      // so the timeout covers the upload as well as the fsyncs on NFS. A
+      // timed-out call may still finish on the node; `ifMatch` / `ifAbsent`
+      // make a retry safe.
+      bus.registerService<ChangeSharedFolderInput, ChangeSharedFolderOutput>(
+        'sandbox:change-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => changeSharedFolder(config, storage, input, ctx.logger),
+        { timeoutMs: 60_000 },
       );
 
       // §11 cleanup-on-agent-delete. A short-lived mount-and-rm pod removes

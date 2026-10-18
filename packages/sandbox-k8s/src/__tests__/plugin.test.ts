@@ -3,6 +3,8 @@ import type { Plugin } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput,
   DeleteSharedFolderInput,
   DeleteSharedFolderOutput,
   LocateSharedFolderInput,
@@ -324,6 +326,41 @@ describe('createSandboxK8sPlugin — sandbox:read-shared-folder wiring', () => {
       );
       expect(out).toEqual({ kind: 'unavailable' });
       // Never a pod per read.
+      expect(api.creates).toHaveLength(0);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// W3c — sandbox:change-shared-folder is registered next to the read and
+// reachable through the bus. Without a shared pool there is no storage node to
+// write through, so the deployment answers `unavailable` for any folder.
+describe('createSandboxK8sPlugin — sandbox:change-shared-folder wiring', () => {
+  const pluginOpts = {
+    namespace: 'ax-test',
+    hostIpcUrl: TEST_HOST_IPC_URL,
+    orphanSweepIntervalMs: 0,
+    orphanSweepTerminalAgeMs: 600_000,
+  };
+
+  it('declares the service in registers', () => {
+    const { manifest } = createSandboxK8sPlugin({ api: makeMockK8sApi(), ...pluginOpts });
+    expect(manifest.registers).toContain('sandbox:change-shared-folder');
+  });
+
+  it('answers unavailable through the bus without a shared pool', async () => {
+    const api = makeMockK8sApi();
+    const h = await createTestHarness({
+      plugins: [createSessionInmemoryPlugin(), createSandboxK8sPlugin({ api, ...pluginOpts })],
+    });
+    try {
+      const out = await h.bus.call<ChangeSharedFolderInput, ChangeSharedFolderOutput>(
+        'sandbox:change-shared-folder',
+        h.ctx(),
+        { folderId: 'sf_abc', createFolder: true, changes: [{ op: 'write', path: 'a.md', content: new Uint8Array([1]) }] },
+      );
+      expect(out).toEqual({ kind: 'unavailable' });
       expect(api.creates).toHaveLength(0);
     } finally {
       await h.close();

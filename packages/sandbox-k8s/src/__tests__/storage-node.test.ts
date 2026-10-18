@@ -8,7 +8,9 @@ import { BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { StorageNodeEngine, STORAGE_REQUEST_MAX_BYTES, assertReadOnlyMount, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from '../storage-node/authority.js';
-import { StorageAssignmentSchema, StorageRecordSchema, StorageRecoverySchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { StorageAssignmentSchema, StorageRecordSchema, StorageRecoverySchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity,
+  ChangeSharedRequestSchema, CHANGE_SHARED_REQUEST_MAX_BYTES, base64Length } from '../storage-node/protocol.js';
+import { WalkChangeError, WalkPathError, WalkReadError, type changeConfinedByWalk } from '@ax/user-files-read';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -552,6 +554,124 @@ describe.skipIf(process.platform !== 'linux')('Linux descriptor confinement', ()
   });
 });
 
+
+// W3c — `/change-shared`: the engine half. The walk itself is
+// @ax/user-files-read's (and Linux-only); here a fake stands in for it off
+// Linux, and the real one runs in the Linux block below.
+describe('storage-node shared-folder changes', () => {
+  const b64 = (text: string) => Buffer.from(text).toString('base64');
+  function withWalk(f: ReturnType<typeof engineFixture>, impl?: typeof changeConfinedByWalk) {
+    const change = vi.fn<typeof changeConfinedByWalk>(impl ?? ((_root, _base, changes) =>
+      changes.map(c => ({ path: c.path, outcome: 'created' as const }))));
+    (f.io as { change?: typeof changeConfinedByWalk }).change = change;
+    return change;
+  }
+  it('creates .shared (0711) for createFolder, then walks .shared/<id> with createBase and chown through io', async () => {
+    const f = engineFixture(); const change = withWalk(f, (_root, _base, changes, opts) => {
+      opts.chown?.(42); return changes.map(c => ({ path: c.path, outcome: 'created' as const }));
+    });
+    const out = await f.make().changeShared({ folderId: 'sf_a', createFolder: true,
+      changes: [{ op: 'mkdir', path: 'work', ifAbsent: true }, { op: 'write', path: 'work/a.md', content: b64('hello'), ifAbsent: true }] });
+    expect(out).toEqual({ kind: 'done', results: [{ path: 'work', outcome: 'created' }, { path: 'work/a.md', outcome: 'created' }] });
+    expect(statSync(join(f.config.userFilesRoot, '.shared')).mode & 0o777).toBe(0o711);
+    const [root, base, changes, opts] = change.mock.calls[0]!;
+    expect(root).toBe(f.config.userFilesRoot);
+    expect(base).toEqual(['.shared', 'sf_a']);
+    expect(opts).toMatchObject({ createBase: true, maxChanges: 64, maxFileBytes: 10 * 1024 * 1024, maxTotalBytes: 25 * 1024 * 1024 });
+    // Content arrives as bytes, decoded from the wire's base64.
+    expect(Buffer.from((changes[1] as { content: Uint8Array }).content).toString()).toBe('hello');
+    // chown goes through io.chown (production: fchown 1000:1000).
+    expect(f.io.chown).toHaveBeenCalledWith(42);
+  });
+  it('neither creates .shared nor asks for createBase without createFolder', async () => {
+    const f = engineFixture(); const change = withWalk(f);
+    await f.make().changeShared({ folderId: 'sf_a', changes: [{ op: 'delete', path: 'x' }] });
+    expect(existsSync(join(f.config.userFilesRoot, '.shared'))).toBe(false);
+    expect(change.mock.calls[0]![3]).not.toHaveProperty('createBase');
+  });
+  it.each([
+    ['link-or-not-dir'], ['not-empty'], ['is-directory'], ['invalid-change'], ['too-large'], ['too-many-changes'],
+  ] as const)('answers a %s refusal with its code and the changes already applied', async code => {
+    const f = engineFixture();
+    withWalk(f, () => { throw new WalkChangeError('refused', { code, index: 1, applied: [{ path: 'a', outcome: 'created' }] }); });
+    expect(await f.make().changeShared({ folderId: 'sf_a', changes: [{ op: 'mkdir', path: 'a' }, { op: 'mkdir', path: 'b' }] }))
+      .toEqual({ kind: 'refused', refused: code, results: [{ path: 'a', outcome: 'created' }] });
+  });
+  it('answers invalid-path for a malformed path and missing-folder for an absent folder', async () => {
+    const f = engineFixture(); const engine = f.make();
+    withWalk(f, () => { throw new WalkPathError('path must be relative'); });
+    expect(await engine.changeShared({ folderId: 'sf_a', changes: [{ op: 'delete', path: '/etc/passwd' }] }))
+      .toEqual({ kind: 'refused', refused: 'invalid-path', results: [] });
+    withWalk(f, () => { throw new WalkReadError('the base does not exist (ENOENT)', { code: 'ENOENT', depth: 1 }); });
+    expect(await engine.changeShared({ folderId: 'sf_a', changes: [] }))
+      .toEqual({ kind: 'refused', refused: 'missing-folder', results: [] });
+  });
+  it('throws a bare error for a storage failure and reports it without paths', async () => {
+    const f = engineFixture();
+    withWalk(f, () => { throw new WalkReadError('could not write a temp file (EIO)', { code: 'EIO', depth: 3 }); });
+    await expect(f.make().changeShared({ folderId: 'sf_a', changes: [{ op: 'mkdir', path: 'a' }] }))
+      .rejects.toThrow(/^shared folder change failed$/);
+    expect(f.reports.join('\n')).toMatch(/sf_a.*EIO/);
+    expect(f.reports.join('\n')).not.toContain(f.root);
+  });
+  it('refuses a bad wire request before the walk runs', async () => {
+    const f = engineFixture(); const change = withWalk(f); const engine = f.make();
+    const bad: unknown[] = [
+      { folderId: '../x', changes: [] },
+      { folderId: 'sf_a', changes: [], extra: 1 },
+      { folderId: 'sf_a', createFolder: false, changes: [] },
+      { folderId: 'sf_a', changes: [{ op: 'write', path: 'a', content: 'not base64!' }] },
+      { folderId: 'sf_a', changes: [{ op: 'write', path: 'a', content: 'aGVsbG8' }] }, // unpadded: not canonical
+      { folderId: 'sf_a', changes: [{ op: 'write', path: 'a', content: '', ifMatch: 'a'.repeat(64), ifAbsent: true }] },
+      { folderId: 'sf_a', changes: [{ op: 'write', path: 'a', content: '', ifMatch: 'A'.repeat(64) }] },
+      { folderId: 'sf_a', changes: [{ op: 'chmod', path: 'a' }] },
+      { folderId: 'sf_a', changes: [{ op: 'delete', path: 'a', recursive: true }] },
+      { folderId: 'sf_a', changes: [{ op: 'delete', path: 'a'.repeat(1025) }] },
+      { folderId: 'sf_a', changes: Array.from({ length: 65 }, () => ({ op: 'mkdir', path: 'a' })) },
+    ];
+    for (const raw of bad) await expect(engine.changeShared(raw as never)).rejects.toThrow();
+    expect(change).not.toHaveBeenCalled();
+  });
+  it('caps each file at 10 MiB decoded and the call at 25 MiB', () => {
+    const file = (bytes: number) => ({ op: 'write' as const, path: 'a', content: Buffer.alloc(bytes).toString('base64') });
+    const MiB = 1024 * 1024;
+    expect(ChangeSharedRequestSchema.safeParse({ folderId: 'sf_a', changes: [file(10 * MiB)] }).success).toBe(true);
+    expect(ChangeSharedRequestSchema.safeParse({ folderId: 'sf_a', changes: [file(10 * MiB + 1)] }).success).toBe(false);
+    expect(ChangeSharedRequestSchema.safeParse({ folderId: 'sf_a', changes: [file(10 * MiB), file(10 * MiB), file(5 * MiB)] }).success).toBe(true);
+    expect(ChangeSharedRequestSchema.safeParse({ folderId: 'sf_a', changes: [file(10 * MiB), file(10 * MiB), file(5 * MiB + 1)] }).success).toBe(false);
+    // The largest legal request fits the route's cap with paths at their limit.
+    const largest = JSON.stringify({ folderId: 'sf_' + 'a'.repeat(64), createFolder: true, changes: [
+      ...[10 * MiB, 10 * MiB, 5 * MiB].map(n => ({ op: 'write', path: 'p'.repeat(1024), content: 'A'.repeat(base64Length(n)), ifMatch: 'a'.repeat(64) })),
+      ...Array.from({ length: 61 }, () => ({ op: 'mkdir', path: '"'.repeat(1024), ifAbsent: true })),
+    ] });
+    expect(Buffer.byteLength(largest)).toBeLessThanOrEqual(CHANGE_SHARED_REQUEST_MAX_BYTES);
+  });
+});
+
+describe.skipIf(process.platform !== 'linux')('Linux shared-folder changes through the real walk', () => {
+  it('creates the folder 0700, chowns what it creates, and refuses a planted symlink', async () => {
+    const f = engineFixture(); const engine = f.make();
+    const out = await engine.changeShared({ folderId: 'sf_a', createFolder: true,
+      changes: [{ op: 'write', path: 'work/a.md', content: Buffer.from('hi').toString('base64') }] });
+    expect(out).toEqual({ kind: 'done', results: [{ path: 'work/a.md', outcome: 'created' }] });
+    const folder = join(f.config.userFilesRoot, '.shared', 'sf_a');
+    expect(statSync(join(f.config.userFilesRoot, '.shared')).mode & 0o777).toBe(0o711);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    expect(readFileSync(join(folder, 'work/a.md'), 'utf8')).toBe('hi');
+    // The folder, work/, and the file (as its temp) are each handed to chown.
+    expect(f.io.chown).toHaveBeenCalledTimes(3);
+    symlinkSync('/etc', join(folder, 'escape'));
+    expect(await engine.changeShared({ folderId: 'sf_a',
+      changes: [{ op: 'write', path: 'escape/owned', content: '' }] }))
+      .toEqual({ kind: 'refused', refused: 'link-or-not-dir', results: [] });
+    expect(existsSync('/etc/owned')).toBe(false);
+  });
+  it('refuses a folder that does not exist without createFolder', async () => {
+    const f = engineFixture(); mkdirSync(join(f.config.userFilesRoot, '.shared'));
+    expect(await f.make().changeShared({ folderId: 'sf_b', changes: [{ op: 'mkdir', path: 'x' }] }))
+      .toEqual({ kind: 'refused', refused: 'missing-folder', results: [] });
+  });
+});
 
 describe('shared storage recovery after local ledger loss', () => {
   const fence = { machineId: '5b723d61-8f6a-4b50-9f81-4eecdb84c172', bootId: 'c358457e-3f7a-41b3-b7e3-44eed001fa32' };

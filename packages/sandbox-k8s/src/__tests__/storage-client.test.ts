@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { createStorageClient } from '../storage-client.js';
+import { CHANGE_SHARED_REQUEST_MAX_BYTES } from '../storage-node/protocol.js';
 import type { SharedPoolConfig } from '../config.js';
 import { makeMockK8sApi } from './mock-k8s.js';
 const state = vi.hoisted(() => ({ request: vi.fn(), read: vi.fn(() => Buffer.from('fixture-tls')) }));
@@ -8,8 +9,8 @@ vi.mock('node:https', () => ({ request: state.request }));
 vi.mock('node:fs', async importOriginal => ({ ...await importOriginal<typeof import('node:fs')>(), readFileSync: state.read }));
 const config: SharedPoolConfig = { replicas: 1, prefix: 'pool', storageNamespace: 'storage', tlsDirectory: '/tls',
   serverName: 'storage.storage.svc', runnerBinaries: { 'claude-sdk': '/runner.js' }, userFiles: { server: '10.0.0.9', exportPath: '/files' } };
-const helper = (nodeName = 'node') => ({ spec: { nodeName }, status: { phase: 'Running', podIP: '10.0.0.3',
-  conditions: [{ type: 'Ready', status: 'True' }] } });
+const helper = (nodeName = 'node', podIP = '10.0.0.3', ready = 'True') => ({ spec: { nodeName }, status: { phase: 'Running', podIP,
+  conditions: [{ type: 'Ready', status: ready }] } });
 const identity = { podName: 'pod', podUid: 'pod-uid', claimName: 'claim', claimUid: 'claim-uid', sandboxName: 'sandbox', sandboxUid: 'sandbox-uid' };
 function transport(body: string) {
   state.request.mockImplementation((_options: unknown, callback: (res: EventEmitter & { statusCode: number }) => void) => {
@@ -39,5 +40,59 @@ describe('authenticated storage client', () => {
     const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
     transport(body); const client = createStorageClient(api, config);
     await expect(client.status('node', identity)).rejects.toThrow(/storage response/);
+  });
+});
+describe('storage client: shared-folder changes (W3c)', () => {
+  const change = { folderId: 'sf_a', changes: [{ op: 'write' as const, path: 'a.md', content: 'aGk=' }] };
+  it('sends to a Ready helper on ANY node, with the same TLS verification', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [
+      helper('node-a', '10.0.0.1', 'False'), helper('node-b', '10.0.0.2'), helper('node-c', '10.0.0.4'),
+      { ...helper('node-d', '10.0.0.5'), metadata: { deletionTimestamp: 'now' } }] });
+    transport('{"kind":"done","results":[{"path":"a.md","outcome":"created"}]}');
+    const client = createStorageClient(api, config, count => count - 1);
+    expect(await client.changeShared(change)).toEqual({ kind: 'done', results: [{ path: 'a.md', outcome: 'created' }] });
+    expect(state.request).toHaveBeenLastCalledWith(expect.objectContaining({ hostname: '10.0.0.4', port: 9443,
+      path: '/change-shared', servername: 'storage.storage.svc', rejectUnauthorized: true, minVersion: 'TLSv1.3', agent: false }),
+    expect.any(Function));
+    const sent = vi.mocked(state.request).mock.results.at(-1)!.value as { end: ReturnType<typeof vi.fn> };
+    expect(JSON.parse(sent.end.mock.calls[0]![0] as string)).toEqual(change);
+  });
+  it('picks a random Ready helper by default', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper('a', '10.0.0.1'), helper('b', '10.0.0.2')] });
+    transport('{"kind":"done","results":[]}');
+    await createStorageClient(api, config).changeShared(change);
+    expect(['10.0.0.1', '10.0.0.2']).toContain((vi.mocked(state.request).mock.lastCall![0] as { hostname: string }).hostname);
+  });
+  it('fails when no helper is Ready, sending nothing', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper('a', '10.0.0.1', 'False')] });
+    state.request.mockClear();
+    await expect(createStorageClient(api, config).changeShared(change)).rejects.toThrow('unavailable');
+    expect(state.request).not.toHaveBeenCalled();
+  });
+  it('passes a refusal through and rejects a malformed reply', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
+    transport('{"kind":"refused","refused":"not-empty","results":[]}');
+    expect(await createStorageClient(api, config).changeShared(change)).toEqual({ kind: 'refused', refused: 'not-empty', results: [] });
+    for (const body of ['{"accepted":true}', '{"kind":"done","results":[{"path":"a","outcome":"moved"}]}',
+      '{"kind":"refused","refused":"/etc/passwd","results":[]}']) {
+      transport(body);
+      await expect(createStorageClient(api, config).changeShared(change)).rejects.toThrow('storage response invalid');
+    }
+  });
+  it('accepts a reply above the 4 KiB assignment cap (64 results), not one above its own cap', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
+    const results = Array.from({ length: 64 }, (_, i) => ({ path: `${'p'.repeat(200)}${i}`, outcome: 'created' }));
+    transport(JSON.stringify({ kind: 'done', results }));
+    expect((await createStorageClient(api, config).changeShared(change)).results).toHaveLength(64);
+    transport(JSON.stringify({ kind: 'done', results: [{ path: 'x'.repeat(300 * 1024), outcome: 'created' }] }));
+    await expect(createStorageClient(api, config).changeShared(change)).rejects.toThrow(/storage response/);
+  });
+  it('refuses a request over the route cap before connecting', async () => {
+    const api = makeMockK8sApi(); vi.spyOn(api, 'listNamespacedPod').mockResolvedValue({ items: [helper()] });
+    state.request.mockClear();
+    const content = 'A'.repeat(CHANGE_SHARED_REQUEST_MAX_BYTES);
+    await expect(createStorageClient(api, config).changeShared({ folderId: 'sf_a', changes: [{ op: 'write', path: 'a', content }] }))
+      .rejects.toThrow('too large');
+    expect(state.request).not.toHaveBeenCalled();
   });
 });
