@@ -224,6 +224,9 @@ export function FileBrowser({
   drillOnFile = false,
   extraList,
   extraViewer = null,
+  listActions,
+  viewerActions,
+  viewerBody = null,
 }: {
   tree: FileTreeState;
   /**
@@ -252,6 +255,12 @@ export function FileBrowser({
   extraList?: (args: FileBrowserSlotArgs) => ReactNode;
   /** A viewer for something selected outside the tree; `null` when nothing is. */
   extraViewer?: ReactNode;
+  /** Controls over the list (the project browser's + menu). */
+  listActions?: ReactNode;
+  /** More controls in the open file's header, beside Download (Edit, a menu). */
+  viewerActions?: ReactNode;
+  /** Drawn in place of the open file's body when set (the project editor). */
+  viewerBody?: ReactNode;
 }) {
   const openDir = onOpenDir ?? tree.openDir;
   const openFile = onOpenFile ?? tree.openFile;
@@ -278,9 +287,10 @@ export function FileBrowser({
   const [drilledIn, setDrilledIn] = useState(false);
   const drillIn = () => setDrilledIn(true);
 
+  const hasExtraViewer = extraViewer !== null;
   useEffect(() => {
-    if (drillOnFile && tree.filePath !== null) setDrilledIn(true);
-  }, [drillOnFile, tree.filePath]);
+    if (drillOnFile && (tree.filePath !== null || hasExtraViewer)) setDrilledIn(true);
+  }, [drillOnFile, tree.filePath, hasExtraViewer]);
 
   const selectFile = (path: string) => {
     onBeforeOpenFile?.();
@@ -364,6 +374,9 @@ export function FileBrowser({
           )}
         >
           <div className="flex flex-col">
+            {listActions !== undefined && (
+              <div className="flex flex-col gap-2 pt-3 pb-1">{listActions}</div>
+            )}
             {sectionLabel !== undefined && <SectionLabel>{sectionLabel}</SectionLabel>}
 
             {/*
@@ -521,6 +534,8 @@ export function FileBrowser({
               download={download(selected)}
               downloadFailure={downloadFailure}
               binaryCopy={copy.binary}
+              actions={viewerActions}
+              body={viewerBody}
             />
           ) : extraViewer !== null ? (
             extraViewer
@@ -560,6 +575,8 @@ export function FileViewer({
   download,
   downloadFailure,
   binaryCopy,
+  actions,
+  body = null,
 }: {
   label: string;
   badge?: string | undefined;
@@ -569,6 +586,10 @@ export function FileViewer({
   download: DownloadThunk;
   downloadFailure: (e: unknown) => string;
   binaryCopy?: ReactNode;
+  /** More header controls, after Download. */
+  actions?: ReactNode;
+  /** Replaces the body card when set (an editor). */
+  body?: ReactNode;
 }) {
   const dl = useDownload(download, downloadFailure);
   const tooBig = file !== null && 'downloadable' in file && file.downloadable === false;
@@ -600,6 +621,7 @@ export function FileViewer({
             {dl.busy ? 'Getting it…' : 'Download'}
           </Button>
         )}
+        {actions}
       </div>
       {/* The label is the fenced display name (never the raw path, which may
           carry bidi or control characters), so it's drawn once; the
@@ -634,6 +656,8 @@ export function FileViewer({
             </span>
           </AlertDescription>
         </Alert>
+      ) : body !== null ? (
+        body
       ) : loading || file === null ? (
         <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
           <Spinner aria-hidden="true" className="size-3.5" />

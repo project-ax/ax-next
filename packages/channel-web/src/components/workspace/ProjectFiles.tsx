@@ -11,9 +11,14 @@
  * The URL is the source of truth for where the browser is. Every folder and
  * file click navigates (a history push), and the browser follows the route, so
  * Back and Forward walk the folders and a copied link opens the same file.
+ *
+ * W3c: a person who can use an editor or owner member agent can change the
+ * files too: Edit on a text file, the + menu (upload, new text file, new
+ * folder) and Delete in the file's menu. Viewers get none of it, and nothing
+ * under `sources/` changes. The pieces live in `ProjectFileEditing`.
  */
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ChevronRight, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -30,13 +35,33 @@ import { projectDownloadFailureMessage } from '@/lib/file-download';
 import { fenceLine } from '@/lib/fence-line';
 import { logRequestFailure } from '@/lib/http';
 import { toReadOutcome, type ReadOutcome } from '@/lib/read-register';
-import { useFileTree, type FileTreeState } from '@/lib/user-files';
+import { parentDirOf, useFileTree, type FileTreeState } from '@/lib/user-files';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import { workspaceRoutePath } from '@/lib/workspace-route';
 import { timeAgo } from '@/lib/workspace-time';
 import type { UserFilesAnswer } from '@/lib/workspace-types';
 import type { ProjectDetail } from '@/wire/projects';
 import { FileBrowser, type FileBrowserCopy } from './FileBrowser';
+import {
+  AddMenu,
+  addTargetDir,
+  canEditProjectFiles,
+  changeFailureMessage,
+  ConflictDialog,
+  DeleteFileDialog,
+  FileEditor,
+  FileMenu,
+  isConflict,
+  isDeletablePath,
+  isEditableFile,
+  joinPath,
+  NameDialog,
+  newNameProblem,
+  PROJECT_FILE_EXISTS,
+  PROJECT_FILE_UPLOAD_MAX_BYTES,
+  UploadResults,
+  type UploadOutcome,
+} from './ProjectFileEditing';
 import { ProjectLoadFailure } from './ProjectLoadFailure';
 import { inPlaceClick } from './ProjectsPage';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -233,14 +258,26 @@ const BROWSER_COPY: FileBrowserCopy = {
   binary: 'This file can’t be previewed.',
 };
 
-/** The tree, following the route: the URL says where, the tree goes there. */
+/** An edit in progress on an existing file: the text and the version it started from. */
+interface Editing {
+  path: string;
+  text: string;
+  baseHash: string;
+}
+
+/**
+ * The tree, following the route: the URL says where, the tree goes there.
+ * With `canEdit`, also the editor, the + menu and Delete (W3c).
+ */
 function ProjectFilesBrowser({
   projectId,
   path,
+  canEdit,
   onNavigate,
 }: {
   projectId: string;
   path: string;
+  canEdit: boolean;
   onNavigate: (path: string) => void;
 }) {
   const read = useCallback((p: string) => workspaceApi.projectFiles(projectId, p), [projectId]);
@@ -256,19 +293,321 @@ function ProjectFilesBrowser({
   */
   const routed: FileTreeState = { ...tree, reload: () => open(path) };
 
+  // ---- changes (W3c) --------------------------------------------------------
+  const [editing, setEditing] = useState<Editing | null>(null);
+  /** A new text file being written: its raw key and text. Not on disk until Save. */
+  const [creating, setCreating] = useState<{ path: string; text: string } | null>(null);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  const [nameDialog, setNameDialog] = useState<'file' | 'folder' | null>(null);
+  const [nameBusy, setNameBusy] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploads, setUploads] = useState<UploadOutcome[] | null>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
+
+  // An edit belongs to one file: opening another one leaves it behind.
+  const activeEdit = editing !== null && editing.path === tree.filePath ? editing : null;
+  // A new file's editor shows only while no file is open.
+  useEffect(() => {
+    if (tree.filePath !== null) setCreating(null);
+  }, [tree.filePath]);
+  useEffect(() => {
+    setSaveError(null);
+  }, [tree.filePath]);
+
+  const target = addTargetDir(tree.dirPath);
+  /** Show `dir`'s listing fresh: re-read it when it's on screen, else go there. */
+  const showDir = async (dir: string) => {
+    if (tree.dirPath === dir) await tree.refresh();
+    else onNavigate(dir);
+  };
+
+  async function saveEdit(overwrite: boolean) {
+    if (activeEdit === null) return;
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      await workspaceApi.writeProjectFile(
+        projectId,
+        activeEdit.path,
+        activeEdit.text,
+        overwrite ? {} : { baseHash: activeEdit.baseHash },
+      );
+      setConflictOpen(false);
+      setEditing(null);
+      await tree.refresh();
+    } catch (e) {
+      if (!overwrite && isConflict(e)) setConflictOpen(true);
+      else {
+        setConflictOpen(false);
+        setSaveError(changeFailureMessage(e, 'save'));
+      }
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function saveNew() {
+    if (creating === null) return;
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      await workspaceApi.writeProjectFile(projectId, creating.path, creating.text, { createOnly: true });
+      const made = creating.path;
+      setCreating(null);
+      if (tree.dirPath === (parentDirOf(made) ?? '')) await tree.refresh();
+      onNavigate(made);
+    } catch (e) {
+      setSaveError(changeFailureMessage(e, 'save'));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function submitName(name: string) {
+    const at = joinPath(target, name);
+    if (nameDialog === 'file') {
+      // The listing on screen may already know; the save checks again.
+      if (tree.dirPath === target && tree.entries.some((e) => e.path === at)) {
+        setNameError(PROJECT_FILE_EXISTS);
+        return;
+      }
+      setNameDialog(null);
+      setEditing(null);
+      setSaveError(null);
+      setCreating({ path: at, text: '' });
+      if (tree.filePath !== null || tree.dirPath !== target) onNavigate(target);
+      return;
+    }
+    setNameBusy(true);
+    setNameError(null);
+    try {
+      await workspaceApi.createProjectFolder(projectId, at);
+      setNameDialog(null);
+      onNavigate(at);
+    } catch (e) {
+      setNameError(changeFailureMessage(e, 'folder'));
+    } finally {
+      setNameBusy(false);
+    }
+  }
+
+  async function confirmDelete() {
+    const doomed = tree.filePath;
+    if (doomed === null) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await workspaceApi.deleteProjectFile(projectId, doomed);
+      setDeleteOpen(false);
+      setEditing(null);
+      onNavigate(parentDirOf(doomed) ?? '');
+    } catch (e) {
+      setDeleteError(changeFailureMessage(e, 'delete'));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  async function upload(files: File[]) {
+    if (files.length === 0) return;
+    const into = target;
+    setUploading(true);
+    setUploads(null);
+    const outcomes: UploadOutcome[] = [];
+    for (const file of files) {
+      // The person's own file name, but still fenced before it's drawn.
+      const name = fenceLine(file.name, 120) ?? 'A file with no readable name';
+      if (file.size > PROJECT_FILE_UPLOAD_MAX_BYTES) {
+        outcomes.push({ name, ok: false, message: 'it’s too big. Each file can be up to 10 MB.' });
+        continue;
+      }
+      const problem = newNameProblem(file.name);
+      if (problem !== null) {
+        outcomes.push({ name, ok: false, message: 'its name has characters we can’t save. Rename it and try again.' });
+        continue;
+      }
+      try {
+        await workspaceApi.writeProjectFile(projectId, joinPath(into, file.name), file, { createOnly: true });
+        outcomes.push({ name, ok: true, message: '' });
+      } catch (e) {
+        const message = changeFailureMessage(e, 'upload');
+        outcomes.push({ name, ok: false, message: lowerFirst(message) });
+      }
+    }
+    setUploads(outcomes);
+    setUploading(false);
+    if (outcomes.some((o) => o.ok)) await showDir(into);
+  }
+
+  const openFile = tree.file;
+  const openPath = tree.filePath;
+  const canEditOpen = canEdit && activeEdit === null && openFile !== null && openFile.path === openPath && isEditableFile(openFile);
+  const canDeleteOpen = canEdit && openPath !== null && openFile !== null && isDeletablePath(openPath);
+
+  const viewerActions =
+    canEdit && (canEditOpen || canDeleteOpen) ? (
+      <>
+        {canEditOpen && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="shrink-0"
+            onClick={() => {
+              setSaveError(null);
+              setEditing({ path: openFile.path, text: openFile.body, baseHash: openFile.sha256 });
+            }}
+          >
+            <Pencil data-icon="inline-start" />
+            Edit
+          </Button>
+        )}
+        {canDeleteOpen && (
+          <FileMenu
+            onDelete={() => {
+              setDeleteError(null);
+              setDeleteOpen(true);
+            }}
+          />
+        )}
+      </>
+    ) : undefined;
+
+  const viewerBody =
+    activeEdit !== null ? (
+      <FileEditor
+        value={activeEdit.text}
+        onChange={(text) => setEditing({ ...activeEdit, text })}
+        onSave={() => void saveEdit(false)}
+        onCancel={() => {
+          setEditing(null);
+          setSaveError(null);
+        }}
+        busy={saveBusy}
+        error={saveError}
+      />
+    ) : null;
+
+  const newFileLabel = creating === null ? '' : (fenceLine(creating.path, 120) ?? '');
+  const extraViewer =
+    creating !== null && tree.filePath === null ? (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2.5">
+          <span className="truncate font-mono text-[13px]" title={newFileLabel}>
+            {newFileLabel}
+          </span>
+          <span className="shrink-0 text-[12.5px] text-muted-foreground">New file</span>
+        </div>
+        <FileEditor
+          value={creating.text}
+          onChange={(text) => setCreating({ ...creating, text })}
+          onSave={() => void saveNew()}
+          onCancel={() => {
+            setCreating(null);
+            setSaveError(null);
+          }}
+          busy={saveBusy}
+          error={saveError}
+          saveLabel="Save file"
+        />
+      </div>
+    ) : null;
+
+  const listActions = canEdit ? (
+    <>
+      <div className="flex justify-end">
+        <AddMenu
+          busy={uploading}
+          onUpload={() => uploadInput.current?.click()}
+          onNewFile={() => {
+            setNameError(null);
+            setNameDialog('file');
+          }}
+          onNewFolder={() => {
+            setNameError(null);
+            setNameDialog('folder');
+          }}
+        />
+        <input
+          ref={uploadInput}
+          type="file"
+          multiple
+          hidden
+          data-testid="project-upload-input"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            void upload(files);
+          }}
+        />
+      </div>
+      {uploads !== null && <UploadResults outcomes={uploads} onDismiss={() => setUploads(null)} />}
+    </>
+  ) : undefined;
+
   return (
-    <FileBrowser
-      tree={routed}
-      treeKey={`project:${projectId}`}
-      copy={BROWSER_COPY}
-      download={(p) => () => workspaceApi.downloadProjectFile(projectId, p)}
-      downloadFailure={projectDownloadFailureMessage}
-      showTrail={false}
-      onOpenDir={onNavigate}
-      onOpenFile={onNavigate}
-      drillOnFile
-    />
+    <>
+      <FileBrowser
+        tree={routed}
+        treeKey={`project:${projectId}`}
+        copy={BROWSER_COPY}
+        download={(p) => () => workspaceApi.downloadProjectFile(projectId, p)}
+        downloadFailure={projectDownloadFailureMessage}
+        showTrail={false}
+        onOpenDir={onNavigate}
+        onOpenFile={onNavigate}
+        drillOnFile
+        listActions={listActions}
+        viewerActions={viewerActions}
+        viewerBody={viewerBody}
+        extraViewer={extraViewer}
+      />
+      {canEdit && (
+        <>
+          <ConflictDialog
+            open={conflictOpen}
+            busy={saveBusy}
+            onReload={() => {
+              setConflictOpen(false);
+              setEditing(null);
+              void tree.refresh();
+            }}
+            onSaveOver={() => void saveEdit(true)}
+            onOpenChange={setConflictOpen}
+          />
+          <NameDialog
+            open={nameDialog !== null}
+            kind={nameDialog ?? 'file'}
+            where={target}
+            busy={nameBusy}
+            error={nameError}
+            onSubmit={(name) => void submitName(name)}
+            onOpenChange={(next) => {
+              if (!next) setNameDialog(null);
+            }}
+          />
+          <DeleteFileDialog
+            open={deleteOpen}
+            name={openFile?.name ?? ''}
+            busy={deleteBusy}
+            error={deleteError}
+            onConfirm={() => void confirmDelete()}
+            onOpenChange={setDeleteOpen}
+          />
+        </>
+      )}
+    </>
   );
+}
+
+/** "Files aren’t…" → "files aren’t…", for the "name: why" lines under an upload. */
+function lowerFirst(s: string): string {
+  return s.length === 0 ? s : s[0]!.toLowerCase() + s.slice(1);
 }
 
 /**
@@ -408,7 +747,12 @@ export function ProjectFilesPage({
         </Breadcrumb>
       </div>
       <div className="flex min-h-0 flex-1 border-t border-border">
-        <ProjectFilesBrowser projectId={projectId} path={path} onNavigate={onNavigate} />
+        <ProjectFilesBrowser
+          projectId={projectId}
+          path={path}
+          canEdit={canEditProjectFiles(project.members)}
+          onNavigate={onNavigate}
+        />
       </div>
     </>
   );

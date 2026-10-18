@@ -89,6 +89,12 @@ export type AgentUserFilesResponse =
        * never the gate.
        */
       downloadable?: boolean;
+      /**
+       * W3c, project files only: the sha256 of the file, present ONLY when
+       * `body` is the whole file byte for byte — the base hash a save sends
+       * as `If-Match`. Absent means "not editable as text here".
+       */
+      sha256?: string;
     };
 
 /**
@@ -143,15 +149,19 @@ const FILE_DECODER = new TextDecoder('utf-8');
  * replacement characters that LOOKS like a corrupted document — so we say
  * "this is not a text file" instead, and let the tab render that.
  */
-export function decodeFileBody(bytes: Uint8Array): {
+export function decodeFileBody(
+  bytes: Uint8Array,
+  /** How much text to send. A project preview passes 1 MiB, so it can be edited whole. */
+  maxBytes: number = FILE_BODY_MAX_BYTES,
+): {
   body: string | null;
   clipped: 'binary' | 'too-large' | null;
 } {
   const probe = bytes.subarray(0, Math.min(bytes.length, BINARY_PROBE_BYTES));
   if (probe.includes(0)) return { body: null, clipped: 'binary' };
-  if (bytes.length > FILE_BODY_MAX_BYTES) {
+  if (bytes.length > maxBytes) {
     return {
-      body: fenceBody(FILE_DECODER.decode(bytes.subarray(0, FILE_BODY_MAX_BYTES))),
+      body: fenceBody(FILE_DECODER.decode(bytes.subarray(0, maxBytes))),
       clipped: 'too-large',
     };
   }

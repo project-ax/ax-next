@@ -207,6 +207,12 @@ export const ReadFileOutputSchema = z.discriminatedUnion('kind', [
     truncated: z.boolean(),
     /** The whole file's size in bytes. */
     size: z.number(),
+    /**
+     * Lowercase hex sha256 of `contents` — the base hash `projects:write-file`
+     * takes. Omitted when `truncated`: a preview's hash isn't the file's, and
+     * the editor only opens files that fit in one preview.
+     */
+    sha256: z.string().optional(),
   }),
   z.object({ kind: z.literal('absent') }),
   /** This deployment can't read project folders on the host (no reader, or no mount). */
@@ -230,3 +236,63 @@ export type ProjectsDownloadFileOutput = z.infer<typeof DownloadFileOutputSchema
  * - `unavailable` — this deployment can't read project folders on the host.
  */
 export type ProjectsDownloadRefusal = 'not-found' | 'not-a-file' | 'too-large' | 'unavailable';
+
+// ---- write-file / delete-file / create-folder (W3c §6) ----------------------
+// Host-internal, like read-file. The person must be able to use a member agent
+// whose role is editor or owner. `path` is relative to the project's folder,
+// never '' and never `sources/` (read-only; W5 fills it). The sandbox
+// provider's confined walk does the change; this plugin decides who and where.
+
+/** Largest file `projects:write-file` saves (the provider's per-file cap). */
+export const WRITE_FILE_MAX_BYTES = 10_485_760;
+
+const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/, 'expected a lowercase hex sha256');
+
+export const WriteFileInputSchema = z
+  .object({
+    projectId: ProjectIdSchema,
+    path: RelPathSchema,
+    content: BytesSchema,
+    /** sha256 of the bytes the person last read; anything else on disk is a `conflict`. */
+    baseHash: Sha256HexSchema.optional(),
+    /** Create only: an existing name is `exists`. */
+    ifAbsent: z.literal(true).optional(),
+  })
+  .strict()
+  .refine((v) => !(v.baseHash !== undefined && v.ifAbsent !== undefined), {
+    message: 'pass baseHash or ifAbsent, not both',
+  });
+export type ProjectsWriteFileInput = z.input<typeof WriteFileInputSchema>;
+export const WriteFileOutputSchema = z.object({ sha256: z.string() });
+export type ProjectsWriteFileOutput = z.infer<typeof WriteFileOutputSchema>;
+
+export const DeleteFileInputSchema = z.object({ projectId: ProjectIdSchema, path: RelPathSchema }).strict();
+export type ProjectsDeleteFileInput = z.input<typeof DeleteFileInputSchema>;
+export const DeleteFileOutputSchema = z.object({});
+export type ProjectsDeleteFileOutput = z.infer<typeof DeleteFileOutputSchema>;
+
+export const CreateFolderInputSchema = z.object({ projectId: ProjectIdSchema, path: RelPathSchema }).strict();
+export type ProjectsCreateFolderInput = z.input<typeof CreateFolderInputSchema>;
+export const CreateFolderOutputSchema = z.object({});
+export type ProjectsCreateFolderOutput = z.infer<typeof CreateFolderOutputSchema>;
+
+/**
+ * The `PluginError` codes the change hooks refuse with (set as both `code`
+ * and `reasonCode`), besides `invalid-payload` (a bad path or input),
+ * `not-found` (no such project, one the person can't use, or — delete only —
+ * nothing at the path) and `forbidden` (the person can use the project only
+ * through viewer agents):
+ * - `conflict` — the file changed since `baseHash` was read (or is gone).
+ * - `exists` — `ifAbsent` and something is already there.
+ * - `protected-path` — deleting `instructions.md` or `memory/status.md`.
+ * - `read-only-path` — anything in `sources/`.
+ * - `too-large` — over {@link WRITE_FILE_MAX_BYTES}.
+ * - `files-unavailable` — this deployment can't write project folders.
+ */
+export type ProjectsChangeRefusal =
+  | 'conflict'
+  | 'exists'
+  | 'protected-path'
+  | 'read-only-path'
+  | 'too-large'
+  | 'files-unavailable';

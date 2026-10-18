@@ -587,16 +587,26 @@ describe('project routes (W3a)', () => {
     await expect(makeProjectsHandlers({ bus: faulty, initCtx }).getProject(mkReq({ projectId: 'prj_1' }), res)).rejects.toThrow();
   });
 
-  it('registers the twelve routes, owner-candidates as an exact path, PATCH included, the file splats last', async () => {
+  it('registers the fifteen routes, owner-candidates as an exact path, PATCH included, the file splats last', async () => {
     const reg = new HookBus();
-    const routes: Array<{ method: string; path: string }> = [];
+    const routes: Array<{ method: string; path: string; maxBodyBytes?: number; bypassCsrf?: boolean }> = [];
     reg.registerService('http:register-route', 'http', async (_c, input) => {
-      const { method, path } = input as { method: string; path: string };
-      routes.push({ method, path });
+      const { method, path, maxBodyBytes, bypassCsrf } = input as {
+        method: string;
+        path: string;
+        maxBodyBytes?: number;
+        bypassCsrf?: boolean;
+      };
+      routes.push({
+        method,
+        path,
+        ...(maxBodyBytes !== undefined ? { maxBodyBytes } : {}),
+        ...(bypassCsrf !== undefined ? { bypassCsrf } : {}),
+      });
       return { unregister: () => {} };
     });
     const unregs = await registerProjectsRoutes(reg, initCtx);
-    expect(unregs).toHaveLength(12);
+    expect(unregs).toHaveLength(15);
     expect(routes).toEqual([
       { method: 'GET', path: '/api/workspace/projects' },
       { method: 'POST', path: '/api/workspace/projects' },
@@ -610,6 +620,11 @@ describe('project routes (W3a)', () => {
       { method: 'GET', path: '/api/workspace/projects/:projectId/files' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/files/*' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/download/*' },
+      // W3c: the write's body is the file, so its cap is the 10 MiB file cap.
+      // No route opts out of CSRF.
+      { method: 'PUT', path: '/api/workspace/projects/:projectId/files/*', maxBodyBytes: 10 * 1024 * 1024 },
+      { method: 'DELETE', path: '/api/workspace/projects/:projectId/files/*' },
+      { method: 'POST', path: '/api/workspace/projects/:projectId/folders/*' },
     ]);
   });
 });

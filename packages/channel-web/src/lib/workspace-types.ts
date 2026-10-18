@@ -953,6 +953,12 @@ export type UserFilesAnswer =
        * the download route remains the gate.
        */
       downloadable?: boolean;
+      /**
+       * W3c, project files only: present ONLY when `body` is the whole file,
+       * byte for byte — the base hash a save sends back. Absent means the file
+       * can't be edited as text here.
+       */
+      sha256?: string;
     };
 
 /** One file's text, as the server is willing to show it. */

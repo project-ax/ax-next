@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   isOwnerlessId,
   makeAgentContext,
@@ -25,10 +25,23 @@ import {
   type ContextTreeEntry,
   type ContextTreePart,
 } from './block.js';
+import {
+  createdLogLine,
+  LAYOUT_SWEEP_LOG_LINE,
+  LAYOUT_TOP_LEVEL,
+  layoutChanges,
+  PROTECTED_PATHS,
+  SOURCES_DIR,
+  type LayoutChange,
+} from './layout.js';
 import { runProjectsMigration, type ProjectRow, type ProjectsDatabase } from './migrations.js';
 import {
+  CreateFolderInputSchema,
+  CreateFolderOutputSchema,
   CreateInputSchema,
   CreateOutputSchema,
+  DeleteFileInputSchema,
+  DeleteFileOutputSchema,
   DeleteInputSchema,
   DeleteOutputSchema,
   DOWNLOAD_FILE_MAX_BYTES,
@@ -48,7 +61,13 @@ import {
   SetMemberOutputSchema,
   UpdateInputSchema,
   UpdateOutputSchema,
+  WRITE_FILE_MAX_BYTES,
+  WriteFileInputSchema,
+  WriteFileOutputSchema,
   type ProjectMember,
+  type ProjectsChangeRefusal,
+  type ProjectsCreateFolderOutput,
+  type ProjectsDeleteFileOutput,
   type ProjectsCreateOutput,
   type ProjectsDeletedEvent,
   type ProjectsDeleteOutput,
@@ -60,6 +79,7 @@ import {
   type ProjectsResolveOutput,
   type ProjectsSetMemberOutput,
   type ProjectsUpdateOutput,
+  type ProjectsWriteFileOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/projects';
@@ -113,6 +133,27 @@ type ReadSharedFolderOut =
     }
   | { kind: 'absent' }
   | { kind: 'unavailable' };
+
+/**
+ * `sandbox:change-shared-folder` (W3c): the provider's confined WRITE path,
+ * grant-free like the reader, so called only after `loadEditable` (or by
+ * `projects:create` on the folder it just made). Undeclared and
+ * `hasService`-guarded for the same boot-cycle reason as the reader.
+ */
+const CHANGE_SHARED_FOLDER_HOOK = 'sandbox:change-shared-folder';
+interface ChangeSharedFolderIn {
+  folderId: string;
+  changes: LayoutChange[];
+  createFolder?: true;
+}
+type ChangeOutcome = 'written' | 'created' | 'exists' | 'deleted' | 'absent' | 'conflict';
+type ChangeSharedFolderOut =
+  | { kind: 'done'; results: { path: string; outcome: ChangeOutcome }[] }
+  | { kind: 'unavailable' };
+/** Removes a folder's bytes; `projects:create` calls it when seeding fails. Undeclared, as shared-folders does. */
+const DELETE_SHARED_FOLDER_HOOK = 'sandbox:delete-shared-folder';
+/** The person's display name for the new project's log line (optional). */
+const GET_USER_HOOK = 'auth:get-user';
 
 /**
  * The project block's file reads all finish inside this, or the block goes
@@ -183,6 +224,52 @@ function fileRefusal(hookName: string, code: ProjectsDownloadRefusal): PluginErr
           ? `${hookName}: not a file`
           : `${hookName}: project files can't be read on this deployment`;
   return new PluginError({ code, plugin: PLUGIN_NAME, hookName, message });
+}
+
+const CHANGE_REFUSAL_MESSAGES: Record<ProjectsChangeRefusal, string> = {
+  conflict: 'someone changed this file since it was opened',
+  exists: 'something with that name is already there',
+  'protected-path': 'this file keeps the project running, so it can be edited but not deleted',
+  'read-only-path': 'sources/ is read-only: it holds copies from connected sources',
+  'too-large': 'this file is too big to save here (10 MiB at most)',
+  'files-unavailable': "project files can't be changed on this deployment",
+};
+
+/** A change the rules or the folder refused. `code` and `reasonCode` are the same refusal. */
+function changeRefusal(hookName: string, code: ProjectsChangeRefusal): PluginError {
+  return new PluginError({
+    code,
+    reasonCode: code,
+    plugin: PLUGIN_NAME,
+    hookName,
+    message: `${hookName}: ${CHANGE_REFUSAL_MESSAGES[code]}`,
+  });
+}
+
+/**
+ * A path a person may name for a change: relative, not `''`, and no empty,
+ * `.` or `..` segment and no NUL. The provider's walk refuses those too; we
+ * check here so `sources/` can't be reached by another spelling.
+ */
+function changePath(hookName: string, raw: string): string {
+  const segments = raw.split('/');
+  if (raw === '' || segments.some((seg) => seg === '' || seg === '.' || seg === '..' || seg.includes('\0'))) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${hookName}: path must be a relative path inside the project folder`,
+    });
+  }
+  return raw;
+}
+
+function isUnderSources(path: string): boolean {
+  return path === SOURCES_DIR || path.startsWith(`${SOURCES_DIR}/`);
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 /** A person, or nothing: empty, `system` and owner-less session ids are not actors. */
@@ -290,6 +377,25 @@ export function createProjectsPlugin(): Plugin {
   }
 
   /**
+   * As `loadUsable`, plus "edit the project's files" (W3c): the actor can use a
+   * member agent whose role is editor or owner. Someone who reaches the project
+   * only through viewers is `forbidden` (they can already see it exists).
+   */
+  async function loadEditable(
+    ctx: AgentContext,
+    hookName: string,
+    actor: string,
+    projectId: string,
+  ): Promise<{ row: ProjectRow; members: SharedFolderMember[] }> {
+    const loaded = await loadUsable(ctx, hookName, projectId);
+    for (const m of loaded.members) {
+      if (m.role === 'viewer') continue;
+      if (await canUseAgent(ctx, actor, m.agentId)) return loaded;
+    }
+    refuse(ctx, hookName, 'forbidden', 'viewer-only', { projectId });
+  }
+
+  /**
    * THE check behind `projects:resolve` and the prompt block: the actor can use
    * `agentId`, the project exists, and `agentId` holds a live grant on its
    * folder. Never throws a denial; real failures (database, bus) propagate.
@@ -358,6 +464,186 @@ export function createProjectsPlugin(): Plugin {
       limitBytes,
       maxEntries,
     });
+  }
+
+  /**
+   * One confined change of a project's folder. Only after `loadEditable`, or on
+   * a folder `projects:create` just made.
+   *
+   * Every caller here passes `createFor`, so the provider's "folder missing"
+   * refusal (`createFolder` unset) has no caller in projects today.
+   *
+   * `createFor` creates the folder when it's missing (a W3a folder exists on
+   * disk only once a session mounted it). That opens a window: the project can
+   * be deleted, and its folder reaped, between our row check and the write,
+   * which would bring the folder back with nobody left to clean it. So after
+   * the change we look at the row again; if the project (or its folder) is
+   * gone, we reap what we may have made and answer not-found. A delete that
+   * lands after this check reaps our bytes itself.
+   */
+  async function changeFolder(
+    ctx: AgentContext,
+    folderId: string,
+    changes: LayoutChange[],
+    createFor?: { projectId: string; hookName: string },
+  ): Promise<ChangeSharedFolderOut> {
+    if (!bus!.hasService(CHANGE_SHARED_FOLDER_HOOK)) return { kind: 'unavailable' };
+    const out = await bus!.call<ChangeSharedFolderIn, ChangeSharedFolderOut>(CHANGE_SHARED_FOLDER_HOOK, ctx, {
+      folderId,
+      changes,
+      ...(createFor !== undefined ? { createFolder: true as const } : {}),
+    });
+    if (createFor !== undefined && out.kind === 'done') {
+      const row = await getRow(createFor.projectId);
+      if (row === undefined || row.folder_id !== folderId) {
+        if (bus!.hasService(DELETE_SHARED_FOLDER_HOOK)) {
+          try {
+            await bus!.call(DELETE_SHARED_FOLDER_HOOK, ctx, { folderId });
+          } catch (err) {
+            ctx.logger.error('projects_change_reap_failed', { projectId: createFor.projectId, folderId, err: errOf(err) });
+          }
+        }
+        refuse(ctx, createFor.hookName, 'not-found', 'deleted-during-change', { projectId: createFor.projectId });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Projects whose layout this process already ensured (or tried to): the
+   * sweep runs at most once per project per process. A W3a project gets its
+   * top level on its first listing or change; everything is `ifAbsent`.
+   */
+  const ensured = new Set<string>();
+
+  /**
+   * The lazy layout sweep (§6.2). Never throws and never blocks the caller's
+   * own read or change: a failure is logged. `skipPath` leaves out the entry
+   * the caller is about to change, so a "create only" save isn't beaten to
+   * its own name. True when it created something.
+   */
+  async function ensureLayout(ctx: AgentContext, row: ProjectRow, skipPath?: string): Promise<boolean> {
+    if (ensured.has(row.project_id)) return false;
+    ensured.add(row.project_id);
+    try {
+      const changes = layoutChanges({
+        name: row.name,
+        description: row.description,
+        logLine: LAYOUT_SWEEP_LOG_LINE,
+      }).filter((c) => c.path !== skipPath);
+      // `createFolder`: a W3a project's folder exists on disk only once a
+      // session mounted it. The row was just loaded, so the id is live.
+      const out = await changeFolder(ctx, row.folder_id, changes, { projectId: row.project_id, hookName: 'projects:ensure-layout' });
+      if (out.kind === 'unavailable') return false;
+      const created = out.results.filter((r) => r.outcome === 'created').map((r) => r.path);
+      if (created.length > 0) ctx.logger.info('projects_layout_ensured', { projectId: row.project_id, created });
+      return created.length > 0;
+    } catch (err) {
+      ctx.logger.warn('projects_layout_ensure_failed', { projectId: row.project_id, err: errOf(err) });
+      return false;
+    }
+  }
+
+  /** The audit line for a person's change (W3c §6.1): one per attempt that passed the access check. */
+  function auditChange(
+    ctx: AgentContext,
+    projectId: string,
+    path: string,
+    op: LayoutChange['op'],
+    outcome: string,
+  ): void {
+    ctx.logger.info('project_file_changed', { userId: ctx.userId, projectId, path, op, outcome });
+  }
+
+  /** Refuse a change on the rules, audited. */
+  function refuseChange(
+    ctx: AgentContext,
+    hookName: string,
+    projectId: string,
+    change: { op: LayoutChange['op']; path: string },
+    code: ProjectsChangeRefusal,
+  ): never {
+    auditChange(ctx, projectId, change.path, change.op, code);
+    throw changeRefusal(hookName, code);
+  }
+
+  /**
+   * Apply one person's change (after `loadEditable` and the path rules):
+   * the layout sweep first, then the change. Returns the provider's outcome;
+   * `unavailable` (or no provider) is `files-unavailable`.
+   */
+  async function applyChange(
+    ctx: AgentContext,
+    hookName: string,
+    row: ProjectRow,
+    change: LayoutChange,
+  ): Promise<ChangeOutcome> {
+    const projectId = row.project_id;
+    if (!bus!.hasService(CHANGE_SHARED_FOLDER_HOOK)) refuseChange(ctx, hookName, projectId, change, 'files-unavailable');
+    await ensureLayout(ctx, row, change.path);
+    let out: ChangeSharedFolderOut;
+    try {
+      out = await changeFolder(ctx, row.folder_id, [change], { projectId, hookName });
+    } catch (err) {
+      // A refusal from the walk (a symlink or a file in the way, a non-empty
+      // folder) or a storage failure. Passed through as is.
+      auditChange(ctx, projectId, change.path, change.op, 'failed');
+      throw err;
+    }
+    if (out.kind === 'unavailable') refuseChange(ctx, hookName, projectId, change, 'files-unavailable');
+    const outcome = out.results[0]?.outcome;
+    if (outcome === undefined) {
+      auditChange(ctx, projectId, change.path, change.op, 'failed');
+      throw new PluginError({
+        code: 'unknown',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `${hookName}: the file change returned no result`,
+      });
+    }
+    auditChange(ctx, projectId, change.path, change.op, outcome);
+    return outcome;
+  }
+
+  /** "Project created by <display name>", when an auth provider knows one. Never throws. */
+  async function creatorLogLine(ctx: AgentContext, actor: string): Promise<string> {
+    if (!bus!.hasService(GET_USER_HOOK)) return createdLogLine(null);
+    try {
+      const user = await bus!.call<{ userId: string }, { displayName?: string | null } | null>(GET_USER_HOOK, ctx, {
+        userId: actor,
+      });
+      return createdLogLine(user?.displayName);
+    } catch (err) {
+      ctx.logger.warn('projects_creator_name_failed', { err: errOf(err) });
+      return createdLogLine(null);
+    }
+  }
+
+  /**
+   * Undo a `projects:create` that failed after the folder was made: the row
+   * (if inserted; deleted directly, so no `projects:deleted` fires for a
+   * project nobody saw), the folder's bytes, then the folder. Never throws.
+   */
+  async function rollbackCreate(ctx: AgentContext, folderId: string, projectId?: string): Promise<void> {
+    if (projectId !== undefined) {
+      try {
+        await db!.deleteFrom('projects_v1_projects').where('project_id', '=', projectId).execute();
+      } catch (err) {
+        ctx.logger.error('projects_create_rollback_failed', { folderId, projectId, step: 'row', err: errOf(err) });
+      }
+    }
+    if (bus!.hasService(DELETE_SHARED_FOLDER_HOOK)) {
+      try {
+        await bus!.call(DELETE_SHARED_FOLDER_HOOK, ctx, { folderId });
+      } catch (err) {
+        ctx.logger.error('projects_create_rollback_failed', { folderId, step: 'bytes', err: errOf(err) });
+      }
+    }
+    try {
+      await bus!.call('shared-folders:delete', ctx, { folderId });
+    } catch (cleanupErr) {
+      ctx.logger.error('projects_create_rollback_failed', { folderId, err: errOf(cleanupErr) });
+    }
   }
 
   /**
@@ -455,6 +741,9 @@ export function createProjectsPlugin(): Plugin {
         'projects:read-file',
         'projects:download-file',
         'projects:set-member',
+        'projects:write-file',
+        'projects:delete-file',
+        'projects:create-folder',
         PROJECTS_BLOCK_HOOK,
       ],
       // NEVER conversations:*, and no declared sandbox:* edge. conversations
@@ -470,7 +759,11 @@ export function createProjectsPlugin(): Plugin {
       // `sandbox:delete-shared-folder`. Without a reader: projects:read-file
       // answers unavailable, projects:download-file refuses 'unavailable', and
       // the project block carries no file context (its brief still lands).
-      // preset.test and this package's manifest test pin the rule.
+      // W3c's `sandbox:change-shared-folder` (and `sandbox:delete-shared-folder`
+      // for a failed create's rollback) follow the same rule: without a writer,
+      // the change hooks refuse `files-unavailable` and a new project starts
+      // with an empty folder. preset.test and this package's manifest test pin
+      // the rule.
       calls: [
         'database:get-instance',
         'agents:can-manage-sharing',
@@ -490,6 +783,11 @@ export function createProjectsPlugin(): Plugin {
           hook: 'teams:list-for-user',
           degradation:
             'projects:list cannot find team agents without the actor’s team ids, so it lists only projects of their personal agents.',
+        },
+        {
+          hook: GET_USER_HOOK,
+          degradation:
+            "a new project's memory/log.md says \"Project created\" without the person's name.",
         },
       ],
       subscribes: [SHARED_FOLDERS_DELETED_HOOK],
@@ -521,6 +819,7 @@ export function createProjectsPlugin(): Plugin {
             { ownerAgentId: input.ownerAgentId },
           );
           const projectId = mintProjectId();
+          const description = input.description ?? null;
           try {
             await db!
               .insertInto('projects_v1_projects')
@@ -528,18 +827,48 @@ export function createProjectsPlugin(): Plugin {
                 project_id: projectId,
                 folder_id: folderId,
                 name: input.name,
-                description: input.description ?? null,
+                description,
                 created_by_user: actor,
               })
               .execute();
           } catch (err) {
             // Don't leave a folder no project points at.
-            try {
-              await b.call('shared-folders:delete', ctx, { folderId });
-            } catch (cleanupErr) {
-              ctx.logger.error('projects_create_rollback_failed', { folderId, err: errOf(cleanupErr) });
-            }
+            await rollbackCreate(ctx, folderId);
             throw err;
+          }
+          // Seed the layout (§6.2) in one change that also creates the folder.
+          // No writer at all (no file storage on this deployment) is fine:
+          // projects work without files (W3b). Anything else that fails rolls
+          // the whole create back, so the person never gets a half-made project.
+          try {
+            const changes = layoutChanges({
+              name: input.name,
+              description,
+              logLine: await creatorLogLine(ctx, actor),
+            });
+            const out = await changeFolder(ctx, folderId, changes, { projectId, hookName: 'projects:create' });
+            if (out.kind === 'unavailable') {
+              ctx.logger.info('projects_layout_skipped', { projectId, reason: 'files-unavailable' });
+            } else {
+              const refused = changes.find(
+                (c, i) => out.results[i]?.outcome !== 'created' && out.results[i]?.outcome !== 'exists',
+              );
+              if (refused !== undefined) {
+                throw new Error(`seeding ${refused.path} answered ${out.results.find((r) => r.path === refused.path)?.outcome ?? 'nothing'}`);
+              }
+              ensured.add(projectId);
+            }
+          } catch (err) {
+            ctx.logger.error('projects_layout_seed_failed', { projectId, folderId, err: errOf(err) });
+            await rollbackCreate(ctx, folderId, projectId);
+            throw new PluginError({
+              code: 'layout-failed',
+              reasonCode: 'layout-failed',
+              plugin: PLUGIN_NAME,
+              hookName: hook,
+              message: `${hook}: couldn't set up the new project's files, so the project wasn't created`,
+              cause: err,
+            });
           }
           ctx.logger.info('projects_created', { projectId, folderId, ownerAgentId: input.ownerAgentId, actor });
           return { projectId, folderId };
@@ -782,7 +1111,17 @@ export function createProjectsPlugin(): Plugin {
           const input = parseInput(ReadFileInputSchema, hook, rawInput);
           requireActor(ctx, hook);
           const { row } = await loadUsable(ctx, hook, input.projectId);
-          const out = await readFolder(ctx, row.folder_id, input.path, READ_FILE_PREVIEW_MAX_BYTES, READ_FILE_MAX_ENTRIES);
+          let out = await readFolder(ctx, row.folder_id, input.path, READ_FILE_PREVIEW_MAX_BYTES, READ_FILE_MAX_ENTRIES);
+          // The lazy layout sweep, from the root listing we already have.
+          if (input.path === '' && out.kind === 'dir' && !ensured.has(row.project_id)) {
+            const names = new Set(out.entries.map((e) => e.name));
+            if (LAYOUT_TOP_LEVEL.every((n) => names.has(n))) {
+              ensured.add(row.project_id);
+            } else if (await ensureLayout(ctx, row)) {
+              // Show the person the layout we just made.
+              out = await readFolder(ctx, row.folder_id, '', READ_FILE_PREVIEW_MAX_BYTES, READ_FILE_MAX_ENTRIES);
+            }
+          }
           switch (out.kind) {
             case 'dir':
               return {
@@ -797,11 +1136,14 @@ export function createProjectsPlugin(): Plugin {
               };
             case 'file': {
               const truncated = out.truncated || out.contents.length > READ_FILE_PREVIEW_MAX_BYTES;
+              const contents = out.contents.subarray(0, READ_FILE_PREVIEW_MAX_BYTES);
               return {
                 kind: 'file',
-                contents: out.contents.subarray(0, READ_FILE_PREVIEW_MAX_BYTES),
+                contents,
                 truncated,
                 size: out.size,
+                // The base hash for a save. A preview's hash isn't the file's, so none.
+                ...(truncated ? {} : { sha256: sha256Hex(contents) }),
               };
             }
             case 'absent':
@@ -835,6 +1177,83 @@ export function createProjectsPlugin(): Plugin {
           return { contents: out.contents, size: out.contents.length };
         },
         { returns: DownloadFileOutputSchema },
+      );
+
+      // ---- write-file / delete-file / create-folder (W3c §6) ----------------
+      // The person must be able to use an editor or owner member agent
+      // (`loadEditable`; unknown and foreign are the same `not-found`). Then
+      // the rules: `sources/` is read-only, `instructions.md` and
+      // `memory/status.md` can't be deleted, 10 MiB a file. Each attempt past
+      // the access check logs one `project_file_changed` audit line.
+      b.registerService<unknown, ProjectsWriteFileOutput>(
+        'projects:write-file',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:write-file';
+          const input = parseInput(WriteFileInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const path = changePath(hook, input.path);
+          const { row, members } = await loadEditable(ctx, hook, actor, input.projectId);
+          const change: LayoutChange = {
+            op: 'write',
+            path,
+            content: input.content,
+            ...(input.baseHash !== undefined ? { ifMatch: input.baseHash } : {}),
+            ...(input.ifAbsent === true ? { ifAbsent: true as const } : {}),
+          };
+          if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
+          if (input.content.length > WRITE_FILE_MAX_BYTES) refuseChange(ctx, hook, row.project_id, change, 'too-large');
+          const outcome = await applyChange(ctx, hook, row, change);
+          if (outcome === 'conflict') throw changeRefusal(hook, 'conflict');
+          if (outcome === 'exists') throw changeRefusal(hook, 'exists');
+          if (PROTECTED_PATHS.has(path)) {
+            // Every member agent's prompt quotes this file (the project
+            // block); live sessions rebuild it at their next turn.
+            for (const agentId of new Set(members.map((m) => m.agentId))) {
+              await b.fire(AUGMENT_CHANGED_HOOK, ctx, { agentId });
+            }
+          }
+          return { sha256: sha256Hex(input.content) };
+        },
+        { returns: WriteFileOutputSchema },
+      );
+
+      b.registerService<unknown, ProjectsDeleteFileOutput>(
+        'projects:delete-file',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:delete-file';
+          const input = parseInput(DeleteFileInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const path = changePath(hook, input.path);
+          const { row } = await loadEditable(ctx, hook, actor, input.projectId);
+          const change: LayoutChange = { op: 'delete', path };
+          if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
+          if (PROTECTED_PATHS.has(path)) refuseChange(ctx, hook, row.project_id, change, 'protected-path');
+          const outcome = await applyChange(ctx, hook, row, change);
+          // Same message as an unknown project's, like download-file's.
+          if (outcome === 'absent') throw fileRefusal(hook, 'not-found');
+          return {};
+        },
+        { returns: DeleteFileOutputSchema },
+      );
+
+      b.registerService<unknown, ProjectsCreateFolderOutput>(
+        'projects:create-folder',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:create-folder';
+          const input = parseInput(CreateFolderInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const path = changePath(hook, input.path);
+          const { row } = await loadEditable(ctx, hook, actor, input.projectId);
+          const change: LayoutChange = { op: 'mkdir', path };
+          if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
+          // 'created' or 'exists': either way the folder is there (mkdir -p).
+          await applyChange(ctx, hook, row, change);
+          return {};
+        },
+        { returns: CreateFolderOutputSchema },
       );
 
       // ---- the project block ---------------------------------------------

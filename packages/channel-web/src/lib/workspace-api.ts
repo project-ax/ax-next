@@ -74,6 +74,7 @@ import type {
   ProjectLabel,
   SetProjectMemberResponse,
   UpdateProjectResponse,
+  WriteProjectFileResponse,
 } from '@/wire/projects';
 import type {
   ActivityEvent,
@@ -807,6 +808,57 @@ function dropRetiredConnectorGrants(body: unknown): unknown {
   return { ...body, grants: kept };
 }
 
+/**
+ * W3c — the refusals a project file change answers with, as the route's
+ * `error` body names them. Only these are kept; anything else reads as
+ * `undefined`, so an unexpected body never decides what a person is told.
+ */
+export const PROJECT_FILE_CHANGE_CODES = [
+  'conflict',
+  'exists',
+  'forbidden',
+  'protected-path',
+  'read-only-path',
+  'file-too-large',
+  'body-too-large',
+  'project-files-unavailable',
+  'projects-unavailable',
+  'file-not-found',
+  'project-not-found',
+  'invalid-path',
+  'invalid-payload',
+] as const;
+export type ProjectFileChangeCode = (typeof PROJECT_FILE_CHANGE_CODES)[number];
+
+/** A refused (or failed) project file change: the status, plus the refusal when the body named one. */
+export class ProjectFileChangeError extends WorkspaceApiError {
+  readonly code: ProjectFileChangeCode | undefined;
+  constructor(route: string, status: number, code?: unknown) {
+    super(route, status);
+    this.name = 'ProjectFileChangeError';
+    this.code =
+      typeof code === 'string' && (PROJECT_FILE_CHANGE_CODES as readonly string[]).includes(code)
+        ? (code as ProjectFileChangeCode)
+        : undefined;
+  }
+}
+
+async function projectFileChangeError(route: string, res: Response): Promise<ProjectFileChangeError> {
+  let code: unknown;
+  try {
+    const body = (await res.json()) as unknown;
+    code = isRecord(body) ? body.error : undefined;
+  } catch {
+    code = undefined;
+  }
+  return new ProjectFileChangeError(route, res.status, code);
+}
+
+/** A project file path in a change route: the whole path, encoded once, as `projectFiles` does it. */
+function projectChangeRoute(projectId: string, kind: 'files' | 'folders', path: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/${kind}/${encodeURIComponent(path)}`;
+}
+
 export const workspaceApi = {
   board: () => req<BoardState>('/state'),
 
@@ -1437,6 +1489,46 @@ export const workspaceApi = {
       blob: await res.blob(),
       filename: filenameFromContentDisposition(res.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME,
     };
+  },
+
+  /**
+   * W3c — save one file in the project's folder (≤ 10 MiB). `baseHash` (the
+   * `sha256` the file was read with) makes it a save over exactly that
+   * version: anything else there now is a 409 `conflict`. `createOnly` makes
+   * it a new file: something already there is a 409 `exists`. Neither is a
+   * plain overwrite ("Save over it"). A refusal throws a
+   * `ProjectFileChangeError` naming it.
+   */
+  writeProjectFile: async (
+    projectId: string,
+    path: string,
+    content: Blob | string,
+    opts: { baseHash?: string; createOnly?: boolean } = {},
+  ): Promise<WriteProjectFileResponse> => {
+    const route = projectChangeRoute(projectId, 'files', path);
+    const headers: Record<string, string> = {
+      'content-type': 'application/octet-stream',
+      'x-requested-with': 'ax-admin',
+    };
+    if (opts.baseHash !== undefined) headers['if-match'] = `"${opts.baseHash}"`;
+    else if (opts.createOnly === true) headers['if-none-match'] = '*';
+    const res = await httpFetch(`/api/workspace${route}`, { method: 'PUT', headers, body: content });
+    if (!res.ok) throw await projectFileChangeError(route, res);
+    return (await res.json()) as WriteProjectFileResponse;
+  },
+
+  /** W3c — delete one file (or empty folder) in the project's folder. */
+  deleteProjectFile: async (projectId: string, path: string): Promise<void> => {
+    const route = projectChangeRoute(projectId, 'files', path);
+    const res = await httpFetch(`/api/workspace${route}`, { method: 'DELETE', headers: writeHeaders });
+    if (!res.ok) throw await projectFileChangeError(route, res);
+  },
+
+  /** W3c — make a folder (and any missing parents) in the project's folder. */
+  createProjectFolder: async (projectId: string, path: string): Promise<void> => {
+    const route = projectChangeRoute(projectId, 'folders', path);
+    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
+    if (!res.ok) throw await projectFileChangeError(route, res);
   },
 
   /**

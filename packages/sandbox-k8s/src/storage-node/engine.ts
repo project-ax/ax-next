@@ -6,7 +6,11 @@ import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-
 import { openDirectory } from './confined-directory.js';
 import { describeFailure, redactedError } from './describe-failure.js';
 import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts, SHARED_FOLDERS_ROOT } from './sources.js';
-import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
+import type { SharedFolderChange } from '@ax/sandbox-mount-protocol';
+import { changeConfinedByWalk, WalkChangeError, WalkPathError, WalkReadError,
+  MAX_CHANGE_COUNT, MAX_CHANGE_FILE_BYTES, MAX_CHANGE_TOTAL_BYTES } from '@ax/user-files-read';
+import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema, ChangeSharedRequestSchema,
+  type ChangeSharedWireRequest, type ChangeSharedResponse,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
 export interface StorageAuthority {
@@ -74,6 +78,8 @@ export interface StorageNodeIo {
   inode(fd: number): number;
   /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
   report(message: string): void;
+  /** The confined writer. Injectable for tests off Linux; production uses `changeConfinedByWalk`. */
+  change?: typeof changeConfinedByWalk;
 }
 
 export class StorageNodeEngine {
@@ -275,6 +281,48 @@ export class StorageNodeEngine {
       }
     });
   }
+  /**
+   * W3c — apply a person's changes to `.shared/<folderId>` on the writable
+   * export. The folder comes from the id alone (re-validated by
+   * `sharedFolderSourceParts`); every change path is untrusted and confined by
+   * `changeConfinedByWalk`, which opens each component through the held
+   * parent with O_NOFOLLOW, so a link an agent planted anywhere in the folder
+   * is refused, never followed. Everything it creates is chowned to the runner
+   * uid (1000), so agents can edit what people save.
+   *
+   * With `createFolder` the folder is made like `/assign` makes it: `.shared`
+   * first (0711, root), then `<folderId>` 0700 owned by 1000.
+   *
+   * A refusal is an answer (`kind: 'refused'` with a code and the results
+   * already applied), never a path. A storage failure throws (the route
+   * answers 409). Serialized per folder on this node.
+   */
+  async changeShared(raw: ChangeSharedWireRequest): Promise<ChangeSharedResponse> {
+    const input = ChangeSharedRequestSchema.parse(raw);
+    const base = sharedFolderSourceParts(input.folderId);
+    return this.serial(`shared:${input.folderId}`, async () => {
+      if (input.createFolder) this.traverseOnlySharedRoot(true);
+      const change = this.io.change ?? changeConfinedByWalk;
+      try {
+        // Zod leaves an absent optional key absent, so this is the hook's own shape.
+        const results = change(this.config.userFilesRoot, base, input.changes as SharedFolderChange[], {
+          ...(input.createFolder ? { createBase: true } : {}),
+          chown: fd => this.io.chown(fd),
+          maxChanges: MAX_CHANGE_COUNT, maxFileBytes: MAX_CHANGE_FILE_BYTES, maxTotalBytes: MAX_CHANGE_TOTAL_BYTES,
+        });
+        return { kind: 'done', results };
+      } catch (e) {
+        if (e instanceof WalkChangeError) return { kind: 'refused', refused: e.code, results: e.applied };
+        if (e instanceof WalkPathError) return { kind: 'refused', refused: 'invalid-path', results: [] };
+        // depth 1 is the folder itself (depth 0 is `.shared`): absent without createFolder.
+        if (e instanceof WalkReadError && e.code === 'ENOENT' && e.depth === 1 && !input.createFolder) {
+          return { kind: 'refused', refused: 'missing-folder', results: [] };
+        }
+        this.io.report(`shared folder change failed for ${input.folderId}: ${describeFailure(e, {})}`);
+        throw new Error('shared folder change failed');
+      }
+    });
+  }
   async status(identity: StorageIdentity): Promise<{ accepted: boolean }> {
     return this.serial(identity.podUid, async () => {
       const record = this.load(identity.podUid);
@@ -368,3 +416,4 @@ export class StorageNodeEngine {
 }
 
 export const STORAGE_REQUEST_MAX_BYTES = BOOTSTRAP_MAX_BYTES + 4096;
+export { CHANGE_SHARED_REQUEST_MAX_BYTES, CHANGE_SHARED_RESPONSE_MAX_BYTES } from './protocol.js';

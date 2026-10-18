@@ -13,8 +13,16 @@ export {
   READ_FILE_PREVIEW_MAX_BYTES,
   READ_FILE_MAX_ENTRIES,
   DOWNLOAD_FILE_MAX_BYTES,
+  WRITE_FILE_MAX_BYTES,
 } from './types.js';
 export type {
+  ProjectsChangeRefusal,
+  ProjectsCreateFolderInput,
+  ProjectsCreateFolderOutput,
+  ProjectsDeleteFileInput,
+  ProjectsDeleteFileOutput,
+  ProjectsWriteFileInput,
+  ProjectsWriteFileOutput,
   ProjectMember,
   ProjectMemberRole,
   ProjectsCreateInput,

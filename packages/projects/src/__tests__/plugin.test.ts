@@ -18,6 +18,7 @@ import {
 } from '@ax/core';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
+import { createHash } from 'node:crypto';
 import { existsSync, promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
@@ -43,6 +44,8 @@ import type {
 interface StubAgent {
   ownerType: 'user' | 'team';
   ownerId: string;
+  /** W3c: a team agent only the team's admins may use. */
+  adminsOnly?: true;
 }
 
 const AGENTS: Record<string, StubAgent> = {
@@ -55,6 +58,8 @@ const AGENTS: Record<string, StubAgent> = {
   // W3e: a personal agent of the team's admin — the admin manages both it and
   // the team's agents, so only W2's "same owner" rule stops mixing them.
   'a-tadmin': { ownerType: 'user', ownerId: 'tadmin' },
+  // W3c: so a team member can reach a project only through a viewer.
+  'a-team-admins': { ownerType: 'team', ownerId: 't1', adminsOnly: true },
 };
 const TEAMS: Record<string, { admins: string[]; members: string[] }> = {
   t1: { admins: ['tadmin'], members: ['tmember'] },
@@ -69,7 +74,8 @@ function canUse(userId: string, agentId: string): boolean {
   const a = AGENTS[agentId]!;
   if (a.ownerType === 'user') return a.ownerId === userId;
   const t = TEAMS[a.ownerId]!;
-  return t.admins.includes(userId) || t.members.includes(userId);
+  if (t.admins.includes(userId)) return true;
+  return a.adminsOnly !== true && t.members.includes(userId);
 }
 function notFound(hookName: string, agentId: string): PluginError {
   return new PluginError({ code: 'not-found', plugin: 'stub-agents', hookName, message: `no ${agentId}` });
@@ -116,6 +122,8 @@ const stubServices: Record<string, ServiceHandler> = {
 // ---------------------------------------------------------------------------
 
 const FILES = new Map<string, Map<string, Uint8Array>>();
+/** Folders made by `mkdir` (W3c); others are implied by file paths. */
+const DIRS = new Map<string, Set<string>>();
 const READS: { folderId: string; relPath?: string; limitBytes: number; maxEntries?: number }[] = [];
 const FAIL_PATHS = new Set<string>();
 let READS_UNAVAILABLE = false;
@@ -145,12 +153,13 @@ const readSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
   }
   const prefix = rel === '' ? '' : `${rel}/`;
   const children = new Map<string, 'file' | 'dir'>();
-  for (const p of tree.keys()) {
+  const dirs = DIRS.get(input.folderId) ?? new Set<string>();
+  for (const p of [...tree.keys(), ...dirs]) {
     if (!p.startsWith(prefix)) continue;
     const [head, ...rest] = p.slice(prefix.length).split('/');
-    children.set(head!, rest.length > 0 ? 'dir' : 'file');
+    children.set(head!, rest.length > 0 || dirs.has(prefix + head!) ? 'dir' : 'file');
   }
-  if (children.size === 0 && rel !== '') return { kind: 'absent' };
+  if (children.size === 0 && rel !== '' && !dirs.has(rel)) return { kind: 'absent' };
   const max = input.maxEntries ?? 5000;
   const entries = [...children].map(([name, kind]) =>
     kind === 'file'
@@ -158,6 +167,87 @@ const readSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
       : { name, kind },
   );
   return { kind: 'dir', entries: entries.slice(0, max), truncated: entries.length > max };
+};
+
+// ---------------------------------------------------------------------------
+// A stand-in for `sandbox:change-shared-folder` (W3c), over the same in-memory
+// trees: in order, stopping at a conflict; ifAbsent never overwrites; ifMatch
+// compares sha256; a missing folder needs `createFolder`. Records every call,
+// and can be told to answer `unavailable` or to throw.
+// ---------------------------------------------------------------------------
+
+type StubChange =
+  | { op: 'write'; path: string; content: Uint8Array; ifMatch?: string; ifAbsent?: true }
+  | { op: 'mkdir'; path: string; ifAbsent?: true }
+  | { op: 'delete'; path: string };
+interface StubChangeCall {
+  folderId: string;
+  changes: StubChange[];
+  createFolder?: true;
+}
+const CHANGES: StubChangeCall[] = [];
+let CHANGES_UNAVAILABLE = false;
+let CHANGE_THROWS: Error | null = null;
+
+function sha256(b: Uint8Array | string): string {
+  return createHash('sha256').update(b).digest('hex');
+}
+
+function whatIsAt(folderId: string, path: string): 'file' | 'dir' | null {
+  const tree = FILES.get(folderId);
+  if (tree?.has(path)) return 'file';
+  if (DIRS.get(folderId)?.has(path)) return 'dir';
+  for (const p of [...(tree?.keys() ?? []), ...(DIRS.get(folderId) ?? [])]) {
+    if (p.startsWith(`${path}/`)) return 'dir';
+  }
+  return null;
+}
+
+const changeSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
+  const input = raw as StubChangeCall;
+  CHANGES.push(input);
+  if (CHANGES_UNAVAILABLE) return { kind: 'unavailable' };
+  if (CHANGE_THROWS !== null) throw CHANGE_THROWS;
+  if (!FILES.has(input.folderId)) {
+    if (input.createFolder !== true) throw new Error('no such folder');
+    FILES.set(input.folderId, new Map());
+  }
+  const tree = FILES.get(input.folderId)!;
+  const dirs = DIRS.get(input.folderId) ?? new Set<string>();
+  DIRS.set(input.folderId, dirs);
+  const results: { path: string; outcome: string }[] = [];
+  for (const c of input.changes) {
+    const at = whatIsAt(input.folderId, c.path);
+    if (c.op === 'write') {
+      if (at === 'dir') throw new Error('a folder is in the way');
+      if (c.ifAbsent === true && at !== null) {
+        results.push({ path: c.path, outcome: 'exists' });
+        continue;
+      }
+      if (c.ifMatch !== undefined && (at !== 'file' || sha256(tree.get(c.path)!) !== c.ifMatch)) {
+        results.push({ path: c.path, outcome: 'conflict' });
+        break;
+      }
+      tree.set(c.path, c.content);
+      results.push({ path: c.path, outcome: at === null ? 'created' : 'written' });
+    } else if (c.op === 'mkdir') {
+      if (at === 'file') throw new Error('a file is in the way');
+      if (at === null) dirs.add(c.path);
+      results.push({ path: c.path, outcome: at === null ? 'created' : 'exists' });
+    } else {
+      if (at === null) {
+        results.push({ path: c.path, outcome: 'absent' });
+      } else if (at === 'file') {
+        tree.delete(c.path);
+        results.push({ path: c.path, outcome: 'deleted' });
+      } else {
+        if ([...tree.keys(), ...dirs].some((p) => p.startsWith(`${c.path}/`))) throw new Error('folder not empty');
+        dirs.delete(c.path);
+        results.push({ path: c.path, outcome: 'deleted' });
+      }
+    }
+  }
+  return { kind: 'done', results };
 };
 
 // ---------------------------------------------------------------------------
@@ -177,11 +267,21 @@ interface World {
 }
 
 async function makeWorld(
-  opts: { teams?: boolean; reader?: boolean; extraPlugins?: Plugin[]; extraServices?: Record<string, ServiceHandler> } = {},
+  opts: {
+    teams?: boolean;
+    reader?: boolean;
+    /** W3c: register the `sandbox:change-shared-folder` stub (off by default, so W3a/W3b tests see no seeding). */
+    writer?: boolean;
+    extraPlugins?: Plugin[];
+    extraServices?: Record<string, ServiceHandler>;
+  } = {},
 ): Promise<World> {
   const services: Record<string, ServiceHandler> = { ...stubServices, ...opts.extraServices };
   if (opts.teams === false) delete services['teams:list-for-user'];
   if (opts.reader !== false) services['sandbox:read-shared-folder'] = readSharedFolderStub;
+  if (opts.writer === true && services['sandbox:change-shared-folder'] === undefined) {
+    services['sandbox:change-shared-folder'] = changeSharedFolderStub;
+  }
   const h = await createTestHarness({
     services,
     plugins: [
@@ -307,6 +407,10 @@ beforeAll(async () => {
 }, 120_000);
 afterEach(async () => {
   FILES.clear();
+  DIRS.clear();
+  CHANGES.length = 0;
+  CHANGES_UNAVAILABLE = false;
+  CHANGE_THROWS = null;
   READS.length = 0;
   FAIL_PATHS.clear();
   READS_UNAVAILABLE = false;
@@ -333,6 +437,9 @@ describe('@ax/projects manifest', () => {
       'projects:read-file',
       'projects:download-file',
       'projects:set-member',
+      'projects:write-file',
+      'projects:delete-file',
+      'projects:create-folder',
       'system-prompt:augment:optional:projects',
     ]);
     expect(m.calls).toEqual([
@@ -348,11 +455,12 @@ describe('@ax/projects manifest', () => {
       'shared-folders:grant',
       'shared-folders:revoke',
     ]);
-    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user']);
+    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user', 'auth:get-user']);
     expect(m.subscribes).toEqual(['shared-folders:deleted']);
     const edges = [...m.calls, ...(m.optionalCalls ?? []).map((c) => c.hook)];
     expect(edges.filter((h) => h.startsWith('conversations:'))).toEqual([]);
-    // `sandbox:read-shared-folder` is called UNDECLARED (hasService-guarded):
+    // `sandbox:read-shared-folder` and W3c's `sandbox:change-shared-folder` /
+    // `sandbox:delete-shared-folder` are called UNDECLARED (hasService-guarded):
     // a declared edge closes a boot cycle through sandbox-subprocess (below).
     expect(edges.filter((h) => h.startsWith('sandbox:'))).toEqual([]);
   });
@@ -368,12 +476,13 @@ describe('@ax/projects manifest', () => {
       manifest: {
         name: 'test/sandbox-provider-leading-back',
         version: '0.0.0',
-        registers: ['sandbox:read-shared-folder'],
+        registers: ['sandbox:read-shared-folder', 'sandbox:change-shared-folder'],
         calls: ['projects:resolve'],
         subscribes: [],
       },
       init({ bus }) {
         bus.registerService('sandbox:read-shared-folder', 'test/sandbox-provider-leading-back', readSharedFolderStub);
+        bus.registerService('sandbox:change-shared-folder', 'test/sandbox-provider-leading-back', changeSharedFolderStub);
       },
     };
     const w = await makeWorld({ reader: false, extraPlugins: [provider] });
@@ -385,6 +494,12 @@ describe('@ax/projects manifest', () => {
     });
     expect(out.kind).toBe('file');
     expect(new TextDecoder().decode(out.contents)).toBe('Through the provider.');
+    // W3c: writes go through the same provider (it seeded the layout too).
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: new TextEncoder().encode('x') });
+    expect(CHANGES.map((c) => c.changes.map((ch) => ch.path))).toEqual([
+      ['instructions.md', 'memory/status.md', 'memory/log.md', 'playbooks', 'sources', 'work'],
+      ['work/a.md'],
+    ]);
   });
 });
 
@@ -1283,11 +1398,11 @@ describe('through the real subprocess reader', () => {
       expect(Object.keys(block)).toEqual(['brief']);
       return;
     }
-    // The link is neither listed nor followed.
-    expect((listing as { entries: { name: string }[] }).entries.map((e) => e.name).sort()).toEqual([
-      'instructions.md',
-      'memory',
-    ]);
+    // The link is neither listed nor followed. (Once the provider writes,
+    // create seeds playbooks/, sources/ and work/ beside these.)
+    const names = (listing as { entries: { name: string }[] }).entries.map((e) => e.name);
+    expect(names).toEqual(expect.arrayContaining(['instructions.md', 'memory']));
+    expect(names).not.toContain('leak.md');
     await expect(w.call('alice', 'projects:read-file', { projectId, path: 'leak.md' })).resolves.toEqual({
       kind: 'absent',
     });
@@ -1302,5 +1417,411 @@ describe('through the real subprocess reader', () => {
     expect(block.context).toContain('instructions.md:\n> Real instructions.');
     expect(block.context).toContain('memory/status.md:\n> Real status.');
     expect(block.context).not.toContain('TOPSECRET');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3c: people edit project files.
+// ---------------------------------------------------------------------------
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+/** A change call with its bytes as text, for exact comparisons. */
+function readable(call: StubChangeCall): unknown {
+  return {
+    ...call,
+    changes: call.changes.map((c) => (c.op === 'write' ? { ...c, content: dec(c.content) } : c)),
+  };
+}
+function fileText(folderId: string, path: string): string | undefined {
+  const b = FILES.get(folderId)?.get(path);
+  return b === undefined ? undefined : dec(b);
+}
+function changeAudits(w: World): Record<string, unknown>[] {
+  return w.logs.filter((l) => l.msg === 'project_file_changed');
+}
+const LAYOUT_PATHS = ['instructions.md', 'memory/status.md', 'memory/log.md', 'playbooks', 'sources', 'work'];
+
+describe('projects:create seeds the layout (W3c §6.2)', () => {
+  it('writes the whole top level in one change that creates the folder, every entry ifAbsent', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1', 'Q4 launch', 'Ship it.\nOn time.');
+    expect(CHANGES.map(readable)).toEqual([
+      {
+        folderId,
+        createFolder: true,
+        changes: [
+          {
+            op: 'write',
+            path: 'instructions.md',
+            content: '# Q4 launch\n\n## What this is for\n\nShip it.\nOn time.\n\n## Who does what\n\n',
+            ifAbsent: true,
+          },
+          { op: 'write', path: 'memory/status.md', content: '# Status\n\nJust getting started.\n', ifAbsent: true },
+          { op: 'write', path: 'memory/log.md', content: 'Project created\n', ifAbsent: true },
+          { op: 'mkdir', path: 'playbooks', ifAbsent: true },
+          { op: 'mkdir', path: 'sources', ifAbsent: true },
+          { op: 'mkdir', path: 'work', ifAbsent: true },
+        ],
+      },
+    ]);
+    expect(await projectRow(projectId)).toBeDefined();
+    // Seeded projects don't sweep again on their first listing.
+    const root = await w.call<{ entries: { name: string }[] }>('alice', 'projects:read-file', { projectId, path: '' });
+    expect(root.entries.map((e) => e.name).sort()).toEqual(['instructions.md', 'memory', 'playbooks', 'sources', 'work']);
+    expect(CHANGES).toHaveLength(1);
+  });
+
+  it('names the person in the log when an auth provider knows them (one clean line), and leaves out a blank description', async () => {
+    const w = await makeWorld({
+      writer: true,
+      extraServices: { 'auth:get-user': async () => ({ id: 'alice', displayName: '  Vinay\nPulim  ', isAdmin: false }) },
+    });
+    const { folderId } = await createProject(w, 'alice', 'a-alice-1', 'Plain');
+    expect(fileText(folderId, 'memory/log.md')).toBe('Project created by Vinay Pulim\n');
+    expect(fileText(folderId, 'instructions.md')).toBe('# Plain\n\n## What this is for\n\n## Who does what\n\n');
+  });
+
+  it.each([
+    ['throws', 'throw'],
+    ['refuses an entry', 'refuse'],
+  ])('rolls everything back when seeding %s', async (_label, mode) => {
+    const deletedBytes: unknown[] = [];
+    const extraServices: Record<string, ServiceHandler> = {
+      'sandbox:delete-shared-folder': async (_c, raw) => {
+        deletedBytes.push(raw);
+        return { deleted: true };
+      },
+    };
+    if (mode === 'refuse') {
+      extraServices['sandbox:change-shared-folder'] = async (_c, raw) => {
+        CHANGES.push(raw as StubChangeCall);
+        return { kind: 'done', results: [{ path: 'instructions.md', outcome: 'conflict' }] };
+      };
+    }
+    const w = await makeWorld({ writer: true, extraServices });
+    if (mode === 'throw') CHANGE_THROWS = new Error('EIO');
+    const projectsBefore = await q('SELECT * FROM projects_v1_projects');
+    await expect(createProject(w, 'alice', 'a-alice-1', 'Doomed')).rejects.toMatchObject({
+      code: 'layout-failed',
+      hookName: 'projects:create',
+    });
+    expect(CHANGES).toHaveLength(1);
+    const folderId = CHANGES[0]!.folderId;
+    expect(await q('SELECT * FROM projects_v1_projects')).toEqual(projectsBefore);
+    // shared-folders:delete ran: tombstoned, or already gone once its bytes were.
+    expect(w.folderDeleted).toEqual([{ folderId }]);
+    const folder = await folderRow(folderId);
+    expect(folder === undefined || folder.deleted_at !== null).toBe(true);
+    expect(deletedBytes).toContainEqual({ folderId });
+    // Nobody ever saw the project, so no projects:deleted.
+    expect(w.projectsDeleted).toEqual([]);
+    expect(w.logs.some((l) => l.msg === 'projects_layout_seed_failed')).toBe(true);
+  });
+
+  it('creates the project anyway when the deployment has no file storage (unavailable, or no writer)', async () => {
+    const w = await makeWorld({ writer: true });
+    CHANGES_UNAVAILABLE = true;
+    const a = await createProject(w, 'alice', 'a-alice-1', 'No files');
+    expect(await projectRow(a.projectId)).toBeDefined();
+    expect(CHANGES).toHaveLength(1);
+    expect(w.logs.some((l) => l.msg === 'projects_layout_skipped')).toBe(true);
+    const bare = await makeWorld();
+    const b = await createProject(bare, 'alice', 'a-alice-1', 'No writer');
+    expect(await projectRow(b.projectId)).toBeDefined();
+  });
+});
+
+describe('the lazy layout sweep (ensureLayout)', () => {
+  /** A W3a-style project: made with no writer around, with one file a person wrote. */
+  async function w3aProject(w: World): Promise<ProjectsCreateOutput> {
+    CHANGES_UNAVAILABLE = true;
+    const out = await createProject(w, 'alice', 'a-alice-1', 'Old', 'From before.');
+    CHANGES_UNAVAILABLE = false;
+    CHANGES.length = 0;
+    putFile(out.folderId, 'instructions.md', 'mine');
+    return out;
+  }
+
+  it('runs once on the first root listing, never overwrites, and the listing shows the layout', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await w3aProject(w);
+    const root = await w.call<{ entries: { name: string }[] }>('alice', 'projects:read-file', { projectId, path: '' });
+    expect(CHANGES).toHaveLength(1);
+    // A W3a folder may not exist on disk yet (no session mounted it).
+    expect(CHANGES[0]!.createFolder).toBe(true);
+    expect(CHANGES[0]!.changes.map((c) => c.path)).toEqual(LAYOUT_PATHS);
+    expect(CHANGES[0]!.changes.every((c) => 'ifAbsent' in c && c.ifAbsent === true)).toBe(true);
+    expect(fileText(folderId, 'instructions.md')).toBe('mine');
+    expect(fileText(folderId, 'memory/log.md')).toBe('Project folder set up\n');
+    expect(root.entries.map((e) => e.name).sort()).toEqual(['instructions.md', 'memory', 'playbooks', 'sources', 'work']);
+    await w.call('alice', 'projects:read-file', { projectId, path: '' });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('a') });
+    expect(CHANGES).toHaveLength(2); // the sweep, then the write — never the sweep again
+  });
+
+  it('runs once before the first change, leaving out the path being changed', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await w3aProject(w);
+    await w.call('alice', 'projects:write-file', { projectId, path: 'memory/log.md', content: enc('mine\n'), ifAbsent: true });
+    expect(CHANGES.map((c) => c.changes.map((ch) => ch.path))).toEqual([
+      LAYOUT_PATHS.filter((p) => p !== 'memory/log.md'),
+      ['memory/log.md'],
+    ]);
+    expect(fileText(folderId, 'memory/log.md')).toBe('mine\n');
+    await w.call('alice', 'projects:create-folder', { projectId, path: 'work/drafts' });
+    expect(CHANGES).toHaveLength(3);
+  });
+
+  it('a failing sweep is logged and never blocks the read', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId } = await w3aProject(w);
+    CHANGE_THROWS = new Error('EIO');
+    const root = await w.call<{ kind: string; entries: { name: string }[] }>('alice', 'projects:read-file', {
+      projectId,
+      path: '',
+    });
+    expect(root.entries.map((e) => e.name)).toEqual(['instructions.md']);
+    expect(w.logs.some((l) => l.msg === 'projects_layout_ensure_failed')).toBe(true);
+  });
+});
+
+describe('projects:write-file / delete-file / create-folder (W3c)', () => {
+  // Security review, 2026-10-18: a change that may create the folder
+  // (createFolder) raced with a project delete would bring the reaped folder
+  // back with nobody left to clean it. The row is checked again after the
+  // change; a project gone mid-change is reaped and answered not-found.
+  it('a project deleted during a change is reaped, not resurrected, and the save is not-found', async () => {
+    const reaped: unknown[] = [];
+    const w = await makeWorld({
+      writer: true,
+      extraServices: {
+        'sandbox:delete-shared-folder': async (_c, raw) => {
+          reaped.push(raw);
+          return { deleted: true };
+        },
+        'sandbox:change-shared-folder': async (c, raw) => {
+          const input = raw as StubChangeCall;
+          // The person's own write: the project is deleted while it's in flight.
+          if (input.changes.some((ch) => ch.path === 'work/late.md')) {
+            await q('DELETE FROM projects_v1_projects WHERE folder_id = $1', [input.folderId]);
+          }
+          return changeSharedFolderStub(c, raw);
+        },
+      },
+    });
+    const { folderId, projectId } = await createProject(w, 'alice', 'a-alice-1');
+    reaped.length = 0;
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/late.md', content: enc('x') }),
+    ).rejects.toMatchObject({ code: 'not-found', hookName: 'projects:write-file' });
+    expect(reaped).toEqual([{ folderId }]);
+  });
+
+  it('an owner saves: sha256 back, the change sent, and read-file returns the same hash', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    const out = await w.call<{ sha256: string }>('alice', 'projects:write-file', {
+      projectId,
+      path: 'work/notes.md',
+      content: enc('hello'),
+    });
+    expect(out).toEqual({ sha256: sha256('hello') });
+    expect(readable(CHANGES.at(-1)!)).toEqual({
+      folderId,
+      changes: [{ op: 'write', path: 'work/notes.md', content: 'hello' }],
+      createFolder: true,
+    });
+    const read = await w.call<{ sha256?: string }>('alice', 'projects:read-file', { projectId, path: 'work/notes.md' });
+    expect(read.sha256).toBe(out.sha256);
+    // A save based on what was read goes through, with ifMatch.
+    const again = await w.call<{ sha256: string }>('alice', 'projects:write-file', {
+      projectId,
+      path: 'work/notes.md',
+      content: enc('hello again'),
+      baseHash: read.sha256,
+    });
+    expect(again.sha256).toBe(sha256('hello again'));
+    expect(CHANGES.at(-1)!.changes[0]).toMatchObject({ ifMatch: sha256('hello') });
+    expect(changeAudits(w).at(-1)).toMatchObject({
+      level: 'info',
+      userId: 'alice',
+      projectId,
+      path: 'work/notes.md',
+      op: 'write',
+      outcome: 'written',
+    });
+  });
+
+  it('maps a stale baseHash to conflict and an ifAbsent clash to exists; the file is untouched', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('theirs') });
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('mine'), baseHash: sha256('old') }),
+    ).rejects.toMatchObject({ code: 'conflict', reasonCode: 'conflict', hookName: 'projects:write-file' });
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('mine'), ifAbsent: true }),
+    ).rejects.toMatchObject({ code: 'exists', reasonCode: 'exists' });
+    expect(fileText(folderId, 'work/a.md')).toBe('theirs');
+    expect(changeAudits(w).slice(-2).map((l) => l.outcome)).toEqual(['conflict', 'exists']);
+    await expect(
+      w.call('alice', 'projects:write-file', {
+        projectId,
+        path: 'work/a.md',
+        content: enc('x'),
+        baseHash: sha256('theirs'),
+        ifAbsent: true,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('an editor may change files; a viewer-only person is forbidden; a stranger gets not-found; nothing is changed', async () => {
+    const w = await makeWorld({ writer: true });
+    // Owned by an agent only team admins can use; the plain member reaches it
+    // only through a viewer (a-team-1) at first.
+    const { projectId, folderId } = await createProject(w, 'tadmin', 'a-team-admins', 'Team');
+    await grant(w, 'tadmin', folderId, 'a-team-1', 'viewer');
+    const changesBefore = CHANGES.length;
+    for (const [hook, input] of [
+      ['projects:write-file', { projectId, path: 'work/a.md', content: enc('x') }],
+      ['projects:delete-file', { projectId, path: 'work' }],
+      ['projects:create-folder', { projectId, path: 'work/x' }],
+    ] as const) {
+      await expectRefused(w, 'tmember', hook, input, 'forbidden', 'viewer-only');
+      await expectRefused(w, 'bob', hook, input, 'not-found', 'cannot-use-project');
+    }
+    expect(CHANGES.length).toBe(changesBefore);
+    // Reading is still fine for the viewer-only person.
+    await expect(w.call('tmember', 'projects:read-file', { projectId, path: '' })).resolves.toMatchObject({ kind: 'dir' });
+    // Made an editor, they can write.
+    await grant(w, 'tadmin', folderId, 'a-team-1', 'editor');
+    await expect(
+      w.call('tmember', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('x') }),
+    ).resolves.toEqual({ sha256: sha256('x') });
+  });
+
+  it('refuses sources/ (read-only), deleting instructions.md or memory/status.md (protected), and bad paths', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const changesBefore = CHANGES.length;
+    const refusedWith = async (hook: string, input: Record<string, unknown>, code: string) => {
+      await expect(w.call('alice', hook, { projectId, ...input })).rejects.toMatchObject({ code, hookName: hook });
+    };
+    for (const path of ['sources', 'sources/x.md', 'sources/deep/x.md']) {
+      await refusedWith('projects:write-file', { path, content: enc('x') }, 'read-only-path');
+      await refusedWith('projects:delete-file', { path }, 'read-only-path');
+      await refusedWith('projects:create-folder', { path }, 'read-only-path');
+    }
+    for (const path of ['instructions.md', 'memory/status.md']) {
+      await refusedWith('projects:delete-file', { path }, 'protected-path');
+    }
+    for (const path of ['', '/etc/passwd', './sources/x', 'work/../sources/x', 'work//x', 'work/', 'a\0b']) {
+      await refusedWith('projects:write-file', { path, content: enc('x') }, 'invalid-payload');
+      await refusedWith('projects:delete-file', { path }, 'invalid-payload');
+    }
+    expect(CHANGES.length).toBe(changesBefore);
+    expect(changeAudits(w).find((l) => l.outcome === 'protected-path')).toMatchObject({
+      userId: 'alice',
+      projectId,
+      path: 'instructions.md',
+      op: 'delete',
+    });
+    // Protected files can still be edited.
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'memory/status.md', content: enc('On track.') }),
+    ).resolves.toEqual({ sha256: sha256('On track.') });
+  });
+
+  it('caps a file at 10 MiB', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/big.bin', content: bytes(10 * MiB + 1) }),
+    ).rejects.toMatchObject({ code: 'too-large', reasonCode: 'too-large' });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/big.bin', content: bytes(10 * MiB) });
+    expect(FILES.get(folderId)!.get('work/big.bin')!.length).toBe(10 * MiB);
+  });
+
+  it('answers files-unavailable when the writer says unavailable, or there is none', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    CHANGES_UNAVAILABLE = true;
+    for (const [hook, input] of [
+      ['projects:write-file', { projectId, path: 'work/a.md', content: enc('x') }],
+      ['projects:delete-file', { projectId, path: 'work/a.md' }],
+      ['projects:create-folder', { projectId, path: 'work/x' }],
+    ] as const) {
+      await expect(w.call('alice', hook, input)).rejects.toMatchObject({
+        code: 'files-unavailable',
+        reasonCode: 'files-unavailable',
+      });
+    }
+    const bare = await makeWorld();
+    const p = await createProject(bare, 'alice', 'a-alice-1');
+    await expect(
+      bare.call('alice', 'projects:write-file', { projectId: p.projectId, path: 'work/a.md', content: enc('x') }),
+    ).rejects.toMatchObject({ code: 'files-unavailable' });
+  });
+
+  it('deletes a file (absent is not-found), and creates a folder that then lists', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('x') });
+    await expect(w.call('alice', 'projects:delete-file', { projectId, path: 'work/a.md' })).resolves.toEqual({});
+    expect(fileText(folderId, 'work/a.md')).toBeUndefined();
+    await expect(w.call('alice', 'projects:delete-file', { projectId, path: 'work/a.md' })).rejects.toMatchObject({
+      code: 'not-found',
+      message: 'projects:delete-file: not found',
+    });
+    await expect(w.call('alice', 'projects:create-folder', { projectId, path: 'work/drafts' })).resolves.toEqual({});
+    await expect(w.call('alice', 'projects:create-folder', { projectId, path: 'work/drafts' })).resolves.toEqual({});
+    const work = await w.call<{ entries: unknown[] }>('alice', 'projects:read-file', { projectId, path: 'work' });
+    expect(work.entries).toEqual([{ name: 'drafts', kind: 'dir' }]);
+    expect(changeAudits(w).map((l) => [l.op, l.outcome])).toEqual([
+      ['write', 'created'],
+      ['delete', 'deleted'],
+      ['delete', 'absent'],
+      ['mkdir', 'created'],
+      ['mkdir', 'exists'],
+    ]);
+  });
+
+  it('a provider refusal passes through, audited as failed', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a/b.md', content: enc('x') });
+    await expect(w.call('alice', 'projects:delete-file', { projectId, path: 'work/a' })).rejects.toThrow('folder not empty');
+    expect(changeAudits(w).at(-1)).toMatchObject({ op: 'delete', path: 'work/a', outcome: 'failed' });
+  });
+
+  it('a save to instructions.md or memory/status.md fires augment-changed for every member; other files fire nothing', async () => {
+    const w = await makeWorld({ writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await grant(w, 'alice', folderId, 'a-alice-2', 'editor');
+    await grant(w, 'alice', folderId, 'a-alice-3', 'viewer');
+    w.augmentChanged.length = 0;
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('x') });
+    await w.call('alice', 'projects:create-folder', { projectId, path: 'work/b' });
+    expect(w.augmentChanged).toEqual([]);
+    await w.call('alice', 'projects:write-file', { projectId, path: 'instructions.md', content: enc('New rules.') });
+    expect(w.augmentChanged.map((e) => e.agentId).sort()).toEqual(['a-alice-1', 'a-alice-2', 'a-alice-3']);
+    w.augmentChanged.length = 0;
+    await w.call('alice', 'projects:write-file', { projectId, path: 'memory/status.md', content: enc('Done.') });
+    expect(w.augmentChanged).toHaveLength(3);
+  });
+});
+
+describe('projects:read-file sha256 (W3c)', () => {
+  it('hashes a whole file, and leaves the hash out of a truncated preview', async () => {
+    const w = await makeWorld();
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'hash me');
+    putFile(folderId, 'big.bin', bytes(2 * MiB));
+    const small = await w.call<{ sha256?: string }>('alice', 'projects:read-file', { projectId, path: 'a.md' });
+    expect(small.sha256).toBe(sha256('hash me'));
+    const big = await w.call<{ truncated: boolean }>('alice', 'projects:read-file', { projectId, path: 'big.bin' });
+    expect(big.truncated).toBe(true);
+    expect(big).not.toHaveProperty('sha256');
   });
 });

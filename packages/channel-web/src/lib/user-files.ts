@@ -109,6 +109,13 @@ export interface FileTreeState {
   open: (path: string) => void;
 
   reload: () => void;
+
+  /**
+   * Re-read what is on screen after a change WE made (W3c): the folder listed
+   * and the open file, if any. Resolves once the listing has answered, so a
+   * caller can move to a file it just created and find it in the list.
+   */
+  refresh: () => Promise<void>;
 }
 
 /** Kept under its old name for the agent's tab and its tests. */
@@ -163,11 +170,14 @@ export function useFileTree(
   const listed = useRef<{ dirPath: string; entries: UserFileEntry[] } | null>(null);
   listed.current = loading && listed.current === null ? null : { dirPath, entries };
 
+  /** Bumped to make the open file read again (a refresh after a save). */
+  const [fileNonce, setFileNonce] = useState(0);
+
   const loadDir = useCallback(
-    (path: string) => {
+    (path: string): Promise<void> => {
       const id = ++listRequest.current;
       setLoading(true);
-      void (async () => {
+      return (async () => {
         try {
           const answer = await read(path);
           if (listRequest.current !== id) return;
@@ -212,7 +222,7 @@ export function useFileTree(
     setFileError(null);
     listed.current = null;
     preloaded.current = null;
-    if (initialPath !== null) loadDir(initialPath);
+    if (initialPath !== null) void loadDir(initialPath);
     // `initialPath` is read once per tree, on purpose: later moves go through
     // `open` / `openDir`, never through a re-run of this reset.
   }, [loadDir]);
@@ -255,7 +265,7 @@ export function useFileTree(
         if (bodyRequest.current === id) setFileLoading(false);
       }
     })();
-  }, [read, filePath]);
+  }, [read, filePath, fileNonce]);
 
   const openDir = useCallback(
     (path: string) => {
@@ -264,7 +274,7 @@ export function useFileTree(
       setFilePath(null);
       setFile(null);
       setFileError(null);
-      loadDir(path);
+      void loadDir(path);
     },
     [loadDir],
   );
@@ -303,7 +313,7 @@ export function useFileTree(
           setFileError(null);
           setError(null);
           const parent = parentDirOf(answer.path) ?? '';
-          if (here === null || here.dirPath !== parent) loadDir(parent);
+          if (here === null || here.dirPath !== parent) void loadDir(parent);
         } catch (e) {
           if (listRequest.current !== id) return;
           setFilePath(null);
@@ -317,7 +327,13 @@ export function useFileTree(
   );
 
   const reload = useCallback(() => {
-    loadDir(dirPath);
+    void loadDir(dirPath);
+  }, [loadDir, dirPath]);
+
+  const refresh = useCallback(async () => {
+    preloaded.current = null;
+    setFileNonce((n) => n + 1);
+    await loadDir(dirPath);
   }, [loadDir, dirPath]);
 
   return {
@@ -334,6 +350,7 @@ export function useFileTree(
     fileError,
     open,
     reload,
+    refresh,
   };
 }
 

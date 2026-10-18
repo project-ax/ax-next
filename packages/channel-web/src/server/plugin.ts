@@ -696,6 +696,21 @@ export function createChannelWebServerPlugin(
             'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
         },
         {
+          // W3c — people change project files: save, delete, new folder.
+          // @ax/projects decides who may (an editor or owner member the
+          // person can use) and where (`sources/` is read-only).
+          hook: 'projects:write-file',
+          degradation: 'PUT /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:delete-file',
+          degradation: 'DELETE /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:create-folder',
+          degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
+        },
+        {
           // "May this person manage this agent's sharing?" — who may own a new
           // project, and whether the project page offers rename/delete. The
           // hooks re-check; this only decides what to offer.
