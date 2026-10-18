@@ -503,7 +503,9 @@ export function createProjectsPlugin(): Plugin {
         description: row.description,
         logLine: LAYOUT_SWEEP_LOG_LINE,
       }).filter((c) => c.path !== skipPath);
-      const out = await changeFolder(ctx, row.folder_id, changes);
+      // `createFolder`: a W3a project's folder exists on disk only once a
+      // session mounted it. The row was just loaded, so the id is live.
+      const out = await changeFolder(ctx, row.folder_id, changes, true);
       if (out.kind === 'unavailable') return false;
       const created = out.results.filter((r) => r.outcome === 'created').map((r) => r.path);
       if (created.length > 0) ctx.logger.info('projects_layout_ensured', { projectId: row.project_id, created });
@@ -553,7 +555,7 @@ export function createProjectsPlugin(): Plugin {
     await ensureLayout(ctx, row, change.path);
     let out: ChangeSharedFolderOut;
     try {
-      out = await changeFolder(ctx, row.folder_id, [change]);
+      out = await changeFolder(ctx, row.folder_id, [change], true);
     } catch (err) {
       // A refusal from the walk (a symlink or a file in the way, a non-empty
       // folder) or a storage failure. Passed through as is.

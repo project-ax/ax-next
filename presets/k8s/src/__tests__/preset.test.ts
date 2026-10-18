@@ -717,6 +717,9 @@ describe('@ax/preset-k8s wiring', () => {
       'projects:read-file',
       'projects:download-file',
       'projects:set-member',
+      'projects:write-file',
+      'projects:delete-file',
+      'projects:create-folder',
       'system-prompt:augment:optional:projects',
     ]);
     // A tombstoned folder takes its project row with it (W3 §4.7).

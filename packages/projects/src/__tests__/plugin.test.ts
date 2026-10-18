@@ -1548,7 +1548,8 @@ describe('the lazy layout sweep (ensureLayout)', () => {
     const { projectId, folderId } = await w3aProject(w);
     const root = await w.call<{ entries: { name: string }[] }>('alice', 'projects:read-file', { projectId, path: '' });
     expect(CHANGES).toHaveLength(1);
-    expect(CHANGES[0]!.createFolder).toBeUndefined();
+    // A W3a folder may not exist on disk yet (no session mounted it).
+    expect(CHANGES[0]!.createFolder).toBe(true);
     expect(CHANGES[0]!.changes.map((c) => c.path)).toEqual(LAYOUT_PATHS);
     expect(CHANGES[0]!.changes.every((c) => 'ifAbsent' in c && c.ifAbsent === true)).toBe(true);
     expect(fileText(folderId, 'instructions.md')).toBe('mine');
@@ -1598,6 +1599,7 @@ describe('projects:write-file / delete-file / create-folder (W3c)', () => {
     expect(readable(CHANGES.at(-1)!)).toEqual({
       folderId,
       changes: [{ op: 'write', path: 'work/notes.md', content: 'hello' }],
+      createFolder: true,
     });
     const read = await w.call<{ sha256?: string }>('alice', 'projects:read-file', { projectId, path: 'work/notes.md' });
     expect(read.sha256).toBe(out.sha256);
