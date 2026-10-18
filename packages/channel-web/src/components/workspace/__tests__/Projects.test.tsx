@@ -567,7 +567,7 @@ describe('project members (W3e)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Add one of your agents' });
     await within(dialog).findByLabelText('Agent');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-    expect(await within(dialog).findByText('That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add or change it.')).toBeTruthy();
+    expect(await within(dialog).findByText('That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add, change or remove it.')).toBeTruthy();
   });
 
   it('changes a member’s role from its menu', async () => {

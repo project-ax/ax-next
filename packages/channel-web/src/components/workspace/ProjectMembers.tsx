@@ -104,7 +104,7 @@ function memberChangeError(e: unknown, context: string): string {
   // different owner than the project's (W2 allows only the same owner). The
   // route can't say which, so the copy names the rules.
   if (e instanceof HttpError && e.status === 403) {
-    return 'That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add or change it.';
+    return 'That agent can’t be changed here. A project can only include agents with the same owner as the project, and only someone who looks after an agent can add, change or remove it.';
   }
   return 'We couldn’t change that just now. Nothing changed — try again in a moment.';
 }

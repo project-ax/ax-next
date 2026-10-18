@@ -1248,9 +1248,11 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
      * Telling them apart: `@ax/conversations` rethrows a gate's refusal as its
      * own PluginError with the gate's error as `cause`, and `@ax/projects`
      * names its hook on every refusal — so a `cause` whose hookName is
-     * `projects:resolve` is the project saying no. A `forbidden` with no cause
-     * is the hook's own: "projects aren't loaded" when we asked to go into one
-     * and `projects:resolve` is missing, else the routine refusal. Unknown and
+     * `projects:resolve` is the project saying no. The hook tags its own
+     * refusals with a `reasonCode` (`routine-conversation`,
+     * `projects-unavailable`), and the route keys on that — never on the
+     * absence of a cause, which once read a routine chat moved into a project
+     * without @ax/projects as a 503. Unknown and
      * foreign collapse to one 404 per subject, so neither a chat nor a project
      * can be probed through here.
      */
