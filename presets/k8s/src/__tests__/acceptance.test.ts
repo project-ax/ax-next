@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   PostgreSqlContainer,
@@ -3947,7 +3947,14 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
         { projectId, path: '' },
       );
       expect(listing.kind).toBe('dir');
-      expect(listing.entries.map((e) => e.name).sort()).toEqual(['instructions.md', 'memory']);
+      // W3c seeds the layout on create; the planted links are not among it.
+      expect(listing.entries.map((e) => e.name).sort()).toEqual([
+        'instructions.md',
+        'memory',
+        'playbooks',
+        'sources',
+        'work',
+      ]);
       for (const p of ['leak.md', 'leakdir/secret.md']) {
         const out = await bus.call<unknown, unknown>('projects:read-file', userCtx(), { projectId, path: p });
         expect(out).toEqual({ kind: 'absent' });
@@ -4331,6 +4338,192 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       expect(t4.outcome).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
       expect(await spawnCount()).toBe(spawnsBefore);
       expect(proxyOpens).toBe(opensBefore);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // W3c — people edit project files (W3c plan task 8, spec §6).
+  //
+  // Writes go through `sandbox:change-shared-folder`, the same O_NOFOLLOW walk
+  // through /proc/self/fd as W3b's reads, so it exists on Linux only (CI).
+  // Off Linux the provider answers `unavailable`: a new project starts without
+  // a layout and every person's change refuses `files-unavailable`. The rules
+  // (who, protected paths, `sources/`) are decided before any file is touched,
+  // so they're checked on every platform.
+  // -------------------------------------------------------------------------
+  const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+  const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+  type ReadFileOut =
+    | { kind: 'dir'; entries: { name: string; kind: string }[] }
+    | { kind: 'file'; contents: Uint8Array; sha256?: string }
+    | { kind: 'absent' }
+    | { kind: 'unavailable' };
+  const readFile = (projectId: string, p: string): Promise<ReadFileOut> =>
+    bus.call<unknown, ReadFileOut>('projects:read-file', userCtx(), { projectId, path: p });
+  const writeFile = (
+    projectId: string,
+    p: string,
+    content: string,
+    guard: { baseHash?: string; ifAbsent?: true } = {},
+  ): Promise<{ sha256: string }> =>
+    bus.call<unknown, { sha256: string }>('projects:write-file', userCtx(), {
+      projectId,
+      path: p,
+      content: enc(content),
+      ...guard,
+    });
+  /** Merge one warm plan step per conversation into the plan file. */
+  async function warmStep(conversationId: string, step: Step): Promise<void> {
+    const current = JSON.parse(await fs.readFile(planPath, 'utf-8')) as Record<string, unknown>;
+    current[conversationId] = { ...step, warm: true };
+    await fs.writeFile(planPath, JSON.stringify(current));
+  }
+
+  it.skipIf(!ON_LINUX)(
+    'W3c (Linux): a new project starts with its layout on disk, and the root listing shows it',
+    { timeout: 120_000 },
+    async () => {
+      const owner = await createAgent('W3c seeded owner');
+      const project = await createProject(owner, 'W3c seeded');
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+
+      const instructions = await fs.readFile(path.join(folderDir, 'instructions.md'), 'utf-8');
+      expect(instructions).toContain('# W3c seeded');
+      expect(instructions).toContain(PROJECT_DESCRIPTION);
+      expect(await fs.readFile(path.join(folderDir, 'memory', 'status.md'), 'utf-8')).toContain('# Status');
+      expect(await fs.readFile(path.join(folderDir, 'memory', 'log.md'), 'utf-8')).toMatch(/^Project created/);
+      for (const dir of ['playbooks', 'sources', 'work']) {
+        expect((await fs.stat(path.join(folderDir, dir))).isDirectory()).toBe(true);
+        expect(await fs.readdir(path.join(folderDir, dir))).toEqual([]);
+      }
+
+      const root = await readFile(project.projectId, '');
+      expect(root.kind).toBe('dir');
+      const entries = (root as Extract<ReadFileOut, { kind: 'dir' }>).entries;
+      expect(entries.map((e) => [e.name, e.kind]).sort()).toEqual([
+        ['instructions.md', 'file'],
+        ['memory', 'dir'],
+        ['playbooks', 'dir'],
+        ['sources', 'dir'],
+        ['work', 'dir'],
+      ]);
+      const memory = await readFile(project.projectId, 'memory');
+      expect((memory as Extract<ReadFileOut, { kind: 'dir' }>).entries.map((e) => e.name).sort()).toEqual([
+        'log.md',
+        'status.md',
+      ]);
+    },
+  );
+
+  it.skipIf(!ON_LINUX)(
+    "W3c (Linux): a person writes a file, an agent reads it and then edits it, and the person's stale save is a conflict",
+    { timeout: 180_000 },
+    async () => {
+      const PERSON = '# Plan\n\n- written by a person PERSON-MARKER-3b8e\n';
+      const AGENT = '# Plan\n\n- edited by the agent AGENT-MARKER-c41d\n';
+      const owner = await createAgent('W3c editor');
+      const project = await createProject(owner, 'W3c both ways');
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+
+      // 1. The person creates work/plan.md.
+      const saved = await writeFile(project.projectId, 'work/plan.md', PERSON, { ifAbsent: true });
+      expect(saved.sha256).toBe(sha256(PERSON));
+      expect(await fs.readFile(path.join(folderDir, 'work', 'plan.md'), 'utf-8')).toBe(PERSON);
+      const first = await readFile(project.projectId, 'work/plan.md');
+      expect(first).toMatchObject({ kind: 'file', sha256: saved.sha256 });
+
+      // 2. An agent turn in a project chat reads it.
+      const chat = await createChat(owner, project.projectId);
+      await warmStep(chat, { op: 'read', path: 'work/plan.md' });
+      const t1 = await warmTurn(chat, owner);
+      expect(t1.report!.sharedFolders).toEqual([{ id: project.folderId, path: folderDir, readOnly: false }]);
+      expect(t1.report!.error).toBeNull();
+      expect(t1.report!.readContent).toBe(PERSON);
+
+      // 3. The next turn (same live session) writes over the person's file:
+      //    the agent can edit what a person created.
+      await warmStep(chat, { op: 'write', path: 'work/plan.md', content: AGENT });
+      const t2 = await warmTurn(chat, owner);
+      expect(t2.report!.sessionId).toBe(t1.sessionId);
+      expect(t2.report!.turnIndex).toBe(2);
+      expect(t2.report!.error).toBeNull();
+      expect(t2.report!.wrote).toBe(true);
+
+      // 4. The person sees the agent's bytes, with a new hash.
+      const second = await readFile(project.projectId, 'work/plan.md');
+      expect(second.kind).toBe('file');
+      const file = second as Extract<ReadFileOut, { kind: 'file' }>;
+      expect(new TextDecoder().decode(file.contents)).toBe(AGENT);
+      expect(file.sha256).toBe(sha256(AGENT));
+      expect(file.sha256).not.toBe(saved.sha256);
+
+      // 5. A save based on what the person read BEFORE the agent's edit is a
+      //    conflict, and the agent's bytes stay.
+      await expect(
+        writeFile(project.projectId, 'work/plan.md', `${PERSON}stale\n`, { baseHash: saved.sha256 }),
+      ).rejects.toMatchObject({ code: 'conflict', reasonCode: 'conflict' });
+      expect(await fs.readFile(path.join(folderDir, 'work', 'plan.md'), 'utf-8')).toBe(AGENT);
+
+      // 6. A save based on the current hash goes through.
+      const FINAL = `${AGENT}- and the person again\n`;
+      await expect(
+        writeFile(project.projectId, 'work/plan.md', FINAL, { baseHash: file.sha256! }),
+      ).resolves.toEqual({ sha256: sha256(FINAL) });
+      expect(await fs.readFile(path.join(folderDir, 'work', 'plan.md'), 'utf-8')).toBe(FINAL);
+    },
+  );
+
+  // The viewer-only case ("a person who reaches the project only through a
+  // viewer agent is forbidden") isn't reachable here: shared-folders:grant and
+  // projects:set-member refuse an agent with a different owner than the
+  // project's owner agent, so whoever can use a viewer member can use the
+  // owner too. @ax/projects' unit tests cover `viewer-only`.
+  it('W3c: protected files cannot be deleted, sources/ is read-only, and a stranger gets not-found', async () => {
+    const owner = await createAgent('W3c rules');
+    const project = await createProject(owner, 'W3c rules');
+    const folderDir = path.join(filesRoot, '.shared', project.folderId);
+    for (const p of ['instructions.md', 'memory/status.md']) {
+      await expect(
+        bus.call('projects:delete-file', userCtx(), { projectId: project.projectId, path: p }),
+      ).rejects.toMatchObject({ code: 'protected-path', reasonCode: 'protected-path' });
+    }
+    await expect(writeFile(project.projectId, 'sources/notes.md', 'nope')).rejects.toMatchObject({
+      code: 'read-only-path',
+      reasonCode: 'read-only-path',
+    });
+    await expect(
+      bus.call('projects:create-folder', userCtx(), { projectId: project.projectId, path: 'sources/sub' }),
+    ).rejects.toMatchObject({ code: 'read-only-path' });
+    await expect(
+      bus.call('projects:delete-file', userCtx(), { projectId: project.projectId, path: 'sources' }),
+    ).rejects.toMatchObject({ code: 'read-only-path' });
+    if (ON_LINUX) {
+      // Nothing was touched: the seeded files stay and sources/ is still empty.
+      expect(existsSync(path.join(folderDir, 'instructions.md'))).toBe(true);
+      expect(existsSync(path.join(folderDir, 'memory', 'status.md'))).toBe(true);
+      expect(await fs.readdir(path.join(folderDir, 'sources'))).toEqual([]);
+    }
+
+    const stranger = makeAgentContext({ sessionId: 'w3c-stranger', agentId: 'w3c-stranger', userId: 'w3c-stranger' });
+    await expect(
+      bus.call('projects:write-file', stranger, { projectId: project.projectId, path: 'work/x.md', content: enc('x') }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await expect(
+      bus.call('projects:delete-file', stranger, { projectId: project.projectId, path: 'work' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it.skipIf(ON_LINUX)(
+    "W3c (off Linux, degraded): no host walk here, so a new project has no layout and a person's save refuses files-unavailable",
+    async () => {
+      const owner = await createAgent('W3c degraded');
+      const project = await createProject(owner, 'W3c degraded');
+      expect(existsSync(path.join(filesRoot, '.shared', project.folderId, 'instructions.md'))).toBe(false);
+      await expect(writeFile(project.projectId, 'work/plan.md', 'hi')).rejects.toMatchObject({
+        code: 'files-unavailable',
+        reasonCode: 'files-unavailable',
+      });
+      await expect(readFile(project.projectId, '')).resolves.toEqual({ kind: 'unavailable' });
     },
   );
 });
