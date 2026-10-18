@@ -157,11 +157,12 @@ const FOLDER: Record<string, UserFilesAnswer> = {
     fileEntry('work/chart.png'),
     fileEntry('work/huge.log', { size: HUGE }),
   ]),
+  // `name` as the server sends it: the fenced base name, never the path.
   'instructions.md': { kind: 'file', path: 'instructions.md', name: 'instructions.md', body: 'Be brief.', clipped: null, size: 9, downloadable: true },
-  'work/plan.md': { kind: 'file', path: 'work/plan.md', name: 'work/plan.md', body: '# Launch plan\n\nShip it.', clipped: null, size: 24, downloadable: true },
-  'work/notes.txt': { kind: 'file', path: 'work/notes.txt', name: 'work/notes.txt', body: '# not a heading', clipped: null, size: 15, downloadable: true },
-  'work/chart.png': { kind: 'file', path: 'work/chart.png', name: 'work/chart.png', body: null, clipped: 'binary', size: 2048, downloadable: true },
-  'work/huge.log': { kind: 'file', path: 'work/huge.log', name: 'work/huge.log', body: 'line 1', clipped: 'too-large', size: HUGE, downloadable: false },
+  'work/plan.md': { kind: 'file', path: 'work/plan.md', name: 'plan.md', body: '# Launch plan\n\nShip it.', clipped: null, size: 24, downloadable: true },
+  'work/notes.txt': { kind: 'file', path: 'work/notes.txt', name: 'notes.txt', body: '# not a heading', clipped: null, size: 15, downloadable: true },
+  'work/chart.png': { kind: 'file', path: 'work/chart.png', name: 'chart.png', body: null, clipped: 'binary', size: 2048, downloadable: true },
+  'work/huge.log': { kind: 'file', path: 'work/huge.log', name: 'huge.log', body: 'line 1', clipped: 'too-large', size: HUGE, downloadable: false },
 };
 
 function serveFolder(folder: Record<string, UserFilesAnswer> = FOLDER) {
