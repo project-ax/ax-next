@@ -1071,6 +1071,18 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
         },
         {
+          hook: 'projects:write-file',
+          degradation: 'PUT /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:delete-file',
+          degradation: 'DELETE /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:create-folder',
+          degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
+        },
+        {
           hook: 'agents:can-manage-sharing',
           degradation:
             'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',

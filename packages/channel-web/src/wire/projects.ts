@@ -143,3 +143,11 @@ export interface ProjectLabel {
   projectId: string;
   name: string;
 }
+
+/**
+ * W3c — `PUT /api/workspace/projects/:projectId/files/*`: the saved file's
+ * sha256, the base hash for the next save.
+ */
+export interface WriteProjectFileResponse {
+  sha256: string;
+}

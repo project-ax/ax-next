@@ -8,6 +8,7 @@
  * download is ≤ 10 MiB or refused. The stubs add a `folderId` to everything
  * they return, so the "never in a response" checks have something to catch.
  */
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeProjectsHandlers } from '../../server/routes-projects.js';
@@ -18,6 +19,7 @@ const initCtx: AgentContext = makeAgentContext({ sessionId: 'init', agentId: '@a
 const enc = new TextEncoder();
 const MiB = 1024 * 1024;
 const SECRET = 'fld_secret_folder_id';
+const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 
 function mkReq(params: Record<string, string>): RouteRequest {
   return { headers: {}, body: Buffer.alloc(0), cookies: {}, query: {}, params, signedCookie: () => null };
@@ -106,6 +108,8 @@ describe('project file routes (W3b)', () => {
         contents: node.bytes.subarray(0, MiB),
         truncated: node.bytes.length > MiB,
         size: node.bytes.length,
+        // As @ax/projects: the hash only when the preview is the whole file.
+        ...(node.bytes.length > MiB ? {} : { sha256: sha256(node.bytes) }),
         folderId: SECRET,
       };
     });
@@ -134,7 +138,10 @@ describe('project file routes (W3b)', () => {
       ['work', { kind: 'dir' }],
       ['work/a b.txt', { kind: 'file', bytes: enc.encode('spaced') }],
       ['work/blob.bin', { kind: 'file', bytes: new Uint8Array([0x89, 0x50, 0x00, 0x47]) }],
-      ['work/long.md', { kind: 'file', bytes: enc.encode('x'.repeat(FILE_BODY_MAX_BYTES + 100)) }],
+      ['work/long.md', { kind: 'file', bytes: enc.encode('x'.repeat(MiB + 100)) }],
+      ['work/mid.md', { kind: 'file', bytes: enc.encode('y'.repeat(FILE_BODY_MAX_BYTES + 100)) }],
+      ['work/bidi.md', { kind: 'file', bytes: enc.encode('a\u202Eb') }],
+      ['work/latin1.txt', { kind: 'file', bytes: new Uint8Array([0x63, 0x61, 0x66, 0xe9]) }],
       ['work/huge.log', { kind: 'file', bytes: new Uint8Array(11 * MiB).fill(0x61) }],
       ['work/two-mib.txt', { kind: 'file', bytes: new Uint8Array(2 * MiB).fill(0x62) }],
       ['work/rlo‮gnp.exe', { kind: 'file', bytes: enc.encode('tricky') }],
@@ -219,7 +226,29 @@ describe('project file routes (W3b)', () => {
         clipped: null,
         size: 15,
         downloadable: true,
+        sha256: sha256(enc.encode('# Do the thing\n')),
       });
+    });
+
+    // W3c: the base hash rides along only when the body IS the file, so a Save
+    // can never rewrite bytes the person didn't see.
+    it('a project preview carries up to 1 MiB of text, whole and with its hash (W3c)', async () => {
+      const out = await list('prj_1', 'work/mid.md');
+      const body = out.json as { body: string; clipped: string | null; sha256?: string };
+      expect(body.body).toHaveLength(FILE_BODY_MAX_BYTES + 100);
+      expect(body.clipped).toBeNull();
+      expect(body.sha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it.each([
+      ['a fenced bidi control', 'work/bidi.md'],
+      ['invalid UTF-8', 'work/latin1.txt'],
+      ['a clipped preview', 'work/long.md'],
+      ['a binary file', 'work/blob.bin'],
+    ])('no sha256 when the body is not the file byte for byte: %s', async (_n, path) => {
+      const out = await list('prj_1', path);
+      expect(out.statusCode).toBe(200);
+      expect(out.json).not.toHaveProperty('sha256');
     });
 
     it('a binary file says so instead of decoding', async () => {
@@ -227,12 +256,12 @@ describe('project file routes (W3b)', () => {
       expect(out.json).toMatchObject({ kind: 'file', body: null, clipped: 'binary', size: 4, downloadable: true });
     });
 
-    it('a long file is clipped at 128 KiB and says so', async () => {
+    it('a long file is clipped at 1 MiB (the hook’s preview) and says so', async () => {
       const out = await list('prj_1', 'work/long.md');
       const body = out.json as { body: string; clipped: string; size: number };
-      expect(body.body).toHaveLength(FILE_BODY_MAX_BYTES);
+      expect(body.body).toHaveLength(MiB);
       expect(body.clipped).toBe('too-large');
-      expect(body.size).toBe(FILE_BODY_MAX_BYTES + 100);
+      expect(body.size).toBe(MiB + 100);
     });
 
     it('a file the hook only previewed (truncated) is never presented as whole', async () => {

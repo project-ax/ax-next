@@ -22,6 +22,7 @@ import {
   type ProjectSummary,
   type SetProjectMemberResponse,
   type UpdateProjectResponse,
+  type WriteProjectFileResponse,
 } from '../wire/projects.js';
 import {
   basenameOf,
@@ -53,6 +54,9 @@ import { workspaceFilePath } from './safe-path.js';
 //   GET    /api/workspace/projects/:projectId/files         projects:read-file (the folder root)
 //   GET    /api/workspace/projects/:projectId/files/*       projects:read-file
 //   GET    /api/workspace/projects/:projectId/download/*    projects:download-file
+//   PUT    /api/workspace/projects/:projectId/files/*       projects:write-file (W3c)
+//   DELETE /api/workspace/projects/:projectId/files/*       projects:delete-file (W3c)
+//   POST   /api/workspace/projects/:projectId/folders/*     projects:create-folder (W3c)
 //
 // THE ACTOR. Every `projects:*` hook (and `agents:can-manage-sharing`) takes
 // its actor from `ctx.userId`, never from the payload. So each call here runs
@@ -107,6 +111,31 @@ import { workspaceFilePath } from './safe-path.js';
 // A download's `not-found` covers an unknown project, someone else's and a
 // missing file alike (the hook can't tell them apart on purpose), hence one
 // 404 body there.
+//
+// A FILE ANSWER'S `sha256` (W3c) is the base hash a save sends back as
+// `If-Match`. It is present ONLY when `body` is the whole file, byte for byte:
+// not clipped, not truncated by the hook, and unchanged by the decode and the
+// fence (a file with invalid UTF-8 or a stripped bidi control would come back
+// different). So "has a sha256" is exactly "safe to edit as text" — a Save can
+// never quietly rewrite bytes the person never saw. Project previews carry up
+// to 1 MiB of body (the hook's preview), so a file that size can be edited.
+//
+// THE CHANGE ROUTES (W3c, W3 spec §6.3). Same order as the reads: auth →
+// project id → hook loaded → path → preconditions → hook; the actor is the
+// session's person. The write body is the file's raw bytes (≤ 10 MiB, the
+// route's `maxBodyBytes`, so @ax/http-server answers 413 before we run).
+// `If-Match: "<sha256>"` → `baseHash`; `If-None-Match: *` → `ifAbsent`; both,
+// or a malformed one, is a 400. Refusals:
+//
+//   invalid-payload → 400 invalid-payload     conflict  → 409 conflict
+//   not-found       → 404 (see below)         exists    → 409 exists
+//   forbidden       → 403 forbidden (the person can use only viewer agents)
+//   protected-path  → 403 protected-path      too-large → 413 file-too-large
+//   read-only-path  → 403 read-only-path      files-unavailable → 503 project-files-unavailable
+//
+// A delete's `not-found` covers an unknown project, someone else's and a
+// missing file alike, so it is one body (`file-not-found`), as the download's.
+// A write or a new folder can only miss the project (`project-not-found`).
 // ---------------------------------------------------------------------------
 
 const ACTOR_AGENT_ID = '@ax/channel-web';
@@ -119,6 +148,17 @@ const PROJECT_FILE_PATH_MAX_CHARS = 4096;
  * stays the gate and answers `too-large` (413) on its own.
  */
 const PROJECT_FILE_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * The write route's body cap: `@ax/projects`' `WRITE_FILE_MAX_BYTES` (no
+ * cross-plugin import). The hook re-checks and answers `too-large` itself.
+ */
+export const PROJECT_FILE_WRITE_MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * How much of a project file a preview carries as text: the hook's own
+ * preview (1 MiB), so a file up to that size can be edited whole (W3c).
+ */
+const PROJECT_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 // --- duck-typed hook payloads (invariant 2 — no cross-plugin import) -------
 
@@ -169,7 +209,7 @@ type ProjectsReadFileOutput =
       entries: Array<{ name: string; kind: 'file' | 'dir'; size?: number; updatedAt?: string }>;
       truncated: boolean;
     }
-  | { kind: 'file'; contents: Uint8Array; truncated: boolean; size: number }
+  | { kind: 'file'; contents: Uint8Array; truncated: boolean; size: number; sha256?: string }
   | { kind: 'absent' }
   | { kind: 'unavailable' };
 interface ProjectsDownloadFileOutput {
@@ -265,6 +305,59 @@ function downloadRefused(res: RouteResponse, err: unknown): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * Map a refusal from one of the change hooks onto a status (the table at the
+ * top). `notFound` is the 404 body: a delete's `not-found` may mean the file.
+ * False for anything else — the caller rethrows it.
+ */
+function changeRefused(res: RouteResponse, err: unknown, notFound: string): boolean {
+  if (!(err instanceof PluginError)) return false;
+  switch (err.code) {
+    case 'invalid-payload':
+      res.status(400).json({ error: 'invalid-payload' });
+      return true;
+    case 'not-found':
+      res.status(404).json({ error: notFound });
+      return true;
+    case 'forbidden':
+    case 'protected-path':
+    case 'read-only-path':
+      res.status(403).json({ error: err.code });
+      return true;
+    case 'conflict':
+    case 'exists':
+      res.status(409).json({ error: err.code });
+      return true;
+    case 'too-large':
+      res.status(413).json({ error: 'file-too-large' });
+      return true;
+    case 'files-unavailable':
+      res.status(503).json({ error: 'project-files-unavailable' });
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * A write's preconditions, from its headers, or `null` (the caller answers
+ * 400). `If-Match` takes one strong entity tag naming a sha256 (quoted, as
+ * HTTP spells it); `If-None-Match` takes only `*`. Never both.
+ */
+function writePreconditions(
+  headers: Record<string, string>,
+): { baseHash?: string; ifAbsent?: true } | null {
+  const ifMatch = headers['if-match'];
+  const ifNoneMatch = headers['if-none-match'];
+  if (ifMatch !== undefined && ifNoneMatch !== undefined) return null;
+  if (ifMatch !== undefined) {
+    const m = /^"([0-9a-f]{64})"$/.exec(ifMatch.trim());
+    return m === null ? null : { baseHash: m[1]! };
+  }
+  if (ifNoneMatch !== undefined) return ifNoneMatch.trim() === '*' ? { ifAbsent: true } : null;
+  return {};
 }
 
 /**
@@ -459,19 +552,45 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       } satisfies AgentUserFilesResponse);
       return;
     }
-    const decoded = decodeFileBody(out.contents);
+    const decoded = decodeFileBody(out.contents, PROJECT_FILE_PREVIEW_MAX_BYTES);
+    const clipped = decoded.clipped === null && out.truncated ? 'too-large' : decoded.clipped;
+    // The base hash only for a body that IS the file (see the top).
+    const whole =
+      clipped === null &&
+      decoded.body !== null &&
+      typeof out.sha256 === 'string' &&
+      SHA256_HEX.test(out.sha256) &&
+      Buffer.from(decoded.body, 'utf8').equals(Buffer.from(out.contents.buffer, out.contents.byteOffset, out.contents.byteLength));
     res.status(200).json({
       kind: 'file',
       path: relPath,
       name,
       body: decoded.body,
-      // The hook's preview (1 MiB) is longer than ours (128 KiB), so a clipped
-      // preview is already `too-large` here; this only keeps "the whole file"
-      // honest if those two bounds ever cross.
-      clipped: decoded.clipped === null && out.truncated ? 'too-large' : decoded.clipped,
+      // "The whole file" stays honest if the hook clipped what we decoded.
+      clipped,
       size: out.size,
       downloadable: out.size <= PROJECT_FILE_DOWNLOAD_MAX_BYTES,
+      ...(whole ? { sha256: out.sha256 } : {}),
     } satisfies AgentUserFilesResponse);
+  }
+
+  /** Auth → project id → hook loaded → path, shared by the three change routes. */
+  async function changeTarget(
+    req: RouteRequest,
+    res: RouteResponse,
+    loaded: boolean,
+  ): Promise<{ userId: string; projectId: string; relPath: string } | null> {
+    const userId = await authOr401(bus, initCtx, req, res);
+    if (userId === null) return null;
+    const projectId = projectIdParam(req, res);
+    if (projectId === null) return null;
+    if (!projectsLoaded(res, loaded)) return null;
+    const relPath = projectFilePath(req.params['*'] ?? '', false);
+    if (relPath === null) {
+      res.status(400).json({ error: 'invalid-path' });
+      return null;
+    }
+    return { userId, projectId, relPath };
   }
 
   return {
@@ -718,6 +837,69 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       }
       sendFileDownload(res, relPath, out.contents);
     },
+
+    /**
+     * PUT /api/workspace/projects/:projectId/files/* — save one file's bytes
+     * (the raw body). `If-Match` / `If-None-Match` as at the top.
+     */
+    async writeProjectFile(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await changeTarget(req, res, bus.hasService('projects:write-file'));
+      if (target === null) return;
+      const pre = writePreconditions(req.headers);
+      if (pre === null) {
+        res.status(400).json({ error: 'invalid-precondition' });
+        return;
+      }
+      let out: { sha256: string };
+      try {
+        out = await bus.call<
+          { projectId: string; path: string; content: Uint8Array; baseHash?: string; ifAbsent?: true },
+          { sha256: string }
+        >('projects:write-file', actorCtx(target.userId), {
+          projectId: target.projectId,
+          path: target.relPath,
+          content: new Uint8Array(req.body.buffer, req.body.byteOffset, req.body.byteLength),
+          ...pre,
+        });
+      } catch (err) {
+        if (changeRefused(res, err, 'project-not-found')) return;
+        throw err;
+      }
+      res.status(200).json({ sha256: out.sha256 } satisfies WriteProjectFileResponse);
+    },
+
+    /** DELETE /api/workspace/projects/:projectId/files/* — a file or an empty folder. */
+    async deleteProjectFile(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await changeTarget(req, res, bus.hasService('projects:delete-file'));
+      if (target === null) return;
+      try {
+        await bus.call<{ projectId: string; path: string }, unknown>('projects:delete-file', actorCtx(target.userId), {
+          projectId: target.projectId,
+          path: target.relPath,
+        });
+      } catch (err) {
+        if (changeRefused(res, err, 'file-not-found')) return;
+        throw err;
+      }
+      res.status(204).end();
+    },
+
+    /** POST /api/workspace/projects/:projectId/folders/* — a new folder (and any missing parents). */
+    async createProjectFolder(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await changeTarget(req, res, bus.hasService('projects:create-folder'));
+      if (target === null) return;
+      try {
+        await bus.call<{ projectId: string; path: string }, unknown>(
+          'projects:create-folder',
+          actorCtx(target.userId),
+          { projectId: target.projectId, path: target.relPath },
+        );
+      } catch (err) {
+        if (changeRefused(res, err, 'project-not-found')) return;
+        throw err;
+      }
+      res.status(204).end();
+    },
   };
 }
 
@@ -729,7 +911,12 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
 export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext): Promise<Array<() => void>> {
   const h = makeProjectsHandlers({ bus, initCtx });
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  const routes: Array<{ method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; path: string; handler: RouteHandler }> = [
+  const routes: Array<{
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    path: string;
+    handler: RouteHandler;
+    maxBodyBytes?: number;
+  }> = [
     { method: 'GET', path: '/api/workspace/projects', handler: h.listProjects },
     { method: 'POST', path: '/api/workspace/projects', handler: h.createProject },
     { method: 'GET', path: '/api/workspace/projects/owner-candidates', handler: h.ownerCandidates },
@@ -754,6 +941,16 @@ export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext
       // of `RouteResponse` (the agent download routes are registered the same way).
       handler: h.projectFileDownload as unknown as RouteHandler,
     },
+    // W3c — changes. CSRF-gated like every write here (no `bypassCsrf`). The
+    // write's body is the file itself, so it gets the file cap, not 1 MiB.
+    {
+      method: 'PUT',
+      path: '/api/workspace/projects/:projectId/files/*',
+      handler: h.writeProjectFile,
+      maxBodyBytes: PROJECT_FILE_WRITE_MAX_BYTES,
+    },
+    { method: 'DELETE', path: '/api/workspace/projects/:projectId/files/*', handler: h.deleteProjectFile },
+    { method: 'POST', path: '/api/workspace/projects/:projectId/folders/*', handler: h.createProjectFolder },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {
