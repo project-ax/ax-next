@@ -49,6 +49,7 @@ import { useIsCompact } from '@/lib/use-compact';
 import { parentDirOf, type FileTreeState, type UserFileBody } from '@/lib/user-files';
 import type { WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
+import { fenceLine } from '@/lib/fence-line';
 import { SectionLabel } from './bits';
 
 /**
@@ -347,7 +348,9 @@ export function FileBrowser({
     let acc = '';
     for (const seg of tree.dirPath.split('/')) {
       acc = acc === '' ? seg : `${acc}/${seg}`;
-      crumbs.push({ label: seg, path: acc });
+      // The segment is a raw, agent-written name: fence it for display; the
+      // raw path stays the navigation key.
+      crumbs.push({ label: fenceLine(seg, 120) ?? '…', path: acc });
     }
   }
 
