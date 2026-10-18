@@ -339,6 +339,14 @@ describe('the files browser', () => {
     expect(within(main()).queryByRole('button', { name: 'instructions.md' })).toBeNull();
   });
 
+  it('names the open file once in the viewer, not twice (kind walk, 2026-10-17)', async () => {
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await within(main()).findByRole('heading', { name: 'Launch plan' });
+    // The folder list's row, the breadcrumb's last crumb, and the viewer
+    // header — no second line under the header repeating it.
+    expect(within(main()).getAllByText('plan.md')).toHaveLength(3);
+  });
+
   it('shows text as text, not as markdown', async () => {
     await openAt('/workspace/projects/p1/files/work/notes.txt');
     const pre = await waitFor(() => {

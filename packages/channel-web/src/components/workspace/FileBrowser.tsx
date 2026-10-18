@@ -595,9 +595,16 @@ export function FileViewer({
           </Button>
         )}
       </div>
-      <div className="mb-5 truncate text-[12.5px] text-muted-foreground" title={label}>
-        {label}
-      </div>
+      {/* The label is the fenced display name (never the raw path, which may
+          carry bidi or control characters), so it's drawn once; the
+          breadcrumb shows where the file is. */}
+      {label !== basename(label) ? (
+        <div className="mb-5 truncate text-[12.5px] text-muted-foreground" title={label}>
+          {label}
+        </div>
+      ) : (
+        <div className="mb-4" />
+      )}
 
       {/*
         A download that did not happen is its own thing: the file is listed,
