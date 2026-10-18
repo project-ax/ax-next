@@ -22,15 +22,18 @@ clear home.
   records how W3a was built. W1 is in
   [`2026-10-12-w1-prompt-contributions-design.md`](2026-10-12-w1-prompt-contributions-design.md),
   W2 in [`2026-10-12-w2-shared-folders-design.md`](2026-10-12-w2-shared-folders-design.md).
-- **2026-10-17:** the kind browser walk of the projects UI passed except for one
-  bug: an agent still in its first-run chat never saw the project. Fixed by a
-  new `brief` prompt section that reaches bootstrap mode (W1 §11, W3 §17
-  item 12), with two small UI fixes from the same walk.
+- **2026-10-17:** the kind walk of the projects UI found that an agent still in
+  its first-run chat never saw the project; fixed by a `brief` prompt section
+  (#992, W1 §11). W2 + W3a went to production that day (Helm rev 43).
+- **2026-10-17, later: W3b is built** on `feat/w3b-project-files` (the project's
+  files, read-only). `nosymfollow` didn't survive into the pod on kind, so host
+  reads use a per-component walk (W3 spec §18); a race test on real NFS leaked
+  nothing in 40,000 reads where a plain read leaked 1,121 times in 20,000.
 - **Next, in order:**
-  1. Production deploy of W2 + W3a: Helm upgrade (image and chart), then delete
-     the storage-helper pods (the DaemonSet is OnDelete), then the host rolls.
-     Migrations only add tables and columns.
-  2. W3b (the project's files, read-only) and W3e (moving chats, other agents).
+  1. Review and merge W3b; deploy (no chart change; the storage-helper pod must
+     be deleted again so `.shared` becomes `0711`).
+  2. W3e (moving chats, other agents), and W3c (people edit files: the same
+     walk, for writes).
   3. Turn the goals design into a final spec, lined up with W1 and W13.
   4. Write the W13 (agent tasks) spec.
   5. W4 (sharing across owners) waits on TASK-897's six decisions; W3 §17
@@ -52,7 +55,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 |---|---|---|---|---|---|---|
 | W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
 | W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | merged with W3a (#989); GKE pool acceptance passed 2026-10-16 | — |
-| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a merged (#989, #991); kind UI walk 2026-10-17; W3b–W3f not started | — |
+| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a merged (#989, #991, #992) and in prod (rev 43); W3b built on `feat/w3b-project-files`; W3c–W3f not started | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |
 | W13 | Agent tasks | Goals and delegation | W1 (the project view also needs W3) | — | no spec | — |
@@ -747,6 +750,7 @@ building cards must know also go into a `.claude/memory/decisions/` shard.
 | 2026-10-11 | Proposed | Projects are flat, and goals hold the hierarchy. |
 | 2026-10-11 | Proposed | Defaults: a Fellow series copies the last three months, then each new meeting. Switching off a connector that keeps a source in sync leaves the last copy and shows "Can't refresh". No project-wide rules from the owner in v1. |
 | 2026-10-17 | Decided | A fourth prompt section, `brief` (person-written, no agent can change it), reaches an agent's first-run chat; the project block moves from `context` to `brief`. Option A over filing a card, chosen after the kind walk. W4 revisits it for cross-owner projects (W1 §11). |
+| 2026-10-17 | Decided | W3b reads project files with a per-component no-follow walk over the existing read-only export mount, not a `nosymfollow` mount (which the container runtime drops). `.shared` becomes `0711` in pool mode. W3 spec §18. |
 
 ## 15. Open questions
 

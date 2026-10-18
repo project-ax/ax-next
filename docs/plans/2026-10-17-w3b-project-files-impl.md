@@ -26,9 +26,8 @@ read-only export mount (`sandbox.filestore.hostReadPath`, `/user-files` on prod)
 `.shared` is created root `0700` by the storage node, so the host (uid 1000)
 can't traverse it. The storage node sets it to **`0711`**: uid 1000 can open a
 folder whose id it knows, but can't list `.shared`. Runners never mount
-`.shared` itself, so nothing else gains anything. Without the shared pool
-(`sharedPool.enabled: false`) nothing sets `0711`, and reads answer
-`unavailable`; no deployment runs that way today (documented, not built).
+`.shared` itself, so nothing else gains anything. (Without the shared pool,
+kubelet creates `.shared` as `0755`, readable already — seen on the kind walk.)
 
 No PV/PVC, no chart change for reads. `projects` still loads without
 `hostReadPath`; its file features answer `unavailable` (the spec's "refuse to
@@ -78,9 +77,9 @@ Each task: tests first, then code; `pnpm build` + the package's tests green.
    `0711` (on startup and on each prepare). Tests per provider.
 3. **`@ax/projects`**: `projects:read-file` / `projects:download-file`, gated by
    `loadUsable` before any read; limits 1 MiB / 10 MiB (`too-large`, never
-   truncated). `sandbox:read-shared-folder` becomes the one allowed `sandbox:*`
-   optional call (update `plugin.test.ts` and `preset.test.ts` guards to allow
-   exactly it). The block: `brief` unchanged; a new **`context`** body
+   truncated). `sandbox:read-shared-folder` is called undeclared, guarded by
+   `hasService` (as built: declaring it closed a boot cycle through
+   sandbox-subprocess; see W3 spec §18 item 5). The block: `brief` unchanged; a new **`context`** body
    (agent-written text never goes in `brief`): `instructions.md` first 6,000
    chars, the tree (top level + one level under each, ≤ 60 lines, then
    "…and N more"), `memory/status.md` first 3,000 chars; all quoted with

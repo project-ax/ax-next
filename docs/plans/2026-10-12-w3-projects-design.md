@@ -447,6 +447,11 @@ unauthenticated one gets 401, and a request without CSRF is refused.
 
 ### 5.1 Reading a shared folder on the host
 
+> **As built (§18):** `nosymfollow` didn't survive into the pod on kind (the
+> container runtime's bind mount drops it), so W3b reads with a **host walk**
+> that opens every component without following links. No PV, no fallback pod.
+> The text below is the design as reviewed.
+
 - **A new `sandbox:read-shared-folder { folderId, path, limitBytes } → { entries | file }`**,
   with the same result shape as `sandbox:read-user-files`: a listing, or a
   file's first `limitBytes` with a `truncated` flag. The sandbox providers
@@ -1041,6 +1046,11 @@ Both parts rely on `ctx.projectId` on host contexts, which W3d adds (§7.1).
   (W1 §3.6). Projects provide only `brief`, never `rules`. Agent-written
   project text (memory files, later slices) must go in `context`, never
   `brief`: `brief` reaches bootstrap mode, which has no safety floor.
+- **As built in W3b (§18), host reads are confined by a per-component walk**,
+  not by a `nosymfollow` mount: every component is opened relative to the
+  previous descriptor with `O_NOFOLLOW`, so a symlink at any level, swapped in
+  at any time, is refused by the kernel. The design below is what was
+  reviewed; W3c's writes need the same walk.
 - **Host file access is kernel-confined.**
   - The host reaches shared folders only through a `.shared` mount with
     `nosymfollow`, behind lexical path checks, size caps, atomic writes and
@@ -1200,3 +1210,55 @@ or adds to, the text above:
     the walk asked was. W1 §11 has the change and the trust argument. The same
     walk moved the rail's project label to its own line under the chat title,
     and dropped the breadcrumb's trailing chevron.
+
+## 18. As built: W3b (2026-10-17)
+
+Plan: `docs/plans/2026-10-17-w3b-project-files-impl.md`; decisions in
+`.claude/memory/decisions/2026-10-17-AXWM-3.md`. Where the build differs from
+§5, or adds to it:
+
+1. **A host walk, not `nosymfollow`.** On kind, kubelet's NFS PV mount carried
+   `nosymfollow` and a node-level `mount.nfs` honoured it, but the container
+   runtime bind-mounts the volume into the pod without the flag, and a planted
+   absolute symlink was followed. The person chose the walk instead:
+   `readConfinedByWalk` (`@ax/user-files-read`) opens each component through
+   `/proc/<pid>/fd/<n>/<name>` with `O_NOFOLLOW` (`O_PATH` for the ones it only
+   passes through), the storage node's existing pattern. Listings are streamed
+   and capped, skipped entries included; reads are sized to the file.
+2. **Evidence on real NFS** (`deploy/kind/w3b-nfs-race-2026-10-17.json`): one
+   pod, one mount, a directory swapped for a symlink every ~200 µs. The walk:
+   40,000 reads, 21,833 real, 18,167 refused, **0 leaked**. A plain
+   `readFileSync` in the same pod leaked the outside file 1,121 times in 20,000.
+3. **No new mount.** Reads go through the existing read-only export mount
+   (`sandbox.filestore.hostReadPath`, `/user-files` on prod). No PV/PVC.
+   Without that mount the file features answer "unavailable"; `@ax/projects`
+   still loads, so project chats keep working.
+4. **`.shared` is `0711`** in pool mode: the storage node created it root
+   `0700`, which the host (uid 1000) can't pass through. `0711` lets uid 1000
+   open a folder whose id it knows, never list them. Without the shared pool,
+   kubelet creates `.shared` as `0755`, which the host can already read
+   (seen on the kind walk).
+5. **`sandbox:read-shared-folder` is called, not declared.** Declaring it as
+   an optional call closed a boot cycle through the subprocess provider
+   (`sandbox-subprocess → ipc-server → conversations → projects`); it's
+   guarded by `hasService`, the precedent shared-folders set for
+   `sandbox:delete-shared-folder`. Projects declares no `sandbox:*` edge.
+6. **The block's file parts are `context`, never `brief`:** `instructions.md`
+   (6,000 chars), a tree (top level plus one level, 60 lines) and
+   `memory/status.md` (3,000 chars), quoted, under 12,000 chars, read in
+   parallel within a 5 s budget. Any failure drops just that part, or the
+   whole `context`; `brief` always lands. The acceptance test checks that the
+   bootstrap prompt never carries file text.
+7. **UI:** the files card shows counts, "Updated …" and "Empty"; empty rows
+   aren't links. The browser follows the URL (`/workspace/projects/:id/files/…`),
+   so Back and shared links work. Files over 10 MiB show their size and no
+   download. The agent Files tab and the project browser share one
+   `FileBrowser`.
+8. **Kind walk (2026-10-17)** with a temporary filestore on the dev NFS server:
+   an agent wrote the files; the card, browser, Markdown preview, download,
+   oversize file and phone layout all worked, and a new chat answered from
+   `instructions.md` and `memory/status.md` without tools. The walk found the
+   viewer naming a file twice (fixed, with a test).
+9. **Still owed:** the `/files` reader (`readConfinedUserFiles`) keeps its
+   intermediate-directory race (§13); the walk can replace it (TASK-899, Backlog).
+
