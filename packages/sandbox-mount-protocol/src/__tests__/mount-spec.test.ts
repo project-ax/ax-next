@@ -22,8 +22,19 @@ import type {
   ReadSharedFolderOutput,
   ReadSharedFolderHandler,
   SharedFolderDirEntry,
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput,
+  ChangeSharedFolderHandler,
+  SharedFolderChange,
+  SharedFolderChangeOutcome,
 } from '../index.js';
-import { SHARED_FOLDERS_DIR, SHARED_FOLDERS_MOUNT_BASE } from '../index.js';
+import {
+  SHARED_FOLDERS_DIR,
+  SHARED_FOLDERS_MOUNT_BASE,
+  SHARED_FOLDER_CHANGE_MAX_CHANGES,
+  SHARED_FOLDER_CHANGE_MAX_FILE_BYTES,
+  SHARED_FOLDER_CHANGE_MAX_TOTAL_BYTES,
+} from '../index.js';
 
 // This package is pure TS types — the contract IS the type (no zod, no runtime).
 // `sandbox:resolve-mounts` is a HOST-INTERNAL service hook consumed as a
@@ -533,6 +544,99 @@ describe('sandbox:read-shared-folder signature (W3b)', () => {
       kind: 'unavailable',
     });
     const handler: ReadSharedFolderHandler = raw;
+    expect(typeof handler).toBe('function');
+  });
+});
+
+describe('sandbox:change-shared-folder signature (W3c)', () => {
+  it('pins the limits: 64 changes, 10 MiB a file, 25 MiB a call', () => {
+    expect(SHARED_FOLDER_CHANGE_MAX_CHANGES).toBe(64);
+    expect(SHARED_FOLDER_CHANGE_MAX_FILE_BYTES).toBe(10 * 1024 * 1024);
+    expect(SHARED_FOLDER_CHANGE_MAX_TOTAL_BYTES).toBe(25 * 1024 * 1024);
+  });
+
+  it('input: folderId + ordered changes (write | mkdir | delete) + optional createFolder', () => {
+    const input: ChangeSharedFolderInput = {
+      folderId: 'sf_abc',
+      changes: [
+        { op: 'write', path: 'work/a.md', content: new Uint8Array([104, 105]), ifMatch: 'ab'.repeat(32) },
+        { op: 'write', path: 'instructions.md', content: new Uint8Array(), ifAbsent: true },
+        { op: 'mkdir', path: 'playbooks', ifAbsent: true },
+        { op: 'delete', path: 'work/old.md' },
+      ],
+      createFolder: true,
+    };
+    expect(input.changes.map((c) => c.op)).toEqual(['write', 'write', 'mkdir', 'delete']);
+    const minimal: ChangeSharedFolderInput = { folderId: 'sf_abc', changes: [] };
+    expect(minimal.createFolder).toBeUndefined();
+  });
+
+  it('content is bytes in-process (never a base64 string)', () => {
+    // @ts-expect-error — the storage-node wire carries base64; this hook does not.
+    const asString: SharedFolderChange = { op: 'write', path: 'a', content: 'aGk=' };
+    expect(asString).toBeDefined();
+    // @ts-expect-error — createFolder is `true` or absent, never `false`.
+    const off: ChangeSharedFolderInput = { folderId: 'sf_abc', changes: [], createFolder: false };
+    expect(off).toBeDefined();
+    // @ts-expect-error — a delete carries no content.
+    const del: SharedFolderChange = { op: 'delete', path: 'a', content: new Uint8Array() };
+    expect(del).toBeDefined();
+  });
+
+  it('every change op is exhaustively switchable', () => {
+    const describe1 = (c: SharedFolderChange): string => {
+      switch (c.op) {
+        case 'write':
+          return `write:${c.content.length}`;
+        case 'mkdir':
+          return 'mkdir';
+        case 'delete':
+          return 'delete';
+        default: {
+          const never: never = c;
+          return never;
+        }
+      }
+    };
+    expect(describe1({ op: 'write', path: 'a', content: new Uint8Array(3) })).toBe('write:3');
+    expect(describe1({ op: 'mkdir', path: 'a' })).toBe('mkdir');
+    expect(describe1({ op: 'delete', path: 'a' })).toBe('delete');
+  });
+
+  it('output: done (ordered results) | unavailable', () => {
+    const outcomes: SharedFolderChangeOutcome[] = [
+      'written',
+      'created',
+      'exists',
+      'deleted',
+      'absent',
+      'conflict',
+    ];
+    const describe1 = (o: ChangeSharedFolderOutput): string => {
+      switch (o.kind) {
+        case 'done':
+          return `done:${o.results.map((r) => r.outcome).join(',')}`;
+        case 'unavailable':
+          return 'unavailable';
+        default: {
+          const never: never = o;
+          return never;
+        }
+      }
+    };
+    const done: ChangeSharedFolderOutput = {
+      kind: 'done',
+      results: outcomes.map((outcome, i) => ({ path: `f${i}`, outcome })),
+    };
+    expect(describe1(done)).toBe(`done:${outcomes.join(',')}`);
+    expect(describe1({ kind: 'unavailable' })).toBe('unavailable');
+  });
+
+  it('ChangeSharedFolderHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<ChangeSharedFolderInput, ChangeSharedFolderOutput> = async () => ({
+      kind: 'unavailable',
+    });
+    const handler: ChangeSharedFolderHandler = raw;
     expect(typeof handler).toBe('function');
   });
 });

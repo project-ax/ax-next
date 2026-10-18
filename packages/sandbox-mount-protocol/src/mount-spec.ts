@@ -25,7 +25,7 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // the abstraction. (Mirrors exactly what ARCH-3 did for the git-vocabulary
 // bundle types in @ax/workspace-bundle-protocol.)
 //
-// Pure TS types (plus two plain string constants), NO zod: this is consumed only as an in-process hook-bus
+// Pure TS types (plus a few plain constants), NO zod: this is consumed only as an in-process hook-bus
 // generic (`bus.call<In, Out>` / `registerService<In, Out>`), where the TS
 // type IS the whole contract. `sandbox:resolve-mounts` is host-internal — it
 // is called by the provider during pod construction and NEVER crosses the
@@ -513,3 +513,110 @@ export type ReadSharedFolderOutput =
  * `registerService<ReadSharedFolderInput, ReadSharedFolderOutput>`.
  */
 export type ReadSharedFolderHandler = ServiceHandler<ReadSharedFolderInput, ReadSharedFolderOutput>;
+
+// ---------------------------------------------------------------------------
+// `sandbox:change-shared-folder` (host-internal service hook) — W3c
+//
+//   sandbox:change-shared-folder (ctx, { folderId, changes, createFolder? })
+//     → ChangeSharedFolderOutput
+//
+// The host's WRITE path into one shared folder: a person saving, creating,
+// or deleting a project file from the web UI, and `@ax/projects` seeding a
+// new project's layout. Registered by the provider that owns mount
+// realization (`@ax/sandbox-k8s` via its storage node, `@ax/sandbox-subprocess`
+// directly); both apply the changes with `changeConfinedByWalk`
+// (`@ax/user-files-read`).
+//
+// THIS HOOK DOES NO GRANT CHECK, exactly like `sandbox:read-shared-folder`.
+// The ONLY caller is `@ax/projects`, after it has checked that the person may
+// edit the project (and that the path isn't protected or read-only).
+//
+// HOST-INTERNAL, never an IPC action. `content` is bytes in-process; it is
+// base64 only on the k8s storage node's own wire, whose schema lives with
+// that route (`sandbox-k8s/src/storage-node/protocol.ts`), not here. Every
+// `path` is untrusted relative to the folder, and a realization MUST confine
+// every change without following a symlink at any component.
+// ---------------------------------------------------------------------------
+
+/** Most changes in one `sandbox:change-shared-folder` call. */
+export const SHARED_FOLDER_CHANGE_MAX_CHANGES = 64;
+/** Most bytes of one written file. */
+export const SHARED_FOLDER_CHANGE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+/** Most bytes of written content across one call. */
+export const SHARED_FOLDER_CHANGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+
+/**
+ * One change, relative to the folder root. Same path rules as
+ * `ReadSharedFolderInput.relPath`, and `path` may not be `''` for a write or
+ * a delete.
+ *
+ * - `write` replaces the file atomically (temp file in the same directory,
+ *   fsync, rename), creating missing parent directories. `ifMatch` is the
+ *   lowercase hex sha256 of the bytes the caller last read: anything else on
+ *   disk (or nothing) is a `conflict`. `ifAbsent` never overwrites: an
+ *   existing name answers `exists`. Not both.
+ * - `mkdir` is `mkdir -p`; an existing directory answers `exists` either way
+ *   (`ifAbsent` records the caller's intent for seeding).
+ * - `delete` removes a file, a symlink (as a link), or an EMPTY directory.
+ */
+export type SharedFolderChange =
+  | { op: 'write'; path: string; content: Uint8Array; ifMatch?: string; ifAbsent?: true }
+  | { op: 'mkdir'; path: string; ifAbsent?: true }
+  | { op: 'delete'; path: string };
+
+/**
+ * What one change did. `conflict` stops the call: it is the LAST result.
+ * `written` replaced an existing file; `created` made a new file or directory.
+ */
+export type SharedFolderChangeOutcome =
+  | 'written'
+  | 'created'
+  | 'exists'
+  | 'deleted'
+  | 'absent'
+  | 'conflict';
+
+/** One entry of `ChangeSharedFolderOutput.results`, in the order of `changes`. */
+export interface SharedFolderChangeResult {
+  path: string;
+  outcome: SharedFolderChangeOutcome;
+}
+
+/**
+ * Input to `sandbox:change-shared-folder`. `folderId` must pass
+ * `isValidSharedFolderId`. At most `SHARED_FOLDER_CHANGE_MAX_CHANGES`
+ * changes, `SHARED_FOLDER_CHANGE_MAX_FILE_BYTES` per file and
+ * `SHARED_FOLDER_CHANGE_MAX_TOTAL_BYTES` per call; a realization refuses more
+ * before it touches the disk. `createFolder` makes the folder itself if it is
+ * missing (seeding a new project); without it a missing folder throws.
+ */
+export interface ChangeSharedFolderInput {
+  folderId: string;
+  changes: SharedFolderChange[];
+  createFolder?: true;
+}
+
+/**
+ * Output of `sandbox:change-shared-folder`.
+ *
+ * - `done` — the changes applied in order, up to and including the first
+ *   `conflict` (later changes were not attempted).
+ * - `unavailable` — this deployment can't write shared folders at all (no
+ *   storage pool, no export). Decided before the paths matter.
+ *
+ * A REFUSAL (a path through a symlink or a file, a non-empty directory, a
+ * directory in the way, a bad path, over a cap) or a storage failure THROWS;
+ * it is never `done` with fewer results.
+ */
+export type ChangeSharedFolderOutput =
+  | { kind: 'done'; results: SharedFolderChangeResult[] }
+  | { kind: 'unavailable' };
+
+/**
+ * The full `sandbox:change-shared-folder` handler signature — satisfied via
+ * `registerService<ChangeSharedFolderInput, ChangeSharedFolderOutput>`.
+ */
+export type ChangeSharedFolderHandler = ServiceHandler<
+  ChangeSharedFolderInput,
+  ChangeSharedFolderOutput
+>;
