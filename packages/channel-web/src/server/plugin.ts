@@ -696,14 +696,6 @@ export function createChannelWebServerPlugin(
             'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
         },
         {
-          // W3e — only probed, never called: conversations:set-project calls
-          // it. Tells "projects aren't loaded" apart from a routine chat's
-          // refusal, both a bare forbidden from the hook.
-          hook: 'projects:resolve',
-          degradation:
-            'PUT /api/chat/conversations/:id/project answers 503 projects-unavailable for a move into a project (moving out still works)',
-        },
-        {
           // "May this person manage this agent's sharing?" — who may own a new
           // project, and whether the project page offers rename/delete. The
           // hooks re-check; this only decides what to offer.
