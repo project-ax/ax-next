@@ -96,6 +96,28 @@ export const GetOutputSchema = z.object({
 });
 export type ProjectsGetOutput = z.infer<typeof GetOutputSchema>;
 
+// ---- set-member (W3e §8) ----------------------------------------------------
+/**
+ * Add one of the person's agents to a project, change its role, or remove it
+ * (`role: null`). The project's folder never crosses this surface: the plugin
+ * maps project → folder itself and goes through `shared-folders:grant` /
+ * `revoke` as the person, so W2's rules (same owner only, never the owner
+ * agent) and its session reaping apply unchanged.
+ */
+export const SetMemberInputSchema = z
+  .object({
+    projectId: ProjectIdSchema,
+    agentId: AgentIdSchema,
+    role: z.enum(['editor', 'viewer']).nullable(),
+  })
+  .strict();
+export type ProjectsSetMemberInput = z.input<typeof SetMemberInputSchema>;
+export const SetMemberOutputSchema = z.object({
+  /** The project's members after the change, as `projects:get` returns them. */
+  members: z.array(MemberSchema),
+});
+export type ProjectsSetMemberOutput = z.infer<typeof SetMemberOutputSchema>;
+
 // ---- update ---------------------------------------------------------------
 export const UpdateInputSchema = z
   .object({

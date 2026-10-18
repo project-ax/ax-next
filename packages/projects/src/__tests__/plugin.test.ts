@@ -52,6 +52,9 @@ const AGENTS: Record<string, StubAgent> = {
   'a-bob': { ownerType: 'user', ownerId: 'bob' },
   'a-team-1': { ownerType: 'team', ownerId: 't1' },
   'a-team-2': { ownerType: 'team', ownerId: 't1' },
+  // W3e: a personal agent of the team's admin — the admin manages both it and
+  // the team's agents, so only W2's "same owner" rule stops mixing them.
+  'a-tadmin': { ownerType: 'user', ownerId: 'tadmin' },
 };
 const TEAMS: Record<string, { admins: string[]; members: string[] }> = {
   t1: { admins: ['tadmin'], members: ['tmember'] },
@@ -329,6 +332,7 @@ describe('@ax/projects manifest', () => {
       'projects:resolve',
       'projects:read-file',
       'projects:download-file',
+      'projects:set-member',
       'system-prompt:augment:optional:projects',
     ]);
     expect(m.calls).toEqual([
@@ -341,6 +345,8 @@ describe('@ax/projects manifest', () => {
       'shared-folders:get',
       'shared-folders:list',
       'shared-folders:authorize-mounts',
+      'shared-folders:grant',
+      'shared-folders:revoke',
     ]);
     expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user']);
     expect(m.subscribes).toEqual(['shared-folders:deleted']);
@@ -595,6 +601,159 @@ describe('projects:update', () => {
     await expect(w.call('alice', 'projects:update', { projectId })).rejects.toMatchObject({
       code: 'invalid-payload',
     });
+  });
+});
+
+describe('projects:set-member (W3e §8)', () => {
+  type Members = { members: { agentId: string; role: string }[] };
+  const setMember = (w: World, userId: string, input: Record<string, unknown>) =>
+    w.call<Members>(userId, 'projects:set-member', input);
+  function accessReduced(w: World): { folderId: string; agentIds: string[] }[] {
+    const seen: { folderId: string; agentIds: string[] }[] = [];
+    w.h.bus.subscribe<{ folderId: string; agentIds: string[] }>(
+      'shared-folders:access-reduced',
+      'test-reduced',
+      async (_c, p) => {
+        seen.push(p);
+        return undefined;
+      },
+    );
+    return seen;
+  }
+
+  it('adds an editor: granted on the folder, augment-changed for that agent, fresh member list back', async () => {
+    const w = await makeWorld();
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    const out = await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: 'editor' });
+    expect(out.members).toEqual([
+      { agentId: 'a-alice-1', role: 'owner' },
+      { agentId: 'a-alice-2', role: 'editor' },
+    ]);
+    expect(await q('SELECT agent_id, role FROM shared_folders_v1_grants WHERE folder_id = $1 AND agent_id = $2', [folderId, 'a-alice-2']))
+      .toEqual([{ agent_id: 'a-alice-2', role: 'editor' }]);
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-2' }]);
+    // The same shape projects:get returns.
+    const got = await w.call<ProjectsGetOutput>('alice', 'projects:get', { projectId });
+    expect(got.members).toEqual(out.members);
+  });
+
+  it('adds a viewer; resolve then reports it read-only', async () => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const out = await setMember(w, 'alice', { projectId, agentId: 'a-alice-3', role: 'viewer' });
+    expect(out.members).toContainEqual({ agentId: 'a-alice-3', role: 'viewer' });
+    const r = await w.call<ProjectsResolveOutput>('alice', 'projects:resolve', { projectId, agentId: 'a-alice-3' });
+    expect(r.readOnly).toBe(true);
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-3' }]);
+  });
+
+  it('changes a role: a downgrade goes through W2 (access-reduced fires); the same role again changes nothing', async () => {
+    const w = await makeWorld();
+    const reduced = accessReduced(w);
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: 'editor' });
+    w.augmentChanged.length = 0;
+    const out = await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: 'viewer' });
+    expect(out.members).toContainEqual({ agentId: 'a-alice-2', role: 'viewer' });
+    expect(reduced).toEqual([{ folderId, agentIds: ['a-alice-2'] }]);
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-2' }]);
+
+    await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: 'viewer' });
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-2' }]);
+    expect(reduced).toHaveLength(1);
+  });
+
+  it('removes a member (role null): revoked, access-reduced fires, augment-changed for that agent', async () => {
+    const w = await makeWorld();
+    const reduced = accessReduced(w);
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: 'editor' });
+    w.augmentChanged.length = 0;
+    const out = await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: null });
+    expect(out.members).toEqual([{ agentId: 'a-alice-1', role: 'owner' }]);
+    expect(reduced).toEqual([{ folderId, agentIds: ['a-alice-2'] }]);
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-2' }]);
+    await expect(
+      w.call('alice', 'projects:resolve', { projectId, agentId: 'a-alice-2' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+
+    // Removing an agent that isn't a member changes nothing and fires nothing.
+    const again = await setMember(w, 'alice', { projectId, agentId: 'a-alice-2', role: null });
+    expect(again.members).toEqual([{ agentId: 'a-alice-1', role: 'owner' }]);
+    expect(w.augmentChanged).toEqual([{ agentId: 'a-alice-2' }]);
+  });
+
+  it.each([
+    ['removed', null],
+    ['made an editor', 'editor'],
+    ['made a viewer', 'viewer'],
+  ])("the owner agent can't be %s", async (_label, role) => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    await expectRefused(
+      w, 'alice', 'projects:set-member', { projectId, agentId: 'a-alice-1', role }, 'forbidden', 'target-is-owner',
+    );
+  });
+
+  it("refuses an agent with a different owner (W2's rule), and one the actor doesn't manage", async () => {
+    const w = await makeWorld();
+    const team = await createProject(w, 'tadmin', 'a-team-1', 'Team');
+    // tadmin manages both agents; only "same owner" refuses this one.
+    await expectRefused(
+      w, 'tadmin', 'projects:set-member', { projectId: team.projectId, agentId: 'a-tadmin', role: 'editor' },
+      'forbidden', 'member-change-refused',
+    );
+    expect(w.logs.filter((l) => l.msg === 'shared_folders_refused').at(-1)).toMatchObject({ reason: 'different-owner' });
+
+    const mine = await createProject(w, 'alice', 'a-alice-1');
+    await expectRefused(
+      w, 'alice', 'projects:set-member', { projectId: mine.projectId, agentId: 'a-bob', role: 'viewer' },
+      'forbidden', 'member-change-refused',
+    );
+  });
+
+  it("someone who can use the project but not manage it is forbidden, and nothing changes", async () => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'tadmin', 'a-team-1', 'Team');
+    await expectRefused(
+      w, 'tmember', 'projects:set-member', { projectId, agentId: 'a-team-2', role: 'editor' },
+      'forbidden', 'cannot-manage-project',
+    );
+  });
+
+  it('is not-found for someone who cannot use the project, identical to an unknown id', async () => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const foreign = await expectRefused(
+      w, 'bob', 'projects:set-member', { projectId, agentId: 'a-bob', role: 'editor' },
+      'not-found', 'cannot-use-project',
+    );
+    const unknown = await expectRefused(
+      w, 'bob', 'projects:set-member', { projectId: 'prj_nope', agentId: 'a-bob', role: 'editor' },
+      'not-found', 'unknown-project',
+    );
+    expect(foreign).toBe(unknown);
+  });
+
+  it.each([
+    ['an owner role', { role: 'owner' }],
+    ['a missing role', { role: undefined }],
+    ['a smuggled folder id', { role: 'editor', folderId: 'sf_x' }],
+    ['an empty agent id', { role: 'editor', agentId: '' }],
+  ])('rejects %s as invalid-payload', async (_label, extra) => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const input: Record<string, unknown> = { projectId, agentId: 'a-alice-2', ...extra };
+    if (input.role === undefined) delete input.role;
+    await expect(setMember(w, 'alice', input)).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('refuses a call with no real person', async () => {
+    const w = await makeWorld();
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    await expectRefused(
+      w, 'system', 'projects:set-member', { projectId, agentId: 'a-alice-2', role: 'editor' }, 'forbidden', 'no-actor',
+    );
   });
 });
 

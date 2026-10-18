@@ -44,6 +44,8 @@ import {
   ReadFileOutputSchema,
   ResolveInputSchema,
   ResolveOutputSchema,
+  SetMemberInputSchema,
+  SetMemberOutputSchema,
   UpdateInputSchema,
   UpdateOutputSchema,
   type ProjectMember,
@@ -56,6 +58,7 @@ import {
   type ProjectsListOutput,
   type ProjectsReadFileOutput,
   type ProjectsResolveOutput,
+  type ProjectsSetMemberOutput,
   type ProjectsUpdateOutput,
 } from './types.js';
 
@@ -451,6 +454,7 @@ export function createProjectsPlugin(): Plugin {
         'projects:resolve',
         'projects:read-file',
         'projects:download-file',
+        'projects:set-member',
         PROJECTS_BLOCK_HOOK,
       ],
       // NEVER conversations:*, and no declared sandbox:* edge. conversations
@@ -477,6 +481,9 @@ export function createProjectsPlugin(): Plugin {
         'shared-folders:get',
         'shared-folders:list',
         'shared-folders:authorize-mounts',
+        // W3e: projects:set-member. shared-folders never calls projects.
+        'shared-folders:grant',
+        'shared-folders:revoke',
       ],
       optionalCalls: [
         {
@@ -662,6 +669,60 @@ export function createProjectsPlugin(): Plugin {
           };
         },
         { returns: UpdateOutputSchema },
+      );
+
+      // ---- set-member (W3e §8) -----------------------------------------
+      // The person manages the project (loadManaged); the change itself is
+      // W2's grant / revoke on the project's folder, called AS the person, so
+      // W2 decides "same owner only" and reaps sessions on a downgrade or a
+      // removal. Every shared-folders refusal reads `forbidden` here (its log
+      // line says which rule); the owner agent is refused before the call.
+      b.registerService<unknown, ProjectsSetMemberOutput>(
+        'projects:set-member',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:set-member';
+          const input = parseInput(SetMemberInputSchema, hook, rawInput);
+          requireActor(ctx, hook);
+          const fields = { projectId: input.projectId, agentId: input.agentId };
+          const { row, members } = await loadManaged(ctx, hook, input.projectId);
+          if (members.some((m) => m.role === 'owner' && m.agentId === input.agentId)) {
+            refuse(ctx, hook, 'forbidden', 'target-is-owner', fields);
+          }
+          let changed: boolean;
+          try {
+            if (input.role === null) {
+              const out = await b.call<{ folderId: string; agentId: string }, { revoked: boolean }>(
+                'shared-folders:revoke',
+                ctx,
+                { folderId: row.folder_id, agentId: input.agentId },
+              );
+              changed = out.revoked;
+            } else {
+              const out = await b.call<{ folderId: string; agentId: string; role: 'editor' | 'viewer' }, { changed: boolean }>(
+                'shared-folders:grant',
+                ctx,
+                { folderId: row.folder_id, agentId: input.agentId, role: input.role },
+              );
+              changed = out.changed;
+            }
+          } catch (err) {
+            // W2 wrote nothing (different owner, an agent the person doesn't
+            // manage, the folder going away mid-call).
+            if (isDenial(err)) refuse(ctx, hook, 'forbidden', 'member-change-refused', fields);
+            throw err;
+          }
+          if (changed) {
+            ctx.logger.info('projects_member_set', { ...fields, role: input.role, actor: ctx.userId });
+            // The agent's prompt gains, loses or re-labels this project's
+            // block; a live session rebuilds it at its next turn (TASK-612).
+            // `fire`, so a broken listener can't report a saved change as failed.
+            await b.fire(AUGMENT_CHANGED_HOOK, ctx, { agentId: input.agentId });
+          }
+          const fresh = await loadUsable(ctx, hook, input.projectId);
+          return { members: fresh.members.map((m) => ({ agentId: m.agentId, role: m.role })) };
+        },
+        { returns: SetMemberOutputSchema },
       );
 
       // ---- delete -------------------------------------------------------
