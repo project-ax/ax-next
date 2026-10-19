@@ -84,9 +84,13 @@ them and hand them back, and never read meaning into them.
 - **Bounded work.** A pass scans at most 10,000 files, reads at most 500
   changed files, each up to 1 MiB (bigger ones are recorded as "too large",
   without bytes), and stops taking new files after 2 minutes (the next pass
-  takes the rest). Host writes don't take the lease, so a save racing a pass
-  can record a version twice or attribute it to the turn's agent. Nothing is
-  lost.
+  takes the rest). Host writes don't take the lease and don't touch the
+  manifest, so a pass that reads a file between a person's save and the save's
+  own version can record those bytes first, labeled as the turn's agent or
+  "changed outside history", and the save's version then follows (or is
+  skipped as identical). Nothing is lost: every version stays, and the
+  preimage taken before each save is what undo relies on. The next pass
+  re-reads the file once and records nothing new.
 - **One pass per project, and never a held connection.** A pass takes a
   **lease row** (`projects_v1_history_leases`), not a lock on a database
   connection: one `INSERT … ON CONFLICT … WHERE until < now() RETURNING
@@ -101,8 +105,10 @@ them and hand them back, and never read meaning into them.
 - **At most 2 passes at once per host process.** A third answers `locked`
   straight away; the turn-end path doesn't mark the turn seen, so a later turn
   retries, and a snapshot just answers "nothing recorded". So a burst of turn
-  ends can't crowd the shared pool. If a pass outlives its lease (a single read
-  hanging for minutes), a second pass may overlap it; both only record what
+  ends can't crowd the shared pool. The scan isn't bounded by the deadline, so
+  a pass renews and re-checks its lease after scanning and stops if another
+  pass took it. If a pass still outlives its lease (a single read hanging for
+  minutes), a second pass may overlap it; both only record what
   differs from the latest version, so the worst case is a duplicate version.
 - **A truncated scan never deletes.** A file missing from a scan that hit a cap
   may still exist, so it's never recorded as deleted.

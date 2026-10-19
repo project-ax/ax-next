@@ -10,9 +10,11 @@ import { HISTORY_MAX_FILE_BYTES } from './types.js';
 // ONE pass function (`recordPass`) serves every trigger that looks at the
 // folder as a whole (the agent's turn end, the orchestrator's pre-session
 // snapshot); `record` serves the host writes, which already know the path
-// and the bytes. Both store a version only when the file's state differs from
-// its latest version, so a touch with no content change, a host write the
-// next pass sees again, or a pass that races another records nothing twice.
+// and the bytes. Host writes don't update the manifest: the next pass
+// re-reads such a file once. Both store a version only when the file's state
+// differs from its latest version, so a touch with no content change, a host
+// write the next pass sees again, or a pass that races another records
+// nothing twice.
 //
 // Bytes go to the blob store as the project's OWNER (the person charged by
 // disk-quota), never as whoever triggered the pass. The folder's contents are
@@ -231,6 +233,22 @@ export function createHistory(deps: HistoryDeps) {
     return got.rows[0]?.token === token;
   }
 
+  /**
+   * Renew OUR lease and confirm we still hold it. The scan isn't bounded by
+   * the pass deadline (10k stats over NFS can be slow), so a lease can lapse
+   * before any recording starts and another replica can take it. A pass that
+   * lost its lease stops before writing anything.
+   */
+  async function renewLease(projectId: string, token: string): Promise<boolean> {
+    const out = await sql<{ token: string }>`
+      UPDATE projects_v1_history_leases
+      SET until = NOW() + make_interval(secs => ${PASS_LEASE_MS / 1000})
+      WHERE project_id = ${projectId} AND token = ${token}
+      RETURNING token
+    `.execute(db);
+    return out.rows[0]?.token === token;
+  }
+
   /** Release OUR lease only: one taken over after it expired isn't ours to drop. Never throws. */
   async function releaseLease(ctx: AgentContext, projectId: string, token: string): Promise<void> {
     try {
@@ -380,7 +398,7 @@ export function createHistory(deps: HistoryDeps) {
     try {
       leased = await takeLease(projectId, token);
       if (!leased) return { kind: 'locked' };
-      return await passUnderLease(ctx, row, opts);
+      return await passUnderLease(ctx, row, opts, token);
     } catch (err) {
       if (!isProjectGone(err)) throw err;
       ctx.logger.info('projects_history_pass_gone', { projectId });
@@ -396,6 +414,7 @@ export function createHistory(deps: HistoryDeps) {
     ctx: AgentContext,
     row: ProjectRow,
     opts: { label: 'agent' | 'outside'; owner: string; attribution: Attribution },
+    token: string,
   ): Promise<PassResult> {
     const projectId = row.project_id;
     const deadlineAt = now() + PASS_DEADLINE_MS;
@@ -405,6 +424,11 @@ export function createHistory(deps: HistoryDeps) {
     });
     if (!isScanOut(scan)) throw new Error('sandbox:scan-shared-folder returned a malformed answer');
     if (scan.kind === 'unavailable') return { kind: 'unavailable' };
+    // Review, 2026-10-18: a slow scan could outlive the lease.
+    if (!(await renewLease(projectId, token))) {
+      ctx.logger.info('projects_history_lease_lost', { projectId });
+      return { kind: 'locked' };
+    }
 
     const manifest = new Map(
       (await db.selectFrom('projects_v1_file_manifest').selectAll().where('project_id', '=', projectId).execute()).map(

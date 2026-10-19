@@ -79,8 +79,8 @@ W3d ships as two PRs (the person's choice, 2026-10-18):
     current bytes are compared with its latest version; if they differ, or
     there is no version, the current bytes are recorded first as "Changed
     outside history". After the change, the new bytes are recorded,
-    attributed to the person, and the manifest row is updated, so the next
-    pass doesn't record it twice. Seeding at create records versions the
+    attributed to the person. The manifest isn't updated; the next pass
+    re-reads the file once and skips it as identical to the latest version. Seeding at create records versions the
     same way.
 - **Tables** (one additive migration in `@ax/projects`):
   - `projects_v1_file_versions`: `version_id`, `project_id`, `path`,

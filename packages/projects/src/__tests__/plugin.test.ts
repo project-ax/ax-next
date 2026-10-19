@@ -2296,7 +2296,10 @@ describe('file history: leases, the pass cap, and a project deleted mid-pass (W3
     await q(`UPDATE projects_v1_history_leases SET token = 'intruder'`);
     release();
     SCAN_HOLD = null;
-    await expect(run).resolves.toEqual({ recorded: 1, gap: false });
+    // Review, 2026-10-18: the scan isn't bounded by the deadline, so a lease
+    // can lapse during it. A pass that lost its lease records nothing.
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    expect(await versionRows(projectId, 'b.md')).toEqual([]);
     expect(await q('SELECT token FROM projects_v1_history_leases')).toEqual([{ token: 'intruder' }]);
   });
 

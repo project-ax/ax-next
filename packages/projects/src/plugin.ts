@@ -1844,7 +1844,9 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
       // is `ctx.projectId`, stamped by the IPC server from the session record,
       // never from the runner's frame. A turn fires twice (tool, then
       // assistant), so a pass runs once per (session, reqId). The payload is
-      // runner-written: its ids are only a key and a label. In the background:
+      // runner-written: its ids are only a key and a label. A runner replaying
+      // a reqId only skips its own session's pass; the next pre-spawn
+      // snapshot or a person's save still catches what changed. In the background:
       // never blocks the turn, never throws.
       b.subscribe<unknown>(CHAT_TURN_END_HOOK, PLUGIN_NAME, async (ctx, payload) => {
         try {
