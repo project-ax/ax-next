@@ -81,7 +81,7 @@ const MiB = 1024 * 1024;
 const H1 = '1'.repeat(64);
 const H2 = '2'.repeat(64);
 /** The inline restore/undo confirmation (a group inside the History sheet, never a dialog). */
-const CONFIRM_NAME = new RegExp(`^(${RESTORE_CONFIRM_TITLE}|${UNDO_CONFIRM_TITLE})$`.replace(/\?/g, '\\?'));
+const CONFIRM_NAME = (name: string): boolean => name === RESTORE_CONFIRM_TITLE || name === UNDO_CONFIRM_TITLE;
 
 function summary(): ProjectSummary {
   return { projectId: 'p1', name: 'Q4 launch', description: null, updatedAt: hoursAgo(2), members: [{ agentId: 'a-quill', role: 'owner' }] };
