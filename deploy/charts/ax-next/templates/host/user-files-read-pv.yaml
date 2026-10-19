@@ -34,6 +34,15 @@ Read-only three times over: ReadOnlyMany, `nfs.readOnly: true` here, and
 (templates/host/deployment.yaml).
 
 Rendered under exactly the condition that used to render the inline volume.
+
+OPERATOR NOTE — a PV's source and mount options are IMMUTABLE. Changing
+`sandbox.filestore.server` or `exportPath` (or these mountOptions) after
+install makes `helm upgrade` fail on this PV (and `--atomic` rolls the whole
+release back). Delete the PV first: `kubectl delete pv <release>-ax-next-
+user-files-host-read` (Retain: the files are untouched), then upgrade.
+deploy/GKE.md › "Existing deployment procedure" says the same. Its name
+carries only the release name, so two releases with one name in different
+namespaces would collide on this cluster-scoped PV.
 */}}
 {{- if and .Values.sandbox.filestore.server .Values.sandbox.filestore.hostReadPath }}
 {{- $name := printf "%s-user-files-host-read" (include "ax-next.fullname" .) }}

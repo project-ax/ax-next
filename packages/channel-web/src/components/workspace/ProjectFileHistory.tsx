@@ -117,7 +117,11 @@ export function restoreFailureMessage(e: unknown): string {
   return changeFailureMessage(e, 'save');
 }
 
-type Row = { kind: 'version'; version: ProjectFileVersion } | { kind: 'gap'; at: string };
+type Row =
+  | { kind: 'version'; version: ProjectFileVersion }
+  | { kind: 'gap'; at: string }
+  /** A delete with newer versions above it: the file was made again at this path. */
+  | { kind: 'deleted'; at: string };
 
 /**
  * The versions with the gaps that fall in their span (from the oldest
@@ -127,17 +131,29 @@ export function historyRows(data: ProjectFileHistoryResponse): Row[] {
   const oldest = data.versions[data.versions.length - 1];
   if (oldest === undefined) return [];
   const from = Date.parse(oldest.createdAt);
-  const rows: Array<Row & { t: number }> = [
+  const rows: Array<Exclude<Row, { kind: 'deleted' }> & { t: number }> = [
     ...data.versions.map((v) => ({ kind: 'version' as const, version: v, t: Date.parse(v.createdAt) })),
     ...data.gaps
       .map((g) => ({ kind: 'gap' as const, at: g.at, t: Date.parse(g.at) }))
       .filter((g) => !Number.isNaN(g.t) && g.t >= from),
   ];
   // Stable: versions keep the server's order among equal times.
-  return rows
+  const sorted = rows
     .map((r, i) => ({ r, i }))
     .sort((a, b) => b.r.t - a.r.t || a.i - b.i)
-    .map(({ r }) => (r.kind === 'gap' ? { kind: 'gap', at: r.at } : { kind: 'version', version: r.version }));
+    .map(({ r }): Row => (r.kind === 'gap' ? { kind: 'gap', at: r.at } : { kind: 'version', version: r.version }));
+  // History is kept per path, so a file made again where a deleted one was
+  // shows the old file's versions too. A delete that isn't the newest version
+  // becomes a divider, so it's clear everything below it was a different file
+  // (production smoke test, 2026-10-19). The newest delete (the file is gone
+  // now) stays a row: that's what Undo brings back from.
+  let seenVersion = false;
+  return sorted.map((r) => {
+    if (r.kind !== 'version') return r;
+    const newer = seenVersion;
+    seenVersion = true;
+    return r.version.kind === 'delete' && newer ? { kind: 'deleted', at: r.version.createdAt } : r;
+  });
 }
 
 type Load =
@@ -316,12 +332,24 @@ export function FileHistorySheet({
           ) : (
             <ol className="flex flex-col" aria-label="Versions">
               {rows.map((row, i) => (
-                <li key={row.kind === 'gap' ? `gap:${row.at}:${i}` : row.version.versionId}>
+                <li key={row.kind === 'version' ? row.version.versionId : `${row.kind}:${row.at}:${i}`}>
                   {i > 0 && <Separator />}
                   {row.kind === 'gap' ? (
                     <p className="py-3 text-[12.5px] italic text-muted-foreground">
                       History may be missing changes from around {clockOf(row.at)}.
                     </p>
+                  ) : row.kind === 'deleted' ? (
+                    <div className="flex flex-col gap-0.5 py-3" role="separator" aria-label="Deleted earlier">
+                      <span className="text-[13px] font-medium">
+                        Deleted ·{' '}
+                        <time dateTime={row.at} title={absoluteOf(row.at)}>
+                          {timeAgo(row.at)}
+                        </time>
+                      </span>
+                      <span className="text-[12px] text-muted-foreground">
+                        Earlier versions are from before it was deleted.
+                      </span>
+                    </div>
                   ) : (
                     <VersionRow
                       version={row.version}

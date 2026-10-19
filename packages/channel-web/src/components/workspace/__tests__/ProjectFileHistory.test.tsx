@@ -16,7 +16,7 @@ import { UserProvider } from '@/lib/user-context';
 import type { UserFileEntry, UserFilesAnswer } from '@/lib/workspace-types';
 import type { ProjectDetail, ProjectSummary } from '@/wire/projects';
 import { WorkspaceShell } from '../WorkspaceShell';
-import { NOT_RESTORABLE, RESTORE_CONFIRM_TITLE, UNDO_CONFIRM_TITLE, undoTarget } from '../ProjectFileHistory';
+import { historyRows, NOT_RESTORABLE, RESTORE_CONFIRM_TITLE, UNDO_CONFIRM_TITLE, undoTarget } from '../ProjectFileHistory';
 import type { ProjectFileVersion } from '@/wire/projects';
 import { rail as railFixture } from './rail-fixture';
 
@@ -455,3 +455,36 @@ describe('a deleted file', () => {
     expect(await within(main()).findByText('Back again.')).toBeTruthy();
   });
 });
+
+// Production smoke test, 2026-10-19: history is kept per path, so a file made
+// again where a deleted one was showed the old file's versions with nothing
+// to tell them apart. An older delete is now a divider.
+describe('a file made again at a deleted path', () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 19, 12) - h * 3_600_000).toISOString();
+  const ver = (id: string, kind: 'write' | 'delete', h: number): ProjectFileVersion => ({
+    versionId: id,
+    kind,
+    label: 'edit',
+    size: kind === 'write' ? 5 : 0,
+    tooLarge: false,
+    author: { kind: 'you' },
+    chat: null,
+    createdAt: at(h),
+  });
+
+  it('turns a delete with newer versions into a divider, and keeps the older versions below it', () => {
+    const rows = historyRows({ versions: [ver('new', 'write', 1), ver('del', 'delete', 2), ver('old', 'write', 3)], gaps: [] });
+    expect(rows).toEqual([
+      { kind: 'version', version: ver('new', 'write', 1) },
+      { kind: 'deleted', at: at(2) },
+      { kind: 'version', version: ver('old', 'write', 3) },
+    ]);
+  });
+
+  it('leaves the newest delete as a row: the file is gone now, and that is what Undo brings back from', () => {
+    const rows = historyRows({ versions: [ver('del', 'delete', 1), ver('old', 'write', 2)], gaps: [] });
+    expect(rows[0]).toEqual({ kind: 'version', version: ver('del', 'delete', 1) });
+    expect(rows.some((r) => r.kind === 'deleted')).toBe(false);
+  });
+});
+

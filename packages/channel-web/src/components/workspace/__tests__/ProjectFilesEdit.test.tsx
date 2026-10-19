@@ -435,6 +435,12 @@ describe('deleting a file', () => {
     // an undo was the host's NFS negative-lookup cache; see the chart).
     expect(await within(main()).findByText('Back again.')).toBeTruthy();
     expect(within(main()).queryByText(/isn’t here anymore/)).toBeNull();
+    // The folder is read again after the restore, so its listing has the file back.
+    const restoredAt = api.restoreProjectFileVersion.mock.invocationCallOrder[0]!;
+    const relisted = api.projectFiles.mock.calls
+      .map(([, p], i) => ({ p, order: api.projectFiles.mock.invocationCallOrder[i]! }))
+      .some(({ p, order }) => p === 'work' && order > restoredAt);
+    expect(relisted).toBe(true);
   });
 
   it('after a delete, Undo says so plainly when there is nothing to bring back, or the restore fails', async () => {

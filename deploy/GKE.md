@@ -115,6 +115,14 @@ We're a nervous crab, so two things up front, honestly:
 
 ---
 
+
+**Changing the user-files filestore server or export path.** The host reads
+the export through a static PersistentVolume (`<release>-ax-next-user-files-host-read`,
+mounted with `lookupcache=positive`). A PV's NFS source is immutable, so a
+`helm upgrade` that changes `sandbox.filestore.server` or `exportPath` fails
+on it, and `--atomic` rolls the release back. Delete that PV first. Its
+reclaim policy is Retain, so the files aren't touched. Then upgrade.
+
 ## Why Autopilot changes things (the short version)
 
 Autopilot is opinionated, and that opinion intersects almost every choice here.
