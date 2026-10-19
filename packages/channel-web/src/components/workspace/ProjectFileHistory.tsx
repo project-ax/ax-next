@@ -10,19 +10,9 @@
  * or nobody, and an agent's name only when it's on this person's own list.
  * Every name and every preview is fenced by the server before it gets here.
  */
-import { useCallback, useEffect, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { History, Undo2 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
@@ -272,7 +262,20 @@ export function FileHistorySheet({
             </SheetDescription>
           </SheetHeader>
 
-          {undo !== null && (
+          {confirm?.undo === true && (
+            <RestoreConfirm
+              undo
+              busy={busy}
+              error={error}
+              onConfirm={() => void restore()}
+              onCancel={() => {
+                setConfirm(null);
+                setError(null);
+              }}
+            />
+          )}
+
+          {undo !== null && confirm === null && (
             <Button
               variant="secondary"
               size="sm"
@@ -330,6 +333,20 @@ export function FileHistorySheet({
                         setError(null);
                         setConfirm({ version: row.version, undo: false });
                       }}
+                      confirm={
+                        confirm !== null && !confirm.undo && confirm.version.versionId === row.version.versionId ? (
+                          <RestoreConfirm
+                            undo={false}
+                            busy={busy}
+                            error={error}
+                            onConfirm={() => void restore()}
+                            onCancel={() => {
+                              setConfirm(null);
+                              setError(null);
+                            }}
+                          />
+                        ) : null
+                      }
                       onOpenChat={onOpenChat}
                     />
                   )}
@@ -339,40 +356,53 @@ export function FileHistorySheet({
           )}
         </SheetContent>
       </Sheet>
-
-      <AlertDialog
-        open={confirm !== null}
-        onOpenChange={(next) => {
-          if (!busy && !next) setConfirm(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirm?.undo === true ? UNDO_CONFIRM_TITLE : RESTORE_CONFIRM_TITLE}</AlertDialogTitle>
-            <AlertDialogDescription>{RESTORE_CONFIRM_BODY}</AlertDialogDescription>
-          </AlertDialogHeader>
-          {error !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={(e) => {
-                // Stay open until the restore answers, so a failure has somewhere to say so.
-                e.preventDefault();
-                void restore();
-              }}
-            >
-              {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-              {confirm?.undo === true ? 'Undo' : 'Restore'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
+  );
+}
+
+/**
+ * Restore and Undo confirm INLINE, inside the Sheet, never as a second modal.
+ * An AlertDialog stacked over the Sheet left the page unclickable once it
+ * closed (Cancel or Restore), and the restore never reached the server: two
+ * modal layers tearing down together leave `pointer-events: none` behind.
+ * Found on the production smoke test, 2026-10-19.
+ */
+function RestoreConfirm({
+  undo,
+  busy,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  undo: boolean;
+  busy: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    confirmRef.current?.focus();
+    confirmRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
+  const title = undo ? UNDO_CONFIRM_TITLE : RESTORE_CONFIRM_TITLE;
+  return (
+    <Alert role="group" aria-label={title}>
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="flex flex-col items-start gap-3">
+        <span>{RESTORE_CONFIRM_BODY}</span>
+        {error !== null && <span className="text-destructive">{error}</span>}
+        <span className="flex gap-2">
+          <Button ref={confirmRef} size="sm" disabled={busy} onClick={onConfirm}>
+            {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+            {undo ? 'Undo' : 'Restore'}
+          </Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={onCancel}>
+            Cancel
+          </Button>
+        </span>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -384,6 +414,7 @@ function VersionRow({
   onPreview,
   onRestore,
   onOpenChat,
+  confirm,
 }: {
   version: ProjectFileVersion;
   path: string;
@@ -392,6 +423,8 @@ function VersionRow({
   onPreview: () => void;
   onRestore: () => void;
   onOpenChat?: ((agentId: string, conversationId: string) => void) | undefined;
+  /** This row's restore confirmation, when it's the one being restored. */
+  confirm: ReactNode;
 }) {
   const who = whoOf(v);
   const restorable = isRestorable(v);
@@ -434,7 +467,7 @@ function VersionRow({
             <Button variant="ghost" size="sm" aria-expanded={preview !== null} onClick={onPreview}>
               {preview !== null ? 'Hide' : 'Preview'}
             </Button>
-            {canEdit && (
+            {canEdit && confirm === null && (
               <Button variant="outline" size="sm" onClick={onRestore}>
                 <History data-icon="inline-start" />
                 Restore
@@ -443,6 +476,7 @@ function VersionRow({
           </div>
         )}
       </div>
+      {confirm}
       {preview !== null && (
         <div className="max-h-80 overflow-y-auto rounded-md border border-border bg-card p-4" aria-label="Version preview">
           {preview.status === 'loading' ? (
