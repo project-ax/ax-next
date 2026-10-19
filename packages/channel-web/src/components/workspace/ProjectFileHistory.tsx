@@ -385,13 +385,24 @@ function RestoreConfirm({
     confirmRef.current?.focus();
     confirmRef.current?.scrollIntoView?.({ block: 'nearest' });
   }, []);
+  // The busy button disables itself, which drops focus; give it back when the
+  // restore answers with a failure, so a keyboard user can retry or cancel.
+  useEffect(() => {
+    if (error !== null && !busy) confirmRef.current?.focus();
+  }, [error, busy]);
   const title = undo ? UNDO_CONFIRM_TITLE : RESTORE_CONFIRM_TITLE;
   return (
+    // Escape closes the whole History sheet (Radix), which also drops this
+    // confirm: a safe way out, just a bigger one.
     <Alert role="group" aria-label={title}>
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription className="flex flex-col items-start gap-3">
         <span>{RESTORE_CONFIRM_BODY}</span>
-        {error !== null && <span className="text-destructive">{error}</span>}
+        {error !== null && (
+          <span role="alert" className="text-destructive">
+            {error}
+          </span>
+        )}
         <span className="flex gap-2">
           <Button ref={confirmRef} size="sm" disabled={busy} onClick={onConfirm}>
             {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}

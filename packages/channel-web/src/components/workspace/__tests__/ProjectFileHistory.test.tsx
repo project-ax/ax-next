@@ -369,6 +369,10 @@ describe('restoring', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: 'Restore' }));
     expect(await within(confirm).findByText(NOT_RESTORABLE)).toBeTruthy();
     expect(NOT_RESTORABLE).toBe('This version can’t be restored.');
+    // Announced, and focus is back on the confirm button (the busy button had
+    // disabled itself and dropped it).
+    expect(within(confirm).getByRole('alert')).toHaveTextContent(NOT_RESTORABLE);
+    await waitFor(() => expect(within(confirm).getByRole('button', { name: 'Restore' })).toHaveFocus());
   });
 });
 
