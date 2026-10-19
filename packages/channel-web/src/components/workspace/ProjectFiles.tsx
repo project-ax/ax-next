@@ -23,6 +23,7 @@
  */
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight, Pencil } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -66,7 +67,7 @@ import {
   UploadResults,
   type UploadOutcome,
 } from './ProjectFileEditing';
-import { FileHistorySheet } from './ProjectFileHistory';
+import { FileHistorySheet, restoreFailureMessage, undoTarget } from './ProjectFileHistory';
 import { ProjectLoadFailure } from './ProjectLoadFailure';
 import { inPlaceClick } from './ProjectsPage';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -313,6 +314,15 @@ function ProjectFilesBrowser({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /**
+   * The file just deleted, so it can come back. After a delete the viewer goes
+   * to the folder, where the "isn't here anymore" page (and its See history)
+   * never shows: without this there was no way back to a deleted file
+   * (production smoke test, 2026-10-19).
+   */
+  const [deleted, setDeleted] = useState<{ path: string; label: string } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploads, setUploads] = useState<UploadOutcome[] | null>(null);
   const uploadInput = useRef<HTMLInputElement>(null);
@@ -415,11 +425,37 @@ function ProjectFilesBrowser({
       await workspaceApi.deleteProjectFile(projectId, doomed);
       setDeleteOpen(false);
       setEditing(null);
+      setUndoError(null);
+      setDeleted({ path: doomed, label: tree.file?.name ?? fenceLine(doomed, 120) ?? 'The file' });
       onNavigate(parentDirOf(doomed) ?? '');
     } catch (e) {
       setDeleteError(changeFailureMessage(e, 'delete'));
     } finally {
       setDeleteBusy(false);
+    }
+  }
+
+  /** Bring the just-deleted file back: restore its last write before the delete. */
+  async function undoDelete() {
+    if (deleted === null) return;
+    setUndoBusy(true);
+    setUndoError(null);
+    try {
+      const history = await workspaceApi.projectFileHistory(projectId, deleted.path);
+      const target = undoTarget(history.versions);
+      if (target === null) {
+        setUndoError('This file can’t be brought back from here. Its history may still have it.');
+        return;
+      }
+      await workspaceApi.restoreProjectFileVersion(projectId, target.versionId);
+      const back = deleted.path;
+      setDeleted(null);
+      onNavigate(back);
+    } catch (e) {
+      logRequestFailure(e, 'project-file-undo-delete');
+      setUndoError(restoreFailureMessage(e));
+    } finally {
+      setUndoBusy(false);
     }
   }
 
@@ -559,6 +595,28 @@ function ProjectFilesBrowser({
         />
       </div>
       {uploads !== null && <UploadResults outcomes={uploads} onDismiss={() => setUploads(null)} />}
+      {deleted !== null && (
+        <Alert role="status">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1 break-words">Deleted {deleted.label}.</span>
+            <Button size="sm" variant="secondary" disabled={undoBusy} onClick={() => void undoDelete()}>
+              {undoBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+              Undo
+            </Button>
+            <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setHistory({ path: deleted.path, label: deleted.label })}>
+              See history
+            </Button>
+            <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setDeleted(null)}>
+              Dismiss
+            </Button>
+            {undoError !== null && (
+              <span role="alert" className="w-full text-destructive">
+                {undoError}
+              </span>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
     </>
   ) : undefined;
 
@@ -601,6 +659,8 @@ function ProjectFilesBrowser({
             if (!next) setHistory(null);
           }}
           onRestored={() => {
+            // Restored from its history: the "Deleted …" notice is done.
+            if (deleted?.path === history.path) setDeleted(null);
             // A restored file that had been deleted comes back: re-open the route's path.
             if (tree.filePath === history.path) void tree.refresh();
             else open(path);

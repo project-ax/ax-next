@@ -429,6 +429,14 @@ export function DeleteFileDialog({
   );
 }
 
+/**
+ * Menus that open a dialog are NOT modal. A modal menu sets
+ * `pointer-events: none` on <body> and puts it back when it closes; a dialog
+ * opened from one of its items mounts while that's still in flight, and when
+ * the dialog's own content unmounts with it (Delete takes the open file away)
+ * the page is left unclickable. Reproduced in Chromium on the production smoke
+ * test, 2026-10-19 (delete froze the page).
+ */
 /** The + menu over the file list. */
 export function AddMenu({
   busy,
@@ -442,7 +450,7 @@ export function AddMenu({
   onNewFolder: () => void;
 }) {
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" disabled={busy}>
           {busy ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <Plus data-icon="inline-start" />}
@@ -463,7 +471,7 @@ export function AddMenu({
 /** The open file's own menu: History for everyone, Delete for editors where it's allowed. */
 export function FileMenu({ onHistory, onDelete }: { onHistory: () => void; onDelete?: (() => void) | undefined }) {
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label="File options" className="shrink-0">
           <MoreHorizontal aria-hidden="true" />

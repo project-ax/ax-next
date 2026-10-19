@@ -243,6 +243,9 @@ export function AgentRailContent({
     const others = targets.filter((p) => p.projectId !== projectId);
     return (
       <DropdownMenu
+        // Not modal: Delete opens a dialog whose action removes this row, and
+        // the menu with it; a modal menu would leave <body> unclickable.
+        modal={false}
         onOpenChange={(open) => {
           if (open) void loadMoveTargets();
         }}

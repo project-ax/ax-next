@@ -57,6 +57,9 @@ vi.mock('@/lib/workspace-api', async () => {
       writeProjectFile: vi.fn(),
       deleteProjectFile: vi.fn(),
       createProjectFolder: vi.fn(),
+      projectFileHistory: vi.fn(),
+      projectFileVersion: vi.fn(),
+      restoreProjectFileVersion: vi.fn(),
     },
   };
 });
@@ -382,6 +385,101 @@ describe('deleting a file', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.deleteProjectFile).toHaveBeenCalledWith('p1', 'work/plan.md'));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects/p1/files/work'));
+  });
+
+  // Production smoke test, 2026-10-19: Delete froze the page. The file menu
+  // was a MODAL dropdown, which sets pointer-events: none on <body>; the
+  // Delete dialog it opened took the open file (and the menu) away with it,
+  // and the body was never given back. Menus that open dialogs are non-modal.
+  it.each([
+    ['File options', '/workspace/projects/p1/files/work/plan.md'],
+    ['Add', '/workspace/projects/p1/files/work'],
+  ])('the %s menu never locks the page', async (name, at) => {
+    await openAt(at);
+    await openMenu(name);
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+  });
+
+  // …and after a delete the folder offers the file back: the "isn't here
+  // anymore" page (with its See history) never shows after one.
+  it('after a delete, Undo brings the file back and opens it', async () => {
+    api.projectFileHistory.mockResolvedValue({
+      versions: [
+        { versionId: 'vdel', kind: 'delete', label: 'edit', size: 0, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(0) },
+        { versionId: 'vlast', kind: 'write', label: 'agent', size: 5, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(1) },
+      ],
+      gaps: [],
+    });
+    api.restoreProjectFileVersion.mockResolvedValue({ sha256: H2 });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent('Deleted plan.md.');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects/p1/files/work/plan.md'));
+    expect(screen.queryByText('Deleted plan.md.')).toBeNull();
+  });
+
+  it('after a delete, Undo says so plainly when there is nothing to bring back, or the restore fails', async () => {
+    api.projectFileHistory.mockResolvedValue({ versions: [], gaps: [] });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    const notice = await screen.findByRole('status');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    expect(await within(notice).findByRole('alert')).toHaveTextContent('This file can’t be brought back from here.');
+    expect(api.restoreProjectFileVersion).not.toHaveBeenCalled();
+
+    api.projectFileHistory.mockResolvedValue({
+      versions: [
+        { versionId: 'vdel', kind: 'delete', label: 'edit', size: 0, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(0) },
+        { versionId: 'vlast', kind: 'write', label: 'agent', size: 5, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(1) },
+      ],
+      gaps: [],
+    });
+    api.restoreProjectFileVersion.mockRejectedValue(new ProjectFileChangeError('/x', 409, 'not-restorable'));
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    // A restore refusal reads as one ("can't be restored"), not as a save's "already there".
+    expect(await within(notice).findByText('This version can’t be restored.')).toBeTruthy();
+    expect(screen.getByText('Deleted plan.md.')).toBeTruthy();
+  });
+
+  it('a restore from See history clears the Deleted notice', async () => {
+    api.projectFileHistory.mockResolvedValue({
+      versions: [
+        { versionId: 'vdel', kind: 'delete', label: 'edit', size: 0, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(0) },
+        { versionId: 'vlast', kind: 'write', label: 'agent', size: 5, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(1) },
+      ],
+      gaps: [],
+    });
+    api.restoreProjectFileVersion.mockResolvedValue({ sha256: H2 });
+    api.projectFileVersion.mockResolvedValue({ body: 'x', clipped: null, size: 1 });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('status')).getByRole('button', { name: 'See history' }));
+    const sheet = await screen.findByRole('dialog', { name: 'History' });
+    fireEvent.click(await within(sheet).findByRole('button', { name: 'Undo the last change' }));
+    fireEvent.click(within(await within(sheet).findByRole('group')).getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
+    await waitFor(() => expect(screen.queryByText('Deleted plan.md.')).toBeNull());
+  });
+
+  it('after a delete, See history opens the deleted file’s history', async () => {
+    api.projectFileHistory.mockResolvedValue({ versions: [], gaps: [] });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('status')).getByRole('button', { name: 'See history' }));
+    expect(await screen.findByRole('dialog', { name: 'History' })).toBeTruthy();
+    await waitFor(() => expect(api.projectFileHistory).toHaveBeenCalledWith('p1', 'work/plan.md'));
   });
 
   it.each(['instructions.md', 'memory/status.md'])('%s can be edited but offers no Delete', async (path) => {
