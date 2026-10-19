@@ -27,6 +27,10 @@ import type {
   ChangeSharedFolderHandler,
   SharedFolderChange,
   SharedFolderChangeOutcome,
+  ScanSharedFolderInput,
+  ScanSharedFolderOutput,
+  ScanSharedFolderHandler,
+  ScannedSharedFile,
 } from '../index.js';
 import {
   SHARED_FOLDERS_DIR,
@@ -34,6 +38,8 @@ import {
   SHARED_FOLDER_CHANGE_MAX_CHANGES,
   SHARED_FOLDER_CHANGE_MAX_FILE_BYTES,
   SHARED_FOLDER_CHANGE_MAX_TOTAL_BYTES,
+  SCAN_SHARED_FOLDER_MAX_ENTRIES,
+  SCAN_SHARED_FOLDER_MAX_DEPTH,
 } from '../index.js';
 
 // This package is pure TS types — the contract IS the type (no zod, no runtime).
@@ -637,6 +643,45 @@ describe('sandbox:change-shared-folder signature (W3c)', () => {
       kind: 'unavailable',
     });
     const handler: ChangeSharedFolderHandler = raw;
+    expect(typeof handler).toBe('function');
+  });
+});
+
+describe('sandbox:scan-shared-folder signature (W3d)', () => {
+  it('pins the limits: 10,000 files, 32 components deep', () => {
+    expect(SCAN_SHARED_FOLDER_MAX_ENTRIES).toBe(10_000);
+    expect(SCAN_SHARED_FOLDER_MAX_DEPTH).toBe(32);
+  });
+
+  it('input: folderId + optional maxEntries', () => {
+    const minimal: ScanSharedFolderInput = { folderId: 'sf_abc' };
+    const capped: ScanSharedFolderInput = { folderId: 'sf_abc', maxEntries: 100 };
+    expect(minimal.maxEntries).toBeUndefined();
+    expect(capped.maxEntries).toBe(100);
+  });
+
+  it('output: done (sorted files + truncated) | unavailable, branched on kind', () => {
+    const file: ScannedSharedFile = { path: 'memory/status.md', size: 8, mtimeMs: 1.5, ino: 42 };
+    const describe1 = (o: ScanSharedFolderOutput): string => {
+      switch (o.kind) {
+        case 'done':
+          return `done:${o.files.map((f) => f.path).join(',')}:${o.truncated}`;
+        case 'unavailable':
+          return 'unavailable';
+      }
+    };
+    expect(describe1({ kind: 'done', files: [file], truncated: false })).toBe(
+      'done:memory/status.md:false',
+    );
+    expect(describe1({ kind: 'done', files: [], truncated: false })).toBe('done::false');
+    expect(describe1({ kind: 'unavailable' })).toBe('unavailable');
+  });
+
+  it('ScanSharedFolderHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<ScanSharedFolderInput, ScanSharedFolderOutput> = async () => ({
+      kind: 'unavailable',
+    });
+    const handler: ScanSharedFolderHandler = raw;
     expect(typeof handler).toBe('function');
   });
 });
