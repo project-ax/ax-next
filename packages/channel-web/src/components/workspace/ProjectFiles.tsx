@@ -450,9 +450,10 @@ function ProjectFilesBrowser({
       await workspaceApi.restoreProjectFileVersion(projectId, target.versionId);
       const back = deleted.path;
       setDeleted(null);
-      // The folder's listing still says the file is gone: read it again first,
-      // or opening the file lands on "isn't here anymore" until a reload
-      // (production smoke test, 2026-10-19). Same as saving a new file.
+      // Read the folder again so its listing shows the file back, as saving a
+      // new file does. (The "isn't here anymore" seen right after an undo on
+      // production was the host's NFS mount caching "not found"; the chart's
+      // lookupcache=positive mount fixes that, not this.)
       if (tree.dirPath === (parentDirOf(back) ?? '')) await tree.refresh();
       onNavigate(back);
     } catch (e) {

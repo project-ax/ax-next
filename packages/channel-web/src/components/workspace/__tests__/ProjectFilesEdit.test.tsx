@@ -431,8 +431,8 @@ describe('deleting a file', () => {
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects/p1/files/work/plan.md'));
     expect(screen.queryByText('Deleted plan.md.')).toBeNull();
-    // Production smoke test, 2026-10-19: the folder's stale listing made the
-    // restored file open as "That isn't here anymore" until a reload.
+    // The restored file opens (production's "isn't here anymore" right after
+    // an undo was the host's NFS negative-lookup cache; see the chart).
     expect(await within(main()).findByText('Back again.')).toBeTruthy();
     expect(within(main()).queryByText(/isn’t here anymore/)).toBeNull();
   });
