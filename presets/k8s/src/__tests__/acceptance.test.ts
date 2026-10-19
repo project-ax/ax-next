@@ -4579,7 +4579,7 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
 
   it.skipIf(!ON_LINUX)(
     "W3d (Linux): seed versions, an agent turn's version, an outside change caught before a spawn and before a person's save, restore, and undoing a delete",
-    { timeout: 240_000 },
+    { timeout: 180_000 },
     async () => {
       const AGENT_1 = '# Notes\n\n- first draft by the agent AGENT1-MARKER-0e7a\n';
       const OUTSIDE_1 = '# Notes\n\n- changed outside any turn, the long way round OUTSIDE1-MARKER-a51c\n';
