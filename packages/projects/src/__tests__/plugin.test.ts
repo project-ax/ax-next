@@ -2307,14 +2307,22 @@ describe('file history: leases, the pass cap, and a project deleted mid-pass (W3
     const w = await makeWorld({ history: true, writer: true });
     const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
     putFile(folderId, 'work/a.md', 'mid-pass');
+    // Held mid-read: after the scan and the lease check, so the delete lands
+    // while the pass is recording (a delete during the scan is caught earlier,
+    // by the lease check; see the next test).
     let release!: () => void;
-    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const hold = new Promise<void>((r) => (release = r));
+    let reading = false;
+    ON_READ = async () => {
+      reading = true;
+      await hold;
+    };
     const run = w.call('alice', 'projects:snapshot', { projectId });
-    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await until(() => reading, 5_000, 'the pass reading');
     await w.call('alice', 'projects:delete', { projectId });
     const putsBefore = PUTS.length;
     release();
-    SCAN_HOLD = null;
+    ON_READ = null;
     await expect(run).resolves.toEqual({ recorded: 0, gap: false });
     await w.projects.drainHistory();
     // The pass put the first file's bytes, its insert met the cascade, and it
@@ -2331,6 +2339,25 @@ describe('file history: leases, the pass cap, and a project deleted mid-pass (W3
     });
     const answers = ((out as { payload: unknown }).payload as { answers: { holder: string; refs: unknown[] }[] }).answers;
     expect(answers.find((a) => a.holder === '@ax/projects')?.refs).toEqual([]);
+  });
+
+  it('a project deleted during the scan: the lease check stops the pass before anything is stored', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'work/a.md', 'during-scan');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await w.call('alice', 'projects:delete', { projectId });
+    const putsBefore = PUTS.length;
+    release();
+    SCAN_HOLD = null;
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    await w.projects.drainHistory();
+    expect(PUTS.length).toBe(putsBefore);
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
   });
 
   it("a gap for a project that's gone is swallowed (a snapshot that ran out of time after the delete)", async () => {
