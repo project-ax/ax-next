@@ -67,7 +67,7 @@ import {
   UploadResults,
   type UploadOutcome,
 } from './ProjectFileEditing';
-import { FileHistorySheet, undoTarget } from './ProjectFileHistory';
+import { FileHistorySheet, restoreFailureMessage, undoTarget } from './ProjectFileHistory';
 import { ProjectLoadFailure } from './ProjectLoadFailure';
 import { inPlaceClick } from './ProjectsPage';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -453,7 +453,7 @@ function ProjectFilesBrowser({
       onNavigate(back);
     } catch (e) {
       logRequestFailure(e, 'project-file-undo-delete');
-      setUndoError(changeFailureMessage(e, 'save'));
+      setUndoError(restoreFailureMessage(e));
     } finally {
       setUndoBusy(false);
     }
@@ -659,6 +659,8 @@ function ProjectFilesBrowser({
             if (!next) setHistory(null);
           }}
           onRestored={() => {
+            // Restored from its history: the "Deleted …" notice is done.
+            if (deleted?.path === history.path) setDeleted(null);
             // A restored file that had been deleted comes back: re-open the route's path.
             if (tree.filePath === history.path) void tree.refresh();
             else open(path);

@@ -58,6 +58,7 @@ vi.mock('@/lib/workspace-api', async () => {
       deleteProjectFile: vi.fn(),
       createProjectFolder: vi.fn(),
       projectFileHistory: vi.fn(),
+      projectFileVersion: vi.fn(),
       restoreProjectFileVersion: vi.fn(),
     },
   };
@@ -421,6 +422,53 @@ describe('deleting a file', () => {
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects/p1/files/work/plan.md'));
     expect(screen.queryByText('Deleted plan.md.')).toBeNull();
+  });
+
+  it('after a delete, Undo says so plainly when there is nothing to bring back, or the restore fails', async () => {
+    api.projectFileHistory.mockResolvedValue({ versions: [], gaps: [] });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    const notice = await screen.findByRole('status');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    expect(await within(notice).findByRole('alert')).toHaveTextContent('This file can’t be brought back from here.');
+    expect(api.restoreProjectFileVersion).not.toHaveBeenCalled();
+
+    api.projectFileHistory.mockResolvedValue({
+      versions: [
+        { versionId: 'vdel', kind: 'delete', label: 'edit', size: 0, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(0) },
+        { versionId: 'vlast', kind: 'write', label: 'agent', size: 5, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(1) },
+      ],
+      gaps: [],
+    });
+    api.restoreProjectFileVersion.mockRejectedValue(new ProjectFileChangeError('/x', 409, 'not-restorable'));
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    // A restore refusal reads as one ("can't be restored"), not as a save's "already there".
+    expect(await within(notice).findByText('This version can’t be restored.')).toBeTruthy();
+    expect(screen.getByText('Deleted plan.md.')).toBeTruthy();
+  });
+
+  it('a restore from See history clears the Deleted notice', async () => {
+    api.projectFileHistory.mockResolvedValue({
+      versions: [
+        { versionId: 'vdel', kind: 'delete', label: 'edit', size: 0, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(0) },
+        { versionId: 'vlast', kind: 'write', label: 'agent', size: 5, tooLarge: false, author: { kind: 'you' }, chat: null, createdAt: hoursAgo(1) },
+      ],
+      gaps: [],
+    });
+    api.restoreProjectFileVersion.mockResolvedValue({ sha256: H2 });
+    api.projectFileVersion.mockResolvedValue({ body: 'x', clipped: null, size: 1 });
+    await openAt('/workspace/projects/p1/files/work/plan.md');
+    await openMenu('File options');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('status')).getByRole('button', { name: 'See history' }));
+    const sheet = await screen.findByRole('dialog', { name: 'History' });
+    fireEvent.click(await within(sheet).findByRole('button', { name: 'Undo the last change' }));
+    fireEvent.click(within(await within(sheet).findByRole('group')).getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
+    await waitFor(() => expect(screen.queryByText('Deleted plan.md.')).toBeNull());
   });
 
   it('after a delete, See history opens the deleted file’s history', async () => {
