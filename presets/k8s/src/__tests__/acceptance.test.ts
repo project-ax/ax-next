@@ -4526,4 +4526,200 @@ describe('W3a projects through the orchestrator (real postgres, real files)', ()
       await expect(readFile(project.projectId, '')).resolves.toEqual({ kind: 'unavailable' });
     },
   );
+
+  // -------------------------------------------------------------------------
+  // W3d — file history, restore and undo (W3d-1 plan task 7, spec §7).
+  //
+  // Recording reads the folder through `sandbox:scan-shared-folder` and the
+  // same O_NOFOLLOW walk as W3b/W3c, so it exists on Linux only (CI). Off
+  // Linux nothing is recorded, and only the refusals that come before any
+  // file is touched are checked.
+  //
+  // The turn-end pass runs in the background (it never blocks the turn), so
+  // the tests poll `projects:file-history` with a bounded wait.
+  // -------------------------------------------------------------------------
+  interface Version {
+    versionId: string;
+    kind: 'write' | 'delete';
+    label: string;
+    size: number;
+    tooLarge: boolean;
+    authorUserId: string | null;
+    authorAgentId: string | null;
+    conversationId: string | null;
+    createdAt: string;
+  }
+  type FileHistoryOut = { versions: Version[]; gaps: { at: string; reason: string }[] };
+  const fileHistory = (projectId: string, p: string, ctx: AgentContext = userCtx()): Promise<FileHistoryOut> =>
+    bus.call<unknown, FileHistoryOut>('projects:file-history', ctx, { projectId, path: p });
+  const readVersion = async (projectId: string, versionId: string): Promise<string> => {
+    const out = await bus.call<unknown, { contents: Uint8Array; size: number }>('projects:read-version', userCtx(), {
+      projectId,
+      versionId,
+    });
+    expect(out.size).toBe(out.contents.length);
+    return new TextDecoder().decode(out.contents);
+  };
+  const restoreVersion = (projectId: string, versionId: string): Promise<{ sha256: string }> =>
+    bus.call<unknown, { sha256: string }>('projects:restore-version', userCtx(), { projectId, versionId });
+  /** Newest first, as `file-history` lists them: just the labels. */
+  const labelsOf = (h: FileHistoryOut): string[] => h.versions.map((v) => v.label);
+  /** Poll until `path`'s history has `n` versions (recording is in the background). */
+  async function historyWith(projectId: string, p: string, n: number): Promise<FileHistoryOut> {
+    let out: FileHistoryOut = { versions: [], gaps: [] };
+    await vi.waitFor(
+      async () => {
+        out = await fileHistory(projectId, p);
+        expect(out.versions.length).toBeGreaterThanOrEqual(n);
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    return out;
+  }
+
+  it.skipIf(!ON_LINUX)(
+    "W3d (Linux): seed versions, an agent turn's version, an outside change caught before a spawn and before a person's save, restore, and undoing a delete",
+    { timeout: 240_000 },
+    async () => {
+      const AGENT_1 = '# Notes\n\n- first draft by the agent AGENT1-MARKER-0e7a\n';
+      const OUTSIDE_1 = '# Notes\n\n- changed outside any turn, the long way round OUTSIDE1-MARKER-a51c\n';
+      const AGENT_2 = '# Notes\n\n- second pass AGENT2-MARKER-77d0\n';
+      const OUTSIDE_2 = '# Notes\n\n- an older session changed it again, with more words this time OUTSIDE2-MARKER-3c9b\n';
+      const PERSON = '# Notes\n\n- the person tidies up PERSON-MARKER-be14\n';
+      const owner = await createAgent('W3d historian');
+      const project = await createProject(owner, 'W3d history');
+      const folderDir = path.join(filesRoot, '.shared', project.folderId);
+      const notesOnDisk = path.join(folderDir, 'work', 'notes.md');
+      const NOTES = 'work/notes.md';
+
+      // 0. The seeded layout has history from the start: one `seed` version
+      //    per seeded file, attributed to the person who created the project.
+      for (const seeded of ['instructions.md', 'memory/status.md', 'memory/log.md']) {
+        const h = await fileHistory(project.projectId, seeded);
+        expect(labelsOf(h)).toEqual(['seed']);
+        expect(h.versions[0]).toMatchObject({ kind: 'write', authorUserId: USER, authorAgentId: null });
+        expect(await readVersion(project.projectId, h.versions[0]!.versionId)).toBe(
+          await fs.readFile(path.join(folderDir, seeded), 'utf-8'),
+        );
+      }
+      expect((await fileHistory(project.projectId, NOTES)).versions).toEqual([]);
+
+      // 1. An agent turn in a project chat writes work/notes.md. Its turn-end
+      //    pass records a version attributed to the agent and the chat.
+      const chat1 = await createChat(owner, project.projectId);
+      await warmStep(chat1, { op: 'write', path: NOTES, content: AGENT_1 });
+      const t1 = await warmTurn(chat1, owner);
+      expect(t1.report!.error).toBeNull();
+      expect(t1.report!.wrote).toBe(true);
+      const h1 = await historyWith(project.projectId, NOTES, 1);
+      expect(labelsOf(h1)).toEqual(['agent']);
+      const agent1 = h1.versions[0]!;
+      expect(agent1).toMatchObject({
+        kind: 'write',
+        label: 'agent',
+        authorAgentId: owner,
+        authorUserId: null,
+        conversationId: chat1,
+        size: enc(AGENT_1).length,
+        tooLarge: false,
+      });
+      expect(await readVersion(project.projectId, agent1.versionId)).toBe(AGENT_1);
+      // The seeded files didn't change in the turn, so nothing new for them.
+      expect(labelsOf(await fileHistory(project.projectId, 'instructions.md'))).toEqual(['seed']);
+
+      // 2a. An older session changes the file outside any tracked turn (the
+      //     test writes the folder directly). A NEW chat's spawn snapshots the
+      //     folder first, so the outside change is its own version, before the
+      //     agent's next write; it isn't folded into that turn.
+      await fs.writeFile(notesOnDisk, OUTSIDE_1);
+      const chat2 = await createChat(owner, project.projectId);
+      await warmStep(chat2, { op: 'write', path: NOTES, content: AGENT_2 });
+      const t2 = await warmTurn(chat2, owner);
+      expect(t2.report!.sessionId).not.toBe(t1.report!.sessionId);
+      expect(t2.report!.turnIndex).toBe(1);
+      expect(t2.report!.wrote).toBe(true);
+      const h2 = await historyWith(project.projectId, NOTES, 3);
+      expect(labelsOf(h2)).toEqual(['agent', 'outside', 'agent']);
+      const [agent2, outside1] = h2.versions;
+      expect(outside1).toMatchObject({ kind: 'write', authorAgentId: null, authorUserId: null, conversationId: null });
+      expect(await readVersion(project.projectId, outside1!.versionId)).toBe(OUTSIDE_1);
+      expect(agent2).toMatchObject({ authorAgentId: owner, conversationId: chat2 });
+      expect(await readVersion(project.projectId, agent2!.versionId)).toBe(AGENT_2);
+
+      // 2b. Changed outside again, then a person saves: the preimage records
+      //     the outside bytes first, then the person's edit.
+      await fs.writeFile(notesOnDisk, OUTSIDE_2);
+      await writeFile(project.projectId, NOTES, PERSON);
+      const h3 = await fileHistory(project.projectId, NOTES);
+      expect(labelsOf(h3)).toEqual(['edit', 'outside', 'agent', 'outside', 'agent']);
+      const [edit, outside2] = h3.versions;
+      expect(edit).toMatchObject({ kind: 'write', authorUserId: USER, authorAgentId: null, conversationId: null });
+      expect(await readVersion(project.projectId, edit!.versionId)).toBe(PERSON);
+      expect(outside2).toMatchObject({ authorUserId: null, authorAgentId: null });
+      expect(await readVersion(project.projectId, outside2!.versionId)).toBe(OUTSIDE_2);
+
+      // 3. Restore the agent's first version: those bytes are on disk again,
+      //    and the restore is a version of its own, by the person.
+      const restored = await restoreVersion(project.projectId, agent1.versionId);
+      expect(restored.sha256).toBe(sha256(AGENT_1));
+      expect(await fs.readFile(notesOnDisk, 'utf-8')).toBe(AGENT_1);
+      const h4 = await fileHistory(project.projectId, NOTES);
+      expect(labelsOf(h4)).toEqual(['restore', 'edit', 'outside', 'agent', 'outside', 'agent']);
+      expect(h4.versions[0]).toMatchObject({ kind: 'write', authorUserId: USER });
+      expect(await readVersion(project.projectId, h4.versions[0]!.versionId)).toBe(AGENT_1);
+      const read = await readFile(project.projectId, NOTES);
+      expect(read).toMatchObject({ kind: 'file', sha256: sha256(AGENT_1) });
+
+      // 4. Undoing a delete: the person deletes the file (a delete version),
+      //    then restores its last write; the file is back.
+      await bus.call('projects:delete-file', userCtx(), { projectId: project.projectId, path: NOTES });
+      expect(existsSync(notesOnDisk)).toBe(false);
+      const h5 = await fileHistory(project.projectId, NOTES);
+      expect(labelsOf(h5).slice(0, 2)).toEqual(['edit', 'restore']);
+      const deleted = h5.versions[0]!;
+      expect(deleted).toMatchObject({ kind: 'delete', authorUserId: USER });
+      const lastWrite = h5.versions.find((v) => v.kind === 'write')!;
+      await restoreVersion(project.projectId, lastWrite.versionId);
+      expect(await fs.readFile(notesOnDisk, 'utf-8')).toBe(AGENT_1);
+      const h6 = await fileHistory(project.projectId, NOTES);
+      expect(h6.versions[0]).toMatchObject({ kind: 'write', label: 'restore' });
+      expect(h6.versions).toHaveLength(8);
+
+      // 5. Refusals: a delete version can't be restored (nor previewed), and
+      //    the file stays as it is.
+      await expect(restoreVersion(project.projectId, deleted.versionId)).rejects.toMatchObject({
+        code: 'not-restorable',
+        reasonCode: 'not-restorable',
+      });
+      await expect(readVersion(project.projectId, deleted.versionId)).rejects.toMatchObject({ code: 'not-found' });
+      expect(await fs.readFile(notesOnDisk, 'utf-8')).toBe(AGENT_1);
+
+      // Nothing failed to record along the way.
+      expect(h6.gaps).toEqual([]);
+    },
+  );
+
+  it('W3d: a stranger gets not-found on history, and a version id from another project is not-found', async () => {
+    const owner = await createAgent('W3d refusals');
+    const project = await createProject(owner, 'W3d refusals');
+    const other = await createProject(owner, 'W3d other');
+    const stranger = makeAgentContext({ sessionId: 'w3d-stranger', agentId: 'w3d-stranger', userId: 'w3d-stranger' });
+    await expect(fileHistory(project.projectId, 'instructions.md', stranger)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(
+      bus.call('projects:read-version', stranger, { projectId: project.projectId, versionId: 'pv_nope' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await expect(
+      bus.call('projects:restore-version', stranger, { projectId: project.projectId, versionId: 'pv_nope' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await expect(restoreVersion(project.projectId, 'pv_nope')).rejects.toMatchObject({ code: 'not-found' });
+    if (ON_LINUX) {
+      // A real version of ANOTHER project of the same person: not this one's.
+      const seed = (await fileHistory(other.projectId, 'instructions.md')).versions[0]!;
+      expect(seed.label).toBe('seed');
+      await expect(readVersion(project.projectId, seed.versionId)).rejects.toMatchObject({ code: 'not-found' });
+      await expect(restoreVersion(project.projectId, seed.versionId)).rejects.toMatchObject({ code: 'not-found' });
+    }
+  });
 });
