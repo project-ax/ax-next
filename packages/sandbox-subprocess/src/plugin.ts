@@ -7,6 +7,8 @@ import type {
   DeleteSharedFolderOutput,
   ReadSharedFolderInput,
   ReadSharedFolderOutput,
+  ScanSharedFolderInput,
+  ScanSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -21,6 +23,7 @@ import {
   changeSharedFolder,
   deleteSharedFolder,
   readSharedFolder,
+  scanSharedFolder,
 } from './shared-folders.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
@@ -72,12 +75,18 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // through the same locate + shape check and `changeConfinedByWalk` with
       // no chown (Linux only; `unavailable` elsewhere). No grant check —
       // @ax/projects checks the person first.
+      //
+      // `sandbox:scan-shared-folder` (W3d): a recursive, confined stat of one
+      // shared folder for @ax/projects' file history — the read's locate +
+      // shape check, then `scanConfinedByWalk` (Linux only; `unavailable`
+      // elsewhere). No grant check.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
         'sandbox:read-shared-folder',
         'sandbox:change-shared-folder',
+        'sandbox:scan-shared-folder',
       ],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
@@ -116,8 +125,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           degradation:
             'sandbox:delete-shared-folder throws no-mount-resolver (nothing is ' +
             'deleted, so the caller keeps its tombstone and retries); ' +
-            'sandbox:read-shared-folder and sandbox:change-shared-folder ' +
-            'answer unavailable; opening ' +
+            'sandbox:read-shared-folder, sandbox:change-shared-folder and ' +
+            'sandbox:scan-shared-folder answer unavailable; opening ' +
             'sessions is unaffected',
         },
       ],
@@ -168,6 +177,15 @@ export function createSandboxSubprocessPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => readSharedFolder(ctx, bus, PLUGIN_NAME, input),
         { timeoutMs: 30_000 },
+      );
+
+      // W3d: a recursive, confined stat of one shared folder (no symlink
+      // followed, no file opened). Up to 10,000 files on a local disk.
+      bus.registerService<ScanSharedFolderInput, ScanSharedFolderOutput>(
+        'sandbox:scan-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => scanSharedFolder(ctx, bus, PLUGIN_NAME, input),
+        { timeoutMs: 60_000 },
       );
 
       // W3c: change one shared folder — no symlink followed at any depth, each

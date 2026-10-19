@@ -16,14 +16,18 @@ import type {
   ReadSharedFolderInput,
   ReadSharedFolderOutput,
   ReadUserFilesInput,
+  ScanSharedFolderInput,
+  ScanSharedFolderOutput,
   ReadUserFilesOutput,
   ResolveMountsInput,
   ResolveMountsOutput,
   UserFileDirEntry,
 } from '@ax/sandbox-mount-protocol';
 import {
+  MAX_WALK_ENTRIES,
   readConfinedByWalk,
   readConfinedUserFiles,
+  scanConfinedByWalk,
   splitRelPath,
   WalkPathError,
   WalkReadError,
@@ -639,6 +643,11 @@ export async function deleteSharedFolder(
 // ---------------------------------------------------------------------------
 
 const READ_SHARED_FOLDER_HOOK = 'sandbox:read-shared-folder';
+const SHARED_TRAVERSE_FIX =
+  `the host cannot traverse ${SHARED_FOLDERS_DIR} on the user-files export. The ` +
+  `storage node sets ${SHARED_FOLDERS_DIR} to 0711 (on startup and on every ` +
+  `prepare that mounts a shared folder); without the shared pool ` +
+  `(sharedPool.enabled: false) nothing does, and project files stay unavailable.`;
 const SHARED_READ_MAX_ENTRIES = READ_MAX_DIR_ENTRIES;
 
 function invalidSharedRead(message: string, cause?: unknown): PluginError {
@@ -697,11 +706,92 @@ export async function readSharedFolder(
         log.warn('shared_folder_read_unavailable', {
           folderId,
           depth: err.depth,
-          fix:
-            `the host cannot traverse ${SHARED_FOLDERS_DIR} on the user-files export. The ` +
-            `storage node sets ${SHARED_FOLDERS_DIR} to 0711 (on startup and on every ` +
-            `prepare that mounts a shared folder); without the shared pool ` +
-            `(sharedPool.enabled: false) nothing does, and project files stay unavailable.`,
+          fix: SHARED_TRAVERSE_FIX,
+        });
+        return { kind: 'unavailable' };
+      }
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:scan-shared-folder (W3d) — a recursive, confined stat of ONE shared
+// folder, for @ax/projects' file history (no grant check, like the read).
+//
+// Same realization as the read above: `scanConfinedByWalk` over the read-only
+// `<userFilesHostReadRoot>`, from `[.shared, <folderId>]`, every directory
+// opened relative to its parent's descriptor with O_NOFOLLOW. Files are only
+// lstat'ed, never opened. Same `unavailable` rules (no root, EACCES while
+// traversing `.shared`, no /proc).
+//
+// A folder that does not exist yet answers `done` with no files: a W3a
+// project's folder is only created by its first write, and "nothing there"
+// is the truth. A folder whose NAME is a link or a file is not: that is not a
+// state the storage node ever leaves, so it throws rather than tell history
+// that every file was deleted.
+// ---------------------------------------------------------------------------
+
+const SCAN_SHARED_FOLDER_HOOK = 'sandbox:scan-shared-folder';
+
+function scanError(code: string, message: string, cause?: unknown): PluginError {
+  return new PluginError({
+    code,
+    plugin: PLUGIN_NAME,
+    hookName: SCAN_SHARED_FOLDER_HOOK,
+    message,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+/**
+ * Realize `sandbox:scan-shared-folder` for the k8s provider. `walk` is
+ * injectable for tests only (the real one needs Linux /proc).
+ */
+export async function scanSharedFolder(
+  config: ResolvedSandboxK8sConfig,
+  input: ScanSharedFolderInput,
+  log: Logger,
+  walk: typeof scanConfinedByWalk = scanConfinedByWalk,
+): Promise<ScanSharedFolderOutput> {
+  if (config.userFilesHostReadRoot.length === 0) return { kind: 'unavailable' };
+  const folderId: unknown = (input as { folderId?: unknown } | null)?.folderId;
+  if (!isValidSharedFolderId(folderId)) throw scanError('invalid-payload', 'invalid shared folder id');
+  const maxEntries: unknown = input.maxEntries ?? MAX_WALK_ENTRIES;
+  if (
+    typeof maxEntries !== 'number' ||
+    !Number.isSafeInteger(maxEntries) ||
+    maxEntries < 1 ||
+    maxEntries > MAX_WALK_ENTRIES
+  ) {
+    throw scanError('invalid-payload', `maxEntries must be an integer from 1 to ${MAX_WALK_ENTRIES}`);
+  }
+  try {
+    const out = await walk(config.userFilesHostReadRoot, [SHARED_FOLDERS_DIR, folderId], {
+      maxEntries,
+    });
+    if (out.kind === 'absent') {
+      if (out.reason === 'missing') return { kind: 'done', files: [], truncated: false };
+      log.warn('shared_folder_scan_refused', { folderId, reason: out.reason });
+      throw scanError(
+        'unsafe-shared-folder-location',
+        `shared folder '${folderId}' is not a directory on the user-files export`,
+      );
+    }
+    if (out.truncated) {
+      log.info('shared_folder_scan_truncated', { folderId, files: out.files.length });
+    }
+    return out;
+  } catch (err) {
+    if (err instanceof WalkPathError) throw scanError('invalid-payload', `invalid path: ${err.message}`, err);
+    if (err instanceof WalkReadError) {
+      if (err.code === 'unsupported-platform') return { kind: 'unavailable' };
+      // EACCES opening `.shared` or the folder: the deployment, not the folder.
+      if (err.code === 'EACCES' && (err.depth === 0 || err.depth === 1)) {
+        log.warn('shared_folder_scan_unavailable', {
+          folderId,
+          depth: err.depth,
+          fix: SHARED_TRAVERSE_FIX,
         });
         return { kind: 'unavailable' };
       }

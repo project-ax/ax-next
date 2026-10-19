@@ -16,6 +16,10 @@
  * files too: Edit on a text file, the + menu (upload, new text file, new
  * folder) and Delete in the file's menu. Viewers get none of it, and nothing
  * under `sources/` changes. The pieces live in `ProjectFileEditing`.
+ *
+ * W3d: History in the file's menu, for everyone (viewers read it too), with
+ * Restore and Undo for editors (`ProjectFileHistory`). A path that isn't
+ * there any more offers "See history", so a deleted file can be brought back.
  */
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight, Pencil } from 'lucide-react';
@@ -62,6 +66,7 @@ import {
   UploadResults,
   type UploadOutcome,
 } from './ProjectFileEditing';
+import { FileHistorySheet } from './ProjectFileHistory';
 import { ProjectLoadFailure } from './ProjectLoadFailure';
 import { inPlaceClick } from './ProjectsPage';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -274,11 +279,13 @@ function ProjectFilesBrowser({
   path,
   canEdit,
   onNavigate,
+  onOpenConversation,
 }: {
   projectId: string;
   path: string;
   canEdit: boolean;
   onNavigate: (path: string) => void;
+  onOpenConversation?: (agentId: string, conversationId: string) => void;
 }) {
   const read = useCallback((p: string) => workspaceApi.projectFiles(projectId, p), [projectId]);
   const tree = useFileTree(read, { initialPath: null });
@@ -309,6 +316,8 @@ function ProjectFilesBrowser({
   const [uploading, setUploading] = useState(false);
   const [uploads, setUploads] = useState<UploadOutcome[] | null>(null);
   const uploadInput = useRef<HTMLInputElement>(null);
+  /** The file whose History sheet is open: its raw key and fenced name. */
+  const [history, setHistory] = useState<{ path: string; label: string } | null>(null);
 
   // An edit belongs to one file: opening another one leaves it behind.
   const activeEdit = editing !== null && editing.path === tree.filePath ? editing : null;
@@ -451,7 +460,7 @@ function ProjectFilesBrowser({
   const canDeleteOpen = canEdit && openPath !== null && openFile !== null && isDeletablePath(openPath);
 
   const viewerActions =
-    canEdit && (canEditOpen || canDeleteOpen) ? (
+    openPath !== null && openFile !== null ? (
       <>
         {canEditOpen && (
           <Button
@@ -467,14 +476,17 @@ function ProjectFilesBrowser({
             Edit
           </Button>
         )}
-        {canDeleteOpen && (
-          <FileMenu
-            onDelete={() => {
-              setDeleteError(null);
-              setDeleteOpen(true);
-            }}
-          />
-        )}
+        <FileMenu
+          onHistory={() => setHistory({ path: openPath, label: openFile.name })}
+          onDelete={
+            canDeleteOpen
+              ? () => {
+                  setDeleteError(null);
+                  setDeleteOpen(true);
+                }
+              : undefined
+          }
+        />
       </>
     ) : undefined;
 
@@ -566,7 +578,36 @@ function ProjectFilesBrowser({
         viewerActions={viewerActions}
         viewerBody={viewerBody}
         extraViewer={extraViewer}
+        missingAction={(missing) =>
+          missing === '' ? null : (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setHistory({ path: missing, label: fenceLine(missing, 120) ?? 'This file' })}
+            >
+              See history
+            </Button>
+          )
+        }
       />
+      {history !== null && (
+        <FileHistorySheet
+          projectId={projectId}
+          path={history.path}
+          label={history.label}
+          open
+          canEdit={canEdit}
+          onOpenChange={(next) => {
+            if (!next) setHistory(null);
+          }}
+          onRestored={() => {
+            // A restored file that had been deleted comes back: re-open the route's path.
+            if (tree.filePath === history.path) void tree.refresh();
+            else open(path);
+          }}
+          {...(onOpenConversation !== undefined ? { onOpenChat: onOpenConversation } : {})}
+        />
+      )}
       {canEdit && (
         <>
           <ConflictDialog
@@ -623,6 +664,7 @@ export function ProjectFilesPage({
   onNavigate,
   onOpenProject,
   onAllProjects,
+  onOpenConversation,
   leading,
 }: {
   projectId: string;
@@ -631,6 +673,8 @@ export function ProjectFilesPage({
   onNavigate: (path: string) => void;
   onOpenProject: () => void;
   onAllProjects: () => void;
+  /** Open one of this person's chats (a version's "Open the chat"). */
+  onOpenConversation?: (agentId: string, conversationId: string) => void;
   leading?: ReactNode;
 }) {
   const [project, setProject] = useState<ProjectDetail | null>(null);
@@ -752,6 +796,7 @@ export function ProjectFilesPage({
           path={path}
           canEdit={canEditProjectFiles(project.members)}
           onNavigate={onNavigate}
+          {...(onOpenConversation !== undefined ? { onOpenConversation } : {})}
         />
       </div>
     </>

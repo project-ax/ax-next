@@ -49,6 +49,8 @@ export interface SessionOwner {
    * `null` when absent so `resolveToken` always answers with a typed scalar.
    */
   source?: 'routine' | 'user' | null;
+  /** W3d: the session's spawn project; stored as `null` when absent. Host-only. */
+  projectId?: string | null;
 }
 
 export interface SessionRecord {
@@ -61,6 +63,8 @@ export interface SessionRecord {
   readonly conversationId: string | null;
   /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
   readonly source: 'routine' | 'user' | null;
+  /** W3d: the session's spawn project. Null ≡ no project. */
+  readonly projectId: string | null;
   terminated: boolean;
 }
 
@@ -86,6 +90,11 @@ export interface ResolveTokenResult {
    * user / canary / pre-TASK-181.
    */
   source: 'routine' | 'user' | null;
+  /**
+   * W3d: the session's spawn project, carried so the IPC listeners stamp
+   * `ctx.projectId`. Null ≡ no project.
+   */
+  projectId: string | null;
 }
 
 export interface SessionStore {
@@ -130,6 +139,8 @@ export function createSessionStore(): SessionStore {
         conversationId: owner?.conversationId ?? null,
         // TASK-181 — host-derived session origin; normalized to null when absent.
         source: owner?.source ?? null,
+        // W3d — the session's spawn project; normalized to null when absent.
+        projectId: owner?.projectId ?? null,
         terminated: false,
       };
       bySessionId.set(sessionId, record);
@@ -149,6 +160,7 @@ export function createSessionStore(): SessionStore {
         agentId: record.agentId,
         conversationId: record.conversationId,
         source: record.source,
+        projectId: record.projectId,
       };
     },
 

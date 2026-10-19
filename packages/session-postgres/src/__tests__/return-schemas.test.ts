@@ -32,6 +32,7 @@ describe('session-postgres return schemas', () => {
       conversationId: 'c1',
       // TASK-181 — host-derived origin must round-trip (schema can't strip it).
       source: 'routine',
+      projectId: 'prj_abc',
     };
     expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
     expect(SessionResolveTokenOutputSchema.parse(null)).toBeNull();

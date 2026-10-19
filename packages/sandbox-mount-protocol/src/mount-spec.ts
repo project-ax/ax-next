@@ -515,6 +515,82 @@ export type ReadSharedFolderOutput =
 export type ReadSharedFolderHandler = ServiceHandler<ReadSharedFolderInput, ReadSharedFolderOutput>;
 
 // ---------------------------------------------------------------------------
+// `sandbox:scan-shared-folder` (host-internal service hook) — W3d
+//
+//   sandbox:scan-shared-folder (ctx, { folderId, maxEntries? })
+//     → ScanSharedFolderOutput
+//
+// A recursive, confined STAT of one shared folder: every regular file's path,
+// size, mtime and inode, so `@ax/projects` can tell what changed since its
+// last look (file history). Registered by the provider that owns mount
+// realization (`@ax/sandbox-k8s`, `@ax/sandbox-subprocess`), over the same
+// read-only host walk as `sandbox:read-shared-folder`
+// (`scanConfinedByWalk`, `@ax/user-files-read`).
+//
+// THIS HOOK DOES NO GRANT CHECK, exactly like `sandbox:read-shared-folder`.
+// The ONLY caller is `@ax/projects`, for a project it already holds.
+//
+// HOST-INTERNAL, never an IPC action. The folder's CONTENTS are untrusted
+// (agents write it): a realization never follows a symlink at any depth and
+// never opens a file. Symlinks, sockets, FIFOs and devices are skipped,
+// never named. Directories are walked but not reported.
+// ---------------------------------------------------------------------------
+
+/** Default and ceiling for `ScanSharedFolderInput.maxEntries`. */
+export const SCAN_SHARED_FOLDER_MAX_ENTRIES = 10_000;
+/** Most directory components below the export root a reported file may sit at (`MAX_WALK_PARTS`). */
+export const SCAN_SHARED_FOLDER_MAX_DEPTH = 32;
+
+/**
+ * Input to `sandbox:scan-shared-folder`. `folderId` must pass
+ * `isValidSharedFolderId`. `maxEntries` bounds the files reported (default
+ * and ceiling `SCAN_SHARED_FOLDER_MAX_ENTRIES`); a realization refuses more.
+ */
+export interface ScanSharedFolderInput {
+  folderId: string;
+  maxEntries?: number;
+}
+
+/** One regular file in a scan. */
+export interface ScannedSharedFile {
+  /** Relative to the folder root, `/`-separated; valid as a `ReadSharedFolderInput.relPath`. */
+  path: string;
+  /** Bytes on disk. */
+  size: number;
+  /** Last modification, ms since the epoch, with sub-ms precision where the filesystem keeps it. */
+  mtimeMs: number;
+  /** Inode number. */
+  ino: number;
+}
+
+/**
+ * Output of `sandbox:scan-shared-folder`.
+ *
+ * - `done` — `files` sorted by `path` (code-unit order), so two scans diff
+ *   deterministically. `truncated` when a cap stopped the scan (files,
+ *   directories, skipped entries) or a directory was too deep to enter: a
+ *   file missing from a truncated scan MAY STILL EXIST, so a caller must not
+ *   read its absence as a delete. A folder that does not exist yet (a new
+ *   project's folder before anything wrote it) is `done` with no files and
+ *   not truncated: an empty scan is the truth.
+ * - `unavailable` — this deployment can't read shared folders at all (no host
+ *   read root, the host can't traverse `.shared`, or the platform can't do a
+ *   confined walk). Same rule as `ReadSharedFolderOutput`.
+ *
+ * A scan that FAILED (EIO, ESTALE, an EACCES deeper in, the folder's name
+ * being a link or a file) THROWS. It is never `done` with fewer files.
+ */
+export type ScanSharedFolderOutput =
+  | { kind: 'done'; files: ScannedSharedFile[]; truncated: boolean }
+  | { kind: 'unavailable' };
+
+/**
+ * The full `sandbox:scan-shared-folder` handler signature — satisfied via
+ * `registerService<ScanSharedFolderInput, ScanSharedFolderOutput>`.
+ */
+export type ScanSharedFolderHandler = ServiceHandler<ScanSharedFolderInput, ScanSharedFolderOutput>;
+
+// ---------------------------------------------------------------------------
 // `sandbox:change-shared-folder` (host-internal service hook) — W3c
 //
 //   sandbox:change-shared-folder (ctx, { folderId, changes, createFolder? })

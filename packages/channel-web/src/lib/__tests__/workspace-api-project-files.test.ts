@@ -99,3 +99,33 @@ describe('workspaceApi.deleteProjectFile / createProjectFolder', () => {
     expect((e as ProjectFileChangeError).code).toBe('protected-path');
   });
 });
+
+describe('W3d — workspaceApi.projectFileHistory / projectFileVersion / restoreProjectFileVersion', () => {
+  it('GETs the history splat, encoded whole', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ versions: [], gaps: [] }), { status: 200 }));
+    expect(await workspaceApi.projectFileHistory('p1', 'work/a b.md')).toEqual({ versions: [], gaps: [] });
+    expect(call()[0]).toBe('/api/workspace/projects/p1/history/work%2Fa%20b.md');
+  });
+
+  it('GETs one version, its id encoded', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ body: 'x', clipped: null, size: 1 }), { status: 200 }));
+    await workspaceApi.projectFileVersion('p1', 'v/1');
+    expect(call()[0]).toBe('/api/workspace/projects/p1/versions/v%2F1');
+  });
+
+  it('POSTs a restore with the CSRF header and answers the hash', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ sha256: HASH }), { status: 200 }));
+    expect(await workspaceApi.restoreProjectFileVersion('p1', 'v1')).toEqual({ sha256: HASH });
+    const [url, init] = call();
+    expect(url).toBe('/api/workspace/projects/p1/versions/v1/restore');
+    expect(init.method).toBe('POST');
+    expect(headers()['x-requested-with']).toBe('ax-admin');
+  });
+
+  it('a refused restore names not-restorable', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'not-restorable' }), { status: 409 }));
+    const e = await failure(workspaceApi.restoreProjectFileVersion('p1', 'v1'));
+    expect(e).toBeInstanceOf(ProjectFileChangeError);
+    expect((e as ProjectFileChangeError).code).toBe('not-restorable');
+  });
+});

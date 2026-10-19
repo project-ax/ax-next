@@ -151,3 +151,61 @@ export interface ProjectLabel {
 export interface WriteProjectFileResponse {
   sha256: string;
 }
+
+/**
+ * W3d — who made one version of a file, as the History sheet names them. Never
+ * another person's user id: a person is "you", a display name, or no one
+ * named. An agent is named only when it's on this person's own agent list;
+ * `removed` is an agent that has since been deleted.
+ */
+export type ProjectFileVersionAuthor =
+  | { kind: 'you' }
+  | { kind: 'person'; displayName: string | null }
+  | { kind: 'agent'; displayName: string | null; removed: boolean }
+  | { kind: 'none' };
+
+/** Why a version exists (see `@ax/projects`' history labels). */
+export type ProjectFileVersionLabel = 'edit' | 'agent' | 'baseline' | 'outside' | 'restore' | 'seed';
+
+/** W3d — one version of one file. */
+export interface ProjectFileVersion {
+  versionId: string;
+  /** `delete`: the file was gone at this point. */
+  kind: 'write' | 'delete';
+  label: ProjectFileVersionLabel;
+  size: number;
+  /** Recorded without its bytes: no preview, no restore. */
+  tooLarge: boolean;
+  author: ProjectFileVersionAuthor;
+  /**
+   * The chat the change came from — only a chat this person can open (one of
+   * their own in this project), else null.
+   */
+  chat: { conversationId: string; agentId: string } | null;
+  /** ISO-8601. */
+  createdAt: string;
+}
+
+/** W3d — `GET /api/workspace/projects/:projectId/history/*`. */
+export interface ProjectFileHistoryResponse {
+  /** Newest first. */
+  versions: ProjectFileVersion[];
+  /** Project-wide "history may be missing changes from around <at>", newest first. */
+  gaps: Array<{ at: string }>;
+}
+
+/**
+ * W3d — `GET /api/workspace/projects/:projectId/versions/:versionId`: one
+ * version's text, decoded and fenced as a file preview is. `body` is null for
+ * a file that isn't text (`clipped: 'binary'`).
+ */
+export interface ProjectFileVersionPreview {
+  body: string | null;
+  clipped: 'binary' | 'too-large' | null;
+  size: number;
+}
+
+/** W3d — `POST …/versions/:versionId/restore`: the restored file's sha256. */
+export interface RestoreProjectFileVersionResponse {
+  sha256: string;
+}

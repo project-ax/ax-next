@@ -98,6 +98,12 @@ export interface SessionCreateInput {
      * runner wire.
      */
     source?: 'routine' | 'user' | null;
+    /**
+     * W3d: the project the session was spawned for. Persisted on the v2 row;
+     * echoed back by `session:resolve-token`. Host-only — never from the
+     * runner wire.
+     */
+    projectId?: string | null;
   };
 }
 export interface SessionCreateOutput {
@@ -128,6 +134,13 @@ export type SessionResolveTokenOutput =
        * user / canary / pre-TASK-181.
        */
       source: 'routine' | 'user' | null;
+      /**
+       * W3d: the session's spawn project. The IPC listeners stamp it onto the
+       * per-request AgentContext as `ctx.projectId` (the `chat:turn-end`
+       * file-history pass reads it). Null ≡ no project / pre-W3d. Host-set
+       * only — never from a runner frame.
+       */
+      projectId: string | null;
     }
   | null;
 export type SessionGetConfigInput = Record<string, never>;
@@ -212,6 +225,8 @@ export const SessionResolveTokenOutputSchema = z
     conversationId: z.string().nullable(),
     // TASK-181 — host-derived session origin echoed onto the resolve result.
     source: z.enum(['routine', 'user']).nullable(),
+    // W3d — the session's spawn project, echoed so the listeners stamp ctx.projectId.
+    projectId: z.string().nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 
@@ -362,6 +377,7 @@ function validateOwner(
       agentConfig: AgentConfig;
       conversationId: string | null;
       source: 'routine' | 'user' | null;
+      projectId: string | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -378,6 +394,7 @@ function validateOwner(
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   const sourceRaw = (raw as { source?: unknown }).source;
+  const projectIdRaw = (raw as { projectId?: unknown }).projectId;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -476,6 +493,28 @@ function validateOwner(
       message: `'owner.source' must be 'routine', 'user', or null/undefined`,
     });
   }
+  // projectId — W3d — optional, the session's spawn project. Same posture as
+  // `source`: only the orchestrator (via sandbox:open-session) writes it, the
+  // runner never reaches this hook. A present value must be a non-empty string
+  // of at most 128 chars (the open-session schema's bound); anything else
+  // fails loud rather than storing a bogus project.
+  let projectId: string | null;
+  if (projectIdRaw === undefined || projectIdRaw === null) {
+    projectId = null;
+  } else if (
+    typeof projectIdRaw === 'string' &&
+    projectIdRaw.length > 0 &&
+    projectIdRaw.length <= 128
+  ) {
+    projectId = projectIdRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.projectId' must be a non-empty string of at most 128 chars, or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -495,6 +534,7 @@ function validateOwner(
     },
     conversationId,
     source,
+    projectId,
   };
 }
 

@@ -1051,6 +1051,10 @@ function Inner({
               onNavigate={(path) => navigate({ kind: 'project-files', id: route.id, path })}
               onOpenProject={() => navigate({ kind: 'project', id: route.id })}
               onAllProjects={() => navigate({ kind: 'projects' })}
+              onOpenConversation={(agentId, conversationId) => {
+                setOpenConversation({ agentId, conversationId });
+                navigate({ kind: 'agent', id: agentId, tab: 'chat' });
+              }}
             />
           )}
 

@@ -71,7 +71,10 @@ import type {
   OwnerCandidatesResponse,
   ProjectConversationsResponse,
   ProjectDetail,
+  ProjectFileHistoryResponse,
+  ProjectFileVersionPreview,
   ProjectLabel,
+  RestoreProjectFileVersionResponse,
   SetProjectMemberResponse,
   UpdateProjectResponse,
   WriteProjectFileResponse,
@@ -827,6 +830,9 @@ export const PROJECT_FILE_CHANGE_CODES = [
   'project-not-found',
   'invalid-path',
   'invalid-payload',
+  // W3d — restoring a version.
+  'not-restorable',
+  'version-not-found',
 ] as const;
 export type ProjectFileChangeCode = (typeof PROJECT_FILE_CHANGE_CODES)[number];
 
@@ -1529,6 +1535,31 @@ export const workspaceApi = {
     const route = projectChangeRoute(projectId, 'folders', path);
     const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
     if (!res.ok) throw await projectFileChangeError(route, res);
+  },
+
+  /**
+   * W3d — one file's versions, newest first, and the project's history gaps.
+   * Viewers can read it too. A file with no history is an empty list.
+   */
+  projectFileHistory: (projectId: string, path: string) =>
+    req<ProjectFileHistoryResponse>(`/projects/${encodeURIComponent(projectId)}/history/${encodeURIComponent(path)}`),
+
+  /** W3d — one version's text (a preview: `clipped: 'binary'` when it isn't text). 404 when it has none. */
+  projectFileVersion: (projectId: string, versionId: string) =>
+    req<ProjectFileVersionPreview>(
+      `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}`,
+    ),
+
+  /**
+   * W3d — write a version back over the file (or recreate a deleted one). A
+   * refusal throws a `ProjectFileChangeError`: 409 `not-restorable` for a
+   * version with no bytes, else the same codes a save answers.
+   */
+  restoreProjectFileVersion: async (projectId: string, versionId: string): Promise<RestoreProjectFileVersionResponse> => {
+    const route = `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/restore`;
+    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
+    if (!res.ok) throw await projectFileChangeError(route, res);
+    return (await res.json()) as RestoreProjectFileVersionResponse;
   },
 
   /**

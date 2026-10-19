@@ -7,6 +7,8 @@ import type {
   DeleteSharedFolderOutput,
   ReadSharedFolderInput,
   ReadSharedFolderOutput,
+  ScanSharedFolderInput,
+  ScanSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -28,6 +30,7 @@ import {
   deleteSharedFolder,
   ownerFromAgentId,
   readSharedFolder,
+  scanSharedFolder,
   readUserFiles,
 } from './user-files-ops.js';
 
@@ -101,12 +104,18 @@ export function createSandboxK8sPlugin(
       // followed and chowns what it creates to the runner uid. No grant check
       // here — @ax/projects checks the person first. Without the shared pool
       // it answers `unavailable`.
+      //
+      // `sandbox:scan-shared-folder` (W3d): a recursive, confined stat of one
+      // shared folder (path, size, mtime, inode per regular file) for
+      // @ax/projects' file history. Same host walk and `unavailable` rules as
+      // the read; no grant check here either.
       registers: [
         'sandbox:open-session',
         'sandbox:read-user-files',
         'sandbox:delete-shared-folder',
         'sandbox:read-shared-folder',
         'sandbox:change-shared-folder',
+        'sandbox:scan-shared-folder',
       ],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
@@ -261,6 +270,16 @@ export function createSandboxK8sPlugin(
         PLUGIN_NAME,
         async (ctx, input) => readSharedFolder(config, input, ctx.logger),
         { timeoutMs: 30_000 },
+      );
+
+      // W3d shared-folder scan. The read's host walk, recursive: up to 10,000
+      // files and as many directories, each one lstat over NFS, so a slow
+      // server gets a longer backstop than a single read.
+      bus.registerService<ScanSharedFolderInput, ScanSharedFolderOutput>(
+        'sandbox:scan-shared-folder',
+        PLUGIN_NAME,
+        async (ctx, input) => scanSharedFolder(config, input, ctx.logger),
+        { timeoutMs: 60_000 },
       );
 
       // W3c shared-folder write. One mTLS request to any Ready storage helper,

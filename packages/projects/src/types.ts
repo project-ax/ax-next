@@ -296,3 +296,80 @@ export type ProjectsChangeRefusal =
   | 'read-only-path'
   | 'too-large'
   | 'files-unavailable';
+
+// ---- file history (W3d §7) --------------------------------------------------
+// Host-internal, like read-file. `file-history` and `read-version` need what
+// read-file needs (use the project: viewers included); `restore-version` needs
+// what write-file needs (an editor or owner member). `snapshot` is the
+// orchestrator's pass before a writable project session opens, as the person.
+
+/** Files larger than this are recorded as changed, without their bytes ("Too large to keep history"). */
+export const HISTORY_MAX_FILE_BYTES = 1_048_576;
+
+const HistoryLabelSchema = z.enum(['edit', 'agent', 'baseline', 'outside', 'restore', 'seed']);
+/**
+ * Why a version exists: `edit` a person's save; `agent` seen at the end of an
+ * agent's turn; `baseline` "Before history started"; `outside` changed outside
+ * history (found by the pre-session pass or before a person's save);
+ * `restore` a person restored an older version; `seed` a new project's files.
+ */
+export type ProjectsHistoryLabel = z.infer<typeof HistoryLabelSchema>;
+const VersionIdSchema = z.string().min(1).max(128);
+
+export const SnapshotInputSchema = z.object({ projectId: ProjectIdSchema }).strict();
+export type ProjectsSnapshotInput = z.input<typeof SnapshotInputSchema>;
+/** `recorded`: versions this pass wrote. `gap`: the pass failed or ran long, and a gap was recorded. */
+export const SnapshotOutputSchema = z.object({ recorded: z.number(), gap: z.boolean() });
+export type ProjectsSnapshotOutput = z.infer<typeof SnapshotOutputSchema>;
+
+export const FileHistoryInputSchema = z.object({ projectId: ProjectIdSchema, path: RelPathSchema }).strict();
+export type ProjectsFileHistoryInput = z.input<typeof FileHistoryInputSchema>;
+const FileVersionSchema = z.object({
+  versionId: z.string(),
+  /** `delete`: the file was gone. */
+  kind: z.enum(['write', 'delete']),
+  label: HistoryLabelSchema,
+  size: z.number(),
+  /** Recorded without its bytes; can't be previewed or restored. */
+  tooLarge: z.boolean(),
+  /** The person who saved or restored it (edit, restore, seed). */
+  authorUserId: z.string().nullable(),
+  /** The agent whose turn it was (agent); null once that agent is deleted. */
+  authorAgentId: z.string().nullable(),
+  /** The chat the turn belonged to; null once that chat is purged. */
+  conversationId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type ProjectFileVersion = z.infer<typeof FileVersionSchema>;
+export const FileHistoryOutputSchema = z.object({
+  /** Newest first, at most 500. */
+  versions: z.array(FileVersionSchema),
+  /** Project-wide "history may be missing changes from around <at>", newest first, at most 100. */
+  gaps: z.array(z.object({ at: z.string(), reason: z.string() })),
+});
+export type ProjectsFileHistoryOutput = z.infer<typeof FileHistoryOutputSchema>;
+
+export const ReadVersionInputSchema = z.object({ projectId: ProjectIdSchema, versionId: VersionIdSchema }).strict();
+export type ProjectsReadVersionInput = z.input<typeof ReadVersionInputSchema>;
+export const ReadVersionOutputSchema = z.object({ contents: BytesSchema, size: z.number() });
+export type ProjectsReadVersionOutput = z.infer<typeof ReadVersionOutputSchema>;
+
+export const RestoreVersionInputSchema = z
+  .object({ projectId: ProjectIdSchema, versionId: VersionIdSchema })
+  .strict();
+export type ProjectsRestoreVersionInput = z.input<typeof RestoreVersionInputSchema>;
+export const RestoreVersionOutputSchema = z.object({ sha256: z.string() });
+export type ProjectsRestoreVersionOutput = z.infer<typeof RestoreVersionOutputSchema>;
+
+/**
+ * The `PluginError` codes the history hooks refuse with, besides
+ * `invalid-payload`, `not-found` and `forbidden` (as read-file / write-file):
+ * - `not-found` also covers a version id that isn't this project's, and (for
+ *   `read-version`) a delete version, a too-large one, or one whose bytes are
+ *   gone. One message for all.
+ * - `not-restorable` (`restore-version`, also the `reasonCode`) — a delete
+ *   version, a too-large one, or one whose bytes are gone.
+ * - `restore-version` also refuses with every `ProjectsChangeRefusal` a save
+ *   can (`read-only-path` for a version under `sources/`, `files-unavailable`).
+ */
+export type ProjectsVersionRefusal = 'not-found' | 'not-restorable';

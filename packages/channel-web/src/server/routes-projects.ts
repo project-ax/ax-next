@@ -15,6 +15,12 @@ import {
   type CreateProjectResponse,
   type ListProjectsResponse,
   type OwnerCandidatesResponse,
+  type ProjectFileHistoryResponse,
+  type ProjectFileVersion,
+  type ProjectFileVersionAuthor,
+  type ProjectFileVersionLabel,
+  type ProjectFileVersionPreview,
+  type RestoreProjectFileVersionResponse,
   type ProjectConversationsResponse,
   type ProjectDetail,
   type ProjectMember,
@@ -57,6 +63,9 @@ import { workspaceFilePath } from './safe-path.js';
 //   PUT    /api/workspace/projects/:projectId/files/*       projects:write-file (W3c)
 //   DELETE /api/workspace/projects/:projectId/files/*       projects:delete-file (W3c)
 //   POST   /api/workspace/projects/:projectId/folders/*     projects:create-folder (W3c)
+//   GET    /api/workspace/projects/:projectId/history/*     projects:file-history (W3d)
+//   GET    /api/workspace/projects/:projectId/versions/:versionId          projects:read-version (W3d)
+//   POST   /api/workspace/projects/:projectId/versions/:versionId/restore  projects:restore-version (W3d)
 //
 // THE ACTOR. Every `projects:*` hook (and `agents:can-manage-sharing`) takes
 // its actor from `ctx.userId`, never from the payload. So each call here runs
@@ -136,6 +145,26 @@ import { workspaceFilePath } from './safe-path.js';
 // A delete's `not-found` covers an unknown project, someone else's and a
 // missing file alike, so it is one body (`file-not-found`), as the download's.
 // A write or a new folder can only miss the project (`project-not-found`).
+//
+// THE HISTORY ROUTES (W3d, W3 spec §7.3). Same order again: auth → project id
+// → hook loaded → path / version id → hook, as the session's person.
+//
+//   - history: any person who can use the project (viewers too). A file with
+//     no history is an empty list, not a 404. Each version's author is
+//     rebuilt here and NEVER carries a user id: "you", another person's display
+//     name (`auth:get-user`, else unnamed), or an agent named only if it's on
+//     this person's own agent list. A version's chat is linked only when it's
+//     one of this person's own chats in the project (`conversations:list` is
+//     user-scoped); anyone else's chat id is dropped.
+//   - a version's preview: the read-file preview rules (1 MiB of text,
+//     decoded and bidi-fenced; a binary body is `clipped: 'binary'` and no
+//     bytes). JSON only, never the raw bytes, so nothing here hands a browser
+//     agent-written content to interpret. `not-found` covers an unknown
+//     project, someone else's, a foreign version and one with no bytes alike:
+//     one body, `version-not-found`.
+//   - restore: what a save needs. `not-restorable` (a delete, a too-large
+//     version, bytes gone) → 409; every other refusal maps as a save's, with
+//     `version-not-found` for the 404.
 // ---------------------------------------------------------------------------
 
 const ACTOR_AGENT_ID = '@ax/channel-web';
@@ -159,6 +188,10 @@ export const PROJECT_FILE_WRITE_MAX_BYTES = 10 * 1024 * 1024;
  */
 const PROJECT_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** `@ax/projects`' bound on a version id; longer can only be unknown (404). */
+const VERSION_ID_MAX_CHARS = 128;
+/** The longest person or agent name the History sheet draws. */
+const HISTORY_NAME_MAX_CHARS = 80;
 
 // --- duck-typed hook payloads (invariant 2 — no cross-plugin import) -------
 
@@ -213,6 +246,24 @@ type ProjectsReadFileOutput =
   | { kind: 'absent' }
   | { kind: 'unavailable' };
 interface ProjectsDownloadFileOutput {
+  contents: Uint8Array;
+  size: number;
+}
+interface ProjectsFileHistoryOutput {
+  versions: Array<{
+    versionId: string;
+    kind: 'write' | 'delete';
+    label: ProjectFileVersionLabel;
+    size: number;
+    tooLarge: boolean;
+    authorUserId: string | null;
+    authorAgentId: string | null;
+    conversationId: string | null;
+    createdAt: string;
+  }>;
+  gaps: Array<{ at: string; reason: string }>;
+}
+interface ProjectsReadVersionOutput {
   contents: Uint8Array;
   size: number;
 }
@@ -339,6 +390,11 @@ function changeRefused(res: RouteResponse, err: unknown, notFound: string): bool
     default:
       return false;
   }
+}
+
+/** `:versionId`, bounded, or `null` (the caller answers 404: an id we could never hold is unknown). */
+function versionIdParam(raw: string | undefined): string | null {
+  return typeof raw === 'string' && raw.length > 0 && raw.length <= VERSION_ID_MAX_CHARS ? raw : null;
 }
 
 /**
@@ -574,7 +630,7 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
     } satisfies AgentUserFilesResponse);
   }
 
-  /** Auth → project id → hook loaded → path, shared by the three change routes. */
+  /** Auth → project id → hook loaded → path, shared by the three change routes and history. */
   async function changeTarget(
     req: RouteRequest,
     res: RouteResponse,
@@ -591,6 +647,82 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       return null;
     }
     return { userId, projectId, relPath };
+  }
+
+  /** Display names for the history's agents: only agents on this person's own list. */
+  async function historyAgentNames(
+    userId: string,
+    versions: ProjectsFileHistoryOutput['versions'],
+  ): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    if (!versions.some((v) => v.authorAgentId !== null)) return names;
+    for (const a of await listAgents(userId)) {
+      const name = fenceLine(a.displayName, HISTORY_NAME_MAX_CHARS);
+      if (name !== null && name.length > 0) names.set(a.id, name);
+    }
+    return names;
+  }
+
+  /**
+   * Display names for the OTHER people in the history, asked once per person.
+   * Fail-soft: no `auth:get-user`, a miss or a throw leaves them unnamed
+   * ("Someone"). Never logs who.
+   */
+  async function historyPersonNames(
+    userId: string,
+    versions: ProjectsFileHistoryOutput['versions'],
+  ): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    const others = new Set<string>();
+    for (const v of versions) {
+      if (v.authorAgentId === null && v.authorUserId !== null && v.authorUserId !== userId) others.add(v.authorUserId);
+    }
+    if (others.size === 0 || !bus.hasService('auth:get-user')) return names;
+    let failed = false;
+    await Promise.all(
+      [...others].map(async (id) => {
+        try {
+          const u = await bus.call<{ userId: string }, { displayName?: string | null } | null>(
+            'auth:get-user',
+            initCtx,
+            { userId: id },
+          );
+          const name = typeof u?.displayName === 'string' ? fenceLine(u.displayName, HISTORY_NAME_MAX_CHARS) : null;
+          if (typeof name === 'string' && name.length > 0) names.set(id, name);
+        } catch {
+          failed = true;
+        }
+      }),
+    );
+    if (failed) initCtx.logger.warn('projects_history_person_name_failed', {});
+    return names;
+  }
+
+  /**
+   * The history's chats this person can open: their own chats in this project
+   * (`conversations:list` is user-scoped), as conversationId → agentId. Any
+   * other chat is left unlinked. Fail-soft: a failed read links nothing.
+   */
+  async function historyChats(
+    userId: string,
+    projectId: string,
+    versions: ProjectsFileHistoryOutput['versions'],
+  ): Promise<Map<string, string>> {
+    const chats = new Map<string, string>();
+    if (!versions.some((v) => v.conversationId !== null) || !bus.hasService('conversations:list')) return chats;
+    try {
+      const rows = await bus.call<{ userId: string; projectId: string }, ConversationRow[]>(
+        'conversations:list',
+        initCtx,
+        { userId, projectId },
+      );
+      for (const r of rows) chats.set(r.conversationId, r.agentId);
+    } catch (err) {
+      initCtx.logger.warn('projects_history_chats_unreadable', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return chats;
   }
 
   return {
@@ -900,6 +1032,131 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       }
       res.status(204).end();
     },
+
+    /**
+     * GET /api/workspace/projects/:projectId/history/* — one file's versions,
+     * newest first, plus the project's history gaps. Names and chat links as
+     * at the top; never a user id.
+     */
+    async projectFileHistory(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await changeTarget(req, res, bus.hasService('projects:file-history'));
+      if (target === null) return;
+      const { userId, projectId, relPath } = target;
+      let out: ProjectsFileHistoryOutput;
+      try {
+        out = await bus.call<{ projectId: string; path: string }, ProjectsFileHistoryOutput>(
+          'projects:file-history',
+          actorCtx(userId),
+          { projectId, path: relPath },
+        );
+      } catch (err) {
+        if (projectRefused(res, err)) return;
+        throw err;
+      }
+      const [agentNames, personNames, chats] = await Promise.all([
+        historyAgentNames(userId, out.versions),
+        historyPersonNames(userId, out.versions),
+        historyChats(userId, projectId, out.versions),
+      ]);
+      const versions: ProjectFileVersion[] = out.versions.map((v) => {
+        let author: ProjectFileVersionAuthor;
+        if (v.authorAgentId !== null) {
+          author = { kind: 'agent', displayName: agentNames.get(v.authorAgentId) ?? null, removed: false };
+        } else if (v.label === 'agent') {
+          // The agent was deleted since; its id was cleared with it.
+          author = { kind: 'agent', displayName: null, removed: true };
+        } else if (v.authorUserId === userId) {
+          author = { kind: 'you' };
+        } else if (v.authorUserId !== null) {
+          author = { kind: 'person', displayName: personNames.get(v.authorUserId) ?? null };
+        } else {
+          author = { kind: 'none' };
+        }
+        const chat = v.conversationId === null ? undefined : chats.get(v.conversationId);
+        return {
+          versionId: v.versionId,
+          kind: v.kind,
+          label: v.label,
+          size: v.size,
+          tooLarge: v.tooLarge,
+          author,
+          chat: chat === undefined ? null : { conversationId: v.conversationId!, agentId: chat },
+          createdAt: v.createdAt,
+        };
+      });
+      res.status(200).json({
+        versions,
+        gaps: out.gaps.map((g) => ({ at: g.at })),
+      } satisfies ProjectFileHistoryResponse);
+    },
+
+    /**
+     * GET /api/workspace/projects/:projectId/versions/:versionId — one
+     * version's text, as a file preview (JSON; never the raw bytes).
+     */
+    async projectFileVersion(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const projectId = projectIdParam(req, res);
+      if (projectId === null) return;
+      if (!projectsLoaded(res, bus.hasService('projects:read-version'))) return;
+      const versionId = versionIdParam(req.params.versionId);
+      if (versionId === null) {
+        res.status(404).json({ error: 'version-not-found' });
+        return;
+      }
+      let out: ProjectsReadVersionOutput;
+      try {
+        out = await bus.call<{ projectId: string; versionId: string }, ProjectsReadVersionOutput>(
+          'projects:read-version',
+          actorCtx(userId),
+          { projectId, versionId },
+        );
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-found') {
+          res.status(404).json({ error: 'version-not-found' });
+          return;
+        }
+        if (projectRefused(res, err)) return;
+        throw err;
+      }
+      const decoded = decodeFileBody(out.contents, PROJECT_FILE_PREVIEW_MAX_BYTES);
+      res.status(200).json({
+        body: decoded.body,
+        clipped: decoded.clipped,
+        size: out.size,
+      } satisfies ProjectFileVersionPreview);
+    },
+
+    /** POST /api/workspace/projects/:projectId/versions/:versionId/restore — write that version back. */
+    async restoreProjectFileVersion(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const projectId = projectIdParam(req, res);
+      if (projectId === null) return;
+      if (!projectsLoaded(res, bus.hasService('projects:restore-version'))) return;
+      const versionId = versionIdParam(req.params.versionId);
+      if (versionId === null) {
+        res.status(404).json({ error: 'version-not-found' });
+        return;
+      }
+      let out: { sha256: string };
+      try {
+        out = await bus.call<{ projectId: string; versionId: string }, { sha256: string }>(
+          'projects:restore-version',
+          actorCtx(userId),
+          { projectId, versionId },
+        );
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-restorable') {
+          res.status(409).json({ error: 'not-restorable' });
+          return;
+        }
+        if (changeRefused(res, err, 'version-not-found')) return;
+        throw err;
+      }
+      res.status(200).json({ sha256: out.sha256 } satisfies RestoreProjectFileVersionResponse);
+    },
   };
 }
 
@@ -951,6 +1208,15 @@ export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext
     },
     { method: 'DELETE', path: '/api/workspace/projects/:projectId/files/*', handler: h.deleteProjectFile },
     { method: 'POST', path: '/api/workspace/projects/:projectId/folders/*', handler: h.createProjectFolder },
+    // W3d — history. `history` is its own segment, like `download`, so no
+    // file can collide with it. Restore is CSRF-gated like every write.
+    { method: 'GET', path: '/api/workspace/projects/:projectId/history/*', handler: h.projectFileHistory },
+    { method: 'GET', path: '/api/workspace/projects/:projectId/versions/:versionId', handler: h.projectFileVersion },
+    {
+      method: 'POST',
+      path: '/api/workspace/projects/:projectId/versions/:versionId/restore',
+      handler: h.restoreProjectFileVersion,
+    },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

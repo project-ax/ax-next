@@ -1409,3 +1409,88 @@ Plan: `docs/plans/2026-10-18-w3c-edit-project-files-impl.md`. Decisions are in
    deploy: seed, edit in the UI, an agent edits the same file, delete the
    project.
 
+## 21. As built: W3d-1 (2026-10-18)
+
+Plan: `docs/plans/2026-10-18-w3d-history-undo-impl.md`. Decisions are in
+`.claude/memory/decisions/2026-10-17-AXWM-3.md`. W3d ships as two PRs, the
+person's choice. This one records history and adds History, Restore and Undo.
+W3d-2 adds the "Updated project memory" chip under a chat turn. Where the
+build differs from §7, or adds to it:
+
+1. **`projectId` is on the session record (§7.1)**, threaded exactly like
+   `source`:
+   - the orchestrator's `owner.projectId`;
+   - both providers;
+   - a new nullable `project_id` column in session-postgres, plus
+     session-inmemory;
+   - ipc-core's auth result;
+   - both IPC listeners, which stamp `ctx.projectId`.
+
+   A runner frame can't set or change it.
+2. **A new `sandbox:scan-shared-folder`** gives a recursive, confined stat
+   (`scanConfinedByWalk`, `@ax/user-files-read`) on the host, through the same
+   walk as reads. It never follows a link, skips special files, and is capped
+   at 10,000 files and 10,000 directories. A missing folder scans as empty.
+   A folder whose name is a link or a file throws, so history never mistakes
+   it for "everything was deleted".
+3. **The baseline is lazy.** A project's first pass records everything as
+   "Before history started", and `projects_v1_history_state` marks that
+   history has begun. There's no boot-time sweep. New projects record `seed`
+   versions at create.
+4. **A pass:**
+   - **Lease and limits.** It takes a lease row
+     (`projects_v1_history_leases`, 3 minutes), not a database lock, and
+     re-checks the lease after scanning. At most 2 passes run at once per
+     process, and a pass stops taking files after 2 minutes.
+   - **What it compares.** It diffs `(size, mtimeMs, ino)` against a
+     manifest, records at most 500 changed files per pass, and reads up to
+     1 MiB each; larger files are recorded as too large.
+   - **Deletes.** A truncated scan never records a deletion.
+5. **The triggers:**
+   - the `chat:turn-end` subscriber, for writable grants only, once per
+     `(session, reqId)`, in the background;
+   - `projects:snapshot`, which the orchestrator calls with a 10 s budget
+     before a writable project session opens;
+   - before every host write, a preimage ("Changed outside history") when the
+     current bytes differ from the latest version;
+   - after every host write, the person's version.
+
+   A failed recording leaves a gap, which the History sheet shows. It never
+   fails the save.
+6. **Storage:**
+   - Bytes go to the blob store as the project's owner (a team project is
+     charged `team:<id>`), the person's choice.
+   - `@ax/projects` answers `blob:collect-refs`.
+   - Retention keeps 30 days plus the last 50 versions of each file.
+   - `agents:deleted` and `conversations:purged` clear the author and chat
+     fields and keep the version.
+7. **The background security review found two issues, both fixed:**
+   - **A deadlock.** A pass pinned a database connection for its whole run,
+     then needed a second one from the same shared pool of 10. About ten
+     passes at once would have deadlocked the host. Hence the lease row and
+     the cap.
+   - **Orphan rows.** A pass still running after a project delete could
+     insert history for the deleted project. Every history table now cascades
+     from the project row, and a late insert stops the pass quietly.
+8. **Known limit:** host writes don't take the lease. A pass that reads a file
+   between a person's save and that save's version can record those bytes
+   first, labeled as the turn's agent or "outside". Nothing is lost; the
+   preimage is what undo relies on (`packages/projects/SECURITY.md`).
+9. **Hooks and routes.** The hooks are `projects:file-history`,
+   `projects:read-version` and `projects:restore-version` (a delete version,
+   a too-large one, or missing bytes is `not-restorable`). The routes are
+   `GET …/history/*`, `GET …/versions/:id` (a JSON preview, fenced) and
+   `POST …/versions/:id/restore`. No user id reaches the browser: authors are
+   "you", a name, one of your agents, "an agent" or "a removed agent".
+   Missing project, missing version and no access all answer one identical
+   404.
+10. **UI.** The History `Sheet` lists who, when, what, a chat link and gap
+    rows, with a preview of each version. Restore confirms first. Undo
+    restores the version before the newest; after a delete, it restores the
+    last write, which brings the file back. Viewers get History but no
+    Restore or Undo, and a deleted file offers "See history".
+11. **Tests.** Acceptance through the real orchestrator on Linux covers the
+    seed, the agent's version, an outside change caught before a spawn and
+    before a save, restore, and undoing a delete. The production smoke test
+    comes after deploy.
+

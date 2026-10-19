@@ -46,6 +46,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: null,
       conversationId: null,
       source: null,
+      projectId: null,
     });
   });
 
@@ -70,6 +71,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: null,
       source: null,
+      projectId: null,
     });
   });
 
@@ -95,6 +97,7 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: 'cnv_test_1',
       source: null,
+      projectId: null,
     });
   });
 
@@ -123,7 +126,27 @@ describe('@ax/session-inmemory store', () => {
       agentId: 'a-1',
       conversationId: null,
       source: 'routine',
+      projectId: null,
     });
+  });
+
+  it('resolveToken() carries projectId when create() carried one (W3d)', () => {
+    const store = createSessionStore();
+    const rec = store.create('s-prj', '/tmp/ws', {
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'be helpful',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+      projectId: 'prj_abc',
+    });
+    expect(rec.projectId).toBe('prj_abc');
+    expect(store.resolveToken(rec.token)).toMatchObject({ sessionId: 's-prj', projectId: 'prj_abc' });
   });
 
   it('resolveToken() returns null for an unknown token', () => {

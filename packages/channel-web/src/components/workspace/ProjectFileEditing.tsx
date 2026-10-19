@@ -460,8 +460,8 @@ export function AddMenu({
   );
 }
 
-/** The open file's own menu: just Delete, for now. */
-export function FileMenu({ onDelete }: { onDelete: () => void }) {
+/** The open file's own menu: History for everyone, Delete for editors where it's allowed. */
+export function FileMenu({ onHistory, onDelete }: { onHistory: () => void; onDelete?: (() => void) | undefined }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -471,9 +471,12 @@ export function FileMenu({ onDelete }: { onDelete: () => void }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>
-          <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete}>
-            Delete
-          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onHistory}>History</DropdownMenuItem>
+          {onDelete !== undefined && (
+            <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete}>
+              Delete
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

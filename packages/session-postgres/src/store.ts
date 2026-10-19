@@ -83,6 +83,12 @@ export interface SessionOwner {
    * from the runner wire.
    */
   source?: 'routine' | 'user' | null;
+  /**
+   * W3d: the project the session was spawned for. Persisted on the v2 row
+   * and echoed back by `resolveToken` so the IPC listeners stamp
+   * `ctx.projectId`. Host-only — never sourced from the runner wire.
+   */
+  projectId?: string | null;
 }
 
 export interface SessionRecord {
@@ -95,6 +101,8 @@ export interface SessionRecord {
   readonly conversationId: string | null;
   /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
   readonly source: 'routine' | 'user' | null;
+  /** W3d: the session's spawn project. Null ≡ no project / pre-W3d. */
+  readonly projectId: string | null;
   readonly terminated: boolean;
 }
 
@@ -120,6 +128,12 @@ export interface ResolveTokenResult {
    * user / canary / pre-TASK-181.
    */
   source: 'routine' | 'user' | null;
+  /**
+   * W3d: the session's spawn project, carried so the IPC listeners stamp
+   * `ctx.projectId` on every per-request AgentContext (the `chat:turn-end`
+   * file-history pass reads it). Null ≡ no project / pre-W3d.
+   */
+  projectId: string | null;
 }
 
 export interface SessionStore {
@@ -196,6 +210,16 @@ function normalizeSource(raw: string | null | undefined): 'routine' | 'user' | n
   return raw === 'routine' || raw === 'user' ? raw : null;
 }
 
+/** Same bound as the open-session schema and @ax/conversations' check. */
+const PROJECT_ID_MAX = 128;
+
+// W3d — a stored project id is only ever written by the host, but read it
+// back defensively: anything that isn't a non-empty bounded string is "no
+// project" rather than a value a handler might key off.
+function normalizeProjectId(raw: string | null | undefined): string | null {
+  return typeof raw === 'string' && raw.length > 0 && raw.length <= PROJECT_ID_MAX ? raw : null;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (
     err !== null &&
@@ -239,6 +263,8 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
                 conversation_id: owner.conversationId ?? null,
                 // TASK-181 — host-derived session origin; null for user turns.
                 source: owner.source ?? null,
+                // W3d — the session's spawn project; null for none.
+                project_id: owner.projectId ?? null,
               } as never)
               .execute();
           }
@@ -251,6 +277,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
             agentConfig: owner?.agentConfig ?? null,
             conversationId: owner?.conversationId ?? null,
             source: owner?.source ?? null,
+            projectId: owner?.projectId ?? null,
             terminated: v1Row.terminated,
           };
         });
@@ -288,6 +315,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.agent_id',
           'a.conversation_id',
           'a.source',
+          'a.project_id',
         ])
         .where('s.token', '=', token)
         .executeTakeFirst();
@@ -299,6 +327,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         agentId: row.agent_id ?? null,
         conversationId: row.conversation_id ?? null,
         source: normalizeSource(row.source),
+        projectId: normalizeProjectId(row.project_id),
       };
     },
 
@@ -320,6 +349,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.agent_config_json',
           'a.conversation_id',
           'a.source',
+          'a.project_id',
         ])
         .where('s.session_id', '=', sessionId)
         .executeTakeFirst();
@@ -333,6 +363,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         agentConfig: (row.agent_config_json as AgentConfig | null) ?? null,
         conversationId: row.conversation_id ?? null,
         source: normalizeSource(row.source),
+        projectId: normalizeProjectId(row.project_id),
         terminated: row.terminated,
       };
     },

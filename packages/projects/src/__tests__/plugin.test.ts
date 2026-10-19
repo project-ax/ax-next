@@ -24,7 +24,12 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createProjectsPlugin, PROJECTS_DELETED_HOOK } from '../plugin.js';
+import {
+  createProjectsPlugin,
+  PROJECTS_DELETED_HOOK,
+  type ProjectsPlugin,
+  type ProjectsPluginOptions,
+} from '../plugin.js';
 import type {
   ProjectsCreateOutput,
   ProjectsDeletedEvent,
@@ -127,6 +132,8 @@ const DIRS = new Map<string, Set<string>>();
 const READS: { folderId: string; relPath?: string; limitBytes: number; maxEntries?: number }[] = [];
 const FAIL_PATHS = new Set<string>();
 let READS_UNAVAILABLE = false;
+/** W3d: called on every read, before it answers (a test moves a clock or deletes a project here). */
+let ON_READ: (() => void | Promise<void>) | null = null;
 
 function putFile(folderId: string, relPath: string, contents: string | Uint8Array): void {
   const tree = FILES.get(folderId) ?? new Map<string, Uint8Array>();
@@ -137,6 +144,7 @@ function putFile(folderId: string, relPath: string, contents: string | Uint8Arra
 const readSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
   const input = raw as { folderId: string; relPath?: string; limitBytes: number; maxEntries?: number };
   READS.push(input);
+  if (ON_READ !== null) await ON_READ();
   if (READS_UNAVAILABLE) return { kind: 'unavailable' };
   const rel = input.relPath ?? '';
   if (FAIL_PATHS.has(rel)) throw new Error(`EIO reading ${rel}`);
@@ -251,6 +259,64 @@ const changeSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
 };
 
 // ---------------------------------------------------------------------------
+// W3d stand-ins: `sandbox:scan-shared-folder` over the same in-memory trees,
+// and a content-addressed blob store that records who each put was charged to.
+// A file's mtime is the identity of its byte array: every write (even of the
+// same text) is a new array, so a "touch" changes the stat but not the bytes.
+// ---------------------------------------------------------------------------
+
+const MTIMES = new WeakMap<Uint8Array, number>();
+let mtimeClock = 1_700_000_000_000;
+function mtimeOf(bytes: Uint8Array): number {
+  let t = MTIMES.get(bytes);
+  if (t === undefined) {
+    t = ++mtimeClock;
+    MTIMES.set(bytes, t);
+  }
+  return t;
+}
+function inoOf(path: string): number {
+  return Number.parseInt(sha256(path).slice(0, 8), 16);
+}
+const SCANS: { folderId: string; maxEntries?: number }[] = [];
+/** Report at most this many files, flagged truncated. */
+let SCAN_LIMIT: number | null = null;
+let SCAN_THROWS: Error | null = null;
+let SCAN_HOLD: Promise<void> | null = null;
+
+const scanSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
+  const input = raw as { folderId: string; maxEntries?: number };
+  SCANS.push(input);
+  if (SCAN_HOLD !== null) await SCAN_HOLD;
+  if (SCAN_THROWS !== null) throw SCAN_THROWS;
+  const tree = FILES.get(input.folderId) ?? new Map<string, Uint8Array>();
+  const all = [...tree]
+    .map(([path, bytes]) => ({ path, size: bytes.length, mtimeMs: mtimeOf(bytes), ino: inoOf(path) }))
+    .sort((a, z) => (a.path < z.path ? -1 : a.path > z.path ? 1 : 0));
+  const limit = SCAN_LIMIT ?? all.length;
+  return { kind: 'done', files: all.slice(0, limit), truncated: all.length > limit };
+};
+
+const BLOBS = new Map<string, Uint8Array>();
+const PUTS: { userId: string; agentId: string; sha256: string }[] = [];
+let PUT_THROWS: Error | null = null;
+const blobServices: Record<string, ServiceHandler> = {
+  'blob:put': async (ctx, raw) => {
+    if (PUT_THROWS !== null) throw PUT_THROWS;
+    const { bytes } = raw as { bytes: Uint8Array };
+    const sha = sha256(bytes);
+    BLOBS.set(sha, new Uint8Array(bytes));
+    PUTS.push({ userId: ctx.userId, agentId: ctx.agentId, sha256: sha });
+    return { sha256: sha, size: bytes.length };
+  },
+  'blob:get': async (_ctx, raw) => {
+    const { sha256: sha } = raw as { sha256: string };
+    const b = BLOBS.get(sha);
+    return b === undefined ? { found: false } : { bytes: b };
+  },
+};
+
+// ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -258,11 +324,15 @@ const harnesses: TestHarness[] = [];
 
 interface World {
   h: TestHarness;
+  projects: ProjectsPlugin;
   logs: Record<string, unknown>[];
   projectsDeleted: ProjectsDeletedEvent[];
   folderDeleted: { folderId: string }[];
   augmentChanged: { agentId: string }[];
-  as(userId: string, extra?: { agentId?: string; projectId?: string }): AgentContext;
+  as(
+    userId: string,
+    extra?: { agentId?: string; projectId?: string; conversationId?: string; sessionId?: string },
+  ): AgentContext;
   call<O = unknown>(userId: string, hook: string, input: unknown): Promise<O>;
 }
 
@@ -274,20 +344,30 @@ async function makeWorld(
     writer?: boolean;
     extraPlugins?: Plugin[];
     extraServices?: Record<string, ServiceHandler>;
+    /** W3d: register the scan stub and the blob store (off by default: no history). */
+    history?: boolean;
+    projectsOptions?: ProjectsPluginOptions;
+    /** The host's Postgres pool size (default 10). */
+    poolMax?: number;
   } = {},
 ): Promise<World> {
-  const services: Record<string, ServiceHandler> = { ...stubServices, ...opts.extraServices };
+  const services: Record<string, ServiceHandler> = {
+    ...stubServices,
+    ...(opts.history === true ? { ...blobServices, 'sandbox:scan-shared-folder': scanSharedFolderStub } : {}),
+    ...opts.extraServices,
+  };
   if (opts.teams === false) delete services['teams:list-for-user'];
   if (opts.reader !== false) services['sandbox:read-shared-folder'] = readSharedFolderStub;
   if (opts.writer === true && services['sandbox:change-shared-folder'] === undefined) {
     services['sandbox:change-shared-folder'] = changeSharedFolderStub;
   }
+  const projects = createProjectsPlugin(opts.projectsOptions);
   const h = await createTestHarness({
     services,
     plugins: [
-      createDatabasePostgresPlugin({ connectionString }),
+      createDatabasePostgresPlugin({ connectionString, ...(opts.poolMax !== undefined ? { poolMax: opts.poolMax } : {}) }),
       createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
-      createProjectsPlugin(),
+      projects,
       ...(opts.extraPlugins ?? []),
     ],
   });
@@ -309,16 +389,21 @@ async function makeWorld(
     augmentChanged.push(p);
     return undefined;
   });
-  const as = (userId: string, extra: { agentId?: string; projectId?: string } = {}): AgentContext =>
+  const as = (
+    userId: string,
+    extra: { agentId?: string; projectId?: string; conversationId?: string; sessionId?: string } = {},
+  ): AgentContext =>
     makeAgentContext({
-      sessionId: 's',
+      sessionId: extra.sessionId ?? 's',
       agentId: extra.agentId ?? 'caller-agent',
       userId,
       logger,
       ...(extra.projectId !== undefined ? { projectId: extra.projectId } : {}),
+      ...(extra.conversationId !== undefined ? { conversationId: extra.conversationId } : {}),
     });
   return {
     h,
+    projects,
     logs,
     projectsDeleted,
     folderDeleted,
@@ -414,7 +499,21 @@ afterEach(async () => {
   READS.length = 0;
   FAIL_PATHS.clear();
   READS_UNAVAILABLE = false;
+  ON_READ = null;
+  SCANS.length = 0;
+  SCAN_LIMIT = null;
+  SCAN_THROWS = null;
+  SCAN_HOLD = null;
+  BLOBS.clear();
+  PUTS.length = 0;
+  PUT_THROWS = null;
   while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
+  // History tables first: they reference projects_v1_projects.
+  await q('DROP TABLE IF EXISTS projects_v1_file_versions');
+  await q('DROP TABLE IF EXISTS projects_v1_file_manifest');
+  await q('DROP TABLE IF EXISTS projects_v1_history_gaps');
+  await q('DROP TABLE IF EXISTS projects_v1_history_state');
+  await q('DROP TABLE IF EXISTS projects_v1_history_leases');
   await q('DROP TABLE IF EXISTS projects_v1_projects');
   await q('DROP TABLE IF EXISTS shared_folders_v1_grants');
   await q('DROP TABLE IF EXISTS shared_folders_v1_folders');
@@ -440,6 +539,10 @@ describe('@ax/projects manifest', () => {
       'projects:write-file',
       'projects:delete-file',
       'projects:create-folder',
+      'projects:snapshot',
+      'projects:file-history',
+      'projects:read-version',
+      'projects:restore-version',
       'system-prompt:augment:optional:projects',
     ]);
     expect(m.calls).toEqual([
@@ -455,8 +558,14 @@ describe('@ax/projects manifest', () => {
       'shared-folders:grant',
       'shared-folders:revoke',
     ]);
-    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user', 'auth:get-user']);
-    expect(m.subscribes).toEqual(['shared-folders:deleted']);
+    expect(m.optionalCalls?.map((c) => c.hook)).toEqual(['teams:list-for-user', 'auth:get-user', 'blob:put', 'blob:get']);
+    expect(m.subscribes).toEqual([
+      'shared-folders:deleted',
+      'chat:turn-end',
+      'agents:deleted',
+      'conversations:purged',
+      'blob:collect-refs',
+    ]);
     const edges = [...m.calls, ...(m.optionalCalls ?? []).map((c) => c.hook)];
     expect(edges.filter((h) => h.startsWith('conversations:'))).toEqual([]);
     // `sandbox:read-shared-folder` and W3c's `sandbox:change-shared-folder` /
@@ -1823,5 +1932,759 @@ describe('projects:read-file sha256 (W3c)', () => {
     const big = await w.call<{ truncated: boolean }>('alice', 'projects:read-file', { projectId, path: 'big.bin' });
     expect(big.truncated).toBe(true);
     expect(big).not.toHaveProperty('sha256');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3d: file history
+// ---------------------------------------------------------------------------
+
+interface VersionRow {
+  version_id: string;
+  path: string;
+  kind: 'write' | 'delete';
+  label: string;
+  blob_sha: string | null;
+  size: string;
+  too_large: boolean;
+  owner_user_id: string | null;
+  author_user_id: string | null;
+  author_agent_id: string | null;
+  conversation_id: string | null;
+  req_id: string | null;
+}
+async function versionRows(projectId: string, path?: string): Promise<VersionRow[]> {
+  return path === undefined
+    ? q<VersionRow>('SELECT * FROM projects_v1_file_versions WHERE project_id = $1 ORDER BY seq', [projectId])
+    : q<VersionRow>('SELECT * FROM projects_v1_file_versions WHERE project_id = $1 AND path = $2 ORDER BY seq', [
+        projectId,
+        path,
+      ]);
+}
+function blobText(sha: string | null): string | undefined {
+  if (sha === null) return undefined;
+  const b = BLOBS.get(sha);
+  return b === undefined ? undefined : new TextDecoder().decode(b);
+}
+async function manifestPaths(projectId: string): Promise<string[]> {
+  const rows = await q<{ path: string }>(
+    'SELECT path FROM projects_v1_file_manifest WHERE project_id = $1 ORDER BY path',
+    [projectId],
+  );
+  return rows.map((r) => r.path);
+}
+/** Fire `chat:turn-end` as an agent's session in the project, then wait for the background pass. */
+async function turnEnd(
+  w: World,
+  who: { userId: string; agentId: string; projectId: string; conversationId?: string; sessionId?: string },
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const { userId, ...extra } = who;
+  await w.h.bus.fire('chat:turn-end', w.as(userId, extra), payload);
+  await w.projects.drainHistory();
+}
+
+describe('file history: passes (W3d)', () => {
+  it('the first pass over an older project records the baseline, unattributed; later passes are "outside"', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    // An older project: history hasn't started.
+    await q('DELETE FROM projects_v1_history_state WHERE project_id = $1', [projectId]);
+    putFile(folderId, 'instructions.md', 'Old rules.');
+    putFile(folderId, 'work/big.bin', new Uint8Array(2 * 1024 * 1024));
+    const out = await w.call('alice', 'projects:snapshot', { projectId });
+    expect(out).toEqual({ recorded: 2, gap: false });
+    const rows = await versionRows(projectId);
+    expect(rows.map((r) => [r.path, r.label, r.too_large, blobText(r.blob_sha)])).toEqual([
+      ['instructions.md', 'baseline', false, 'Old rules.'],
+      ['work/big.bin', 'baseline', true, undefined],
+    ]);
+    expect(rows.every((r) => r.author_user_id === null && r.author_agent_id === null)).toBe(true);
+    expect(await manifestPaths(projectId)).toEqual(['instructions.md', 'work/big.bin']);
+    // Nothing changed: nothing recorded.
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    putFile(folderId, 'instructions.md', 'New rules.');
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect((await versionRows(projectId, 'instructions.md')).map((r) => r.label)).toEqual(['baseline', 'outside']);
+  });
+
+  it("an agent's turn records only what changed, attributed to the agent, chat and request, once per (session, reqId)", async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    // Seeded files carry seed versions; the first pass sees the same bytes.
+    await w.call('alice', 'projects:snapshot', { projectId });
+    expect(new Set((await versionRows(projectId)).map((r) => r.label))).toEqual(new Set(['seed']));
+    const before = (await versionRows(projectId)).length;
+    const who = { userId: 'alice', agentId: 'a-alice-1', projectId, conversationId: 'c1', sessionId: 'sess-1' };
+
+    putFile(folderId, 'work/a.md', 'from the agent');
+    await turnEnd(w, who, { reqId: 'r1', role: 'tool' });
+    const added = (await versionRows(projectId)).slice(before);
+    expect(added).toMatchObject([
+      {
+        path: 'work/a.md',
+        kind: 'write',
+        label: 'agent',
+        author_agent_id: 'a-alice-1',
+        author_user_id: null,
+        conversation_id: 'c1',
+        req_id: 'r1',
+      },
+    ]);
+    expect(blobText(added[0]!.blob_sha)).toBe('from the agent');
+
+    // The same turn's second turn-end (assistant) runs no pass.
+    putFile(folderId, 'work/b.md', 'later');
+    const scansBefore = SCANS.length;
+    await turnEnd(w, who, { reqId: 'r1', role: 'assistant' });
+    expect(SCANS.length).toBe(scansBefore);
+    expect((await versionRows(projectId, 'work/b.md')).length).toBe(0);
+    // The next turn does.
+    await turnEnd(w, who, { reqId: 'r2', role: 'assistant' });
+    expect((await versionRows(projectId, 'work/b.md')).map((r) => r.req_id)).toEqual(['r2']);
+
+    // A touch (same bytes, new mtime) records nothing.
+    putFile(folderId, 'work/a.md', 'from the agent');
+    await turnEnd(w, who, { reqId: 'r3' });
+    expect((await versionRows(projectId, 'work/a.md')).length).toBe(1);
+
+    // A delete is recorded as such.
+    FILES.get(folderId)!.delete('work/b.md');
+    await turnEnd(w, who, { reqId: 'r4' });
+    expect((await versionRows(projectId, 'work/b.md')).map((r) => [r.kind, r.label, r.req_id])).toEqual([
+      ['write', 'agent', 'r2'],
+      ['delete', 'agent', 'r4'],
+    ]);
+  });
+
+  it("skips a turn with no project, a viewer agent's turn, and a turn with no id", async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await grant(w, 'alice', folderId, 'a-alice-2', 'viewer');
+    const before = (await versionRows(projectId)).length;
+    putFile(folderId, 'work/a.md', 'x');
+    await turnEnd(w, { userId: 'alice', agentId: 'a-alice-2', projectId }, { reqId: 'r1' });
+    await turnEnd(w, { userId: 'alice', agentId: 'a-alice-1', projectId }, {});
+    await w.h.bus.fire('chat:turn-end', w.as('alice', { agentId: 'a-alice-1' }), { reqId: 'r9' });
+    await w.projects.drainHistory();
+    expect(SCANS).toEqual([]);
+    expect((await versionRows(projectId)).length).toBe(before);
+    // The owner agent's turn does record it.
+    await turnEnd(w, { userId: 'alice', agentId: 'a-alice-1', projectId }, { reqId: 'r2' });
+    expect((await versionRows(projectId, 'work/a.md')).map((r) => r.label)).toEqual(['agent']);
+  });
+
+  it('a file missing from a TRUNCATED scan is never recorded as deleted', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    putFile(folderId, 'b.md', 'b');
+    putFile(folderId, 'c.md', 'c');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    expect(await manifestPaths(projectId)).toEqual(['a.md', 'b.md', 'c.md']);
+    // c.md is still there, but the scan stops after one file.
+    SCAN_LIMIT = 1;
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    expect((await versionRows(projectId)).filter((r) => r.kind === 'delete')).toEqual([]);
+    expect(await manifestPaths(projectId)).toEqual(['a.md', 'b.md', 'c.md']);
+    // A whole scan without c.md: now it is gone.
+    SCAN_LIMIT = null;
+    FILES.get(folderId)!.delete('c.md');
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect((await versionRows(projectId, 'c.md')).map((r) => r.kind)).toEqual(['write', 'delete']);
+    expect(await manifestPaths(projectId)).toEqual(['a.md', 'b.md']);
+  });
+
+  it('records at most 500 changed files per pass; the next pass takes the rest', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    for (let i = 0; i < 503; i++) putFile(folderId, `f/${String(i).padStart(4, '0')}.md`, `n${i}`);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 500, gap: false });
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 3, gap: false });
+  });
+
+  it('a pass that finds another pass holding the project lease skips; the turn may try again', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const first = w.call<{ recorded: number }>('alice', 'projects:snapshot', { projectId });
+    while (SCANS.length === 0) await new Promise((r) => setTimeout(r, 5));
+    // The second pass can't take the lock: it answers at once, without scanning.
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    // A turn that hit the lock isn't remembered, so its second turn-end runs.
+    const who = { userId: 'alice', agentId: 'a-alice-1', projectId };
+    await w.h.bus.fire('chat:turn-end', w.as('alice', who), { reqId: 'r1' });
+    const lockedOut = () => w.logs.some((l) => l.msg === 'projects_history_turn_skipped' && l.reason === 'locked');
+    while (!lockedOut()) await new Promise((r) => setTimeout(r, 5));
+    expect(SCANS.length).toBe(1);
+    release();
+    SCAN_HOLD = null;
+    await expect(first).resolves.toMatchObject({ recorded: 1 });
+    await w.projects.drainHistory();
+    putFile(folderId, 'b.md', 'b');
+    await turnEnd(w, who, { reqId: 'r1', role: 'assistant' });
+    expect((await versionRows(projectId, 'b.md')).map((r) => r.req_id)).toEqual(['r1']);
+  });
+
+  it('a snapshot that fails records a gap and says so; a failed blob write is a gap and is retried', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    SCAN_THROWS = new Error('ESTALE');
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: true });
+    SCAN_THROWS = null;
+    const gaps = async () =>
+      (
+        await w.call<{ gaps: { at: string; reason: string }[] }>('alice', 'projects:file-history', {
+          projectId,
+          path: 'a.md',
+        })
+      ).gaps.map((g) => g.reason);
+    expect(await gaps()).toEqual(['snapshot-failed']);
+    // A failed blob write is a gap too, and the file is retried by the next pass.
+    PUT_THROWS = new Error('storage full');
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: true });
+    expect(await gaps()).toEqual(['record-failed', 'snapshot-failed']);
+    PUT_THROWS = null;
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+  });
+
+  it('a snapshot past its budget answers with a gap; the pass still records what it finds', async () => {
+    const w = await makeWorld({ history: true, projectsOptions: { snapshotBudgetMs: 50 } });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: true });
+    release();
+    await w.projects.drainHistory();
+    expect((await versionRows(projectId, 'a.md')).length).toBe(1);
+    const h = await w.call<{ gaps: { reason: string }[] }>('alice', 'projects:file-history', { projectId, path: 'a.md' });
+    expect(h.gaps.map((g) => g.reason)).toEqual(['snapshot-timeout']);
+  });
+
+  it('without a blob store nothing is recorded, and snapshot answers with no gap', async () => {
+    const w = await makeWorld({ writer: true, extraServices: { 'sandbox:scan-shared-folder': scanSharedFolderStub } });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('x') });
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    expect(await versionRows(projectId)).toEqual([]);
+    expect(SCANS).toEqual([]);
+  });
+});
+
+/** Wait for `cond`, failing (not hanging) after `ms`: a deadlock is a red test, not a timeout. */
+async function until(cond: () => boolean, ms = 5_000, what = 'condition'): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+/** Settle `p` within `ms`, or throw: for a call that must not wait on the pool forever. */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const HISTORY_TABLES = [
+  'projects_v1_file_versions',
+  'projects_v1_file_manifest',
+  'projects_v1_history_gaps',
+  'projects_v1_history_state',
+  'projects_v1_history_leases',
+];
+async function historyCounts(projectId: string): Promise<number[]> {
+  return Promise.all(
+    HISTORY_TABLES.map(async (t) => (await q(`SELECT 1 FROM ${t} WHERE project_id = $1`, [projectId])).length),
+  );
+}
+function historyTrouble(w: World): Record<string, unknown>[] {
+  return w.logs.filter(
+    (l) => (l.level === 'warn' || l.level === 'error') && typeof l.msg === 'string' && l.msg.startsWith('projects_'),
+  );
+}
+
+describe('file history: leases, the pass cap, and a project deleted mid-pass (W3d security review)', () => {
+  it('runs at most two passes at once, and a pass holds no connection while it waits: a pool of 2 still answers', async () => {
+    // Regression for the pool deadlock: a pass used to pin a pool connection for
+    // its whole length and then ask the pool for another for its own queries.
+    const w = await makeWorld({ history: true, poolMax: 2, projectsOptions: { snapshotBudgetMs: 30_000 } });
+    const owners: [string, string][] = [
+      ['alice', 'a-alice-1'],
+      ['alice', 'a-alice-2'],
+      ['alice', 'a-alice-3'],
+      ['bob', 'a-bob'],
+      ['tadmin', 'a-tadmin'],
+    ];
+    const made: { userId: string; projectId: string }[] = [];
+    for (const [userId, agentId] of owners) {
+      const p = await createProject(w, userId, agentId, `P ${agentId}`);
+      putFile(p.folderId, 'a.md', `in ${agentId}`);
+      made.push({ userId, projectId: p.projectId });
+    }
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    let settled = 0;
+    const runs = made.map((m) =>
+      w.call<{ recorded: number; gap: boolean }>(m.userId, 'projects:snapshot', { projectId: m.projectId }).finally(() => {
+        settled++;
+      }),
+    );
+    // Two passes are in their scans; the other three answer at once (locked),
+    // without scanning.
+    await until(() => SCANS.length === 2 && settled === 3, 10_000, 'two scans and three locked answers');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(SCANS.length).toBe(2);
+    expect((await q('SELECT 1 FROM projects_v1_history_leases')).length).toBe(2);
+    // Something unrelated still gets a connection from the same pool of 2.
+    const listed = await within(w.call<ProjectsListOutput>('alice', 'projects:list', {}), 5_000, 'projects:list');
+    expect(listed.projects).toHaveLength(3);
+    release();
+    SCAN_HOLD = null;
+    const outs = await within(Promise.all(runs), 10_000, 'the held passes');
+    expect(outs.reduce((n, o) => n + o.recorded, 0)).toBe(2);
+    expect(outs.every((o) => o.gap === false)).toBe(true);
+    // Every lease was released.
+    expect(await q('SELECT 1 FROM projects_v1_history_leases')).toEqual([]);
+    // With the cap free again, the three that were turned away run.
+    for (const m of made) await w.call(m.userId, 'projects:snapshot', { projectId: m.projectId });
+    for (const m of made) expect((await versionRows(m.projectId, 'a.md')).length).toBe(1);
+  });
+
+  it("a lease held by another pass skips; an expired one is taken over; a pass releases only its own", async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    await q(
+      `INSERT INTO projects_v1_history_leases (project_id, token, until) VALUES ($1, 'other', NOW() + INTERVAL '1 minute')`,
+      [projectId],
+    );
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    expect(SCANS).toEqual([]);
+    expect(await q('SELECT token FROM projects_v1_history_leases')).toEqual([{ token: 'other' }]);
+
+    // Expired: taken over, and released after the pass.
+    await q(`UPDATE projects_v1_history_leases SET until = NOW() - INTERVAL '1 second'`);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect(await q('SELECT 1 FROM projects_v1_history_leases')).toEqual([]);
+
+    // A pass's lease lasts about three minutes; if it's taken over meanwhile
+    // (ours expired), our release leaves the new holder's lease alone.
+    putFile(folderId, 'b.md', 'b');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 2, 5_000, 'the second scan');
+    const held = await q<{ token: string; secs: number }>(
+      `SELECT token, EXTRACT(EPOCH FROM (until - NOW()))::float8 AS secs FROM projects_v1_history_leases`,
+    );
+    expect(held).toHaveLength(1);
+    expect(held[0]!.token).not.toBe('other');
+    expect(held[0]!.secs).toBeGreaterThan(170);
+    expect(held[0]!.secs).toBeLessThanOrEqual(180);
+    await q(`UPDATE projects_v1_history_leases SET token = 'intruder'`);
+    release();
+    SCAN_HOLD = null;
+    // Review, 2026-10-18: the scan isn't bounded by the deadline, so a lease
+    // can lapse during it. A pass that lost its lease records nothing.
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    expect(await versionRows(projectId, 'b.md')).toEqual([]);
+    expect(await q('SELECT token FROM projects_v1_history_leases')).toEqual([{ token: 'intruder' }]);
+  });
+
+  it('a project deleted mid-pass: the pass stops quietly, leaves no gap, and no history row or blob ref survives', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'work/a.md', 'mid-pass');
+    // Held mid-read: after the scan and the lease check, so the delete lands
+    // while the pass is recording (a delete during the scan is caught earlier,
+    // by the lease check; see the next test).
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    let reading = false;
+    ON_READ = async () => {
+      reading = true;
+      await hold;
+    };
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => reading, 5_000, 'the pass reading');
+    await w.call('alice', 'projects:delete', { projectId });
+    const putsBefore = PUTS.length;
+    release();
+    ON_READ = null;
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    await w.projects.drainHistory();
+    // The pass put the first file's bytes, its insert met the cascade, and it
+    // stopped there: one put, nothing kept.
+    expect(PUTS.length).toBe(putsBefore + 1);
+    const putSha = PUTS.at(-1)!.sha256;
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
+    expect(w.logs.some((l) => l.msg === 'projects_history_pass_gone' && l.projectId === projectId)).toBe(true);
+    // …so nothing holds its blob.
+    const out = await w.h.bus.fire('blob:collect-refs', w.as('system'), {
+      candidates: [putSha, sha256('mid-pass')],
+      answers: [],
+    });
+    const answers = ((out as { payload: unknown }).payload as { answers: { holder: string; refs: unknown[] }[] }).answers;
+    expect(answers.find((a) => a.holder === '@ax/projects')?.refs).toEqual([]);
+  });
+
+  it('a project deleted during the scan: the lease check stops the pass before anything is stored', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'work/a.md', 'during-scan');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await w.call('alice', 'projects:delete', { projectId });
+    const putsBefore = PUTS.length;
+    release();
+    SCAN_HOLD = null;
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    await w.projects.drainHistory();
+    expect(PUTS.length).toBe(putsBefore);
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
+  });
+
+  it("a gap for a project that's gone is swallowed (a snapshot that ran out of time after the delete)", async () => {
+    const w = await makeWorld({ history: true, projectsOptions: { snapshotBudgetMs: 1_000 } });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await w.call('alice', 'projects:delete', { projectId });
+    // The budget runs out after the delete: its gap has no project to land on.
+    await expect(run).resolves.toEqual({ recorded: 0, gap: true });
+    release();
+    SCAN_HOLD = null;
+    await w.projects.drainHistory();
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w).filter((l) => l.msg !== 'projects_snapshot_slow')).toEqual([]);
+    expect(
+      w.logs.some((l) => l.msg === 'projects_history_gap_skipped' && l.reason === 'snapshot-timeout' && l.level === 'debug'),
+    ).toBe(true);
+  });
+
+  it("a person's save recorded after the project is gone is swallowed: no rows, no gap, no error", async () => {
+    let deleteDuring: string | null = null;
+    const w = await makeWorld({
+      history: true,
+      writer: true,
+      extraServices: {
+        // The project goes between the change landing and its version being
+        // written (after the change's own row re-check): the blob put is that window.
+        'blob:put': async (ctx, raw) => {
+          const out: unknown = await blobServices['blob:put']!(ctx, raw);
+          if (deleteDuring !== null) await q('DELETE FROM projects_v1_projects WHERE project_id = $1', [deleteDuring]);
+          return out;
+        },
+      },
+    });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    expect((await versionRows(projectId)).length).toBeGreaterThan(0);
+    deleteDuring = projectId;
+    // The save itself succeeded; only its history had nowhere to go.
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/late.md', content: enc('late') }),
+    ).resolves.toBeDefined();
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
+    expect(
+      w.logs.some((l) => l.msg === 'projects_history_skipped' && l.reason === 'project-gone' && l.level === 'debug'),
+    ).toBe(true);
+  });
+
+  it('a pass past its deadline stops taking new files; the next pass records the rest', async () => {
+    let clock = 0;
+    const w = await makeWorld({ history: true, projectsOptions: { historyNow: () => clock } });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    for (const p of ['a.md', 'b.md', 'c.md']) putFile(folderId, p, p);
+    // Each read takes "61 seconds": a and b fit in two minutes, c doesn't.
+    ON_READ = () => {
+      clock += 61_000;
+    };
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 2, gap: false });
+    expect((await versionRows(projectId)).map((r) => r.path)).toEqual(['a.md', 'b.md']);
+    expect(await manifestPaths(projectId)).toEqual(['a.md', 'b.md']);
+    expect(w.logs.some((l) => l.msg === 'projects_history_pass' && l.deferred === true)).toBe(true);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect((await versionRows(projectId)).map((r) => r.path)).toEqual(['a.md', 'b.md', 'c.md']);
+  });
+});
+
+describe('file history: host writes (W3d)', () => {
+  it("records a person's save, with a preimage when the file changed outside history", async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/n.md', content: enc('v1') });
+    // An agent changed it outside any tracked turn.
+    putFile(folderId, 'work/n.md', 'agent text');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/n.md', content: enc('v3') });
+    const rows = await versionRows(projectId, 'work/n.md');
+    expect(rows.map((r) => [r.label, r.author_user_id, blobText(r.blob_sha)])).toEqual([
+      ['edit', 'alice', 'v1'],
+      ['outside', null, 'agent text'],
+      ['edit', 'alice', 'v3'],
+    ]);
+    // A save over what history already has records no preimage.
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/n.md', content: enc('v4') });
+    expect((await versionRows(projectId, 'work/n.md')).map((r) => r.label)).toEqual(['edit', 'outside', 'edit', 'edit']);
+    // A delete is a version; the next pass doesn't record it again.
+    await w.call('alice', 'projects:delete-file', { projectId, path: 'work/n.md' });
+    await w.call('alice', 'projects:snapshot', { projectId });
+    expect((await versionRows(projectId, 'work/n.md')).map((r) => [r.kind, r.label]).at(-1)).toEqual(['delete', 'edit']);
+    expect((await versionRows(projectId, 'work/n.md')).length).toBe(5);
+  });
+
+  it('seeds a new project with seed versions; the first pass is no baseline', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const rows = await versionRows(projectId);
+    expect(rows.map((r) => [r.path, r.label, r.author_user_id])).toEqual([
+      ['instructions.md', 'seed', 'alice'],
+      ['memory/status.md', 'seed', 'alice'],
+      ['memory/log.md', 'seed', 'alice'],
+    ]);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+  });
+
+  it("charges every version to the project's owner, never to whoever triggered it", async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'tadmin', 'a-team-admins', 'Team');
+    await grant(w, 'tadmin', folderId, 'a-team-1', 'editor');
+    PUTS.length = 0;
+    await w.call('tmember', 'projects:write-file', { projectId, path: 'work/a.md', content: enc('by a member') });
+    putFile(folderId, 'work/b.md', 'by an agent');
+    await turnEnd(w, { userId: 'tmember', agentId: 'a-team-1', projectId }, { reqId: 'r1' });
+    expect(PUTS.length).toBe(2);
+    expect(PUTS.every((p) => p.userId === 'team:t1' && p.agentId === '@ax/projects')).toBe(true);
+    expect(new Set((await versionRows(projectId)).map((r) => r.owner_user_id))).toEqual(new Set(['team:t1']));
+
+    // A personal project is charged to its owner.
+    const personal = await createProject(w, 'alice', 'a-alice-1');
+    PUTS.length = 0;
+    await w.call('alice', 'projects:write-file', { projectId: personal.projectId, path: 'x.md', content: enc('x') });
+    expect(PUTS.map((p) => p.userId)).toEqual(['alice']);
+  });
+});
+
+describe('file history: hooks (W3d)', () => {
+  async function setup() {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/n.md', content: enc('v1') });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/n.md', content: enc('v2') });
+    await w.call('alice', 'projects:delete-file', { projectId, path: 'work/n.md' });
+    putFile(folderId, 'work/big.bin', new Uint8Array(2 * 1024 * 1024));
+    await w.call('alice', 'projects:snapshot', { projectId });
+    type H = { versions: { versionId: string; kind: string; label: string; tooLarge: boolean }[] };
+    const n = await w.call<H>('alice', 'projects:file-history', { projectId, path: 'work/n.md' });
+    const big = await w.call<H>('alice', 'projects:file-history', { projectId, path: 'work/big.bin' });
+    return { w, projectId, folderId, n, big };
+  }
+
+  it('lists a file’s versions newest first, previews one, and restores it (recorded as restore)', async () => {
+    const { w, projectId, folderId, n } = await setup();
+    expect(n.versions.map((v) => [v.kind, v.label])).toEqual([
+      ['delete', 'edit'],
+      ['write', 'edit'],
+      ['write', 'edit'],
+    ]);
+    expect(n.versions[2]).toMatchObject({ size: 2, tooLarge: false, authorUserId: 'alice', authorAgentId: null });
+    const v1 = n.versions[2]!.versionId;
+    const read = await w.call<{ contents: Uint8Array; size: number }>('alice', 'projects:read-version', {
+      projectId,
+      versionId: v1,
+    });
+    expect(new TextDecoder().decode(read.contents)).toBe('v1');
+    expect(read.size).toBe(2);
+    // Restoring a deleted file's old version recreates it.
+    await expect(w.call('alice', 'projects:restore-version', { projectId, versionId: v1 })).resolves.toEqual({
+      sha256: sha256('v1'),
+    });
+    expect(new TextDecoder().decode(FILES.get(folderId)!.get('work/n.md')!)).toBe('v1');
+    const after = await w.call<{ versions: { label: string; authorUserId: string | null }[] }>(
+      'alice',
+      'projects:file-history',
+      { projectId, path: 'work/n.md' },
+    );
+    expect(after.versions[0]).toMatchObject({ label: 'restore', authorUserId: 'alice' });
+  });
+
+  it('refuses to restore a deletion or a too-large version (not-restorable), and to read one (not-found)', async () => {
+    const { w, projectId, n, big } = await setup();
+    const del = n.versions[0]!.versionId;
+    const tooLarge = big.versions[0]!.versionId;
+    expect(big.versions[0]).toMatchObject({ tooLarge: true, label: 'outside' });
+    const changesBefore = CHANGES.length;
+    for (const versionId of [del, tooLarge]) {
+      await expect(w.call('alice', 'projects:restore-version', { projectId, versionId })).rejects.toMatchObject({
+        code: 'not-restorable',
+        reasonCode: 'not-restorable',
+      });
+      await expect(w.call('alice', 'projects:read-version', { projectId, versionId })).rejects.toMatchObject({
+        code: 'not-found',
+      });
+    }
+    expect(CHANGES.length).toBe(changesBefore);
+  });
+
+  it('a version of another project is not-found; a stranger is not-found; a viewer may read but not restore', async () => {
+    const { w, projectId, n } = await setup();
+    const v = n.versions[1]!.versionId;
+    const other = await createProject(w, 'alice', 'a-alice-2', 'Other');
+    for (const hook of ['projects:read-version', 'projects:restore-version']) {
+      await expect(w.call('alice', hook, { projectId: other.projectId, versionId: v })).rejects.toMatchObject({
+        code: 'not-found',
+      });
+      await expect(w.call('alice', hook, { projectId, versionId: 'pv_nope' })).rejects.toMatchObject({
+        code: 'not-found',
+      });
+    }
+    for (const [hook, input] of [
+      ['projects:file-history', { projectId, path: 'work/n.md' }],
+      ['projects:read-version', { projectId, versionId: v }],
+      ['projects:restore-version', { projectId, versionId: v }],
+      ['projects:snapshot', { projectId }],
+    ] as const) {
+      await expectRefused(w, 'bob', hook, input, 'not-found', 'cannot-use-project');
+    }
+    await expect(w.call('alice', 'projects:file-history', { projectId, path: '../x' })).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+
+    // A team project the member reaches only through a viewer.
+    const team = await createProject(w, 'tadmin', 'a-team-admins', 'Team');
+    await grant(w, 'tadmin', team.folderId, 'a-team-1', 'viewer');
+    await w.call('tadmin', 'projects:write-file', { projectId: team.projectId, path: 'a.md', content: enc('t1') });
+    const th = await w.call<{ versions: { versionId: string }[] }>('tmember', 'projects:file-history', {
+      projectId: team.projectId,
+      path: 'a.md',
+    });
+    const tv = th.versions[0]!.versionId;
+    await expect(
+      w.call('tmember', 'projects:read-version', { projectId: team.projectId, versionId: tv }),
+    ).resolves.toMatchObject({ size: 2 });
+    await expectRefused(
+      w,
+      'tmember',
+      'projects:restore-version',
+      { projectId: team.projectId, versionId: tv },
+      'forbidden',
+      'viewer-only',
+    );
+  });
+});
+
+describe('file history: cleanup (W3d)', () => {
+  it('answers blob:collect-refs with the owner of every sha it still holds', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    await w.call('alice', 'projects:write-file', { projectId, path: 'a.md', content: enc('held') });
+    const held = sha256('held');
+    const unheld = sha256('nobody');
+    const out = await w.h.bus.fire('blob:collect-refs', w.as('system'), { candidates: [held, unheld], answers: [] });
+    expect(out.rejected).toBe(false);
+    const answers = ((out as { payload: unknown }).payload as { answers: { holder: string; ok: boolean; refs: unknown[] }[] })
+      .answers;
+    expect(answers.find((a) => a.holder === '@ax/projects')).toEqual({
+      holder: '@ax/projects',
+      ok: true,
+      refs: [{ sha256: held, userIds: ['alice'] }],
+    });
+  });
+
+  it('agents:deleted and conversations:purged null the author agent and the chat, keeping the versions', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    // An editor agent's turns, so deleting that agent leaves the project.
+    await grant(w, 'alice', folderId, 'a-alice-2', 'editor');
+    const who = { userId: 'alice', agentId: 'a-alice-2', projectId };
+    putFile(folderId, 'a.md', 'a');
+    await turnEnd(w, { ...who, conversationId: 'c1' }, { reqId: 'r1' });
+    putFile(folderId, 'a.md', 'b');
+    await turnEnd(w, { ...who, conversationId: 'c2' }, { reqId: 'r2' });
+    await w.h.bus.fire('conversations:purged', w.as('system'), { conversationIds: ['c1'] });
+    // A malformed payload is rejected whole.
+    await w.h.bus.fire('conversations:purged', w.as('system'), { conversationIds: ['c2', 7] });
+    expect((await versionRows(projectId, 'a.md')).map((r) => r.conversation_id)).toEqual([null, 'c2']);
+    await w.h.bus.fire('agents:deleted', w.as('system'), { agentId: 'a-alice-2', ownerId: 'alice', ownerType: 'user' });
+    expect((await versionRows(projectId, 'a.md')).map((r) => [r.author_agent_id, r.req_id])).toEqual([
+      [null, 'r1'],
+      [null, 'r2'],
+    ]);
+  });
+
+  it("deleting a project deletes its history, manifest and gaps; a folder's tombstone does too", async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const counts = async (projectId: string): Promise<number[]> =>
+      Promise.all(
+        [
+          'projects_v1_file_versions',
+          'projects_v1_file_manifest',
+          'projects_v1_history_gaps',
+          'projects_v1_history_state',
+        ].map(async (t) => (await q(`SELECT 1 FROM ${t} WHERE project_id = $1`, [projectId])).length),
+      );
+    const a = await createProject(w, 'alice', 'a-alice-1');
+    const b = await createProject(w, 'alice', 'a-alice-2', 'B');
+    for (const p of [a, b]) {
+      putFile(p.folderId, 'x.md', 'x');
+      await w.call('alice', 'projects:snapshot', { projectId: p.projectId });
+      await q('INSERT INTO projects_v1_history_gaps (project_id, reason) VALUES ($1, $2)', [p.projectId, 'test']);
+      expect((await counts(p.projectId)).every((n) => n > 0)).toBe(true);
+    }
+    await w.call('alice', 'projects:delete', { projectId: a.projectId });
+    expect(await counts(a.projectId)).toEqual([0, 0, 0, 0]);
+    await w.h.bus.fire('shared-folders:deleted', w.as('system'), { folderId: b.folderId });
+    expect(await counts(b.projectId)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('retention keeps every version from the last 30 days plus the last 50 of each file', async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    const insert = (path: string, ageDays: number, i: number) =>
+      q(
+        `INSERT INTO projects_v1_file_versions (version_id, project_id, path, size, kind, label, created_at)
+         VALUES ($1, $2, $3, 0, 'delete', 'agent', NOW() - make_interval(days => $4))`,
+        [`pv_${path}_${i}`, projectId, path, ageDays],
+      );
+    // old.md: 60 old versions → the newest 50 stay.
+    for (let i = 0; i < 60; i++) await insert('old.md', 90, i);
+    // mixed.md: 55 old then 10 recent → all 10 recent stay, plus 40 old (50 newest overall)…
+    for (let i = 0; i < 55; i++) await insert('mixed.md', 90, i);
+    for (let i = 0; i < 10; i++) await insert('mixed.md', 1, 100 + i);
+    // recent.md: 70 recent → all stay.
+    for (let i = 0; i < 70; i++) await insert('recent.md', 2, i);
+    await q(`INSERT INTO projects_v1_history_gaps (project_id, reason, at) VALUES ($1, 'old', NOW() - INTERVAL '40 days')`, [
+      projectId,
+    ]);
+    await q(`INSERT INTO projects_v1_history_gaps (project_id, reason) VALUES ($1, 'new')`, [projectId]);
+    await expect(w.projects.runHistoryRetention()).resolves.toEqual({ kind: 'done', versions: 25, gaps: 1 });
+    const left = async (path: string) => (await versionRows(projectId, path)).map((r) => r.version_id);
+    expect(await left('old.md')).toEqual(Array.from({ length: 50 }, (_, i) => `pv_old.md_${i + 10}`));
+    const mixed = await left('mixed.md');
+    expect(mixed).toHaveLength(50);
+    expect(mixed.slice(-10)).toEqual(Array.from({ length: 10 }, (_, i) => `pv_mixed.md_${100 + i}`));
+    expect(await left('recent.md')).toHaveLength(70);
+    expect((await q<{ reason: string }>('SELECT reason FROM projects_v1_history_gaps')).map((g) => g.reason)).toEqual([
+      'new',
+    ]);
   });
 });

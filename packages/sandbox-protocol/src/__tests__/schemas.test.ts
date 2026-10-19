@@ -669,6 +669,53 @@ describe('OpenSessionInputSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // TASK-181 / W3d — `owner.source` and `owner.projectId` are host-internal
+  // fields the orchestrator sets; the schema bounds them.
+  describe('owner.source and owner.projectId', () => {
+    const withOwner = (extra: Record<string, unknown>) => ({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          displayName: 'Helper',
+          systemPromptAugment: '',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude',
+          runner: 'claude-sdk',
+        },
+        ...extra,
+      },
+    });
+
+    it('accepts an owner with neither', () => {
+      expect(OpenSessionInputSchema.safeParse(withOwner({})).success).toBe(true);
+    });
+
+    it('accepts source routine and a prj_ projectId, and keeps them', () => {
+      const projectId = 'prj_AbCdEfGhIjKlMnOpQrStUv';
+      const result = OpenSessionInputSchema.safeParse(withOwner({ source: 'routine', projectId }));
+      expect(result.success).toBe(true);
+      expect(result.success && result.data.owner?.projectId).toBe(projectId);
+      expect(result.success && result.data.owner?.source).toBe('routine');
+    });
+
+    it('rejects an unknown source', () => {
+      expect(OpenSessionInputSchema.safeParse(withOwner({ source: 'runner' })).success).toBe(false);
+    });
+
+    it('rejects an empty, overlong or non-string projectId', () => {
+      for (const projectId of ['', 'p'.repeat(129), 42, null]) {
+        expect(OpenSessionInputSchema.safeParse(withOwner({ projectId })).success).toBe(false);
+      }
+      expect(OpenSessionInputSchema.safeParse(withOwner({ projectId: 'p'.repeat(128) })).success).toBe(true);
+    });
+  });
 });
 
 // --- ServiceDescriptorSchema (standalone wire re-validation) ----------------

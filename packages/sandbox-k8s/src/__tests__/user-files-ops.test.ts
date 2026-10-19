@@ -2,7 +2,8 @@ import { existsSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFINED_READ_LIMITS, WalkReadError } from '@ax/user-files-read';
+import { DEFAULT_CONFINED_READ_LIMITS, MAX_WALK_ENTRIES, WalkPathError, WalkReadError } from '@ax/user-files-read';
+import { SCAN_SHARED_FOLDER_MAX_ENTRIES } from '@ax/sandbox-mount-protocol';
 import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import type {
   LocateSharedFolderInput,
@@ -20,6 +21,7 @@ import {
   parseReadOutput,
   readSharedFolder,
   readUserFiles,
+  scanSharedFolder,
 } from '../user-files-ops.js';
 import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
 
@@ -1204,6 +1206,179 @@ describe('readSharedFolder (k8s, host-mounted)', () => {
       expect(
         await readSharedFolder(withRoot(), { folderId: 'sf_a', relPath: 'up/SECRET', limitBytes: 100 }, log),
       ).toEqual({ kind: 'absent' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3d — sandbox:scan-shared-folder, the host-mounted realization. Same shape as
+// the read above: error mapping with an injected walk everywhere, the real
+// walk on Linux.
+// ---------------------------------------------------------------------------
+describe('scanSharedFolder (k8s, host-mounted)', () => {
+  const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
+  let hostRoot: string;
+  beforeEach(async () => {
+    hostRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-k8s-sharedscan-')));
+  });
+  afterEach(async () => {
+    await fs.rm(hostRoot, { recursive: true, force: true }).catch(() => undefined);
+  });
+  const withRoot = () =>
+    resolveConfig({ hostIpcUrl: 'http://h:80', namespace: 'ax-test', userFilesHostReadRoot: hostRoot });
+  function recordingLog() {
+    const lines: Array<{ level: string; msg: string; bindings?: Record<string, unknown> }> = [];
+    const mk = (): Logger => ({
+      debug: (msg, bindings) => lines.push({ level: 'debug', msg, bindings }),
+      info: (msg, bindings) => lines.push({ level: 'info', msg, bindings }),
+      warn: (msg, bindings) => lines.push({ level: 'warn', msg, bindings }),
+      error: (msg, bindings) => lines.push({ level: 'error', msg, bindings }),
+      child: () => mk(),
+    });
+    return { log: mk(), lines };
+  }
+  const walkErr = (code: string, depth: number) =>
+    new WalkReadError(`could not open (${code})`, { code, depth });
+
+  it('the default/ceiling matches the protocol constant', () => {
+    expect(MAX_WALK_ENTRIES).toBe(SCAN_SHARED_FOLDER_MAX_ENTRIES);
+  });
+
+  it('answers unavailable when the deployment has no host read root, without walking', async () => {
+    const walk = vi.fn();
+    expect(await scanSharedFolder(CONFIG, { folderId: 'sf_a' }, log, walk)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(walk).not.toHaveBeenCalled();
+  });
+
+  it.each([['../etc'], ['sf_a/x'], ['.shared'], [''], ['sf_'], [42]])(
+    'SECURITY: refuses folderId %j with invalid-payload before touching the disk',
+    async (folderId) => {
+      const walk = vi.fn();
+      const err = await scanSharedFolder(withRoot(), { folderId: folderId as string }, log, walk).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(PluginError);
+      expect((err as PluginError).code).toBe('invalid-payload');
+      expect(walk).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[0], [-1], [1.5], [10_001], ['10']])(
+    'refuses maxEntries %j with invalid-payload before touching the disk',
+    async (maxEntries) => {
+      const walk = vi.fn();
+      const err = await scanSharedFolder(
+        withRoot(),
+        { folderId: 'sf_a', maxEntries: maxEntries as number },
+        log,
+        walk,
+      ).catch((e: unknown) => e);
+      expect((err as PluginError).code).toBe('invalid-payload');
+      expect(walk).not.toHaveBeenCalled();
+    },
+  );
+
+  it('walks [.shared, folderId] from the host read root, 10,000 files by default', async () => {
+    const files = [{ path: 'a.md', size: 1, mtimeMs: 2, ino: 3 }];
+    const walk = vi.fn(async () => ({ kind: 'done' as const, files, truncated: false }));
+    expect(await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).toEqual({
+      kind: 'done',
+      files,
+      truncated: false,
+    });
+    expect(walk).toHaveBeenCalledWith(hostRoot, ['.shared', 'sf_a'], { maxEntries: 10_000 });
+    await scanSharedFolder(withRoot(), { folderId: 'sf_a', maxEntries: 5 }, log, walk);
+    expect(walk).toHaveBeenLastCalledWith(hostRoot, ['.shared', 'sf_a'], { maxEntries: 5 });
+  });
+
+  it('a folder that does not exist yet is an empty, complete scan', async () => {
+    const walk = vi.fn(async () => ({ kind: 'absent' as const, reason: 'missing' as const }));
+    expect(await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).toEqual({
+      kind: 'done',
+      files: [],
+      truncated: false,
+    });
+  });
+
+  it('a folder whose name is a link or a file throws, never an empty scan', async () => {
+    const walk = vi.fn(async () => ({ kind: 'absent' as const, reason: 'link-or-not-dir' as const }));
+    await expect(scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).rejects.toMatchObject({
+      code: 'unsafe-shared-folder-location',
+    });
+  });
+
+  it('a WalkPathError is invalid-payload', async () => {
+    const walk = vi.fn(async () => {
+      throw new WalkPathError('path is too deep');
+    });
+    await expect(scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+  });
+
+  it.each([[0], [1]])('EACCES at depth %i is unavailable, with a warning naming the fix', async (depth) => {
+    const { log: rec, lines } = recordingLog();
+    const walk = vi.fn(async () => {
+      throw walkErr('EACCES', depth);
+    });
+    expect(await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, rec, walk)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(JSON.stringify(lines.find((l) => l.level === 'warn'))).toMatch(/0711/);
+  });
+
+  it('EACCES deeper in, and any other failure, rethrows', async () => {
+    for (const [code, depth] of [['EACCES', 2], ['EIO', 1], ['ENOENT', -1], ['ESTALE', 0]] as const) {
+      const walk = vi.fn(async () => {
+        throw walkErr(code, depth);
+      });
+      await expect(scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).rejects.toMatchObject({
+        code,
+      });
+    }
+  });
+
+  it('a platform with no /proc walk answers unavailable', async () => {
+    const walk = vi.fn(async () => {
+      throw walkErr('unsupported-platform', -1);
+    });
+    expect(await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log, walk)).toEqual({
+      kind: 'unavailable',
+    });
+  });
+
+  it.skipIf(ON_LINUX)('with the real walk off Linux, answers unavailable', async () => {
+    expect(await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log)).toEqual({
+      kind: 'unavailable',
+    });
+  });
+
+  describe.skipIf(!ON_LINUX)('with the real walk (Linux /proc; runs in CI)', () => {
+    it('scans the folder recursively, sorted, and never follows a planted link', async () => {
+      const folder = path.join(hostRoot, '.shared', 'sf_a');
+      await fs.mkdir(path.join(folder, 'memory'), { recursive: true });
+      await fs.writeFile(path.join(folder, 'memory', 'status.md'), 'all good');
+      await fs.writeFile(path.join(folder, 'README.md'), 'hi');
+      await fs.mkdir(path.join(hostRoot, 'outside'));
+      await fs.writeFile(path.join(hostRoot, 'outside', 'SECRET'), 'x');
+      await fs.symlink(path.join(hostRoot, 'outside'), path.join(folder, 'up'));
+      const out = await scanSharedFolder(withRoot(), { folderId: 'sf_a' }, log);
+      if (out.kind !== 'done') throw new Error(`expected done, got ${out.kind}`);
+      expect(out.truncated).toBe(false);
+      expect(out.files.map((f) => [f.path, f.size])).toEqual([
+        ['README.md', 2],
+        ['memory/status.md', 8],
+      ]);
+    });
+
+    it('a folder that does not exist yet is done with no files', async () => {
+      expect(await scanSharedFolder(withRoot(), { folderId: 'sf_none' }, log)).toEqual({
+        kind: 'done',
+        files: [],
+        truncated: false,
+      });
     });
   });
 });

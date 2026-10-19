@@ -54,6 +54,87 @@ keeping a copy. (Design: `docs/plans/2026-10-12-w3-projects-design.md` §4, §13
 - The person's display name lands in `memory/log.md`, a file agents read, so
   it's cut to one line of at most 80 characters with no control characters.
 
+## File history (W3d)
+
+History keeps earlier versions of a project's files so a person can see what
+changed and put a file back. Its bytes are agent-written and untrusted: we store
+them and hand them back, and never read meaning into them.
+
+- **Who may do what.** `projects:file-history` and `projects:read-version` need
+  what `read-file` needs (use the project, viewers included).
+  `projects:restore-version` needs what `write-file` needs (an editor or owner
+  member) and follows the same rules: a version under `sources/` is
+  `read-only-path`. A version id that isn't this project's is `not-found`, with
+  the same message as an unknown project. A deletion or a too-large version
+  can't be restored (`not-restorable`).
+- **`projects:snapshot`** is called by the orchestrator, as the person, before a
+  writable project session opens. The person must be able to use the project.
+- **The turn-end pass** takes the project from `ctx.projectId`, which the IPC
+  server stamps from the session record, never from the runner's frame. It
+  records only when the session's agent holds a **writable** grant
+  (`projects:resolve`'s check, as the session's person); a viewer's turn
+  records nothing. The payload's `reqId` / `turnId` are runner-written: they're
+  used only as a dedupe key and a label, capped at 200 characters.
+- **Who pays.** Every version's bytes are `blob:put` as the project's **owner**
+  (the owner of its member agents: a person, or `team:<id>` for a team's
+  agents, disk-quota's key), never as whoever triggered the pass. So an agent
+  in someone's project can't fill a stranger's quota, and one person pays for
+  one project. The owner is stored on each version, and that's who
+  `blob:collect-refs` names.
+- **Bounded work.** A pass scans at most 10,000 files, reads at most 500
+  changed files, each up to 1 MiB (bigger ones are recorded as "too large",
+  without bytes), and stops taking new files after 2 minutes (the next pass
+  takes the rest). Host writes don't take the lease and don't touch the
+  manifest, so a pass that reads a file between a person's save and the save's
+  own version can record those bytes first, labeled as the turn's agent or
+  "changed outside history", and the save's version then follows (or is
+  skipped as identical). Nothing is lost: every version stays, and the
+  preimage taken before each save is what undo relies on. The next pass
+  re-reads the file once and records nothing new.
+- **One pass per project, and never a held connection.** A pass takes a
+  **lease row** (`projects_v1_history_leases`), not a lock on a database
+  connection: one `INSERT … ON CONFLICT … WHERE until < now() RETURNING
+  token` takes it if it's free or expired, it lasts 3 minutes, and the pass
+  deletes only its own token when it ends. A pass that can't take it skips.
+  This replaced a session advisory lock that pinned one pool connection for the
+  whole pass while the pass's own queries needed a second one: about ten
+  passes at once (ten project chats ending a turn together) took every
+  connection in the host's shared pool and deadlocked, taking every plugin's
+  database access down with them. A pass now holds no connection while it
+  waits on the folder or the blob store.
+- **At most 2 passes at once per host process.** A third answers `locked`
+  straight away; the turn-end path doesn't mark the turn seen, so a later turn
+  retries, and a snapshot just answers "nothing recorded". So a burst of turn
+  ends can't crowd the shared pool. The scan isn't bounded by the deadline, so
+  a pass renews and re-checks its lease after scanning and stops if another
+  pass took it. If a pass still outlives its lease (a single read hanging for
+  minutes), a second pass may overlap it; both only record what
+  differs from the latest version, so the worst case is a duplicate version.
+- **A truncated scan never deletes.** A file missing from a scan that hit a cap
+  may still exist, so it's never recorded as deleted.
+- **Failures leave a gap, never a failed save or a stuck turn.** A preimage or
+  version that can't be recorded writes a gap row ("history may be missing
+  changes from around …") and the person's change goes ahead. The turn-end
+  subscriber runs in the background and never throws.
+- **Cleanup.** Deleting a project (or its folder being tombstoned) deletes its
+  versions, manifest, gaps, history state and lease in the same transaction as
+  the row. Every history table also declares `project_id REFERENCES
+  projects_v1_projects ON DELETE CASCADE`, so a pass, snapshot or host write
+  that was still running when the project went can't leave rows behind: its
+  insert fails with a foreign-key violation, which we read as "the project is
+  gone". The pass stops, no gap is written, and it's logged at debug/info, not
+  as an error. Without this, those late rows outlived the project forever, and
+  their blobs stayed held through `blob:collect-refs` (which answers from the
+  versions table, so the cascade takes the refs with it). `agents:deleted` nulls `author_agent_id` and `conversations:purged`
+  nulls `conversation_id`; the versions stay ("a removed agent"). A daily job,
+  under a try-lock, keeps every version from the last 30 days plus the last 50
+  of each file; blob-gc releases the bytes nobody holds. Retention keeps an
+  advisory try-lock, and runs every statement on that lock's own connection,
+  never asking the pool for a second one while holding it.
+- **`sandbox:scan-shared-folder`** is called undeclared and `hasService`-guarded,
+  like the reader: it does no grant check, and it's called only for a project
+  already loaded and checked.
+
 ## Refusals: `not-found` vs `forbidden`
 
 - Anything keyed on a project id that the actor can't **use** (unknown id, a
@@ -112,4 +193,7 @@ prompt of every member agent, so we treat them as untrusted:
   for a failed create's rollback) are called the same way. The change hook
   does no grant check either: it's called only after `loadEditable` and the
   path rules, or by `projects:create` on the folder it just made.
+- W3d's **`sandbox:scan-shared-folder`** is called the same way, only for a
+  project already loaded. `blob:put` / `blob:get` are optional calls: without
+  a blob store nothing is recorded.
 - No new npm dependencies.

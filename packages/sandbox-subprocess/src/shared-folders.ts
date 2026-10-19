@@ -12,10 +12,14 @@ import type {
   LocateSharedFolderOutput,
   ReadSharedFolderInput,
   ReadSharedFolderOutput,
+  ScanSharedFolderInput,
+  ScanSharedFolderOutput,
 } from '@ax/sandbox-mount-protocol';
 import {
   changeConfinedByWalk,
+  MAX_WALK_ENTRIES,
   readConfinedByWalk,
+  scanConfinedByWalk,
   splitRelPath,
   WalkChangeError,
   WalkPathError,
@@ -51,6 +55,7 @@ const LOCATE_HOOK = 'sandbox:locate-shared-folder';
 const DELETE_HOOK = 'sandbox:delete-shared-folder';
 const READ_HOOK = 'sandbox:read-shared-folder';
 const CHANGE_HOOK = 'sandbox:change-shared-folder';
+const SCAN_HOOK = 'sandbox:scan-shared-folder';
 
 /** One entry of the runner's `AX_SHARED_FOLDERS` JSON list (key order is part of the contract). */
 export interface SharedFolderEnvEntry {
@@ -361,6 +366,43 @@ function readError(code: string, pluginName: string, message: string, cause?: un
 }
 
 /**
+ * Where the read-only host walks (read, scan) start: the resolver's
+ * `sandbox:locate-shared-folder` answer, which must be exactly
+ * `<root>/.shared/<folderId>` ({@link checkSharedFolderMount}), minus the last
+ * two components. Anything else is refused before the disk is touched.
+ */
+async function locateReadRoot(
+  ctx: AgentContext,
+  bus: HookBus,
+  folderId: string,
+  verb: string,
+  error: (code: string, message: string) => PluginError,
+): Promise<string> {
+  const { mount } = await bus.call<LocateSharedFolderInput, LocateSharedFolderOutput>(
+    LOCATE_HOOK,
+    ctx,
+    { folderId },
+  );
+  if (mount.kind !== 'localDir') {
+    throw error(
+      'unrealizable-mount-kind',
+      `subprocess sandbox cannot ${verb} a '${String(mount.kind)}' shared folder. Load ` +
+        `@ax/workspace-localdir for the subprocess/CLI preset instead of @ax/workspace-filestore.`,
+    );
+  }
+  const checked = checkSharedFolderMount(mount, folderId);
+  if ('problem' in checked) {
+    throw error(
+      'unsafe-shared-folder-location',
+      `refusing to ${verb} shared folder '${folderId}': the located path is not ` +
+        `<root>/${SHARED_FOLDERS_DIR}/${folderId} (${checked.problem})`,
+    );
+  }
+  // Proven `<root>/.shared/<folderId>`, so this is `<root>`.
+  return path.dirname(path.dirname(mount.hostPath));
+}
+
+/**
  * Realize `sandbox:read-shared-folder` for the subprocess provider: the host's
  * read-only view of one folder. NO GRANT CHECK — the only caller,
  * `@ax/projects`, checks the person can use the project first.
@@ -399,30 +441,9 @@ export async function readSharedFolder(
     throw err;
   }
 
-  const { mount } = await bus.call<LocateSharedFolderInput, LocateSharedFolderOutput>(
-    LOCATE_HOOK,
-    ctx,
-    { folderId },
+  const root = await locateReadRoot(ctx, bus, folderId, 'read', (code, message) =>
+    readError(code, pluginName, message),
   );
-  if (mount.kind !== 'localDir') {
-    throw readError(
-      'unrealizable-mount-kind',
-      pluginName,
-      `subprocess sandbox cannot read a '${String(mount.kind)}' shared folder. Load ` +
-        `@ax/workspace-localdir for the subprocess/CLI preset instead of @ax/workspace-filestore.`,
-    );
-  }
-  const checked = checkSharedFolderMount(mount, folderId);
-  if ('problem' in checked) {
-    throw readError(
-      'unsafe-shared-folder-location',
-      pluginName,
-      `refusing to read shared folder '${folderId}': the located path is not ` +
-        `<root>/${SHARED_FOLDERS_DIR}/${folderId} (${checked.problem})`,
-    );
-  }
-  // Proven `<root>/.shared/<folderId>`, so this is `<root>`.
-  const root = path.dirname(path.dirname(mount.hostPath));
 
   try {
     const out = await walk(root, [SHARED_FOLDERS_DIR, folderId, ...rel], {
@@ -443,6 +464,98 @@ export async function readSharedFolder(
     // passed splitRelPath can still be too deep. Same answer as k8s.
     if (err instanceof WalkPathError) {
       throw readError('invalid-payload', pluginName, `invalid relPath: ${err.message}`, err);
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sandbox:scan-shared-folder (W3d)
+// ---------------------------------------------------------------------------
+
+function scanError(code: string, pluginName: string, message: string, cause?: unknown): PluginError {
+  return new PluginError({
+    code,
+    plugin: pluginName,
+    hookName: SCAN_HOOK,
+    message,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+/**
+ * Realize `sandbox:scan-shared-folder` for the subprocess provider: a
+ * recursive, confined stat of one folder for `@ax/projects`' file history.
+ * NO GRANT CHECK, like the read.
+ *
+ * Where and how: exactly {@link readSharedFolder} — the located
+ * `<root>/.shared/<id>` (shape-checked), then `scanConfinedByWalk` from
+ * `<root>` over `[.shared, <id>]`. No directory is entered through a symlink,
+ * no file is opened, and links / FIFOs / sockets / devices are skipped.
+ *
+ * Answers:
+ * - `done` with every regular file, sorted by path. A folder that does not
+ *   exist yet (a project nothing has written) is `done` with no files and not
+ *   truncated: an empty scan is the truth.
+ * - `unavailable` when no resolver is loaded, or off Linux (no /proc), as the
+ *   read does.
+ * - A folder whose NAME is a link or a file throws
+ *   `unsafe-shared-folder-location` (never an empty scan: history would read
+ *   it as every file deleted). A bad `maxEntries` or a `WalkPathError` is
+ *   `invalid-payload`. A storage failure (`WalkReadError`) rethrows.
+ *
+ * `walk` is injectable for tests only.
+ */
+export async function scanSharedFolder(
+  ctx: AgentContext,
+  bus: HookBus,
+  pluginName: string,
+  input: ScanSharedFolderInput,
+  walk: typeof scanConfinedByWalk = scanConfinedByWalk,
+): Promise<ScanSharedFolderOutput> {
+  if (!bus.hasService(LOCATE_HOOK)) return { kind: 'unavailable' };
+  const folderId: unknown = (input as { folderId?: unknown } | undefined)?.folderId;
+  if (!isValidSharedFolderId(folderId)) {
+    throw scanError('invalid-payload', pluginName, 'folderId is not a valid shared-folder id');
+  }
+  const maxEntries: unknown = input.maxEntries ?? MAX_WALK_ENTRIES;
+  if (
+    typeof maxEntries !== 'number' ||
+    !Number.isSafeInteger(maxEntries) ||
+    maxEntries < 1 ||
+    maxEntries > MAX_WALK_ENTRIES
+  ) {
+    throw scanError(
+      'invalid-payload',
+      pluginName,
+      `maxEntries must be an integer from 1 to ${MAX_WALK_ENTRIES}`,
+    );
+  }
+  const root = await locateReadRoot(ctx, bus, folderId, 'scan', (code, message) =>
+    scanError(code, pluginName, message),
+  );
+
+  try {
+    const out = await walk(root, [SHARED_FOLDERS_DIR, folderId], { maxEntries });
+    if (out.kind === 'absent') {
+      if (out.reason === 'missing') return { kind: 'done', files: [], truncated: false };
+      ctx.logger.warn('shared_folder_scan_refused', { folderId, reason: out.reason });
+      throw scanError(
+        'unsafe-shared-folder-location',
+        pluginName,
+        `shared folder '${folderId}' is not a directory`,
+      );
+    }
+    if (out.truncated) {
+      ctx.logger.info('shared_folder_scan_truncated', { folderId, files: out.files.length });
+    }
+    return out;
+  } catch (err) {
+    if (err instanceof WalkReadError && err.code === 'unsupported-platform') {
+      return { kind: 'unavailable' };
+    }
+    if (err instanceof WalkPathError) {
+      throw scanError('invalid-payload', pluginName, `invalid path: ${err.message}`, err);
     }
     throw err;
   }
