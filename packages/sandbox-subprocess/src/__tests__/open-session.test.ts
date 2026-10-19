@@ -896,6 +896,63 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // TASK-181 / W3d — owner.source and owner.projectId are host-internal and
+  // ride sandbox:open-session → session:create → session:resolve-token, so
+  // the IPC listeners can stamp them on ctx. Drive the real session store and
+  // read them back through the token the provider minted.
+  it('forwards owner.source and owner.projectId into session:create (and resolve-token echoes them)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const spy = vi.spyOn(h.bus, 'call');
+    const ctx = h.ctx();
+    const owner = {
+      userId: 'u-1',
+      agentId: 'agt-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+    };
+    const resolveFor = async (sessionId: string, extra: Record<string, unknown>) => {
+      const opened = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+        sessionId,
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
+        owner: { ...owner, ...extra },
+      });
+      const i = spy.mock.calls.findIndex(
+        ([hook, , input]) => hook === 'session:create' && (input as { sessionId: string }).sessionId === sessionId,
+      );
+      const createInput = spy.mock.calls[i]![2] as { owner: Record<string, unknown> };
+      const { token } = (await spy.mock.results[i]!.value) as { token: string };
+      const resolved = await h.bus.call<unknown, { source: unknown; projectId: unknown }>(
+        'session:resolve-token', ctx, { token },
+      );
+      return { opened, createOwner: createInput.owner, resolved };
+    };
+
+    const withBoth = await resolveFor('sub-own-p', { source: 'routine', projectId: 'prj_abc' });
+    expect(withBoth.createOwner).toMatchObject({ source: 'routine', projectId: 'prj_abc' });
+    expect(withBoth.resolved).toMatchObject({ source: 'routine', projectId: 'prj_abc' });
+
+    // Neither set: the keys stay absent on session:create (not undefined),
+    // and the record echoes null.
+    const neither = await resolveFor('sub-own-none', {});
+    expect('source' in neither.createOwner).toBe(false);
+    expect('projectId' in neither.createOwner).toBe(false);
+    expect(neither.resolved).toMatchObject({ source: null, projectId: null });
+    for (const r of [withBoth, neither]) {
+      await r.opened.handle.kill();
+      await r.opened.handle.exited;
+    }
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('owner.conversationId round-trips through session:create → session:get-config', async () => {
     // Bug 1 regression net: prior to this fix, OpenSessionInputSchema
     // stripped `owner.conversationId` (it wasn't declared on the Zod

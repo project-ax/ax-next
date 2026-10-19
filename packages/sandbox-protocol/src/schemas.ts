@@ -304,6 +304,13 @@ export const OpenSessionInputSchema = z.object({
       // ctx.source on the host. Do NOT move this onto the runner-facing IPC
       // protocol.
       source: z.enum(['routine', 'user']).optional(),
+      // W3d — the project this session was spawned for, set HOST-SIDE by the
+      // orchestrator from the chat's row after `projects:resolve`. Forwarded
+      // into session:create exactly like `source`, so the IPC listeners stamp
+      // `ctx.projectId` from the session record. Same SECURITY posture: it
+      // rides this host-internal hook only, never the runner wire. An opaque
+      // id (minted `prj_<base64url>`), bounded like projects' own check.
+      projectId: z.string().min(1).max(128).optional(),
     })
     .optional(),
   proxyConfig: ProxyConfigSchema,

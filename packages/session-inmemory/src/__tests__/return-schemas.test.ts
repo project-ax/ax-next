@@ -36,6 +36,7 @@ describe('session return schemas', () => {
       // TASK-181 — a routine-originated session round-trips its origin so the
       // schema can't silently strip it (which would re-break the happy-path guard).
       source: 'routine',
+      projectId: 'prj_abc',
     };
     expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
     expect(SessionResolveTokenOutputSchema.parse(null)).toBeNull();
@@ -48,6 +49,7 @@ describe('session return schemas', () => {
         agentId: null,
         conversationId: null,
         source: null,
+        projectId: null,
       }).success,
     ).toBe(true);
   });

@@ -967,6 +967,15 @@ interface OpenSessionInput {
      * ctx.source on the host.
      */
     source?: 'routine' | 'user';
+    /**
+     * W3d — the project this session was spawned for (the same value
+     * `spawnProjectBySession` records), absent for none. Forwarded into
+     * session:create the way `source` is, so the IPC listeners stamp
+     * `ctx.projectId` on every host handler the session reaches (the
+     * `chat:turn-end` history pass reads it). SECURITY: host-set only — from
+     * the chat's row after `projects:resolve`, never from a runner frame.
+     */
+    projectId?: string;
   };
   /**
    * Per-session proxy blob from `proxy:open-session`. REQUIRED (TASK-838):
@@ -4075,6 +4084,11 @@ export function createOrchestrator(
           // spread keeps the key ABSENT (not `undefined`) for user turns, matching
           // the exactOptionalPropertyTypes posture.
           ...(ctx.source !== undefined ? { source: ctx.source } : {}),
+          // W3d — the spawn project (the value recordSessionSharedFolders
+          // keeps in spawnProjectBySession), so the session record carries it
+          // and the IPC listeners stamp ctx.projectId. Host-internal like
+          // `source`; key absent when the chat has no project.
+          ...(project !== null ? { projectId: project.projectId } : {}),
         },
         // Phase 6: credential-proxy is mandatory; proxyConfig is always set
         // by the time we reach this point (the !proxyOpenLoaded gate above

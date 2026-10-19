@@ -530,6 +530,35 @@ describe('W2: shared-folders:access-reduced retires sessions holding the folder'
   });
 });
 
+describe('W3d: the spawn project travels on owner.projectId (like owner.source)', () => {
+  const ownerOf = (input: Record<string, unknown>) => input.owner as Record<string, unknown>;
+
+  it('a project chat sets owner.projectId to the resolved project', async () => {
+    const t = await setup({ folderId: 'sf_a' });
+    await t.turn('s-1', 'req-1');
+    expect(ownerOf(t.openInputs[0]!).projectId).toBe('prj-1');
+    t.cleanup();
+  });
+
+  it('a chat outside a project leaves owner.projectId absent (not undefined)', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    expect('projectId' in ownerOf(t.openInputs[0]!)).toBe(false);
+    t.cleanup();
+  });
+
+  it('a chat moved P → Q respawns with owner.projectId = Q', async () => {
+    const t = await setup({ folderId: 'sf_a', projectFolders: { 'prj-q': 'sf_q' } });
+    await t.turn('s-1', 'req-1');
+    expect(ownerOf(t.openInputs[0]!).projectId).toBe('prj-1');
+    t.setChatProject('prj-q');
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(2);
+    expect(ownerOf(t.openInputs[1]!).projectId).toBe('prj-q');
+    t.cleanup();
+  });
+});
+
 describe('W3e: a chat moved between projects retires its live session at the next turn', () => {
   const respawns = (logs: Array<Record<string, unknown>>) =>
     logs.filter((l) => l.msg === 'stale_session_respawn');

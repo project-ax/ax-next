@@ -113,6 +113,7 @@ function validateOwner(
       agentConfig: AgentConfig;
       conversationId: string | null;
       source: 'routine' | 'user' | null;
+      projectId: string | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -129,6 +130,7 @@ function validateOwner(
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   const sourceRaw = (raw as { source?: unknown }).source;
+  const projectIdRaw = (raw as { projectId?: unknown }).projectId;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -228,6 +230,28 @@ function validateOwner(
       message: `'owner.source' must be 'routine', 'user', or null/undefined`,
     });
   }
+  // projectId — W3d — optional, the session's spawn project. Same posture as
+  // `source`: only the orchestrator (via sandbox:open-session) writes it, the
+  // runner never reaches this hook. A present value must be a non-empty string
+  // of at most 128 chars (the open-session schema's bound); anything else
+  // fails loud rather than storing a bogus project.
+  let projectId: string | null;
+  if (projectIdRaw === undefined || projectIdRaw === null) {
+    projectId = null;
+  } else if (
+    typeof projectIdRaw === 'string' &&
+    projectIdRaw.length > 0 &&
+    projectIdRaw.length <= 128
+  ) {
+    projectId = projectIdRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.projectId' must be a non-empty string of at most 128 chars, or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -247,6 +271,7 @@ function validateOwner(
     },
     conversationId,
     source,
+    projectId,
   };
 }
 

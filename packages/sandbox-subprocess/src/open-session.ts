@@ -192,6 +192,9 @@ interface SessionCreateInput {
     // verbatim into session:create. Host-only: it arrives on the
     // sandbox:open-session hook (orchestrator → here), never from the runner.
     source?: 'routine' | 'user';
+    // W3d — the session's spawn project, forwarded the same way as `source`
+    // so the session record carries it. Host-only, never from the runner.
+    projectId?: string;
   };
 }
 interface SessionCreateOutput {
@@ -480,6 +483,10 @@ export async function openSessionImpl(
         // persists it. Conditional-spread keeps the key absent for user turns.
         ...(input.owner.source !== undefined
           ? { source: input.owner.source }
+          : {}),
+        // W3d — the spawn project, same treatment as `source`.
+        ...(input.owner.projectId !== undefined
+          ? { projectId: input.owner.projectId }
           : {}),
       };
     }

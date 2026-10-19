@@ -66,7 +66,10 @@ interface Harness {
 async function makeHarness(opts: {
   sessionId: string;
   source: 'routine' | 'user' | undefined;
+  /** W3d — the spawn project the host stamps on the owner, if any. */
+  projectId?: string;
   onChatEnd: (ctx: AgentContext, payload: unknown) => void;
+  onTurnEnd?: (ctx: AgentContext, payload: unknown) => void;
 }): Promise<Harness> {
   const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
   h.bus.subscribe(
@@ -74,6 +77,14 @@ async function makeHarness(opts: {
     'mock-observer',
     async (ctx, payload) => {
       opts.onChatEnd(ctx, payload);
+      return undefined;
+    },
+  );
+  h.bus.subscribe(
+    'chat:turn-end',
+    'mock-turn-end-observer',
+    async (ctx, payload) => {
+      opts.onTurnEnd?.(ctx, payload);
       return undefined;
     },
   );
@@ -89,6 +100,7 @@ async function makeHarness(opts: {
       owner: {
         ...OWNER,
         ...(opts.source !== undefined ? { source: opts.source } : {}),
+        ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
       },
     },
   );
@@ -269,5 +281,72 @@ describe('@ax/ipc-server: AgentContext.source propagation through token resoluti
     expect(capturedCtx).not.toBeNull();
     // The forged routine source did NOT take — the host's known user origin wins.
     expect((capturedCtx as AgentContext | null)?.source).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3d — `projectId` rides the session record exactly like `source`. The
+// `chat:turn-end` file-history pass reads `ctx.projectId`, so the ctx the
+// listener mints for a runner's /event.turn-end must carry the session's
+// spawn project — and a runner frame must not be able to set or change it.
+// ---------------------------------------------------------------------------
+describe('@ax/ipc-server: AgentContext.projectId propagation through token resolution (W3d)', () => {
+  const harnesses: Harness[] = [];
+
+  afterEach(async () => {
+    for (const h of harnesses) await h.cleanup();
+    harnesses.length = 0;
+  });
+
+  async function turnEndCtx(
+    projectId: string | undefined,
+    body: Record<string, unknown>,
+  ): Promise<AgentContext> {
+    let resolveFire: ((ctx: AgentContext) => void) | null = null;
+    const fired = new Promise<AgentContext>((resolve) => {
+      resolveFire = resolve;
+    });
+    const h = await makeHarness({
+      sessionId: `s-prj-${projectId ?? 'none'}`,
+      source: undefined,
+      ...(projectId !== undefined ? { projectId } : {}),
+      onChatEnd: () => {},
+      onTurnEnd: (ctx) => resolveFire?.(ctx),
+    });
+    harnesses.push(h);
+    const res = await postJson(h.socketPath, '/event.turn-end', h.token, JSON.stringify(body));
+    expect(res.status).toBe(202);
+    return fired;
+  }
+
+  const TURN_END = {
+    reqId: 'req-prj-1',
+    reason: 'user-message-wait',
+    role: 'assistant',
+    contentBlocks: [{ type: 'text', text: 'hello' }],
+  };
+
+  it('stamps the session\'s projectId onto the chat:turn-end ctx', async () => {
+    const ctx = await turnEndCtx('prj_abc', TURN_END);
+    expect(ctx.projectId).toBe('prj_abc');
+  });
+
+  it('leaves ctx.projectId undefined for a session outside any project', async () => {
+    const ctx = await turnEndCtx(undefined, TURN_END);
+    expect(ctx.projectId).toBeUndefined();
+  });
+
+  it('SECURITY: a runner frame cannot set projectId on a no-project session', async () => {
+    const ctx = await turnEndCtx(undefined, {
+      ...TURN_END,
+      projectId: 'prj_evil',
+      owner: { projectId: 'prj_evil' },
+    });
+    expect(ctx.projectId).toBeUndefined();
+  });
+
+  it('SECURITY: a runner frame cannot change the session\'s projectId', async () => {
+    const ctx = await turnEndCtx('prj_abc', { ...TURN_END, projectId: 'prj_evil' });
+    expect(ctx.projectId).toBe('prj_abc');
   });
 });
