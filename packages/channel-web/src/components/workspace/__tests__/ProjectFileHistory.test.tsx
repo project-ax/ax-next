@@ -80,6 +80,8 @@ const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString
 const MiB = 1024 * 1024;
 const H1 = '1'.repeat(64);
 const H2 = '2'.repeat(64);
+/** The inline restore/undo confirmation (a group inside the History sheet, never a dialog). */
+const CONFIRM_NAME = (name: string): boolean => name === RESTORE_CONFIRM_TITLE || name === UNDO_CONFIRM_TITLE;
 
 function summary(): ProjectSummary {
   return { projectId: 'p1', name: 'Q4 launch', description: null, updatedAt: hoursAgo(2), members: [{ agentId: 'a-quill', role: 'owner' }] };
@@ -318,19 +320,39 @@ describe('the History sheet', () => {
 });
 
 describe('restoring', () => {
+  // Production smoke test, 2026-10-19: an AlertDialog stacked over the History
+  // Sheet left the page unclickable after Cancel or Restore, and the restore
+  // never reached the server. The confirmation now lives inside the sheet:
+  // one dialog layer, ever.
+  it('confirms inside the sheet, never as a second dialog, and Cancel leaves the sheet usable', async () => {
+    await openHistory();
+    const sheet = screen.getByRole('dialog', { name: 'History' });
+    fireEvent.click(within(row('v7')).getByRole('button', { name: 'Restore' }));
+    const confirm = await within(sheet).findByRole('group', { name: CONFIRM_NAME });
+    expect(within(row('v7')).getByRole('group', { name: CONFIRM_NAME })).toBe(confirm);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('group', { name: CONFIRM_NAME })).toBeNull();
+    expect(api.restoreProjectFileVersion).not.toHaveBeenCalled();
+    // Still open, and the row offers Restore again.
+    expect(screen.getByRole('dialog', { name: 'History' })).toBe(sheet);
+    expect(within(row('v7')).getByRole('button', { name: 'Restore' })).toBeTruthy();
+  });
+
   it('confirms, restores, then refreshes the viewer and the history', async () => {
     await openHistory();
     const fileReads = () => api.projectFiles.mock.calls.filter(([, p]) => p === 'work/plan.md').length;
     const readsBefore = fileReads();
     fireEvent.click(within(row('v7')).getByRole('button', { name: 'Restore' }));
-    const confirm = await screen.findByRole('alertdialog');
+    const confirm = await screen.findByRole('group', { name: CONFIRM_NAME });
     expect(confirm).toHaveTextContent(RESTORE_CONFIRM_TITLE);
     expect(confirm).toHaveTextContent('The current file stays in history, so you can undo this too.');
     expect(api.restoreProjectFileVersion).not.toHaveBeenCalled();
     folder['work/plan.md'] = textFile('work/plan.md', 'An older plan.', H2);
     fireEvent.click(within(confirm).getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'v7'));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: CONFIRM_NAME })).toBeNull());
     await waitFor(() => expect(api.projectFileHistory).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(fileReads()).toBeGreaterThan(readsBefore));
     // The sheet stays open on the refreshed list; behind it, the viewer shows the restored file.
@@ -343,10 +365,14 @@ describe('restoring', () => {
     api.restoreProjectFileVersion.mockRejectedValue(new ProjectFileChangeError('/x', 409, 'not-restorable'));
     await openHistory();
     fireEvent.click(within(row('v7')).getByRole('button', { name: 'Restore' }));
-    const confirm = await screen.findByRole('alertdialog');
+    const confirm = await screen.findByRole('group', { name: CONFIRM_NAME });
     fireEvent.click(within(confirm).getByRole('button', { name: 'Restore' }));
     expect(await within(confirm).findByText(NOT_RESTORABLE)).toBeTruthy();
     expect(NOT_RESTORABLE).toBe('This version can’t be restored.');
+    // Announced, and focus is back on the confirm button (the busy button had
+    // disabled itself and dropped it).
+    expect(within(confirm).getByRole('alert')).toHaveTextContent(NOT_RESTORABLE);
+    await waitFor(() => expect(within(confirm).getByRole('button', { name: 'Restore' })).toHaveFocus());
   });
 });
 
@@ -354,7 +380,7 @@ describe('Undo the last change', () => {
   it('restores the version just before the newest', async () => {
     const sheet = await openHistory();
     fireEvent.click(within(sheet).getByRole('button', { name: 'Undo the last change' }));
-    const confirm = await screen.findByRole('alertdialog');
+    const confirm = await screen.findByRole('group', { name: CONFIRM_NAME });
     expect(confirm).toHaveTextContent(UNDO_CONFIRM_TITLE);
     fireEvent.click(within(confirm).getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'v7'));
@@ -367,7 +393,7 @@ describe('Undo the last change', () => {
     ];
     const sheet = await openHistory();
     fireEvent.click(within(sheet).getByRole('button', { name: 'Undo the last change' }));
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Undo' }));
+    fireEvent.click(within(await screen.findByRole('group', { name: CONFIRM_NAME })).getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'v8'));
   });
 
@@ -423,7 +449,7 @@ describe('a deleted file', () => {
     await within(sheet).findByRole('list', { name: 'Versions' });
     put('work/old.md', 'Back again.');
     fireEvent.click(within(row('last')).getByRole('button', { name: 'Restore' }));
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(await screen.findByRole('group', { name: CONFIRM_NAME })).getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'last'));
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'History' }), { key: 'Escape' });
     expect(await within(main()).findByText('Back again.')).toBeTruthy();
