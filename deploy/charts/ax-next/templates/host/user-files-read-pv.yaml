@@ -1,0 +1,81 @@
+{{/*
+The host pod's READ-ONLY view of the user-files export, as a static
+PersistentVolume + a PersistentVolumeClaim pinned to it.
+
+Why not the inline `nfs:` volume the host used to have: an inline volume
+cannot carry mount options, and this mount needs one. People change these
+files through a DIFFERENT NFS client (the storage helper, on another pod or
+node). When a person deletes a file and the host looks it up, the host's
+kernel caches "not there" (a negative dentry). If the file then comes back
+(an undo, a restore), the host keeps answering ENOENT until its cached copy
+of the parent directory's attributes happens to expire — and a lookup of the
+missing name does not refresh them. Measured on kind
+(deploy/kind/nfs-lookupcache-2026-10-19.json): with the default lookupcache
+the file stayed invisible for ~28.6 s in 3 of 5 trials and for the full
+90 s in the other 2; with `lookupcache=positive` it was visible on the first
+stat (<200 ms) in 3 of 3.
+
+`lookupcache=positive` keeps caching names that EXIST (cheap, and safe: a
+stale positive entry is revalidated against the server's file handle) and
+stops caching names that don't. It is correctness, not tuning, so it is
+hard-coded rather than a values knob. NFS version is left to negotiation,
+exactly as the inline volume did (prod Filestore negotiates v3; the kind dev
+server is v4-only, so pinning nfsvers would break one of them).
+
+Static binding, no provisioner: `storageClassName: ""` on both sides, the
+PVC names the PV (`volumeName`) and the PV names the PVC (`claimRef`), so
+no other claim can take this PV and no dynamic provisioner can answer this
+claim. The PV is cluster-scoped; its name carries the release fullname.
+Reclaim policy Retain: the PV is a pointer to a shared export, and nothing
+about releasing the claim should ever touch the files behind it.
+
+Read-only three times over: ReadOnlyMany, `nfs.readOnly: true` here, and
+`readOnly: true` on the pod's claim reference and on the container mount
+(templates/host/deployment.yaml).
+
+Rendered under exactly the condition that used to render the inline volume.
+*/}}
+{{- if and .Values.sandbox.filestore.server .Values.sandbox.filestore.hostReadPath }}
+{{- $name := printf "%s-user-files-host-read" (include "ax-next.fullname" .) }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+spec:
+  # Informational for NFS (nothing enforces it); the claim requests the same.
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  # See the header: without this, a restored file stays "not found" on the
+  # host for 30-90 s+ (deploy/kind/nfs-lookupcache-2026-10-19.json).
+  mountOptions:
+    - lookupcache=positive
+  claimRef:
+    namespace: {{ include "ax-next.hostNamespace" . }}
+    name: {{ $name }}
+  nfs:
+    server: {{ .Values.sandbox.filestore.server | quote }}
+    path: {{ .Values.sandbox.filestore.exportPath | quote }}
+    readOnly: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: ""
+  volumeName: {{ $name }}
+  resources:
+    requests:
+      storage: 1Gi
+{{- end }}

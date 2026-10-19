@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-19",
+  "subject": "Host 'file not found' after a restore: NFS negative-lookup cache on the reader, fixed by lookupcache=positive",
+  "cluster": "kind-ax-next-dev (OrbStack kernel 7.2.9), dev NFS server 10.96.200.49 (ax-next-memory-nfs, btrfs-backed /exports), fresh export dir /nfs-cache-test",
+  "nfs_version": {
+    "kind": "vers=4.2 on every mount (the dev server runs rpc.nfsd -N 3: NFSv3 is disabled, so nfsvers=3 could not be pinned here)",
+    "prod": "vers=3, hard, proto=tcp (Filestore). The Linux client's lookupcache handling is the same code path for v3 and v4 (dentry revalidation in fs/nfs/dir.c), so the v4.2 result carries over; this is an inference, not a v3 measurement."
+  },
+  "setup": {
+    "namespace": "nfs-cache-test (deleted afterwards; PV deleted; /exports/nfs-cache-test removed)",
+    "writer": "pod with an inline nfs: volume, rw",
+    "reader_inline": "pod with an inline nfs: volume, readOnly: true; /proc/mounts: nfs4 ro,relatime,vers=4.2,hard,proto=tcp,timeo=600,retrans=2 (default lookupcache) -- the shape the host's user-files-read volume has today",
+    "reader_pv": "pod with a PVC bound by volumeName to a static PV: accessModes [ReadOnlyMany], Retain, storageClassName \"\", mountOptions [lookupcache=positive], nfs readOnly: true; PVC mounted readOnly: true; /proc/mounts: nfs4 ro,...,vers=4.2,...,lookupcache=pos -- the shape the chart now renders",
+    "server_writer": "some trials write straight into the export on the NFS server pod instead of through the writer pod, so the writer is a genuinely different client (as the storage helper is in prod)"
+  },
+  "procedure": [
+    "writer creates <f> and deletes it",
+    "reader stats <f> -> ENOENT (negative dentry now cached)",
+    "1 s later the writer creates <f>; creation time taken on the writer",
+    "reader stats + opens <f> every 200 ms for 90 s from before the create; first success time recorded (same node, same clock)"
+  ],
+  "trials": [
+    {"reader": "inline (default lookupcache)", "writer": "pod",    "file": "a1", "time_to_visible_ms": null,  "note": "still ENOENT after 90 s of polling and minutes later; one readdir (ls) of the parent fixed it"},
+    {"reader": "inline (default lookupcache)", "writer": "server", "file": "a2", "time_to_visible_ms": 28571},
+    {"reader": "inline (default lookupcache)", "writer": "pod",    "file": "a3", "time_to_visible_ms": null,  "note": "not visible within 90 s"},
+    {"reader": "inline (default lookupcache)", "writer": "server", "file": "a4", "time_to_visible_ms": 28694},
+    {"reader": "inline (default lookupcache)", "writer": "pod",    "file": "a5", "time_to_visible_ms": 28657},
+    {"reader": "PV lookupcache=positive",      "writer": "pod",    "file": "b1", "time_to_visible_ms": 185},
+    {"reader": "PV lookupcache=positive",      "writer": "server", "file": "b2", "time_to_visible_ms": 161},
+    {"reader": "PV lookupcache=positive",      "writer": "pod",    "file": "b3", "time_to_visible_ms": 169}
+  ],
+  "summary": {
+    "default_lookupcache": "3 of 5 visible after ~28.6 s (the parent dir's attribute cache, acdirmin 30 s, minus the 1 s gap); 2 of 5 NOT visible within 90 s. Polling the missing name never refreshes the parent's attributes, so the negative entry lives until something else (a listing, the attr timeout under other traffic) revalidates the directory.",
+    "lookupcache_positive": "3 of 3 visible on the first poll after the create (161-185 ms = at most one 200 ms poll interval)",
+    "conclusion": "The stale ENOENT is the reader's cached negative dentry; lookupcache=positive removes it."
+  }
+}
