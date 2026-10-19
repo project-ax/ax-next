@@ -108,6 +108,15 @@ export function createChatOrchestratorPlugin(
           degradation:
             'a chat in a project is refused (project-unavailable) rather than run without its project; chats outside a project are unaffected',
         },
+        {
+          // W3d — before a fresh session that can write the project's folder
+          // opens, a bounded (10 s) history pass. Same edge as
+          // projects:resolve above, so no new cycle: @ax/projects calls
+          // nothing this plugin registers.
+          hook: 'projects:snapshot',
+          degradation:
+            'no history pass before a writable project session opens: changes made outside a tracked turn are recorded by the next pass instead, under the agent turn that follows',
+        },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   HookBus, PluginError, makeAgentContext, createLogger,
   type AgentContext, type AgentOutcome, type ServiceHandler,
@@ -81,6 +81,10 @@ async function setup(opts: {
   runnerExitsOnKill?: boolean;
   idleWindowMs?: number;
   idleGraceMs?: number;
+  /** The grant `projects:resolve` reports (default writable). */
+  readOnly?: boolean;
+  /** W3d — registers `projects:snapshot` with this body. Absent → not registered. */
+  snapshot?: (ctx: AgentContext, input: { projectId: string }) => Promise<unknown> | unknown;
   /** Runs inside the fake `sandbox:open-session`, before it returns. */
   duringOpen?: (fire: (payload: unknown) => Promise<void>) => Promise<void>;
 } = {}) {
@@ -101,6 +105,9 @@ async function setup(opts: {
   const metadataCalls: Array<Record<string, unknown>> = [];
   const resolveCalls: Array<{ input: Record<string, unknown>; userId: string }> = [];
   const turnErrors: Array<Record<string, unknown>> = [];
+  // W3d — call order across projects:snapshot and sandbox:open-session.
+  const events: string[] = [];
+  const snapshotCalls: Array<{ input: Record<string, unknown>; userId: string }> = [];
   // W3e — mutable: `setChatProject` moves the chat, as conversations:set-project would.
   let projectId: string | null =
     opts.projectId !== undefined ? opts.projectId : opts.folderId !== undefined ? 'prj-1' : null;
@@ -136,6 +143,7 @@ async function setup(opts: {
     },
     'sandbox:open-session': async (_c, input: unknown) => {
       openInputs.push(input as Record<string, unknown>);
+      events.push('open-session');
       if (opts.duringOpen !== undefined) await opts.duringOpen((payload) => reduce(payload));
       const hk = handles[opens]!;
       opens += 1;
@@ -178,8 +186,19 @@ async function setup(opts: {
       }
       return {
         projectId: i.projectId, name: 'Q4 launch', description: '',
-        folderId: opts.folderId, readOnly: false,
+        folderId: opts.folderId, readOnly: opts.readOnly ?? false,
       };
+    };
+  }
+  if (opts.snapshot !== undefined) {
+    const body = opts.snapshot;
+    services['projects:snapshot'] = async (c, input: unknown) => {
+      const i = input as { projectId: string };
+      snapshotCalls.push({ input: i, userId: c.userId });
+      events.push('snapshot:start');
+      const out = await body(c, i);
+      events.push('snapshot:end');
+      return out;
     };
   }
   if (opts.captureProviderCtx !== undefined) {
@@ -236,6 +255,7 @@ async function setup(opts: {
     plugin, h, handles, turn, reduce, settle, cancels, userMessages,
     get opens() { return opens; },
     openInputs, queued, terminated, proxyCloses, logs, metadataCalls, resolveCalls, turnErrors,
+    events, snapshotCalls,
     setChatProject: (p: string | null) => { projectId = p; },
     cleanup: () => { for (const hk of handles) hk.forceExit(); },
   };
@@ -631,6 +651,113 @@ describe('W3e: a chat moved between projects retires its live session at the nex
     await t.reduce({ folderId: 'sf_a', agentIds: ['test-agent'] });
     await t.settle();
     expect(t.logs.some((l) => l.msg === 'shared_folder_access_reduced_sessions_retired')).toBe(false);
+    t.cleanup();
+  });
+});
+
+describe('W3d: a writable project gets projects:snapshot before sandbox:open-session', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  const ok = () => ({ recorded: 2, gap: false });
+  const failures = (logs: Array<Record<string, unknown>>) =>
+    logs.filter((l) => l.msg === 'projects_snapshot_failed');
+
+  it('a writable project spawn snapshots first, as the person, then opens', async () => {
+    const t = await setup({ folderId: 'sf_a', snapshot: ok });
+    await t.turn('s-1', 'req-1');
+    expect(t.snapshotCalls).toEqual([{ input: { projectId: 'prj-1' }, userId: 'test-user' }]);
+    expect(t.events).toEqual(['snapshot:start', 'snapshot:end', 'open-session']);
+    expect(failures(t.logs)).toEqual([]);
+    t.cleanup();
+  });
+
+  it('a read-only (viewer) grant never snapshots', async () => {
+    const t = await setup({ folderId: 'sf_a', readOnly: true, snapshot: ok });
+    await t.turn('s-1', 'req-1');
+    expect(t.opens).toBe(1);
+    expect(t.snapshotCalls).toHaveLength(0);
+    t.cleanup();
+  });
+
+  it('a chat outside a project never snapshots', async () => {
+    const t = await setup({ snapshot: ok });
+    await t.turn('s-1', 'req-1');
+    expect(t.opens).toBe(1);
+    expect(t.snapshotCalls).toHaveLength(0);
+    t.cleanup();
+  });
+
+  it('a reused session does not snapshot again', async () => {
+    const t = await setup({ folderId: 'sf_a', snapshot: ok });
+    await t.turn('s-1', 'req-1');
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(1);
+    expect(t.userMessages('s-1')).toHaveLength(2);
+    expect(t.snapshotCalls).toHaveLength(1);
+    t.cleanup();
+  });
+
+  it('a refused project never snapshots and still ends the turn project-unavailable', async () => {
+    const t = await setup({
+      projectId: 'prj-gone',
+      resolve: () => { throw new PluginError({ code: 'forbidden', plugin: 'stub-projects', message: 'no' }); },
+      snapshot: ok,
+    });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out).toMatchObject({ kind: 'terminated', reason: 'project-unavailable' });
+    expect(t.snapshotCalls).toHaveLength(0);
+    expect(t.opens).toBe(0);
+    t.cleanup();
+  });
+
+  it('a snapshot that throws is logged and the session still opens', async () => {
+    const t = await setup({
+      folderId: 'sf_a',
+      snapshot: () => { throw new PluginError({ code: 'internal', plugin: 'stub-projects', message: 'db down' }); },
+    });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out.kind).not.toBe('terminated');
+    expect(t.opens).toBe(1);
+    expect(failures(t.logs)).toEqual([expect.objectContaining({ projectId: 'prj-1' })]);
+    t.cleanup();
+  });
+
+  it('a slow snapshot holds the spawn for at most the 10 s budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // Never settles on its own: only the budget can release the spawn.
+    const t = await setup({ folderId: 'sf_a', snapshot: () => new Promise(() => undefined) });
+    // Fake setTimeout also holds the harness's own turn-end timer, so fire
+    // turn-end by hand once the session is open.
+    const invoked = t.h.bus.call<unknown, AgentOutcome>('agent:invoke',
+      makeAgentContext({
+        sessionId: 's-1', agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-1',
+        reqId: 'req-1',
+        logger: createLogger({
+          reqId: 'req-1',
+          writer: (line: string) => { t.logs.push(JSON.parse(line) as Record<string, unknown>); },
+        }),
+      }),
+      { message: { role: 'user', content: 'hi' } });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(t.snapshotCalls).toHaveLength(1);
+    expect(t.opens).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.opens).toBe(1);
+    expect(failures(t.logs)).toEqual([
+      expect.objectContaining({ projectId: 'prj-1', code: 'timeout', timeoutMs: 10_000 }),
+    ]);
+    vi.useRealTimers();
+    fireTurnEnd(t.h.bus, 's-1', 'req-1');
+    const out = await invoked;
+    expect(out.kind).not.toBe('terminated');
+    t.cleanup();
+  });
+
+  it('without the projects:snapshot service the spawn just opens', async () => {
+    const t = await setup({ folderId: 'sf_a' });
+    const out = await t.turn('s-1', 'req-1');
+    expect(out.kind).not.toBe('terminated');
+    expect(t.events).toEqual(['open-session']);
+    expect(failures(t.logs)).toEqual([]);
     t.cleanup();
   });
 });

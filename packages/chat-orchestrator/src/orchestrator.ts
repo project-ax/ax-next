@@ -1321,6 +1321,15 @@ export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
 export const PROXY_CLOSE_TIMEOUT_MS = 10_000;
 
 /**
+ * W3d — the budget for `projects:snapshot`, the history pass @ax/projects runs
+ * before a session that can write a project's folder opens. The spawn waits at
+ * most this long; on a timeout or a failure it opens anyway (the pass keeps
+ * running and records a gap if it can't finish). History is best-effort; the
+ * chat is not.
+ */
+export const PROJECT_SNAPSHOT_TIMEOUT_MS = 10_000;
+
+/**
  * W1 — default for `augmentDeadlineMs`: the orchestrator's own bound on each
  * system-prompt contribution provider. Far below the 120 s bus default that
  * could otherwise block startup; memory's normal latency is well under it.
@@ -2396,7 +2405,7 @@ export function createOrchestrator(
   async function resolveSpawnProject(
     ctx: AgentContext,
     agentId: string,
-  ): Promise<{ projectId: string; folderId: string } | null> {
+  ): Promise<{ projectId: string; folderId: string; readOnly: boolean } | null> {
     if (ctx.conversationId === undefined || !bus.hasService('conversations:get-metadata')) {
       return null;
     }
@@ -2426,13 +2435,20 @@ export function createOrchestrator(
       throw new ProjectUnavailableError(new Error('projects:resolve is not registered'));
     }
     let folderId: unknown;
+    let readOnly: boolean;
     try {
-      const resolved = await bus.call<{ projectId: string; agentId: string }, { folderId?: unknown }>(
+      const resolved = await bus.call<
+        { projectId: string; agentId: string },
+        { folderId?: unknown; readOnly?: unknown }
+      >(
         'projects:resolve',
         ctx,
         { projectId, agentId },
       );
       folderId = resolved.folderId;
+      // Writable only when the grant says so explicitly: anything else is
+      // read-only here, which at worst skips a history pass (W3d).
+      readOnly = resolved.readOnly !== false;
     } catch (err) {
       ctx.logger.warn('project_lookup_failed', {
         step: 'projects:resolve', projectId, agentId, ...errorLogFields(err),
@@ -2446,7 +2462,46 @@ export function createOrchestrator(
       });
       throw new ProjectUnavailableError(new Error('projects:resolve returned an invalid folderId'));
     }
-    return { projectId, folderId };
+    return { projectId, folderId, readOnly };
+  }
+
+  /**
+   * W3d (spec §7) — before a fresh session that can WRITE the project's folder
+   * opens, ask @ax/projects to record what changed since its last pass
+   * (`projects:snapshot`), so edits made outside a tracked turn are kept as
+   * "Changed outside history" rather than folded into the agent's turn.
+   *
+   * Best-effort and bounded: waits at most `PROJECT_SNAPSHOT_TIMEOUT_MS`, never
+   * throws, and the caller opens the session whatever happens. Undeclared
+   * peers stay usable: no service registered → no call. Same ctx as
+   * `projects:resolve` (the person, for this chat).
+   */
+  async function snapshotProjectBeforeSpawn(ctx: AgentContext, projectId: string): Promise<void> {
+    if (!bus.hasService('projects:snapshot')) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), PROJECT_SNAPSHOT_TIMEOUT_MS);
+    });
+    const call = bus
+      .call<{ projectId: string }, { recorded?: unknown; gap?: unknown }>(
+        'projects:snapshot', ctx, { projectId },
+      )
+      .then(
+        (out) => ({ ok: true as const, out }),
+        (err: unknown) => ({ ok: false as const, err }),
+      );
+    try {
+      const res = await Promise.race([call, bound]);
+      if (res === 'timeout') {
+        ctx.logger.warn('projects_snapshot_failed', {
+          projectId, code: 'timeout', timeoutMs: PROJECT_SNAPSHOT_TIMEOUT_MS,
+        });
+      } else if (!res.ok) {
+        ctx.logger.warn('projects_snapshot_failed', { projectId, ...errorLogFields(res.err) });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // W2 — `shared-folders:access-reduced { folderId, agentIds }` (fired by
@@ -3140,7 +3195,7 @@ export function createOrchestrator(
     // the turn before anything else is assembled — no augment, no proxy
     // session, no sandbox. (A routed turn reuses a session spawned for the
     // chat's project; W3e compares the recorded projectId when chats move.)
-    let project: { projectId: string; folderId: string } | null;
+    let project: { projectId: string; folderId: string; readOnly: boolean } | null;
     try {
       project = await resolveSpawnProject(ctx, agent.id);
     } catch (err) {
@@ -4107,6 +4162,12 @@ export function createOrchestrator(
       // authorizes the mounts inside it, so a reduction that commits while
       // the open is in flight must already find (and mark) this session. A
       // failed open forgets it in the catch below.
+      // W3d — a writable project gets a history pass first (bounded, never
+      // throws; the session opens whatever it returns). Read-only grants
+      // can't change the folder, so there is nothing to record for them.
+      if (project !== null && !project.readOnly) {
+        await snapshotProjectBeforeSpawn(ctx, project.projectId);
+      }
       recordSessionSharedFolders(sessionId, agent.id, sharedFolderIds, project?.projectId ?? null);
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
