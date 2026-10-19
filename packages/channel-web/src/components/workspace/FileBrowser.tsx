@@ -227,6 +227,7 @@ export function FileBrowser({
   listActions,
   viewerActions,
   viewerBody = null,
+  missingAction,
 }: {
   tree: FileTreeState;
   /**
@@ -261,6 +262,8 @@ export function FileBrowser({
   viewerActions?: ReactNode;
   /** Drawn in place of the open file's body when set (the project editor). */
   viewerBody?: ReactNode;
+  /** One more control beside "Go back" when a path isn't there (a project's "See history"). */
+  missingAction?: (path: string) => ReactNode;
 }) {
   const openDir = onOpenDir ?? tree.openDir;
   const openFile = onOpenFile ?? tree.openFile;
@@ -425,6 +428,7 @@ export function FileBrowser({
                           ? copy.missing
                           : copy.failed}
                     </span>
+                    {listError.kind === 'missing' && missingAction?.(listError.path)}
                     {listError.kind !== 'unavailable' && (
                       /*
                         "Try again" re-reads where we are, because the read is

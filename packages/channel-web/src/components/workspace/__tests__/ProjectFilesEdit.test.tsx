@@ -387,7 +387,10 @@ describe('deleting a file', () => {
   it.each(['instructions.md', 'memory/status.md'])('%s can be edited but offers no Delete', async (path) => {
     await openAt(`/workspace/projects/p1/files/${path}`);
     expect(await within(main()).findByRole('button', { name: 'Edit' })).toBeTruthy();
-    expect(within(main()).queryByRole('button', { name: 'File options' })).toBeNull();
+    // The menu is there for History (W3d), without Delete.
+    await openMenu('File options');
+    expect(await screen.findByRole('menuitem', { name: 'History' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
   });
 });
 
@@ -396,7 +399,9 @@ describe('where nothing can be changed', () => {
     await openAt('/workspace/projects/p1/files/sources/import.md');
     await within(main()).findByText('Copied in.');
     expect(within(main()).queryByRole('button', { name: 'Edit' })).toBeNull();
-    expect(within(main()).queryByRole('button', { name: 'File options' })).toBeNull();
+    await openMenu('File options');
+    expect(await screen.findByRole('menuitem', { name: 'History' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
   });
 
   it('the + menu in sources/ adds into work/, never sources/', async () => {
@@ -419,8 +424,12 @@ describe('where nothing can be changed', () => {
     await openAt('/workspace/projects/p1/files/work/plan.md');
     await within(main()).findByText('Ship it.');
     expect(within(main()).getByRole('button', { name: 'Download' })).toBeTruthy();
-    for (const name of ['Edit', 'File options', 'Add']) {
+    for (const name of ['Edit', 'Add']) {
       expect(within(main()).queryByRole('button', { name })).toBeNull();
     }
+    // History is for everyone; Delete isn't.
+    await openMenu('File options');
+    expect(await screen.findByRole('menuitem', { name: 'History' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
   });
 });
