@@ -1168,6 +1168,15 @@ describe('AgentRail — moving a chat between projects (W3e)', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to project' }));
   }
 
+  // A modal menu here leaves the page unclickable after its dialog removes
+  // the trigger (production, 2026-10-19).
+  it('the chat row menu never locks the page', async () => {
+    renderChats();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Options for Launch checklist' }), { button: 0, ctrlKey: false });
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+  });
+
   it('lists only the projects this agent is in, leaving out the chat’s own', async () => {
     renderChats();
     await openMove('Launch checklist');

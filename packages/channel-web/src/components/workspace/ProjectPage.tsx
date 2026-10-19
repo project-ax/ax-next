@@ -157,7 +157,10 @@ export function ProjectPage({
     <>
       <WorkspaceHeader title={project.name} leading={leading}>
         {project.canManage && (
-          <DropdownMenu>
+          <DropdownMenu
+            // Not modal: Delete's dialog removes this page; a modal menu would leave <body> unclickable.
+            modal={false}
+          >
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label="Project options" className="md:ml-auto">
                 <MoreHorizontal aria-hidden="true" />

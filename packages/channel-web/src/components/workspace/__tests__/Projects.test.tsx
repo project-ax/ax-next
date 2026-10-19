@@ -445,6 +445,15 @@ describe('project page', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects'));
   });
 
+  // A modal menu here leaves the page unclickable after its dialog removes
+  // the trigger (production, 2026-10-19).
+  it('the project options menu never locks the page', async () => {
+    renderAt('/workspace/projects/p1');
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Project options' }), { button: 0, ctrlKey: false });
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+  });
+
   it('says so when the project can’t be opened', async () => {
     const { HttpError } = await import('@/lib/http');
     api.getProject.mockRejectedValue(new HttpError('/api/workspace/projects/p1', 404));
@@ -596,6 +605,16 @@ describe('project members (W3e)', () => {
     fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Can view' }));
     expect(await screen.findByText('We couldn’t change that just now. Nothing changed — try again in a moment.')).toBeTruthy();
     expect(within(screen.getByRole('list', { name: 'Members' })).getByText('Can edit')).toBeTruthy();
+  });
+
+  // A modal menu here leaves the page unclickable after its dialog removes
+  // the trigger (production, 2026-10-19).
+  it('the member menu never locks the page', async () => {
+    api.getProject.mockResolvedValue(withScribe());
+    renderAt('/workspace/projects/p1');
+    await openMemberMenu('Scribe');
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
   });
 
   it('removes a member after saying what happens to its chats', async () => {

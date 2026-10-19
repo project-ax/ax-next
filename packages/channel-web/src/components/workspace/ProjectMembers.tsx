@@ -188,7 +188,10 @@ export function ProjectMembersCard({
                   {ROLE_LABEL[m.role]}
                 </Badge>
                 {canManage && m.role !== 'owner' && (
-                  <DropdownMenu>
+                  <DropdownMenu
+                    // Not modal: Remove's dialog removes this row; a modal menu would leave <body> unclickable.
+                    modal={false}
+                  >
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost"
