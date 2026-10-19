@@ -411,7 +411,16 @@ describe('deleting a file', () => {
       ],
       gaps: [],
     });
-    api.restoreProjectFileVersion.mockResolvedValue({ sha256: H2 });
+    // A real delete and restore: the file and its listing go, then come back.
+    api.deleteProjectFile.mockImplementation(async (_p: string, path: string) => {
+      delete folder[path];
+      const listing = folder['work'];
+      if (listing?.kind === 'dir') folder['work'] = { ...listing, entries: listing.entries.filter((e) => e.path !== path) };
+    });
+    api.restoreProjectFileVersion.mockImplementation(async () => {
+      put('work/plan.md', 'Back again.');
+      return { sha256: H2 };
+    });
     await openAt('/workspace/projects/p1/files/work/plan.md');
     await openMenu('File options');
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
@@ -422,6 +431,16 @@ describe('deleting a file', () => {
     await waitFor(() => expect(api.restoreProjectFileVersion).toHaveBeenCalledWith('p1', 'vlast'));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/projects/p1/files/work/plan.md'));
     expect(screen.queryByText('Deleted plan.md.')).toBeNull();
+    // The restored file opens (production's "isn't here anymore" right after
+    // an undo was the host's NFS negative-lookup cache; see the chart).
+    expect(await within(main()).findByText('Back again.')).toBeTruthy();
+    expect(within(main()).queryByText(/isn’t here anymore/)).toBeNull();
+    // The folder is read again after the restore, so its listing has the file back.
+    const restoredAt = api.restoreProjectFileVersion.mock.invocationCallOrder[0]!;
+    const relisted = api.projectFiles.mock.calls
+      .map(([, p], i) => ({ p, order: api.projectFiles.mock.invocationCallOrder[i]! }))
+      .some(({ p, order }) => p === 'work' && order > restoredAt);
+    expect(relisted).toBe(true);
   });
 
   it('after a delete, Undo says so plainly when there is nothing to bring back, or the restore fails', async () => {
