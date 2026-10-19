@@ -711,6 +711,21 @@ export function createChannelWebServerPlugin(
           degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
         },
         {
+          // W3d — file history, restore and undo. @ax/projects records the
+          // versions; these read them and restore one as the person.
+          hook: 'projects:file-history',
+          degradation: 'GET /api/workspace/projects/:projectId/history/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:read-version',
+          degradation: 'GET /api/workspace/projects/:projectId/versions/:versionId answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:restore-version',
+          degradation:
+            'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
+        },
+        {
           // "May this person manage this agent's sharing?" — who may own a new
           // project, and whether the project page offers rename/delete. The
           // hooks re-check; this only decides what to offer.

@@ -1083,6 +1083,19 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
         },
         {
+          hook: 'projects:file-history',
+          degradation: 'GET /api/workspace/projects/:projectId/history/* answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:read-version',
+          degradation: 'GET /api/workspace/projects/:projectId/versions/:versionId answers 503 projects-unavailable',
+        },
+        {
+          hook: 'projects:restore-version',
+          degradation:
+            'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
+        },
+        {
           hook: 'agents:can-manage-sharing',
           degradation:
             'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',
