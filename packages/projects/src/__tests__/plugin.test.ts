@@ -132,6 +132,8 @@ const DIRS = new Map<string, Set<string>>();
 const READS: { folderId: string; relPath?: string; limitBytes: number; maxEntries?: number }[] = [];
 const FAIL_PATHS = new Set<string>();
 let READS_UNAVAILABLE = false;
+/** W3d: called on every read, before it answers (a test moves a clock or deletes a project here). */
+let ON_READ: (() => void | Promise<void>) | null = null;
 
 function putFile(folderId: string, relPath: string, contents: string | Uint8Array): void {
   const tree = FILES.get(folderId) ?? new Map<string, Uint8Array>();
@@ -142,6 +144,7 @@ function putFile(folderId: string, relPath: string, contents: string | Uint8Arra
 const readSharedFolderStub: ServiceHandler = async (_ctx, raw) => {
   const input = raw as { folderId: string; relPath?: string; limitBytes: number; maxEntries?: number };
   READS.push(input);
+  if (ON_READ !== null) await ON_READ();
   if (READS_UNAVAILABLE) return { kind: 'unavailable' };
   const rel = input.relPath ?? '';
   if (FAIL_PATHS.has(rel)) throw new Error(`EIO reading ${rel}`);
@@ -344,6 +347,8 @@ async function makeWorld(
     /** W3d: register the scan stub and the blob store (off by default: no history). */
     history?: boolean;
     projectsOptions?: ProjectsPluginOptions;
+    /** The host's Postgres pool size (default 10). */
+    poolMax?: number;
   } = {},
 ): Promise<World> {
   const services: Record<string, ServiceHandler> = {
@@ -360,7 +365,7 @@ async function makeWorld(
   const h = await createTestHarness({
     services,
     plugins: [
-      createDatabasePostgresPlugin({ connectionString }),
+      createDatabasePostgresPlugin({ connectionString, ...(opts.poolMax !== undefined ? { poolMax: opts.poolMax } : {}) }),
       createSharedFoldersPlugin({ sweepIntervalMs: 0 }),
       projects,
       ...(opts.extraPlugins ?? []),
@@ -494,6 +499,7 @@ afterEach(async () => {
   READS.length = 0;
   FAIL_PATHS.clear();
   READS_UNAVAILABLE = false;
+  ON_READ = null;
   SCANS.length = 0;
   SCAN_LIMIT = null;
   SCAN_THROWS = null;
@@ -502,11 +508,13 @@ afterEach(async () => {
   PUTS.length = 0;
   PUT_THROWS = null;
   while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
-  await q('DROP TABLE IF EXISTS projects_v1_projects');
+  // History tables first: they reference projects_v1_projects.
   await q('DROP TABLE IF EXISTS projects_v1_file_versions');
   await q('DROP TABLE IF EXISTS projects_v1_file_manifest');
   await q('DROP TABLE IF EXISTS projects_v1_history_gaps');
   await q('DROP TABLE IF EXISTS projects_v1_history_state');
+  await q('DROP TABLE IF EXISTS projects_v1_history_leases');
+  await q('DROP TABLE IF EXISTS projects_v1_projects');
   await q('DROP TABLE IF EXISTS shared_folders_v1_grants');
   await q('DROP TABLE IF EXISTS shared_folders_v1_folders');
 });
@@ -2095,7 +2103,7 @@ describe('file history: passes (W3d)', () => {
     await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 3, gap: false });
   });
 
-  it('a pass that finds another pass holding the project lock skips; the turn may try again', async () => {
+  it('a pass that finds another pass holding the project lease skips; the turn may try again', async () => {
     const w = await makeWorld({ history: true });
     const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
     putFile(folderId, 'a.md', 'a');
@@ -2164,6 +2172,229 @@ describe('file history: passes (W3d)', () => {
     await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
     expect(await versionRows(projectId)).toEqual([]);
     expect(SCANS).toEqual([]);
+  });
+});
+
+/** Wait for `cond`, failing (not hanging) after `ms`: a deadlock is a red test, not a timeout. */
+async function until(cond: () => boolean, ms = 5_000, what = 'condition'): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+/** Settle `p` within `ms`, or throw: for a call that must not wait on the pool forever. */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const HISTORY_TABLES = [
+  'projects_v1_file_versions',
+  'projects_v1_file_manifest',
+  'projects_v1_history_gaps',
+  'projects_v1_history_state',
+  'projects_v1_history_leases',
+];
+async function historyCounts(projectId: string): Promise<number[]> {
+  return Promise.all(
+    HISTORY_TABLES.map(async (t) => (await q(`SELECT 1 FROM ${t} WHERE project_id = $1`, [projectId])).length),
+  );
+}
+function historyTrouble(w: World): Record<string, unknown>[] {
+  return w.logs.filter(
+    (l) => (l.level === 'warn' || l.level === 'error') && typeof l.msg === 'string' && l.msg.startsWith('projects_'),
+  );
+}
+
+describe('file history: leases, the pass cap, and a project deleted mid-pass (W3d security review)', () => {
+  it('runs at most two passes at once, and a pass holds no connection while it waits: a pool of 2 still answers', async () => {
+    // Regression for the pool deadlock: a pass used to pin a pool connection for
+    // its whole length and then ask the pool for another for its own queries.
+    const w = await makeWorld({ history: true, poolMax: 2, projectsOptions: { snapshotBudgetMs: 30_000 } });
+    const owners: [string, string][] = [
+      ['alice', 'a-alice-1'],
+      ['alice', 'a-alice-2'],
+      ['alice', 'a-alice-3'],
+      ['bob', 'a-bob'],
+      ['tadmin', 'a-tadmin'],
+    ];
+    const made: { userId: string; projectId: string }[] = [];
+    for (const [userId, agentId] of owners) {
+      const p = await createProject(w, userId, agentId, `P ${agentId}`);
+      putFile(p.folderId, 'a.md', `in ${agentId}`);
+      made.push({ userId, projectId: p.projectId });
+    }
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    let settled = 0;
+    const runs = made.map((m) =>
+      w.call<{ recorded: number; gap: boolean }>(m.userId, 'projects:snapshot', { projectId: m.projectId }).finally(() => {
+        settled++;
+      }),
+    );
+    // Two passes are in their scans; the other three answer at once (locked),
+    // without scanning.
+    await until(() => SCANS.length === 2 && settled === 3, 10_000, 'two scans and three locked answers');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(SCANS.length).toBe(2);
+    expect((await q('SELECT 1 FROM projects_v1_history_leases')).length).toBe(2);
+    // Something unrelated still gets a connection from the same pool of 2.
+    const listed = await within(w.call<ProjectsListOutput>('alice', 'projects:list', {}), 5_000, 'projects:list');
+    expect(listed.projects).toHaveLength(3);
+    release();
+    SCAN_HOLD = null;
+    const outs = await within(Promise.all(runs), 10_000, 'the held passes');
+    expect(outs.reduce((n, o) => n + o.recorded, 0)).toBe(2);
+    expect(outs.every((o) => o.gap === false)).toBe(true);
+    // Every lease was released.
+    expect(await q('SELECT 1 FROM projects_v1_history_leases')).toEqual([]);
+    // With the cap free again, the three that were turned away run.
+    for (const m of made) await w.call(m.userId, 'projects:snapshot', { projectId: m.projectId });
+    for (const m of made) expect((await versionRows(m.projectId, 'a.md')).length).toBe(1);
+  });
+
+  it("a lease held by another pass skips; an expired one is taken over; a pass releases only its own", async () => {
+    const w = await makeWorld({ history: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    await q(
+      `INSERT INTO projects_v1_history_leases (project_id, token, until) VALUES ($1, 'other', NOW() + INTERVAL '1 minute')`,
+      [projectId],
+    );
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 0, gap: false });
+    expect(SCANS).toEqual([]);
+    expect(await q('SELECT token FROM projects_v1_history_leases')).toEqual([{ token: 'other' }]);
+
+    // Expired: taken over, and released after the pass.
+    await q(`UPDATE projects_v1_history_leases SET until = NOW() - INTERVAL '1 second'`);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect(await q('SELECT 1 FROM projects_v1_history_leases')).toEqual([]);
+
+    // A pass's lease lasts about three minutes; if it's taken over meanwhile
+    // (ours expired), our release leaves the new holder's lease alone.
+    putFile(folderId, 'b.md', 'b');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 2, 5_000, 'the second scan');
+    const held = await q<{ token: string; secs: number }>(
+      `SELECT token, EXTRACT(EPOCH FROM (until - NOW()))::float8 AS secs FROM projects_v1_history_leases`,
+    );
+    expect(held).toHaveLength(1);
+    expect(held[0]!.token).not.toBe('other');
+    expect(held[0]!.secs).toBeGreaterThan(170);
+    expect(held[0]!.secs).toBeLessThanOrEqual(180);
+    await q(`UPDATE projects_v1_history_leases SET token = 'intruder'`);
+    release();
+    SCAN_HOLD = null;
+    await expect(run).resolves.toEqual({ recorded: 1, gap: false });
+    expect(await q('SELECT token FROM projects_v1_history_leases')).toEqual([{ token: 'intruder' }]);
+  });
+
+  it('a project deleted mid-pass: the pass stops quietly, leaves no gap, and no history row or blob ref survives', async () => {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'work/a.md', 'mid-pass');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await w.call('alice', 'projects:delete', { projectId });
+    const putsBefore = PUTS.length;
+    release();
+    SCAN_HOLD = null;
+    await expect(run).resolves.toEqual({ recorded: 0, gap: false });
+    await w.projects.drainHistory();
+    // The pass put the first file's bytes, its insert met the cascade, and it
+    // stopped there: one put, nothing kept.
+    expect(PUTS.length).toBe(putsBefore + 1);
+    const putSha = PUTS.at(-1)!.sha256;
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
+    expect(w.logs.some((l) => l.msg === 'projects_history_pass_gone' && l.projectId === projectId)).toBe(true);
+    // …so nothing holds its blob.
+    const out = await w.h.bus.fire('blob:collect-refs', w.as('system'), {
+      candidates: [putSha, sha256('mid-pass')],
+      answers: [],
+    });
+    const answers = ((out as { payload: unknown }).payload as { answers: { holder: string; refs: unknown[] }[] }).answers;
+    expect(answers.find((a) => a.holder === '@ax/projects')?.refs).toEqual([]);
+  });
+
+  it("a gap for a project that's gone is swallowed (a snapshot that ran out of time after the delete)", async () => {
+    const w = await makeWorld({ history: true, projectsOptions: { snapshotBudgetMs: 1_000 } });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    putFile(folderId, 'a.md', 'a');
+    let release!: () => void;
+    SCAN_HOLD = new Promise<void>((r) => (release = r));
+    const run = w.call('alice', 'projects:snapshot', { projectId });
+    await until(() => SCANS.length === 1, 5_000, 'the scan');
+    await w.call('alice', 'projects:delete', { projectId });
+    // The budget runs out after the delete: its gap has no project to land on.
+    await expect(run).resolves.toEqual({ recorded: 0, gap: true });
+    release();
+    SCAN_HOLD = null;
+    await w.projects.drainHistory();
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w).filter((l) => l.msg !== 'projects_snapshot_slow')).toEqual([]);
+    expect(
+      w.logs.some((l) => l.msg === 'projects_history_gap_skipped' && l.reason === 'snapshot-timeout' && l.level === 'debug'),
+    ).toBe(true);
+  });
+
+  it("a person's save recorded after the project is gone is swallowed: no rows, no gap, no error", async () => {
+    let deleteDuring: string | null = null;
+    const w = await makeWorld({
+      history: true,
+      writer: true,
+      extraServices: {
+        // The project goes between the change landing and its version being
+        // written (after the change's own row re-check): the blob put is that window.
+        'blob:put': async (ctx, raw) => {
+          const out: unknown = await blobServices['blob:put']!(ctx, raw);
+          if (deleteDuring !== null) await q('DELETE FROM projects_v1_projects WHERE project_id = $1', [deleteDuring]);
+          return out;
+        },
+      },
+    });
+    const { projectId } = await createProject(w, 'alice', 'a-alice-1');
+    expect((await versionRows(projectId)).length).toBeGreaterThan(0);
+    deleteDuring = projectId;
+    // The save itself succeeded; only its history had nowhere to go.
+    await expect(
+      w.call('alice', 'projects:write-file', { projectId, path: 'work/late.md', content: enc('late') }),
+    ).resolves.toBeDefined();
+    expect(await historyCounts(projectId)).toEqual([0, 0, 0, 0, 0]);
+    expect(historyTrouble(w)).toEqual([]);
+    expect(
+      w.logs.some((l) => l.msg === 'projects_history_skipped' && l.reason === 'project-gone' && l.level === 'debug'),
+    ).toBe(true);
+  });
+
+  it('a pass past its deadline stops taking new files; the next pass records the rest', async () => {
+    let clock = 0;
+    const w = await makeWorld({ history: true, projectsOptions: { historyNow: () => clock } });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    for (const p of ['a.md', 'b.md', 'c.md']) putFile(folderId, p, p);
+    // Each read takes "61 seconds": a and b fit in two minutes, c doesn't.
+    ON_READ = () => {
+      clock += 61_000;
+    };
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 2, gap: false });
+    expect((await versionRows(projectId)).map((r) => r.path)).toEqual(['a.md', 'b.md']);
+    expect(await manifestPaths(projectId)).toEqual(['a.md', 'b.md']);
+    expect(w.logs.some((l) => l.msg === 'projects_history_pass' && l.deferred === true)).toBe(true);
+    await expect(w.call('alice', 'projects:snapshot', { projectId })).resolves.toEqual({ recorded: 1, gap: false });
+    expect((await versionRows(projectId)).map((r) => r.path)).toEqual(['a.md', 'b.md', 'c.md']);
   });
 });
 

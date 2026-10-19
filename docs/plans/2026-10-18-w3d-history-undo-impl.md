@@ -41,9 +41,20 @@ W3d ships as two PRs (the person's choice, 2026-10-18):
   boot doesn't depend on the sandbox, and projects that are never touched cost
   nothing.
 - **A pass** (one function; every trigger uses it):
-  1. Take a per-project lock: `pg_try_advisory_lock` on a pinned connection,
-     the blob-gc pattern. If another replica holds it, skip; that replica's
-     pass sees the same changes.
+  1. Take a per-project **lease row** (`projects_v1_history_leases`: one
+     `INSERT … ON CONFLICT DO UPDATE … WHERE until < now() RETURNING token`,
+     ours iff the token comes back), good for 3 minutes, released with
+     `DELETE … WHERE token = ours`. If another pass or replica holds it,
+     skip; that pass sees the same changes. *(Changed after the security
+     review: the plan first said `pg_try_advisory_lock` on a pinned
+     connection, but a pass then held that connection for its whole length
+     while its own queries needed a second one from the host's small shared
+     pool; about ten concurrent passes deadlocked every plugin's database
+     access. A lease row holds no connection.)* At most **2 passes run at
+     once per process**; past that a pass answers `locked` (the turn-end
+     path retries on a later turn). A pass stops taking new files after 2
+     minutes and leaves the rest to the next pass (always taking at least
+     one, so a slow folder still moves).
   2. Scan, then diff against `projects_v1_file_manifest` by
      `(size, mtimeMs, ino)`.
   3. Read each changed file up to 1 MiB, then `blob:put` it as the owner.
@@ -81,6 +92,16 @@ W3d ships as two PRs (the person's choice, 2026-10-18):
   - `projects_v1_file_manifest`: `project_id`, `path`, `size`, `mtime_ms`,
     `ino`, `sha256`.
   - `projects_v1_history_gaps`: `project_id`, `at`, `reason`.
+  - `projects_v1_history_state` (history started) and
+    `projects_v1_history_leases` (`project_id`, `token`, `until`).
+  - Every one of these declares `project_id REFERENCES
+    projects_v1_projects(project_id) ON DELETE CASCADE` (same plugin, so
+    allowed). A pass, snapshot or host write still running when its project
+    is deleted then fails its insert with a foreign-key violation, which is
+    read as "project gone": the pass stops, no gap is written, nothing is
+    logged above debug/info. Without it those late inserts left orphan rows
+    that retention never removed and whose blobs `blob:collect-refs` kept
+    holding forever (security review).
 - **Agent- and chat-keyed columns** (the agent-keyed-tables guard):
   - `agents:deleted` sets `author_agent_id` to null; the version shows "a
     removed agent";
@@ -91,7 +112,8 @@ W3d ships as two PRs (the person's choice, 2026-10-18):
 - **Blob references:** `@ax/projects` answers `blob:collect-refs` (via
   `answerBlobCollectRefs`) for every `blob_sha` it still holds. The `userIds`
   are the project owner.
-- **Retention:** a daily job under a try-lock keeps every version from the last
+- **Retention:** a daily job under an advisory try-lock (every statement on
+  the lock's own pinned connection, never the pool) keeps every version from the last
   30 days plus the last 50 of each file, and deletes the rest. Blob-gc then
   releases the unheld blobs.
 - **Restore** writes through `applyChange` with the version's bytes, labeled

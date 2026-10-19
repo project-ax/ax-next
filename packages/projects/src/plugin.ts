@@ -36,7 +36,7 @@ import {
   SOURCES_DIR,
   type LayoutChange,
 } from './layout.js';
-import { createHistory, type Attribution, type FileState, type History, type PassResult } from './history.js';
+import { createHistory, isProjectGone, type Attribution, type FileState, type History, type PassResult } from './history.js';
 import {
   runProjectsMigration,
   type FileVersionRow,
@@ -201,6 +201,8 @@ export interface ProjectsPluginOptions {
   historyRetentionIntervalMs?: number;
   /** Delay before the first retention run. Default 5 minutes. */
   historyRetentionInitialDelayMs?: number;
+  /** The clock a history pass's deadline is measured with (tests move it). Default `Date.now`. */
+  historyNow?: () => number;
 }
 
 export interface ProjectsPlugin extends Plugin {
@@ -694,6 +696,17 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
   }
 
   /**
+   * W3d: true (and logged at debug) when a history write failed because the
+   * project was deleted meanwhile: every history table cascades from the
+   * project row, so there's nothing to record and no gap to leave.
+   */
+  function projectGone(ctx: AgentContext, projectId: string, err: unknown): boolean {
+    if (!isProjectGone(err)) return false;
+    ctx.logger.debug('projects_history_skipped', { projectId, reason: 'project-gone' });
+    return true;
+  }
+
+  /**
    * W3d: the preimage before a person's write or delete. The file's current
    * bytes are compared with its latest version; if they differ (or there's no
    * version and the file exists) they're recorded first, "Changed outside
@@ -720,6 +733,7 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
       const state = await history!.currentState(ctx, row.folder_id, change.path);
       if (state !== null) await history!.record(ctx, projectId, owner, change.path, state, 'outside', {});
     } catch (err) {
+      if (projectGone(ctx, projectId, err)) return owner;
       ctx.logger.warn('projects_history_preimage_failed', { projectId, err: errOf(err) });
       await history!.recordGapQuietly(ctx, projectId, 'preimage-failed');
     }
@@ -749,6 +763,7 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
     try {
       await history!.record(ctx, row.project_id, owner, change.path, state, recordAs.label, { userId: recordAs.actor });
     } catch (err) {
+      if (projectGone(ctx, row.project_id, err)) return;
       ctx.logger.warn('projects_history_record_failed', { projectId: row.project_id, err: errOf(err) });
       await history!.recordGapQuietly(ctx, row.project_id, 'record-failed');
     }
@@ -818,6 +833,7 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         await history!.record(ctx, projectId, owner, f.path, { kind: 'write', bytes: f.content }, 'seed', { userId: actor });
       }
     } catch (err) {
+      if (projectGone(ctx, projectId, err)) return;
       ctx.logger.warn('projects_history_seed_failed', { projectId, err: errOf(err) });
       await history!.recordGapQuietly(ctx, projectId, 'record-failed');
     }
@@ -982,12 +998,14 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         reqId: reqId ?? null,
       };
       const out = await history!.recordPass(ctx, row, { label: 'agent', owner, attribution });
-      // Another pass held the lock: let this turn's second turn-end try again.
+      // Another pass held the project's lease, or the process was at its pass
+      // cap: let this turn's second turn-end (or a later turn) try again.
       if (out.kind === 'locked') {
         turnsSeen.delete(key);
         ctx.logger.debug('projects_history_turn_skipped', { projectId, reason: 'locked' });
       }
     } catch (err) {
+      if (projectGone(ctx, projectId, err)) return;
       ctx.logger.error('projects_history_turn_failed', { projectId, err: errOf(err) });
       await history!.recordGapQuietly(ctx, projectId, 'pass-failed');
     }
@@ -1160,6 +1178,7 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         db,
         bus: b,
         pluginName: PLUGIN_NAME,
+        ...(opts.historyNow !== undefined ? { now: opts.historyNow } : {}),
         readFile: async (ctx, folderId, relPath, limitBytes) => {
           const out = await readFolder(ctx, folderId, relPath, limitBytes, 1);
           return out.kind === 'dir' ? { kind: 'dir' } : out;

@@ -83,10 +83,27 @@ them and hand them back, and never read meaning into them.
   `blob:collect-refs` names.
 - **Bounded work.** A pass scans at most 10,000 files, reads at most 500
   changed files, each up to 1 MiB (bigger ones are recorded as "too large",
-  without bytes). Passes over one project run one at a time (a Postgres
-  advisory try-lock; a pass that can't take it skips). Host writes don't take
-  the lock, so a save racing a pass can record a version twice or attribute it
-  to the turn's agent. Nothing is lost.
+  without bytes), and stops taking new files after 2 minutes (the next pass
+  takes the rest). Host writes don't take the lease, so a save racing a pass
+  can record a version twice or attribute it to the turn's agent. Nothing is
+  lost.
+- **One pass per project, and never a held connection.** A pass takes a
+  **lease row** (`projects_v1_history_leases`), not a lock on a database
+  connection: one `INSERT … ON CONFLICT … WHERE until < now() RETURNING
+  token` takes it if it's free or expired, it lasts 3 minutes, and the pass
+  deletes only its own token when it ends. A pass that can't take it skips.
+  This replaced a session advisory lock that pinned one pool connection for the
+  whole pass while the pass's own queries needed a second one: about ten
+  passes at once (ten project chats ending a turn together) took every
+  connection in the host's shared pool and deadlocked, taking every plugin's
+  database access down with them. A pass now holds no connection while it
+  waits on the folder or the blob store.
+- **At most 2 passes at once per host process.** A third answers `locked`
+  straight away; the turn-end path doesn't mark the turn seen, so a later turn
+  retries, and a snapshot just answers "nothing recorded". So a burst of turn
+  ends can't crowd the shared pool. If a pass outlives its lease (a single read
+  hanging for minutes), a second pass may overlap it; both only record what
+  differs from the latest version, so the worst case is a duplicate version.
 - **A truncated scan never deletes.** A file missing from a scan that hit a cap
   may still exist, so it's never recorded as deleted.
 - **Failures leave a gap, never a failed save or a stuck turn.** A preimage or
@@ -94,11 +111,20 @@ them and hand them back, and never read meaning into them.
   changes from around …") and the person's change goes ahead. The turn-end
   subscriber runs in the background and never throws.
 - **Cleanup.** Deleting a project (or its folder being tombstoned) deletes its
-  versions, manifest, gaps and history state in the same transaction as the
-  row. `agents:deleted` nulls `author_agent_id` and `conversations:purged`
+  versions, manifest, gaps, history state and lease in the same transaction as
+  the row. Every history table also declares `project_id REFERENCES
+  projects_v1_projects ON DELETE CASCADE`, so a pass, snapshot or host write
+  that was still running when the project went can't leave rows behind: its
+  insert fails with a foreign-key violation, which we read as "the project is
+  gone". The pass stops, no gap is written, and it's logged at debug/info, not
+  as an error. Without this, those late rows outlived the project forever, and
+  their blobs stayed held through `blob:collect-refs` (which answers from the
+  versions table, so the cascade takes the refs with it). `agents:deleted` nulls `author_agent_id` and `conversations:purged`
   nulls `conversation_id`; the versions stay ("a removed agent"). A daily job,
   under a try-lock, keeps every version from the last 30 days plus the last 50
-  of each file; blob-gc releases the bytes nobody holds.
+  of each file; blob-gc releases the bytes nobody holds. Retention keeps an
+  advisory try-lock, and runs every statement on that lock's own connection,
+  never asking the pool for a second one while holding it.
 - **`sandbox:scan-shared-folder`** is called undeclared and `hasService`-guarded,
   like the reader: it does no grant check, and it's called only for a project
   already loaded and checked.

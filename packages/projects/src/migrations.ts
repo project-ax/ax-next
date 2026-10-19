@@ -31,6 +31,12 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
 
   // ---- W3d: file history (spec §7.2; plan 2026-10-18-w3d-history-undo-impl) ----
   //
+  // Every history table's project_id REFERENCES projects_v1_projects ON DELETE
+  // CASCADE (a same-plugin FK, so allowed): deleting a project takes its
+  // history with it, and a pass or host write still running when the project
+  // goes gets a foreign-key violation instead of leaving orphan rows (and
+  // orphan blob refs) behind.
+  //
   // projects_v1_file_versions — one row per recorded state of one file. Bytes
   // live in the blob store (`blob_sha`; null for a delete or a file too large
   // to keep). `owner_user_id` is whom `blob:put` charged (the project's owner),
@@ -42,7 +48,7 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
     CREATE TABLE IF NOT EXISTS projects_v1_file_versions (
       seq             BIGSERIAL PRIMARY KEY,
       version_id      TEXT NOT NULL UNIQUE,
-      project_id      TEXT NOT NULL,
+      project_id      TEXT NOT NULL REFERENCES projects_v1_projects(project_id) ON DELETE CASCADE,
       path            TEXT NOT NULL,
       blob_sha        TEXT NULL,
       size            BIGINT NOT NULL,
@@ -79,7 +85,7 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // back numbers (exact to 2^53, which every one of these fits).
   await sql`
     CREATE TABLE IF NOT EXISTS projects_v1_file_manifest (
-      project_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects_v1_projects(project_id) ON DELETE CASCADE,
       path       TEXT NOT NULL,
       size       DOUBLE PRECISION NOT NULL,
       mtime_ms   DOUBLE PRECISION NOT NULL,
@@ -93,7 +99,7 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE TABLE IF NOT EXISTS projects_v1_history_gaps (
       gap_id     BIGSERIAL PRIMARY KEY,
-      project_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects_v1_projects(project_id) ON DELETE CASCADE,
       at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       reason     TEXT NOT NULL
     )
@@ -107,8 +113,19 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // started"); a new project gets its row at create (nothing came before).
   await sql`
     CREATE TABLE IF NOT EXISTS projects_v1_history_state (
-      project_id TEXT PRIMARY KEY,
+      project_id TEXT PRIMARY KEY REFERENCES projects_v1_projects(project_id) ON DELETE CASCADE,
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
+  // projects_v1_history_leases — a pass's lease on its project: one pass at a
+  // time per project, across replicas, without holding a database connection
+  // for the pass's length. A lease past `until` may be taken over; a pass
+  // releases only its own `token`.
+  await sql`
+    CREATE TABLE IF NOT EXISTS projects_v1_history_leases (
+      project_id TEXT PRIMARY KEY REFERENCES projects_v1_projects(project_id) ON DELETE CASCADE,
+      token      TEXT NOT NULL,
+      until      TIMESTAMPTZ NOT NULL
     )
   `.execute(db);
 }
@@ -155,6 +172,12 @@ export interface HistoryStateTable {
   started_at: Generated<Date>;
 }
 
+export interface HistoryLeasesTable {
+  project_id: string;
+  token: string;
+  until: Date;
+}
+
 export type FileVersionRow = Selectable<FileVersionsTable>;
 
 export interface ProjectsTable {
@@ -175,4 +198,5 @@ export interface ProjectsDatabase {
   projects_v1_file_manifest: FileManifestTable;
   projects_v1_history_gaps: HistoryGapsTable;
   projects_v1_history_state: HistoryStateTable;
+  projects_v1_history_leases: HistoryLeasesTable;
 }
