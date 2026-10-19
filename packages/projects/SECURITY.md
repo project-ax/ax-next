@@ -54,6 +54,55 @@ keeping a copy. (Design: `docs/plans/2026-10-12-w3-projects-design.md` §4, §13
 - The person's display name lands in `memory/log.md`, a file agents read, so
   it's cut to one line of at most 80 characters with no control characters.
 
+## File history (W3d)
+
+History keeps earlier versions of a project's files so a person can see what
+changed and put a file back. Its bytes are agent-written and untrusted: we store
+them and hand them back, and never read meaning into them.
+
+- **Who may do what.** `projects:file-history` and `projects:read-version` need
+  what `read-file` needs (use the project, viewers included).
+  `projects:restore-version` needs what `write-file` needs (an editor or owner
+  member) and follows the same rules: a version under `sources/` is
+  `read-only-path`. A version id that isn't this project's is `not-found`, with
+  the same message as an unknown project. A deletion or a too-large version
+  can't be restored (`not-restorable`).
+- **`projects:snapshot`** is called by the orchestrator, as the person, before a
+  writable project session opens. The person must be able to use the project.
+- **The turn-end pass** takes the project from `ctx.projectId`, which the IPC
+  server stamps from the session record, never from the runner's frame. It
+  records only when the session's agent holds a **writable** grant
+  (`projects:resolve`'s check, as the session's person); a viewer's turn
+  records nothing. The payload's `reqId` / `turnId` are runner-written: they're
+  used only as a dedupe key and a label, capped at 200 characters.
+- **Who pays.** Every version's bytes are `blob:put` as the project's **owner**
+  (the owner of its member agents: a person, or `team:<id>` for a team's
+  agents, disk-quota's key), never as whoever triggered the pass. So an agent
+  in someone's project can't fill a stranger's quota, and one person pays for
+  one project. The owner is stored on each version, and that's who
+  `blob:collect-refs` names.
+- **Bounded work.** A pass scans at most 10,000 files, reads at most 500
+  changed files, each up to 1 MiB (bigger ones are recorded as "too large",
+  without bytes). Passes over one project run one at a time (a Postgres
+  advisory try-lock; a pass that can't take it skips). Host writes don't take
+  the lock, so a save racing a pass can record a version twice or attribute it
+  to the turn's agent. Nothing is lost.
+- **A truncated scan never deletes.** A file missing from a scan that hit a cap
+  may still exist, so it's never recorded as deleted.
+- **Failures leave a gap, never a failed save or a stuck turn.** A preimage or
+  version that can't be recorded writes a gap row ("history may be missing
+  changes from around …") and the person's change goes ahead. The turn-end
+  subscriber runs in the background and never throws.
+- **Cleanup.** Deleting a project (or its folder being tombstoned) deletes its
+  versions, manifest, gaps and history state in the same transaction as the
+  row. `agents:deleted` nulls `author_agent_id` and `conversations:purged`
+  nulls `conversation_id`; the versions stay ("a removed agent"). A daily job,
+  under a try-lock, keeps every version from the last 30 days plus the last 50
+  of each file; blob-gc releases the bytes nobody holds.
+- **`sandbox:scan-shared-folder`** is called undeclared and `hasService`-guarded,
+  like the reader: it does no grant check, and it's called only for a project
+  already loaded and checked.
+
 ## Refusals: `not-found` vs `forbidden`
 
 - Anything keyed on a project id that the actor can't **use** (unknown id, a
@@ -112,4 +161,7 @@ prompt of every member agent, so we treat them as untrusted:
   for a failed create's rollback) are called the same way. The change hook
   does no grant check either: it's called only after `loadEditable` and the
   path rules, or by `projects:create` on the folder it just made.
+- W3d's **`sandbox:scan-shared-folder`** is called the same way, only for a
+  project already loaded. `blob:put` / `blob:get` are optional calls: without
+  a blob store nothing is recorded.
 - No new npm dependencies.

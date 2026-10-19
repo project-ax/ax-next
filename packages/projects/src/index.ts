@@ -1,5 +1,11 @@
 export { runProjectsMigration, type ProjectsDatabase, type ProjectRow } from './migrations.js';
-export { createProjectsPlugin, PROJECTS_DELETED_HOOK, PROJECTS_BLOCK_HOOK } from './plugin.js';
+export {
+  createProjectsPlugin,
+  PROJECTS_DELETED_HOOK,
+  PROJECTS_BLOCK_HOOK,
+  type ProjectsPlugin,
+  type ProjectsPluginOptions,
+} from './plugin.js';
 export {
   renderProjectBlock,
   renderProjectContext,
@@ -14,9 +20,21 @@ export {
   READ_FILE_MAX_ENTRIES,
   DOWNLOAD_FILE_MAX_BYTES,
   WRITE_FILE_MAX_BYTES,
+  HISTORY_MAX_FILE_BYTES,
 } from './types.js';
 export type {
   ProjectsChangeRefusal,
+  ProjectFileVersion,
+  ProjectsFileHistoryInput,
+  ProjectsFileHistoryOutput,
+  ProjectsHistoryLabel,
+  ProjectsReadVersionInput,
+  ProjectsReadVersionOutput,
+  ProjectsRestoreVersionInput,
+  ProjectsRestoreVersionOutput,
+  ProjectsSnapshotInput,
+  ProjectsSnapshotOutput,
+  ProjectsVersionRefusal,
   ProjectsCreateFolderInput,
   ProjectsCreateFolderOutput,
   ProjectsDeleteFileInput,

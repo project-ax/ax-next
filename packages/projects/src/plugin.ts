@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  answerBlobCollectRefs,
+  BLOB_COLLECT_REFS_HOOK,
   isOwnerlessId,
   makeAgentContext,
   PluginError,
@@ -34,7 +36,13 @@ import {
   SOURCES_DIR,
   type LayoutChange,
 } from './layout.js';
-import { runProjectsMigration, type ProjectRow, type ProjectsDatabase } from './migrations.js';
+import { createHistory, type Attribution, type FileState, type History, type PassResult } from './history.js';
+import {
+  runProjectsMigration,
+  type FileVersionRow,
+  type ProjectRow,
+  type ProjectsDatabase,
+} from './migrations.js';
 import {
   CreateFolderInputSchema,
   CreateFolderOutputSchema,
@@ -47,7 +55,10 @@ import {
   DOWNLOAD_FILE_MAX_BYTES,
   DownloadFileInputSchema,
   DownloadFileOutputSchema,
+  FileHistoryInputSchema,
+  FileHistoryOutputSchema,
   GetInputSchema,
+  HISTORY_MAX_FILE_BYTES,
   GetOutputSchema,
   ListInputSchema,
   ListOutputSchema,
@@ -55,10 +66,16 @@ import {
   READ_FILE_PREVIEW_MAX_BYTES,
   ReadFileInputSchema,
   ReadFileOutputSchema,
+  ReadVersionInputSchema,
+  ReadVersionOutputSchema,
   ResolveInputSchema,
   ResolveOutputSchema,
+  RestoreVersionInputSchema,
+  RestoreVersionOutputSchema,
   SetMemberInputSchema,
   SetMemberOutputSchema,
+  SnapshotInputSchema,
+  SnapshotOutputSchema,
   UpdateInputSchema,
   UpdateOutputSchema,
   WRITE_FILE_MAX_BYTES,
@@ -73,11 +90,15 @@ import {
   type ProjectsDeleteOutput,
   type ProjectsDownloadFileOutput,
   type ProjectsDownloadRefusal,
+  type ProjectsFileHistoryOutput,
   type ProjectsGetOutput,
   type ProjectsListOutput,
   type ProjectsReadFileOutput,
   type ProjectsResolveOutput,
+  type ProjectsReadVersionOutput,
+  type ProjectsRestoreVersionOutput,
   type ProjectsSetMemberOutput,
+  type ProjectsSnapshotOutput,
   type ProjectsUpdateOutput,
   type ProjectsWriteFileOutput,
 } from './types.js';
@@ -155,6 +176,45 @@ const DELETE_SHARED_FOLDER_HOOK = 'sandbox:delete-shared-folder';
 /** The person's display name for the new project's log line (optional). */
 const GET_USER_HOOK = 'auth:get-user';
 
+// ---- W3d file history ---------------------------------------------------------
+/** The runner's turn end (fired by the IPC server; ctx carries the session's project). */
+const CHAT_TURN_END_HOOK = 'chat:turn-end';
+const AGENTS_DELETED_HOOK = 'agents:deleted';
+const CONVERSATIONS_PURGED_HOOK = 'conversations:purged';
+/** Turn keys remembered for the twice-fired turn end (tool, then assistant). */
+const TURN_DEDUPE_MAX = 2_000;
+/** Projects whose owner we remember (the owner never changes: W2 folders are same-owner). */
+const OWNER_CACHE_MAX = 1_000;
+/** A runner-written id longer than this isn't one (it's only a key and a label). */
+const TURN_ID_MAX_CHARS = 200;
+/** `conversations:purged` sends at most 500 ids; twice that is still a real payload. */
+const PURGED_IDS_MAX = 1_000;
+/** The orchestrator gives `projects:snapshot` 10 s; we answer (with a gap) a little before that. */
+const DEFAULT_SNAPSHOT_BUDGET_MS = 9_000;
+const DEFAULT_RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RETENTION_INITIAL_DELAY_MS = 5 * 60 * 1000;
+
+export interface ProjectsPluginOptions {
+  /** How long `projects:snapshot` waits for its pass before answering with a gap. */
+  snapshotBudgetMs?: number;
+  /** How often history retention runs; 0 turns the timer off. Default daily. */
+  historyRetentionIntervalMs?: number;
+  /** Delay before the first retention run. Default 5 minutes. */
+  historyRetentionInitialDelayMs?: number;
+}
+
+export interface ProjectsPlugin extends Plugin {
+  /** Run history retention now (what the daily timer does). */
+  runHistoryRetention(): Promise<{ kind: 'done'; versions: number; gaps: number } | { kind: 'locked' } | { kind: 'not-started' }>;
+  /** Resolves once every background history pass has settled. */
+  drainHistory(): Promise<void>;
+}
+
+/** A runner-written turn id we'll use as a key: a short non-empty string. */
+function turnIdOf(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 && v.length <= TURN_ID_MAX_CHARS ? v : undefined;
+}
+
 /**
  * The project block's file reads all finish inside this, or the block goes
  * without its `context` (the `brief` still lands). Well inside the
@@ -167,6 +227,13 @@ const CONTEXT_TREE_EXPAND_MAX_DIRS = 10;
 const BYTES_PER_CHAR = 4;
 
 type RefusalFields = { projectId?: string; agentId?: string };
+
+/** How a person's change is recorded in history (W3d). */
+interface RecordAs {
+  label: 'edit' | 'restore';
+  actor: string;
+  members: SharedFolderMember[];
+}
 
 function mintProjectId(): string {
   return `prj_${randomBytes(16).toString('base64url')}`;
@@ -300,9 +367,24 @@ type ResolveResult =
   | { ok: true; value: ProjectsResolveOutput }
   | { ok: false; reason: 'no-actor' | 'cannot-use-agent' | 'unknown-project' | 'agent-has-no-grant' };
 
-export function createProjectsPlugin(): Plugin {
+export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): ProjectsPlugin {
   let bus: HookBus | undefined;
   let db: Kysely<ProjectsDatabase> | undefined;
+  let history: History | undefined;
+  const snapshotBudgetMs = opts.snapshotBudgetMs ?? DEFAULT_SNAPSHOT_BUDGET_MS;
+  /** Background history work (turn-end passes, a snapshot past its budget), drained on shutdown. */
+  const inFlight = new Set<Promise<unknown>>();
+  /** `(sessionId, reqId)` keys whose turn already ran a pass. Insertion-ordered: oldest evicted first. */
+  const turnsSeen = new Set<string>();
+  const ownerCache = new Map<string, string>();
+  let retentionStartTimer: NodeJS.Timeout | undefined;
+  let retentionTimer: NodeJS.Timeout | undefined;
+  let shuttingDown = false;
+
+  function track(p: Promise<unknown>): void {
+    const tracked: Promise<unknown> = p.catch(() => undefined).finally(() => inFlight.delete(tracked));
+    inFlight.add(tracked);
+  }
 
   async function getRow(projectId: string): Promise<ProjectRow | undefined> {
     return db!.selectFrom('projects_v1_projects').selectAll().where('project_id', '=', projectId).executeTakeFirst();
@@ -329,6 +411,48 @@ export function createProjectsPlugin(): Plugin {
       if (isDenial(err)) return false;
       throw err;
     }
+  }
+
+  /**
+   * Whom the project's history is charged to (W3d): the owner of its member
+   * agents — a person, or `team:<id>` for a team's agents, the key disk-quota
+   * keeps a team's storage under. W2 folders are same-owner, so any member the
+   * actor can resolve answers; the owner agent is tried first. Null when none
+   * resolves (nobody to charge, so nothing is recorded). Remembered per project.
+   */
+  async function projectOwner(
+    ctx: AgentContext,
+    actor: string,
+    projectId: string,
+    agentIds: string[],
+  ): Promise<string | null> {
+    const cached = ownerCache.get(projectId);
+    if (cached !== undefined) return cached;
+    for (const agentId of agentIds) {
+      let agent: { ownerId?: unknown; ownerType?: unknown } | undefined;
+      try {
+        const out = await bus!.call<
+          { agentId: string; userId: string },
+          { agent?: { ownerId?: unknown; ownerType?: unknown } } | null
+        >('agents:resolve', ctx, { agentId, userId: actor });
+        agent = out?.agent;
+      } catch (err) {
+        if (isDenial(err)) continue;
+        throw err;
+      }
+      if (typeof agent?.ownerId !== 'string' || agent.ownerId.length === 0) continue;
+      const owner = agent.ownerType === 'team' ? `team:${agent.ownerId}` : agent.ownerId;
+      if (ownerCache.size >= OWNER_CACHE_MAX) ownerCache.clear();
+      ownerCache.set(projectId, owner);
+      return owner;
+    }
+    return null;
+  }
+
+  /** Member agent ids, the owner first. */
+  function ownerFirst(members: SharedFolderMember[]): string[] {
+    const rank = { owner: 0, editor: 1, viewer: 2 } as const;
+    return [...members].sort((a, z) => rank[a.role] - rank[z.role]).map((m) => m.agentId);
   }
 
   /**
@@ -434,12 +558,14 @@ export function createProjectsPlugin(): Plugin {
     column: 'project_id' | 'folder_id',
     value: string,
   ): Promise<string[]> {
-    const deleted = await db!
-      .deleteFrom('projects_v1_projects')
-      .where(column, '=', value)
-      .returning('project_id')
-      .execute();
+    // The row and its history (W3d) go in one transaction.
+    const deleted = await db!.transaction().execute(async (trx) => {
+      const rows = await trx.deleteFrom('projects_v1_projects').where(column, '=', value).returning('project_id').execute();
+      for (const { project_id } of rows) await history!.purgeProject(trx, project_id);
+      return rows;
+    });
     for (const { project_id } of deleted) {
+      ownerCache.delete(project_id);
       ctx.logger.info('projects_deleted', { projectId: project_id, actor: ctx.userId });
       // Fired here, AFTER the delete committed. `HookBus.fire` isolates a
       // subscriber's throw, so a broken listener can't fail the delete.
@@ -568,19 +694,84 @@ export function createProjectsPlugin(): Plugin {
   }
 
   /**
+   * W3d: the preimage before a person's write or delete. The file's current
+   * bytes are compared with its latest version; if they differ (or there's no
+   * version and the file exists) they're recorded first, "Changed outside
+   * history", so the change can always be undone. Returns the owner to charge
+   * the change's own version to, or null when history is off for this change.
+   * Never throws: a failure is logged and leaves a gap, and the change goes ahead.
+   */
+  async function preimage(ctx: AgentContext, row: ProjectRow, change: LayoutChange, recordAs: RecordAs): Promise<string | null> {
+    if (change.op === 'mkdir' || !history!.enabled()) return null;
+    const projectId = row.project_id;
+    let owner: string | null;
+    try {
+      owner = await projectOwner(ctx, recordAs.actor, projectId, ownerFirst(recordAs.members));
+    } catch (err) {
+      ctx.logger.warn('projects_history_skipped', { projectId, reason: 'owner-lookup-failed', err: errOf(err) });
+      await history!.recordGapQuietly(ctx, projectId, 'record-failed');
+      return null;
+    }
+    if (owner === null) {
+      ctx.logger.warn('projects_history_skipped', { projectId, reason: 'no-owner' });
+      return null;
+    }
+    try {
+      const state = await history!.currentState(ctx, row.folder_id, change.path);
+      if (state !== null) await history!.record(ctx, projectId, owner, change.path, state, 'outside', {});
+    } catch (err) {
+      ctx.logger.warn('projects_history_preimage_failed', { projectId, err: errOf(err) });
+      await history!.recordGapQuietly(ctx, projectId, 'preimage-failed');
+    }
+    return owner;
+  }
+
+  /** W3d: the version a person's successful change leaves. Never throws. */
+  async function recordChange(
+    ctx: AgentContext,
+    row: ProjectRow,
+    change: LayoutChange,
+    outcome: ChangeOutcome,
+    owner: string,
+    recordAs: RecordAs,
+  ): Promise<void> {
+    let state: FileState | null = null;
+    if (change.op === 'write' && (outcome === 'written' || outcome === 'created')) {
+      state =
+        change.content.length > HISTORY_MAX_FILE_BYTES
+          ? { kind: 'too-large', size: change.content.length }
+          : { kind: 'write', bytes: change.content };
+    } else if (change.op === 'delete' && outcome === 'deleted') {
+      // A folder that never had a version records nothing (`record` skips it).
+      state = { kind: 'delete' };
+    }
+    if (state === null) return;
+    try {
+      await history!.record(ctx, row.project_id, owner, change.path, state, recordAs.label, { userId: recordAs.actor });
+    } catch (err) {
+      ctx.logger.warn('projects_history_record_failed', { projectId: row.project_id, err: errOf(err) });
+      await history!.recordGapQuietly(ctx, row.project_id, 'record-failed');
+    }
+  }
+
+  /**
    * Apply one person's change (after `loadEditable` and the path rules):
    * the layout sweep first, then the change. Returns the provider's outcome;
-   * `unavailable` (or no provider) is `files-unavailable`.
+   * `unavailable` (or no provider) is `files-unavailable`. With `recordAs`
+   * (W3d), a write or delete is recorded in history: the preimage before, the
+   * new version after.
    */
   async function applyChange(
     ctx: AgentContext,
     hookName: string,
     row: ProjectRow,
     change: LayoutChange,
+    recordAs?: RecordAs,
   ): Promise<ChangeOutcome> {
     const projectId = row.project_id;
     if (!bus!.hasService(CHANGE_SHARED_FOLDER_HOOK)) refuseChange(ctx, hookName, projectId, change, 'files-unavailable');
     await ensureLayout(ctx, row, change.path);
+    const owner = recordAs !== undefined ? await preimage(ctx, row, change, recordAs) : null;
     let out: ChangeSharedFolderOut;
     try {
       out = await changeFolder(ctx, row.folder_id, [change], { projectId, hookName });
@@ -602,7 +793,34 @@ export function createProjectsPlugin(): Plugin {
       });
     }
     auditChange(ctx, projectId, change.path, change.op, outcome);
+    if (owner !== null && recordAs !== undefined) await recordChange(ctx, row, change, outcome, owner, recordAs);
     return outcome;
+  }
+
+  /**
+   * W3d: a new project's history starts now (nothing came before it, so its
+   * first pass is no baseline), with a `seed` version of each file the layout
+   * created. Never throws: a failure is logged and leaves a gap.
+   */
+  async function startHistory(
+    ctx: AgentContext,
+    actor: string,
+    projectId: string,
+    ownerAgentId: string,
+    seeded: { path: string; content: Uint8Array }[],
+  ): Promise<void> {
+    try {
+      await history!.markStarted(projectId);
+      if (seeded.length === 0 || !history!.enabled()) return;
+      const owner = await projectOwner(ctx, actor, projectId, [ownerAgentId]);
+      if (owner === null) return;
+      for (const f of seeded) {
+        await history!.record(ctx, projectId, owner, f.path, { kind: 'write', bytes: f.content }, 'seed', { userId: actor });
+      }
+    } catch (err) {
+      ctx.logger.warn('projects_history_seed_failed', { projectId, err: errOf(err) });
+      await history!.recordGapQuietly(ctx, projectId, 'record-failed');
+    }
   }
 
   /** "Project created by <display name>", when an auth provider knows one. Never throws. */
@@ -627,7 +845,10 @@ export function createProjectsPlugin(): Plugin {
   async function rollbackCreate(ctx: AgentContext, folderId: string, projectId?: string): Promise<void> {
     if (projectId !== undefined) {
       try {
-        await db!.deleteFrom('projects_v1_projects').where('project_id', '=', projectId).execute();
+        await db!.transaction().execute(async (trx) => {
+          await trx.deleteFrom('projects_v1_projects').where('project_id', '=', projectId).execute();
+          await history!.purgeProject(trx, projectId);
+        });
       } catch (err) {
         ctx.logger.error('projects_create_rollback_failed', { folderId, projectId, step: 'row', err: errOf(err) });
       }
@@ -727,7 +948,116 @@ export function createProjectsPlugin(): Plugin {
     }
   }
 
+  // ---- W3d: the history triggers -------------------------------------------
+
+  /**
+   * The pass at the end of an agent's turn, in the background. Only for an
+   * agent holding a WRITABLE grant (a viewer's session can't change the
+   * folder); checked as the session's person, like the prompt block. Never
+   * throws: a failure is logged and leaves a gap.
+   */
+  async function turnEndPass(ctx: AgentContext, projectId: string, reqId: string | undefined, key: string): Promise<void> {
+    try {
+      const res = await resolveProject(ctx, projectId, ctx.agentId);
+      if (!res.ok || res.value.readOnly) {
+        ctx.logger.debug('projects_history_turn_skipped', {
+          projectId,
+          agentId: ctx.agentId,
+          reason: res.ok ? 'read-only' : res.reason,
+        });
+        return;
+      }
+      const row = await getRow(projectId);
+      if (row === undefined) return;
+      const members = await folderMembers(ctx, row.folder_id);
+      if (members === null) return;
+      const owner = await projectOwner(ctx, actorOf(ctx)!, projectId, ownerFirst(members));
+      if (owner === null) {
+        ctx.logger.warn('projects_history_skipped', { projectId, reason: 'no-owner' });
+        return;
+      }
+      const attribution: Attribution = {
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId ?? null,
+        reqId: reqId ?? null,
+      };
+      const out = await history!.recordPass(ctx, row, { label: 'agent', owner, attribution });
+      // Another pass held the lock: let this turn's second turn-end try again.
+      if (out.kind === 'locked') {
+        turnsSeen.delete(key);
+        ctx.logger.debug('projects_history_turn_skipped', { projectId, reason: 'locked' });
+      }
+    } catch (err) {
+      ctx.logger.error('projects_history_turn_failed', { projectId, err: errOf(err) });
+      await history!.recordGapQuietly(ctx, projectId, 'pass-failed');
+    }
+  }
+
+  /** Remember a turn key; false when it was already seen. Oldest keys go first. */
+  function firstSighting(key: string): boolean {
+    if (turnsSeen.has(key)) return false;
+    turnsSeen.add(key);
+    if (turnsSeen.size > TURN_DEDUPE_MAX) {
+      const oldest = turnsSeen.values().next().value;
+      if (oldest !== undefined) turnsSeen.delete(oldest);
+    }
+    return true;
+  }
+
+  function versionOut(v: FileVersionRow): ProjectsFileHistoryOutput['versions'][number] {
+    return {
+      versionId: v.version_id,
+      kind: v.kind,
+      label: v.label,
+      size: Number(v.size),
+      tooLarge: v.too_large,
+      authorUserId: v.author_user_id,
+      authorAgentId: v.author_agent_id,
+      conversationId: v.conversation_id,
+      createdAt: v.created_at.toISOString(),
+    };
+  }
+
+  /** A version that can't be read (wrong project, no bytes): the same message as an unknown project's. */
+  function versionNotFound(hookName: string): PluginError {
+    return fileRefusal(hookName, 'not-found');
+  }
+
+  function notRestorable(hookName: string): PluginError {
+    return new PluginError({
+      code: 'not-restorable',
+      reasonCode: 'not-restorable',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${hookName}: this version can't be restored (it was a deletion, or too big to keep)`,
+    });
+  }
+
+  async function runRetentionNow(): Promise<
+    { kind: 'done'; versions: number; gaps: number } | { kind: 'locked' } | { kind: 'not-started' }
+  > {
+    if (history === undefined) return { kind: 'not-started' };
+    return history.runRetention();
+  }
+
   return {
+    async runHistoryRetention() {
+      return runRetentionNow();
+    },
+
+    async drainHistory() {
+      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+    },
+
+    async shutdown() {
+      shuttingDown = true;
+      if (retentionStartTimer !== undefined) clearTimeout(retentionStartTimer);
+      if (retentionTimer !== undefined) clearInterval(retentionTimer);
+      retentionStartTimer = undefined;
+      retentionTimer = undefined;
+      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+    },
+
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
@@ -744,6 +1074,11 @@ export function createProjectsPlugin(): Plugin {
         'projects:write-file',
         'projects:delete-file',
         'projects:create-folder',
+        // W3d: file history.
+        'projects:snapshot',
+        'projects:file-history',
+        'projects:read-version',
+        'projects:restore-version',
         PROJECTS_BLOCK_HOOK,
       ],
       // NEVER conversations:*, and no declared sandbox:* edge. conversations
@@ -763,7 +1098,8 @@ export function createProjectsPlugin(): Plugin {
       // for a failed create's rollback) follow the same rule: without a writer,
       // the change hooks refuse `files-unavailable` and a new project starts
       // with an empty folder. preset.test and this package's manifest test pin
-      // the rule.
+      // the rule. W3d's `sandbox:scan-shared-folder` is the same again: without
+      // a scanner no pass runs (host writes still record their versions).
       calls: [
         'database:get-instance',
         'agents:can-manage-sharing',
@@ -789,8 +1125,29 @@ export function createProjectsPlugin(): Plugin {
           degradation:
             "a new project's memory/log.md says \"Project created\" without the person's name.",
         },
+        // W3d: versions' bytes live in the blob store, charged to the
+        // project's owner. The blob backends call nothing, so no cycle.
+        {
+          hook: 'blob:put',
+          degradation: 'no file history is recorded; History lists only what was recorded before.',
+        },
+        {
+          hook: 'blob:get',
+          degradation: 'a version can be listed but not previewed or restored.',
+        },
       ],
-      subscribes: [SHARED_FOLDERS_DELETED_HOOK],
+      // W3d: `chat:turn-end` records an agent turn's changes; `agents:deleted`
+      // and `conversations:purged` null a version's agent / chat (the
+      // agent-keyed-tables guard); `blob:collect-refs` because versions hold
+      // blob shas. Subscribing is no call edge, so conversations → projects
+      // stays one-way.
+      subscribes: [
+        SHARED_FOLDERS_DELETED_HOOK,
+        CHAT_TURN_END_HOOK,
+        AGENTS_DELETED_HOOK,
+        CONVERSATIONS_PURGED_HOOK,
+        BLOB_COLLECT_REFS_HOOK,
+      ],
     },
 
     async init({ bus: b }) {
@@ -799,6 +1156,15 @@ export function createProjectsPlugin(): Plugin {
       const { db: raw } = await b.call<unknown, { db: Kysely<unknown> }>('database:get-instance', initCtx, {});
       db = raw as Kysely<ProjectsDatabase>;
       await runProjectsMigration(db);
+      history = createHistory({
+        db,
+        bus: b,
+        pluginName: PLUGIN_NAME,
+        readFile: async (ctx, folderId, relPath, limitBytes) => {
+          const out = await readFolder(ctx, folderId, relPath, limitBytes, 1);
+          return out.kind === 'dir' ? { kind: 'dir' } : out;
+        },
+      });
 
       // ---- create -------------------------------------------------------
       b.registerService<unknown, ProjectsCreateOutput>(
@@ -840,6 +1206,7 @@ export function createProjectsPlugin(): Plugin {
           // No writer at all (no file storage on this deployment) is fine:
           // projects work without files (W3b). Anything else that fails rolls
           // the whole create back, so the person never gets a half-made project.
+          const seeded: { path: string; content: Uint8Array }[] = [];
           try {
             const changes = layoutChanges({
               name: input.name,
@@ -857,6 +1224,9 @@ export function createProjectsPlugin(): Plugin {
                 throw new Error(`seeding ${refused.path} answered ${out.results.find((r) => r.path === refused.path)?.outcome ?? 'nothing'}`);
               }
               ensured.add(projectId);
+              changes.forEach((c, i) => {
+                if (c.op === 'write' && out.results[i]?.outcome === 'created') seeded.push({ path: c.path, content: c.content });
+              });
             }
           } catch (err) {
             ctx.logger.error('projects_layout_seed_failed', { projectId, folderId, err: errOf(err) });
@@ -870,6 +1240,7 @@ export function createProjectsPlugin(): Plugin {
               cause: err,
             });
           }
+          await startHistory(ctx, actor, projectId, input.ownerAgentId, seeded);
           ctx.logger.info('projects_created', { projectId, folderId, ownerAgentId: input.ownerAgentId, actor });
           return { projectId, folderId };
         },
@@ -1203,7 +1574,7 @@ export function createProjectsPlugin(): Plugin {
           };
           if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
           if (input.content.length > WRITE_FILE_MAX_BYTES) refuseChange(ctx, hook, row.project_id, change, 'too-large');
-          const outcome = await applyChange(ctx, hook, row, change);
+          const outcome = await applyChange(ctx, hook, row, change, { label: 'edit', actor, members });
           if (outcome === 'conflict') throw changeRefusal(hook, 'conflict');
           if (outcome === 'exists') throw changeRefusal(hook, 'exists');
           if (PROTECTED_PATHS.has(path)) {
@@ -1226,11 +1597,11 @@ export function createProjectsPlugin(): Plugin {
           const input = parseInput(DeleteFileInputSchema, hook, rawInput);
           const actor = requireActor(ctx, hook);
           const path = changePath(hook, input.path);
-          const { row } = await loadEditable(ctx, hook, actor, input.projectId);
+          const { row, members } = await loadEditable(ctx, hook, actor, input.projectId);
           const change: LayoutChange = { op: 'delete', path };
           if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
           if (PROTECTED_PATHS.has(path)) refuseChange(ctx, hook, row.project_id, change, 'protected-path');
-          const outcome = await applyChange(ctx, hook, row, change);
+          const outcome = await applyChange(ctx, hook, row, change, { label: 'edit', actor, members });
           // Same message as an unknown project's, like download-file's.
           if (outcome === 'absent') throw fileRefusal(hook, 'not-found');
           return {};
@@ -1254,6 +1625,135 @@ export function createProjectsPlugin(): Plugin {
           return {};
         },
         { returns: CreateFolderOutputSchema },
+      );
+
+      // ---- file history (W3d §7) ------------------------------------------
+      // `snapshot`: the orchestrator's pass before a writable project session
+      // opens, called as the person (the ctx it resolved the project with), so
+      // the person must be able to use the project. Changes it finds are
+      // "Changed outside history". It answers within `snapshotBudgetMs`; a pass
+      // that fails or runs past that leaves a gap, and the session opens anyway.
+      b.registerService<unknown, ProjectsSnapshotOutput>(
+        'projects:snapshot',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:snapshot';
+          const input = parseInput(SnapshotInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const { row, members } = await loadUsable(ctx, hook, input.projectId);
+          if (!history!.enabled()) return { recorded: 0, gap: false };
+          const projectId = row.project_id;
+          const owner = await projectOwner(ctx, actor, projectId, ownerFirst(members));
+          if (owner === null) {
+            ctx.logger.warn('projects_history_skipped', { projectId, reason: 'no-owner' });
+            return { recorded: 0, gap: false };
+          }
+          type Settled = { kind: 'pass'; out: PassResult } | { kind: 'error'; err: unknown };
+          const run: Promise<Settled> = history!
+            .recordPass(ctx, row, { label: 'outside', owner, attribution: {} })
+            .then(
+              (out): Settled => ({ kind: 'pass', out }),
+              (err: unknown): Settled => ({ kind: 'error', err }),
+            );
+          track(run);
+          let timer: NodeJS.Timeout | undefined;
+          const deadline = new Promise<'deadline'>((resolve) => {
+            timer = setTimeout(() => resolve('deadline'), snapshotBudgetMs);
+            timer.unref();
+          });
+          let settled: Settled | 'deadline';
+          try {
+            settled = await Promise.race([run, deadline]);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (settled === 'deadline') {
+            // The pass carries on in the background; what it finds is still recorded.
+            ctx.logger.warn('projects_snapshot_slow', { projectId, budgetMs: snapshotBudgetMs });
+            await history!.recordGapQuietly(ctx, projectId, 'snapshot-timeout');
+            return { recorded: 0, gap: true };
+          }
+          if (settled.kind === 'error') {
+            ctx.logger.error('projects_snapshot_failed', { projectId, err: errOf(settled.err) });
+            await history!.recordGapQuietly(ctx, projectId, 'snapshot-failed');
+            return { recorded: 0, gap: true };
+          }
+          const out = settled.out;
+          if (out.kind !== 'done') return { recorded: 0, gap: false };
+          return { recorded: out.recorded, gap: out.failed > 0 };
+        },
+        { returns: SnapshotOutputSchema },
+      );
+
+      // `file-history`, `read-version`: the same gate as read-file (any person
+      // who can use the project, viewers included). The path is checked like a
+      // change's, since only a file has history.
+      b.registerService<unknown, ProjectsFileHistoryOutput>(
+        'projects:file-history',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:file-history';
+          const input = parseInput(FileHistoryInputSchema, hook, rawInput);
+          requireActor(ctx, hook);
+          const path = changePath(hook, input.path);
+          const { row } = await loadUsable(ctx, hook, input.projectId);
+          const [versions, gaps] = await Promise.all([
+            history!.listVersions(row.project_id, path),
+            history!.listGaps(row.project_id),
+          ]);
+          return {
+            versions: versions.map(versionOut),
+            gaps: gaps.map((g) => ({ at: g.at.toISOString(), reason: g.reason })),
+          };
+        },
+        { returns: FileHistoryOutputSchema },
+      );
+
+      b.registerService<unknown, ProjectsReadVersionOutput>(
+        'projects:read-version',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:read-version';
+          const input = parseInput(ReadVersionInputSchema, hook, rawInput);
+          requireActor(ctx, hook);
+          const { row } = await loadUsable(ctx, hook, input.projectId);
+          const v = await history!.getVersion(row.project_id, input.versionId);
+          if (v === undefined || v.kind !== 'write' || v.too_large || v.blob_sha === null) throw versionNotFound(hook);
+          const bytes = await history!.readBlob(ctx, v.blob_sha);
+          if (bytes === null) throw versionNotFound(hook);
+          return { contents: bytes, size: bytes.length };
+        },
+        { returns: ReadVersionOutputSchema },
+      );
+
+      // `restore-version`: the same gate and rules as write-file. The version's
+      // bytes are written through `applyChange` (an overwrite, or a re-create
+      // of a deleted file), recorded as "Restored by <person>".
+      b.registerService<unknown, ProjectsRestoreVersionOutput>(
+        'projects:restore-version',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:restore-version';
+          const input = parseInput(RestoreVersionInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const { row, members } = await loadEditable(ctx, hook, actor, input.projectId);
+          const v = await history!.getVersion(row.project_id, input.versionId);
+          if (v === undefined) throw versionNotFound(hook);
+          if (v.kind !== 'write' || v.too_large || v.blob_sha === null) throw notRestorable(hook);
+          const path = changePath(hook, v.path);
+          const bytes = await history!.readBlob(ctx, v.blob_sha);
+          if (bytes === null) throw notRestorable(hook);
+          const change: LayoutChange = { op: 'write', path, content: bytes };
+          if (isUnderSources(path)) refuseChange(ctx, hook, row.project_id, change, 'read-only-path');
+          await applyChange(ctx, hook, row, change, { label: 'restore', actor, members });
+          if (PROTECTED_PATHS.has(path)) {
+            for (const agentId of new Set(members.map((m) => m.agentId))) {
+              await b.fire(AUGMENT_CHANGED_HOOK, ctx, { agentId });
+            }
+          }
+          return { sha256: sha256Hex(bytes) };
+        },
+        { returns: RestoreVersionOutputSchema },
       );
 
       // ---- the project block ---------------------------------------------
@@ -1319,6 +1819,95 @@ export function createProjectsPlugin(): Plugin {
         }
         return undefined;
       });
+
+      // ---- W3d: history ------------------------------------------------------
+      // The end of an agent's turn: record what the turn changed. The project
+      // is `ctx.projectId`, stamped by the IPC server from the session record,
+      // never from the runner's frame. A turn fires twice (tool, then
+      // assistant), so a pass runs once per (session, reqId). The payload is
+      // runner-written: its ids are only a key and a label. In the background:
+      // never blocks the turn, never throws.
+      b.subscribe<unknown>(CHAT_TURN_END_HOOK, PLUGIN_NAME, async (ctx, payload) => {
+        try {
+          const projectId = ctx.projectId;
+          if (typeof projectId !== 'string' || projectId === '' || shuttingDown) return undefined;
+          if (!history!.enabled() || actorOf(ctx) === null) return undefined;
+          const p = (payload ?? {}) as { reqId?: unknown; turnId?: unknown };
+          const reqId = turnIdOf(p.reqId);
+          const turnKey = reqId ?? turnIdOf(p.turnId);
+          if (turnKey === undefined) return undefined;
+          const key = `${ctx.sessionId}\u0000${turnKey}`;
+          if (!firstSighting(key)) return undefined;
+          track(turnEndPass(ctx, projectId, reqId, key));
+        } catch (err) {
+          ctx.logger.error('projects_history_turn_failed', { err: errOf(err) });
+        }
+        return undefined;
+      });
+
+      // An agent is gone: its versions stay, showing "a removed agent".
+      b.subscribe<unknown>(AGENTS_DELETED_HOOK, PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (typeof agentId !== 'string' || agentId.length === 0) {
+          ctx.logger.warn('projects_history_agent_skipped', { reason: 'agents:deleted payload has no agentId' });
+          return undefined;
+        }
+        try {
+          await history!.forgetAgent(agentId);
+        } catch (err) {
+          ctx.logger.error('projects_history_agent_failed', { agentId, err: errOf(err) });
+        }
+        return undefined;
+      });
+
+      // Chats are purged: versions stay, without the link to the chat. A
+      // payload we don't recognise is rejected WHOLE.
+      b.subscribe<unknown>(CONVERSATIONS_PURGED_HOOK, PLUGIN_NAME, async (ctx, payload) => {
+        const ids = (payload as { conversationIds?: unknown } | null | undefined)?.conversationIds;
+        if (
+          !Array.isArray(ids) ||
+          ids.length > PURGED_IDS_MAX ||
+          !ids.every((id): id is string => typeof id === 'string' && id.length > 0)
+        ) {
+          ctx.logger.warn('projects_history_purge_skipped', { reason: 'malformed conversations:purged payload' });
+          return undefined;
+        }
+        try {
+          await history!.forgetConversations(ids);
+        } catch (err) {
+          ctx.logger.error('projects_history_purge_failed', { count: ids.length, err: errOf(err) });
+        }
+        return undefined;
+      });
+
+      // We hold blob shas in our own rows, so we answer (never throws).
+      b.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, PLUGIN_NAME, async (_ctx, payload) =>
+        answerBlobCollectRefs(payload, PLUGIN_NAME, (shas) => history!.blobRefs(shas)),
+      );
+
+      // Retention, daily, under a try-lock (one replica runs it).
+      const retentionIntervalMs = opts.historyRetentionIntervalMs ?? DEFAULT_RETENTION_INTERVAL_MS;
+      if (retentionIntervalMs > 0) {
+        const runRetention = (): void => {
+          track(
+            runRetentionNow().then(
+              (out) => {
+                if (out.kind === 'done' && out.versions + out.gaps > 0) {
+                  initCtx.logger.info('projects_history_retention', { versions: out.versions, gaps: out.gaps });
+                }
+              },
+              (err: unknown) => initCtx.logger.error('projects_history_retention_failed', { err: errOf(err) }),
+            ),
+          );
+        };
+        retentionStartTimer = setTimeout(() => {
+          retentionStartTimer = undefined;
+          runRetention();
+          retentionTimer = setInterval(runRetention, retentionIntervalMs);
+          retentionTimer.unref();
+        }, opts.historyRetentionInitialDelayMs ?? DEFAULT_RETENTION_INITIAL_DELAY_MS);
+        retentionStartTimer.unref();
+      }
     },
   };
 }

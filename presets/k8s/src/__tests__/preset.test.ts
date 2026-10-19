@@ -720,10 +720,18 @@ describe('@ax/preset-k8s wiring', () => {
       'projects:write-file',
       'projects:delete-file',
       'projects:create-folder',
+      'projects:snapshot',
+      'projects:file-history',
+      'projects:read-version',
+      'projects:restore-version',
       'system-prompt:augment:optional:projects',
     ]);
     // A tombstoned folder takes its project row with it (W3 §4.7).
     expect(pj!.manifest.subscribes).toContain('shared-folders:deleted');
+    // W3d: an agent turn's changes are recorded; versions hold blob shas.
+    expect(pj!.manifest.subscribes).toEqual(
+      expect.arrayContaining(['chat:turn-end', 'agents:deleted', 'conversations:purged', 'blob:collect-refs']),
+    );
   });
 
   // W3 §4.4: the call direction is conversations → projects (and the
@@ -947,7 +955,7 @@ describe('@ax/preset-k8s wiring', () => {
         .filter((p) => p.manifest.subscribes.includes('blob:collect-refs'))
         .map((p) => p.manifest.name)
         .sort(),
-    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/skills']);
+    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/projects', '@ax/skills']);
     // The exception must still be real: loaded, and still a blob writer. An
     // exception for a plugin that no longer exists is a hole for its successor.
     for (const name of BLOB_WRITER_HOLDER_EXCEPTIONS) {
