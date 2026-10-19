@@ -450,6 +450,10 @@ function ProjectFilesBrowser({
       await workspaceApi.restoreProjectFileVersion(projectId, target.versionId);
       const back = deleted.path;
       setDeleted(null);
+      // The folder's listing still says the file is gone: read it again first,
+      // or opening the file lands on "isn't here anymore" until a reload
+      // (production smoke test, 2026-10-19). Same as saving a new file.
+      if (tree.dirPath === (parentDirOf(back) ?? '')) await tree.refresh();
       onNavigate(back);
     } catch (e) {
       logRequestFailure(e, 'project-file-undo-delete');
@@ -597,20 +601,23 @@ function ProjectFilesBrowser({
       {uploads !== null && <UploadResults outcomes={uploads} onDismiss={() => setUploads(null)} />}
       {deleted !== null && (
         <Alert role="status">
-          <AlertDescription className="flex flex-wrap items-center gap-2">
-            <span className="min-w-0 flex-1 break-words">Deleted {deleted.label}.</span>
-            <Button size="sm" variant="secondary" disabled={undoBusy} onClick={() => void undoDelete()}>
-              {undoBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-              Undo
-            </Button>
-            <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setHistory({ path: deleted.path, label: deleted.label })}>
-              See history
-            </Button>
-            <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setDeleted(null)}>
-              Dismiss
-            </Button>
+          {/* Stacked: the folder column is narrow, and a wrapping row squeezed the text to a letter column. */}
+          <AlertDescription className="flex flex-col items-start gap-2">
+            <span className="break-words">Deleted {deleted.label}.</span>
+            <span className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" disabled={undoBusy} onClick={() => void undoDelete()}>
+                {undoBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+                Undo
+              </Button>
+              <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setHistory({ path: deleted.path, label: deleted.label })}>
+                See history
+              </Button>
+              <Button size="sm" variant="ghost" disabled={undoBusy} onClick={() => setDeleted(null)}>
+                Dismiss
+              </Button>
+            </span>
             {undoError !== null && (
-              <span role="alert" className="w-full text-destructive">
+              <span role="alert" className="text-destructive">
                 {undoError}
               </span>
             )}
@@ -663,7 +670,7 @@ function ProjectFilesBrowser({
             if (deleted?.path === history.path) setDeleted(null);
             // A restored file that had been deleted comes back: re-open the route's path.
             if (tree.filePath === history.path) void tree.refresh();
-            else open(path);
+            else void tree.refresh().then(() => open(path));
           }}
           {...(onOpenConversation !== undefined ? { onOpenChat: onOpenConversation } : {})}
         />
