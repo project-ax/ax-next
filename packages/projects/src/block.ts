@@ -56,7 +56,10 @@ export function renderProjectBlock(p: ProjectBlockInput): string {
   const parts = [
     `## Project: ${oneLine(p.name)}
 You're working in a project. Its folder is /shared/${p.folderId} and every member sees it
-at the same path.${readOnly}`,
+at the same path.${readOnly}
+In this chat, a path like memory/status.md means the project's file:
+/shared/${p.folderId}/memory/status.md. Your own files (/files) are separate;
+keep only what isn't the project's there.`,
   ];
   if (p.description !== null && p.description !== '') {
     parts.push(`What it's for, in its members' words:\n${quote(noControls(p.description))}`);
