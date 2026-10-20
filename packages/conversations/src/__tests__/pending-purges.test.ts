@@ -13,7 +13,30 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import pg from 'pg';
 import { createConversationsPlugin, type ConversationsPlugin } from '../plugin.js';
+import type { PendingPurge } from '../store.js';
 import type { ConversationsPurgedEvent, CreateInput, CreateOutput } from '../types.js';
+
+// The real store, except that the sweep's read returns `extraDue.rows` ahead of
+// what it found. Empty, it changes nothing. duePurges' SQL reads only kinds this
+// build knows, so this is the one way to put another kind in a pass; the filter
+// itself is untouched.
+const extraDue = vi.hoisted(() => ({ rows: [] as Array<{ kind: string; targetId: string }> }));
+vi.mock('../store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../store.js')>();
+  return {
+    ...actual,
+    createConversationStore: (...args: Parameters<typeof actual.createConversationStore>) => {
+      const store = actual.createConversationStore(...args);
+      return {
+        ...store,
+        duePurges: async (now: Date, limit: number): Promise<PendingPurge[]> => [
+          ...(extraDue.rows as PendingPurge[]),
+          ...(await store.duePurges(now, limit)),
+        ],
+      };
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Durable chat purge. `agents:deleted` fires ONCE, after the agent row is
@@ -447,6 +470,38 @@ describe('durable purge — when the pending record itself cannot be written', (
     // The dequeue is part of the purge transaction, so with no table the purge rolls back.
     expect(await countConversations(pool, ids)).toBe(ids.length);
     expect(announced).toEqual([]);
+  });
+});
+
+// The sweep purges one row after another, so one attempt that throws ends the
+// pass and strands every row behind it. On the sweep's path a row's kind comes
+// back from the database.
+describe('durable purge — a pending row of a kind this build does not know', () => {
+  it('is logged and skipped, and the agent row behind it in the same pass is still purged', async () => {
+    const { plugin, pool, announced } = await makeHarness();
+    const { ids } = await seed(pool, target);
+    await pool.query(`INSERT INTO conversations_v1_pending_purges (kind, target_id) VALUES ('agent', $1)`, [target]);
+    // The sweep logs through its own ctx, whose logger writes JSON lines to stdout.
+    const stdout = vi.spyOn(process.stdout, 'write');
+    extraDue.rows = [{ kind: 'project', targetId: 'prj_gone' }];
+    let lines: string[];
+    try {
+      expect(await plugin.sweepPendingPurges(new Date(Date.now() + 60 * SEC))).toEqual({ attempted: 2, purged: 1 });
+    } finally {
+      extraDue.rows = [];
+      lines = stdout.mock.calls.map(([chunk]) => String(chunk));
+      stdout.mockRestore();
+    }
+
+    expect(await countConversations(pool, ids)).toBe(0);
+    expect(announced).toHaveLength(1);
+    expect(await pendingRows(pool)).toEqual([]);
+    const unknown = lines
+      .filter((line) => line.includes('conversations_purge_unknown_kind'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(unknown).toEqual([
+      expect.objectContaining({ level: 'error', msg: 'conversations_purge_unknown_kind', kind: 'project', targetId: 'prj_gone' }),
+    ]);
   });
 });
 

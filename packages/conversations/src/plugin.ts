@@ -806,7 +806,16 @@ async function purgeAndAnnounce(
   targetId: string,
   now: Date,
 ): Promise<boolean> {
-  const log = PURGE_LOG[kind];
+  // `kind` is typed, but on the sweep's path it was read back from the
+  // database. A kind with no PURGE_LOG entry is logged and skipped: reading
+  // its log names would throw out of this function and end the sweep's pass,
+  // stranding every row behind it. duePurges reads only known kinds, so this
+  // is a guard, not a path anything takes today.
+  const log = Object.hasOwn(PURGE_LOG, kind) ? PURGE_LOG[kind] : undefined;
+  if (log === undefined) {
+    ctx.logger.error('conversations_purge_unknown_kind', { kind, targetId });
+    return false;
+  }
   let conversationIds: string[];
   try {
     conversationIds = await store.purgeAndDequeue(kind, targetId);
