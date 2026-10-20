@@ -309,6 +309,37 @@ export async function runConversationsMigration<DB>(
     CREATE INDEX IF NOT EXISTS conversations_v1_transcripts_by_conv
       ON conversations_v1_transcripts (conversation_id, seq)
   `.execute(db);
+
+  // Durable chat purge — the outbox behind the agents:deleted subscriber. That
+  // event fires ONCE, after the agent row is gone, so a purge that fails (or a
+  // crash part-way through) would otherwise strand that agent's chats for good.
+  // The subscriber records `(kind, target_id)` here FIRST; the purge transaction
+  // deletes the row as it commits (success and dequeue are atomic); a failure
+  // leaves it with `attempts`/`next_attempt_at` set for the plugin's retry
+  // sweep. `target_id` is the deleted agent's id; it is keyed with `kind`, a
+  // generic shape on purpose (see W3's table below). `last_error` is the error
+  // MESSAGE only, truncated, for an operator.
+  //
+  // A database that ran W3's version of this migration (#991, reverted in
+  // #1004) already has this table, with `CHECK (kind IN ('agent', 'project'))`.
+  // IF NOT EXISTS keeps that table, which is harmless, because only `agent`
+  // rows are written or read.
+  await sql`
+    CREATE TABLE IF NOT EXISTS conversations_v1_pending_purges (
+      kind TEXT NOT NULL CHECK (kind IN ('agent')),
+      target_id TEXT NOT NULL,
+      attempts INT NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_error TEXT NULL,
+      PRIMARY KEY (kind, target_id)
+    )
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS conversations_v1_pending_purges_due
+      ON conversations_v1_pending_purges (next_attempt_at)
+  `.execute(db);
 }
 
 /**
@@ -381,8 +412,22 @@ export interface ConversationTranscriptRow {
   created_at?: Date;
 }
 
+/**
+ * A purge still owed for a deleted agent (see the migration). The defaulted
+ * columns are optional so an insert can omit them.
+ */
+export interface ConversationPendingPurgeRow {
+  kind: 'agent';
+  target_id: string;
+  attempts?: number;
+  next_attempt_at?: Date;
+  created_at?: Date;
+  last_error?: string | null;
+}
+
 export interface ConversationDatabase {
   conversations_v1_conversations: ConversationsRow;
   conversations_v1_events: ConversationEventsRow;
   conversations_v1_transcripts: ConversationTranscriptRow;
+  conversations_v1_pending_purges: ConversationPendingPurgeRow;
 }

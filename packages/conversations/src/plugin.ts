@@ -25,6 +25,7 @@ import {
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
+  type PendingPurgeKind,
   type StoredEvent,
 } from './store.js';
 import {
@@ -103,9 +104,136 @@ const PLUGIN_NAME = '@ax/conversations';
 //   - We DO NOT add `bind-session` / `unbind-session` hooks here — Task 14.
 // ---------------------------------------------------------------------------
 
-export function createConversationsPlugin(): Plugin {
+/** Default retry-sweep interval for pending purges. */
+const DEFAULT_PURGE_SWEEP_INTERVAL_MS = 60_000;
+/** The first pass after init — picks up rows a crash left behind — runs after this (or the interval, if shorter). */
+const PURGE_STARTUP_DELAY_MS = 5_000;
+/** Pending purges retried per sweep pass. */
+const PURGE_SWEEP_BATCH = 50;
+/** `last_error` keeps at most this much of an error message. */
+const PURGE_ERROR_MAX_CHARS = 500;
+
+export interface ConversationsPluginOptions {
+  /**
+   * How often the durable-purge sweep retries purges that failed (or were
+   * interrupted by a crash). Default 60 s; 0 disables both the timer and the
+   * post-init pass (tests drive `sweepPendingPurges()` directly).
+   */
+  purgeSweepIntervalMs?: number;
+}
+
+export interface ConversationsPlugin extends Plugin {
+  /**
+   * Run one retry pass over the pending purges due at `now`. A pass already
+   * running is joined, not doubled. Resolves with how many were attempted and
+   * how many purged; never rejects for a single target's failure.
+   */
+  sweepPendingPurges(now?: Date): Promise<{ attempted: number; purged: number }>;
+}
+
+export function createConversationsPlugin(
+  opts: ConversationsPluginOptions = {},
+): ConversationsPlugin {
+  const purgeSweepIntervalMs = opts.purgeSweepIntervalMs ?? DEFAULT_PURGE_SWEEP_INTERVAL_MS;
   let db: Kysely<ConversationDatabase> | undefined;
   let _store: ConversationStore | undefined;
+  let busRef: HookBus | undefined;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let sweepInFlight: Promise<{ attempted: number; purged: number }> | undefined;
+  let stopped = false;
+  /**
+   * Purges running right now in THIS process (`kind:targetId`): the sweep skips
+   * them rather than racing the subscriber, and vice versa. Another replica can
+   * still run the same purge concurrently; that is safe (the second waits on
+   * the first's row locks, then deletes and announces nothing).
+   */
+  const purging = new Set<string>();
+
+  const sweepCtx = (): AgentContext =>
+    makeAgentContext({
+      sessionId: 'conversations-purge-sweep',
+      agentId: PLUGIN_NAME,
+      userId: 'system',
+    });
+
+  async function runPurgeSweep(now: Date): Promise<{ attempted: number; purged: number }> {
+    const store = _store;
+    const bus = busRef;
+    if (store === undefined || bus === undefined) return { attempted: 0, purged: 0 };
+    const ctx = sweepCtx();
+    const due = await store.duePurges(now, PURGE_SWEEP_BATCH);
+    let attempted = 0;
+    let purged = 0;
+    for (const { kind, targetId } of due) {
+      if (stopped) break;
+      const key = purgeKey(kind, targetId);
+      if (purging.has(key)) continue;
+      attempted++;
+      purging.add(key);
+      try {
+        if (await purgeAndAnnounce(store, bus, ctx, kind, targetId, now)) purged++;
+      } finally {
+        purging.delete(key);
+      }
+    }
+    return { attempted, purged };
+  }
+
+  /** One pass at a time: a pass still running when the next is asked for is joined, not doubled. */
+  function sweepPendingPurges(now: Date = new Date()): Promise<{ attempted: number; purged: number }> {
+    if (sweepInFlight !== undefined) return sweepInFlight;
+    const p = runPurgeSweep(now).finally(() => {
+      sweepInFlight = undefined;
+    });
+    sweepInFlight = p;
+    return p;
+  }
+
+  function sweepInBackground(): void {
+    void sweepPendingPurges().catch((err: unknown) => {
+      sweepCtx().logger.error('conversations_purge_sweep_failed', {
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    });
+  }
+
+  /**
+   * The subscriber half of the durable purge. Record the debt FIRST, then
+   * purge-and-dequeue in one transaction, then announce. Never throws (K10).
+   */
+  async function purgeForDeletion(
+    store: ConversationStore,
+    bus: HookBus,
+    ctx: AgentContext,
+    kind: PendingPurgeKind,
+    targetId: string,
+  ): Promise<void> {
+    try {
+      await store.enqueuePurge(kind, targetId);
+    } catch (err) {
+      // We could not write down that this purge is owed. Still try it now: if
+      // it succeeds nothing is lost. If it fails too, recordPurgeFailure
+      // upserts the row — and if THAT fails as well, nothing more can be done
+      // here: the chats stay behind until someone purges them by hand, and
+      // these error lines are the only trace.
+      ctx.logger.error('conversations_purge_enqueue_failed', {
+        kind,
+        targetId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+    const key = purgeKey(kind, targetId);
+    // The sweep is already on it (it found the row we just inserted, or one a
+    // previous failure left). Its outcome — purge or reschedule — stands.
+    if (purging.has(key)) return;
+    purging.add(key);
+    try {
+      await purgeAndAnnounce(store, bus, ctx, kind, targetId, new Date());
+    } finally {
+      purging.delete(key);
+    }
+  }
 
   return {
     manifest: {
@@ -193,7 +321,8 @@ export function createConversationsPlugin(): Plugin {
       // TASK-718: agents:deleted hard-deletes the agent's conversations,
       // events and transcripts. The manifest has no field for hooks a plugin
       // FIRES; the one it fires in response (`conversations:purged`) is
-      // documented at its fire site, in purgeConversationsForDeletedAgent.
+      // documented at its fire site, in announcePurged (reached through
+      // purgeAndAnnounce, which is durable: see there).
       subscribes: [
         'chat:turn-end',
         'session:terminate',
@@ -218,6 +347,8 @@ export function createConversationsPlugin(): Plugin {
       await runConversationsMigration(db);
       const localStore = createConversationStore(db);
       _store = localStore;
+      busRef = bus;
+      stopped = false;
 
       bus.registerService<CreateInput, CreateOutput>(
         'conversations:create',
@@ -461,22 +592,56 @@ export function createConversationsPlugin(): Plugin {
       // drop the rows they keep per conversation. @ax/agents fires this AFTER
       // the agent row is gone, with `{ agentId, ownerId, ownerType }`; only
       // `agentId` matters here. Subscriber MUST NOT throw — it logs + swallows.
+      // A purge that fails is retried by the sweep below until it succeeds
+      // (see purgeAndAnnounce).
       bus.subscribe<AgentDeletedPayload>(
         'agents:deleted',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          await purgeConversationsForDeletedAgent(localStore, bus, ctx, payload);
+          const agentId = validDeletedId(ctx, payload?.agentId);
+          if (agentId !== undefined) {
+            await purgeForDeletion(localStore, bus, ctx, 'agent', agentId);
+          }
           return undefined;
         },
       );
+
+      // The durable-purge retry sweep: failed purges are retried with
+      // backoff, and a pass shortly after init picks up rows a crash
+      // part-way through a purge left behind. unref() so the timers never
+      // keep a process alive on their own.
+      if (purgeSweepIntervalMs > 0) {
+        startupTimer = setTimeout(() => {
+          startupTimer = undefined;
+          sweepInBackground();
+        }, Math.min(PURGE_STARTUP_DELAY_MS, purgeSweepIntervalMs));
+        startupTimer.unref?.();
+        sweepTimer = setInterval(sweepInBackground, purgeSweepIntervalMs);
+        sweepTimer.unref?.();
+      }
     },
 
+    sweepPendingPurges,
+
     async shutdown() {
+      stopped = true;
+      if (startupTimer !== undefined) {
+        clearTimeout(startupTimer);
+        startupTimer = undefined;
+      }
+      if (sweepTimer !== undefined) {
+        clearInterval(sweepTimer);
+        sweepTimer = undefined;
+      }
+      // A pass in flight stops after its current target; wait for it so it
+      // never touches the database after the pool is closed.
+      if (sweepInFlight !== undefined) await sweepInFlight.catch(() => undefined);
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Drop our references so a re-init doesn't read a stale
       // store.
       db = undefined;
       _store = undefined;
+      busRef = undefined;
     },
   };
 }
@@ -551,70 +716,156 @@ interface PermissionRequestPayload {
 }
 
 /**
- * TASK-718: the `agents:deleted` subscriber. Deleting an agent used to leave
- * every conversation, display event and transcript row it ever had behind, for
- * good: nothing hard-deleted these tables, and every per-conversation hook
- * answers 404 once the agent is gone, so nobody could see or remove them.
+ * TASK-718: the `agents:deleted` subscriber.
  *
+ * Deleting an agent used to leave every conversation, display event and
+ * transcript row it ever had behind, for good: nothing hard-deleted these
+ * tables, and every per-conversation hook answers 404 once the agent is gone.
  * Product decision: conversations are deleted WITH the agent (no retention),
- * for every user who talked to it. Hence `purgeForAgent` keys on agent_id alone
- * and includes soft-deleted and hidden rows.
+ * for every user who talked to it — hence `purgeForAgent` keys on agent_id
+ * alone and includes soft-deleted and hidden rows.
  *
- * Order matters: purge (one transaction) FIRST, announce SECOND. The
- * `conversations:purged` fire below is deliberately outside the transaction, so
- * a subscriber never sees ids whose deletion could still roll back, and a slow
- * or failing subscriber can never hold the purge open or undo it.
+ * Durable (retried until it succeeds). The event fires ONCE, after the agent
+ * row is gone, so nobody will ever ask again. The subscriber therefore:
+ *   1. records the debt in `conversations_v1_pending_purges` (idempotent);
+ *   2. purges the chats AND deletes that row in ONE transaction — success and
+ *      dequeue commit together;
+ *   3. after the commit, announces `conversations:purged` for exactly the ids
+ *      removed.
+ * On failure the row stays with attempts+1, the error message and a backoff
+ * (30 s · 2^(attempts−1), capped at 1 h), and the plugin's sweep retries it.
+ * A crash anywhere before the commit leaves the row too, and the sweep's
+ * first pass after restart picks it up. Re-delivery is a no-op: nothing left
+ * to purge, nothing announced.
+ *
+ * NOT covered — said plainly: an event this subscriber never received. If the
+ * process dies after @ax/agents deleted its row but before (or while) the
+ * event reached us and step 1 committed, there is no record that a purge is
+ * owed, and those chats stay behind (still scoped to their own users,
+ * unreadable through every per-conversation hook). Closing that needs
+ * @ax/agents to keep its own outbox / re-fire, which is outside this package.
+ * Likewise a `conversations:purged` subscriber that fails is not re-announced
+ * (the ids are gone once the purge commits).
+ *
+ * Order matters: purge (one transaction) FIRST, announce SECOND. The fire is
+ * deliberately outside the transaction, so a subscriber never sees ids whose
+ * deletion could still roll back, and a slow or failing subscriber can never
+ * hold the purge open or undo it.
  *
  * Subscriber-must-not-throw (K10): every failure (an invalid payload, a
  * database error, a fire that throws) is logged at `error` and swallowed. The
- * agent row is already gone by the time this runs; failing here would only tell
- * @ax/agents about a problem it cannot act on.
+ * agent row is already gone by the time this runs; failing here would only
+ * tell @ax/agents about a problem it cannot act on.
  */
-async function purgeConversationsForDeletedAgent(
+function validDeletedId(ctx: AgentContext, value: unknown): string | undefined {
+  // A payload without a non-empty string id is a caller bug. Refuse it HERE as
+  // well as in the store: nothing may ever reach a delete keyed on an empty or
+  // non-string value — nor be written to the pending-purge outbox.
+  if (typeof value === 'string' && value.length > 0) return value;
+  ctx.logger.error(PURGE_LOG.agent.failed, {
+    agentId: value,
+    err: new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'agents:deleted',
+      message: "'agentId' must be a non-empty string",
+    }),
+  });
+  return undefined;
+}
+
+/** Log lines per kind — the names predate the outbox and are kept stable. */
+const PURGE_LOG: Record<PendingPurgeKind, { ok: string; failed: string; idField: string }> = {
+  agent: {
+    ok: 'conversations_purged_for_deleted_agent',
+    failed: 'conversations_purge_for_deleted_agent_failed',
+    idField: 'agentId',
+  },
+};
+
+function purgeKey(kind: PendingPurgeKind, targetId: string): string {
+  return `${kind}:${targetId}`;
+}
+
+/** The error's message only (never a stack or a whole object), truncated. */
+function shortErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.length > PURGE_ERROR_MAX_CHARS ? `${msg.slice(0, PURGE_ERROR_MAX_CHARS)}…` : msg;
+}
+
+/**
+ * One attempt, shared by the subscriber and the sweep: purge-and-dequeue in one
+ * transaction, then announce; on failure, reschedule. Returns whether the purge
+ * committed. Never throws.
+ */
+async function purgeAndAnnounce(
   store: ConversationStore,
   bus: HookBus,
   ctx: AgentContext,
-  payload: AgentDeletedPayload,
-): Promise<void> {
-  const agentId = payload?.agentId;
+  kind: PendingPurgeKind,
+  targetId: string,
+  now: Date,
+): Promise<boolean> {
+  const log = PURGE_LOG[kind];
+  let conversationIds: string[];
   try {
-    // A payload that is not `{ agentId: <non-empty string> }` is a caller bug.
-    // Refuse it HERE as well as in the store: nothing may ever reach a delete
-    // keyed on an empty or non-string value.
-    if (typeof agentId !== 'string' || agentId.length === 0) {
-      throw new PluginError({
-        code: 'invalid-payload',
-        plugin: PLUGIN_NAME,
-        hookName: 'agents:deleted',
-        message: "'agentId' must be a non-empty string",
-      });
-    }
-    const conversationIds = await store.purgeForAgent(agentId);
-    ctx.logger.info('conversations_purged_for_deleted_agent', {
-      agentId,
-      count: conversationIds.length,
-    });
-
-    // `conversations:purged`: a subscriber hook this plugin FIRES for others
-    // (@ax/attachments deletes the rows it keeps per conversation). Payload is
-    // ConversationsPurgedEvent `{ conversationIds }`, at most
-    // CONVERSATIONS_PURGED_CHUNK_SIZE ids per fire so a subscriber's own query
-    // stays bounded however many conversations the agent had. Nothing is fired
-    // when nothing was purged. Not an IPC action; domain vocabulary only.
-    //
-    // Alternate impl: a different conversations backend fires the same event,
-    // and any store that keeps per-conversation data (a blob service, a search
-    // index) subscribes the same way.
-    for (let i = 0; i < conversationIds.length; i += CONVERSATIONS_PURGED_CHUNK_SIZE) {
-      await bus.fire('conversations:purged', ctx, {
-        conversationIds: conversationIds.slice(i, i + CONVERSATIONS_PURGED_CHUNK_SIZE),
-      } satisfies ConversationsPurgedEvent);
-    }
+    conversationIds = await store.purgeAndDequeue(kind, targetId);
   } catch (err) {
-    ctx.logger.error('conversations_purge_for_deleted_agent_failed', {
-      agentId,
+    ctx.logger.error(log.failed, {
+      [log.idField]: targetId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
+    try {
+      await store.recordPurgeFailure(kind, targetId, shortErrorMessage(err), now);
+    } catch (recordErr) {
+      // The pending row (if the enqueue landed) still exists with its old
+      // schedule, so the sweep will retry anyway — just without the backoff
+      // bump or the error text.
+      ctx.logger.error('conversations_purge_retry_record_failed', {
+        kind,
+        targetId,
+        err: recordErr instanceof Error ? recordErr : new Error(String(recordErr)),
+      });
+    }
+    return false;
+  }
+  ctx.logger.info(log.ok, { [log.idField]: targetId, count: conversationIds.length });
+  try {
+    await announcePurged(bus, ctx, conversationIds);
+  } catch (err) {
+    // The purge is committed and dequeued; a failed announce is not retried.
+    ctx.logger.error('conversations_purged_announce_failed', {
+      kind,
+      targetId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+  return true;
+}
+
+/**
+ * `conversations:purged`: a subscriber hook this plugin FIRES for others
+ * (@ax/attachments deletes the rows it keeps per conversation). Payload is
+ * ConversationsPurgedEvent `{ conversationIds }`, at most
+ * CONVERSATIONS_PURGED_CHUNK_SIZE ids per fire so a subscriber's own query
+ * stays bounded however many conversations the agent had. Nothing is fired
+ * when nothing was purged. Not an IPC action; domain vocabulary only.
+ *
+ * Alternate impl: a different conversations backend fires the same event, and
+ * any store that keeps per-conversation data (a blob service, a search index)
+ * subscribes the same way.
+ *
+ * Callers invoke this only AFTER the purge transaction committed.
+ */
+async function announcePurged(
+  bus: HookBus,
+  ctx: AgentContext,
+  conversationIds: string[],
+): Promise<void> {
+  for (let i = 0; i < conversationIds.length; i += CONVERSATIONS_PURGED_CHUNK_SIZE) {
+    await bus.fire('conversations:purged', ctx, {
+      conversationIds: conversationIds.slice(i, i + CONVERSATIONS_PURGED_CHUNK_SIZE),
+    } satisfies ConversationsPurgedEvent);
   }
 }
 

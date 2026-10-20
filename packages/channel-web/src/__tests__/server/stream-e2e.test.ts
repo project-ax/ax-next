@@ -259,7 +259,7 @@ async function boot(args: BootArgs): Promise<{
       // Phase D — conversations plugin needs workspace:list/read
       // registered to satisfy bootstrap's verifyCalls.
       createMockWorkspacePlugin(),
-      createConversationsPlugin(),
+      createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),

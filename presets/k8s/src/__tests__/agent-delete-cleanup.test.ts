@@ -209,7 +209,7 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
         createAgentsPlugin(),
-        createConversationsPlugin(),
+        createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
         createAttachmentsPlugin({ janitorIntervalSeconds: 3600 }),
         createSessionPostgresPlugin({ connectionString }),
       ],

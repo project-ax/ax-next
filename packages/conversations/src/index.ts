@@ -1,4 +1,8 @@
-export { createConversationsPlugin } from './plugin.js';
+export {
+  createConversationsPlugin,
+  type ConversationsPlugin,
+  type ConversationsPluginOptions,
+} from './plugin.js';
 export {
   runConversationsMigration,
   type ConversationDatabase,

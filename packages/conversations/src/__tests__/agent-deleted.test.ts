@@ -179,6 +179,7 @@ afterEach(async () => {
   const cleanup = new pg.Client({ connectionString });
   await cleanup.connect();
   try {
+    await cleanup.query('DROP TABLE IF EXISTS conversations_v1_pending_purges');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_transcripts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_events');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
@@ -361,6 +362,12 @@ describe('conversations: agents:deleted subscriber (TASK-718)', () => {
       [c],
     );
     expect((rows.rows[0] as { n: number }).n).toBe(1);
+    // ...and the purge is still owed: a pending row the retry sweep will pick
+    // up (pending-purges.test.ts covers the retry itself).
+    const pending = await pool.query(
+      'SELECT kind, target_id, attempts FROM conversations_v1_pending_purges',
+    );
+    expect(pending.rows).toEqual([{ kind: 'agent', target_id: 'agt_a', attempts: 1 }]);
   });
 
   it.each([
@@ -393,6 +400,11 @@ describe('conversations: agents:deleted subscriber (TASK-718)', () => {
     expect(logRecords.filter((r) => r.msg === 'hook_subscriber_failed')).toEqual([]);
     expect(fires).toEqual([]);
     expect(await countRows(pool, [c])).toEqual({ conversations: 1, events: 1, transcripts: 1 });
+    // Nor is a purge recorded as owed: an invalid id never reaches the outbox.
+    const pending = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM conversations_v1_pending_purges',
+    );
+    expect((pending.rows[0] as { n: number }).n).toBe(0);
   });
 });
 
