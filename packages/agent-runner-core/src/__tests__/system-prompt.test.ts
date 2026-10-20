@@ -8,6 +8,7 @@ import {
   operationalNotes,
   pythonVenvNote,
   sharedFoldersNote,
+  noSharedFoldersNote,
   skillAuthoringNote,
   userFilesNote,
   workPolicyNote,
@@ -378,6 +379,21 @@ describe('agent-facing vocabulary', () => {
   });
 });
 
+describe('noSharedFoldersNote (W3)', () => {
+  // A chat outside a project once went hunting for a /shared path the agent
+  // remembered from a project chat, and reported a dangling mount.
+  it('is said exactly when no shared folder is mounted, after the memory note', () => {
+    for (const folders of [undefined, []]) {
+      const notes = operationalNotes(WS, '/ephemeral', false, undefined, WS, '/memory', folders);
+      expect(notes).toContain(noSharedFoldersNote());
+      expect(notes.indexOf(noSharedFoldersNote())).toBeGreaterThan(notes.indexOf('Memory files:'));
+      expect(notes.indexOf(noSharedFoldersNote())).toBeLessThan(notes.indexOf(capabilityHandoffNote()));
+    }
+    expect(noSharedFoldersNote()).toContain("only there in that project's own chats");
+    expect(noSharedFoldersNote().toLowerCase()).not.toContain('workspace');
+  });
+});
+
 describe('sharedFoldersNote (W2)', () => {
   const FOLDERS = [
     { id: 'sf_a', path: '/shared/sf_a', readOnly: false },
@@ -406,6 +422,7 @@ describe('sharedFoldersNote (W2)', () => {
     expect(empty).not.toContain('Shared folders');
     const withShared = operationalNotes(WS, '/ephemeral', false, undefined, WS, '/memory', FOLDERS);
     expect(withShared).toContain(sharedFoldersNote(FOLDERS));
+    expect(withShared).not.toContain(noSharedFoldersNote());
     expect(withShared.indexOf('Shared folders:')).toBeGreaterThan(withShared.indexOf('Memory files:'));
     expect(withShared.indexOf('Shared folders:')).toBeLessThan(
       withShared.indexOf(capabilityHandoffNote()),

@@ -403,9 +403,21 @@ export function sharedFoldersNote(
 }
 
 /**
+ * W3: said when NO shared folder is mounted. An agent's memory can hold a
+ * project folder's path from an earlier project chat; in any other chat that
+ * folder isn't mounted, and the agent went looking for it (and reported a
+ * dangling `/shared`) instead of saying where the work belongs.
+ */
+export function noSharedFoldersNote(): string {
+  return 'No project folder is mounted in this chat. If you remember a project folder under `/shared/`, ' +
+    "it's only there in that project's own chats, so don't look for it here. " +
+    'If the person wants project work done, ask them to start the chat from the project.';
+}
+
+/**
  * Assemble the runner-authored operational notes block, in order:
  *   roots → (keeping-files?) → (ephemeral-scratch?) → (python-venv?) →
- *   (memory?) → (shared-folders?) → capability-handoff → skill-authoring → clarifying-questions.
+ *   (memory?) → shared-folders | no-shared-folders → capability-handoff → skill-authoring → clarifying-questions.
  *
  * The roots note comes first and is always present (the root is always known).
  * The keeping-files note follows it IMMEDIATELY rather than after the scratch
@@ -448,6 +460,8 @@ export function operationalNotes(
   if (memoryRoot !== undefined) notes.push(memoryExportNote(memoryRoot));
   if (sharedFolders !== undefined && sharedFolders.length > 0) {
     notes.push(sharedFoldersNote(sharedFolders));
+  } else {
+    notes.push(noSharedFoldersNote());
   }
   // Always-present tail: the JIT capability-handoff note (design §7) so the
   // agent doesn't narrate a mid-conversation connect/approval handoff, the
