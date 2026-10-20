@@ -15,14 +15,11 @@ knows what it's for and says how it's going.
 
 ## Resume here
 
-- **Now:** this design is proposed. §11 step 1, the revert, merged as #1004
-  (TASK-903). §11 step 2, the keepers PR, is TASK-904.
-- **Next, in order:**
-  1. §11 steps 3–4: resetting production and kind, tidying the board. Deploy
-     the reverted main to production only with TASK-904 in the image, or drain
-     first (step 3). The wipe alone isn't enough: without TASK-904 the storage
-     helper refuses records that still carry `sharedFolders` and won't start.
-  2. §12 PR 1: "Stay on top of something", end to end.
+- **Now:** §11 is done. The revert merged as #1004 (TASK-903) and the keepers
+  as #1006 (TASK-904). Production and kind were wiped and redeployed on
+  2026-10-20, and the board is tidied. Open questions 2, 3 and 7 are decided
+  (§15).
+- **Next:** §12 PR 1, "Stay on top of something", end to end.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -616,7 +613,7 @@ ordinary task.
 | "Needs you" only shows on Today, and the CEO and the parents don't open ax every day | Email each new ask, with a daily cap; push later | PR 2 |
 | "Get something done" has no due date | An optional "Finish by" date: on the row, in the brief ("9 days left"), and the agent reports Off track when the remaining steps won't fit. A person sets it, so it isn't an estimate. | PR 3 |
 | A task has one owner, and its asks reach one person | View-only sharing of a task, plus an "Also ask" list. This is the finding that pulls hardest toward the projects work. | After PR 5, in its own short design |
-| Only team admins can start tasks on a team agent | Members start tasks that run as themselves, within their own usage limits | PR 4, if agreed |
+| Only team admins can start tasks on a team agent | Members start tasks that run as themselves, within their own usage limits | PR 4 (decided, §15) |
 | The update inbox could drop data when an update is the only copy | First in, first out; unseen updates stay; the agent can read a cut-off update in full | PR 5 |
 | Numbers over time live only in sentences | An optional number in each report, shown as a small trend and labelled as the agent's reading | PR 3 |
 | The same plan every week | Duplicate task; a procedure that repeats becomes a skill the agent drafts from | PR 3 |
@@ -823,9 +820,10 @@ ask" list.
 1. Fold routines into Tasks (PR 4), or keep Routines as its own settings page?
    Recommend folding: two lists that both mean "work my agent does on its own"
    will confuse people.
-2. "Tasks" or "Jobs"? Recommend Tasks, the word people already use for this.
-3. Shortest check-in: 15 minutes? Routines allow 60 seconds today. 15 minutes
-   keeps a forgotten task cheap.
+2. ~~"Tasks" or "Jobs"?~~ **Decided: Tasks** (§15).
+3. ~~Shortest check-in: 15 minutes?~~ **Decided: 15 minutes** (§15). Routines
+   allow 60 seconds today; whether "Repeat a job" keeps that is settled in PR 4,
+   when routines move into Tasks.
 4. Is Today enough for "Needs you" in v1, or do we need email? Recommend email.
    The pressure test changed this: the CEO and the parents don't open ax every
    day.
@@ -833,8 +831,8 @@ ask" list.
    test: an optional number in each report, labelled as the agent's reading,
    never a computed measure.
 6. Give each task its own webhook address token? Recommend yes, with PR 5.
-7. Can team members start tasks on a team agent, running as themselves?
-   Recommend yes. Today only team admins can.
+7. ~~Can team members start tasks on a team agent, running as themselves?~~
+   **Decided: yes** (§15), in PR 4. Today only team admins can.
 8. Who else can see a task or answer its asks? Recommend view-only sharing plus
    an "Also ask" list after PR 5, in its own short design rather than as a
    bolt-on.
@@ -853,4 +851,7 @@ ask" list.
 | 2026-10-20 | Decided | For "Stay on top" and "Get done", updates from other apps are batched nudges with one check-in at a time, and the schedule is a required safety net. "Repeat a job" keeps one run per update. |
 | 2026-10-20 | Decided | Only a person marks a task done or resumes it, and an agent's edit to a task's brief always needs a yes. |
 | 2026-10-20 | Decided | Keep W1 and build on it. Revert W2 and W3 (#989, #991–#1001) and wipe production's database, since no real users depend on it. |
-| 2026-10-20 | Proposed | The pressure-test changes in §9 and the open questions in §14. |
+| 2026-10-20 | Decided | The app calls them **Tasks**, not Jobs (§14 Q2). |
+| 2026-10-20 | Decided | The shortest check-in is **15 minutes** (§14 Q3). |
+| 2026-10-20 | Decided | Team members can start tasks on a team agent, and those tasks run as the member who started them, within that member's usage limits. Lands in PR 4 (§14 Q7). |
+| 2026-10-20 | Proposed | The other pressure-test changes in §9 and the remaining open questions in §14. |
