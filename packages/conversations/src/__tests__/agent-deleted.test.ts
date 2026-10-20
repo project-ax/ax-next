@@ -397,6 +397,11 @@ describe('conversations: agents:deleted subscriber (TASK-718)', () => {
     expect(
       logRecords.filter((r) => r.msg === 'conversations_purge_for_deleted_agent_failed'),
     ).toHaveLength(1);
+    // Refused by the plugin's own guard, before the outbox is touched. With only
+    // the store's validation, the enqueue and the failure record would each be
+    // tried and fail, and log.
+    expect(logRecords.filter((r) => r.msg === 'conversations_purge_enqueue_failed')).toEqual([]);
+    expect(logRecords.filter((r) => r.msg === 'conversations_purge_retry_record_failed')).toEqual([]);
     expect(logRecords.filter((r) => r.msg === 'hook_subscriber_failed')).toEqual([]);
     expect(fires).toEqual([]);
     expect(await countRows(pool, [c])).toEqual({ conversations: 1, events: 1, transcripts: 1 });

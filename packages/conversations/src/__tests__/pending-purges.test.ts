@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createLogger, makeAgentContext, type AgentContext } from '@ax/core';
 import {
   PostgreSqlContainer,
@@ -56,9 +56,8 @@ function capturingCtx(): AgentContext {
 }
 
 async function makeHarness(
-  purgeSweepIntervalMs = 0,
+  plugin: ConversationsPlugin = createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
 ): Promise<{ h: TestHarness; plugin: ConversationsPlugin; pool: pg.Pool; announced: string[][] }> {
-  const plugin = createConversationsPlugin({ purgeSweepIntervalMs });
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
@@ -154,11 +153,17 @@ async function pendingRows(pool: pg.Pool): Promise<PendingRow[]> {
   return r.rows as PendingRow[];
 }
 
-/** Make every delete of a conversation row fail (the purge's LAST statement, so the child deletes must roll back too). */
-async function breakPurge(pool: pg.Pool): Promise<void> {
+const injected = 'injected purge failure';
+
+/**
+ * Make every delete of a conversation row fail with `message` (the purge's LAST
+ * statement, so the child deletes must roll back too). `message` is a test
+ * constant spliced into the SQL: no quotes, no `%`.
+ */
+async function breakPurge(pool: pg.Pool, message = injected): Promise<void> {
   await pool.query(`
     CREATE OR REPLACE FUNCTION test_fail_purge() RETURNS trigger AS $$
-    BEGIN RAISE EXCEPTION 'injected purge failure'; END
+    BEGIN RAISE EXCEPTION '${message}'; END
     $$ LANGUAGE plpgsql
   `);
   await pool.query(`
@@ -242,7 +247,8 @@ describe('durable purge — agents:deleted', () => {
     expect(rows[0]!.kind).toBe('agent');
     expect(rows[0]!.target_id).toBe(target);
     expect(rows[0]!.attempts).toBe(1);
-    expect(rows[0]!.last_error).toContain('injected purge failure');
+    // The message only: no error name, no stack.
+    expect(rows[0]!.last_error).toBe(injected);
     const due = rows[0]!.next_attempt_at.getTime();
     expect(due).toBeGreaterThanOrEqual(before + 30 * SEC - 1000);
     expect(due).toBeLessThanOrEqual(after + 30 * SEC + 1000);
@@ -348,7 +354,7 @@ describe('durable purge — agents:deleted', () => {
       expect(await plugin.sweepPendingPurges(now)).toEqual({ attempted: 1, purged: 0 });
       const [row] = await pendingRows(pool);
       expect(row!.attempts).toBe(i + 1);
-      expect(row!.last_error).toContain('injected purge failure');
+      expect(row!.last_error).toBe(injected);
       delays.push((row!.next_attempt_at.getTime() - now.getTime()) / SEC);
       now = new Date(row!.next_attempt_at.getTime() + SEC);
     }
@@ -363,8 +369,19 @@ describe('durable purge — agents:deleted', () => {
     expect(announced).toHaveLength(1);
   });
 
+  it('last_error keeps a long message cut to 500 characters and an ellipsis', async () => {
+    const { h, pool } = await makeHarness();
+    await seed(pool, target);
+    await breakPurge(pool, 'x'.repeat(2000));
+
+    await fireAgentDeleted(h, target);
+
+    const rows = await pendingRows(pool);
+    expect(rows.map((r) => r.last_error)).toEqual([`${'x'.repeat(500)}…`]);
+  });
+
   it('the timer runs the sweep on its own (startup pass included) — no manual call', async () => {
-    const { pool, announced } = await makeHarness(50);
+    const { pool, announced } = await makeHarness(createConversationsPlugin({ purgeSweepIntervalMs: 50 }));
     const { ids } = await seed(pool, target);
     await pool.query(
       `INSERT INTO conversations_v1_pending_purges (kind, target_id, next_attempt_at)
@@ -378,6 +395,42 @@ describe('durable purge — agents:deleted', () => {
     expect(await pendingRows(pool)).toEqual([]);
     expect(await countConversations(pool, ids)).toBe(0);
     expect(announced).toHaveLength(1);
+  });
+});
+
+// The production preset passes no options, so the defaults are what runs: a
+// pass every 60 s, plus one 5 s after init for rows a crash left behind.
+describe('durable purge — the sweep schedule', () => {
+  /**
+   * The delays of the timers that run the sweep, set while `boot` runs. They
+   * are picked out by what they run, so the harness's and pg's own timers
+   * don't count.
+   */
+  async function sweepTimers(boot: () => Promise<unknown>): Promise<{ intervals: unknown[]; timeouts: unknown[] }> {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      await boot();
+      const delays = (calls: unknown[][]) =>
+        calls.filter(([fn]) => String(fn).includes('sweepInBackground')).map(([, ms]) => ms);
+      return { intervals: delays(setIntervalSpy.mock.calls), timeouts: delays(setTimeoutSpy.mock.calls) };
+    } finally {
+      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  }
+
+  it('with no options, sweeps every 60 s and once 5 s after init', async () => {
+    expect(await sweepTimers(() => makeHarness(createConversationsPlugin()))).toEqual({
+      intervals: [60_000],
+      timeouts: [5_000],
+    });
+  });
+
+  it('purgeSweepIntervalMs: 0 sets neither timer', async () => {
+    expect(
+      await sweepTimers(() => makeHarness(createConversationsPlugin({ purgeSweepIntervalMs: 0 }))),
+    ).toEqual({ intervals: [], timeouts: [] });
   });
 });
 
