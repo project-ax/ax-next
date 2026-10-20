@@ -669,7 +669,8 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                 if (fixedAgentId) return <div key={s.skillId} data-testid={`installed-${s.skillId}`} className="flex items-center gap-3 py-4">
                   <span className="min-w-0 flex-1 truncate text-sm">{humanizeId(s.skillId)}</span>
                   <span className="text-xs text-muted-foreground">Enabled</span>
-                  <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${s.skillId}`}><ChevronRight /></Button></DropdownMenuTrigger>
+                  {/* Not modal: Delete skill's dialog removes this row; a modal menu would leave <body> unclickable. */}
+                  <DropdownMenu modal={false}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${s.skillId}`}><ChevronRight /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-muted-foreground">{s.description}</DropdownMenuLabel>
                       {isOwn && <><DropdownMenuItem onSelect={() => setEditor({ mode: 'edit-user', skillId: s.skillId })}>Edit skill</DropdownMenuItem><DropdownMenuItem onSelect={() => { setShareResult(null); setPendingShare(s.skillId); }}>Submit to workspace</DropdownMenuItem><DropdownMenuItem onSelect={() => setPendingDelete({ skillId: s.skillId, scope: 'user' })}>Delete skill</DropdownMenuItem></>}

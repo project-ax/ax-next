@@ -777,4 +777,5 @@ export const CONVERSATIONS_PURGED_CHUNK_SIZE = 500;
 // the runner a per-AGENT choice, so the honest value comes from the agent:
 // seeded at create, refreshed on every `conversations:bind-session`. A host-wide
 // default could only ever disagree with that, so the knob is deleted rather than
-// deprecated — `createConversationsPlugin()` now takes no arguments.
+// deprecated. `createConversationsPlugin()` takes only operational options
+// (`purgeSweepIntervalMs`), never anything stored on a conversation.

@@ -3,11 +3,13 @@ import { constants, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, read
   rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ApiException } from '@kubernetes/client-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StorageNodeEngine, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from '../storage-node/authority.js';
-import { StorageAssignmentSchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { StorageAssignmentSchema, StorageRecordSchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { legacySharedFolderTargetParts } from '../storage-node/sources.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -56,9 +58,11 @@ function engineFixture(data = input()) {
       if (!pretendSuccess) mounted.delete(args.at(-1)!);
     }
   });
-  const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
+  const reports: string[] = [];
+  const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), report: vi.fn((message: string) => { reports.push(message); }),
+    mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
-    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io };
+    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, reports };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -331,4 +335,266 @@ it('does not equate an uncertain terminal Pod with stopped containers on the cur
     await vi.advanceTimersByTimeAsync(90001);await assertion;
     expect(f.api.patchFinalizers).not.toHaveBeenCalled();expect(f.api.deleteClaim).not.toHaveBeenCalled();
   } finally {vi.useRealTimers();}
+});
+
+// TASK-904. A W2-era helper (#989, reverted in #1004) bound shared folders at
+// ax-late/shared/<folderId> and named them in its ledger record and recovery
+// annotation. This helper never binds one. It must boot over those records and
+// undo every bind they name when it releases them.
+const W2_SHARED = [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }];
+/** The record a W2 helper wrote: the assignment minus its bootstrap, plus sharedFolders. */
+function w2Record(data: StorageAssignment, published: boolean) {
+  const { bootstrap, ...rest } = data;
+  return { ...rest, sharedFolders: W2_SHARED, assignmentId: bootstrap.assignmentId, published };
+}
+/** The binds a W2 helper left attached on the pod's late volume. */
+function plantW2Binds(f: ReturnType<typeof engineFixture>, folders = ['sf_a', 'sf_b']) {
+  for (const parts of [['files'], ...folders.map(id => ['shared', id])]) {
+    const path = join(f.volume, ...parts); mkdirSync(path, { recursive: true }); f.mounted.add(path);
+  }
+}
+const unmounted = (f: ReturnType<typeof engineFixture>) =>
+  f.command.mock.calls.filter(([program]) => program === 'umount').map(([, args]) => args.at(-1));
+const writeLedger = (f: ReturnType<typeof engineFixture>, record: unknown) =>
+  writeFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), JSON.stringify(record));
+/**
+ * What the generated client throws for a refused request: the response text as the body,
+ * and that response's headers, which carry a per-request audit-id and date.
+ */
+function apiError(code: number, message: string): ApiException<string> {
+  const status = { kind: 'Status', apiVersion: 'v1', metadata: {}, status: 'Failure', message, code };
+  return new ApiException(code, 'Unknown API Status Code!', `${JSON.stringify(status)}\n`,
+    { 'audit-id': randomUUID(), date: new Date().toUTCString() });
+}
+
+describe('storage-node over leftover W2 shared-folder state (TASK-904)', () => {
+  it('boots reconcile over a W2 recovery annotation with no local ledger and unmounts every bind it names', async () => {
+    const data = input(); const f = engineFixture(data); const k = kubeFixture(data);
+    const fence = { machineId: randomUUID(), bootId: randomUUID() };
+    k.pod.metadata!.finalizers = [STORAGE_FINALIZER]; k.claim.metadata!.finalizers = [STORAGE_FINALIZER];
+    // Written by the W2 helper during an earlier boot of this machine.
+    k.pod.metadata!.annotations!['ax.io/storage-recovery'] =
+      JSON.stringify({ version: 1, fence: { ...fence, bootId: randomUUID() }, record: w2Record(data, false) });
+    plantW2Binds(f);
+    const engine = new StorageNodeEngine(f.config, createStorageAuthority(k.api, 'node', 'pool', fence), f.command, f.io);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(unmounted(f)).toEqual([join(f.volume, 'files'), join(f.volume, 'shared/sf_a'), join(f.volume, 'shared/sf_b')]);
+    expect(f.mounted.size).toBe(0);
+    expect(k.api.deleteClaim).toHaveBeenCalledWith(data.claimName, data.claimUid);
+    expect(k.pod.metadata!.finalizers).toEqual([]); expect(k.claim.metadata!.finalizers).toEqual([]);
+    expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  it('boots reconcile over a W2 ledger record and releases an abandoned one, shared binds included', async () => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f); writeLedger(f, w2Record(f.data, true));
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(f.mounted.size).toBe(0); expect(f.authority.finish).toHaveBeenCalledOnce();
+    expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  it('leaves a live W2 session alone at boot; its later release unmounts the shared binds too', async () => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f); writeLedger(f, w2Record(f.data, true));
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(f.authority.stop).not.toHaveBeenCalled(); expect(f.mounted.size).toBe(3);
+    await engine.release(identity(f.data));
+    expect(f.events).toEqual(['stop', 'sync', 'umount', 'sync', 'umount', 'sync', 'umount', 'finish']);
+    expect(f.mounted.size).toBe(0); expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  // W2 saved its record before binding anything, so a record can name a bind, or
+  // a whole `shared` directory, that was never made or is already gone.
+  it.each<[string, string[], string[]]>([
+    ['shared/sf_b', ['sf_a'], ['files', 'shared/sf_a']],
+    ['the whole shared directory', [], ['files']],
+  ])('still releases a W2 record whose shared bind is already gone (%s)', async (_missing, planted, expected) => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f, planted); writeLedger(f, w2Record(f.data, true));
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(unmounted(f)).toEqual(expected.map(parts => join(f.volume, parts)));
+    expect(f.authority.finish).toHaveBeenCalledOnce();
+  });
+  it('accepts sharedFolders on a record only, and only in the shape W2 wrote', () => {
+    const data = input();
+    expect(StorageAssignmentSchema.safeParse({ ...data, sharedFolders: W2_SHARED }).success).toBe(false);
+    expect(StorageRecordSchema.safeParse(w2Record(data, false)).success).toBe(true);
+    const seventeen = Array.from({ length: 17 }, (_, i) => ({ folderId: `sf_${String(i).padStart(2, '0')}`, readOnly: true }));
+    for (const sharedFolders of [[{ folderId: '../agent-b', readOnly: false }], [{ folderId: 'sf_a/..', readOnly: false }],
+      [{ folderId: 'agent-a', readOnly: false }], [{ folderId: 'sf_a', readOnly: 'no' }], [{ folderId: 'sf_a' }],
+      [{ folderId: 'sf_a', readOnly: false, path: '/etc' }], [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_a', readOnly: true }],
+      [{ folderId: 'sf_b', readOnly: false }, { folderId: 'sf_a', readOnly: false }], [], seventeen]) {
+      expect(StorageRecordSchema.safeParse({ ...w2Record(data, false), sharedFolders }).success).toBe(false);
+    }
+  });
+  // The one place a folder id becomes path components re-checks it, so nothing
+  // that skipped the schema can reach `..`, `/` or a sibling of `shared`.
+  it('turns only a W2-shaped folder id into path components', () => {
+    expect(legacySharedFolderTargetParts('sf_a')).toEqual(['shared', 'sf_a']);
+    for (const id of ['', '.', '..', 'sf_', 'sf_.', 'sf_..', '../sf_a', 'sf_a/..', 'sf_a/b', 'sf_a\\b', 'agent-a',
+      'SF_a', 'sf_a\u0000', 'sf_a\n', `sf_${'a'.repeat(65)}`]) {
+      expect(() => legacySharedFolderTargetParts(id)).toThrow('invalid shared folder id');
+    }
+  });
+});
+
+// F4 — a failed activation keeps its cause: the helper reports the underlying
+// error (and any release error) and rethrows with { cause }. Credentials never
+// reach the report.
+describe('storage-node activation failure reporting', () => {
+  it('reports the failing mount and keeps it as the cause', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('mount: /files: permission denied'); });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e) as Error;
+    expect(err.message).toBe('storage activation failed');
+    expect((err.cause as Error).message).toBe('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain(f.data.podUid);
+  });
+  it('reports a release failure during unwind as well as the original error', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('first failure'); });
+    vi.mocked(f.authority.stop).mockRejectedValueOnce(new Error('stop refused'));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('first failure'); expect(log).toContain('stop refused');
+  });
+  it('never reports bootstrap credentials, even when an error message echoes them', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error(`leaked secret-token and ${'d'.repeat(32)}`); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('leaked'); expect(log).not.toContain('secret-token'); expect(log).not.toContain('d'.repeat(32));
+  });
+  it('rethrows a redacted stand-in as the cause, never the credential-bearing original', async () => {
+    const f = engineFixture();
+    const original = new Error('leaked secret-token');
+    f.command.mockImplementationOnce(() => { throw original; });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e) as Error;
+    expect(err.cause).not.toBe(original);
+    expect((err.cause as Error).message).toContain('leaked');
+    expect((err.cause as Error).message).not.toContain('secret-token');
+  });
+  it('redacts a short secret-named bootstrap value from the report', async () => {
+    const data = input(); data.bootstrap.env.AX_AUTH_TOKEN = 'tok42';
+    const f = engineFixture(data);
+    f.command.mockImplementationOnce(() => { throw new Error('auth tok42 refused for session'); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('refused'); expect(log).not.toContain('tok42');
+  });
+  it('reports a Kubernetes API error as its HTTP code and Status message, without the response headers', async () => {
+    const f = engineFixture(); const conflict = 'Operation cannot be fulfilled on pods "standby": the object has been modified';
+    vi.mocked(f.authority.protect).mockRejectedValueOnce(apiError(409, conflict));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    expect(f.reports).toEqual([`storage activation failed for pod ${f.data.podUid}: HTTP 409: ${conflict}`]);
+  });
+});
+
+// A record reconcile cannot release keeps the helper unready. Its cause used to be
+// swallowed, so a boot exited with only "storage recovery pending". Reconcile also
+// runs every 2 s (main.ts), so each pod's cause is reported once per change.
+describe('storage-node recovery failure reporting', () => {
+  const recoveryLine = (podUid: string, cause: string) => `storage recovery failed for pod ${podUid}: ${cause}`;
+  /** A published assignment whose pod is gone, so reconcile releases it, and whose detach fails. */
+  async function stuckRelease() {
+    const f = engineFixture(); await f.make().assign(f.data);
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true); f.failUnmount(true);
+    return f;
+  }
+  it('reports which pod a boot could not release and why, and still rejects', async () => {
+    const f = await stuckRelease();
+    await expect(f.make().reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  it('reports a stuck record once, not on every reconcile pass', async () => {
+    const f = await stuckRelease(); const engine = f.make();
+    for (let pass = 0; pass < 3; pass++) await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  // A real apiserver error is a fresh ApiException on every pass, each with its own
+  // headers. Described whole, every pass read differently and reported again.
+  it('reports a Kubernetes API error once across passes, as its HTTP code and Status message', async () => {
+    const data = input(); const f = engineFixture(data); const k = kubeFixture(data);
+    const forbidden = `pods "${data.podName}" is forbidden: User "system:serviceaccount:ax:storage" cannot get resource "pods" in the namespace "ax"`;
+    k.api.readPod = vi.fn(async () => { throw apiError(403, forbidden); });
+    const engine = new StorageNodeEngine(f.config, createStorageAuthority(k.api, 'node', 'pool'), f.command, f.io);
+    const { bootstrap, ...rest } = data;
+    writeLedger(f, { ...rest, assignmentId: bootstrap.assignmentId, published: true });
+    for (let pass = 0; pass < 3; pass++) await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(k.api.readPod).toHaveBeenCalledTimes(3);
+    expect(f.reports).toEqual([recoveryLine(data.podUid, `HTTP 403: ${forbidden}`)]);
+  });
+  it('reports again when a record that recovered fails again, and when its cause changes', async () => {
+    const f = engineFixture(); await f.make().assign(f.data); const engine = f.make();
+    const outage = Object.assign(new Error('apiserver unavailable'), { code: 503 });
+    vi.mocked(f.authority.abandoned).mockRejectedValueOnce(outage).mockRejectedValueOnce(outage)
+      .mockResolvedValueOnce(false).mockRejectedValueOnce(outage).mockRejectedValueOnce(new Error('forbidden'));
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).resolves.toBeUndefined(); // The API is back and the session is live.
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    const outageLine = recoveryLine(f.data.podUid, '503: apiserver unavailable');
+    expect(f.reports).toEqual([outageLine, outageLine, recoveryLine(f.data.podUid, 'Error: forbidden')]);
+  });
+  it('forgets a pod once its ledger is gone, so a later failure under that uid reports again', async () => {
+    const f = await stuckRelease(); const engine = f.make();
+    const ledger = join(f.config.ledgerRoot, `${f.data.podUid}.json`); const saved = readFileSync(ledger, 'utf8');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    f.failUnmount(false); await engine.release(identity(f.data)); // Released between passes.
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    writeFileSync(ledger, saved); f.mounted.add(join(f.volume, 'files')); f.failUnmount(true);
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy'), recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  it('keeps a report to one line: a fixed prefix, the pod uid, a cause of at most 1024 characters', async () => {
+    const f = await stuckRelease();
+    vi.mocked(f.authority.stop).mockRejectedValue(new Error(`stop refused\n${'x'.repeat(5000)}\r\nmore`));
+    await expect(f.make().reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toHaveLength(1);
+    const [line] = f.reports as [string]; const prefix = recoveryLine(f.data.podUid, '');
+    expect(line.startsWith(`${prefix}Error: stop refused x`)).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(prefix.length + 1024);
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+});
+
+// The 2 s retry loop (main.ts) printed only "storage recovery pending" for any failed pass,
+// so a pass that could not run at all said nothing about why: recovery discovery failing on
+// an apiserver outage or an RBAC denial, before any record was reached.
+describe('storage-node recovery retry loop', () => {
+  const PENDING = 'storage recovery pending';
+  const passLine = (cause: string) => `storage recovery pass failed: ${cause}`;
+  it('reports a discovery failure once, by its cause, and still says pending on every pass', async () => {
+    const f = engineFixture(); const engine = f.make();
+    const denied = 'pods is forbidden: User "system:serviceaccount:ax:storage" cannot list resource "pods" in the namespace "ax"';
+    f.authority.recover = vi.fn(async () => { throw apiError(403, denied); });
+    for (let pass = 0; pass < 3; pass++) await expect(engine.retryReconcile()).resolves.toBeUndefined();
+    expect(f.authority.recover).toHaveBeenCalledTimes(3);
+    expect(f.reports).toEqual([passLine(`HTTP 403: ${denied}`), PENDING, PENDING, PENDING]);
+  });
+  // A pass that gets past discovery clears it, even when a record is still stuck, so an
+  // outage that comes back reports again.
+  it('reports a discovery failure again after a pass that ran, and when its cause changes', async () => {
+    const f = engineFixture(); await f.make().assign(f.data); const engine = f.make();
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true); f.failUnmount(true); // The record stays stuck.
+    const outage = Object.assign(new Error('apiserver unavailable'), { code: 503 });
+    f.authority.recover = vi.fn(async () => []).mockRejectedValueOnce(outage).mockRejectedValueOnce(outage)
+      .mockResolvedValueOnce([]).mockRejectedValueOnce(outage).mockRejectedValueOnce(new Error('forbidden'));
+    for (let pass = 0; pass < 5; pass++) await expect(engine.retryReconcile()).resolves.toBeUndefined();
+    const outageLine = passLine('503: apiserver unavailable');
+    expect(f.reports).toEqual([outageLine, PENDING, PENDING,
+      `storage recovery failed for pod ${f.data.podUid}: Error: busy`, PENDING,
+      outageLine, PENDING, passLine('Error: forbidden'), PENDING]);
+  });
+  it('reports nothing once a pass completes', async () => {
+    const f = engineFixture(); const engine = f.make();
+    f.authority.recover = vi.fn(async () => []).mockRejectedValueOnce(new Error('apiserver unavailable'));
+    await engine.retryReconcile(); await engine.retryReconcile(); await engine.retryReconcile();
+    expect(f.reports).toEqual([passLine('Error: apiserver unavailable'), PENDING]);
+  });
+  // Boot is unchanged: main.ts awaits reconcile(), so the process exits on the error itself.
+  it('leaves boot to reject with the discovery error itself, reporting nothing', async () => {
+    const f = engineFixture(); const outage = new Error('apiserver unavailable');
+    f.authority.recover = vi.fn(async () => { throw outage; });
+    await expect(f.make().reconcile()).rejects.toBe(outage);
+    expect(f.reports).toEqual([]);
+  });
 });

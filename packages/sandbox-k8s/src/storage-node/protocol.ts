@@ -24,10 +24,26 @@ export const StorageAssignmentSchema = StorageIdentitySchema.extend({
   }
 });
 export type StorageAssignment = z.infer<typeof StorageAssignmentSchema>;
+/**
+ * W2 legacy (TASK-904). A W2-era helper (#989, reverted) bound shared folders at
+ * `ax-late/shared/<folderId>` and named them here. Nothing binds one any more, and
+ * an assignment may not carry the key. A record may, and release unmounts those
+ * binds, so a helper upgraded over a live W2 session leaves no bind behind. Delete
+ * this once no W2-era ledger record or recovery annotation can exist (production
+ * reset and drained, §11 step 3).
+ */
+const LEGACY_SHARED_FOLDER_ID_RE = /^sf_[A-Za-z0-9_-]{1,64}$/;
+export const isLegacySharedFolderId = (id: unknown): id is string =>
+  typeof id === 'string' && LEGACY_SHARED_FOLDER_ID_RE.test(id);
+const LegacySharedFoldersSchema = z.array(z.object({
+  folderId: z.string().regex(LEGACY_SHARED_FOLDER_ID_RE), readOnly: z.boolean() }).strict())
+  .min(1).max(16)
+  .refine(list => list.every((f, i) => i === 0 || list[i - 1]!.folderId < f.folderId), 'shared folders must be sorted and unique');
 export const StorageRecordSchema = StorageIdentitySchema.extend({
   backingProfile: z.string().regex(/^[0-9a-f]{64}$/),
   agentId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
   roles: z.array(z.enum(['user-files', 'memory'])).max(2),
+  sharedFolders: LegacySharedFoldersSchema.optional(),
   assignmentId: uid,
   published: z.boolean(),
 }).strict();

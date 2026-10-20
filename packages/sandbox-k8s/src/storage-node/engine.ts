@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
-import { sourceParts } from './sources.js';
+import { describeFailure, redactedError } from './describe-failure.js';
+import { sourceParts, legacySharedFolderTargetParts } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
@@ -21,17 +22,42 @@ export interface StorageNodeConfig {
   kubeletPodsRoot: string; ledgerRoot: string; userFilesRoot: string; memoryRoot?: string;
 }
 const targetName = (role: 'user-files' | 'memory') => role === 'user-files' ? 'files' : 'memory';
+/**
+ * Every bind target a record names below the late-bind volume: `files`, `memory`,
+ * then each `shared/<folderId>` a W2-era record lists (TASK-904). Release derives
+ * them from the record alone.
+ */
+const targetParts = (record: StorageRecord): string[][] => [
+  ...record.roles.map(role => [targetName(role)]),
+  ...(record.sharedFolders ?? []).map(folder => legacySharedFolderTargetParts(folder.folderId)),
+];
+export interface StorageNodeIo {
+  directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
+  /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
+  report(message: string): void;
+}
 
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
+  /**
+   * The recovery failure last reported per pod uid. Reconcile runs at boot and then every
+   * 2 s (main.ts), so a stuck record reports only when its line changes. That is once per
+   * cause only if the cause describes the same way every time: describeFailure drops what a
+   * Kubernetes API error carries per request, but an error whose own text changes on each
+   * attempt still reports on each pass. An entry goes when its record recovers or its ledger
+   * is gone: a later failure reports again, and the map never outgrows the ledger.
+   */
+  private readonly recoveryFailures = new Map<string, string>();
+  /** The failure of a whole pass that retryReconcile last reported, until a pass runs. */
+  private passFailure: string | undefined;
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
-    }, private readonly io: { directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void;
-      isTmpfs(path: string): boolean } = {
+    }, private readonly io: StorageNodeIo = {
       directory: openDirectory, mountInfo: () => readFileSync('/proc/self/mountinfo', 'utf8'),
       chown: fd => fchownSync(fd, 1000, 1000),
       isTmpfs: path => statfsSync(path).type === 0x01021994,
+      report: message => { process.stderr.write(`${message}\n`); },
     }) {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
     const root = this.io.directory(config.ledgerRoot, []);
@@ -129,10 +155,16 @@ export class StorageNodeEngine {
         } finally { directory.close(); volume.close(); }
         this.save({ ...record, published: true });
         return { assignmentId: record.assignmentId };
-      } catch {
+      } catch (cause) {
+        // Keep the cause for the operator; never credentials (describeFailure redacts).
+        const env = bootstrap.env;
+        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, env)}`);
         // Keep durable intent + finalizers for recovery; never discard an active mount.
-        await this.releaseLocked(record).catch(() => undefined);
-        throw new Error('storage activation failed');
+        await this.releaseLocked(record).catch((e: unknown) => {
+          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, env)}`);
+        });
+        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
+        throw new Error('storage activation failed', { cause: redactedError(cause, env) });
       }
     });
   }
@@ -175,15 +207,15 @@ export class StorageNodeEngine {
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     if (volume) {
       try {
-        for (const role of record.roles) {
+        for (const parts of targetParts(record)) {
           let target;
           try {
-            target = this.io.directory(volume, [targetName(role)]);
+            target = this.io.directory(volume, parts);
             const targetStat = fstatSync(target.fd), volumeStat = fstatSync(volume.fd);
             // A planned but never completed bind lives on the same filesystem as emptyDir.
             // Require a mount record too: local acceptance sources may have the same device.
             const stillMounted = () => this.io.mountInfo().split('\n').some(line => line.split(' ')[4]?.endsWith(
-              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${targetName(role)}`));
+              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${parts.join('/')}`));
             const mounted = stillMounted();
             if (mounted || targetStat.dev !== volumeStat.dev) {
               this.command('sync', ['-f', target.path]);
@@ -202,7 +234,36 @@ export class StorageNodeEngine {
     await this.authority.finish(record);
     unlinkSync(this.ledgerPath(record.podUid));
   }
+  /**
+   * Boot's recovery (main.ts). Rejects with the pass's own error when it cannot run
+   * (discovery or the ledger scan throws), and with "storage recovery pending" when a
+   * record could not be released (each one reported, see recoveryFailures).
+   */
   async reconcile(): Promise<void> {
+    if (await this.recoveryPass()) throw new Error('storage recovery pending');
+  }
+  /**
+   * One pass of main.ts's 2 s retry loop: it reports instead of rejecting. A pass that
+   * cannot run (discovery or the ledger scan throws: an apiserver outage, an RBAC denial)
+   * reports its cause, once per change of that line. The next pass that runs clears it,
+   * whatever that pass finds, so a failure that comes back reports again. Every pass that
+   * leaves recovery unfinished still reports "storage recovery pending", as the loop always has.
+   */
+  async retryReconcile(): Promise<void> {
+    let pending: boolean;
+    try { pending = await this.recoveryPass(); }
+    catch (e) {
+      // Recovery reads no bootstrap, so there is no env to redact (see the per-record report).
+      const report = `storage recovery pass failed: ${describeFailure(e, {})}`;
+      if (this.passFailure !== report) { this.passFailure = report; this.io.report(report); }
+      this.io.report('storage recovery pending');
+      return;
+    }
+    this.passFailure = undefined;
+    if (pending) this.io.report('storage recovery pending');
+  }
+  /** Resolves true when a record could not be released; throws when the pass cannot run. */
+  private async recoveryPass(): Promise<boolean> {
     // Rebuild lost local intent from protected, secret-free Kubernetes metadata.
     // Conservatively retire recovered assignments; never replay consumed credentials.
     for (const record of await this.authority.recover?.() ?? []) {
@@ -212,19 +273,30 @@ export class StorageNodeEngine {
       });
     }
     let failed = false;
+    const present = new Set<string>();
     for (const file of readdirSync(this.config.ledgerRoot)) {
       if (!/^[0-9a-f-]{36}\.json$/.test(file)) continue;
+      const uid = file.slice(0, -5);
+      present.add(uid);
       try {
-        const uid = file.slice(0, -5);
         await this.serial(uid, async () => {
           // Assignment may finish while discovery or cleanup waits for this
           // lock. Decide from the current ledger, never a pre-lock snapshot.
           const record = this.load(uid);
           if (record && (!record.published || await this.authority.abandoned(record))) await this.releaseLocked(record);
         });
-      } catch { failed = true; }
+        this.recoveryFailures.delete(uid);
+      } catch (e) {
+        failed = true;
+        // No env to redact: a record never holds the bootstrap (StorageRecordSchema is
+        // strict), and recovery never reads one. describeFailure still keeps the cause to
+        // one bounded line; `uid` is 36 characters of [0-9a-f-] (the filter above).
+        const report = `storage recovery failed for pod ${uid}: ${describeFailure(e, {})}`;
+        if (this.recoveryFailures.get(uid) !== report) { this.recoveryFailures.set(uid, report); this.io.report(report); }
+      }
     }
-    if (failed) throw new Error('storage recovery pending');
+    for (const uid of this.recoveryFailures.keys()) if (!present.has(uid)) this.recoveryFailures.delete(uid);
+    return failed;
   }
 }
 

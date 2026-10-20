@@ -556,8 +556,49 @@ export interface ConversationStore {
    * cannot over- or under-report. `[]` when the agent has none (idempotent).
    * An empty/non-string `agentId` throws `invalid-payload` BEFORE any SQL
    * runs: a delete keyed on an empty string must never be issued.
+   *
+   * `purgeAndDequeue` runs this same delete, plus the outbox row, for the
+   * `agents:deleted` subscriber.
    */
   purgeForAgent(agentId: string): Promise<string[]>;
+
+  // -------------------------------------------------------------------------
+  // Durable purge — the `conversations_v1_pending_purges` outbox.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record that the chats of a deleted agent are owed a purge. Idempotent
+   * (ON CONFLICT DO NOTHING): a re-delivered event never resets an existing
+   * row's attempts or backoff.
+   */
+  enqueuePurge(kind: PendingPurgeKind, targetId: string): Promise<void>;
+
+  /**
+   * `purgeForAgent`, plus deleting the pending row, in the SAME transaction:
+   * the purge and its dequeue commit together or not at all. Returns the
+   * purged conversation ids (`[]` when nothing was left).
+   */
+  purgeAndDequeue(kind: PendingPurgeKind, targetId: string): Promise<string[]>;
+
+  /**
+   * A purge attempt failed: bump `attempts`, store `error` (the caller passes a
+   * message only), and push `next_attempt_at` to `now` + 30 s × 2^(attempts−1),
+   * capped at one hour. Upserts, so a failure is recorded even when the
+   * earlier enqueue did not land.
+   */
+  recordPurgeFailure(
+    kind: PendingPurgeKind,
+    targetId: string,
+    error: string,
+    now: Date,
+  ): Promise<void>;
+
+  /**
+   * Pending purges due at `now`, earliest-due first, at most `limit`. Reads
+   * `agent` rows only: a database that ran W3's migration (#991, reverted) may
+   * still hold a `project` row, and that row must never be retried.
+   */
+  duePurges(now: Date, limit: number): Promise<PendingPurge[]>;
 
   /**
    * Does a `conversations_v1_conversations` row exist for this id? PK lookup
@@ -568,6 +609,19 @@ export interface ConversationStore {
    */
   conversationExists(conversationId: string): Promise<boolean>;
 }
+
+/** Which deletion a pending purge is for. */
+export type PendingPurgeKind = 'agent';
+
+/** One row of the pending-purge outbox, as the sweep reads it. */
+export interface PendingPurge {
+  kind: PendingPurgeKind;
+  targetId: string;
+}
+
+/** Retry backoff for a failed purge: 30 s · 2^(attempts−1), capped at one hour (seconds). */
+const PURGE_BACKOFF_BASE_S = 30;
+const PURGE_BACKOFF_MAX_S = 60 * 60;
 
 /** TASK-66 — args for ConversationStore.appendEvent. */
 export interface StoreAppendEventArgs {
@@ -608,6 +662,79 @@ export interface StoredEvent {
   foldKey: string;
   payload: Record<string, unknown>;
   createdAt: string;
+}
+
+/** Refuse an unknown kind or an empty/non-string id before any SQL runs. */
+function validatePurgeTarget(kind: unknown, targetId: unknown): void {
+  if (kind !== 'agent') {
+    throw invalid("kind must be 'agent'");
+  }
+  if (typeof targetId !== 'string' || targetId.length === 0) {
+    throw invalid('targetId must be a non-empty string');
+  }
+}
+
+/**
+ * The one hard-delete: every conversation of `agentId`, with its display events
+ * and transcript rows, in ONE transaction. `purgeForAgent` (TASK-718) is the
+ * direct form. The `agents:deleted` subscriber reaches it through
+ * `purgeAndDequeue`, which sets `dequeue` so the pending-purge row is removed
+ * in the same transaction. Every caller validates `agentId` first.
+ */
+async function purgeAgentConversations(
+  db: Kysely<ConversationDatabase>,
+  agentId: string,
+  dequeue: boolean,
+): Promise<string[]> {
+  // Default isolation (READ COMMITTED) on purpose. REPEATABLE READ would pin
+  // one snapshot for all three statements, but then a concurrent UPDATE of a
+  // victim row (an in-flight turn's last_activity bump) would abort the whole
+  // purge with a serialization failure. Under READ COMMITTED that UPDATE just
+  // makes the delete wait and then delete the updated row.
+  return db.transaction().execute(async (trx) => {
+    // Children first, addressed through the parent's agent_id so no id list
+    // ever crosses the wire (an agent can hold tens of thousands of rows, and
+    // a bound-parameter list caps at 65535). The conversations rows go last
+    // so their RETURNING is the authoritative "what was removed".
+    await trx
+      .deleteFrom('conversations_v1_events')
+      .where(
+        'conversation_id',
+        'in',
+        trx
+          .selectFrom('conversations_v1_conversations')
+          .select('conversation_id')
+          .where('agent_id', '=', agentId),
+      )
+      .execute();
+    await trx
+      .deleteFrom('conversations_v1_transcripts')
+      .where(
+        'conversation_id',
+        'in',
+        trx
+          .selectFrom('conversations_v1_conversations')
+          .select('conversation_id')
+          .where('agent_id', '=', agentId),
+      )
+      .execute();
+    const removed = await trx
+      .deleteFrom('conversations_v1_conversations')
+      .where('agent_id', '=', agentId)
+      .returning('conversation_id')
+      .execute();
+    // The durable-purge outbox row goes in the same transaction, so "purged"
+    // and "no longer owed" commit together: a crash before the commit leaves
+    // both the chats and the row (the sweep retries), never one without the other.
+    if (dequeue) {
+      await trx
+        .deleteFrom('conversations_v1_pending_purges')
+        .where('kind', '=', 'agent')
+        .where('target_id', '=', agentId)
+        .execute();
+    }
+    return removed.map((r) => r.conversation_id);
+  });
 }
 
 export function createConversationStore(
@@ -1258,45 +1385,59 @@ export function createConversationStore(
       if (typeof agentId !== 'string' || agentId.length === 0) {
         throw invalid('agentId must be a non-empty string');
       }
-      // Default isolation (READ COMMITTED) on purpose. REPEATABLE READ would pin
-      // one snapshot for all three statements, but then a concurrent UPDATE of a
-      // victim row (an in-flight turn's last_activity bump) would abort the whole
-      // purge with a serialization failure. Under READ COMMITTED that UPDATE just
-      // makes the delete wait and then delete the updated row.
-      return db.transaction().execute(async (trx) => {
-        // Children first, addressed through the parent's agent_id so no id list
-        // ever crosses the wire (an agent can hold tens of thousands of rows, and
-        // a bound-parameter list caps at 65535). The conversations rows go last
-        // so their RETURNING is the authoritative "what was removed".
-        await trx
-          .deleteFrom('conversations_v1_events')
-          .where(
-            'conversation_id',
-            'in',
-            trx
-              .selectFrom('conversations_v1_conversations')
-              .select('conversation_id')
-              .where('agent_id', '=', agentId),
-          )
-          .execute();
-        await trx
-          .deleteFrom('conversations_v1_transcripts')
-          .where(
-            'conversation_id',
-            'in',
-            trx
-              .selectFrom('conversations_v1_conversations')
-              .select('conversation_id')
-              .where('agent_id', '=', agentId),
-          )
-          .execute();
-        const removed = await trx
-          .deleteFrom('conversations_v1_conversations')
-          .where('agent_id', '=', agentId)
-          .returning('conversation_id')
-          .execute();
-        return removed.map((r) => r.conversation_id);
-      });
+      return purgeAgentConversations(db, agentId, false);
+    },
+
+    async enqueuePurge(kind, targetId) {
+      validatePurgeTarget(kind, targetId);
+      await db
+        .insertInto('conversations_v1_pending_purges')
+        .values({ kind, target_id: targetId })
+        .onConflict((oc) => oc.columns(['kind', 'target_id']).doNothing())
+        .execute();
+    },
+
+    async purgeAndDequeue(kind, targetId) {
+      validatePurgeTarget(kind, targetId);
+      return purgeAgentConversations(db, targetId, true);
+    },
+
+    async recordPurgeFailure(kind, targetId, error, now) {
+      validatePurgeTarget(kind, targetId);
+      // One statement. In ON CONFLICT DO UPDATE, `p.attempts` is the value
+      // BEFORE this update, so the new delay is 30 s · 2^(old attempts) =
+      // 30 s · 2^(new attempts − 1). The exponent is clamped so 2^n can never
+      // overflow on a row that has failed for months.
+      await sql`
+        INSERT INTO conversations_v1_pending_purges AS p
+          (kind, target_id, attempts, next_attempt_at, last_error)
+        VALUES (
+          ${kind}, ${targetId}, 1,
+          ${now}::timestamptz + make_interval(secs => ${PURGE_BACKOFF_BASE_S}),
+          ${error}
+        )
+        ON CONFLICT (kind, target_id) DO UPDATE SET
+          attempts = p.attempts + 1,
+          next_attempt_at = ${now}::timestamptz + make_interval(
+            secs => LEAST(
+              ${PURGE_BACKOFF_MAX_S}::double precision,
+              ${PURGE_BACKOFF_BASE_S}::double precision * power(2, LEAST(p.attempts, 20))
+            )
+          ),
+          last_error = EXCLUDED.last_error
+      `.execute(db);
+    },
+
+    async duePurges(now, limit) {
+      const rows = await db
+        .selectFrom('conversations_v1_pending_purges')
+        .select(['kind', 'target_id'])
+        .where('kind', '=', 'agent')
+        .where('next_attempt_at', '<=', now)
+        .orderBy('next_attempt_at')
+        .limit(limit)
+        .execute();
+      return rows.map((r) => ({ kind: r.kind, targetId: r.target_id }));
     },
 
     async conversationExists(conversationId) {

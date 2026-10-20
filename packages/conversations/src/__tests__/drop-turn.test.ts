@@ -109,6 +109,7 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
+    await cleanup.query('DROP TABLE IF EXISTS conversations_v1_pending_purges');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_transcripts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');

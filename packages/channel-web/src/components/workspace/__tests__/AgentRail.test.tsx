@@ -1082,6 +1082,26 @@ describe('AgentRail — past conversations', () => {
     expect(ids.size).toBe(2);
     await waitFor(() => expect(railMock).toHaveBeenCalled());
   });
+
+  // A modal menu here leaves the page unclickable after its dialog removes the
+  // trigger (production, 2026-10-19; #998).
+  it('the chat row menu never locks the page', async () => {
+    render(
+      <AgentRail
+        detail={detail({ past: [{ id: 'c-launch', title: 'Launch checklist', lastActivityAt: new Date().toISOString() }] })}
+        openPastId={null}
+        onOpenPast={vi.fn()}
+        tab="chat"
+      />,
+    );
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Options for Launch checklist' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
 });
 
 describe('AgentRail — the way into agent settings (TASK-888)', () => {

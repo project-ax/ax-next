@@ -177,7 +177,9 @@ export function AgentRailContent({
   }
   function menu(id: string, name: string) {
     return (
-      <DropdownMenu>
+      // Not modal: Delete opens a dialog whose action removes this row, and the
+      // menu with it; a modal menu would leave <body> unclickable.
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
