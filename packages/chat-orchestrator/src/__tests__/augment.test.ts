@@ -20,8 +20,8 @@ import { AUGMENT_DEADLINE_MS } from '../orchestrator.js';
 // `system-prompt:augment:required:<name>` / `…:optional:<name>`, calls them in
 // parallel, and gives each its own step: call → orchestrator deadline → schema
 // → class rule → size. Bodies join with "\n\n" in section order (rules,
-// brief, context, recall), and within a section by full service name. Only
-// `rules` and `brief` reach `systemPromptBootstrapAugment`. A failed REQUIRED provider skips the
+// context, recall), and within a section by full service name. Only `rules`
+// reaches `systemPromptBootstrapAugment`. A failed REQUIRED provider skips the
 // whole augment; a failed OPTIONAL provider drops only its own blocks.
 // ---------------------------------------------------------------------------
 
@@ -256,7 +256,7 @@ describe('Orchestrator: ordering and landing', () => {
   const ORDERED: Provider[] = [
     [`${REQ}memory`, value({ rules: 'R-MEM', recall: 'REC-MEM' })],
     [`${REQ}zz-policy`, value({ rules: 'R-POLICY' })],
-    [`${OPT}a`, value({ context: 'CTX-a', brief: 'BRIEF-a' })],
+    [`${OPT}a`, value({ context: 'CTX-a' })],
     // Upper-case 'B' sorts BEFORE lower-case 'a' under a plain `<` compare
     // (code-unit order), but after it under localeCompare. Pins the former:
     // the same bytes on every host, whatever its locale.
@@ -265,7 +265,6 @@ describe('Orchestrator: ordering and landing', () => {
   const EXPECTED_NORMAL = [
     'R-MEM',
     'R-POLICY',
-    'BRIEF-a',
     'CTX-B',
     'CTX-a',
     // `…:optional:B` < `…:required:memory` by full service name.
@@ -280,29 +279,19 @@ describe('Orchestrator: ordering and landing', () => {
 
     for (const s of [forward, reversed, shuffled]) {
       expect(s.trace.lastSystemPromptAugment).toBe(EXPECTED_NORMAL);
-      expect(s.trace.lastBootstrapAugment).toBe('R-MEM\n\nR-POLICY\n\nBRIEF-a');
+      expect(s.trace.lastBootstrapAugment).toBe('R-MEM\n\nR-POLICY');
       expect(failures(s.logs)).toEqual([]);
       for (const [name] of ORDERED) expect(s.calls[name]).toBe(1);
     }
   });
 
-  it('bootstrap gets only `rules` and `brief`; context and recall never reach it', async () => {
+  it('bootstrap gets only `rules`; context and recall never reach it', async () => {
     const s = await run([
       [`${REQ}memory`, value({ rules: 'RULES', recall: 'RECALLED' })],
-      [`${OPT}project`, value({ brief: 'BRIEF', context: 'PROJECT' })],
+      [`${OPT}project`, value({ context: 'PROJECT' })],
     ]);
-    expect(s.trace.lastSystemPromptAugment).toBe('RULES\n\nBRIEF\n\nPROJECT\n\nRECALLED');
-    expect(s.trace.lastBootstrapAugment).toBe('RULES\n\nBRIEF');
-  });
-
-  // Kind walk, 2026-10-17: every agent still in its first-run chat answered a
-  // project chat as if there were no project, because the project block was
-  // `context` and bootstrap mode drops `context`. A brief alone must reach it.
-  it('an optional provider\'s `brief` alone reaches bootstrap mode', async () => {
-    const s = await run([[`${OPT}projects`, value({ brief: 'PROJECT BRIEF' })]]);
-    expect(s.trace.lastSystemPromptAugment).toBe('PROJECT BRIEF');
-    expect(s.trace.lastBootstrapAugment).toBe('PROJECT BRIEF');
-    expect(failures(s.logs)).toEqual([]);
+    expect(s.trace.lastSystemPromptAugment).toBe('RULES\n\nPROJECT\n\nRECALLED');
+    expect(s.trace.lastBootstrapAugment).toBe('RULES');
   });
 
   it('no rules anywhere → the bootstrap augment is empty, never the full augment', async () => {
@@ -494,8 +483,6 @@ describe('Orchestrator: review 1, finding 2 (validation)', () => {
     ['an unknown key', { context: 'C', extra: 'x' }, 'invalid'],
     ['the old { contributions } shape', { contributions: [{ source: 'x', body: 'C' }] }, 'invalid'],
     ['an oversized body', { context: OVERSIZED }, 'too_large'],
-    ['an oversized brief', { brief: OVERSIZED }, 'too_large'],
-    ['a number brief', { brief: 1 }, 'invalid'],
   ];
 
   for (const [label, result, reason] of OPTIONAL_CASES) {

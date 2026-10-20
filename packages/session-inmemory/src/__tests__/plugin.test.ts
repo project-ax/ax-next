@@ -104,7 +104,6 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: null,
       conversationId: null,
       source: null,
-      projectId: null,
     });
 
     const termResult = await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -232,7 +231,6 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: null,
-      projectId: null,
     });
   });
 
@@ -263,7 +261,6 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: null,
       source: 'routine',
-      projectId: null,
     });
   });
 
@@ -313,7 +310,6 @@ describe('@ax/session-inmemory plugin', () => {
       agentId: 'a-1',
       conversationId: 'cnv_resolve_1',
       source: null,
-      projectId: null,
     });
   });
 
@@ -512,58 +508,6 @@ describe('@ax/session-inmemory plugin', () => {
       {},
     );
     expect(result.conversationId).toBe('cnv_test_1');
-  });
-
-  it('resolve-token carries projectId when owner carries one (W3d)', async () => {
-    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
-    const ctx = h.ctx();
-    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
-      'session:create',
-      ctx,
-      {
-        sessionId: 's-prj-resolve',
-        workspaceRoot: '/tmp/ws',
-        owner: { ...OWNER, source: 'routine', projectId: 'prj_abc' },
-      },
-    );
-    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
-      'session:resolve-token',
-      ctx,
-      { token },
-    );
-    // The IPC listeners stamp ctx.projectId from exactly this field; a
-    // missing projectId would leave the chat:turn-end history pass blind.
-    expect(resolved).toEqual({
-      sessionId: 's-prj-resolve',
-      workspaceRoot: '/tmp/ws',
-      userId: 'u-1',
-      agentId: 'a-1',
-      conversationId: null,
-      source: 'routine',
-      projectId: 'prj_abc',
-    });
-  });
-
-  it('session:create rejects a bogus owner.projectId (W3d)', async () => {
-    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
-    for (const [i, projectId] of (['', 'p'.repeat(129), 42, {}] as unknown[]).entries()) {
-      let caught: unknown;
-      try {
-        await h.bus.call<SessionCreateInput, SessionCreateOutput>(
-          'session:create',
-          h.ctx(),
-          {
-            sessionId: `s-bad-prj-${i}`,
-            workspaceRoot: '/tmp/ws',
-            owner: { ...OWNER, projectId: projectId as string },
-          },
-        );
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(PluginError);
-      expect((caught as PluginError).code).toBe('invalid-payload');
-    }
   });
 
   it('session:create rejects an empty-string owner.conversationId', async () => {

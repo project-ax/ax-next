@@ -77,39 +77,6 @@ describe('authenticate', () => {
     expect(result.workspaceRoot).toBe('/tmp/ws-4');
   });
 
-  it('carries the session record\'s projectId (W3d); null when the session has none', async () => {
-    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
-    const ctx = h.ctx();
-    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
-      'session:create',
-      ctx,
-      {
-        sessionId: 's-prj',
-        workspaceRoot: '/tmp/ws',
-        owner: {
-          userId: 'u-1',
-          agentId: 'a-1',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'claude',
-            runner: 'claude-sdk',
-          },
-          projectId: 'prj_abc',
-        },
-      },
-    );
-    const withProject = await authenticate(`Bearer ${token}`, h.bus, ctx);
-    expect(withProject.ok && withProject.projectId).toBe('prj_abc');
-
-    const plain = await makeHarnessWithSession('s-no-prj', '/tmp/ws');
-    const without = await authenticate(`Bearer ${plain.token}`, plain.bus, plain.ctx());
-    expect(without.ok).toBe(true);
-    expect(without.ok && without.projectId).toBeNull();
-  });
-
   it('rejects a terminated session with 401 / unknown token', async () => {
     const h = await makeHarnessWithSession('s-5', '/tmp/ws');
     await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(

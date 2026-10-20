@@ -122,6 +122,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
 import type {
   ActivityEvent,
   AgentAbilities,
@@ -152,7 +153,6 @@ import type {
   GrantRef,
   GrantRow,
   PastConversation,
-  ProjectLabel,
   PermissionRow,
   RailActivity,
   ThreadAttachment,
@@ -218,39 +218,9 @@ import {
 } from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
-import { activityStamp } from './recency.js';
-// The file-serving helpers this surface shares with the project routes
-// (W3b). Re-exported below so every existing importer is unchanged.
-import {
-  basenameOf,
-  decodeFileBody,
-  fenceBody,
-  FILE_LABEL_MAX_CHARS,
-  sendFileDownload,
-  toUserFileEntry,
-  UNREADABLE_FILE_NAME,
-  USER_FILES_ENTRIES_MAX,
-  WORKSPACE_FILES_MAX,
-  type AgentUserFilesResponse,
-  type DownloadRouteResponse,
-} from './file-serving.js';
-export {
-  basenameOf,
-  decodeFileBody,
-  fenceBody,
-  FILE_BODY_MAX_BYTES,
-  FILE_LABEL_MAX_CHARS,
-  toUserFileEntry,
-  UNREADABLE_FILE_NAME,
-  USER_FILES_ENTRIES_MAX,
-  WORKSPACE_FILES_MAX,
-  type AgentUserFilesResponse,
-  type DownloadRouteResponse,
-  type UserFileEntry,
-} from './file-serving.js';
+import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { workspaceFilePath } from './safe-path.js';
 import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
-import { attachProjectMemory, parseConversationChangesReply } from './project-memory.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
 // user-files tier is read through this hook rather than through `workspace:*`,
 // which is the git-backed governed tier. Types only, so no runtime coupling
@@ -558,8 +528,6 @@ interface ConversationRow {
   activeSessionId: string | null;
   lastActivityAt?: string | null;
   createdAt: string;
-  /** W3a — the chat's project, or null (absent from an older producer). */
-  projectId?: string | null;
 }
 interface ConversationsListInput {
   userId: string;
@@ -1177,12 +1145,6 @@ export interface AgentDetail {
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
   /**
-   * W3a — the project of the conversation `thread` was read from, or null
-   * (no conversation, a chat outside any project, or a project this person
-   * can no longer use). Same rule as `PastConversation.project`.
-   */
-  project: ProjectLabel | null;
-  /**
    * The Memory tab, split by WHO OWNS IT (AW-13), each half carrying how its
    * read went.
    *
@@ -1255,6 +1217,59 @@ export interface AgentFileResponse {
   body: string | null;
   clipped: 'binary' | 'too-large' | null;
 }
+
+/**
+ * `GET /api/workspace/agents/:agentId/user-files[/*]` — the DURABLE tier.
+ *
+ * A different tier from `/files` above, and the distinction is the whole
+ * reason this exists. `/files` reads `workspace:*`, which is the git-backed
+ * `/agent` tier — AX's own machinery plus whatever the agent committed. THIS
+ * reads the agent's durable user-files tier, which since TASK-164 is the
+ * agent's cwd and HOME: it is where a deliverable lands when nobody said
+ * otherwise, and until now it was invisible in the UI.
+ *
+ * It is a TREE, not a list, because that is what the backing hook answers:
+ * `sandbox:read-user-files` returns one directory's immediate children, not a
+ * recursive walk. So one shape covers both answers and the client navigates.
+ *
+ * `path` / `name` keep the same split as `WorkspaceFileSummary`, for the same
+ * reason: `path` is the raw key the client puts back on the wire and is never
+ * rendered; `name` is the fenced label. On this tier the filenames are, if
+ * anything, MORE agent-authored than on the other one — nothing here has been
+ * through a git commit — so the Trojan-source fence (CVE-2021-42574) is not
+ * optional.
+ */
+export interface UserFileEntry {
+  /** RAW key, relative to the tier root. `docs/note.md`. Never rendered. */
+  path: string;
+  /** The fenced label — one path segment. */
+  name: string;
+  kind: 'file' | 'dir';
+}
+
+export type AgentUserFilesResponse =
+  | {
+      kind: 'dir';
+      /** The raw key this answers for. `''` is the tier root. */
+      path: string;
+      /** The fenced label — the last segment, or `''` at the root. */
+      name: string;
+      entries: UserFileEntry[];
+      /**
+       * `true` when the directory holds more children than one response
+       * carries. Said out loud for the same reason the other listing says it:
+       * a list that silently stops is a list that claims the agent has that
+       * many files and no more.
+       */
+      truncated: boolean;
+    }
+  | {
+      kind: 'file';
+      path: string;
+      name: string;
+      body: string | null;
+      clipped: 'binary' | 'too-large' | null;
+    };
 
 /**
  * The one human-owned doc's display name. Lives here rather than in the
@@ -2193,6 +2208,13 @@ async function resolveAgentOr404(
   }
 }
 
+/** The instant a conversation was last touched, as a sortable epoch ms. */
+function activityStamp(c: ConversationRow): number {
+  const raw = c.lastActivityAt ?? c.createdAt;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 /** Newest first. */
 function byRecencyDesc(a: ConversationRow, b: ConversationRow): number {
   return activityStamp(b) - activityStamp(a);
@@ -2636,6 +2658,13 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
 }
 
 /**
+ * How much of a filename this surface will carry as a LABEL. Longer than a
+ * feed row's 60 because a path is legitimately `notes/2026/q3-summary.md` and
+ * chopping it at 60 turns two distinct files into the same row.
+ */
+export const FILE_LABEL_MAX_CHARS = 120;
+
+/**
  * How much of a past conversation's title this surface will carry.
  *
  * TASK-436 review finding. The labels leaving this file mostly go through
@@ -2665,6 +2694,23 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
  * draw an empty banner.
  */
 export const CONVERSATION_TITLE_MAX_CHARS = 120;
+
+/**
+ * How many rows one listing will carry, and how much of one file we will send.
+ *
+ * Both are bounds on somebody else's output. An agent can write a hundred
+ * thousand files and a gigabyte into one of them; neither number is a reason
+ * for this process to build a hundred-megabyte JSON string. When either bound
+ * bites, the response SAYS SO rather than quietly serving less than it claims.
+ */
+export const WORKSPACE_FILES_MAX = 500;
+export const FILE_BODY_MAX_BYTES = 128 * 1024;
+
+/** How far in we look for a NUL before calling a file "not text". */
+const BINARY_PROBE_BYTES = 8000;
+
+/** What a row says when the agent's filename fences down to nothing legible. */
+export const UNREADABLE_FILE_NAME = 'A file with no readable name';
 
 /**
  * The one predicate for "is this the agent's work, or is it our machinery?".
@@ -2701,6 +2747,143 @@ export function isServableWorkspaceFile(path: string): boolean {
   return !WORKSPACE_FILES_HIDDEN_PREFIXES.some(
     (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
   );
+}
+
+/**
+ * A file's text, with the characters that rewrite a surface removed.
+ *
+ * The sibling of `fenceLine`, and different from it on purpose. `fenceLine`
+ * flattens all whitespace because it is producing a LABEL — one row, one line.
+ * A body is a document: newlines and tabs are its structure, and collapsing
+ * them would turn a markdown file into one long paragraph. So this strips the
+ * same bidi / zero-width / control family MINUS tab, newline and carriage
+ * return.
+ *
+ * They are removed rather than replaced with a space, because in a document
+ * the separators that do real work are the ones we are keeping anyway.
+ */
+export function fenceBody(text: string): string {
+  return stripSurfaceRewritersFromDocument(text);
+}
+
+/** Shared so a clipped read and a whole read decode identically. */
+const FILE_DECODER = new TextDecoder('utf-8');
+
+/**
+ * Bytes → what the Files tab can honestly show.
+ *
+ * A workspace holds whatever the agent put in it, which includes PNGs, PDFs
+ * and sqlite files. Decoding one of those as UTF-8 produces a page of
+ * replacement characters that LOOKS like a corrupted document — so we say
+ * "this is not a text file" instead, and let the tab render that.
+ */
+export function decodeFileBody(bytes: Uint8Array): {
+  body: string | null;
+  clipped: AgentFileResponse['clipped'];
+} {
+  const probe = bytes.subarray(0, Math.min(bytes.length, BINARY_PROBE_BYTES));
+  if (probe.includes(0)) return { body: null, clipped: 'binary' };
+  if (bytes.length > FILE_BODY_MAX_BYTES) {
+    return {
+      body: fenceBody(FILE_DECODER.decode(bytes.subarray(0, FILE_BODY_MAX_BYTES))),
+      clipped: 'too-large',
+    };
+  }
+  return { body: fenceBody(FILE_DECODER.decode(bytes)), clipped: null };
+}
+
+/**
+ * The response adapter a DOWNLOAD needs, on top of the one every other route
+ * on this surface uses.
+ *
+ * `RouteResponse` (routes-chat.ts) is deliberately tiny — status, json, text,
+ * end — because that is all a JSON surface needs, and every test in this
+ * package builds one by hand. Widening it would make every one of those fakes
+ * a compile error for the benefit of two routes. So the two routes declare the
+ * extra shape they use, and it is still the same duck-typed mirror of
+ * `@ax/http-server`'s `HttpResponse` (invariant I2 — no cross-plugin import).
+ */
+export interface DownloadRouteResponse extends RouteResponse {
+  status(n: number): DownloadRouteResponse;
+  header(name: string, value: string): DownloadRouteResponse;
+  /** Raw bytes. Single-shot, like every other terminator on this adapter. */
+  body(buf: Buffer, contentType?: string): void;
+}
+
+/**
+ * THE content type of every download this surface serves.
+ *
+ * Not derived from the bytes, not read off the file's extension, and — most of
+ * all — never taken from anything the caller sent. Every one of those is a way
+ * for the file's own content to decide how a browser treats it, and the file
+ * was written by an agent. `text/html` on an agent-authored file is stored XSS
+ * on our origin; `image/svg+xml` is the same thing wearing a picture.
+ *
+ * `application/octet-stream` plus `nosniff` plus `Content-Disposition:
+ * attachment` is the boring combination that means "save this, do not run it".
+ * The cost is that a PNG will not preview in a tab. That is the intended
+ * trade: this is a download affordance, and previewing is what the Files tab
+ * already does, in a renderer we control.
+ */
+const DOWNLOAD_CONTENT_TYPE = 'application/octet-stream';
+
+/**
+ * One file's bytes, as a download, with the headers that keep it one.
+ *
+ * `path` is the RAW workspace key. Only its last segment reaches the header,
+ * and only after `sanitizeContentDispositionFilename` — the name is
+ * agent-authored, and `Content-Disposition` is a header a newline can end.
+ */
+function sendFileDownload(
+  res: DownloadRouteResponse,
+  path: string,
+  bytes: Uint8Array,
+): void {
+  // A view over the same memory, not a copy: these files are already as big as
+  // this process is willing to hold, and doubling that to add a header would
+  // be a strange way to spend a megabyte.
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const filename = sanitizeContentDispositionFilename(basenameOf(path));
+  res.status(200);
+  // Stated, not defaulted. `body()` would fall back to the same value, but a
+  // route that serves somebody else's bytes should say what it is serving them
+  // as rather than inherit it — and the day the framework's default changes,
+  // this one does not.
+  res.header('content-type', DOWNLOAD_CONTENT_TYPE);
+  res.header('content-disposition', `attachment; filename="${filename}"`);
+  res.header('x-content-type-options', 'nosniff');
+  // No `content-length` here: `@ax/http-server` pins it from the buffer it is
+  // about to write. A second copy computed here could only ever agree with it
+  // or be wrong, and the framework's would win either way (invariant 4).
+  res.body(buf);
+}
+
+/**
+ * How many children of one durable-tier directory a response will carry.
+ *
+ * Smaller than the reader's own cap on purpose: the reader bounds what this
+ * PROCESS reads off an NFS mount, this bounds what one HTTP response carries.
+ * Two different resources, two different numbers, and the response says when
+ * this one bites.
+ */
+export const USER_FILES_ENTRIES_MAX = 500;
+
+/** The last segment of a raw key — the label the viewer heads a file with. */
+export function basenameOf(rawPath: string): string {
+  const cut = rawPath.lastIndexOf('/');
+  return cut === -1 ? rawPath : rawPath.slice(cut + 1);
+}
+
+/** One durable-tier child → one row. The key raw and joined, the label fenced. */
+export function toUserFileEntry(
+  parentPath: string,
+  entry: { name: string; kind: 'file' | 'dir' },
+): UserFileEntry {
+  return {
+    path: parentPath === '' ? entry.name : `${parentPath}/${entry.name}`,
+    name: fenceLine(entry.name, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
+    kind: entry.kind,
+  };
 }
 
 /** One workspace path → one row. The key raw, the label fenced. */
@@ -3770,44 +3953,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     });
   }
 
-  /**
-   * W3a (W3 §15 Q6) — names for the projects these conversations sit in, from
-   * ONE `projects:list` as the person (it lists only projects they can use).
-   * A project missing from that answer — deleted, or no longer theirs —
-   * labels as null: its name is not theirs to see. No list is read when no
-   * conversation is in a project. Without @ax/projects, or when the read
-   * fails, every label is null: a missing label is cosmetic, and the thread
-   * is still the person's to read, so this never fails the panel.
-   */
-  async function projectLabels(
-    userId: string,
-    convs: readonly ConversationRow[],
-  ): Promise<{ labelFor: (projectId: string | null | undefined) => ProjectLabel | null }> {
-    const names = new Map<string, string>();
-    const wanted = convs.some((c) => typeof c.projectId === 'string');
-    if (wanted && bus.hasService('projects:list')) {
-      try {
-        const out = await bus.call<Record<string, never>, { projects: Array<{ projectId: string; name: string }> }>(
-          'projects:list',
-          agentWorkspaceCtx('@ax/channel-web', userId),
-          {},
-        );
-        for (const p of out.projects) names.set(p.projectId, p.name);
-      } catch (err) {
-        initCtx.logger.warn('workspace_project_labels_unreadable', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    return {
-      labelFor: (projectId) => {
-        if (typeof projectId !== 'string') return null;
-        const name = names.get(projectId);
-        return name === undefined ? null : { projectId, name };
-      },
-    };
-  }
-
   /** TASK-739 — this agent's effective connector set, read under the caller. */
   async function listEffectiveConnectors(
     agent: ResolvedAgent,
@@ -4506,45 +4651,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     } catch (err) {
       initCtx.logger.warn('workspace_memory_used_read_failed', {
         agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return thread;
-    }
-  }
-
-  /**
-   * W3d-2 — mark each answer with the `memory/` files its exchange changed in
-   * the chat's project (see `project-memory.ts`). Read AS THE PERSON — the
-   * same ctx `projectLabels` reads `projects:list` on — so the hook's own
-   * gate decides; a person who can no longer use the project gets not-found
-   * and no chip. Strictly additive, like `withMemoryUsed`: outside a project,
-   * without the hook, or on any failure, the thread comes back as built.
-   */
-  async function withProjectMemory(
-    userId: string,
-    projectId: string | null,
-    conversationId: string,
-    thread: ThreadMessage[],
-    turns: readonly TurnRow[],
-  ): Promise<ThreadMessage[]> {
-    if (projectId === null) return thread;
-    if (!bus.hasService('projects:conversation-changes')) return thread;
-    try {
-      const reply = parseConversationChangesReply(
-        await bus.call<{ projectId: string; conversationId: string }, unknown>(
-          'projects:conversation-changes',
-          agentWorkspaceCtx('@ax/channel-web', userId),
-          { projectId, conversationId },
-        ),
-      );
-      if (reply === null) {
-        initCtx.logger.warn('workspace_project_memory_reply_malformed', { projectId });
-        return thread;
-      }
-      return attachProjectMemory(thread, turns, projectId, reply);
-    } catch (err) {
-      initCtx.logger.warn('workspace_project_memory_read_failed', {
-        projectId,
         error: err instanceof Error ? err.message : String(err),
       });
       return thread;
@@ -6345,8 +6451,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // A pointer per row, nothing more: the transcript arrives from a second
       // read through `?conversationId=`, and there is no fold count to ship.
       // See `PastConversation` for why both fields are gone.
-      // W3a: one projects:list per request names every project label below.
-      const projects = await projectLabels(userId, convs);
       const past: PastConversation[] = convs.slice(1).map((c) => ({
         id: c.conversationId,
         // Fenced like every other label out of this file — see
@@ -6355,7 +6459,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           fenceLine(c.title, CONVERSATION_TITLE_MAX_CHARS) ??
           'Untitled conversation',
         lastActivityAt: c.lastActivityAt ?? c.createdAt,
-        project: projects.labelFor(c.projectId),
       }));
 
       /*
@@ -6377,7 +6480,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
-      let threadProjectId: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
       // Read whether or not there is a thread yet: the live panel needs it for
       // the first turn too (TASK-744).
@@ -6427,7 +6529,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             return;
           }
           threadConversationId = got.conversation.conversationId;
-          threadProjectId = got.conversation.projectId ?? null;
           /*
             The still-open decisions raised in THIS conversation, as cards at
             the end of the thread. They go last because that is where they
@@ -6464,13 +6565,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             thread,
             got.turns ?? [],
           );
-          thread = await withProjectMemory(
-            userId,
-            threadProjectId,
-            threadConversationId,
-            thread,
-            got.turns ?? [],
-          );
         }
       }
 
@@ -6492,10 +6586,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread,
         decisions: { status: decisionsRead },
         past,
-        // A past conversation opened by `?conversationId=` may sit in a
-        // project none of the listed ones are in — but the list covers every
-        // conversation of this agent, so one map serves both.
-        project: projects.labelFor(threadProjectId),
         memory: await readMemory(agent, userId),
         connectorTools: connectorNamesToRows(connectors),
       } satisfies AgentDetail);

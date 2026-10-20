@@ -168,28 +168,6 @@ export async function runConversationsMigration<DB>(
       WHERE external_key IS NOT NULL AND deleted_at IS NULL
   `.execute(db);
 
-  // W3a (2026-10-16, W3 spec §4.4). The project this chat belongs to, or NULL
-  // for a chat outside any project. Set once, at create, after
-  // `projects:resolve` has checked the agent can use the project; moving a
-  // chat between projects is W3e. Additive and nullable, no backfill: every
-  // existing chat is outside any project. Idempotent (I11).
-  //
-  // An opaque id owned by @ax/projects. No foreign key: the projects table
-  // belongs to another plugin, and `projects:deleted` is how a deleted
-  // project's chats leave (purged, for every user, like agent deletion).
-  await sql`
-    ALTER TABLE conversations_v1_conversations
-      ADD COLUMN IF NOT EXISTS project_id TEXT
-  `.execute(db);
-
-  // The project page lists one person's live chats in one project. Partial:
-  // most chats have no project, and tombstones never list.
-  await sql`
-    CREATE INDEX IF NOT EXISTS conversations_v1_conversations_project
-      ON conversations_v1_conversations (user_id, project_id)
-      WHERE deleted_at IS NULL AND project_id IS NOT NULL
-  `.execute(db);
-
   // Phase E (2026-05-09): drop the now-dead transcript table. Phase D
   // migrated readers to the workspace's runner-native jsonl; Phase E
   // drops the writer + the table. Idempotent (`IF EXISTS`) so a fresh
@@ -331,33 +309,6 @@ export async function runConversationsMigration<DB>(
     CREATE INDEX IF NOT EXISTS conversations_v1_transcripts_by_conv
       ON conversations_v1_transcripts (conversation_id, seq)
   `.execute(db);
-
-  // Durable chat purge — the outbox behind the agents:deleted and
-  // projects:deleted subscribers. Each of those events fires ONCE, after the
-  // source row is gone, so a purge that fails (or a crash part-way through)
-  // would otherwise strand that agent's / project's chats for good. The
-  // subscriber records `(kind, target_id)` here FIRST; the purge transaction
-  // deletes the row as it commits (success and dequeue are atomic); a failure
-  // leaves it with `attempts`/`next_attempt_at` set for the plugin's retry
-  // sweep. `target_id` is the deleted agent's or project's id — a generic name
-  // on purpose, since the row is keyed on whichever kind went away.
-  // `last_error` is the error MESSAGE only, truncated, for an operator.
-  await sql`
-    CREATE TABLE IF NOT EXISTS conversations_v1_pending_purges (
-      kind TEXT NOT NULL CHECK (kind IN ('agent', 'project')),
-      target_id TEXT NOT NULL,
-      attempts INT NOT NULL DEFAULT 0,
-      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_error TEXT NULL,
-      PRIMARY KEY (kind, target_id)
-    )
-  `.execute(db);
-
-  await sql`
-    CREATE INDEX IF NOT EXISTS conversations_v1_pending_purges_due
-      ON conversations_v1_pending_purges (next_attempt_at)
-  `.execute(db);
 }
 
 /**
@@ -390,8 +341,6 @@ export interface ConversationsRow {
   // (drainSaveRefusals). NULL = none yet. BIGINT, so it may surface as a
   // string.
   save_refused_drained_seq: string | number | null;
-  // W3a. The chat's project (an opaque @ax/projects id), or NULL for none.
-  project_id: string | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;
@@ -432,22 +381,8 @@ export interface ConversationTranscriptRow {
   created_at?: Date;
 }
 
-/**
- * A purge still owed for a deleted agent or project (see the migration). The
- * defaulted columns are optional so an insert can omit them.
- */
-export interface ConversationPendingPurgeRow {
-  kind: 'agent' | 'project';
-  target_id: string;
-  attempts?: number;
-  next_attempt_at?: Date;
-  created_at?: Date;
-  last_error?: string | null;
-}
-
 export interface ConversationDatabase {
   conversations_v1_conversations: ConversationsRow;
   conversations_v1_events: ConversationEventsRow;
   conversations_v1_transcripts: ConversationTranscriptRow;
-  conversations_v1_pending_purges: ConversationPendingPurgeRow;
 }

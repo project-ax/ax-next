@@ -29,9 +29,6 @@ describe('conversations return schemas', () => {
       // unattended fail-safe for every conversation with nothing failing.
       origin: 'web',
       activeSessionId: 'sess-1',
-      // W3a. The orchestrator reads a chat's project from this hook; stripped
-      // here, every project chat would silently run outside its project.
-      projectId: 'prj_1',
     };
 
     it('accepts a fully-populated value', () => {
@@ -48,7 +45,6 @@ describe('conversations return schemas', () => {
           title: null,
           lastActivityAt: null,
           activeSessionId: null,
-          projectId: null,
         }).success,
       ).toBe(true);
     });

@@ -107,22 +107,13 @@ export interface FileDownloadState {
   error: string | null;
 }
 
-/** Fetches one file's bytes, with the name the server settled on. */
-export type DownloadThunk = () => Promise<{ blob: Blob; filename: string }>;
-
-/**
- * The download machinery for ANY file: `fetchBytes` says where the bytes come
- * from and `failureMessage` says what a refusal means on that surface. The
- * in-flight guard and the error state are the same everywhere, so they live
- * here once.
- *
- * Both are read through refs, so a caller may pass fresh closures each render
- * without making `start` a new function every time.
- */
-export function useDownload(
-  fetchBytes: DownloadThunk,
-  failureMessage: (e: unknown) => string,
-): FileDownloadState {
+export function useFileDownload(args: {
+  agentId: string;
+  agentName: string;
+  tier: FileTier;
+  path: string;
+}): FileDownloadState {
+  const { agentId, agentName, tier, path } = args;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -135,10 +126,6 @@ export function useDownload(
    * written synchronously, so the second click sees the first one.
    */
   const inFlight = useRef(false);
-  const fetchRef = useRef(fetchBytes);
-  fetchRef.current = fetchBytes;
-  const messageRef = useRef(failureMessage);
-  messageRef.current = failureMessage;
 
   const start = useCallback(() => {
     if (inFlight.current) return;
@@ -147,43 +134,16 @@ export function useDownload(
     setError(null);
     void (async () => {
       try {
-        const got = await fetchRef.current();
+        const got = await workspaceApi.downloadFile(agentId, tier, path);
         saveBlob(got.blob, got.filename);
       } catch (e) {
-        setError(messageRef.current(e));
+        setError(downloadFailureMessage(e, agentName));
       } finally {
         inFlight.current = false;
         setBusy(false);
       }
     })();
-  }, []);
+  }, [agentId, agentName, tier, path]);
 
   return { start, busy, error };
-}
-
-/** An agent's file, from either tier. */
-export function useFileDownload(args: {
-  agentId: string;
-  agentName: string;
-  tier: FileTier;
-  path: string;
-}): FileDownloadState {
-  const { agentId, agentName, tier, path } = args;
-  return useDownload(
-    () => workspaceApi.downloadFile(agentId, tier, path),
-    (e) => downloadFailureMessage(e, agentName),
-  );
-}
-
-/**
- * What a failed download from a PROJECT's folder says. No agent is named:
- * a project's files belong to the project, and the reader may not even know
- * which agent wrote one.
- */
-export function projectDownloadFailureMessage(e: unknown): string {
-  const status = e instanceof HttpError ? e.status : 0;
-  if (status === 413) return 'This file is too big to download here.';
-  if (status === 503) return 'Files aren’t available on this server right now.';
-  if (status === 404) return 'That file isn’t there anymore.';
-  return 'We couldn’t download that just now. Nothing was lost — try again in a moment.';
 }

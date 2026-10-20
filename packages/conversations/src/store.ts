@@ -116,26 +116,6 @@ export function validateOptionalOrigin(
   return value as ConversationOrigin;
 }
 
-/** Upper bound on a project id. Ids are minted `prj_<base64url>`, far shorter. */
-export const PROJECT_ID_MAX = 128;
-
-/**
- * W3a (§4.4). Reject a `projectId` that is present but not a non-empty,
- * bounded string. `undefined` means "no project". `null` is rejected rather
- * than read as "no project": the field is optional, so a caller sending null
- * is confused about the contract, and the safe answer is to say so.
- */
-export function validateOptionalProjectId(
-  value: unknown,
-  field: string,
-): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0 || value.length > PROJECT_ID_MAX) {
-    throw invalid(`${field} must be a non-empty string of at most ${PROJECT_ID_MAX} chars if provided`);
-  }
-  return value;
-}
-
 export function validateRole(value: unknown): TurnRole {
   if (typeof value !== 'string' || !VALID_ROLES.has(value as TurnRole)) {
     throw invalid("role must be 'user', 'assistant', or 'tool'");
@@ -219,8 +199,6 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     // hand-edited row from widening the union everything downstream switches on.
     origin: row.origin === 'routine' ? 'routine' : 'web',
     externalKey: row.external_key,
-    // W3a. `?? null`: a row read before the column existed has no key at all.
-    projectId: row.project_id ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -269,11 +247,6 @@ export interface ConversationStoreCreateArgs {
    * absent persists as NULL, which reads back as `'web'`.
    */
   origin?: ConversationOrigin;
-  /**
-   * W3a (§4.4). The chat's project. The plugin layer has already checked it
-   * with `projects:resolve`; the store trusts it. Absent persists as NULL.
-   */
-  projectId?: string | null;
 }
 
 /**
@@ -299,8 +272,6 @@ export interface ConversationMetadata {
   origin: ConversationOrigin;
   /** AW-6. The live session serving this conversation, or null. */
   activeSessionId: string | null;
-  /** W3a. The chat's project, or null. See `Conversation.projectId`. */
-  projectId: string | null;
 }
 
 /**
@@ -351,11 +322,7 @@ export interface ConversationStore {
     reqId: string,
   ): Promise<Conversation | null>;
   /** Multi-row reads always go through scopedConversations(). */
-  listForUser(
-    userId: string,
-    agentId?: string,
-    projectId?: string,
-  ): Promise<Conversation[]>;
+  listForUser(userId: string, agentId?: string): Promise<Conversation[]>;
   create(args: ConversationStoreCreateArgs): Promise<Conversation>;
   /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
   softDelete(conversationId: string): Promise<boolean>;
@@ -451,17 +418,6 @@ export interface ConversationStore {
     userId: string;
     title: string;
     ifNull?: boolean;
-  }): Promise<boolean>;
-  /**
-   * W3e (§8). Set a chat's project (null = none). Scoped by
-   * `(conversation_id, user_id, deleted_at IS NULL)` like `setTitle`; the
-   * plugin layer has already validated the id and run every gate. Returns
-   * true iff a row was updated.
-   */
-  setProject(args: {
-    conversationId: string;
-    userId: string;
-    projectId: string | null;
   }): Promise<boolean>;
   /**
    * Phase A (routines foundation, 2026-05-14). Set `hidden = true`. Filtered
@@ -587,8 +543,8 @@ export interface ConversationStore {
    * HARD-delete every conversation of `agentId` together with its display
    * events and resume-transcript rows, in ONE transaction (children first, so
    * a failure part-way rolls everything back rather than stranding orphans).
-   * This and `purgeForProject` are the only hard-delete paths for
-   * `conversations_v1_*` — the `conversations:delete` hook is a soft delete.
+   * This is the only hard-delete path for `conversations_v1_*` — the
+   * `conversations:delete` hook is a soft delete.
    *
    * Keyed on `agent_id` ALONE. A team agent's conversations belong to many
    * users, and the agent is going away for all of them, so there is
@@ -604,51 +560,6 @@ export interface ConversationStore {
   purgeForAgent(agentId: string): Promise<string[]>;
 
   /**
-   * W3a (§4.7, Q1 decided). HARD-delete every conversation in `projectId`, with
-   * its display events and transcript rows, in ONE transaction: exactly
-   * `purgeForAgent`, keyed on `project_id` instead. No user scope (a project's
-   * chats belong to everyone who started one there, and the project is gone
-   * for all of them); soft-deleted and hidden rows included. Returns the purged
-   * ids; `[]` when there are none, so a repeat is a no-op. An empty/non-string
-   * `projectId` throws `invalid-payload` before any SQL runs.
-   */
-  purgeForProject(projectId: string): Promise<string[]>;
-
-  // -------------------------------------------------------------------------
-  // Durable purge — the `conversations_v1_pending_purges` outbox.
-  // -------------------------------------------------------------------------
-
-  /**
-   * Record that the chats of a deleted agent/project are owed a purge. Idempotent
-   * (ON CONFLICT DO NOTHING): a re-delivered event never resets an existing
-   * row's attempts or backoff.
-   */
-  enqueuePurge(kind: PendingPurgeKind, targetId: string): Promise<void>;
-
-  /**
-   * `purgeForAgent` / `purgeForProject`, plus deleting the pending row, in the
-   * SAME transaction: the purge and its dequeue commit together or not at all.
-   * Returns the purged conversation ids (`[]` when nothing was left).
-   */
-  purgeAndDequeue(kind: PendingPurgeKind, targetId: string): Promise<string[]>;
-
-  /**
-   * A purge attempt failed: bump `attempts`, store `error` (the caller passes a
-   * message only), and push `next_attempt_at` to `now` + 30 s × 2^(attempts−1),
-   * capped at one hour. Upserts, so a failure is recorded even when the
-   * earlier enqueue did not land.
-   */
-  recordPurgeFailure(
-    kind: PendingPurgeKind,
-    targetId: string,
-    error: string,
-    now: Date,
-  ): Promise<void>;
-
-  /** Pending purges due at `now`, earliest-due first, at most `limit`. */
-  duePurges(now: Date, limit: number): Promise<PendingPurge[]>;
-
-  /**
    * Does a `conversations_v1_conversations` row exist for this id? PK lookup
    * that IGNORES `deleted_at` — a soft-deleted conversation still exists (its
    * transcript is still appended to by a turn that outlives the sidebar
@@ -657,19 +568,6 @@ export interface ConversationStore {
    */
   conversationExists(conversationId: string): Promise<boolean>;
 }
-
-/** Which deletion a pending purge is for. */
-export type PendingPurgeKind = 'agent' | 'project';
-
-/** One row of the pending-purge outbox, as the sweep reads it. */
-export interface PendingPurge {
-  kind: PendingPurgeKind;
-  targetId: string;
-}
-
-/** Retry backoff for a failed purge: 30 s · 2^(attempts−1), capped at one hour (seconds). */
-const PURGE_BACKOFF_BASE_S = 30;
-const PURGE_BACKOFF_MAX_S = 60 * 60;
 
 /** TASK-66 — args for ConversationStore.appendEvent. */
 export interface StoreAppendEventArgs {
@@ -712,85 +610,6 @@ export interface StoredEvent {
   createdAt: string;
 }
 
-/** Refuse an unknown kind or an empty/non-string id before any SQL runs. */
-function validatePurgeTarget(kind: unknown, targetId: unknown): void {
-  if (kind !== 'agent' && kind !== 'project') {
-    throw invalid("kind must be 'agent' or 'project'");
-  }
-  if (typeof targetId !== 'string' || targetId.length === 0) {
-    throw invalid('targetId must be a non-empty string');
-  }
-}
-
-/**
- * The one hard-delete: every conversation whose `column` equals `value`, with
- * its display events and transcript rows, in ONE transaction. The deletion
- * subscribers reach it through `purgeAndDequeue`, which also removes the
- * pending-purge row in the same transaction; `purgeForAgent` (TASK-718) and
- * `purgeForProject` (W3a) are the direct forms. Every caller validates `value`
- * first and passes a column name from this closed union only.
- */
-async function purgeWhere(
-  db: Kysely<ConversationDatabase>,
-  column: 'agent_id' | 'project_id',
-  value: string,
-  dequeue?: PendingPurgeKind,
-): Promise<string[]> {
-  // Default isolation (READ COMMITTED) on purpose. REPEATABLE READ would pin
-  // one snapshot for all three statements, but then a concurrent UPDATE of a
-  // victim row (an in-flight turn's last_activity bump) would abort the whole
-  // purge with a serialization failure. Under READ COMMITTED that UPDATE just
-  // makes the delete wait and then delete the updated row.
-  return db.transaction().execute(async (trx) => {
-    // Children first, addressed through the parent's key so no id list ever
-    // crosses the wire (an agent or a project can hold tens of thousands of
-    // rows, and a bound-parameter list caps at 65535). The conversations rows
-    // go last so their RETURNING is the authoritative "what was removed".
-    await trx
-      .deleteFrom('conversations_v1_events')
-      .where(
-        'conversation_id',
-        'in',
-        trx
-          .selectFrom('conversations_v1_conversations')
-          .select('conversation_id')
-          .where(column, '=', value),
-      )
-      .execute();
-    await trx
-      .deleteFrom('conversations_v1_transcripts')
-      .where(
-        'conversation_id',
-        'in',
-        trx
-          .selectFrom('conversations_v1_conversations')
-          .select('conversation_id')
-          .where(column, '=', value),
-      )
-      .execute();
-    const removed = await trx
-      .deleteFrom('conversations_v1_conversations')
-      .where(column, '=', value)
-      .returning('conversation_id')
-      .execute();
-    // The durable-purge outbox row goes in the same transaction, so "purged"
-    // and "no longer owed" commit together: a crash before the commit leaves
-    // both the chats and the row (the sweep retries), never one without the other.
-    if (dequeue !== undefined) {
-      await trx
-        .deleteFrom('conversations_v1_pending_purges')
-        .where('kind', '=', dequeue)
-        .where('target_id', '=', value)
-        .execute();
-    }
-    return removed.map((r) => r.conversation_id);
-  });
-}
-
-function purgeColumn(kind: PendingPurgeKind): 'agent_id' | 'project_id' {
-  return kind === 'agent' ? 'agent_id' : 'project_id';
-}
-
 export function createConversationStore(
   db: Kysely<ConversationDatabase>,
 ): ConversationStore {
@@ -822,15 +641,10 @@ export function createConversationStore(
       return row === undefined ? null : rowToConversation(row);
     },
 
-    async listForUser(userId, agentId, projectId) {
+    async listForUser(userId, agentId) {
       let q = scopedConversations(db, { userId }).orderBy('created_at', 'desc');
       if (agentId !== undefined) {
         q = q.where('agent_id', '=', agentId);
-      }
-      // W3a: the project page's chat list. Still user-scoped (above): a
-      // project's other members' chats are theirs, not the caller's.
-      if (projectId !== undefined) {
-        q = q.where('project_id', '=', projectId);
       }
       const rows = await q.execute();
       return rows.map(rowToConversation);
@@ -845,7 +659,6 @@ export function createConversationStore(
       externalKey,
       hidden,
       origin,
-      projectId,
     }) {
       const id = mintConversationId();
       const now = new Date();
@@ -875,8 +688,6 @@ export function createConversationStore(
           // that as `'web'`, so an untaught caller lands on the value it would
           // have chosen anyway — and no backfill is needed.
           origin: origin ?? null,
-          // W3a: checked by the plugin layer with projects:resolve.
-          project_id: projectId ?? null,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -1002,8 +813,6 @@ export function createConversationStore(
         // is how an attendance answer starts depending on which hook asked.
         origin: row.origin === 'routine' ? 'routine' : 'web',
         activeSessionId: row.active_session_id,
-        // W3a. Same reading as `rowToConversation`.
-        projectId: row.project_id ?? null,
       };
     },
 
@@ -1075,17 +884,6 @@ export function createConversationStore(
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 
-    async setProject({ conversationId, userId, projectId }) {
-      const result = await db
-        .updateTable('conversations_v1_conversations')
-        .set({ project_id: projectId, updated_at: new Date() })
-        .where('conversation_id', '=', conversationId)
-        .where('user_id', '=', userId)
-        .where('deleted_at', 'is', null)
-        .executeTakeFirst();
-      return Number(result.numUpdatedRows ?? 0n) > 0;
-    },
-
     async hide(conversationId) {
       const result = await db
         .updateTable('conversations_v1_conversations')
@@ -1137,8 +935,6 @@ export function createConversationStore(
           hidden: fallback.hidden ?? false,
           // AW-6: see `create` above.
           origin: fallback.origin ?? null,
-          // W3a: find-or-create (routines) does not take a project yet (W3f).
-          project_id: null,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -1462,65 +1258,45 @@ export function createConversationStore(
       if (typeof agentId !== 'string' || agentId.length === 0) {
         throw invalid('agentId must be a non-empty string');
       }
-      return purgeWhere(db, 'agent_id', agentId);
-    },
-
-    async purgeForProject(projectId) {
-      if (typeof projectId !== 'string' || projectId.length === 0) {
-        throw invalid('projectId must be a non-empty string');
-      }
-      return purgeWhere(db, 'project_id', projectId);
-    },
-
-    async enqueuePurge(kind, targetId) {
-      validatePurgeTarget(kind, targetId);
-      await db
-        .insertInto('conversations_v1_pending_purges')
-        .values({ kind, target_id: targetId })
-        .onConflict((oc) => oc.columns(['kind', 'target_id']).doNothing())
-        .execute();
-    },
-
-    async purgeAndDequeue(kind, targetId) {
-      validatePurgeTarget(kind, targetId);
-      return purgeWhere(db, purgeColumn(kind), targetId, kind);
-    },
-
-    async recordPurgeFailure(kind, targetId, error, now) {
-      validatePurgeTarget(kind, targetId);
-      // One statement. In ON CONFLICT DO UPDATE, `p.attempts` is the value
-      // BEFORE this update, so the new delay is 30 s · 2^(old attempts) =
-      // 30 s · 2^(new attempts − 1). The exponent is clamped so 2^n can never
-      // overflow on a row that has failed for months.
-      await sql`
-        INSERT INTO conversations_v1_pending_purges AS p
-          (kind, target_id, attempts, next_attempt_at, last_error)
-        VALUES (
-          ${kind}, ${targetId}, 1,
-          ${now}::timestamptz + make_interval(secs => ${PURGE_BACKOFF_BASE_S}),
-          ${error}
-        )
-        ON CONFLICT (kind, target_id) DO UPDATE SET
-          attempts = p.attempts + 1,
-          next_attempt_at = ${now}::timestamptz + make_interval(
-            secs => LEAST(
-              ${PURGE_BACKOFF_MAX_S}::double precision,
-              ${PURGE_BACKOFF_BASE_S}::double precision * power(2, LEAST(p.attempts, 20))
-            )
-          ),
-          last_error = EXCLUDED.last_error
-      `.execute(db);
-    },
-
-    async duePurges(now, limit) {
-      const rows = await db
-        .selectFrom('conversations_v1_pending_purges')
-        .select(['kind', 'target_id'])
-        .where('next_attempt_at', '<=', now)
-        .orderBy('next_attempt_at')
-        .limit(limit)
-        .execute();
-      return rows.map((r) => ({ kind: r.kind, targetId: r.target_id }));
+      // Default isolation (READ COMMITTED) on purpose. REPEATABLE READ would pin
+      // one snapshot for all three statements, but then a concurrent UPDATE of a
+      // victim row (an in-flight turn's last_activity bump) would abort the whole
+      // purge with a serialization failure. Under READ COMMITTED that UPDATE just
+      // makes the delete wait and then delete the updated row.
+      return db.transaction().execute(async (trx) => {
+        // Children first, addressed through the parent's agent_id so no id list
+        // ever crosses the wire (an agent can hold tens of thousands of rows, and
+        // a bound-parameter list caps at 65535). The conversations rows go last
+        // so their RETURNING is the authoritative "what was removed".
+        await trx
+          .deleteFrom('conversations_v1_events')
+          .where(
+            'conversation_id',
+            'in',
+            trx
+              .selectFrom('conversations_v1_conversations')
+              .select('conversation_id')
+              .where('agent_id', '=', agentId),
+          )
+          .execute();
+        await trx
+          .deleteFrom('conversations_v1_transcripts')
+          .where(
+            'conversation_id',
+            'in',
+            trx
+              .selectFrom('conversations_v1_conversations')
+              .select('conversation_id')
+              .where('agent_id', '=', agentId),
+          )
+          .execute();
+        const removed = await trx
+          .deleteFrom('conversations_v1_conversations')
+          .where('agent_id', '=', agentId)
+          .returning('conversation_id')
+          .execute();
+        return removed.map((r) => r.conversation_id);
+      });
     },
 
     async conversationExists(conversationId) {

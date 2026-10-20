@@ -382,34 +382,6 @@ describe('AgentFiles: the durable user-files tier', () => {
     expect(screen.queryByText(raw)).toBeNull();
   });
 
-  // Review, 2026-10-17: the browser's own breadcrumb drew each folder's RAW
-  // path segment. A folder an agent named with a bidi override must show
-  // fenced there too; the click still navigates by the raw path.
-  it('SECURITY: the breadcrumb never draws a raw folder name', async () => {
-    const raw = 're\u202Eports';
-    durableTree({
-      '': {
-        kind: 'dir',
-        path: '',
-        name: '',
-        entries: [{ path: raw, name: 're?ports', kind: 'dir' }],
-        truncated: false,
-      },
-      [raw]: {
-        kind: 'dir',
-        path: raw,
-        name: 're?ports',
-        entries: [{ path: `${raw}/a.md`, name: 'a.md', kind: 'file' }],
-        truncated: false,
-      },
-    });
-    renderTab();
-    fireEvent.click(await screen.findByText('re?ports'));
-    expect(await screen.findByText('a.md')).toBeTruthy();
-    expect(userFilesMock).toHaveBeenCalledWith('a-quill', raw);
-    expect(screen.queryByText(raw)).toBeNull();
-  });
-
   it('a 404 on the tier ROOT is the empty state, with no hedge left in it', async () => {
     /*
       TASK-403. This used to be the ambiguous case: the hook answered one word

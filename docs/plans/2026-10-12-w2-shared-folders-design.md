@@ -1,5 +1,9 @@
 # W2: shared folders (design)
 
+> **Superseded 2026-10-20** by the [Agent Tasks design](2026-10-20-agent-tasks-design.md).
+> Shared folders shipped and then came out again: TASK-903 reverted #989 and #991–#1001.
+> This doc is history. The code it cites is in git, e.g. `git show e011da3:<path>`.
+
 **Status:** draft, revised after review 1 (2026-10-12); see §10. Built on branch
 `feat/w2-shared-folders` (not merged — §4); §11 lists where the build differs
 from this text. **Owner:** Vinay.

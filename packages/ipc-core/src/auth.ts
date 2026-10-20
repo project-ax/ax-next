@@ -45,12 +45,6 @@ export type AuthResult =
       // session record to read; it cannot influence the stored `source`. Null
       // for user / canary / pre-TASK-181 sessions.
       source: 'routine' | 'user' | null;
-      // W3d: the session's spawn project, HOST-DERIVED exactly like `source`
-      // (set at session:create from the orchestrator's owner.projectId, read
-      // back from the session record). The listener stamps it as
-      // `ctx.projectId`; nothing in the inbound request can set it. Null for a
-      // session outside any project and for pre-W3d sessions.
-      projectId: string | null;
     }
   | { ok: false; status: number; body: IpcErrorEnvelope };
 
@@ -71,9 +65,6 @@ type SessionResolveTokenOutput =
       // Optional here for back-compat with any resolver that predates TASK-181;
       // the listener treats a missing value as null (user) — see authenticate().
       source?: 'routine' | 'user' | null;
-      // W3d — the session's spawn project. Optional for back-compat with a
-      // resolver that predates W3d; missing ⇒ null (no project).
-      projectId?: string | null;
     }
   | null;
 
@@ -135,7 +126,5 @@ export async function authenticate(
     conversationId: resolved.conversationId ?? null,
     // TASK-181 — host-derived; absent/unknown ⇒ null (treated as a user turn).
     source: resolved.source ?? null,
-    // W3d — host-derived; absent ⇒ null (no project).
-    projectId: resolved.projectId ?? null,
   };
 }

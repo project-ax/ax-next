@@ -726,10 +726,7 @@ function RowMenu({
   // at): no `⋯` that opens onto an empty menu.
   if (groups.length === 0) return null;
   return (
-    <DropdownMenu
-      // Not modal: Remove's dialog removes this row; a modal menu would leave <body> unclickable.
-      modal={false}
-    >
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"

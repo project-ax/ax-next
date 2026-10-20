@@ -194,12 +194,6 @@ export async function createHttpListener(
         ? { conversationId: auth.conversationId }
         : {}),
       ...(auth.source !== null ? { source: auth.source } : {}),
-      // W3d: the session's spawn project, from the session record (set at
-      // session:create from the orchestrator's owner.projectId) — NEVER from
-      // a runner frame; it's absent from @ax/ipc-protocol. Every host handler
-      // reached from the session (the `chat:turn-end` history pass among
-      // them) sees `ctx.projectId`. Null ⇒ field off (no project).
-      ...(auth.projectId !== null ? { projectId: auth.projectId } : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };

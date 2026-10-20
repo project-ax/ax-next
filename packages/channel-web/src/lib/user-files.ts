@@ -80,7 +80,7 @@ function toUserFilesError(e: unknown, path: string): UserFilesError {
 /** A file's text as this tier serves it. */
 export type UserFileBody = Extract<UserFilesAnswer, { kind: 'file' }>;
 
-export interface FileTreeState {
+export interface AgentUserFilesState {
   /** The directory currently listed. `''` is the tier root. */
   dirPath: string;
   entries: UserFileEntry[];
@@ -100,47 +100,10 @@ export interface FileTreeState {
   fileLoading: boolean;
   fileError: UserFilesError | null;
 
-  /**
-   * Go to a path without knowing whether it is a folder or a file — what a
-   * URL hands us. A folder is listed; a file is opened AND its parent folder
-   * is listed beside it, so a shared link to `work/plan.md` lands on the
-   * `work/` listing with the plan open, not on the root with a stray viewer.
-   */
-  open: (path: string) => void;
-
   reload: () => void;
-
-  /**
-   * Re-read what is on screen after a change WE made (W3c): the folder listed
-   * and the open file, if any. Resolves once the listing has answered, so a
-   * caller can move to a file it just created and find it in the list.
-   */
-  refresh: () => Promise<void>;
 }
 
-/** Kept under its old name for the agent's tab and its tests. */
-export type AgentUserFilesState = FileTreeState;
-
-/** Reads one path of a tree: a folder's listing or a file's preview. */
-export type FileTreeReader = (path: string) => Promise<UserFilesAnswer>;
-
-/**
- * One browsable tree, read one directory at a time through `read`.
- *
- * `read` is the ONLY thing that differs between trees (an agent's durable
- * tier, a project's folder), so it is the only thing passed in — the cursor,
- * the stale-response guards and the error kinds stay in one place. Pass a
- * stable `read` (a `useCallback` keyed on whatever names the tree): a new one
- * IS a new tree, and everything is dropped and re-read.
- *
- * `initialPath: null` skips the first read, for a caller that drives the tree
- * from somewhere else (the URL) and will call `open` itself.
- */
-export function useFileTree(
-  read: FileTreeReader,
-  opts: { initialPath?: string | null } = {},
-): FileTreeState {
-  const initialPath = opts.initialPath === undefined ? '' : opts.initialPath;
+export function useAgentUserFiles(agentId: string): AgentUserFilesState {
   const [dirPath, setDirPath] = useState('');
   const [entries, setEntries] = useState<UserFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -160,26 +123,14 @@ export function useFileTree(
    */
   const listRequest = useRef(0);
   const bodyRequest = useRef(0);
-  /**
-   * What `open` already learned. `open` reads a path to find out what it is,
-   * and when it is a file that read IS the body — so the body effect takes it
-   * from here instead of asking a second time.
-   */
-  const preloaded = useRef<UserFileBody | null>(null);
-  /** The listing as of the last commit, for `open`'s "is it right here?" check. */
-  const listed = useRef<{ dirPath: string; entries: UserFileEntry[] } | null>(null);
-  listed.current = loading && listed.current === null ? null : { dirPath, entries };
-
-  /** Bumped to make the open file read again (a refresh after a save). */
-  const [fileNonce, setFileNonce] = useState(0);
 
   const loadDir = useCallback(
-    (path: string): Promise<void> => {
+    (path: string) => {
       const id = ++listRequest.current;
       setLoading(true);
-      return (async () => {
+      void (async () => {
         try {
-          const answer = await read(path);
+          const answer = await workspaceApi.userFiles(agentId, path);
           if (listRequest.current !== id) return;
           if (answer.kind === 'file') {
             /*
@@ -207,12 +158,12 @@ export function useFileTree(
         }
       })();
     },
-    [read],
+    [agentId],
   );
 
   useEffect(() => {
-    // A new tree (a new agent, a new project). Drop everything first, so the
-    // previous tree's files are never on screen under this one's name.
+    // A new agent is a new tier. Drop everything first, so the previous
+    // agent's files are never on screen under this agent's name.
     setDirPath('');
     setEntries([]);
     setTruncated(false);
@@ -220,11 +171,7 @@ export function useFileTree(
     setFilePath(null);
     setFile(null);
     setFileError(null);
-    listed.current = null;
-    preloaded.current = null;
-    if (initialPath !== null) void loadDir(initialPath);
-    // `initialPath` is read once per tree, on purpose: later moves go through
-    // `open` / `openDir`, never through a re-run of this reset.
+    loadDir('');
   }, [loadDir]);
 
   useEffect(() => {
@@ -235,18 +182,11 @@ export function useFileTree(
       return;
     }
     const id = ++bodyRequest.current;
-    if (preloaded.current !== null && preloaded.current.path === filePath) {
-      setFile(preloaded.current);
-      preloaded.current = null;
-      setFileError(null);
-      setFileLoading(false);
-      return;
-    }
     setFileError(null);
     setFileLoading(true);
     void (async () => {
       try {
-        const answer = await read(filePath);
+        const answer = await workspaceApi.userFiles(agentId, filePath);
         if (bodyRequest.current !== id) return;
         if (answer.kind === 'dir') {
           // It turned into a directory between the listing and the click.
@@ -265,7 +205,7 @@ export function useFileTree(
         if (bodyRequest.current === id) setFileLoading(false);
       }
     })();
-  }, [read, filePath, fileNonce]);
+  }, [agentId, filePath]);
 
   const openDir = useCallback(
     (path: string) => {
@@ -274,66 +214,13 @@ export function useFileTree(
       setFilePath(null);
       setFile(null);
       setFileError(null);
-      void loadDir(path);
+      loadDir(path);
     },
     [loadDir],
   );
 
-  const open = useCallback(
-    (path: string) => {
-      const here = listed.current;
-      const known = here?.entries.find((e) => e.path === path);
-      if (here !== null && known?.kind === 'file' && parentDirOf(path) === here.dirPath) {
-        // A file in the folder already on screen: the listing is right, only
-        // the viewer moves.
-        listRequest.current++;
-        setLoading(false);
-        setError(null);
-        setFilePath(path);
-        return;
-      }
-      const id = ++listRequest.current;
-      setLoading(true);
-      void (async () => {
-        try {
-          const answer = await read(path);
-          if (listRequest.current !== id) return;
-          if (answer.kind === 'dir') {
-            setFilePath(null);
-            setFile(null);
-            setFileError(null);
-            setEntries(answer.entries);
-            setTruncated(answer.truncated);
-            setDirPath(answer.path);
-            setError(null);
-            return;
-          }
-          preloaded.current = answer;
-          setFilePath(answer.path);
-          setFileError(null);
-          setError(null);
-          const parent = parentDirOf(answer.path) ?? '';
-          if (here === null || here.dirPath !== parent) void loadDir(parent);
-        } catch (e) {
-          if (listRequest.current !== id) return;
-          setFilePath(null);
-          setError(toUserFilesError(e, path));
-        } finally {
-          if (listRequest.current === id) setLoading(false);
-        }
-      })();
-    },
-    [read, loadDir],
-  );
-
   const reload = useCallback(() => {
-    void loadDir(dirPath);
-  }, [loadDir, dirPath]);
-
-  const refresh = useCallback(async () => {
-    preloaded.current = null;
-    setFileNonce((n) => n + 1);
-    await loadDir(dirPath);
+    loadDir(dirPath);
   }, [loadDir, dirPath]);
 
   return {
@@ -348,16 +235,8 @@ export function useFileTree(
     file,
     fileLoading,
     fileError,
-    open,
     reload,
-    refresh,
   };
-}
-
-/** The agent's durable tier: `useFileTree` over `/agents/:id/files`. */
-export function useAgentUserFiles(agentId: string): AgentUserFilesState {
-  const read = useCallback((path: string) => workspaceApi.userFiles(agentId, path), [agentId]);
-  return useFileTree(read);
 }
 
 /**

@@ -66,34 +66,6 @@ Wait for the helper DaemonSet to be ready and every configured pool to have its
 standby Pods before measuring first-message latency. Startup creates pools;
 initial image pulls and controller reconciliation still take time.
 
-## Shared folders (W2)
-
-Pooled sessions can use shared folders. Nothing about the standby pod changes:
-shared folders ride the same late-bind path as `/files` and `/memory`.
-
-- **What the helper binds.** For each shared folder in the assignment, the helper
-  opens `.shared/<folderId>` under the user-files export and binds it at
-  `ax-late/shared/<folderId>`. The runner sees it at `/shared/<folderId>`
-  (`/shared` is a link to `/ax/late/shared` in the image). The path comes from
-  the folder id, never from the request. Viewer folders bind from a second,
-  **read-only** mount of the same export (`/backing/files-ro`), so they are
-  read-only before the bind propagates. A `remount,bind,ro` after the fact does
-  not propagate into gVisor; GKE acceptance caught exactly that. The helper
-  refuses to start unless `/backing/files-ro` is really read-only.
-- **The claim annotation.** The host puts `ax.io/shared-folders` on the
-  SandboxClaim: the agent's folders as a canonical JSON list of
-  `{ folderId, readOnly }`, sorted by id. The helper refuses an assignment whose
-  `sharedFolders` doesn't match that annotation exactly, the same way it refuses
-  an agent-id mismatch. The helper still checks no grants; the host decides.
-- **Rollout order matters.** The helper DaemonSet uses `OnDelete`, and an old
-  helper rejects an assignment with the new `sharedFolders` field. So: roll the
-  **image** (runner and helper) first, then **delete the helper pods** so they
-  pick it up, then roll the **host**. Host first means every pooled session with
-  a shared folder fails until the helpers catch up.
-- **Accepted on GKE on 2026-10-16**, after the read-only-source fix above. See
-  the shared-folders item in the
-  [acceptance guide](SHARED-POOL-ACCEPTANCE.md#w2-shared-folders-on-the-pool).
-
 ## Acceptance and resume guide
 
 The checklist, completed evidence, remaining gates, validation results, and

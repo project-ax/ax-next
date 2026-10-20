@@ -273,7 +273,7 @@ async function boot(args: BootArgs): Promise<{
       // Phase D — conversations plugin declares workspace:list/read
       // calls. Empty mock workspace satisfies bootstrap.
       createMockWorkspacePlugin(),
-      createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
+      createConversationsPlugin(),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),

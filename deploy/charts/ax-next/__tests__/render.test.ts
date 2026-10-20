@@ -1247,7 +1247,6 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
             volumes?: Array<{
               name: string;
               nfs?: { server?: string; path?: string; readOnly?: boolean };
-              persistentVolumeClaim?: { claimName?: string; readOnly?: boolean };
             }>;
           };
         };
@@ -1287,73 +1286,10 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     // undefined, the UI's read path can write to every agent's files.
     expect(mount?.readOnly).toBe(true);
 
-    // The volume is a claim on the static PV (below), read-only on the pod
-    // side too — never an inline nfs: volume, which could not carry
-    // lookupcache=positive.
     const vol = (spec?.volumes ?? []).find((v) => v.name === 'user-files-read');
-    expect(vol?.nfs, 'no inline nfs: volume (it cannot carry mount options)').toBeUndefined();
-    expect(vol?.persistentVolumeClaim?.claimName).toBe('ax-test-ax-next-user-files-host-read');
-    expect(vol?.persistentVolumeClaim?.readOnly).toBe(true);
-  });
-
-  function userFilesReadPv(docs: K8sDoc[]) {
-    return docs.find(
-      (d) =>
-        d.kind === 'PersistentVolume' &&
-        d.metadata?.name === 'ax-test-ax-next-user-files-host-read',
-    ) as
-      | (K8sDoc & {
-          spec?: {
-            accessModes?: string[];
-            persistentVolumeReclaimPolicy?: string;
-            storageClassName?: string;
-            mountOptions?: string[];
-            claimRef?: { namespace?: string; name?: string };
-            nfs?: { server?: string; path?: string; readOnly?: boolean };
-          };
-        })
-      | undefined;
-  }
-
-  function userFilesReadPvc(docs: K8sDoc[]) {
-    return docs.find(
-      (d) =>
-        d.kind === 'PersistentVolumeClaim' &&
-        d.metadata?.name === 'ax-test-ax-next-user-files-host-read',
-    ) as
-      | (K8sDoc & {
-          spec?: { accessModes?: string[]; storageClassName?: string; volumeName?: string };
-        })
-      | undefined;
-  }
-
-  it('backs the host read with a static, read-only PV mounted lookupcache=positive', () => {
-    // deploy/kind/nfs-lookupcache-2026-10-19.json: without lookupcache=positive
-    // the host keeps a cached "not found" for a file the storage helper (a
-    // different NFS client) restores — 30-90 s+ on kind. With it: first stat.
-    const docs = helmTemplate(HOST_READ);
-    const pv = userFilesReadPv(docs);
-    expect(pv, 'the user-files host-read PV renders').toBeDefined();
-    expect(pv?.spec?.mountOptions).toContain('lookupcache=positive');
-    expect(pv?.spec?.nfs).toEqual({ server: '10.9.8.7', path: '/vol1', readOnly: true });
-    expect(pv?.spec?.accessModes).toEqual(['ReadOnlyMany']);
-    expect(pv?.spec?.persistentVolumeReclaimPolicy).toBe('Retain');
-    // "" = no dynamic provisioning on either side; the two are pinned to each
-    // other so no other claim can take this PV.
-    expect(pv?.spec?.storageClassName).toBe('');
-    expect(pv?.spec?.claimRef?.name).toBe('ax-test-ax-next-user-files-host-read');
-
-    const pvc = userFilesReadPvc(docs);
-    expect(pvc, 'the user-files host-read PVC renders').toBeDefined();
-    expect(pvc?.spec?.accessModes).toEqual(['ReadOnlyMany']);
-    expect(pvc?.spec?.storageClassName).toBe('');
-    expect(pvc?.spec?.volumeName).toBe('ax-test-ax-next-user-files-host-read');
-  });
-
-  it('renders no user-files host-read PV/PVC when host-read is off', () => {
-    const docs = helmTemplate(FILESTORE);
-    expect(userFilesReadPv(docs)).toBeUndefined();
-    expect(userFilesReadPvc(docs)).toBeUndefined();
+    expect(vol?.nfs?.server).toBe('10.9.8.7');
+    expect(vol?.nfs?.path).toBe('/vol1');
+    expect(vol?.nfs?.readOnly).toBe(true);
   });
 
   it('does NOT mount anything into the host pod by default', () => {

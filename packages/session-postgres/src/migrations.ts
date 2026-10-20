@@ -135,21 +135,6 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE session_postgres_v2_session_agent
       ADD COLUMN IF NOT EXISTS source TEXT
   `.execute(db);
-
-  // ----- W3d: project_id on the v2 row -----------------------------------
-  //
-  // Same shape as `source` above: forward-only, additive, nullable, written
-  // once with the owner triple (no UPDATE path, so I10 holds). The
-  // orchestrator populates it with the project the session was spawned for;
-  // NULL for a session outside any project and for every pre-W3d row.
-  // `resolveToken` reads it back so the IPC listeners stamp `ctx.projectId`
-  // (the `chat:turn-end` file-history pass keys off it). No FK: the project
-  // row lives in another plugin's table (invariant 2), and a session
-  // outliving a deleted project just finds nothing to record.
-  await sql`
-    ALTER TABLE session_postgres_v2_session_agent
-      ADD COLUMN IF NOT EXISTS project_id TEXT
-  `.execute(db);
 }
 
 export interface SessionRow {
@@ -197,11 +182,6 @@ export interface SessionAgentRow {
    * two host-derived literals.
    */
   source: string | null;
-  /**
-   * W3d: the project the session was spawned for, NULL for none (and for
-   * every pre-W3d row). Host-set only.
-   */
-  project_id: string | null;
   created_at: Date;
 }
 

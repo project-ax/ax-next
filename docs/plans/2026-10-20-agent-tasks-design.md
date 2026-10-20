@@ -15,11 +15,13 @@ knows what it's for and says how it's going.
 
 ## Resume here
 
-- **Now:** this design is proposed. Nothing is built.
+- **Now:** this design is proposed. §11 step 1, the revert, is TASK-903.
 - **Next, in order:**
-  1. §11 step 1, the revert PR: keep W1, revert projects and shared folders.
-  2. §11 steps 2–4: the keepers PR, resetting production and kind, tidying the board.
-  3. §12 PR 1: "Stay on top of something", end to end.
+  1. §11 steps 2–4: the keepers PR, resetting production and kind, tidying the board.
+     Don't deploy the reverted main to production until step 2 has landed and
+     step 3's drain is done. The wipe alone isn't enough: the reverted storage
+     helper refuses records that still carry `sharedFolders` and won't start.
+  2. §12 PR 1: "Stay on top of something", end to end.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -98,8 +100,8 @@ House rules this follows:
 
 ### 3.1 The Tasks page
 
-Tasks sits in the sidebar between Today and Activity and lists every task
-across your agents, grouped by what needs a person. Each row leads with the
+Tasks sits in the sidebar right under Today (where Activity is now; §3.7) and
+lists every task across your agents, grouped by what needs a person. Each row leads with the
 agent's latest update, because that's what people come to read.
 
 ```
@@ -263,6 +265,44 @@ Three things are waiting on you
 | ▬ | Paused | Person | Not checking in. Only a person resumes it. |
 | ✓ | Done | Person | Finished. "Get something done" tasks only. Stops checking in. |
 
+### 3.7 Activity goes away
+
+Today the Activity page in the sidebar and the Activity tab on an agent show
+the same feed (`GET /api/workspace/activity`). It has two kinds of row:
+
+- **Routine runs:** "Ran {name}. We don't have a summary of what it did.", or
+  the error when a run failed (`fireToActivityEvent` in
+  `packages/channel-web/src/server/routes-workspace.ts`).
+- **Approval receipts:** you approved it, turned it down, it expired, or it
+  failed after you said yes (`receiptToActivityEvent`, same file).
+
+Once routines live in Tasks, each kind of row has a better home:
+
+- A run shows in its task's Updates thread, with the agent's own report and
+  See what it did. A failed run shows as No recent update on the task.
+- An approval raised during a check-in shows in that task's thread and
+  transcript. An approval raised in an ordinary chat already shows in that
+  chat, because the agent view puts approval cards into the thread.
+
+Keeping Activity would mean a second copy of every task's thread. It would
+also be a third place to look, next to Today (the one inbox) and Tasks (the
+one list of work agents do on their own). So PR 4 removes both the Activity
+page and the agent's Activity tab, and Today loses the two things that read
+the same feed: the "Everything they did" footer link and the count of what
+got done today (`doneTodayFrom` in `WorkspaceShell.tsx`). The link can point
+at Tasks instead.
+
+What we give up is a single list of everything every agent did, newest first.
+That's an audit view. If people ask for it, it comes back as a filter on
+Tasks rather than as its own page.
+
+Before PR 4 removes it, check one thing: an approval that **fails after a
+person said yes** has to be clear somewhere other than Activity. If the
+chat's approval card doesn't say it failed, PR 4 fixes the card first.
+
+Until PR 4, Activity stays as it is. Task check-ins show up there too, still
+without a summary. That isn't worth fixing on a page that is going away.
+
 ## 4. How it works
 
 ### 4.1 A check-in is a short, fresh run
@@ -274,8 +314,8 @@ Three things are waiting on you
    other outward actions still wait for a person's OK.
 4. **It reports** with one `routine_report` call: status, a one-line update,
    what it needs, steps, and notes for next time.
-5. **People see it.** Tasks and Activity update, and anything that needs a
-   person lands on Today.
+5. **People see it.** The Tasks list and the task's Updates thread show the
+   report, and anything that needs a person lands on Today.
 
 Each check-in starts a new session in its own hidden conversation, so its cost
 stays flat however long the task lives. Continuity lives in the task record
@@ -348,13 +388,13 @@ the model that people call routines "tasks".
 |---|---|
 | Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. |
 | Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row. The agent and the person can both edit steps without an approval. |
-| Run history | Each run keeps its report (status and update). That is the Updates thread and the Activity line. |
+| Run history | Each run keeps its report (status and update). That is the task's Updates thread. |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host, available only inside a check-in (§4.3). |
 | Hooks | `routines:report`, `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
-| channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. |
+| channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |
 
 No new plugins.
 
@@ -674,11 +714,27 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
 - **Small sandbox hardening from W2** (`6e00408`): redacted causes for pooled
   storage failures, and the `/files` subPath check in the pod spec. Judge each
   on its own.
+- **The storage helper tolerates W2's leftover `sharedFolders` key.** The
+  reverted `StorageRecordSchema` and `StorageRecoverySchema`
+  (`packages/sandbox-k8s/src/storage-node/protocol.ts`) are strict, and the
+  helper runs `engine.reconcile()` before it listens, with no catch
+  (`storage-node/main.ts`). A W2 ledger record or recovery annotation that
+  still names `sharedFolders` makes it exit at boot, every boot, and only the
+  helper can clear the `ax.io/storage-cleanup` finalizer. Accept the key and
+  drop it, with a test that boots reconcile over such a record. Until this
+  lands, every helper restart (an eviction, a node upgrade) is exposed.
 - **Left in git history until something needs them:** the NFS
   `lookupcache=positive` static PV (#999) and `walk-read.ts` (TASK-899).
 
 ### Step 3: reset production and kind (an hour or two)
 
+- **Drain first, while the old helper still runs.** Delete every shared-pool
+  SandboxClaim, then wait until each node's storage ledger directory is empty
+  and no pod carries an `ax.io/storage-recovery` annotation. A claim lives up
+  to 6 hours and the host's sweeper skips assigned ones, so a recent project
+  chat can still hold a record with `sharedFolders`. The database wipe doesn't
+  touch any of this. Skip the drain only if step 2's leftover-key fix is
+  already in the image.
 - Wipe the database and deploy the reverted main.
 - Delete the storage-helper pods by hand. Its DaemonSet uses `OnDelete`
   (`deploy/charts/ax-next/templates/shared-storage.yaml`), so pods don't roll
@@ -687,9 +743,13 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
 - Run first-time setup again.
 - The wipe also clears the blob-gc and disk-quota holder rosters. Both fail
   closed on a missing holder, so without the wipe they'd stop once
-  `@ax/projects` is gone.
+  `@ax/projects` is gone. If the reverted main ever runs against the old
+  database, `POST /admin/storage/blob-gc/roster/forget` and
+  `POST /admin/storage/ref-holders/forget` with `{"holder":"@ax/projects"}`
+  clear the holder by hand.
 - Optional: roll Helm back to revision 42, the last before W2 and W3a went out
   (revision 43), to get projects out of production before the PR merges.
+  Drain first here too: revision 42's helper has the same strict schema.
 - On kind, every `kubectl` and `helm` command passes `--context kind-ax-next-dev`.
 
 ### Step 4: tidy the board (minutes)
@@ -719,9 +779,11 @@ Five small PRs, each useful on its own:
 4. **One list.** The New task dialog: one choice of kind, checkboxes for when.
    Routines move out of Agent Settings into Tasks as "Repeat a job", with their
    webhooks unchanged, and a task's single trigger splits into a schedule and a
-   webhook. Settings keeps Self-improvement. Activity shows the agent's update
-   instead of "We don't have a summary". Add the per-task run cap and skip
-   repeated deliveries here, since webhooks get easier to find.
+   webhook. Settings keeps Self-improvement. Remove Activity (§3.7): the page,
+   the agent's tab, Today's "Everything they did" link and done-today count,
+   once a failed approval is confirmed to show in its chat. Add the per-task
+   run cap and skip repeated deliveries here, since webhooks get easier to
+   find.
 5. **Updates from other apps for tasks.** Event nudges for "Stay on top" and
    "Get done" tasks: the update inbox (first in, first out, never dropping an
    unseen update), one check-in at a time, the "Respond within" setting, and a
@@ -769,6 +831,10 @@ ask" list.
 8. Who else can see a task or answer its asks? Recommend view-only sharing plus
    an "Also ask" list after PR 5, in its own short design rather than as a
    bolt-on.
+9. Remove Activity in PR 4 (§3.7)? Recommend yes. Once routines are tasks,
+   every row it shows has a better home, and it would be a third place to look
+   next to Today and Tasks. Check first that an approval that fails after a
+   yes is clear in its chat.
 
 ## 15. Decisions
 

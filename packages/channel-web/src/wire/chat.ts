@@ -22,23 +22,7 @@ const ConversationShape = z.object({
   createdAt: z.string(),
   /** ISO-8601. */
   updatedAt: z.string(),
-  /**
-   * W3a (W3 §4.4). The project this chat belongs to, or null. Set when the
-   * chat is created, and changed only by a move (W3e, PUT
-   * /api/chat/conversations/:id/project); an opaque id owned by `@ax/projects`.
-   */
-  projectId: z.string().nullable(),
 });
-
-/**
- * W3a — a chat may be STARTED in a project. A send only sets it when it
- * creates the chat: a `projectId` beside an existing conversation is refused
- * with a 400, never silently ignored — moving an existing chat is its own
- * route (W3e, `SetConversationProjectRequest`). `@ax/conversations` checks it
- * with `projects:resolve` as the person; this only bounds the shape. Same
- * bound as `@ax/conversations`' PROJECT_ID_MAX.
- */
-const ProjectIdField = z.string().min(1).max(128);
 
 // ---------------------------------------------------------------------------
 // @ax/channel-web wire schemas — `/api/chat/messages`
@@ -89,8 +73,6 @@ export const PostMessageRequest = z.object({
       POST_MESSAGE_MAX_CONTENT_BLOCKS,
       `contentBlocks must have at most ${POST_MESSAGE_MAX_CONTENT_BLOCKS} blocks`,
     ),
-  /** Start the new conversation in this project. Only with `conversationId: null`. */
-  projectId: ProjectIdField.optional(),
 });
 export type PostMessageRequest = z.infer<typeof PostMessageRequest>;
 
@@ -300,24 +282,5 @@ export const ListAgentsResponse = z.array(
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponse>;
 
 // User-driven conversation controls; ownership always comes from the session.
-export const CreateConversationRequest = z.object({
-  agentId: z.string().min(1).max(256),
-  /** W3a — start the chat in this project. */
-  projectId: ProjectIdField.optional(),
-});
+export const CreateConversationRequest = z.object({ agentId: z.string().min(1).max(256) });
 export const RenameConversationRequest = z.object({ title: z.string().trim().min(1).max(256) });
-
-/**
- * W3e (W3 §8) — `PUT /api/chat/conversations/:id/project`: move a chat into a
- * project, to another one, or out (`null`). Strict: the actor is the session,
- * so a body naming anything else is a 400. `projectId` is required — absent is
- * a confused caller, not "out".
- */
-export const SetConversationProjectRequest = z
-  .object({ projectId: ProjectIdField.nullable() })
-  .strict();
-export type SetConversationProjectRequest = z.infer<typeof SetConversationProjectRequest>;
-export interface SetConversationProjectResponse {
-  /** The chat's project after the move. */
-  projectId: string | null;
-}

@@ -1,14 +1,6 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
-  ChangeSharedFolderInput,
-  ChangeSharedFolderOutput,
-  DeleteSharedFolderInput,
-  DeleteSharedFolderOutput,
-  ReadSharedFolderInput,
-  ReadSharedFolderOutput,
-  ScanSharedFolderInput,
-  ScanSharedFolderOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -19,12 +11,6 @@ import {
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-host-ops.js';
-import {
-  changeSharedFolder,
-  deleteSharedFolder,
-  readSharedFolder,
-  scanSharedFolder,
-} from './shared-folders.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
 
@@ -59,35 +45,7 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // host's READ-ONLY view of an agent's durable user-files mount, so the
       // web UI can serve those files without entering a live sandbox. Realized
       // by reading the resolved `localDir` hostPath read-only.
-      //
-      // `sandbox:delete-shared-folder` (W2 shared folders, design §3.7): remove
-      // a shared folder's bytes. Realized by locating the folder through the
-      // resolver's `sandbox:locate-shared-folder` and `rm -rf`ing exactly
-      // `<root>/.shared/<folderId>`.
-      //
-      // `sandbox:read-shared-folder` (W3b): the host's read-only view of one
-      // shared folder, walked from `<root>` with no symlink followed (Linux
-      // only; `unavailable` elsewhere). No grant check — @ax/projects checks
-      // the person first.
-      //
-      // `sandbox:change-shared-folder` (W3c): the host's WRITE path into one
-      // shared folder (write / mkdir / delete, optionally creating the folder),
-      // through the same locate + shape check and `changeConfinedByWalk` with
-      // no chown (Linux only; `unavailable` elsewhere). No grant check —
-      // @ax/projects checks the person first.
-      //
-      // `sandbox:scan-shared-folder` (W3d): a recursive, confined stat of one
-      // shared folder for @ax/projects' file history — the read's locate +
-      // shape check, then `scanConfinedByWalk` (Linux only; `unavailable`
-      // elsewhere). No grant check.
-      registers: [
-        'sandbox:open-session',
-        'sandbox:read-user-files',
-        'sandbox:delete-shared-folder',
-        'sandbox:read-shared-folder',
-        'sandbox:change-shared-folder',
-        'sandbox:scan-shared-folder',
-      ],
+      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
       // catch a missing producer at boot instead of first-call time.
@@ -113,21 +71,8 @@ export function createSandboxSubprocessPlugin(): Plugin {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
-            'no shared-folder mounts (AX_SHARED_FOLDERS unset); ' +
             'host-read returns unavailable (this deployment keeps no durable ' +
             'files) and agent-delete cleanup is a no-op',
-        },
-        // W2 shared folders: where a folder's bytes live, for delete, read and change
-        // (registered by the same resolver, grant-free). Optional so a preset
-        // without a resolver still boots; sessions never touch it.
-        {
-          hook: 'sandbox:locate-shared-folder',
-          degradation:
-            'sandbox:delete-shared-folder throws no-mount-resolver (nothing is ' +
-            'deleted, so the caller keeps its tombstone and retries); ' +
-            'sandbox:read-shared-folder, sandbox:change-shared-folder and ' +
-            'sandbox:scan-shared-folder answer unavailable; opening ' +
-            'sessions is unaffected',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -158,45 +103,6 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, PLUGIN_NAME, input),
-      );
-
-      // W2 shared folders: delete one folder's bytes. A delete that did not
-      // happen THROWS (no resolver, a located path that is not exactly
-      // `<root>/.shared/<folderId>`, a symlinked `.shared`) so the caller never
-      // drops its tombstone over bytes that are still there.
-      bus.registerService<DeleteSharedFolderInput, DeleteSharedFolderOutput>(
-        'sandbox:delete-shared-folder',
-        PLUGIN_NAME,
-        async (ctx, input) => deleteSharedFolder(ctx, bus, PLUGIN_NAME, input),
-      );
-
-      // W3b: read one shared folder, read-only, no symlink followed at any
-      // depth. A local-disk walk, so a modest timeout is plenty.
-      bus.registerService<ReadSharedFolderInput, ReadSharedFolderOutput>(
-        'sandbox:read-shared-folder',
-        PLUGIN_NAME,
-        async (ctx, input) => readSharedFolder(ctx, bus, PLUGIN_NAME, input),
-        { timeoutMs: 30_000 },
-      );
-
-      // W3d: a recursive, confined stat of one shared folder (no symlink
-      // followed, no file opened). Up to 10,000 files on a local disk.
-      bus.registerService<ScanSharedFolderInput, ScanSharedFolderOutput>(
-        'sandbox:scan-shared-folder',
-        PLUGIN_NAME,
-        async (ctx, input) => scanSharedFolder(ctx, bus, PLUGIN_NAME, input),
-        { timeoutMs: 60_000 },
-      );
-
-      // W3c: change one shared folder — no symlink followed at any depth, each
-      // write a temp file + rename. A refusal is PluginError('invalid-payload')
-      // with the walk's code as `reasonCode`; a conflict is a result, not an
-      // error. Up to 25 MiB to a local disk, so the read's timeout is plenty.
-      bus.registerService<ChangeSharedFolderInput, ChangeSharedFolderOutput>(
-        'sandbox:change-shared-folder',
-        PLUGIN_NAME,
-        async (ctx, input) => changeSharedFolder(ctx, bus, PLUGIN_NAME, input),
-        { timeoutMs: 30_000 },
       );
 
       // §11 cleanup-on-agent-delete. rm -rf the agent's durable user-files

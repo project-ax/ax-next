@@ -132,13 +132,6 @@ export interface Conversation {
    * unique index — see migrations.ts.
    */
   externalKey: string | null;
-  /**
-   * W3a (2026-10-16, W3 spec §4.4). The project this chat belongs to, or null
-   * for a chat outside any project. An opaque id owned by `@ax/projects`. Set
-   * once at create, after `projects:resolve` has checked that the chat's
-   * agent can use the project. Deleting the project purges the chat.
-   */
-  projectId: string | null;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */
@@ -174,13 +167,6 @@ export interface CreateInput {
    * agent, which is why the ATTENDANCE read fails the other way.
    */
   origin?: ConversationOrigin;
-  /**
-   * W3a (§4.4). Start this chat in a project. Checked with
-   * `projects:resolve { projectId, agentId }` AS `userId` (not the caller's
-   * ctx) before anything is written; any failure refuses the create. When
-   * `@ax/projects` isn't loaded, any `projectId` is refused, never dropped.
-   */
-  projectId?: string;
 }
 export type CreateOutput = Conversation;
 
@@ -420,12 +406,6 @@ export interface ListInput {
    * owns; ACL is implicit via `user_id` filter.
    */
   agentId?: string;
-  /**
-   * W3a (§4.4). Optional filter — only the user's chats in this project.
-   * Combines with `agentId`. User-scoped like every list: it never returns
-   * another member's chats.
-   */
-  projectId?: string;
 }
 export type ListOutput = Conversation[];
 
@@ -556,11 +536,6 @@ export interface GetMetadataOutput {
    * Storage-agnostic: an opaque session handle, not a pod name or a socket path.
    */
   activeSessionId: string | null;
-  /**
-   * W3a (§4.4). The chat's project, or null. The orchestrator reads it here
-   * on every turn to mount the project's folder.
-   */
-  projectId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -595,9 +570,6 @@ export const GetMetadataOutputSchema = z.object({
   // conversation, forever, with nothing failing loudly.
   origin: z.enum(['web', 'routine']),
   activeSessionId: z.string().nullable(),
-  // W3a. Same trap as `origin`: stripped here, every project chat would read
-  // as "no project" and run without its folder, with nothing failing.
-  projectId: z.string().nullable(),
 }) as unknown as ZodType<GetMetadataOutput>;
 
 /**
@@ -683,37 +655,6 @@ export interface SetTitleOutput {
    */
   updated: boolean;
 }
-
-/**
- * W3e (W3 spec §8). Move a chat into a project, to another one, or out
- * (`projectId: null`).
- *
- * ACL: owner-only — `(conversation_id, user_id)` pre-filter, so a foreign,
- * missing or deleted chat is `not-found` before any gate runs. Then:
- *   - a routine's conversation is refused (`forbidden`): its project is set on
- *     the routine;
- *   - `agents:resolve(agent_id, user_id)`, as every hook here;
- *   - into a project: `projects:resolve { projectId, agentId }` AS `userId`,
- *     the same rule as `conversations:create`. Out is always allowed: it only
- *     narrows.
- * Setting the project the chat is already in is a no-op. No event fires: the
- * orchestrator reads the chat's project on its next turn and retires a session
- * that opened with a different one.
- */
-export interface SetProjectInput {
-  conversationId: string;
-  userId: string;
-  projectId: string | null;
-}
-export interface SetProjectOutput {
-  /** The chat's project after the call. */
-  projectId: string | null;
-}
-
-/** Runtime `returns` contract for `conversations:set-project`. */
-export const SetProjectOutputSchema = z
-  .object({ projectId: z.string().nullable() })
-  .strict() as unknown as ZodType<SetProjectOutput>;
 
 /**
  * Phase A (routines foundation, 2026-05-14). Mark a conversation hidden
@@ -836,5 +777,4 @@ export const CONVERSATIONS_PURGED_CHUNK_SIZE = 500;
 // the runner a per-AGENT choice, so the honest value comes from the agent:
 // seeded at create, refreshed on every `conversations:bind-session`. A host-wide
 // default could only ever disagree with that, so the knob is deleted rather than
-// deprecated. `createConversationsPlugin()` takes only operational options
-// (`purgeSweepIntervalMs`), never anything stored on a conversation.
+// deprecated — `createConversationsPlugin()` now takes no arguments.

@@ -4,13 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
-import { describeFailure, redactedError } from './describe-failure.js';
-import { sourceParts, sharedFolderSourceParts, sharedFolderTargetParts, SHARED_FOLDERS_ROOT } from './sources.js';
-import type { SharedFolderChange } from '@ax/sandbox-mount-protocol';
-import { changeConfinedByWalk, WalkChangeError, WalkPathError, WalkReadError,
-  MAX_CHANGE_COUNT, MAX_CHANGE_FILE_BYTES, MAX_CHANGE_TOTAL_BYTES } from '@ax/user-files-read';
-import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema, ChangeSharedRequestSchema,
-  type ChangeSharedWireRequest, type ChangeSharedResponse,
+import { sourceParts } from './sources.js';
+import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
 
 export interface StorageAuthority {
@@ -24,93 +19,23 @@ export interface StorageAuthority {
 export interface StorageNodeConfig {
   backingProfile: string;
   kubeletPodsRoot: string; ledgerRoot: string; userFilesRoot: string; memoryRoot?: string;
-  /**
-   * The same user-files export, mounted read-only. Viewer folders bind from here.
-   * A later `remount,bind,ro` changes only this namespace's copy: mount
-   * propagation carries new mounts, not flag changes, so the bind gVisor sees
-   * would stay writable (measured on GKE, 2026-10-16). A bind cloned from a
-   * read-only mount is read-only before it propagates, which is why `/memory`
-   * was always safe.
-   */
-  userFilesReadOnlyRoot: string;
-}
-
-/**
- * Refuse unless the topmost mount at `path` is read-only for this namespace.
- * The viewer guarantee rests on it, so a chart that drops `readOnly` must fail
- * closed instead of quietly handing viewers a writable folder.
- */
-export function assertReadOnlyMount(mountInfo: string, path: string): void {
-  let options: string | undefined;
-  for (const line of mountInfo.split('\n')) {
-    const fields = line.split(' ');
-    if (fields[4] === path) options = fields[5]; // last match = topmost mount
-  }
-  if (options === undefined || !options.split(',').includes('ro')) {
-    throw new Error(`read-only source ${path} is not mounted read-only`);
-  }
 }
 const targetName = (role: 'user-files' | 'memory') => role === 'user-files' ? 'files' : 'memory';
-/**
- * Every bind target a record owns, below the late-bind volume: `files`,
- * `memory`, then `shared/<folderId>` per shared folder (W2 §3.8.1). Release and
- * recovery derive these from the record alone; the id is re-validated here.
- */
-const targetParts = (record: StorageRecord): string[][] => [
-  ...record.roles.map(role => [targetName(role)]),
-  ...(record.sharedFolders ?? []).map(folder => sharedFolderTargetParts(folder.folderId)),
-];
-
-/** The helper's own uid. Only it may own the late-bind staging directories. */
-const HELPER_UID = 0;
-/**
- * `.shared` is root-owned and traverse-only: anyone may open a folder whose id
- * they know (the host, uid 1000, reads one through the read-only export mount —
- * W3b), and nobody but root can list `.shared` or create in it. Runners never
- * mount `.shared` itself, only the folders they hold a grant on.
- */
-const SHARED_ROOT_MODE = 0o711;
-export interface StorageNodeIo {
-  directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
-  /** The owning uid of a held directory. */
-  owner(fd: number): number;
-  /** The inode of a held directory (the NFS fileid; equal across two mounts of one export). */
-  inode(fd: number): number;
-  /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
-  report(message: string): void;
-  /** The confined writer. Injectable for tests off Linux; production uses `changeConfinedByWalk`. */
-  change?: typeof changeConfinedByWalk;
-}
 
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
-    }, private readonly io: StorageNodeIo = {
+    }, private readonly io: { directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void;
+      isTmpfs(path: string): boolean } = {
       directory: openDirectory, mountInfo: () => readFileSync('/proc/self/mountinfo', 'utf8'),
       chown: fd => fchownSync(fd, 1000, 1000),
       isTmpfs: path => statfsSync(path).type === 0x01021994,
-      owner: fd => fstatSync(fd).uid,
-      inode: fd => fstatSync(fd).ino,
-      report: message => { process.stderr.write(`${message}\n`); },
     }) {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
     const root = this.io.directory(config.ledgerRoot, []);
     try { fchmodSync(root.fd, 0o700); } finally { root.close(); }
-    // Fix an existing `.shared` now, so the host can read folders before the
-    // next prepare. Never fatal: the export may be unreachable at startup, and
-    // every prepare that touches a shared folder re-applies the mode anyway.
-    try { this.traverseOnlySharedRoot(false); } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.io.report(`could not set ${SHARED_FOLDERS_ROOT} to 0711 at startup (the host cannot read shared folders until the next prepare): ${describeFailure(e, {})}`);
-      }
-    }
-  }
-  /** Open (or create) `.shared` on the writable export, pinned, and make it 0711. */
-  private traverseOnlySharedRoot(create: boolean) {
-    const shared = this.io.directory(this.config.userFilesRoot, [SHARED_FOLDERS_ROOT], create);
-    try { fchmodSync(shared.fd, SHARED_ROOT_MODE); } finally { shared.close(); }
   }
   private serial<T>(uid: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.pending.get(uid) ?? Promise.resolve();
@@ -143,22 +68,6 @@ export class StorageNodeEngine {
     return this.io.directory(this.config.kubeletPodsRoot,
       [record.podUid, 'volumes', 'kubernetes.io~empty-dir', LATE_VOLUME], create);
   }
-  /**
-   * Open (creating if needed) the late-bind `shared` staging directory and
-   * prove the helper owns it. It is not mounted over, so its owner controls
-   * the namespace every shared bind lands in: a runner-created one is refused,
-   * never repaired. Then make it traversable (not writable) by the runner.
-   */
-  private sharedStaging(volume: { fd: number }, dir: string) {
-    const parent = this.io.directory(volume, [dir], true);
-    try {
-      if (!fstatSync(parent.fd).isDirectory() || this.io.owner(parent.fd) !== HELPER_UID) {
-        throw new Error('shared staging directory is not owned by the storage helper');
-      }
-      fchmodSync(parent.fd, 0o755);
-      return parent;
-    } catch (e) { parent.close(); throw e; }
-  }
   async assign(raw: StorageAssignment): Promise<{ assignmentId: string }> {
     const input = StorageAssignmentSchema.parse(raw);
     return this.serial(input.podUid, async () => {
@@ -183,14 +92,6 @@ export class StorageNodeEngine {
       this.save(record);
       try {
         await this.authority.protect(input, record);
-        // Refuse a runner-owned staging dir before ANY bind, not just the shared ones.
-        if (input.sharedFolders?.length) {
-          const volume = this.volume(record);
-          try { this.sharedStaging(volume, sharedFolderTargetParts(input.sharedFolders[0]!.folderId)[0]!).close(); }
-          finally { volume.close(); }
-          // Before any folder below creates `.shared` 0700 (see SHARED_ROOT_MODE).
-          this.traverseOnlySharedRoot(true);
-        }
         for (const role of input.roles) {
           const backing = role === 'user-files' ? this.config.userFilesRoot : this.config.memoryRoot;
           if (!backing) throw new Error('storage role is not configured');
@@ -207,46 +108,6 @@ export class StorageNodeEngine {
               finally { mounted.close(); }
             }
           } finally { target?.close(); volume.close(); source.close(); }
-        }
-        // W2 §3.8.1 — shared folders. The source comes from the id alone, under
-        // the user-files export, each component pinned with O_NOFOLLOW; a
-        // symlinked `.shared` or folder directory is refused. Every bind lands
-        // before the bootstrap is published, so the runner never starts without it.
-        for (const folder of input.sharedFolders ?? []) {
-          const source = this.io.directory(this.config.userFilesRoot, sharedFolderSourceParts(folder.folderId), true);
-          const volume = this.volume(record);
-          let parent, target, readOnlySource;
-          try {
-            // Every folder belongs to the runner uid, as /files does. A viewer may
-            // be the first to touch a folder (created root 0700 above); without
-            // this it could not read it. Its bind is still remounted read-only.
-            this.io.chown(source.fd);
-            // A viewer binds from the read-only mount of the same export, never
-            // from the writable one (see `userFilesReadOnlyRoot`).
-            if (folder.readOnly) {
-              assertReadOnlyMount(this.io.mountInfo(), this.config.userFilesReadOnlyRoot);
-              readOnlySource = this.io.directory(this.config.userFilesReadOnlyRoot, sharedFolderSourceParts(folder.folderId));
-              // Two walks, so prove they reached the folder just chowned. Today
-              // nothing can swap it (`.shared` is still root-owned; 0711 is
-              // traverse-only, so nobody but root can list or create in it), but
-              // this keeps the viewer path as tight as the editor's single descriptor.
-              if (this.io.inode(readOnlySource.fd) !== this.io.inode(source.fd)) {
-                throw new Error('read-only shared folder source does not match');
-              }
-            }
-            const [dir, leaf] = sharedFolderTargetParts(folder.folderId) as [string, string];
-            // Re-proved per folder on a fresh descriptor: the late-bind volume
-            // itself may be runner-writable, so `shared` could be swapped since.
-            parent = this.sharedStaging(volume, dir);
-            target = this.io.directory(parent, [leaf], true);
-            this.command('mount', ['--no-canonicalize', '--bind', (readOnlySource ?? source).path, target.path]);
-            if (folder.readOnly) {
-              // Belt and braces: this copy is already read-only; keep it explicit.
-              const mounted = this.io.directory(parent, [leaf]);
-              try { this.command('mount', ['--no-canonicalize', '-o', 'remount,bind,ro', mounted.path]); }
-              finally { mounted.close(); }
-            }
-          } finally { target?.close(); parent?.close(); readOnlySource?.close(); volume.close(); source.close(); }
         }
         const volume = this.volume(record);
         const directory = this.io.directory(volume, ['bootstrap'], true);
@@ -268,58 +129,10 @@ export class StorageNodeEngine {
         } finally { directory.close(); volume.close(); }
         this.save({ ...record, published: true });
         return { assignmentId: record.assignmentId };
-      } catch (cause) {
-        // Keep the cause for the operator; never credentials (describeFailure redacts).
-        const env = bootstrap.env;
-        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, env)}`);
+      } catch {
         // Keep durable intent + finalizers for recovery; never discard an active mount.
-        await this.releaseLocked(record).catch((e: unknown) => {
-          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, env)}`);
-        });
-        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
-        throw new Error('storage activation failed', { cause: redactedError(cause, env) });
-      }
-    });
-  }
-  /**
-   * W3c — apply a person's changes to `.shared/<folderId>` on the writable
-   * export. The folder comes from the id alone (re-validated by
-   * `sharedFolderSourceParts`); every change path is untrusted and confined by
-   * `changeConfinedByWalk`, which opens each component through the held
-   * parent with O_NOFOLLOW, so a link an agent planted anywhere in the folder
-   * is refused, never followed. Everything it creates is chowned to the runner
-   * uid (1000), so agents can edit what people save.
-   *
-   * With `createFolder` the folder is made like `/assign` makes it: `.shared`
-   * first (0711, root), then `<folderId>` 0700 owned by 1000.
-   *
-   * A refusal is an answer (`kind: 'refused'` with a code and the results
-   * already applied), never a path. A storage failure throws (the route
-   * answers 409). Serialized per folder on this node.
-   */
-  async changeShared(raw: ChangeSharedWireRequest): Promise<ChangeSharedResponse> {
-    const input = ChangeSharedRequestSchema.parse(raw);
-    const base = sharedFolderSourceParts(input.folderId);
-    return this.serial(`shared:${input.folderId}`, async () => {
-      if (input.createFolder) this.traverseOnlySharedRoot(true);
-      const change = this.io.change ?? changeConfinedByWalk;
-      try {
-        // Zod leaves an absent optional key absent, so this is the hook's own shape.
-        const results = change(this.config.userFilesRoot, base, input.changes as SharedFolderChange[], {
-          ...(input.createFolder ? { createBase: true } : {}),
-          chown: fd => this.io.chown(fd),
-          maxChanges: MAX_CHANGE_COUNT, maxFileBytes: MAX_CHANGE_FILE_BYTES, maxTotalBytes: MAX_CHANGE_TOTAL_BYTES,
-        });
-        return { kind: 'done', results };
-      } catch (e) {
-        if (e instanceof WalkChangeError) return { kind: 'refused', refused: e.code, results: e.applied };
-        if (e instanceof WalkPathError) return { kind: 'refused', refused: 'invalid-path', results: [] };
-        // depth 1 is the folder itself (depth 0 is `.shared`): absent without createFolder.
-        if (e instanceof WalkReadError && e.code === 'ENOENT' && e.depth === 1 && !input.createFolder) {
-          return { kind: 'refused', refused: 'missing-folder', results: [] };
-        }
-        this.io.report(`shared folder change failed for ${input.folderId}: ${describeFailure(e, {})}`);
-        throw new Error('shared folder change failed');
+        await this.releaseLocked(record).catch(() => undefined);
+        throw new Error('storage activation failed');
       }
     });
   }
@@ -362,15 +175,15 @@ export class StorageNodeEngine {
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     if (volume) {
       try {
-        for (const parts of targetParts(record)) {
+        for (const role of record.roles) {
           let target;
           try {
-            target = this.io.directory(volume, parts);
+            target = this.io.directory(volume, [targetName(role)]);
             const targetStat = fstatSync(target.fd), volumeStat = fstatSync(volume.fd);
             // A planned but never completed bind lives on the same filesystem as emptyDir.
             // Require a mount record too: local acceptance sources may have the same device.
             const stillMounted = () => this.io.mountInfo().split('\n').some(line => line.split(' ')[4]?.endsWith(
-              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${parts.join('/')}`));
+              `/${record.podUid}/volumes/kubernetes.io~empty-dir/${LATE_VOLUME}/${targetName(role)}`));
             const mounted = stillMounted();
             if (mounted || targetStat.dev !== volumeStat.dev) {
               this.command('sync', ['-f', target.path]);
@@ -416,4 +229,3 @@ export class StorageNodeEngine {
 }
 
 export const STORAGE_REQUEST_MAX_BYTES = BOOTSTRAP_MAX_BYTES + 4096;
-export { CHANGE_SHARED_REQUEST_MAX_BYTES, CHANGE_SHARED_RESPONSE_MAX_BYTES } from './protocol.js';

@@ -150,12 +150,6 @@ export interface SessionCreateInput {
      * runner wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
      */
     source?: 'routine' | 'user';
-    /**
-     * W3d: the project the session was spawned for, forwarded exactly like
-     * `source` and echoed back by `session:resolve-token` so the IPC
-     * listeners stamp `ctx.projectId`. Host-only. Optional; absent ≡ none.
-     */
-    projectId?: string;
   };
 }
 
@@ -196,13 +190,6 @@ export type SessionResolveTokenOutput =
        * pre-TASK-181 sessions.
        */
       source: 'routine' | 'user' | null;
-      /**
-       * W3d: the session's spawn project. The IPC listeners stamp it onto the
-       * per-request AgentContext as `ctx.projectId` (the `chat:turn-end`
-       * file-history pass reads it). Null ≡ no project / pre-W3d. Host-set
-       * only — never from a runner frame.
-       */
-      projectId: string | null;
     }
   | null;
 
@@ -326,8 +313,6 @@ export const SessionResolveTokenOutputSchema = z
     conversationId: z.string().nullable(),
     // TASK-181 — host-derived session origin echoed onto the resolve result.
     source: z.enum(['routine', 'user']).nullable(),
-    // W3d — the session's spawn project, echoed so the listeners stamp ctx.projectId.
-    projectId: z.string().nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 

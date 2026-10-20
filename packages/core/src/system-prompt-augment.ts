@@ -13,19 +13,15 @@ import { z } from 'zod';
 //   misses the orchestrator's deadline, or returns invalid output) the WHOLE
 //   augment is skipped for that spawn — context without the Rules that govern
 //   it is the worst outcome. Register as required only if you carry `rules`.
-// - Optional (`…:optional:<name>`): `brief`, `context` and `recall`. A failure
+// - Optional (`…:optional:<name>`): `context` and `recall` only. A failure
 //   drops just this provider's blocks.
 //
-// Sections set the order: `rules`, `brief`, `context`, then `recall`; within a
-// section, by service name. Only `rules` and `brief` reach bootstrap mode.
+// Sections set the order: `rules`, then `context`, then `recall`; within a
+// section, by service name. Only `rules` reaches bootstrap mode.
 //
-// `rules` is for text a person wrote that no agent can change. `brief` is what
-// this session is for, built only from what people wrote plus the provider's
-// own fixed text — no agent can change any of it (a project's name and
-// description). It reaches bootstrap mode so an agent's first chats still know
-// what they're about. `context` and `recall` may carry agent- or
-// third-party-written text, and the provider frames it as information, never
-// as instructions or as another section.
+// `rules` is for text a person wrote that no agent can change. `context` and
+// `recall` may carry agent- or third-party-written text, and the provider
+// frames it as information, never as instructions or as another section.
 //
 // Lives in the kernel because the providers and the orchestrator must share
 // one definition, and plugins may not import each other (invariant 2).
@@ -54,7 +50,6 @@ export type SystemPromptAugmentInput = Record<string, never>;
 export const SystemPromptAugmentOutputSchema = z
   .object({
     rules: z.string().optional(),
-    brief: z.string().optional(),
     context: z.string().optional(),
     recall: z.string().optional(),
   })

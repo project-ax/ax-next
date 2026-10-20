@@ -66,21 +66,6 @@ import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
 import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
-  CreateProjectResponse,
-  ListProjectsResponse,
-  OwnerCandidatesResponse,
-  ProjectConversationsResponse,
-  ProjectDetail,
-  ProjectFileHistoryResponse,
-  ProjectFileVersionPreview,
-  ProjectLabel,
-  RestoreProjectFileVersionResponse,
-  UndoProjectChangeResponse,
-  SetProjectMemberResponse,
-  UpdateProjectResponse,
-  WriteProjectFileResponse,
-} from '@/wire/projects';
-import type {
   ActivityEvent,
   AgentAbilitiesRead,
   AgentAbility,
@@ -296,12 +281,6 @@ export interface AgentDetail {
   decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
-  /**
-   * W3a — the project of the conversation `thread` was read from, or null
-   * (none, outside any project, or a project this person can't use any more).
-   * Optional on read: an older host omits it.
-   */
-  project?: ProjectLabel | null;
   /**
    * The Instructions section's rules tier, carrying how its read went.
    *
@@ -609,12 +588,6 @@ export interface SendMessageInput {
    * Omitted / empty = a plain text-only send, byte-identical to before.
    */
   attachmentIds?: readonly string[];
-  /**
-   * W3a — start the new conversation in this project. Only with
-   * `conversationId: null`; the server refuses it beside an existing one (400)
-   * and answers 404 for a project the agent can't use.
-   */
-  projectId?: string;
 }
 
 /** What a normally-ended turn can still have to say. See `StreamHandlers.onDone`. */
@@ -810,63 +783,6 @@ function dropRetiredConnectorGrants(body: unknown): unknown {
     console.warn('[workspace] dropping in-chat connector cards (retired in slice 2c)');
   }
   return { ...body, grants: kept };
-}
-
-/**
- * W3c — the refusals a project file change answers with, as the route's
- * `error` body names them. Only these are kept; anything else reads as
- * `undefined`, so an unexpected body never decides what a person is told.
- */
-export const PROJECT_FILE_CHANGE_CODES = [
-  'conflict',
-  'exists',
-  'forbidden',
-  'protected-path',
-  'read-only-path',
-  'file-too-large',
-  'body-too-large',
-  'project-files-unavailable',
-  'projects-unavailable',
-  'file-not-found',
-  'project-not-found',
-  'invalid-path',
-  'invalid-payload',
-  // W3d — restoring a version.
-  'not-restorable',
-  'version-not-found',
-  // W3d-2 — undoing an agent's change from the chat chip.
-  'changed-since',
-  'not-undoable',
-] as const;
-export type ProjectFileChangeCode = (typeof PROJECT_FILE_CHANGE_CODES)[number];
-
-/** A refused (or failed) project file change: the status, plus the refusal when the body named one. */
-export class ProjectFileChangeError extends WorkspaceApiError {
-  readonly code: ProjectFileChangeCode | undefined;
-  constructor(route: string, status: number, code?: unknown) {
-    super(route, status);
-    this.name = 'ProjectFileChangeError';
-    this.code =
-      typeof code === 'string' && (PROJECT_FILE_CHANGE_CODES as readonly string[]).includes(code)
-        ? (code as ProjectFileChangeCode)
-        : undefined;
-  }
-}
-
-async function projectFileChangeError(route: string, res: Response): Promise<ProjectFileChangeError> {
-  let code: unknown;
-  try {
-    const body = (await res.json()) as unknown;
-    code = isRecord(body) ? body.error : undefined;
-  } catch {
-    code = undefined;
-  }
-  return new ProjectFileChangeError(route, res.status, code);
-}
-
-/** A project file path in a change route: the whole path, encoded once, as `projectFiles` does it. */
-function projectChangeRoute(projectId: string, kind: 'files' | 'folders', path: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/${kind}/${encodeURIComponent(path)}`;
 }
 
 export const workspaceApi = {
@@ -1415,170 +1331,6 @@ export const workspaceApi = {
    */
   route: (_text: string) => req<RouteProposal>('/route', { method: 'POST' }),
 
-  // ---- W3a: projects (W3 spec §4.8) ---------------------------------------
-
-  /** The projects this person can use, most recently updated first. */
-  listProjects: () => req<ListProjectsResponse>('/projects'),
-
-  /** Create a project owned by `ownerAgentId` (an agent they manage). */
-  createProject: (input: { name: string; description?: string; ownerAgentId: string }) =>
-    req<CreateProjectResponse>('/projects', { method: 'POST', body: input }),
-
-  /** One project: name, description, members, and whether they may manage it. */
-  getProject: (projectId: string) =>
-    req<ProjectDetail>(`/projects/${encodeURIComponent(projectId)}`),
-
-  /** Rename / re-describe. `description: null` (or blank) clears it. */
-  updateProject: (projectId: string, patch: { name?: string; description?: string | null }) =>
-    req<UpdateProjectResponse>(`/projects/${encodeURIComponent(projectId)}`, {
-      method: 'PATCH',
-      body: patch,
-    }),
-
-  /**
-   * Delete the project, its files and EVERY chat in it (anyone's). Answers
-   * 204 with no body, so this does not go through `req()` (which reads JSON).
-   */
-  deleteProject: async (projectId: string): Promise<void> => {
-    const path = `/projects/${encodeURIComponent(projectId)}`;
-    const res = await httpFetch(`/api/workspace${path}`, { method: 'DELETE', headers: writeHeaders });
-    if (!res.ok) throw new WorkspaceApiError(path, res.status);
-  },
-
-  /**
-   * W3e — add one of the person's agents to the project, or change its role.
-   * Answers the members after the change. 403 for the owner agent, a project
-   * they can't manage, or an agent they can't add; 404 for a project they
-   * can't use.
-   */
-  setProjectMember: (projectId: string, agentId: string, role: 'editor' | 'viewer') =>
-    req<SetProjectMemberResponse>(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(agentId)}`,
-      { method: 'PUT', body: { role } },
-    ),
-
-  /** W3e — remove an agent from the project. Its chats stay; the members after. */
-  removeProjectMember: (projectId: string, agentId: string) =>
-    req<SetProjectMemberResponse>(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(agentId)}`,
-      { method: 'DELETE' },
-    ),
-
-  /** This person's chats in the project, newest first. */
-  listProjectConversations: (projectId: string) =>
-    req<ProjectConversationsResponse>(`/projects/${encodeURIComponent(projectId)}/conversations`),
-
-  /** Agents that may own a new project, most recently used first — the first is the default. */
-  ownerCandidates: () => req<OwnerCandidatesResponse>('/projects/owner-candidates'),
-
-  /**
-   * W3b — one path in the project's folder: a directory listing or a file's
-   * text preview, in the same `UserFilesAnswer` shape as `userFiles` (so one
-   * browser reads both). `''` is the folder root. Project files also carry
-   * `size` / `updatedAt` on entries and `size` / `downloadable` on a file.
-   *
-   * `path` is encoded WHOLE — slashes included — as `userFiles` does it: the
-   * server receives one splat and decodes it exactly once.
-   */
-  projectFiles: (projectId: string, path: string) =>
-    req<UserFilesAnswer>(
-      `/projects/${encodeURIComponent(projectId)}/files` + (path === '' ? '' : `/${encodeURIComponent(path)}`),
-    ),
-
-  /**
-   * W3b — the BYTES of one file in the project's folder (≤ 10 MiB), as
-   * `downloadFile` does it. A non-ok answer throws a `WorkspaceApiError`
-   * carrying its status: 413 too big, 404 gone (or no such project), 400 a
-   * folder, 503 this deployment can't read project files.
-   */
-  downloadProjectFile: async (projectId: string, path: string): Promise<{ blob: Blob; filename: string }> => {
-    const route = `/projects/${encodeURIComponent(projectId)}/download/` + encodeURIComponent(path);
-    const res = await httpFetch(`/api/workspace${route}`);
-    if (!res.ok) throw new WorkspaceApiError(route, res.status);
-    return {
-      blob: await res.blob(),
-      filename: filenameFromContentDisposition(res.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME,
-    };
-  },
-
-  /**
-   * W3c — save one file in the project's folder (≤ 10 MiB). `baseHash` (the
-   * `sha256` the file was read with) makes it a save over exactly that
-   * version: anything else there now is a 409 `conflict`. `createOnly` makes
-   * it a new file: something already there is a 409 `exists`. Neither is a
-   * plain overwrite ("Save over it"). A refusal throws a
-   * `ProjectFileChangeError` naming it.
-   */
-  writeProjectFile: async (
-    projectId: string,
-    path: string,
-    content: Blob | string,
-    opts: { baseHash?: string; createOnly?: boolean } = {},
-  ): Promise<WriteProjectFileResponse> => {
-    const route = projectChangeRoute(projectId, 'files', path);
-    const headers: Record<string, string> = {
-      'content-type': 'application/octet-stream',
-      'x-requested-with': 'ax-admin',
-    };
-    if (opts.baseHash !== undefined) headers['if-match'] = `"${opts.baseHash}"`;
-    else if (opts.createOnly === true) headers['if-none-match'] = '*';
-    const res = await httpFetch(`/api/workspace${route}`, { method: 'PUT', headers, body: content });
-    if (!res.ok) throw await projectFileChangeError(route, res);
-    return (await res.json()) as WriteProjectFileResponse;
-  },
-
-  /** W3c — delete one file (or empty folder) in the project's folder. */
-  deleteProjectFile: async (projectId: string, path: string): Promise<void> => {
-    const route = projectChangeRoute(projectId, 'files', path);
-    const res = await httpFetch(`/api/workspace${route}`, { method: 'DELETE', headers: writeHeaders });
-    if (!res.ok) throw await projectFileChangeError(route, res);
-  },
-
-  /** W3c — make a folder (and any missing parents) in the project's folder. */
-  createProjectFolder: async (projectId: string, path: string): Promise<void> => {
-    const route = projectChangeRoute(projectId, 'folders', path);
-    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
-    if (!res.ok) throw await projectFileChangeError(route, res);
-  },
-
-  /**
-   * W3d — one file's versions, newest first, and the project's history gaps.
-   * Viewers can read it too. A file with no history is an empty list.
-   */
-  projectFileHistory: (projectId: string, path: string) =>
-    req<ProjectFileHistoryResponse>(`/projects/${encodeURIComponent(projectId)}/history/${encodeURIComponent(path)}`),
-
-  /** W3d — one version's text (a preview: `clipped: 'binary'` when it isn't text). 404 when it has none. */
-  projectFileVersion: (projectId: string, versionId: string) =>
-    req<ProjectFileVersionPreview>(
-      `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}`,
-    ),
-
-  /**
-   * W3d — write a version back over the file (or recreate a deleted one). A
-   * refusal throws a `ProjectFileChangeError`: 409 `not-restorable` for a
-   * version with no bytes, else the same codes a save answers.
-   */
-  restoreProjectFileVersion: async (projectId: string, versionId: string): Promise<RestoreProjectFileVersionResponse> => {
-    const route = `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/restore`;
-    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
-    if (!res.ok) throw await projectFileChangeError(route, res);
-    return (await res.json()) as RestoreProjectFileVersionResponse;
-  },
-
-  /**
-   * W3d-2 — undo one change the agent made (the chat's "Updated project
-   * memory" chip). A refusal throws a `ProjectFileChangeError`: 409
-   * `changed-since` when the file changed after that, 409 `not-undoable`,
-   * 404 `version-not-found`, else the same codes a save answers.
-   */
-  undoProjectChange: async (projectId: string, versionId: string): Promise<UndoProjectChangeResponse> => {
-    const route = `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/undo`;
-    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
-    if (!res.ok) throw await projectFileChangeError(route, res);
-    return (await res.json()) as UndoProjectChangeResponse;
-  },
-
   /**
    * One page of the activity collection (design §7). `agentId` scopes to one
    * agent's rows; `before` pages backward through older ones; `nextBefore` in
@@ -1608,7 +1360,6 @@ export const workspaceApi = {
     conversationId,
     text,
     attachmentIds = [],
-    projectId,
   }: SendMessageInput): Promise<PostMessageResponse> {
     const res = await httpFetch('/api/chat/messages', {
       method: 'POST',
@@ -1620,9 +1371,6 @@ export const workspaceApi = {
           { type: 'text', text },
           ...attachmentIds.map((id) => attachmentRefBlock(id)),
         ],
-        // Omitted, not `undefined`/null, when there is none — byte-identical
-        // to a send from before projects.
-        ...(projectId !== undefined ? { projectId } : {}),
       }),
     });
     if (!res.ok) {

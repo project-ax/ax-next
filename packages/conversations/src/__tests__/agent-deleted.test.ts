@@ -179,7 +179,6 @@ afterEach(async () => {
   const cleanup = new pg.Client({ connectionString });
   await cleanup.connect();
   try {
-    await cleanup.query('DROP TABLE IF EXISTS conversations_v1_pending_purges');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_transcripts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_events');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
@@ -362,12 +361,6 @@ describe('conversations: agents:deleted subscriber (TASK-718)', () => {
       [c],
     );
     expect((rows.rows[0] as { n: number }).n).toBe(1);
-    // ...and the purge is still owed: a pending row the retry sweep will pick
-    // up (pending-purges.test.ts covers the retry itself).
-    const pending = await pool.query(
-      'SELECT kind, target_id, attempts FROM conversations_v1_pending_purges',
-    );
-    expect(pending.rows).toEqual([{ kind: 'agent', target_id: 'agt_a', attempts: 1 }]);
   });
 
   it.each([

@@ -147,9 +147,6 @@ spec:
             - {name: ledger, mountPath: /ledger}
             - {name: machine-id, mountPath: /host-machine-id, readOnly: true}
             - {name: user-files, mountPath: /backing/files}
-            # The same export, read-only: viewer folders bind from here so the
-            # bind is read-only before it propagates (W2 §3.8.1).
-            - {name: user-files, mountPath: /backing/files-ro, readOnly: true}
             - {name: tls, mountPath: /tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}
             {{- if include "ax-next.memoryExportsEnabled" . }}

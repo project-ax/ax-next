@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from './authority.js';
-import { StorageNodeEngine, assertReadOnlyMount } from './engine.js';
+import { StorageNodeEngine } from './engine.js';
 import { createStorageServer } from './server.js';
 import { backingProfile } from './sources.js';
 import { NodeFenceSchema, STANDBY_LABEL } from './protocol.js';
@@ -11,8 +11,6 @@ try { unlinkSync('/tmp/storage-ready'); } catch { /* No readiness until this ins
 const required = (key: string) => {
   const value = process.env[key]; if (!value) throw new Error(`missing storage configuration: ${key}`); return value;
 };
-// Viewer folders bind from this mount; refuse to start if it is writable.
-assertReadOnlyMount(readFileSync('/proc/self/mountinfo', 'utf8'), '/backing/files-ro');
 const { KubeConfig, CoreV1Api, CustomObjectsApi } = await import('@kubernetes/client-node');
 const kc = new KubeConfig(); kc.loadFromCluster();
 const pods = kc.makeApiClient(CoreV1Api), custom = kc.makeApiClient(CustomObjectsApi);
@@ -41,7 +39,7 @@ const api: StorageKubeApi = {
 const engine = new StorageNodeEngine({ kubeletPodsRoot: '/kubelet-pods', ledgerRoot: '/ledger',
   backingProfile: backingProfile({ userFiles: { server: required('AX_STORAGE_FILES_SERVER'), exportPath: required('AX_STORAGE_FILES_PATH') },
     ...(process.env.AX_STORAGE_MEMORY === '1' ? { memory: { server: required('AX_STORAGE_MEMORY_SERVER'), exportPath: required('AX_STORAGE_MEMORY_PATH') } } : {}) }),
-  userFilesRoot: '/backing/files', userFilesReadOnlyRoot: '/backing/files-ro', ...(process.env.AX_STORAGE_MEMORY === '1' ? { memoryRoot: '/backing/memory' } : {}) },
+  userFilesRoot: '/backing/files', ...(process.env.AX_STORAGE_MEMORY === '1' ? { memoryRoot: '/backing/memory' } : {}) },
 createStorageAuthority(api, nodeName, required('AX_POOL_PREFIX'), fence));
 const tlsRoot = '/tls';
 const server = createStorageServer(engine, { ca: readFileSync(join(tlsRoot, 'ca.crt')),

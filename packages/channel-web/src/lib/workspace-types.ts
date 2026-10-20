@@ -44,9 +44,6 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
-import type { ProjectLabel } from '../wire/projects.js';
-
-export type { ProjectLabel };
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -640,12 +637,6 @@ export type ThreadMessage =
        * model recalled nothing (or nothing could be attributed to this answer).
        */
       memoryUsed?: MemoryUsed;
-      /**
-       * W3d-2 — the files under the project's `memory/` folder that this
-       * answer's exchange changed (from `projects:conversation-changes`).
-       * Absent outside a project, or when the exchange changed none.
-       */
-      projectMemory?: ProjectMemoryUpdate;
       /** Files published by this turn, persisted with the conversation. */
       attachments?: readonly ThreadAttachment[];
     }
@@ -670,8 +661,6 @@ export type ThreadMessage =
       attachments?: readonly ThreadAttachment[];
       /** See `memoryUsed` on the `agent` variant above — same field, same rule. */
       memoryUsed?: MemoryUsed;
-      /** See `projectMemory` on the `agent` variant above. */
-      projectMemory?: ProjectMemoryUpdate;
     }
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }
@@ -877,24 +866,6 @@ export interface MemoryUsed {
   visibility?: 'personal' | 'team';
 }
 
-/** One `memory/` file an answer's exchange changed (W3d-2). */
-export interface ProjectMemoryFile {
-  /** Opaque; the undo route's `:versionId`. */
-  versionId: string;
-  /** Project-relative, e.g. `memory/people.md`. Agent-authored text. */
-  path: string;
-  change: 'created' | 'edited' | 'deleted';
-  undo: 'available' | 'changed-since' | 'not-undoable';
-}
-
-/** What an answer's "Updated project memory" chip draws (W3d-2). */
-export interface ProjectMemoryUpdate {
-  projectId: string;
-  /** The person may edit the project's files (Undo is offered only then). */
-  canEdit: boolean;
-  files: ProjectMemoryFile[];
-}
-
 export interface FactMemoryPage {
   statements: FactMemoryStatement[];
   degraded: string[];
@@ -938,14 +909,6 @@ export interface UserFileEntry {
   path: string;
   name: string;
   kind: 'file' | 'dir';
-  /**
-   * Bytes on disk, files only — present when the server's reader reports it
-   * (a project's folder does; an agent's user-files tier does not yet).
-   * Absent means unknown, never zero.
-   */
-  size?: number;
-  /** ISO-8601 last-modified time, under the same rule as `size`. */
-  updatedAt?: string;
 }
 
 /**
@@ -970,21 +933,6 @@ export type UserFilesAnswer =
       name: string;
       body: string | null;
       clipped: 'binary' | 'too-large' | null;
-      /** The whole file's size in bytes, when the server knows it (project files). */
-      size?: number;
-      /**
-       * Will the download route serve it? Set only where the server knows
-       * (project files: `size` ≤ 10 MiB) — `false` means show the size and no
-       * download button. Absent means "offer it"; a 413 is still possible and
-       * the download route remains the gate.
-       */
-      downloadable?: boolean;
-      /**
-       * W3c, project files only: present ONLY when `body` is the whole file,
-       * byte for byte — the base hash a save sends back. Absent means the file
-       * can't be edited as text here.
-       */
-      sha256?: string;
     };
 
 /** One file's text, as the server is willing to show it. */
@@ -1028,14 +976,6 @@ export interface PastConversation {
    * `lib/workspace-time.ts`, now run on the reader's clock.
    */
   lastActivityAt: string;
-  /**
-   * W3a (W3 §15 Q6) — the project this chat belongs to, so a project chat
-   * carries a small label in the agent rail instead of disappearing from it.
-   * `null` for a chat outside any project, AND for one in a project this
-   * person can no longer use (its name is not theirs to see). Optional on
-   * read: an older host omits it.
-   */
-  project?: ProjectLabel | null;
 }
 
 /**

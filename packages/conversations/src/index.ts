@@ -1,8 +1,4 @@
-export {
-  createConversationsPlugin,
-  type ConversationsPlugin,
-  type ConversationsPluginOptions,
-} from './plugin.js';
+export { createConversationsPlugin } from './plugin.js';
 export {
   runConversationsMigration,
   type ConversationDatabase,
@@ -50,8 +46,6 @@ export type {
   GetOutput,
   ListInput,
   ListOutput,
-  SetProjectInput,
-  SetProjectOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,

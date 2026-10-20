@@ -104,9 +104,6 @@ interface SessionCreateInput {
     // verbatim into session:create. Host-only: it arrives on the
     // sandbox:open-session hook (orchestrator → here), never from the runner.
     source?: 'routine' | 'user';
-    // W3d — the session's spawn project, forwarded the same way as `source`
-    // so the session record carries it. Host-only, never from the runner.
-    projectId?: string;
   };
 }
 interface SessionCreateOutput {
@@ -183,10 +180,6 @@ export function createOpenSession(deps: OpenSessionDeps) {
           ...(input.owner.source !== undefined
             ? { source: input.owner.source }
             : {}),
-          // W3d — the spawn project, same treatment as `source`.
-          ...(input.owner.projectId !== undefined
-            ? { projectId: input.owner.projectId }
-            : {}),
         };
       }
       created = await deps.bus.call<SessionCreateInput, SessionCreateOutput>(
@@ -217,15 +210,7 @@ export function createOpenSession(deps: OpenSessionDeps) {
         const resolved = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
           'sandbox:resolve-mounts',
           ctx,
-          {
-            owner: input.owner,
-            // W2 shared folders: the host's REQUEST, filtered by the resolver
-            // through shared-folders:authorize-mounts. Spread-when-present so a
-            // session without shared folders sends the same input as before.
-            ...(input.sharedFolderIds !== undefined && input.sharedFolderIds.length > 0
-              ? { sharedFolderIds: input.sharedFolderIds }
-              : {}),
-          },
+          { owner: input.owner },
         );
         mounts = resolved.mounts;
       } catch (err) {
@@ -299,13 +284,6 @@ export function createOpenSession(deps: OpenSessionDeps) {
         throw err;
       }
     }
-
-    // 2c. Will this session run on the shared warm pool? Pooled sessions bind
-    //     their storage — /files, /memory and any shared folders (W2 §3.8.1) —
-    //     through the node helper rather than pod volumes.
-    const pooled = deps.config.sharedPool !== undefined &&
-      Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
-      (input.services?.length ?? 0) === 0;
 
     // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
     //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the
@@ -411,6 +389,9 @@ export function createOpenSession(deps: OpenSessionDeps) {
     });
 
     try {
+      const pooled = deps.config.sharedPool &&
+        Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
+        (input.services?.length ?? 0) === 0;
       if (deps.config.backend === 'agent-sandbox' && !pooled) {
         podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);
       }
