@@ -1096,6 +1096,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
         },
         {
+          hook: 'projects:conversation-changes',
+          degradation: 'answers in a project chat carry no "Updated project memory" chip',
+        },
+        {
+          hook: 'projects:undo-change',
+          degradation:
+            'POST /api/workspace/projects/:projectId/versions/:versionId/undo answers 503 projects-unavailable',
+        },
+        {
           hook: 'agents:can-manage-sharing',
           degradation:
             'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',

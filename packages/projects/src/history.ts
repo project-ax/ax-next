@@ -60,6 +60,8 @@ export const RETENTION_KEEP_PER_FILE = 50;
 /** `file-history` lists at most this many versions and gaps. */
 export const HISTORY_LIST_MAX_VERSIONS = 500;
 export const HISTORY_LIST_MAX_GAPS = 100;
+/** `conversation-changes` returns at most this many versions (the newest). */
+export const CONVERSATION_CHANGES_MAX = 500;
 
 /**
  * Passes running at once in this process, at most. A pass holds no database
@@ -99,6 +101,8 @@ export interface Attribution {
   agentId?: string | null;
   conversationId?: string | null;
   reqId?: string | null;
+  /** W3d-2: when the agent's turn ended (the turn-end pass only). */
+  turnAt?: Date | null;
 }
 
 /** A file's state at one moment, as history records it. */
@@ -172,6 +176,63 @@ function isScanOut(v: unknown): v is ScanSharedFolderOut {
       typeof x.ino === 'number'
     );
   });
+}
+
+// ---- W3d-2: a turn's changes, and undoing one ------------------------------
+
+/** What a version did to its path, judged from the version before it. */
+export type ChangeKind = 'created' | 'edited' | 'deleted';
+/** Whether a person can undo a change now. */
+export type UndoState = 'available' | 'changed-since' | 'not-undoable';
+
+/** The slice of a version the classification reads. */
+export interface VersionFacts {
+  kind: 'write' | 'delete';
+  too_large: boolean;
+  blob_sha: string | null;
+}
+
+/** A version, the one before it on the same path (by seq), and whether a newer one exists. */
+export interface ChangeRow {
+  version: FileVersionRow;
+  previous: VersionFacts | null;
+  hasNewer: boolean;
+}
+
+/**
+ * `deleted` for a delete; `created` when nothing came before or the version
+ * before was a delete; `edited` otherwise.
+ */
+export function changeKindOf(version: VersionFacts, previous: VersionFacts | null): ChangeKind {
+  if (version.kind === 'delete') return 'deleted';
+  if (previous === null || previous.kind === 'delete') return 'created';
+  return 'edited';
+}
+
+/**
+ * Whether the change can be undone, before anything is read from the folder:
+ * - `changed-since` when the path has a newer version;
+ * - `not-undoable` when the inverse is impossible: this version is too large
+ *   (an edit has no hash to guard with, a creation can't be content-checked),
+ *   the path is under `sources/` (read-only), an edit or delete whose previous
+ *   version has no bytes, or a creation of a protected path (its inverse is a
+ *   delete, which is refused);
+ * - otherwise `available`.
+ */
+export function undoStateOf(
+  row: { version: FileVersionRow; previous: VersionFacts | null; hasNewer: boolean },
+  rules: { isUnderSources(path: string): boolean; isProtected(path: string): boolean },
+): UndoState {
+  const { version, previous } = row;
+  if (row.hasNewer) return 'changed-since';
+  if (version.too_large || rules.isUnderSources(version.path)) return 'not-undoable';
+  const change = changeKindOf(version, previous);
+  if (change === 'created') return rules.isProtected(version.path) ? 'not-undoable' : 'available';
+  // An edit or a delete puts the previous bytes back.
+  if (previous === null || previous.kind !== 'write' || previous.too_large || previous.blob_sha === null) {
+    return 'not-undoable';
+  }
+  return 'available';
 }
 
 export interface HistoryDeps {
@@ -328,6 +389,7 @@ export function createHistory(deps: HistoryDeps) {
         author_agent_id: attribution.agentId ?? null,
         conversation_id: attribution.conversationId ?? null,
         req_id: attribution.reqId ?? null,
+        turn_at: attribution.turnAt ?? null,
       })
       .execute();
     return true;
@@ -548,6 +610,77 @@ export function createHistory(deps: HistoryDeps) {
       .executeTakeFirst();
   }
 
+  /**
+   * W3d-2: one chat's agent-turn versions (label `agent`, `turn_at` set) in
+   * this project, each with the version before it on its path and whether a
+   * newer one exists. The newest CONVERSATION_CHANGES_MAX, oldest first.
+   * Uses the conversation_id index.
+   */
+  async function listConversationChanges(projectId: string, conversationId: string): Promise<ChangeRow[]> {
+    // One statement, not one per row: the neighbours come from LATERAL
+    // lookups on the (project_id, path) index.
+    const out = await sql<
+      FileVersionRow & {
+        prev_kind: 'write' | 'delete' | null;
+        prev_too_large: boolean | null;
+        prev_blob_sha: string | null;
+        has_newer: boolean;
+      }
+    >`
+      SELECT v.*,
+             prev.kind      AS prev_kind,
+             prev.too_large AS prev_too_large,
+             prev.blob_sha  AS prev_blob_sha,
+             EXISTS (
+               SELECT 1 FROM projects_v1_file_versions n
+               WHERE n.project_id = v.project_id AND n.path = v.path AND n.seq > v.seq
+             ) AS has_newer
+      FROM projects_v1_file_versions v
+      LEFT JOIN LATERAL (
+        SELECT p.kind, p.too_large, p.blob_sha
+        FROM projects_v1_file_versions p
+        WHERE p.project_id = v.project_id AND p.path = v.path AND p.seq < v.seq
+        ORDER BY p.seq DESC
+        LIMIT 1
+      ) prev ON TRUE
+      WHERE v.conversation_id = ${conversationId}
+        AND v.project_id = ${projectId}
+        AND v.label = 'agent'
+        AND v.turn_at IS NOT NULL
+      ORDER BY v.seq DESC
+      LIMIT ${CONVERSATION_CHANGES_MAX}
+    `.execute(db);
+    return out.rows.reverse().map(({ prev_kind, prev_too_large, prev_blob_sha, has_newer, ...version }) => ({
+      version,
+      previous: prev_kind === null ? null : { kind: prev_kind, too_large: prev_too_large === true, blob_sha: prev_blob_sha },
+      hasNewer: has_newer,
+    }));
+  }
+
+  /** A version with its neighbours on the same path (see ChangeRow). */
+  async function changeRow(version: FileVersionRow): Promise<ChangeRow> {
+    const [previous, newer] = await Promise.all([
+      db
+        .selectFrom('projects_v1_file_versions')
+        .select(['kind', 'too_large', 'blob_sha'])
+        .where('project_id', '=', version.project_id)
+        .where('path', '=', version.path)
+        .where('seq', '<', version.seq)
+        .orderBy('seq', 'desc')
+        .limit(1)
+        .executeTakeFirst(),
+      db
+        .selectFrom('projects_v1_file_versions')
+        .select('seq')
+        .where('project_id', '=', version.project_id)
+        .where('path', '=', version.path)
+        .where('seq', '>', version.seq)
+        .limit(1)
+        .executeTakeFirst(),
+    ]);
+    return { version, previous: previous ?? null, hasNewer: newer !== undefined };
+  }
+
   /** A version's bytes, or null when there's no blob store or the bytes are gone. */
   async function readBlob(ctx: AgentContext, sha: string): Promise<Uint8Array | null> {
     if (!bus.hasService(BLOB_GET_HOOK)) return null;
@@ -649,6 +782,8 @@ export function createHistory(deps: HistoryDeps) {
     listVersions,
     listGaps,
     getVersion,
+    listConversationChanges,
+    changeRow,
     readBlob,
     purgeProject,
     forgetAgent,

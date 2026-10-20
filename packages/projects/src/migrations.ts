@@ -79,6 +79,14 @@ export async function runProjectsMigration<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS projects_v1_file_versions_conversation_idx
       ON projects_v1_file_versions (conversation_id) WHERE conversation_id IS NOT NULL
   `.execute(db);
+  // W3d-2: when the agent turn a version belongs to ended, as the turn-end
+  // subscriber first saw it (before its background pass). Set only on `agent`
+  // rows; the chat's "Updated project memory" chip matches a version to its
+  // turn by this, since `created_at` is when the pass finished, which can be
+  // after the person's next message. Additive and idempotent.
+  await sql`
+    ALTER TABLE projects_v1_file_versions ADD COLUMN IF NOT EXISTS turn_at TIMESTAMPTZ NULL
+  `.execute(db);
   // projects_v1_file_manifest — what the last pass saw: one row per file, its
   // stat and (when read) its content hash. A pass diffs the next scan by
   // (size, mtime_ms, ino). DOUBLE PRECISION, not BIGINT, so the driver hands
@@ -148,6 +156,8 @@ export interface FileVersionsTable {
   author_agent_id: string | null;
   conversation_id: string | null;
   req_id: string | null;
+  /** W3d-2: when the agent's turn ended (`agent` rows only); null otherwise. */
+  turn_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   created_at: Generated<Date>;
 }
 

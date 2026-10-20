@@ -1494,3 +1494,60 @@ build differs from §7, or adds to it:
     before a save, restore, and undoing a delete. The production smoke test
     comes after deploy.
 
+
+## 22. As built: W3d-2 (2026-10-19)
+
+The "Updated project memory" chip (§7.3). Plan:
+[`2026-10-19-w3d2-memory-chip-impl.md`](2026-10-19-w3d2-memory-chip-impl.md).
+
+1. **Matching changes to the right turn.** A version row gets a nullable
+   `turn_at`, an additive column. The `chat:turn-end` subscriber stamps it
+   when it first sees the turn, before the background pass starts. A pass's
+   own time (`created_at`) can fall after the person's next message, so
+   matching by it would put the chip under the wrong answer. channel-web
+   matches `turn_at` to an exchange the way the memory-used chip does: the
+   exchange that opened at or before it, attached to that exchange's last
+   answer. That rule is now shared, in `server/exchanges.ts`. No reqId has to
+   reach the browser.
+2. **Late passes.** A pass usually finishes after the `done` re-read. In a
+   project chat the page loads the thread again about 3 s and 10 s later. A
+   new send, a new turn, another chat or leaving the page cancels these
+   reloads. A pass that finishes later still shows the next time the chat is
+   opened.
+3. **`projects:conversation-changes {projectId, conversationId}`** returns
+   `{canEdit, changes[]}`. It includes only agent-turn versions from that
+   chat, at most 500, oldest first. Each change has:
+   - `change`: `created`, `edited` or `deleted`, worked out from the path's
+     previous version;
+   - `undo`: `available`, `changed-since` (something newer is recorded) or
+     `not-undoable`. That covers a too-large version, `sources/`, a previous
+     version with no bytes, and re-creating a protected file.
+
+   Anyone who can use the project may call it, the same as History. Viewers
+   get `canEdit: false`. channel-web shows only paths under `memory/`.
+4. **`projects:undo-change {projectId, versionId}`** has the same gate as
+   restore. It refuses `changed-since` if a newer version exists. Otherwise it
+   applies the reverse change with a guard on what's there now:
+   - **an edit:** write the previous bytes, only if the file still matches
+     this version (`ifMatch`);
+   - **a delete:** write the previous bytes, only if nothing has re-created
+     the file (`ifAbsent`);
+   - **a new file:** check that the current bytes still match this version,
+     then delete it.
+
+   A failed guard is `changed-since`. The change is recorded as `restore`, so
+   History says "Restored by ‹person›".
+
+   The route is `POST …/versions/:versionId/undo`. Both refusals answer 409
+   with their name, and a missing version answers 404.
+5. **UI.** `ProjectMemoryChip` is a closed `Collapsible` under the answer,
+   next to the memory-used chip. Each file shows "added", "edited" or
+   "removed", with an inline Undo when you can edit and the change is still
+   the newest. After Undo the row says "Undone". A file changed since then
+   says "Changed since". There are no dialogs and no modal menus (#997, #998).
+   An "Open project" link goes to the project page.
+6. **Known limit:** undoing a new file checks its bytes and then deletes them,
+   and deletes have no content guard in the walk. A change that lands between
+   the check and the delete is lost from disk. A person's save in that window
+   records its own version, so History can bring it back. An agent's write in
+   that window is not recorded. The window is one host round trip.

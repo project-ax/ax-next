@@ -543,6 +543,8 @@ describe('@ax/projects manifest', () => {
       'projects:file-history',
       'projects:read-version',
       'projects:restore-version',
+      'projects:conversation-changes',
+      'projects:undo-change',
       'system-prompt:augment:optional:projects',
     ]);
     expect(m.calls).toEqual([
@@ -2686,5 +2688,298 @@ describe('file history: cleanup (W3d)', () => {
     expect((await q<{ reason: string }>('SELECT reason FROM projects_v1_history_gaps')).map((g) => g.reason)).toEqual([
       'new',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3d-2: a chat's changes (the "Updated project memory" chip) and undoing one.
+// ---------------------------------------------------------------------------
+
+interface ConvChanges {
+  canEdit: boolean;
+  changes: { versionId: string; path: string; change: string; turnAt: string; undo: string }[];
+}
+
+describe('a chat’s changes and undo (W3d-2)', () => {
+  async function setup() {
+    const w = await makeWorld({ history: true, writer: true });
+    const { projectId, folderId } = await createProject(w, 'alice', 'a-alice-1');
+    // Fill the manifest (the seeded files are already recorded, so nothing new).
+    await w.call('alice', 'projects:snapshot', { projectId });
+    const who = (conversationId = 'c1') => ({
+      userId: 'alice',
+      agentId: 'a-alice-1',
+      projectId,
+      conversationId,
+      sessionId: `sess-${conversationId}`,
+    });
+    let n = 0;
+    /** One agent turn in a chat: change the folder, then end the turn. */
+    const turn = async (change: () => void, conversationId = 'c1') => {
+      change();
+      await turnEnd(w, who(conversationId), { reqId: `r${++n}` });
+    };
+    const list = (conversationId = 'c1', userId = 'alice') =>
+      w.call<ConvChanges>(userId, 'projects:conversation-changes', { projectId, conversationId });
+    const text = (path: string) => fileText(folderId, path);
+    return { w, projectId, folderId, turn, list, text };
+  }
+
+  it('stamps turn_at on agent-turn versions only, at the turn end', async () => {
+    const { w, projectId, folderId, turn } = await setup();
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/p.md', content: enc('person') });
+    const before = Date.now();
+    await turn(() => putFile(folderId, 'work/a.md', 'agent'));
+    const after = Date.now();
+    putFile(folderId, 'work/o.md', 'outside');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    const rows = await q<{ path: string; label: string; turn_at: Date | null; created_at: Date }>(
+      'SELECT path, label, turn_at, created_at FROM projects_v1_file_versions WHERE project_id = $1 ORDER BY seq',
+      [projectId],
+    );
+    const agent = rows.filter((r) => r.label === 'agent');
+    expect(agent.map((r) => r.path)).toEqual(['work/a.md']);
+    const at = agent[0]!.turn_at!.getTime();
+    expect(at).toBeGreaterThanOrEqual(before - 1);
+    expect(at).toBeLessThanOrEqual(after + 1);
+    // Taken when the turn end was seen, before the pass recorded the row.
+    expect(at).toBeLessThanOrEqual(agent[0]!.created_at.getTime() + 1);
+    const others = rows.filter((r) => r.label !== 'agent');
+    expect(new Set(others.map((r) => r.label))).toEqual(new Set(['seed', 'edit', 'outside']));
+    expect(others.every((r) => r.turn_at === null)).toBe(true);
+  });
+
+  it('classifies created / edited / deleted / created-after-delete, oldest first, for that chat only', async () => {
+    const { folderId, turn, list } = await setup();
+    await turn(() => {
+      putFile(folderId, 'memory/a.md', 'a1');
+      putFile(folderId, 'memory/status.md', '# Status\n\nBusy.\n');
+    });
+    await turn(() => FILES.get(folderId)!.delete('memory/a.md'));
+    await turn(() => putFile(folderId, 'memory/a.md', 'a2'));
+    await turn(() => putFile(folderId, 'memory/other.md', 'elsewhere'), 'c2');
+
+    const out = await list();
+    expect(out.canEdit).toBe(true);
+    expect(out.changes.map((c) => [c.path, c.change, c.undo])).toEqual([
+      ['memory/a.md', 'created', 'changed-since'],
+      ['memory/status.md', 'edited', 'available'],
+      ['memory/a.md', 'deleted', 'changed-since'],
+      ['memory/a.md', 'created', 'available'],
+    ]);
+    expect(out.changes.every((c) => !Number.isNaN(Date.parse(c.turnAt)))).toBe(true);
+    expect((await list('c2')).changes.map((c) => [c.path, c.change])).toEqual([['memory/other.md', 'created']]);
+    expect((await list('c-none')).changes).toEqual([]);
+  });
+
+  it('says not-undoable for a too-large previous version, a too-large creation, sources/, and re-creating a protected file', async () => {
+    const { w, projectId, folderId, turn, list } = await setup();
+    putFile(folderId, 'work/big.bin', new Uint8Array(2 * 1024 * 1024));
+    FILES.get(folderId)!.delete('memory/status.md');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    await turn(() => {
+      putFile(folderId, 'work/big.bin', 'tiny now');
+      putFile(folderId, 'work/huge.bin', new Uint8Array(2 * 1024 * 1024));
+      putFile(folderId, 'sources/copy.md', 'synced');
+      putFile(folderId, 'memory/status.md', '# Status\n\nBack.\n');
+    });
+    const out = await list();
+    expect(out.changes.map((c) => [c.path, c.change, c.undo])).toEqual([
+      ['memory/status.md', 'created', 'not-undoable'],
+      ['sources/copy.md', 'created', 'not-undoable'],
+      ['work/big.bin', 'edited', 'not-undoable'],
+      ['work/huge.bin', 'created', 'not-undoable'],
+    ]);
+    const changesBefore = CHANGES.length;
+    for (const c of out.changes) {
+      await expect(
+        w.call('alice', 'projects:undo-change', { projectId, versionId: c.versionId }),
+      ).rejects.toMatchObject({ code: 'not-undoable', reasonCode: 'not-undoable', hookName: 'projects:undo-change' });
+    }
+    expect(CHANGES.length).toBe(changesBefore);
+    expect(fileText(folderId, 'memory/status.md')).toBe('# Status\n\nBack.\n');
+  });
+
+  it('a viewer sees the changes with canEdit false and cannot undo; a non-member gets not-found', async () => {
+    const { w, projectId, folderId, turn } = await setup();
+    await turn(() => putFile(folderId, 'memory/a.md', 'a1'));
+    await expectRefused(
+      w,
+      'bob',
+      'projects:conversation-changes',
+      { projectId, conversationId: 'c1' },
+      'not-found',
+      'cannot-use-project',
+    );
+
+    const team = await createProject(w, 'tadmin', 'a-team-admins', 'Team');
+    await grant(w, 'tadmin', team.folderId, 'a-team-1', 'viewer');
+    await w.call('tadmin', 'projects:snapshot', { projectId: team.projectId });
+    putFile(team.folderId, 'memory/t.md', 'team note');
+    await turnEnd(
+      w,
+      { userId: 'tadmin', agentId: 'a-team-admins', projectId: team.projectId, conversationId: 'tc', sessionId: 'st' },
+      { reqId: 'tr1' },
+    );
+    const asViewer = await w.call<ConvChanges>('tmember', 'projects:conversation-changes', {
+      projectId: team.projectId,
+      conversationId: 'tc',
+    });
+    expect(asViewer.canEdit).toBe(false);
+    expect(asViewer.changes.map((c) => [c.path, c.change, c.undo])).toEqual([['memory/t.md', 'created', 'available']]);
+    const asAdmin = await w.call<ConvChanges>('tadmin', 'projects:conversation-changes', {
+      projectId: team.projectId,
+      conversationId: 'tc',
+    });
+    expect(asAdmin.canEdit).toBe(true);
+    await expectRefused(
+      w,
+      'tmember',
+      'projects:undo-change',
+      { projectId: team.projectId, versionId: asViewer.changes[0]!.versionId },
+      'forbidden',
+      'viewer-only',
+    );
+    expect(fileText(team.folderId, 'memory/t.md')).toBe('team note');
+    await expect(
+      w.call('alice', 'projects:conversation-changes', { projectId, conversationId: 'c1', extra: 1 }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('undoes an edit (ifMatch), a delete (ifAbsent) and a creation (content-checked), each recorded as restore', async () => {
+    const { w, projectId, folderId, turn, list, text } = await setup();
+    putFile(folderId, 'work/d.md', 'keep me');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    const seededStatus = text('memory/status.md');
+    await turn(() => {
+      putFile(folderId, 'memory/status.md', '# Status\n\nAgent wrote this.\n');
+      FILES.get(folderId)!.delete('work/d.md');
+      putFile(folderId, 'work/c.md', 'new file');
+    });
+    const out = await list();
+    const byPath = Object.fromEntries(out.changes.map((c) => [c.path, c]));
+    expect(out.changes.map((c) => [c.path, c.change, c.undo])).toEqual([
+      ['memory/status.md', 'edited', 'available'],
+      ['work/c.md', 'created', 'available'],
+      ['work/d.md', 'deleted', 'available'],
+    ]);
+    const undo = (path: string) =>
+      w.call('alice', 'projects:undo-change', { projectId, versionId: byPath[path]!.versionId });
+
+    // edited → the previous bytes, guarded by this version's hash.
+    const augmentBefore = w.augmentChanged.length;
+    await expect(undo('memory/status.md')).resolves.toEqual({});
+    expect(text('memory/status.md')).toBe(seededStatus);
+    expect(CHANGES.at(-1)!.changes).toMatchObject([
+      { op: 'write', path: 'memory/status.md', ifMatch: sha256('# Status\n\nAgent wrote this.\n') },
+    ]);
+    // A protected file: every member's prompt quotes it.
+    expect(w.augmentChanged.slice(augmentBefore)).toEqual([{ agentId: 'a-alice-1' }]);
+
+    // deleted → the previous bytes, only where nothing is.
+    await expect(undo('work/d.md')).resolves.toEqual({});
+    expect(text('work/d.md')).toBe('keep me');
+    expect(CHANGES.at(-1)!.changes).toMatchObject([{ op: 'write', path: 'work/d.md', ifAbsent: true }]);
+
+    // created → deleted.
+    await expect(undo('work/c.md')).resolves.toEqual({});
+    expect(text('work/c.md')).toBeUndefined();
+    expect(CHANGES.at(-1)!.changes).toEqual([{ op: 'delete', path: 'work/c.md' }]);
+
+    for (const [path, kind] of [
+      ['memory/status.md', 'write'],
+      ['work/d.md', 'write'],
+      ['work/c.md', 'delete'],
+    ] as const) {
+      expect((await versionRows(projectId, path)).at(-1)).toMatchObject({
+        label: 'restore',
+        kind,
+        author_user_id: 'alice',
+        conversation_id: null,
+      });
+    }
+    // The undo is the newest version now, so a second undo is changed-since.
+    expect((await list()).changes.map((c) => c.undo)).toEqual(['changed-since', 'changed-since', 'changed-since']);
+    await expect(undo('work/c.md')).rejects.toMatchObject({ code: 'changed-since', reasonCode: 'changed-since' });
+  });
+
+  it('refuses changed-since when the path has a newer version, even if the file is back to what the change left', async () => {
+    const { w, projectId, folderId, turn, list, text } = await setup();
+    putFile(folderId, 'work/e.md', 'v1');
+    putFile(folderId, 'work/n.md', 'n1');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    await turn(() => {
+      putFile(folderId, 'work/e.md', 'v2');
+      putFile(folderId, 'work/f.md', 'made');
+    });
+    const out = await list();
+    // A person changes each file and then puts back exactly what the agent left.
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/e.md', content: enc('v3') });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/e.md', content: enc('v2') });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/f.md', content: enc('other') });
+    await w.call('alice', 'projects:write-file', { projectId, path: 'work/f.md', content: enc('made') });
+    expect((await list()).changes.map((c) => [c.path, c.undo])).toEqual([
+      ['work/e.md', 'changed-since'],
+      ['work/f.md', 'changed-since'],
+    ]);
+    const changesBefore = CHANGES.length;
+    for (const c of out.changes) {
+      await expect(
+        w.call('alice', 'projects:undo-change', { projectId, versionId: c.versionId }),
+      ).rejects.toMatchObject({ code: 'changed-since', reasonCode: 'changed-since' });
+    }
+    expect(CHANGES.length).toBe(changesBefore);
+    expect(text('work/e.md')).toBe('v2');
+    expect(text('work/f.md')).toBe('made');
+  });
+
+  it('refuses changed-since when the file changed on disk after the turn and no pass recorded it', async () => {
+    const { w, projectId, folderId, turn, list, text } = await setup();
+    putFile(folderId, 'work/e.md', 'v1');
+    putFile(folderId, 'work/d.md', 'gone soon');
+    await w.call('alice', 'projects:snapshot', { projectId });
+    await turn(() => {
+      putFile(folderId, 'work/e.md', 'v2');
+      FILES.get(folderId)!.delete('work/d.md');
+      putFile(folderId, 'work/c1.md', 'made');
+      putFile(folderId, 'work/c2.md', 'made too');
+    });
+    const out = await list();
+    expect(out.changes.every((c) => c.undo === 'available')).toBe(true);
+    const id = (path: string) => out.changes.find((c) => c.path === path)!.versionId;
+    // Out of band, with no pass since.
+    putFile(folderId, 'work/e.md', 'by hand');
+    putFile(folderId, 'work/d.md', 'someone put it back');
+    putFile(folderId, 'work/c1.md', 'edited by hand');
+    FILES.get(folderId)!.delete('work/c2.md');
+
+    for (const path of ['work/e.md', 'work/d.md', 'work/c1.md', 'work/c2.md']) {
+      await expect(
+        w.call('alice', 'projects:undo-change', { projectId, versionId: id(path) }),
+      ).rejects.toMatchObject({ code: 'changed-since', reasonCode: 'changed-since' });
+    }
+    expect(text('work/e.md')).toBe('by hand');
+    expect(text('work/d.md')).toBe('someone put it back');
+    expect(text('work/c1.md')).toBe('edited by hand');
+    expect(text('work/c2.md')).toBeUndefined();
+    // Nothing was recorded as restored.
+    expect((await versionRows(projectId)).some((r) => r.label === 'restore')).toBe(false);
+  });
+
+  it('an unknown version, or one of another project, is not-found', async () => {
+    const { w, projectId, folderId, turn, list } = await setup();
+    await turn(() => putFile(folderId, 'memory/a.md', 'a1'));
+    const v = (await list()).changes[0]!.versionId;
+    const other = await createProject(w, 'alice', 'a-alice-2', 'Other');
+    await expect(
+      w.call('alice', 'projects:undo-change', { projectId: other.projectId, versionId: v }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await expect(w.call('alice', 'projects:undo-change', { projectId, versionId: 'pv_nope' })).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(
+      w.call<ConvChanges>('alice', 'projects:conversation-changes', { projectId: other.projectId, conversationId: 'c1' }),
+    ).resolves.toEqual({ canEdit: true, changes: [] });
+    await expectRefused(w, 'bob', 'projects:undo-change', { projectId, versionId: v }, 'not-found', 'cannot-use-project');
   });
 });

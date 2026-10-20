@@ -35,13 +35,26 @@ clear home.
   the layout. On k8s, writes go through a new mTLS route on the storage helper
   (W3 spec §20). A production smoke test passed: seed, edit, new file, an
   agent edit, a conflict, then delete and reap.
-- **2026-10-18: W3d-1 (file history, restore and undo) is built** on
-  `feat/w3d-history-undo` (W3 spec §21). W3d-2, the "Updated project memory"
-  chip, comes next.
+- **2026-10-19:** W3d-1 (file history, restore and undo; #996) merged and
+  deployed (Helm rev 47; W3 spec §21). The production smoke test found four
+  bugs, each fixed and deployed:
+  - #997 (rev 48): Restore's confirm was a second dialog stacked on the History
+    sheet. It froze the page. Now it's an inline confirm.
+  - #998 (rev 49): seven modal menus left the page unclickable once a dialog
+    removed their trigger. They're non-modal now, and Delete shows a
+    "Deleted ‹name›." notice with Undo and See history.
+  - #999 (rev 50): after a restore, the host's NFS negative-lookup cache
+    hid the file for 30–90 s. The host's read mount is now a static PV with
+    `lookupcache=positive`. History also shows a "Deleted" divider when a
+    file is re-created at a deleted path.
+
+  After the fixes, the smoke test passed. Follow-up cards are filed:
+  TASK-900 (storage-helper RO mount), TASK-901 (flaky tests) and TASK-902
+  (chart tsc errors).
 - **Next, in order:**
-  1. Review and merge W3d-1, then deploy. It has migrations: an additive
-     session-postgres column and new projects tables. Then a production smoke
-     test. Then W3d-2, then W3f.
+  1. W3d-2: the "Updated project memory" chip under a chat turn (W3 spec
+     §7.3). Building now on `AXWM-W3d2`. Then W3f: narrowing, and routines
+     in a project (§9).
   2. Turn the goals design into a final spec, lined up with W1 and W13.
   3. Write the W13 (agent tasks) spec.
   4. W4 (sharing across owners) waits on TASK-897's six decisions; W3 §17
@@ -63,7 +76,7 @@ One row per work item. Statuses go: no spec → spec draft → spec approved →
 |---|---|---|---|---|---|---|
 | W1 | Prompt contributions from several plugins | Foundation | nothing | [W1 spec](2026-10-12-w1-prompt-contributions-design.md) | shipped (#988) | — |
 | W2 | Shared folders | Foundation | nothing (merges with W3's first slice) | [W2 spec](2026-10-12-w2-shared-folders-design.md) | merged with W3a (#989); GKE pool acceptance passed 2026-10-16 | — |
-| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a, W3b, W3c, W3e merged and in prod (rev 46); W3d-1 built on `feat/w3d-history-undo`; W3d-2, W3f not started | — |
+| W3 | Projects | Projects | W1, W2 | [W3 spec](2026-10-12-w3-projects-design.md) | W3a, W3b, W3c, W3e, W3d-1 merged and in prod (rev 50); W3d-2 in progress; W3f not started | — |
 | W4 | Sharing across owners | Projects | W3 | — | no spec | — |
 | W5 | Connector sources, plus the host-side connector call | Projects | W3 | — | no spec | — |
 | W13 | Agent tasks | Goals and delegation | W1 (the project view also needs W3) | — | no spec | — |

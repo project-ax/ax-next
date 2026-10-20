@@ -724,6 +724,8 @@ describe('@ax/preset-k8s wiring', () => {
       'projects:file-history',
       'projects:read-version',
       'projects:restore-version',
+      'projects:conversation-changes',
+      'projects:undo-change',
       'system-prompt:augment:optional:projects',
     ]);
     // A tombstoned folder takes its project row with it (W3 §4.7).

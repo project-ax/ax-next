@@ -21,6 +21,8 @@ import {
   type ProjectFileVersionLabel,
   type ProjectFileVersionPreview,
   type RestoreProjectFileVersionResponse,
+  type UndoProjectChangeRefusal,
+  type UndoProjectChangeResponse,
   type ProjectConversationsResponse,
   type ProjectDetail,
   type ProjectMember,
@@ -66,6 +68,7 @@ import { workspaceFilePath } from './safe-path.js';
 //   GET    /api/workspace/projects/:projectId/history/*     projects:file-history (W3d)
 //   GET    /api/workspace/projects/:projectId/versions/:versionId          projects:read-version (W3d)
 //   POST   /api/workspace/projects/:projectId/versions/:versionId/restore  projects:restore-version (W3d)
+//   POST   /api/workspace/projects/:projectId/versions/:versionId/undo     projects:undo-change (W3d-2)
 //
 // THE ACTOR. Every `projects:*` hook (and `agents:can-manage-sharing`) takes
 // its actor from `ctx.userId`, never from the payload. So each call here runs
@@ -165,6 +168,9 @@ import { workspaceFilePath } from './safe-path.js';
 //   - restore: what a save needs. `not-restorable` (a delete, a too-large
 //     version, bytes gone) → 409; every other refusal maps as a save's, with
 //     `version-not-found` for the 404.
+//   - undo (W3d-2): reverse the change that version recorded. `changed-since`
+//     (something newer for that path, or the content moved under it) and
+//     `not-undoable` → 409 with that word; the rest map as restore's.
 // ---------------------------------------------------------------------------
 
 const ACTOR_AGENT_ID = '@ax/channel-web';
@@ -1157,6 +1163,38 @@ export function makeProjectsHandlers(deps: ProjectsHandlerDeps) {
       }
       res.status(200).json({ sha256: out.sha256 } satisfies RestoreProjectFileVersionResponse);
     },
+
+    /**
+     * POST /api/workspace/projects/:projectId/versions/:versionId/undo —
+     * reverse the change that version recorded (W3d-2, the memory chip's Undo).
+     */
+    async undoProjectChange(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const projectId = projectIdParam(req, res);
+      if (projectId === null) return;
+      if (!projectsLoaded(res, bus.hasService('projects:undo-change'))) return;
+      const versionId = versionIdParam(req.params.versionId);
+      if (versionId === null) {
+        res.status(404).json({ error: 'version-not-found' });
+        return;
+      }
+      try {
+        await bus.call<{ projectId: string; versionId: string }, unknown>(
+          'projects:undo-change',
+          actorCtx(userId),
+          { projectId, versionId },
+        );
+      } catch (err) {
+        if (err instanceof PluginError && (err.code === 'changed-since' || err.code === 'not-undoable')) {
+          res.status(409).json({ error: err.code as UndoProjectChangeRefusal['error'] } satisfies UndoProjectChangeRefusal);
+          return;
+        }
+        if (changeRefused(res, err, 'version-not-found')) return;
+        throw err;
+      }
+      res.status(200).json({} satisfies UndoProjectChangeResponse);
+    },
   };
 }
 
@@ -1216,6 +1254,12 @@ export async function registerProjectsRoutes(bus: HookBus, initCtx: AgentContext
       method: 'POST',
       path: '/api/workspace/projects/:projectId/versions/:versionId/restore',
       handler: h.restoreProjectFileVersion,
+    },
+    // W3d-2 — undo one recorded change. CSRF-gated like every write.
+    {
+      method: 'POST',
+      path: '/api/workspace/projects/:projectId/versions/:versionId/undo',
+      handler: h.undoProjectChange,
     },
   ];
   const unregisters: Array<() => void> = [];

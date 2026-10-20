@@ -36,7 +36,18 @@ import {
   SOURCES_DIR,
   type LayoutChange,
 } from './layout.js';
-import { createHistory, isProjectGone, type Attribution, type FileState, type History, type PassResult } from './history.js';
+import {
+  changeKindOf,
+  createHistory,
+  isProjectGone,
+  undoStateOf,
+  type Attribution,
+  type ChangeRow,
+  type FileState,
+  type History,
+  type PassResult,
+  type UndoState,
+} from './history.js';
 import {
   runProjectsMigration,
   type FileVersionRow,
@@ -44,6 +55,8 @@ import {
   type ProjectsDatabase,
 } from './migrations.js';
 import {
+  ConversationChangesInputSchema,
+  ConversationChangesOutputSchema,
   CreateFolderInputSchema,
   CreateFolderOutputSchema,
   CreateInputSchema,
@@ -76,6 +89,8 @@ import {
   SetMemberOutputSchema,
   SnapshotInputSchema,
   SnapshotOutputSchema,
+  UndoChangeInputSchema,
+  UndoChangeOutputSchema,
   UpdateInputSchema,
   UpdateOutputSchema,
   WRITE_FILE_MAX_BYTES,
@@ -83,6 +98,7 @@ import {
   WriteFileOutputSchema,
   type ProjectMember,
   type ProjectsChangeRefusal,
+  type ProjectsConversationChangesOutput,
   type ProjectsCreateFolderOutput,
   type ProjectsDeleteFileOutput,
   type ProjectsCreateOutput,
@@ -99,6 +115,8 @@ import {
   type ProjectsRestoreVersionOutput,
   type ProjectsSetMemberOutput,
   type ProjectsSnapshotOutput,
+  type ProjectsUndoChangeOutput,
+  type ProjectsUndoRefusal,
   type ProjectsUpdateOutput,
   type ProjectsWriteFileOutput,
 } from './types.js';
@@ -514,11 +532,17 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
     projectId: string,
   ): Promise<{ row: ProjectRow; members: SharedFolderMember[] }> {
     const loaded = await loadUsable(ctx, hookName, projectId);
-    for (const m of loaded.members) {
-      if (m.role === 'viewer') continue;
-      if (await canUseAgent(ctx, actor, m.agentId)) return loaded;
-    }
+    if (await canEditWith(ctx, actor, loaded.members)) return loaded;
     refuse(ctx, hookName, 'forbidden', 'viewer-only', { projectId });
+  }
+
+  /** `loadEditable`'s rule, as a yes/no: the actor can use an editor or owner member. */
+  async function canEditWith(ctx: AgentContext, actor: string, members: SharedFolderMember[]): Promise<boolean> {
+    for (const m of members) {
+      if (m.role === 'viewer') continue;
+      if (await canUseAgent(ctx, actor, m.agentId)) return true;
+    }
+    return false;
   }
 
   /**
@@ -972,7 +996,13 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
    * folder); checked as the session's person, like the prompt block. Never
    * throws: a failure is logged and leaves a gap.
    */
-  async function turnEndPass(ctx: AgentContext, projectId: string, reqId: string | undefined, key: string): Promise<void> {
+  async function turnEndPass(
+    ctx: AgentContext,
+    projectId: string,
+    reqId: string | undefined,
+    key: string,
+    turnAt: Date,
+  ): Promise<void> {
     try {
       const res = await resolveProject(ctx, projectId, ctx.agentId);
       if (!res.ok || res.value.readOnly) {
@@ -996,6 +1026,7 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         agentId: ctx.agentId,
         conversationId: ctx.conversationId ?? null,
         reqId: reqId ?? null,
+        turnAt,
       };
       const out = await history!.recordPass(ctx, row, { label: 'agent', owner, attribution });
       // Another pass held the project's lease, or the process was at its pass
@@ -1051,6 +1082,31 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
     });
   }
 
+  const UNDO_REFUSAL_MESSAGES: Record<ProjectsUndoRefusal, string> = {
+    'changed-since': 'this file has changed since, so this change can no longer be undone here',
+    'not-undoable': "this change can't be undone (the file was too big to keep, or it can't be removed)",
+  };
+
+  /** W3d-2: an undo that can't be done. `code` and `reasonCode` are the same refusal. */
+  function undoRefusal(hookName: string, code: ProjectsUndoRefusal): PluginError {
+    return new PluginError({
+      code,
+      reasonCode: code,
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${hookName}: ${UNDO_REFUSAL_MESSAGES[code]}`,
+    });
+  }
+
+  const UNDO_RULES = {
+    isUnderSources,
+    isProtected: (path: string) => PROTECTED_PATHS.has(path),
+  };
+
+  function undoState(row: ChangeRow): UndoState {
+    return undoStateOf(row, UNDO_RULES);
+  }
+
   async function runRetentionNow(): Promise<
     { kind: 'done'; versions: number; gaps: number } | { kind: 'locked' } | { kind: 'not-started' }
   > {
@@ -1097,6 +1153,9 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         'projects:file-history',
         'projects:read-version',
         'projects:restore-version',
+        // W3d-2: the chat's "Updated project memory" chip.
+        'projects:conversation-changes',
+        'projects:undo-change',
         PROJECTS_BLOCK_HOOK,
       ],
       // NEVER conversations:*, and no declared sandbox:* edge. conversations
@@ -1775,6 +1834,89 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
         { returns: RestoreVersionOutputSchema },
       );
 
+      // ---- W3d-2: a chat's changes, and undoing one --------------------------
+      // `conversation-changes`: the same gate as file-history (viewers
+      // included; a denied caller gets not-found). `canEdit` is write-file's
+      // rule, answered rather than refused, so a viewer still sees the list.
+      b.registerService<unknown, ProjectsConversationChangesOutput>(
+        'projects:conversation-changes',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:conversation-changes';
+          const input = parseInput(ConversationChangesInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const { row, members } = await loadUsable(ctx, hook, input.projectId);
+          const [canEdit, rows] = await Promise.all([
+            canEditWith(ctx, actor, members),
+            history!.listConversationChanges(row.project_id, input.conversationId),
+          ]);
+          return {
+            canEdit,
+            changes: rows.map((r) => ({
+              versionId: r.version.version_id,
+              path: r.version.path,
+              change: changeKindOf(r.version, r.previous),
+              // The query only returns rows with turn_at set.
+              turnAt: (r.version.turn_at ?? r.version.created_at).toISOString(),
+              undo: undoState(r),
+            })),
+          };
+        },
+        { returns: ConversationChangesOutputSchema },
+      );
+
+      // `undo-change`: the same gate as restore-version. It refuses when the
+      // path has anything newer, then applies the inverse with a content
+      // guard, so a file that changed after the change is never clobbered:
+      // an edit writes the previous bytes `ifMatch` this version's hash; a
+      // delete writes them back `ifAbsent`; a creation is deleted only while
+      // the file still hashes to this version. Recorded as "Restored by".
+      b.registerService<unknown, ProjectsUndoChangeOutput>(
+        'projects:undo-change',
+        PLUGIN_NAME,
+        async (ctx, rawInput) => {
+          const hook = 'projects:undo-change';
+          const input = parseInput(UndoChangeInputSchema, hook, rawInput);
+          const actor = requireActor(ctx, hook);
+          const { row, members } = await loadEditable(ctx, hook, actor, input.projectId);
+          const v = await history!.getVersion(row.project_id, input.versionId);
+          if (v === undefined) throw versionNotFound(hook);
+          const facts = await history!.changeRow(v);
+          if (facts.hasNewer) throw undoRefusal(hook, 'changed-since');
+          if (undoState(facts) !== 'available') throw undoRefusal(hook, 'not-undoable');
+          const path = changePath(hook, v.path);
+          const recordAs: RecordAs = { label: 'restore', actor, members };
+          const change = changeKindOf(v, facts.previous);
+          if (change === 'created') {
+            // The file must still be exactly what this version recorded.
+            const current = await readFolder(ctx, row.folder_id, path, HISTORY_MAX_FILE_BYTES, 1);
+            if (current.kind === 'unavailable') throw changeRefusal(hook, 'files-unavailable');
+            if (current.kind !== 'file' || current.truncated || sha256Hex(current.contents) !== v.blob_sha) {
+              throw undoRefusal(hook, 'changed-since');
+            }
+            const outcome = await applyChange(ctx, hook, row, { op: 'delete', path }, recordAs);
+            if (outcome !== 'deleted') throw undoRefusal(hook, 'changed-since');
+          } else {
+            // undoState vouched for the previous version's bytes.
+            const bytes = await history!.readBlob(ctx, facts.previous!.blob_sha!);
+            if (bytes === null) throw undoRefusal(hook, 'not-undoable');
+            const write: LayoutChange =
+              change === 'edited'
+                ? { op: 'write', path, content: bytes, ifMatch: v.blob_sha! }
+                : { op: 'write', path, content: bytes, ifAbsent: true };
+            const outcome = await applyChange(ctx, hook, row, write, recordAs);
+            if (outcome === 'conflict' || outcome === 'exists') throw undoRefusal(hook, 'changed-since');
+          }
+          if (PROTECTED_PATHS.has(path)) {
+            for (const agentId of new Set(members.map((m) => m.agentId))) {
+              await b.fire(AUGMENT_CHANGED_HOOK, ctx, { agentId });
+            }
+          }
+          return {};
+        },
+        { returns: UndoChangeOutputSchema },
+      );
+
       // ---- the project block ---------------------------------------------
       // Optional provider, never `rules`. `brief` is the project's name and
       // description — written by people through the projects routes, never by
@@ -1859,7 +2001,10 @@ export function createProjectsPlugin(opts: ProjectsPluginOptions = {}): Projects
           if (turnKey === undefined) return undefined;
           const key = `${ctx.sessionId}\u0000${turnKey}`;
           if (!firstSighting(key)) return undefined;
-          track(turnEndPass(ctx, projectId, reqId, key));
+          // W3d-2: the turn's time is when we first see it end, not when the
+          // pass finishes (which can be after the person's next message).
+          const turnAt = new Date();
+          track(turnEndPass(ctx, projectId, reqId, key, turnAt));
         } catch (err) {
           ctx.logger.error('projects_history_turn_failed', { err: errOf(err) });
         }

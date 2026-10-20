@@ -5,17 +5,8 @@
  * selected with `memory_use`, not the broader search candidates. This module
  * associates those snapshots with answers in the transcript.
  *
- * ATTRIBUTION IS BY TIME. A receipt taken at `t` belongs to the exchange opened
- * by the last person turn at or before `t` (an exchange runs up to the next
- * person turn), and the chip goes on the LAST `agent` | `steps` message of that
- * exchange — the answer the person actually reads. A receipt with no answer in
- * its exchange yet (the turn is still live) attaches to nothing; the thread
- * re-read at turn end picks it up.
- *
- * "Person turn" is decided by the thread, not re-derived here: `buildThread`
- * already decided which user-role turns carry the person's content (text or a
- * file) and emitted a `user` message for exactly those, with `id = turnId`. A
- * second copy of that rule here would be two definitions of one boundary.
+ * ATTRIBUTION IS BY TIME — see `exchanges.ts`: a receipt taken at `t` goes
+ * on the answer of the exchange open at `t`.
  *
  * THE PAYLOAD IS ANOTHER PLUGIN'S (invariant 2 — no import from @ax/memory;
  * the types below are local and structural). Every statement field is checked
@@ -27,16 +18,13 @@ import type {
   MemoryUsedStatement,
   ThreadMessage,
 } from '../lib/workspace-types.js';
+import { answerFor, buildExchanges, type ExchangeTurn } from './exchanges.js';
 
 /** The most statements one answer's chip carries. */
 export const MEMORY_USED_MAX_STATEMENTS = 100;
 
 /** The slice of a stored turn attribution needs. */
-export interface MemoryUsedTurn {
-  turnId: string;
-  role: string;
-  createdAt: string;
-}
+export type MemoryUsedTurn = ExchangeTurn;
 
 /** One receipt as it arrives off the hook — statements still untrusted. */
 export interface RecallReceiptLike {
@@ -116,46 +104,19 @@ export function attachMemoryUsed(
 ): ThreadMessage[] {
   if (receipts.length === 0) return [...thread];
 
-  const personIds = new Set<string>();
-  const answerIds = new Set<string>();
-  for (const m of thread) {
-    if (m.kind === 'user') personIds.add(m.id);
-    else if (m.kind === 'agent' || m.kind === 'steps') answerIds.add(m.id);
-  }
-
-  /*
-    Each person turn opens an exchange; the answer is the LAST assistant
-    message whose turn falls before the next person turn. Turns are in
-    conversation order (the event log's), which is the order that decides
-    "last" — not their timestamps, which several turns can share.
-  */
-  const exchanges: Array<{ openedAt: number; answerId: string | null }> = [];
-  for (const t of turns) {
-    if (personIds.has(t.turnId)) {
-      exchanges.push({ openedAt: Date.parse(t.createdAt), answerId: null });
-    } else if (exchanges.length > 0 && answerIds.has(t.turnId)) {
-      exchanges[exchanges.length - 1]!.answerId = t.turnId;
-    }
-  }
+  const exchanges = buildExchanges(thread, turns);
 
   const byAnswer = new Map<string, { seen: Set<string>; statements: MemoryUsedStatement[] }>();
   for (const r of receipts) {
-    const at = Date.parse(r.at);
-    if (Number.isNaN(at)) continue;
-    let target: (typeof exchanges)[number] | undefined;
-    for (const ex of exchanges) {
-      // An exchange whose opening instant is unreadable can never be chosen,
-      // but it still ends the exchange before it.
-      if (!Number.isNaN(ex.openedAt) && ex.openedAt <= at) target = ex;
-    }
-    if (target === undefined || target.answerId === null) continue;
-    let acc = byAnswer.get(target.answerId);
+    const answerId = answerFor(exchanges, r.at);
+    if (answerId === null) continue;
+    let acc = byAnswer.get(answerId);
     for (const raw of r.statements) {
       const s = toStatement(raw);
       if (s === null) continue;
       if (acc === undefined) {
         acc = { seen: new Set(), statements: [] };
-        byAnswer.set(target.answerId, acc);
+        byAnswer.set(answerId, acc);
       }
       if (acc.seen.has(s.id)) continue;
       if (acc.statements.length >= MEMORY_USED_MAX_STATEMENTS) break;

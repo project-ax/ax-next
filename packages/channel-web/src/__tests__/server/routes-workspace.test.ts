@@ -5327,4 +5327,101 @@ describe('channel-web agent-workspace BFF', () => {
       expect(thread.some((m) => 'memoryUsed' in m)).toBe(false);
     });
   });
+
+  describe('projectMemory on the agent detail thread (W3d-2)', () => {
+    function seed(projectId: string | null): void {
+      conversations = [conv({ conversationId: 'c1', agentId: 'a1', projectId })];
+      turnsByConversation.set('c1', [
+        { turnId: 't1', turnIndex: 0, role: 'user', contentBlocks: [{ type: 'text', text: 'remember Ana leads QA' }], createdAt: '2026-10-19T10:00:00.000Z' },
+        { turnId: 't2', turnIndex: 1, role: 'assistant', contentBlocks: [{ type: 'text', text: 'Noted.' }], createdAt: '2026-10-19T10:00:05.000Z' },
+        { turnId: 't3', turnIndex: 2, role: 'user', contentBlocks: [{ type: 'text', text: 'thanks' }], createdAt: '2026-10-19T10:01:00.000Z' },
+        { turnId: 't4', turnIndex: 3, role: 'assistant', contentBlocks: [{ type: 'text', text: 'Any time.' }], createdAt: '2026-10-19T10:01:02.000Z' },
+      ]);
+    }
+
+    async function detail(): Promise<{ statusCode: number; thread: Array<Record<string, unknown>> }> {
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      return {
+        statusCode: captured.statusCode,
+        thread: (captured.body as { thread: Array<Record<string, unknown>> }).thread,
+      };
+    }
+
+    it('reads the chat changes as the person and puts memory/ files on the answer they belong to', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seed('prj_1');
+      const calls: Array<{ agentId: string; userId: string; input: unknown }> = [];
+      bus.registerService('projects:conversation-changes', 'projects', async (ctx, input) => {
+        calls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '', input });
+        return {
+          canEdit: true,
+          changes: [
+            { versionId: 'v1', path: 'memory/team.md', change: 'edited', turnAt: '2026-10-19T10:00:06.000Z', undo: 'available' },
+            { versionId: 'v2', path: 'work/plan.md', change: 'created', turnAt: '2026-10-19T10:00:06.000Z', undo: 'available' },
+          ],
+        };
+      });
+      const { statusCode, thread } = await detail();
+      expect(statusCode).toBe(200);
+      // The person's ctx — the same one projects:list runs on — never the agent's.
+      expect(calls).toEqual([
+        { agentId: '@ax/channel-web', userId: 'u1', input: { projectId: 'prj_1', conversationId: 'c1' } },
+      ]);
+      expect(thread.find((m) => m.id === 't2')?.projectMemory).toEqual({
+        projectId: 'prj_1',
+        canEdit: true,
+        files: [{ versionId: 'v1', path: 'memory/team.md', change: 'edited', undo: 'available' }],
+      });
+      expect(thread.find((m) => m.id === 't4')).not.toHaveProperty('projectMemory');
+    });
+
+    it('does not ask when the chat is in no project', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seed(null);
+      let called = false;
+      bus.registerService('projects:conversation-changes', 'projects', async () => {
+        called = true;
+        return { canEdit: true, changes: [] };
+      });
+      const { statusCode, thread } = await detail();
+      expect(statusCode).toBe(200);
+      expect(called).toBe(false);
+      expect(thread.some((m) => 'projectMemory' in m)).toBe(false);
+    });
+
+    it('leaves the thread unchanged (and 200) when the read throws', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seed('prj_1');
+      bus.registerService('projects:conversation-changes', 'projects', async () => {
+        throw new Error('db down');
+      });
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const { statusCode, thread } = await detail();
+        expect(statusCode).toBe(200);
+        expect(thread.map((m) => m.id)).toEqual(['t1', 't2', 't3', 't4']);
+        expect(thread.some((m) => 'projectMemory' in m)).toBe(false);
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_project_memory_read_failed',
+          expect.objectContaining({ projectId: 'prj_1' }),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('ignores a malformed reply, and carries nothing without the hook', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seed('prj_1');
+      let r = await detail();
+      expect(r.statusCode).toBe(200);
+      expect(r.thread.some((m) => 'projectMemory' in m)).toBe(false);
+      bus.registerService('projects:conversation-changes', 'projects', async () => ({ changes: 'nope' }));
+      r = await detail();
+      expect(r.statusCode).toBe(200);
+      expect(r.thread.some((m) => 'projectMemory' in m)).toBe(false);
+    });
+  });
 });
