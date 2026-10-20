@@ -649,6 +649,17 @@ export function AgentView({
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /*
+    W3d-2 (D2) — the late re-reads after a turn in a project chat. The pass
+    that writes project memory runs after `done`, so the first re-read usually
+    lands before it. Two more reads, at about 3 s and 10 s, pick it up. Any
+    new send, conversation change or unmount clears them.
+  */
+  const lateReloadTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const cancelLateReloads = useCallback(() => {
+    for (const t of lateReloadTimers.current) clearTimeout(t);
+    lateReloadTimers.current = [];
+  }, []);
 
   /*
     TASK-688 — STOP.
@@ -713,7 +724,7 @@ export function AgentView({
   const decisionsRef = useRef(decisions);
   decisionsRef.current = decisions;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<AgentDetail | null> => {
     try {
       const next = await workspaceApi.agent(agentId);
       /*
@@ -738,12 +749,14 @@ export function AgentView({
       );
       conversationRef.current = next.conversationId;
       setLoadError(null);
+      return next;
     } catch (e) {
       setDetail(null);
       // The operator's half goes to the console; the reader's half is chosen
       // from the kind, not carried out of the error as a string.
       logRequestFailure(e, 'workspace-agent');
       setLoadError(toReadOutcome(e));
+      return null;
     }
   }, [agentId]);
 
@@ -905,8 +918,9 @@ export function AgentView({
       abortRef.current?.abort();
       // A pending fallback would abort and re-read into a view nobody has.
       cancelStop();
+      cancelLateReloads();
     };
-  }, [agentId, cancelStop]);
+  }, [agentId, cancelStop, cancelLateReloads]);
 
   const streamFrom = useCallback(
     async (reqId: string) => {
@@ -916,6 +930,7 @@ export function AgentView({
       // A new turn supersedes any Stop still pending on the old one, and the
       // old turn's note.
       cancelStop();
+      cancelLateReloads();
       setStopNotice(null);
       setSaveRefusedNotice(null);
       // The conversation this turn runs in — what a save-refused notice from
@@ -979,7 +994,21 @@ export function AgentView({
           // gap until it lands (TASK-689): `load` settles after BOTH of its
           // outcomes have written state, so `finally` is the honest "landed".
           setRereading(true);
-          void load().finally(() => setRereading(false));
+          void load()
+            .then((next) => {
+              // W3d-2 (D2) — only a project chat gets the late re-reads.
+              if (next === null || (next.project ?? null) === null) return;
+              const conversation = next.conversationId;
+              cancelLateReloads();
+              lateReloadTimers.current = [3_000, 10_000].map((ms) =>
+                setTimeout(() => {
+                  // A turn in flight, or another conversation on screen: skip.
+                  if (abortRef.current !== ac || conversationRef.current !== conversation) return;
+                  void load();
+                }, ms),
+              );
+            })
+            .finally(() => setRereading(false));
           onChanged();
         },
         onError: (message, fix) => {
@@ -1060,7 +1089,7 @@ export function AgentView({
         },
       });
     },
-    [agentId, load, onChanged, onDecisionRaised, cancelStop, resetLiveTurn],
+    [agentId, load, onChanged, onDecisionRaised, cancelStop, cancelLateReloads, resetLiveTurn],
   );
 
   /*
@@ -1221,6 +1250,7 @@ export function AgentView({
       // and so is its "files weren't saved" (TASK-720).
       setStopNotice(null);
       setSaveRefusedNotice(null);
+      cancelLateReloads();
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
@@ -1266,7 +1296,7 @@ export function AgentView({
         });
       }
     },
-    [agentId, streamFrom],
+    [agentId, streamFrom, cancelLateReloads],
   );
 
   if (loadError !== null) {
@@ -1653,6 +1683,7 @@ export function AgentView({
     onNew: async () => {
       const created = await conversationControls.create(agent.id);
       const next = await workspaceApi.agent(agent.id, created.conversationId);
+      cancelLateReloads();
       conversationRef.current = created.conversationId;
       setPastId(null);
       setSent(null);
@@ -1978,6 +2009,7 @@ export function AgentView({
                 grants={threadGrants}
                 onGrantResolved={onGrantResolved}
                 onGranted={onGranted}
+                onOpenProject={onOpenProject}
                 /*
                   WHICH conversation that `thread` is (TASK-418). This panel
                   swaps it under a component that is mounted once and un-keyed,

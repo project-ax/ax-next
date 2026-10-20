@@ -75,6 +75,7 @@ import type {
   ProjectFileVersionPreview,
   ProjectLabel,
   RestoreProjectFileVersionResponse,
+  UndoProjectChangeResponse,
   SetProjectMemberResponse,
   UpdateProjectResponse,
   WriteProjectFileResponse,
@@ -833,6 +834,9 @@ export const PROJECT_FILE_CHANGE_CODES = [
   // W3d — restoring a version.
   'not-restorable',
   'version-not-found',
+  // W3d-2 — undoing an agent's change from the chat chip.
+  'changed-since',
+  'not-undoable',
 ] as const;
 export type ProjectFileChangeCode = (typeof PROJECT_FILE_CHANGE_CODES)[number];
 
@@ -1560,6 +1564,19 @@ export const workspaceApi = {
     const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
     if (!res.ok) throw await projectFileChangeError(route, res);
     return (await res.json()) as RestoreProjectFileVersionResponse;
+  },
+
+  /**
+   * W3d-2 — undo one change the agent made (the chat's "Updated project
+   * memory" chip). A refusal throws a `ProjectFileChangeError`: 409
+   * `changed-since` when the file changed after that, 409 `not-undoable`,
+   * 404 `version-not-found`, else the same codes a save answers.
+   */
+  undoProjectChange: async (projectId: string, versionId: string): Promise<UndoProjectChangeResponse> => {
+    const route = `/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/undo`;
+    const res = await httpFetch(`/api/workspace${route}`, { method: 'POST', headers: writeHeaders });
+    if (!res.ok) throw await projectFileChangeError(route, res);
+    return (await res.json()) as UndoProjectChangeResponse;
   },
 
   /**
