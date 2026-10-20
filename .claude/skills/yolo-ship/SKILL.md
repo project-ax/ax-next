@@ -36,7 +36,7 @@ Effort is set **per agent**, not per phase — so the phases that earn more thin
 | Work | Who | Model | Effort |
 |---|---|---|---|
 | Brainstorm + design (Phases 1–2) | `ax-planner` subagent | latest Opus (pinned in its definition) | max (pinned) |
-| Coordination, gates, CI, handoff (Phases 0, 4, 6, 7) | **you**, the builder | Sonnet when auto-ship dispatches you | high |
+| Coordination, gates, CI, handoff (Phases 0, 4, 6, 7) | **you**, the builder | Opus when auto-ship dispatches you | high |
 | Phase 3 task tagged `[tier: mechanical]` | implementer subagent | `model: "sonnet"` | `effort: "medium"` |
 | Phase 3 task tagged `[tier: integration]` | implementer subagent | `model: "sonnet"` | `effort: "high"` |
 | Phase 3 task tagged `[tier: sensitive]` | implementer subagent | `model: "opus"` | `effort: "max"` |
