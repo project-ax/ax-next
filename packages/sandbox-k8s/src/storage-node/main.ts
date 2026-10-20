@@ -50,7 +50,7 @@ let reconciling = false;
 const timer = setInterval(() => {
   if (reconciling) return;
   reconciling = true;
-  void engine.reconcile().catch(() => process.stderr.write('storage recovery pending\n')).finally(() => { reconciling = false; });
+  void engine.retryReconcile().finally(() => { reconciling = false; });
 }, 2000);
 const close = () => { clearInterval(timer); try { unlinkSync('/tmp/storage-ready'); } catch { /* already removed */ }
   server.close(() => process.exit(0)); };

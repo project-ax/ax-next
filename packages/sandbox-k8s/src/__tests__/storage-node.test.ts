@@ -556,3 +556,46 @@ describe('storage-node recovery failure reporting', () => {
     for (const value of Object.values(f.data.bootstrap.env)) expect(line).not.toContain(value);
   });
 });
+
+// The 2 s retry loop (main.ts) printed only "storage recovery pending" for any failed pass,
+// so a pass that could not run at all said nothing about why: recovery discovery failing on
+// an apiserver outage or an RBAC denial, before any record was reached.
+describe('storage-node recovery retry loop', () => {
+  const PENDING = 'storage recovery pending';
+  const passLine = (cause: string) => `storage recovery pass failed: ${cause}`;
+  it('reports a discovery failure once, by its cause, and still says pending on every pass', async () => {
+    const f = engineFixture(); const engine = f.make();
+    const denied = 'pods is forbidden: User "system:serviceaccount:ax:storage" cannot list resource "pods" in the namespace "ax"';
+    f.authority.recover = vi.fn(async () => { throw apiError(403, denied); });
+    for (let pass = 0; pass < 3; pass++) await expect(engine.retryReconcile()).resolves.toBeUndefined();
+    expect(f.authority.recover).toHaveBeenCalledTimes(3);
+    expect(f.reports).toEqual([passLine(`HTTP 403: ${denied}`), PENDING, PENDING, PENDING]);
+  });
+  // A pass that gets past discovery clears it, even when a record is still stuck, so an
+  // outage that comes back reports again.
+  it('reports a discovery failure again after a pass that ran, and when its cause changes', async () => {
+    const f = engineFixture(); await f.make().assign(f.data); const engine = f.make();
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true); f.failUnmount(true); // The record stays stuck.
+    const outage = Object.assign(new Error('apiserver unavailable'), { code: 503 });
+    f.authority.recover = vi.fn(async () => []).mockRejectedValueOnce(outage).mockRejectedValueOnce(outage)
+      .mockResolvedValueOnce([]).mockRejectedValueOnce(outage).mockRejectedValueOnce(new Error('forbidden'));
+    for (let pass = 0; pass < 5; pass++) await expect(engine.retryReconcile()).resolves.toBeUndefined();
+    const outageLine = passLine('503: apiserver unavailable');
+    expect(f.reports).toEqual([outageLine, PENDING, PENDING,
+      `storage recovery failed for pod ${f.data.podUid}: Error: busy`, PENDING,
+      outageLine, PENDING, passLine('Error: forbidden'), PENDING]);
+  });
+  it('reports nothing once a pass completes', async () => {
+    const f = engineFixture(); const engine = f.make();
+    f.authority.recover = vi.fn(async () => []).mockRejectedValueOnce(new Error('apiserver unavailable'));
+    await engine.retryReconcile(); await engine.retryReconcile(); await engine.retryReconcile();
+    expect(f.reports).toEqual([passLine('Error: apiserver unavailable'), PENDING]);
+  });
+  // Boot is unchanged: main.ts awaits reconcile(), so the process exits on the error itself.
+  it('leaves boot to reject with the discovery error itself, reporting nothing', async () => {
+    const f = engineFixture(); const outage = new Error('apiserver unavailable');
+    f.authority.recover = vi.fn(async () => { throw outage; });
+    await expect(f.make().reconcile()).rejects.toBe(outage);
+    expect(f.reports).toEqual([]);
+  });
+});

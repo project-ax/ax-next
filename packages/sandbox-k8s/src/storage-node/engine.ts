@@ -48,6 +48,8 @@ export class StorageNodeEngine {
    * is gone: a later failure reports again, and the map never outgrows the ledger.
    */
   private readonly recoveryFailures = new Map<string, string>();
+  /** The failure of a whole pass that retryReconcile last reported, until a pass runs. */
+  private passFailure: string | undefined;
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
@@ -232,7 +234,36 @@ export class StorageNodeEngine {
     await this.authority.finish(record);
     unlinkSync(this.ledgerPath(record.podUid));
   }
+  /**
+   * Boot's recovery (main.ts). Rejects with the pass's own error when it cannot run
+   * (discovery or the ledger scan throws), and with "storage recovery pending" when a
+   * record could not be released (each one reported, see recoveryFailures).
+   */
   async reconcile(): Promise<void> {
+    if (await this.recoveryPass()) throw new Error('storage recovery pending');
+  }
+  /**
+   * One pass of main.ts's 2 s retry loop: it reports instead of rejecting. A pass that
+   * cannot run (discovery or the ledger scan throws: an apiserver outage, an RBAC denial)
+   * reports its cause, once per change of that line. The next pass that runs clears it,
+   * whatever that pass finds, so a failure that comes back reports again. Every pass that
+   * leaves recovery unfinished still reports "storage recovery pending", as the loop always has.
+   */
+  async retryReconcile(): Promise<void> {
+    let pending: boolean;
+    try { pending = await this.recoveryPass(); }
+    catch (e) {
+      // Recovery reads no bootstrap, so there is no env to redact (see the per-record report).
+      const report = `storage recovery pass failed: ${describeFailure(e, {})}`;
+      if (this.passFailure !== report) { this.passFailure = report; this.io.report(report); }
+      this.io.report('storage recovery pending');
+      return;
+    }
+    this.passFailure = undefined;
+    if (pending) this.io.report('storage recovery pending');
+  }
+  /** Resolves true when a record could not be released; throws when the pass cannot run. */
+  private async recoveryPass(): Promise<boolean> {
     // Rebuild lost local intent from protected, secret-free Kubernetes metadata.
     // Conservatively retire recovered assignments; never replay consumed credentials.
     for (const record of await this.authority.recover?.() ?? []) {
@@ -265,7 +296,7 @@ export class StorageNodeEngine {
       }
     }
     for (const uid of this.recoveryFailures.keys()) if (!present.has(uid)) this.recoveryFailures.delete(uid);
-    if (failed) throw new Error('storage recovery pending');
+    return failed;
   }
 }
 
