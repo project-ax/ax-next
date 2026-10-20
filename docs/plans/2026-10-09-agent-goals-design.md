@@ -1,5 +1,8 @@
 # Agent Goals & Tasks — design (in progress)
 
+> **Paused 2026-10-20.** Superseded by the [Agent Tasks design](2026-10-20-agent-tasks-design.md).
+> Don't turn this into a spec; the resume checklist in §9 no longer applies.
+
 **Status:** Brainstorming, all sections reviewed. The data model and UX were
 approved on 2026-10-09; the agent side (§6) was reviewed on 2026-10-11 under the
 AX Work Model framing, where goals are work item W6 and tasks moved to their own
