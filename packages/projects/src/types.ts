@@ -373,3 +373,54 @@ export type ProjectsRestoreVersionOutput = z.infer<typeof RestoreVersionOutputSc
  *   can (`read-only-path` for a version under `sources/`, `files-unavailable`).
  */
 export type ProjectsVersionRefusal = 'not-found' | 'not-restorable';
+
+// ---- a chat's changes, and undoing one (W3d-2) ------------------------------
+// Host-internal, like file-history. `conversation-changes` needs what
+// file-history needs (use the project: viewers included); `undo-change` needs
+// what restore-version needs (an editor or owner member).
+
+const ConversationIdSchema = z.string().min(1).max(256);
+
+export const ConversationChangesInputSchema = z
+  .object({ projectId: ProjectIdSchema, conversationId: ConversationIdSchema })
+  .strict();
+export type ProjectsConversationChangesInput = z.input<typeof ConversationChangesInputSchema>;
+const ConversationChangeSchema = z.object({
+  versionId: z.string(),
+  path: z.string(),
+  /** From the version before it on the same path: none or a delete → created. */
+  change: z.enum(['created', 'edited', 'deleted']),
+  /** When the agent's turn ended (ISO). */
+  turnAt: z.string(),
+  /**
+   * `changed-since`: the path has a newer version. `not-undoable`: the inverse
+   * is impossible (too large, no bytes to put back, `sources/`, or deleting a
+   * protected file).
+   */
+  undo: z.enum(['available', 'changed-since', 'not-undoable']),
+});
+export type ProjectConversationChange = z.infer<typeof ConversationChangeSchema>;
+export const ConversationChangesOutputSchema = z.object({
+  /** The actor can change the project's files (write-file's rule). */
+  canEdit: z.boolean(),
+  /** That chat's agent-turn changes, oldest first; the newest 500. */
+  changes: z.array(ConversationChangeSchema),
+});
+export type ProjectsConversationChangesOutput = z.infer<typeof ConversationChangesOutputSchema>;
+
+export const UndoChangeInputSchema = z.object({ projectId: ProjectIdSchema, versionId: VersionIdSchema }).strict();
+export type ProjectsUndoChangeInput = z.input<typeof UndoChangeInputSchema>;
+export const UndoChangeOutputSchema = z.object({});
+export type ProjectsUndoChangeOutput = z.infer<typeof UndoChangeOutputSchema>;
+
+/**
+ * The `PluginError` codes `projects:undo-change` refuses with (set as both
+ * `code` and `reasonCode`), besides `invalid-payload`, `not-found` (an unknown
+ * project or version, or one of another project), `forbidden` (viewer-only)
+ * and `files-unavailable`:
+ * - `changed-since` — the path has a newer version, or the file on disk is no
+ *   longer what the change left (the write's content guard failed, or a
+ *   created file is gone or different).
+ * - `not-undoable` — the inverse is impossible (see `undo` above).
+ */
+export type ProjectsUndoRefusal = 'changed-since' | 'not-undoable';
