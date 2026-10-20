@@ -1,5 +1,9 @@
 # AX Work Model (umbrella design)
 
+> **Paused 2026-10-20.** Superseded by the [Agent Tasks design](2026-10-20-agent-tasks-design.md)
+> once its revert lands (§11 there). Start from that doc's "Resume here", not this one's,
+> and don't start W3f or any later work item from here.
+
 **Status:** design approved in conversation on 2026-10-11; each work item gets its own spec and plan before it's built.
 **Owner:** Vinay · **Started:** 2026-10-11 · **Last updated:** 2026-10-12
 **Mocks:** [Projects, simplified flow](https://www.figma.com/design/yDka46zOpwgipUxTBWiXuo/?node-id=120-291) ·
