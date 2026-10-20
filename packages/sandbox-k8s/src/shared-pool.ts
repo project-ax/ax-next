@@ -8,6 +8,7 @@ import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { StorageClient } from './storage-client.js';
 import { CLAIM_AGENT_LABEL, CLAIM_POOL_LABEL, STANDBY_LABEL, LATE_VOLUME, type StorageIdentity } from './storage-node/protocol.js';
 import { isNotFound } from './storage-node/authority.js';
+import { describeFailure, redactedError } from './storage-node/describe-failure.js';
 import { sourceParts, backingProfile } from './storage-node/sources.js';
 
 interface Resource {
@@ -209,10 +210,18 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
           if (Date.now() >= deadline) throw new Error('shared activation timed out'); await setTimeout(config.readinessPollMs);
         }
         return claim;
-      } catch {
-        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch(() => undefined); }
-        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch(() => undefined);
-        throw new Error('shared session activation failed');
+      } catch (cause) {
+        // Keep the cause (and any cleanup failure) in the message: the caller's
+        // pod_create_failed log reads only the message. Bootstrap values are
+        // redacted — an error that echoes one must never reach a log.
+        const env = draft.data.env;
+        const details = [describeFailure(cause, env)];
+        if (assigned) { const { node, ...id } = assigned; await storage.release(node, id).catch((e: unknown) => {
+          details.push(`release failed: ${describeFailure(e, env)}`); }); }
+        await custom.deleteNamespacedCustomObject({ ...claimReq(name), body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch((e: unknown) => {
+          details.push(`claim delete failed: ${describeFailure(e, env)}`); });
+        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
+        throw new Error(`shared session activation failed: ${details.join('; ')}`, { cause: redactedError(cause, env) });
       }
     },
     readNamespacedPod: read,

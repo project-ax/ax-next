@@ -57,9 +57,11 @@ function engineFixture(data = input()) {
       if (!pretendSuccess) mounted.delete(args.at(-1)!);
     }
   });
-  const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
+  const reports: string[] = [];
+  const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), report: vi.fn((message: string) => { reports.push(message); }),
+    mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
-    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted };
+    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted, reports };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -419,5 +421,52 @@ describe('storage-node over leftover W2 shared-folder state (TASK-904)', () => {
       'SF_a', 'sf_a\u0000', 'sf_a\n', `sf_${'a'.repeat(65)}`]) {
       expect(() => legacySharedFolderTargetParts(id)).toThrow('invalid shared folder id');
     }
+  });
+});
+
+// F4 — a failed activation keeps its cause: the helper reports the underlying
+// error (and any release error) and rethrows with { cause }. Credentials never
+// reach the report.
+describe('storage-node activation failure reporting', () => {
+  it('reports the failing mount and keeps it as the cause', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('mount: /files: permission denied'); });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e) as Error;
+    expect(err.message).toBe('storage activation failed');
+    expect((err.cause as Error).message).toBe('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain('mount: /files: permission denied');
+    expect(f.reports.join('\n')).toContain(f.data.podUid);
+  });
+  it('reports a release failure during unwind as well as the original error', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error('first failure'); });
+    vi.mocked(f.authority.stop).mockRejectedValueOnce(new Error('stop refused'));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('first failure'); expect(log).toContain('stop refused');
+  });
+  it('never reports bootstrap credentials, even when an error message echoes them', async () => {
+    const f = engineFixture();
+    f.command.mockImplementationOnce(() => { throw new Error(`leaked secret-token and ${'d'.repeat(32)}`); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('leaked'); expect(log).not.toContain('secret-token'); expect(log).not.toContain('d'.repeat(32));
+  });
+  it('rethrows a redacted stand-in as the cause, never the credential-bearing original', async () => {
+    const f = engineFixture();
+    const original = new Error('leaked secret-token');
+    f.command.mockImplementationOnce(() => { throw original; });
+    const err = await f.make().assign(f.data).catch((e: unknown) => e) as Error;
+    expect(err.cause).not.toBe(original);
+    expect((err.cause as Error).message).toContain('leaked');
+    expect((err.cause as Error).message).not.toContain('secret-token');
+  });
+  it('redacts a short secret-named bootstrap value from the report', async () => {
+    const data = input(); data.bootstrap.env.AX_AUTH_TOKEN = 'tok42';
+    const f = engineFixture(data);
+    f.command.mockImplementationOnce(() => { throw new Error('auth tok42 refused for session'); });
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    const log = f.reports.join('\n');
+    expect(log).toContain('refused'); expect(log).not.toContain('tok42');
   });
 });

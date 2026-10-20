@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { BOOTSTRAP_ACK, BOOTSTRAP_FILE, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { openDirectory } from './confined-directory.js';
+import { describeFailure, redactedError } from './describe-failure.js';
 import { sourceParts, legacySharedFolderTargetParts } from './sources.js';
 import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
   type StorageAssignment, type StorageIdentity, type StorageRecord } from './protocol.js';
@@ -30,17 +31,22 @@ const targetParts = (record: StorageRecord): string[][] => [
   ...record.roles.map(role => [targetName(role)]),
   ...(record.sharedFolders ?? []).map(folder => legacySharedFolderTargetParts(folder.folderId)),
 ];
+export interface StorageNodeIo {
+  directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void; isTmpfs(path: string): boolean;
+  /** Operator-visible diagnostics. Never handed credentials (see describeFailure). */
+  report(message: string): void;
+}
 
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
-    }, private readonly io: { directory: typeof openDirectory; mountInfo(): string; chown(fd: number): void;
-      isTmpfs(path: string): boolean } = {
+    }, private readonly io: StorageNodeIo = {
       directory: openDirectory, mountInfo: () => readFileSync('/proc/self/mountinfo', 'utf8'),
       chown: fd => fchownSync(fd, 1000, 1000),
       isTmpfs: path => statfsSync(path).type === 0x01021994,
+      report: message => { process.stderr.write(`${message}\n`); },
     }) {
     mkdirSync(config.ledgerRoot, { recursive: true, mode: 0o700 });
     const root = this.io.directory(config.ledgerRoot, []);
@@ -138,10 +144,16 @@ export class StorageNodeEngine {
         } finally { directory.close(); volume.close(); }
         this.save({ ...record, published: true });
         return { assignmentId: record.assignmentId };
-      } catch {
+      } catch (cause) {
+        // Keep the cause for the operator; never credentials (describeFailure redacts).
+        const env = bootstrap.env;
+        this.io.report(`storage activation failed for pod ${record.podUid}: ${describeFailure(cause, env)}`);
         // Keep durable intent + finalizers for recovery; never discard an active mount.
-        await this.releaseLocked(record).catch(() => undefined);
-        throw new Error('storage activation failed');
+        await this.releaseLocked(record).catch((e: unknown) => {
+          this.io.report(`storage release after failed activation for pod ${record.podUid} failed: ${describeFailure(e, env)}`);
+        });
+        // A redacted stand-in, never the original: a logger walking `cause` would print it raw.
+        throw new Error('storage activation failed', { cause: redactedError(cause, env) });
       }
     });
   }

@@ -118,6 +118,34 @@ describe('shared Agent Sandbox pool', () => {
     expect(f.storage.assign).not.toHaveBeenCalled();
     expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls).toHaveLength(2);
   });
+  // F4 — the host's generic activation error keeps its cause, and the
+  // caller's pod_create_failed log (open-session) sees it in the message.
+  it('keeps the underlying activation and cleanup errors without leaking credentials', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const cause = new Error('storage operation rejected');
+    vi.mocked(f.storage.assign).mockRejectedValueOnce(cause);
+    vi.mocked(f.storage.release).mockRejectedValueOnce(new Error('echo secret-session-token release refused'));
+    const err = await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() }).catch((e: unknown) => e) as Error;
+    expect(err.message).toMatch(/^shared session activation failed/);
+    expect(err.message).toContain('storage operation rejected');
+    expect(err.message).toContain('release refused');
+    expect(err.message).not.toContain('secret-session-token');
+    // The cause is a redacted stand-in, not the original object: a logger
+    // that deep-serializes `cause` must not find a credential there.
+    expect(err.cause).not.toBe(cause);
+    expect((err.cause as Error).message).toContain('storage operation rejected');
+    expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims' }));
+  });
+  it('never attaches a credential-bearing original error as the cause', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const original = new Error('assign echoed secret-session-token');
+    vi.mocked(f.storage.assign).mockRejectedValueOnce(original);
+    const err = await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() }).catch((e: unknown) => e) as Error;
+    expect(err.cause).not.toBe(original);
+    expect((err.cause as Error).message).toContain('assign echoed');
+    expect((err.cause as Error).message).not.toContain('secret-session-token');
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toContain('secret-session-token');
+  });
   it('keeps the claim protected when storage cleanup fails', async () => {
     const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
     await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });
