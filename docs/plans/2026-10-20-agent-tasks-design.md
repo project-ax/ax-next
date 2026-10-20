@@ -15,11 +15,12 @@ knows what it's for and says how it's going.
 
 ## Resume here
 
-- **Now:** this design is proposed. §11 step 1, the revert, is TASK-903.
+- **Now:** this design is proposed. §11 step 1, the revert, merged as #1004
+  (TASK-903). §11 step 2, the keepers PR, is TASK-904.
 - **Next, in order:**
-  1. §11 steps 2–4: the keepers PR, resetting production and kind, tidying the board.
-     Don't deploy the reverted main to production until step 2 has landed and
-     step 3's drain is done. The wipe alone isn't enough: the reverted storage
+  1. §11 steps 3–4: resetting production and kind, tidying the board. Deploy
+     the reverted main to production only with TASK-904 in the image, or drain
+     first (step 3). The wipe alone isn't enough: without TASK-904 the storage
      helper refuses records that still carry `sharedFolders` and won't start.
   2. §12 PR 1: "Stay on top of something", end to end.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
@@ -713,16 +714,18 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
   events.
 - **Small sandbox hardening from W2** (`6e00408`): redacted causes for pooled
   storage failures, and the `/files` subPath check in the pod spec. Judge each
-  on its own.
+  on its own. TASK-904 re-landed both. Neither depends on shared folders.
 - **The storage helper tolerates W2's leftover `sharedFolders` key.** The
   reverted `StorageRecordSchema` and `StorageRecoverySchema`
   (`packages/sandbox-k8s/src/storage-node/protocol.ts`) are strict, and the
   helper runs `engine.reconcile()` before it listens, with no catch
   (`storage-node/main.ts`). A W2 ledger record or recovery annotation that
   still names `sharedFolders` makes it exit at boot, every boot, and only the
-  helper can clear the `ax.io/storage-cleanup` finalizer. Accept the key and
-  drop it, with a test that boots reconcile over such a record. Until this
-  lands, every helper restart (an eviction, a node upgrade) is exposed.
+  helper can clear the `ax.io/storage-cleanup` finalizer. Accept the key on
+  records only (never on a new assignment), and unmount the `shared/<folderId>`
+  binds it names on release. Dropping it would let the helper boot but leave
+  those binds attached when it frees the pod. Tested by booting reconcile over
+  such a record and annotation (TASK-904). Until this lands, every helper restart (an eviction, a node upgrade) is exposed.
 - **Left in git history until something needs them:** the NFS
   `lookupcache=positive` static PV (#999) and `walk-read.ts` (TASK-899).
 
@@ -733,8 +736,9 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
   and no pod carries an `ax.io/storage-recovery` annotation. A claim lives up
   to 6 hours and the host's sweeper skips assigned ones, so a recent project
   chat can still hold a record with `sharedFolders`. The database wipe doesn't
-  touch any of this. Skip the drain only if step 2's leftover-key fix is
-  already in the image.
+  touch any of this. Skip the drain only if step 2's leftover-key fix
+  (TASK-904) is already in the image. The helper then boots over those records
+  and unmounts their shared-folder binds when it releases them.
 - Wipe the database and deploy the reverted main.
 - Delete the storage-helper pods by hand. Its DaemonSet uses `OnDelete`
   (`deploy/charts/ax-next/templates/shared-storage.yaml`), so pods don't roll
