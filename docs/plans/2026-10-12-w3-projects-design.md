@@ -1547,6 +1547,7 @@ The "Updated project memory" chip (§7.3). Plan:
    says "Changed since". There are no dialogs and no modal menus (#997, #998).
    An "Open project" link goes to the project page.
 6. **Known limit:** undoing a new file checks its bytes and then deletes them,
-   and deletes have no content guard in the walk. A save that lands between
-   the check and the delete is lost from disk. Its preimage is still recorded
-   (§7.2), so History can bring it back.
+   and deletes have no content guard in the walk. A change that lands between
+   the check and the delete is lost from disk. A person's save in that window
+   records its own version, so History can bring it back. An agent's write in
+   that window is not recorded. The window is one host round trip.
