@@ -238,44 +238,6 @@ describe('Agent Sandbox mount preparation', () => {
     expect(api.deletes).toHaveLength(1);
   });
 
-  // W2 shared folders §3.8: every shared folder needs the same ownership step
-  // as /files (a viewer may be the first to touch it), and GKE Sandbox forbids
-  // root init containers — so each is prepared by a host-managed pod. A
-  // viewer's preparation uses its separate writable prep volume; the Sandbox
-  // keeps only the read-only volume.
-  it('prepares editor and viewer shared folders, the viewer through its prep volume only', async () => {
-    const api = makeMockK8sApi();
-    api.setReadResponses({ status: { phase: 'Succeeded', containerStatuses: [{ name: 'ownership', state: { terminated: { exitCode: 0 } } }] } });
-    const pod = buildPodSpec('test', { sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
-      authToken: 'session-secret', runnerEndpoint: config.hostIpcUrl,
-      mounts: [
-        { kind: 'nfs', role: 'user-files', server: '10.1.1.1', exportPath: '/files', mountPath: '/files', subPath: 'agent-one', readOnly: false },
-        { kind: 'nfs', role: 'shared-folder', folderId: 'sf_x', server: '10.1.1.1', exportPath: '/files',
-          mountPath: '/shared/sf_x', subPath: '.shared/sf_x', readOnly: false },
-        { kind: 'nfs', role: 'shared-folder', folderId: 'sf_y', server: '10.1.1.1', exportPath: '/files',
-          mountPath: '/shared/sf_y', subPath: '.shared/sf_y', readOnly: true },
-      ],
-    }, config);
-    const prepared = await prepareAgentSandboxMounts(api, pod, config, log);
-    const bodies = api.creates.map((c) =>
-      (c.body as { spec: { containers: Array<{ volumeMounts: unknown }>; volumes: Array<{ name: string; nfs?: unknown }> } }).spec);
-    expect(bodies.map((b) => b.containers[0]!.volumeMounts)).toEqual([
-      [{ name: 'ax-mount-0', mountPath: '/files', subPath: 'agent-one', readOnly: false }],
-      [{ name: 'ax-mount-1', mountPath: '/shared/sf_x', subPath: '.shared/sf_x', readOnly: false }],
-      [{ name: 'ax-mount-2-prep', mountPath: '/shared/sf_y', subPath: '.shared/sf_y', readOnly: false }],
-    ]);
-    // The viewer's prep pod gets only the writable prep volume, never the runner's.
-    expect(bodies[2]!.volumes).toEqual([{ name: 'ax-mount-2-prep', nfs: { server: '10.1.1.1', path: '/files' } }]);
-    expect(JSON.stringify(api.creates)).not.toContain('session-secret');
-    expect((prepared.spec.initContainers as Array<{ name: string }>).map((init) => init.name)).toEqual(['sdk-scaffold']);
-    // The Sandbox keeps the read-only viewer volume and drops the now-unused prep volume.
-    const volumes = prepared.spec.volumes as Array<{ name: string; nfs?: { readOnly?: boolean } }>;
-    expect(volumes.some((v) => v.name === 'ax-mount-2-prep')).toBe(false);
-    expect(volumes.find((v) => v.name === 'ax-mount-2')!.nfs!.readOnly).toBe(true);
-    expect(volumes.some((v) => v.name === 'ax-mount-1')).toBe(true);
-    expect(api.deletes).toHaveLength(3);
-  });
-
   it.each([null, 1])('fails closed on an unknown or failed ownership exit (%s) and deletes the preparation pod', async (code) => {
     const api = makeMockK8sApi();
     api.setReadResponses({ status: { phase: 'Succeeded', containerStatuses: code === null ? [] : [{ name: 'ownership', state: { terminated: { exitCode: code } } }] } });

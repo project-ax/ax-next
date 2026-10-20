@@ -55,14 +55,6 @@ export const DEFAULT_SETTINGS_SECTION: AgentSettingsSection = 'instructions';
 export type WorkspaceRoute =
   | { kind: 'today' }
   | { kind: 'activity' }
-  | { kind: 'projects' }
-  | { kind: 'project'; id: string }
-  /**
-   * A project's files (W3b): the browser at `path` in the project's folder,
-   * `''` for the folder root. `path` is the RAW key, slashes and all; the URL
-   * spells it one encoded segment per folder.
-   */
-  | { kind: 'project-files'; id: string; path: string }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
 
@@ -91,7 +83,7 @@ function isAgentTab(segment: string): segment is AgentTab {
 }
 
 /**
- * Decode one path segment into an agent (or project) id, or `null` if it can't be one.
+ * Decode one path segment into an agent id, or `null` if it can't be one.
  *
  * Two refusals, both about a link someone else wrote:
  *
@@ -115,32 +107,6 @@ function parseAgentId(segment: string): string | null {
   return id;
 }
 
-/**
- * Decode the segments after `/files` into a raw folder path, or `null` if any
- * one of them can't be part of one.
- *
- * Each segment is decoded ONCE — the server decodes the path once too, so a
- * second decode here would let `%252e%252e` arrive as `..`. A decoded `.` or
- * `..` is refused (the browser would normalize the API request onto another
- * path), as are a slash smuggled in as `%2F` (it would silently split one name
- * into two folders), NUL, and a malformed escape.
- */
-function parseFilePath(segments: readonly string[]): string | null {
-  const parts: string[] = [];
-  for (const segment of segments) {
-    let part: string;
-    try {
-      part = decodeURIComponent(segment);
-    } catch {
-      return null;
-    }
-    if (part.length === 0 || part === '.' || part === '..') return null;
-    if (part.includes('/') || part.includes('\0')) return null;
-    parts.push(part);
-  }
-  return parts.join('/');
-}
-
 /** Read a browser pathname as a workspace route. Never throws. */
 export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   const segments = pathname.split('/').filter((s) => s.length > 0);
@@ -152,23 +118,6 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   const [, section, third, fourth, fifth] = segments;
   if (section === undefined) return TODAY;
   if (section === 'activity') return { kind: 'activity' };
-  if (section === 'projects') {
-    if (third === undefined) return { kind: 'projects' };
-    // Same refusals as an agent id: the project id is interpolated into
-    // `/api/workspace/projects/<id>` the same way. A malformed one falls
-    // back to the list, not Today — the person was clearly after projects.
-    const projectId = parseAgentId(third);
-    if (projectId === null) return { kind: 'projects' };
-    if (fourth === 'files') {
-      // A path we won't follow still opens the project — the person was
-      // clearly after it — rather than a browser at a path we made up.
-      const path = parseFilePath(segments.slice(4));
-      return path === null
-        ? { kind: 'project', id: projectId }
-        : { kind: 'project-files', id: projectId, path };
-    }
-    return { kind: 'project', id: projectId };
-  }
   if (section !== 'agents' || third === undefined) return TODAY;
 
   const id = parseAgentId(third);
@@ -204,15 +153,6 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       return WORKSPACE_ROOT_PATH;
     case 'activity':
       return `${WORKSPACE_ROOT_PATH}/activity`;
-    case 'projects':
-      return `${WORKSPACE_ROOT_PATH}/projects`;
-    case 'project':
-      return `${WORKSPACE_ROOT_PATH}/projects/${encodeURIComponent(route.id)}`;
-    case 'project-files': {
-      const base = `${WORKSPACE_ROOT_PATH}/projects/${encodeURIComponent(route.id)}/files`;
-      if (route.path === '') return base;
-      return `${base}/${route.path.split('/').map(encodeURIComponent).join('/')}`;
-    }
     case 'agent': {
       const base = `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}`;
       return route.tab === DEFAULT_TAB ? base : `${base}/${route.tab}`;
@@ -220,19 +160,4 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
     case 'agent-settings':
       return `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}/settings/${route.section}`;
   }
-}
-
-/**
- * Should a click on a workspace LINK navigate in place? Only a plain primary
- * click: a middle click or a modifier is the reader asking their browser for
- * a new tab or window, and the `href` is there to answer it.
- */
-export function isPlainClick(e: {
-  button: number;
-  metaKey: boolean;
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
-}): boolean {
-  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 }

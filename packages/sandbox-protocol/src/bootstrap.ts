@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { isValidSharedFolderId } from './shared-folder-id.js';
 
 export const BOOTSTRAP_MAX_BYTES = 512 * 1024;
 export const BOOTSTRAP_ROOT = '/ax/late/bootstrap';
@@ -18,9 +17,6 @@ const controlNames = new Set([
   'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT',
   'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
   'GIT_CONFIG_COUNT',
-  // Not in `fixedPaths` (the value varies per session); it is checked by
-  // `validSharedFolders` instead.
-  'AX_SHARED_FOLDERS',
 ]);
 const fixedPaths: Record<string, string> = {
   AX_WORKSPACE_ROOT: '/agent', AX_EPHEMERAL_ROOT: '/ephemeral',
@@ -33,45 +29,10 @@ const fixedPaths: Record<string, string> = {
   DENO_CERT: '/home/runner/.ax/proxy-ca/ca.crt',
 };
 
-/** Most shared folders one session can late-bind (W2 §3.8.1). */
-const MAX_SHARED_FOLDERS = 16;
-const SHARED_FOLDER_KEYS = ['id', 'path', 'readOnly'];
-
-/**
- * W2 §3.8.1 — pooled sessions late-bind shared folders under /shared/<id>; the
- * path is fixed by id so a bootstrap can't point the runner elsewhere.
- *
- * `AX_SHARED_FOLDERS` must be a JSON array of at most 16 objects with exactly
- * the keys `id`, `path`, `readOnly`. `id` has the shared-folder id shape, `path`
- * is exactly `/shared/<id>`, `readOnly` is a boolean, and ids are unique.
- * Anything else is invalid.
- */
-function validSharedFolders(value: string): boolean {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(parsed) || parsed.length > MAX_SHARED_FOLDERS) return false;
-  const seen = new Set<string>();
-  for (const entry of parsed as unknown[]) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
-    const keys = Object.keys(entry).sort();
-    if (keys.length !== SHARED_FOLDER_KEYS.length || keys.some((k, i) => k !== SHARED_FOLDER_KEYS[i])) return false;
-    const { id, path, readOnly } = entry as { id: unknown; path: unknown; readOnly: unknown };
-    if (!isValidSharedFolderId(id) || path !== `/shared/${id}` || typeof readOnly !== 'boolean') return false;
-    if (seen.has(id)) return false;
-    seen.add(id);
-  }
-  return true;
-}
-
 /** Environment is a process capability, not an arbitrary settings dictionary. */
 export function allowedBootstrapEnv(name: string, value: string): boolean {
   if (value.includes('\0') || value.length > 256 * 1024) return false;
   if (fixedPaths[name] !== undefined && value !== fixedPaths[name]) return false;
-  if (name === 'AX_SHARED_FOLDERS') return validSharedFolders(value);
   if (controlNames.has(name)) return true;
   if (/^GIT_CONFIG_(?:KEY|VALUE)_(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(name)) return true;
   // Only proxy placeholders can add provider-specific names. No loader/control vars.

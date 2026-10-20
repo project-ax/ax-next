@@ -13,7 +13,6 @@ import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
 import { makeRememberedSitesHandlers } from './routes-remembered-sites.js';
-import { registerProjectsRoutes } from './routes-projects.js';
 import { registerWorkspaceRoutes } from './routes-workspace.js';
 import {
   createBufferFillSubscriber,
@@ -154,9 +153,6 @@ export function createChannelWebServerPlugin(
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
-        // W3e: PUT /api/chat/conversations/:id/project. Registered by the
-        // same plugin as set-title, so a hard dep like it.
-        'conversations:set-project',
         'agent:invoke',
         // JIT (TASK-36) — the permission-decision endpoint applies a
         // user-approved capability grant via the orchestrator. Orchestrator +
@@ -650,100 +646,6 @@ export function createChannelWebServerPlugin(
           degradation:
             'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
         },
-        // W3a — projects (W3 spec §4.8). @ax/projects is Postgres-only, so a
-        // preset without it still boots; each route below says what it does
-        // instead. Every call runs on a ctx whose userId is the authenticated
-        // person (the hooks take their actor from ctx.userId).
-        {
-          hook: 'projects:list',
-          degradation:
-            'GET /api/workspace/projects answers an empty list, and chats carry no project label in the agent detail',
-        },
-        {
-          hook: 'projects:create',
-          degradation: 'POST /api/workspace/projects answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:get',
-          degradation:
-            'GET /api/workspace/projects/:projectId and its /conversations answer 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:update',
-          degradation: 'PATCH /api/workspace/projects/:projectId answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:delete',
-          degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
-        },
-        {
-          // W3b — a project's files, read-only. Registered by @ax/projects;
-          // without it (or with an @ax/projects that predates W3b) the routes
-          // say so rather than list nothing.
-          hook: 'projects:read-file',
-          degradation:
-            'GET /api/workspace/projects/:projectId/files[/*] answers 503 projects-unavailable (never an empty listing)',
-        },
-        {
-          hook: 'projects:download-file',
-          degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
-        },
-        {
-          // W3e — add one of your agents to a project, change its role, or
-          // remove it. @ax/projects maps the project to its folder itself.
-          hook: 'projects:set-member',
-          degradation:
-            'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
-        },
-        {
-          // W3c — people change project files: save, delete, new folder.
-          // @ax/projects decides who may (an editor or owner member the
-          // person can use) and where (`sources/` is read-only).
-          hook: 'projects:write-file',
-          degradation: 'PUT /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:delete-file',
-          degradation: 'DELETE /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:create-folder',
-          degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
-        },
-        {
-          // W3d — file history, restore and undo. @ax/projects records the
-          // versions; these read them and restore one as the person.
-          hook: 'projects:file-history',
-          degradation: 'GET /api/workspace/projects/:projectId/history/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:read-version',
-          degradation: 'GET /api/workspace/projects/:projectId/versions/:versionId answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:restore-version',
-          degradation:
-            'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
-        },
-        {
-          // W3d-2 — the "Updated project memory" chip under an answer. The
-          // read runs as the person; without it the chip never shows.
-          hook: 'projects:conversation-changes',
-          degradation: 'answers in a project chat carry no "Updated project memory" chip',
-        },
-        {
-          hook: 'projects:undo-change',
-          degradation:
-            'POST /api/workspace/projects/:projectId/versions/:versionId/undo answers 503 projects-unavailable',
-        },
-        {
-          // "May this person manage this agent's sharing?" — who may own a new
-          // project, and whether the project page offers rename/delete. The
-          // hooks re-check; this only decides what to offer.
-          hook: 'agents:can-manage-sharing',
-          degradation:
-            'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',
-        },
       ],
       subscribes: [
         'chat:stream-chunk',
@@ -1078,12 +980,6 @@ export function createChannelWebServerPlugin(
         buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);
-
-      // W3a — the project routes (GET/POST /api/workspace/projects, …).
-      // Always mounted, like the workspace routes: without @ax/projects they
-      // answer an empty list or 503 (see the manifest's degradations).
-      const projectsRouteUnregisters = await registerProjectsRoutes(bus, initCtx);
-      for (const u of projectsRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

@@ -20,7 +20,6 @@ import {
   localDayLabel,
   localTime,
   relativeDay,
-  timeAgo,
 } from '../workspace-time';
 
 /** Local wall-clock, so the assertions mean the same thing in any zone. */
@@ -171,26 +170,5 @@ describe('shortDay', () => {
     const { shortDay } = await import('../workspace-time');
     expect(shortDay('')).toBe('');
     expect(shortDay('not-a-date')).toBe('');
-  });
-});
-
-describe('timeAgo (W3a "Updated 2h ago")', () => {
-  const now = new Date('2026-10-16T12:00:00Z');
-  it.each([
-    ['2026-10-16T11:59:40Z', 'just now'],
-    ['2026-10-16T11:55:00Z', '5m ago'],
-    ['2026-10-16T10:00:00Z', '2h ago'],
-    ['2026-10-15T12:30:00Z', '23h ago'],
-  ])('%s reads as %s', (iso, want) => {
-    expect(timeAgo(iso, now)).toBe(want);
-  });
-
-  it('hands over to relativeDay past a day', () => {
-    const then = '2026-10-12T12:00:00Z';
-    expect(timeAgo(then, now)).toBe(relativeDay(then, now));
-  });
-
-  it('never prints Invalid Date', () => {
-    expect(timeAgo('nope', now)).toBe('a while ago');
   });
 });

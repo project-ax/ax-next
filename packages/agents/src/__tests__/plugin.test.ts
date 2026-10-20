@@ -140,7 +140,6 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-manage-routines',
-        'agents:can-manage-sharing',
         'agents:can-manage-connectors',
         'agents:can-set-shared-credential',
         'agents:list-ids',

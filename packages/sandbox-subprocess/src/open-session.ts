@@ -21,7 +21,6 @@ import {
 import { allowlistFromParent } from './env.js';
 import { createStderrTail } from './stderr-tail.js';
 import { resolveUserFilesMount } from './resolve-user-files-mount.js';
-import type { SharedFolderEnvEntry } from './shared-folders.js';
 import {
   composeAvailable,
   composeDown,
@@ -192,9 +191,6 @@ interface SessionCreateInput {
     // verbatim into session:create. Host-only: it arrives on the
     // sandbox:open-session hook (orchestrator → here), never from the runner.
     source?: 'routine' | 'user';
-    // W3d — the session's spawn project, forwarded the same way as `source`
-    // so the session record carries it. Host-only, never from the runner.
-    projectId?: string;
   };
 }
 interface SessionCreateOutput {
@@ -422,28 +418,13 @@ export async function openSessionImpl(
   //     resolver / no agentId → no durable mount (graceful degradation). An
   //     UNREALIZABLE kind (e.g. an `nfs` mount paired with this provider by a
   //     mis-wired preset) throws — never a silent skip (design §10).
-  //
-  //     W2 shared folders ride the same call: `input.sharedFolderIds` (set by
-  //     the host, never the model) is a REQUEST the resolver filters through
-  //     `shared-folders:authorize-mounts`; each folder that comes back is
-  //     validated + `mkdir -p`'d and listed in AX_SHARED_FOLDERS below. A
-  //     malformed shared mount fails the open here, before any session exists.
   let userFilesRoot: string | undefined;
-  let sharedFolders: SharedFolderEnvEntry[] | undefined;
   try {
     const resolved =
       input.owner !== undefined
-        ? await resolveUserFilesMount(
-            ctx,
-            bus,
-            input.owner,
-            PLUGIN_NAME,
-            undefined,
-            input.sharedFolderIds,
-          )
+        ? await resolveUserFilesMount(ctx, bus, input.owner, PLUGIN_NAME)
         : {};
     userFilesRoot = resolved.userFilesRoot;
-    sharedFolders = resolved.sharedFolders;
   } catch (cause) {
     await unlockInstalledSkillsDir(installedSkillsDir);
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
@@ -483,10 +464,6 @@ export async function openSessionImpl(
         // persists it. Conditional-spread keeps the key absent for user turns.
         ...(input.owner.source !== undefined
           ? { source: input.owner.source }
-          : {}),
-        // W3d — the spawn project, same treatment as `source`.
-        ...(input.owner.projectId !== undefined
-          ? { projectId: input.owner.projectId }
           : {}),
       };
     }
@@ -555,17 +532,6 @@ export async function openSessionImpl(
     // an unset AX_EPHEMERAL_ROOT. Spread conditionally so the env stays clean
     // when no resolver is loaded.
     ...(userFilesRoot !== undefined ? { AX_USERFILES_ROOT: userFilesRoot } : {}),
-    // W2 shared folders: a JSON list of `{ id, path, readOnly }`, one per
-    // folder the resolver authorized for this session. Set ONLY when non-empty
-    // (absent means "no shared folders", same as AX_USERFILES_ROOT). The paths
-    // are HOST paths — the subprocess runner sees the host filesystem; k8s
-    // stamps `/shared/<id>` instead. `readOnly` is NOT enforced by this provider
-    // (no mount namespace; dev-only, see SECURITY.md) — it is advisory here and
-    // only the k8s read-only mount enforces it. The value is host-built from
-    // validated mounts; the runner re-validates it like its other env.
-    ...(sharedFolders !== undefined
-      ? { AX_SHARED_FOLDERS: JSON.stringify(sharedFolders) }
-      : {}),
     // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
     // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
     // skill-discovery walks the host-controlled per-session dir, not the

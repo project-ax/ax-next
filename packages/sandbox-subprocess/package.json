@@ -25,16 +25,11 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@ax/database-postgres": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
-    "@ax/shared-folders": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/workspace-localdir": "workspace:*",
-    "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
-    "@types/pg": "8.20.0",
-    "pg": "8.20.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.1"
   }

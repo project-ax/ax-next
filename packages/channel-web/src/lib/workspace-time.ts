@@ -100,20 +100,3 @@ export function shortDay(iso: string, locale?: string): string {
 export function conversationDate(iso: string): string {
   return shortDay(iso) || 'Unknown';
 }
-
-/**
- * "2h ago" / "5m ago" / "just now" for the last day, then `relativeDay`'s
- * "yesterday" / "3 days ago". The project grid's "Updated 2h ago" (W3 §4.8):
- * within a day the hour is the useful part, past it the day is. Same clock
- * rule as everything here — the reader's, never the server's.
- */
-export function timeAgo(iso: string, now: Date = new Date()): string {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return 'a while ago';
-  const mins = Math.floor((now.getTime() - then) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return relativeDay(iso, now);
-}

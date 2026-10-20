@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { SharedFolderIdSchema } from './shared-folder-id.js';
 
 // ---------------------------------------------------------------------------
 // @ax/sandbox-protocol — shared wire contract for `sandbox:open-session`.
@@ -304,13 +303,6 @@ export const OpenSessionInputSchema = z.object({
       // ctx.source on the host. Do NOT move this onto the runner-facing IPC
       // protocol.
       source: z.enum(['routine', 'user']).optional(),
-      // W3d — the project this session was spawned for, set HOST-SIDE by the
-      // orchestrator from the chat's row after `projects:resolve`. Forwarded
-      // into session:create exactly like `source`, so the IPC listeners stamp
-      // `ctx.projectId` from the session record. Same SECURITY posture: it
-      // rides this host-internal hook only, never the runner wire. An opaque
-      // id (minted `prj_<base64url>`), bounded like projects' own check.
-      projectId: z.string().min(1).max(128).optional(),
     })
     .optional(),
   proxyConfig: ProxyConfigSchema,
@@ -320,19 +312,6 @@ export const OpenSessionInputSchema = z.object({
   // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
   // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 8.
   services: z.array(ServiceDescriptorSchema).max(8).optional(),
-  // W2 shared folders — the folders the HOST wants mounted into this session
-  // (set by the orchestrator, never by the model or the sandbox). This is only
-  // a REQUEST: the mount resolver filters it through
-  // `shared-folders:authorize-mounts`, so listing a folder here grants nothing.
-  // Optional + back-compat with callers that don't share folders. Capped at 16
-  // and duplicate-free so a mount path can never be requested twice.
-  sharedFolderIds: z
-    .array(SharedFolderIdSchema)
-    .max(16)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: 'sharedFolderIds must be unique',
-    })
-    .optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;

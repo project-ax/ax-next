@@ -230,12 +230,9 @@ RUN userdel --remove node 2>/dev/null || true \
 
 # Warm runners see only late-bound child mounts. The aliases are immutable in
 # the image; cold pods can still mount their ordinary NFS volumes at these paths.
-# `/shared` holds one child per project folder (`/shared/<id>`); the helper binds
-# each one under `/ax/late/shared` when a session claims the pod.
-RUN mkdir -p /ax/late/files /ax/late/memory /ax/late/shared \
+RUN mkdir -p /ax/late/files /ax/late/memory \
  && ln -s /ax/late/files /files \
- && ln -s /ax/late/memory /memory \
- && ln -s /ax/late/shared /shared
+ && ln -s /ax/late/memory /memory
 
 # Persisted PATH convention: put `$HOME/bin` on PATH so binaries the agent
 # installs there are found in later sessions.

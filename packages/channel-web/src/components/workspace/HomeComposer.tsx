@@ -16,12 +16,6 @@
  * agent there is not, and the confirmation became a step that asked the person
  * to approve the only possible answer — see `sole` below (TASK-250). The rule
  * above holds unchanged from two agents up.
- *
- * W3e — the project page passes `autoRoute={false}`: its choices are the
- * project's member agents, a person picks among them, and there is no Auto to
- * propose anything. The chip reads "Chat with Scout ▾" and starts on
- * `defaultAgentId` (the page decides: the agent of their latest chat there,
- * else the owner).
  */
 import { useState } from 'react';
 import {
@@ -34,8 +28,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { StorageFullError } from '@/lib/storage-full';
@@ -60,17 +52,8 @@ interface Proposal {
 export function HomeComposer({
   agents,
   onSend,
-  autoRoute = true,
-  defaultAgentId,
 }: {
   agents: WorkspaceAgent[];
-  /**
-   * `false` (the project page): pick among `agents` only — no Auto, no
-   * routing call, and the chip says "Chat with ‹agent›". Default `true`.
-   */
-  autoRoute?: boolean;
-  /** With `autoRoute={false}`: who the chip starts on. Else the first agent. */
-  defaultAgentId?: string;
   /**
    * Awaited, and its rejection is the caller's news to hear. Returning `void`
    * here is what let a failed send reject unhandled while the draft was
@@ -123,18 +106,7 @@ export function HomeComposer({
    */
   const sole = agents.length === 1 ? agents[0]! : null;
 
-  /*
-    Without Auto there is always someone picked: the person's own pick while
-    that agent is still offered, else the default, else the first. Derived
-    for the same reason `sole` is — the list can change under us (a member
-    removed on the same page).
-  */
-  const picked =
-    sole ??
-    agents.find((a) => a.id === pick) ??
-    (autoRoute
-      ? null
-      : (agents.find((a) => a.id === defaultAgentId) ?? agents[0] ?? null));
+  const picked = sole ?? agents.find((a) => a.id === pick) ?? null;
   const nameOf = (id: string) =>
     agents.find((a) => a.id === id)?.name ?? 'that agent';
 
@@ -207,7 +179,6 @@ export function HomeComposer({
       await dispatch(picked.id, text);
       return;
     }
-    if (!autoRoute) return;
 
     setRouting(true);
     setError(null);
@@ -353,39 +324,7 @@ export function HomeComposer({
         onSend={() => void submit()}
         sendDisabled={routing || sending || blocked !== null}
         agentSelector={
-          !autoRoute && picked ? (
-            sole ? (
-              <span className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium">
-                <AgentTile agent={sole} size={16} />
-                Chat with {sole.name}
-              </span>
-            ) : (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    type="button"
-                    className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
-                  >
-                    <AgentTile agent={picked} size={16} />
-                    Chat with {picked.name}
-                    <ChevronDown size={11} className="text-muted-foreground" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuRadioGroup value={picked.id} onValueChange={setPick}>
-                    {agents.map((a) => (
-                      <DropdownMenuRadioItem key={a.id} value={a.id}>
-                        <AgentTile agent={a} size={18} />
-                        {a.name}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )
-          ) : sole ? (
+          sole ? (
             /*
               With one agent there is nothing to pick, so this is a label rather
               than a menu — it still says who you are talking to, which is worth

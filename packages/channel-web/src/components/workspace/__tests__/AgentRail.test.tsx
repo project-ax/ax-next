@@ -10,8 +10,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
-import { conversationControls } from '@/lib/conversation-controls';
-import { HttpError } from '@/lib/http';
 import { AgentRail } from '../AgentRail';
 import { AgentSettings } from '../AgentSettings';
 import { describedRow, mcpRow, rail, railActivity, siteGrant } from './rail-fixture';
@@ -26,25 +24,13 @@ vi.mock('@/lib/workspace-api', async () => {
       revokeGrant: vi.fn(),
       abilities: vi.fn(),
       setAbility: vi.fn(),
-      listProjects: vi.fn(),
     },
   };
-});
-
-// The real `moveTargets` (it reads the mocked `listProjects` above); only the
-// write is faked.
-vi.mock('@/lib/conversation-controls', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/conversation-controls')>(
-    '@/lib/conversation-controls',
-  );
-  return { conversationControls: { ...actual.conversationControls, setProject: vi.fn() } };
 });
 
 const railMock = vi.mocked(workspaceApi.rail);
 const revokeMock = vi.mocked(workspaceApi.revokeGrant);
 const abilitiesMock = vi.mocked(workspaceApi.abilities);
-const listProjectsMock = vi.mocked(workspaceApi.listProjects);
-const setProjectMock = vi.mocked(conversationControls.setProject);
 const ALL_ON = { webSearch: true, readPages: true, runCode: true };
 
 function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
@@ -1116,133 +1102,4 @@ describe('AgentRail — the way into agent settings (TASK-888)', () => {
   });
 
 
-});
-
-/**
- * W3e (W3 spec §8, frame 8) — "Move to project ›" and "Remove from project" on
- * a chat row. Only projects this rail's agent is a member of are offered,
- * because the server would refuse the rest (same rule as starting a chat).
- */
-describe('AgentRail — moving a chat between projects (W3e)', () => {
-  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
-  function project(projectId: string, name: string, agentIds: string[]) {
-    return {
-      projectId,
-      name,
-      description: null,
-      updatedAt: hoursAgo(1),
-      members: agentIds.map((agentId, i) => ({ agentId, role: i === 0 ? ('owner' as const) : ('editor' as const) })),
-    };
-  }
-
-  beforeEach(() => {
-    listProjectsMock.mockResolvedValue({
-      projects: [
-        project('p-launch', 'Q4 launch', ['a-quill']),
-        project('p-hiring', 'Hiring', ['a-scribe', 'a-quill']),
-        project('p-other', 'Not for Quill', ['a-scribe']),
-      ],
-    });
-    setProjectMock.mockResolvedValue({ projectId: null });
-  });
-
-  function renderChats(over: Partial<AgentDetail> = {}, onChanged = vi.fn()) {
-    render(
-      <AgentRail
-        detail={detail({
-          conversationId: 'c-current',
-          past: [{ id: 'c-old', title: 'Launch checklist', lastActivityAt: hoursAgo(30), project: { projectId: 'p-launch', name: 'Q4 launch' } }],
-          ...over,
-        })}
-        openPastId={null}
-        onOpenPast={vi.fn()}
-        tab="chat"
-        onChanged={onChanged}
-      />,
-    );
-    return { onChanged };
-  }
-
-  async function openMove(rowName: string) {
-    fireEvent.pointerDown(screen.getByRole('button', { name: `Options for ${rowName}` }), { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to project' }));
-  }
-
-  // A modal menu here leaves the page unclickable after its dialog removes
-  // the trigger (production, 2026-10-19).
-  it('the chat row menu never locks the page', async () => {
-    renderChats();
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Options for Launch checklist' }), { button: 0, ctrlKey: false });
-    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
-    expect(document.body.style.pointerEvents).not.toBe('none');
-  });
-
-  it('lists only the projects this agent is in, leaving out the chat’s own', async () => {
-    renderChats();
-    await openMove('Launch checklist');
-    expect(await screen.findByRole('menuitem', { name: 'Hiring' })).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: 'Q4 launch' })).toBeNull();
-    expect(screen.queryByRole('menuitem', { name: 'Not for Quill' })).toBeNull();
-    expect(listProjectsMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('offers every project of this agent for a chat outside any project', async () => {
-    renderChats();
-    await openMove('Current conversation');
-    expect(await screen.findByRole('menuitem', { name: 'Q4 launch' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Hiring' })).toBeTruthy();
-    // Nothing to remove it from.
-    expect(screen.queryByRole('menuitem', { name: 'Remove from project' })).toBeNull();
-  });
-
-  it('moves the chat, then refreshes', async () => {
-    setProjectMock.mockResolvedValue({ projectId: 'p-hiring' });
-    const { onChanged } = renderChats();
-    await openMove('Launch checklist');
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Hiring' }));
-    await waitFor(() => expect(setProjectMock).toHaveBeenCalledWith('c-old', 'p-hiring'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('removes the chat from its project, then refreshes', async () => {
-    const { onChanged } = renderChats();
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Options for Launch checklist' }), { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove from project' }));
-    await waitFor(() => expect(setProjectMock).toHaveBeenCalledWith('c-old', null));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-  });
-
-  it('says plainly when there is nowhere to move it', async () => {
-    listProjectsMock.mockResolvedValue({ projects: [project('p-launch', 'Q4 launch', ['a-quill'])] });
-    renderChats();
-    await openMove('Launch checklist');
-    const none = await screen.findByRole('menuitem', { name: 'No other projects for this agent' });
-    expect(none).toHaveAttribute('aria-disabled', 'true');
-  });
-
-  it('says the agent has no projects yet when it is in none', async () => {
-    listProjectsMock.mockResolvedValue({ projects: [project('p-other', 'Not for Quill', ['a-scribe'])] });
-    renderChats();
-    await openMove('Current conversation');
-    const none = await screen.findByRole('menuitem', { name: 'No projects for this agent yet' });
-    expect(none).toHaveAttribute('aria-disabled', 'true');
-  });
-
-  it('says the project isn’t available when the server refuses it', async () => {
-    setProjectMock.mockRejectedValue(new HttpError('/api/chat/conversations/c-old/project', 404));
-    const { onChanged } = renderChats();
-    await openMove('Launch checklist');
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Hiring' }));
-    expect(await screen.findByText('That project isn’t available to this agent.')).toBeTruthy();
-    expect(onChanged).not.toHaveBeenCalled();
-  });
-
-  it('falls back to the general sentence for anything else', async () => {
-    setProjectMock.mockRejectedValue(new HttpError('/api/chat/conversations/c-old/project', 500));
-    renderChats();
-    await openMove('Launch checklist');
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Hiring' }));
-    expect(await screen.findByText('We couldn’t finish that just now. Please try again.')).toBeTruthy();
-  });
 });

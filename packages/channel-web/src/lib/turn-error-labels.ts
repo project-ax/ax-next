@@ -143,15 +143,6 @@ export const ERROR_LABELS: Record<string, string> = {
   // rows replayed on reload — see `connector-needs-sign-in` above.
   'provider-key-missing-connector-needs-sign-in':
     'This agent can’t run right now. The AI service it uses isn’t set up on this server, and one of its connectors isn’t signed in yet. An admin can fix the first one in Settings. Open Connectors to sign in to the second, then retry.',
-  // W3a — the chat belongs to a project this agent can no longer use (the
-  // project was deleted, or the agent's access to its folder was removed). The
-  // host refuses the turn before anything runs rather than run it without the
-  // project. Static on purpose: the agent's name is already in the chat header.
-  'project-unavailable': "This chat's project isn't available to this agent anymore.",
-  // The host couldn't read this chat's details (usually a passing database
-  // hiccup), so it can't tell whether the chat is in a project and stops rather
-  // than guess. Says nothing about projects: most chats don't have one.
-  'conversation-unavailable': "We couldn't load this chat just now. Try sending your message again.",
 };
 
 /**

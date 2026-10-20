@@ -298,10 +298,6 @@ describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)
       'session_postgres_v2_session_agent',
       'routines_v1_definitions',
       'skills_v1_authored',
-      // W2: shared-folder grants are keyed on agent_id (no FK); the plugin's
-      // `agents:deleted` subscriber deletes them. The folders table has no
-      // agent column on purpose, so it is NOT scoped and is not listed here.
-      'shared_folders_v1_grants',
       // Both facts backends create a table of this name; the sqlite one through a
       // `${TABLE}` constant, which is why resolveTableConstants exists.
       'memory_facts_v1',

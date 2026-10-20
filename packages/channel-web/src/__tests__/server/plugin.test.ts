@@ -90,7 +90,6 @@ function conversationsMockPlugin(args: {
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
-        'conversations:set-project',
       ],
       calls: [],
       subscribes: [],
@@ -163,13 +162,6 @@ function conversationsMockPlugin(args: {
           code: 'not-implemented',
           plugin: 'mock-conversations',
           message: 'conversations:set-title stub (not exercised by this suite)',
-        });
-      });
-      bus.registerService('conversations:set-project', 'mock-conversations', async () => {
-        throw new PluginError({
-          code: 'not-implemented',
-          plugin: 'mock-conversations',
-          message: 'conversations:set-project stub (not exercised by this suite)',
         });
       });
       bus.registerService('conversations:delete', 'mock-conversations', async () => {
@@ -716,7 +708,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:list',
         'conversations:delete',
         'conversations:set-title',
-        'conversations:set-project',
         'agent:invoke',
         'agent:apply-capability-grant',
         'attachments:store-temp',
@@ -1033,81 +1024,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
           hook: 'sandbox:read-user-files',
           degradation:
             'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
-        },
-        {
-          hook: 'projects:list',
-          degradation:
-            'GET /api/workspace/projects answers an empty list, and chats carry no project label in the agent detail',
-        },
-        {
-          hook: 'projects:create',
-          degradation: 'POST /api/workspace/projects answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:get',
-          degradation:
-            'GET /api/workspace/projects/:projectId and its /conversations answer 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:update',
-          degradation: 'PATCH /api/workspace/projects/:projectId answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:delete',
-          degradation: 'DELETE /api/workspace/projects/:projectId answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:read-file',
-          degradation:
-            'GET /api/workspace/projects/:projectId/files[/*] answers 503 projects-unavailable (never an empty listing)',
-        },
-        {
-          hook: 'projects:download-file',
-          degradation: 'GET /api/workspace/projects/:projectId/download/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:set-member',
-          degradation:
-            'PUT and DELETE /api/workspace/projects/:projectId/members/:agentId answer 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:write-file',
-          degradation: 'PUT /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:delete-file',
-          degradation: 'DELETE /api/workspace/projects/:projectId/files/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:create-folder',
-          degradation: 'POST /api/workspace/projects/:projectId/folders/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:file-history',
-          degradation: 'GET /api/workspace/projects/:projectId/history/* answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:read-version',
-          degradation: 'GET /api/workspace/projects/:projectId/versions/:versionId answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:restore-version',
-          degradation:
-            'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
-        },
-        {
-          hook: 'projects:conversation-changes',
-          degradation: 'answers in a project chat carry no "Updated project memory" chip',
-        },
-        {
-          hook: 'projects:undo-change',
-          degradation:
-            'POST /api/workspace/projects/:projectId/versions/:versionId/undo answers 503 projects-unavailable',
-        },
-        {
-          hook: 'agents:can-manage-sharing',
-          degradation:
-            'GET /api/workspace/projects/owner-candidates answers no agents and the project page never offers rename or delete',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],

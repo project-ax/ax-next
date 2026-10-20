@@ -582,17 +582,10 @@ spec:
         # same server, same path. The per-agent scoping is NOT done here (there
         # is one host pod and many agents); it is done per request, by joining
         # the validated agentId and confining every read under it.
-        #
-        # A claim on a static PV, not an inline `nfs:` volume, because this
-        # mount needs `lookupcache=positive` and inline volumes cannot carry
-        # mount options: without it a file deleted and then restored by the
-        # storage helper (another NFS client) stays "not found" here for
-        # 30-90 s+ (deploy/kind/nfs-lookupcache-2026-10-19.json). The PV/PVC
-        # live in host/user-files-read-pv.yaml. readOnly is load-bearing —
-        # see the volumeMount above.
         - name: user-files-read
-          persistentVolumeClaim:
-            claimName: {{ include "ax-next.fullname" . }}-user-files-host-read
+          nfs:
+            server: {{ .Values.sandbox.filestore.server | quote }}
+            path: {{ .Values.sandbox.filestore.exportPath | quote }}
             readOnly: true
         {{- end }}
         {{- if eq (.Values.host.preset | default "memory") "memory" }}

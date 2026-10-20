@@ -260,12 +260,10 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/model-policy',
         '@ax/onboarding',
         '@ax/preset-k8s/retire-strata-index',
-        '@ax/projects',
         '@ax/routines',
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
-        '@ax/shared-folders',
         '@ax/skill-broker',
         '@ax/skills',
         '@ax/storage-postgres',
@@ -684,81 +682,6 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
   });
 
-  it('loads @ax/shared-folders and registers the shared-folders:* hooks (W2)', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const sf = plugins.find((p) => p.manifest.name === '@ax/shared-folders');
-    expect(sf).toBeDefined();
-    expect(sf!.manifest.registers).toEqual([
-      'shared-folders:create',
-      'shared-folders:grant',
-      'shared-folders:revoke',
-      'shared-folders:delete',
-      'shared-folders:list',
-      'shared-folders:get',
-      'shared-folders:authorize-mounts',
-    ]);
-    // The agent-deleted fan-out is what removes an agent's grants; if the
-    // subscription is dropped the whole-schema cleanup check goes red, but
-    // pin it here so the preset test names the cause.
-    expect(sf!.manifest.subscribes).toContain('agents:deleted');
-  });
-
-  it('loads @ax/projects and registers the projects:* hooks + the project block (W3a)', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const pj = plugins.find((p) => p.manifest.name === '@ax/projects');
-    expect(pj).toBeDefined();
-    expect(pj!.manifest.registers).toEqual([
-      'projects:create',
-      'projects:list',
-      'projects:get',
-      'projects:update',
-      'projects:delete',
-      'projects:resolve',
-      'projects:read-file',
-      'projects:download-file',
-      'projects:set-member',
-      'projects:write-file',
-      'projects:delete-file',
-      'projects:create-folder',
-      'projects:snapshot',
-      'projects:file-history',
-      'projects:read-version',
-      'projects:restore-version',
-      'projects:conversation-changes',
-      'projects:undo-change',
-      'system-prompt:augment:optional:projects',
-    ]);
-    // A tombstoned folder takes its project row with it (W3 §4.7).
-    expect(pj!.manifest.subscribes).toContain('shared-folders:deleted');
-    // W3d: an agent turn's changes are recorded; versions hold blob shas.
-    expect(pj!.manifest.subscribes).toEqual(
-      expect.arrayContaining(['chat:turn-end', 'agents:deleted', 'conversations:purged', 'blob:collect-refs']),
-    );
-  });
-
-  // W3 §4.4: the call direction is conversations → projects (and the
-  // orchestrator → projects), NEVER projects → conversations. Projects declares
-  // no sandbox:* edge either: W3b's host read, `sandbox:read-shared-folder`, is
-  // called undeclared (hasService-guarded), because declaring it closed
-  // sandbox-subprocess → ipc-server → conversations → projects → sandbox-subprocess.
-  // Bootstrap rejects cycles even through optionalCalls, so one stray edge would
-  // fail a boot; pin the direction here, by name, so the failure says which rule
-  // broke rather than just "cycle".
-  it('pins the projects call direction: conversations/orchestrator call projects; projects never calls conversations:* and declares no sandbox:* edge', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const byName = new Map(plugins.map((p) => [p.manifest.name, p.manifest]));
-    const hooksOf = (name: string): string[] => {
-      const m = byName.get(name);
-      expect(m, name).toBeDefined();
-      return [...m!.calls, ...(m!.optionalCalls ?? []).map((c) => c.hook)];
-    };
-    const projectsCalls = hooksOf('@ax/projects');
-    expect(projectsCalls.filter((h) => h.startsWith('conversations:'))).toEqual([]);
-    expect(projectsCalls.filter((h) => h.startsWith('sandbox:'))).toEqual([]);
-    expect(hooksOf('@ax/conversations')).toContain('projects:resolve');
-    expect(hooksOf('@ax/chat-orchestrator')).toContain('projects:resolve');
-  });
-
   // -------------------------------------------------------------------------
   // Every built-in tool descriptor that ships in this preset (TASK-229).
   //
@@ -957,7 +880,7 @@ describe('@ax/preset-k8s wiring', () => {
         .filter((p) => p.manifest.subscribes.includes('blob:collect-refs'))
         .map((p) => p.manifest.name)
         .sort(),
-    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/projects', '@ax/skills']);
+    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/skills']);
     // The exception must still be real: loaded, and still a blob writer. An
     // exception for a plugin that no longer exists is a hole for its successor.
     for (const name of BLOB_WRITER_HOLDER_EXCEPTIONS) {

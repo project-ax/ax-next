@@ -84,10 +84,6 @@ describe('runSessionMigration v2', () => {
       expect(byName.get('conversation_id')!.is_nullable).toBe('YES');
       expect(byName.has('source')).toBe(true);
       expect(byName.get('source')!.is_nullable).toBe('YES');
-      // W3d — the session's spawn project, nullable TEXT (no project / pre-W3d).
-      expect(byName.has('project_id')).toBe(true);
-      expect(byName.get('project_id')!.is_nullable).toBe('YES');
-      expect(byName.get('project_id')!.data_type).toBe('text');
       expect(byName.get('user_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_config_json')!.is_nullable).toBe('NO');
@@ -143,34 +139,6 @@ describe('runSessionMigration v2', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.session_id).toBe('s-idem');
       expect(rows[0]?.agent_config_json).toEqual({ systemPrompt: 'be helpful' });
-    } finally {
-      await db.destroy();
-      await pool.end().catch(() => {});
-    }
-  });
-
-  it('W3d: adds project_id to a pre-W3d table, keeping its rows (NULL), and re-runs cleanly', async () => {
-    const { db, pool } = await makeDb();
-    try {
-      await runSessionMigration(db);
-      // Simulate a database migrated before W3d: no project_id column yet.
-      await sql`ALTER TABLE session_postgres_v2_session_agent DROP COLUMN project_id`.execute(db);
-      await db
-        .insertInto('session_postgres_v2_session_agent')
-        .values({
-          session_id: 's-pre-w3d',
-          user_id: 'u-1',
-          agent_id: 'a-1',
-          agent_config_json: { systemPrompt: 'old' } as never,
-        } as never)
-        .execute();
-      await runSessionMigration(db);
-      await runSessionMigration(db);
-      const rows = await db
-        .selectFrom('session_postgres_v2_session_agent')
-        .select(['session_id', 'project_id'])
-        .execute();
-      expect(rows).toEqual([{ session_id: 's-pre-w3d', project_id: null }]);
     } finally {
       await db.destroy();
       await pool.end().catch(() => {});

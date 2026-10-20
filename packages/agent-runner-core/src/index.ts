@@ -12,7 +12,7 @@ export { buildTtyHintEnv } from './tty-hint-env.js';
 export { buildToolCacheEnv } from './tool-cache-env.js';
 export { commitTrace } from './commit-trace.js';
 export { readRunnerEnv, runnerHomeDir, MissingEnvError } from './env.js';
-export type { RunnerEnv, SharedFolderEnv } from './env.js';
+export type { RunnerEnv } from './env.js';
 export { createLocalDispatcher } from './local-dispatcher.js';
 export type { LocalDispatcher } from './local-dispatcher.js';
 export { writeProxyCaFromEnv } from './proxy-ca-from-env.js';

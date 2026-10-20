@@ -2,7 +2,6 @@ import { useId, useState } from 'react';
 import {
   Activity,
   Folder,
-  FolderKanban,
   MessageSquare,
   MoreHorizontal,
   PanelRight,
@@ -25,11 +24,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuPortal,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -38,7 +33,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CompactSurfaceContext } from '@/lib/use-compact';
 import { cn } from '@/lib/utils';
 import { conversationControls } from '@/lib/conversation-controls';
-import { HttpError, logRequestFailure } from '@/lib/http';
 import { conversationDate } from '@/lib/workspace-time';
 import { useAgentRail } from '@/lib/workspace-rail';
 import {
@@ -47,7 +41,6 @@ import {
   type AgentTab,
 } from '@/lib/workspace-route';
 import type { AgentRailData, AgentDetail, GrantRow, GrantRef } from '@/lib/workspace-api';
-import type { ProjectSummary } from '@/wire/projects';
 import {
   AgentTile,
   Elapsed,
@@ -56,21 +49,6 @@ import {
   stateWord,
 } from './bits';
 import { IconTooltip } from './IconTooltip';
-
-const ACTION_FAILED = 'We couldn’t finish that just now. Please try again.';
-/** W3e — a move refused because the agent can't use that project (404). */
-export const MOVE_PROJECT_UNAVAILABLE = 'That project isn’t available to this agent.';
-
-/**
- * W3e — the projects a chat's "Move to project ›" submenu can offer. Read
- * when a row's menu opens, never on mount: most visits to the rail never open
- * one, and a list read at mount would be stale by the time someone did.
- */
-type MoveTargets =
-  | { kind: 'idle' }
-  | { kind: 'loading' }
-  | { kind: 'failed' }
-  | { kind: 'ready'; projects: ProjectSummary[] };
 
 export const RAIL_TABS = {
   activity: { label: 'Activity', Icon: Activity },
@@ -179,42 +157,7 @@ export function AgentRailContent({
     kind: 'rename' | 'delete';
   } | null>(null);
   const [title, setTitle] = useState('');
-  const [moveTargets, setMoveTargets] = useState<MoveTargets>({ kind: 'idle' });
   const pastDateId = useId();
-
-  /*
-    Re-read on every open, but keep the last good list on screen while it
-    loads: the submenu never flashes "Loading…" for a list it already has.
-  */
-  async function loadMoveTargets() {
-    setMoveTargets((prev) => (prev.kind === 'ready' ? prev : { kind: 'loading' }));
-    try {
-      const projects = await conversationControls.moveTargets(agent.id);
-      setMoveTargets({ kind: 'ready', projects });
-    } catch (e) {
-      logRequestFailure(e, 'rail-move-targets');
-      setMoveTargets((prev) => (prev.kind === 'ready' ? prev : { kind: 'failed' }));
-    }
-  }
-
-  /** Move a chat into a project, or out of one (`null`). */
-  async function moveTo(id: string, projectId: string | null) {
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      await conversationControls.setProject(id, projectId);
-      onChanged?.();
-    } catch (e) {
-      logRequestFailure(e, 'rail-move-chat');
-      setActionError(
-        projectId !== null && e instanceof HttpError && e.status === 404
-          ? MOVE_PROJECT_UNAVAILABLE
-          : ACTION_FAILED,
-      );
-    } finally {
-      setActionBusy(false);
-    }
-  }
 
   async function act(action: () => Promise<void>) {
     setActionBusy(true);
@@ -222,7 +165,7 @@ export function AgentRailContent({
     try {
       await action();
     } catch {
-      setActionError(ACTION_FAILED);
+      setActionError('We couldn’t finish that just now. Please try again.');
     } finally {
       setActionBusy(false);
     }
@@ -232,24 +175,9 @@ export function AgentRailContent({
     else setLocalTab(next);
     if (collapsed) onCollapse?.();
   }
-  function menu(id: string, name: string, projectId: string | null) {
-    /*
-      Only projects this agent is a member of (`moveTargets` filters): the
-      server refuses the rest, and a list of choices that mostly fail is worse
-      than a short one. The chat's own project is left out — moving it there
-      is nothing.
-    */
-    const targets = moveTargets.kind === 'ready' ? moveTargets.projects : [];
-    const others = targets.filter((p) => p.projectId !== projectId);
+  function menu(id: string, name: string) {
     return (
-      <DropdownMenu
-        // Not modal: Delete opens a dialog whose action removes this row, and
-        // the menu with it; a modal menu would leave <body> unclickable.
-        modal={false}
-        onOpenChange={(open) => {
-          if (open) void loadMoveTargets();
-        }}
-      >
+      <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
@@ -289,51 +217,6 @@ export function AgentRailContent({
             >
               Export as text
             </DropdownMenuItem>
-          </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuGroup>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
-              <DropdownMenuPortal>
-                <DropdownMenuSubContent className="max-w-[260px] shadow-popover">
-                  <DropdownMenuGroup>
-                    {moveTargets.kind === 'ready' && others.length > 0 ? (
-                      others.map((p) => (
-                        <DropdownMenuItem
-                          key={p.projectId}
-                          onSelect={() => void moveTo(id, p.projectId)}
-                        >
-                          <FolderKanban aria-hidden="true" />
-                          <span className="truncate" title={p.name}>
-                            {p.name}
-                          </span>
-                        </DropdownMenuItem>
-                      ))
-                    ) : (
-                      /*
-                        Shown disabled rather than hidden: an empty submenu,
-                        or a Move item that vanishes, leaves the person
-                        wondering where moving went. One line says why.
-                      */
-                      <DropdownMenuItem disabled>
-                        {moveTargets.kind === 'failed'
-                          ? 'Couldn’t load projects'
-                          : moveTargets.kind !== 'ready'
-                            ? 'Loading…'
-                            : targets.length === 0
-                              ? 'No projects for this agent yet'
-                              : 'No other projects for this agent'}
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuPortal>
-            </DropdownMenuSub>
-            {projectId !== null && (
-              <DropdownMenuItem onSelect={() => void moveTo(id, null)}>
-                Remove from project
-              </DropdownMenuItem>
-            )}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
@@ -500,13 +383,12 @@ export function AgentRailContent({
               )}
               {active === 'chat' && (
                 <div className="flex flex-col gap-0.5">
-                  <div className="group relative flex min-h-9 items-center rounded-sm">
+                  <div className="group relative flex h-9 items-center rounded-sm max-md:h-11">
                     <Button
                       variant="ghost"
                       onClick={() => onOpenPast(null)}
                       className={cn(
                         'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
-                        detail.project && 'h-auto min-h-9 py-1.5 max-md:h-auto',
                         openPastId === null && 'bg-primary-soft text-primary',
                       )}
                     >
@@ -514,20 +396,15 @@ export function AgentRailContent({
                         aria-hidden="true"
                         className="size-1.5 shrink-0 rounded-full bg-primary"
                       />
-                      <span className="flex min-w-0 flex-1 flex-col text-left">
-                        <span>Current conversation</span>
-                        {detail.project && <ProjectLabel name={detail.project.name} />}
+                      <span className="min-w-0 flex-1 text-left">
+                        Current conversation
                       </span>
                       <span className="w-[52px] shrink-0 text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                         Now
                       </span>
                     </Button>
                     {detail.conversationId &&
-                      menu(
-                        detail.conversationId,
-                        'Current conversation',
-                        detail.project?.projectId ?? null,
-                      )}
+                      menu(detail.conversationId, 'Current conversation')}
                   </div>
                   {past.map((c, i) => (
                     <div
@@ -539,9 +416,7 @@ export function AgentRailContent({
                           date from being read twice in browse mode, since
                           the row already draws it. The #875 pattern. */}
                       <span id={`${pastDateId}-${i}`} hidden>
-                        {c.project
-                          ? `In ${c.project.name}, ${conversationDate(c.lastActivityAt)}`
-                          : conversationDate(c.lastActivityAt)}
+                        {conversationDate(c.lastActivityAt)}
                       </span>
                       <Button
                         variant="ghost"
@@ -550,24 +425,20 @@ export function AgentRailContent({
                         onClick={() => onOpenPast(c.id)}
                         className={cn(
                           'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
-                          c.project && 'h-auto min-h-9 py-1.5 max-md:h-auto',
                           openPastId === c.id && 'bg-primary-soft text-primary',
                         )}
                       >
-                        <span className="flex min-w-0 flex-1 flex-col text-left">
-                          <span
-                            className="conversation-title-fade overflow-hidden whitespace-nowrap"
-                            title={c.title}
-                          >
-                            {c.title}
-                          </span>
-                          {c.project && <ProjectLabel name={c.project.name} />}
+                        <span
+                          className="conversation-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
+                          title={c.title}
+                        >
+                          {c.title}
                         </span>
                         <span className="w-[52px] shrink-0 whitespace-nowrap text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
                           {conversationDate(c.lastActivityAt)}
                         </span>
                       </Button>
-                      {menu(c.id, c.title, c.project?.projectId ?? null)}
+                      {menu(c.id, c.title)}
                     </div>
                   ))}
 
@@ -812,22 +683,5 @@ function ThisWeek({
         </CardContent>
       </Card>
     </>
-  );
-}
-
-/**
- * W3a (W3 §15 Q6) — a project chat stays in the Chats list, wearing its
- * project's name, so nothing disappears from where people already look. The
- * name sits on its own line under the title, so neither truncates the other
- * in the narrow rail (kind walk, 2026-10-17).
- */
-function ProjectLabel({ name }: { name: string }) {
-  return (
-    <span className="flex min-w-0 items-center gap-1 text-[11.5px] text-muted-foreground">
-      <FolderKanban aria-hidden="true" className="size-3 shrink-0" />
-      <span className="truncate" title={name}>
-        {name}
-      </span>
-    </span>
   );
 }

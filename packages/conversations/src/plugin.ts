@@ -21,12 +21,10 @@ import {
   validateContentBlocks,
   validateOptionalBoolean,
   validateOptionalOrigin,
-  validateOptionalProjectId,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
-  type PendingPurgeKind,
   type StoredEvent,
 } from './store.js';
 import {
@@ -36,7 +34,6 @@ import {
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
-  SetProjectOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
@@ -72,8 +69,6 @@ import type {
   HideOutput,
   ListInput,
   ListOutput,
-  SetProjectInput,
-  SetProjectOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,
@@ -108,137 +103,9 @@ const PLUGIN_NAME = '@ax/conversations';
 //   - We DO NOT add `bind-session` / `unbind-session` hooks here — Task 14.
 // ---------------------------------------------------------------------------
 
-/** Default retry-sweep interval for pending purges. */
-const DEFAULT_PURGE_SWEEP_INTERVAL_MS = 60_000;
-/** The first pass after init — picks up rows a crash left behind — runs after this (or the interval, if shorter). */
-const PURGE_STARTUP_DELAY_MS = 5_000;
-/** Pending purges retried per sweep pass. */
-const PURGE_SWEEP_BATCH = 50;
-/** `last_error` keeps at most this much of an error message. */
-const PURGE_ERROR_MAX_CHARS = 500;
-
-export interface ConversationsPluginOptions {
-  /**
-   * How often the durable-purge sweep retries purges that failed (or were
-   * interrupted by a crash). Default 60 s; 0 disables both the timer and the
-   * post-init pass (tests drive `sweepPendingPurges()` directly).
-   */
-  purgeSweepIntervalMs?: number;
-}
-
-export interface ConversationsPlugin extends Plugin {
-  /**
-   * Run one retry pass over the pending purges due at `now`. A pass already
-   * running is joined, not doubled. Resolves with how many were attempted and
-   * how many purged; never rejects for a single target's failure.
-   */
-  sweepPendingPurges(now?: Date): Promise<{ attempted: number; purged: number }>;
-}
-
-export function createConversationsPlugin(
-  opts: ConversationsPluginOptions = {},
-): ConversationsPlugin {
-  const purgeSweepIntervalMs = opts.purgeSweepIntervalMs ?? DEFAULT_PURGE_SWEEP_INTERVAL_MS;
+export function createConversationsPlugin(): Plugin {
   let db: Kysely<ConversationDatabase> | undefined;
   let _store: ConversationStore | undefined;
-  let busRef: HookBus | undefined;
-  let sweepTimer: ReturnType<typeof setInterval> | undefined;
-  let startupTimer: ReturnType<typeof setTimeout> | undefined;
-  let sweepInFlight: Promise<{ attempted: number; purged: number }> | undefined;
-  let stopped = false;
-  /**
-   * Purges running right now in THIS process (`kind:targetId`): the sweep skips
-   * them rather than racing the subscriber, and vice versa. Another replica can
-   * still run the same purge concurrently; that is safe (the second waits on
-   * the first's row locks, then deletes and announces nothing).
-   */
-  const purging = new Set<string>();
-
-  const sweepCtx = (): AgentContext =>
-    makeAgentContext({
-      sessionId: 'conversations-purge-sweep',
-      agentId: PLUGIN_NAME,
-      userId: 'system',
-    });
-
-  async function runPurgeSweep(now: Date): Promise<{ attempted: number; purged: number }> {
-    const store = _store;
-    const bus = busRef;
-    if (store === undefined || bus === undefined) return { attempted: 0, purged: 0 };
-    const ctx = sweepCtx();
-    const due = await store.duePurges(now, PURGE_SWEEP_BATCH);
-    let attempted = 0;
-    let purged = 0;
-    for (const { kind, targetId } of due) {
-      if (stopped) break;
-      const key = purgeKey(kind, targetId);
-      if (purging.has(key)) continue;
-      attempted++;
-      purging.add(key);
-      try {
-        if (await purgeAndAnnounce(store, bus, ctx, kind, targetId, now)) purged++;
-      } finally {
-        purging.delete(key);
-      }
-    }
-    return { attempted, purged };
-  }
-
-  /** One pass at a time: a pass still running when the next is asked for is joined, not doubled. */
-  function sweepPendingPurges(now: Date = new Date()): Promise<{ attempted: number; purged: number }> {
-    if (sweepInFlight !== undefined) return sweepInFlight;
-    const p = runPurgeSweep(now).finally(() => {
-      sweepInFlight = undefined;
-    });
-    sweepInFlight = p;
-    return p;
-  }
-
-  function sweepInBackground(): void {
-    void sweepPendingPurges().catch((err: unknown) => {
-      sweepCtx().logger.error('conversations_purge_sweep_failed', {
-        err: err instanceof Error ? err : new Error(String(err)),
-      });
-    });
-  }
-
-  /**
-   * The subscriber half of the durable purge (both kinds). Record the debt
-   * FIRST, then purge-and-dequeue in one transaction, then announce. Never
-   * throws (K10).
-   */
-  async function purgeForDeletion(
-    store: ConversationStore,
-    bus: HookBus,
-    ctx: AgentContext,
-    kind: PendingPurgeKind,
-    targetId: string,
-  ): Promise<void> {
-    try {
-      await store.enqueuePurge(kind, targetId);
-    } catch (err) {
-      // We could not write down that this purge is owed. Still try it now: if
-      // it succeeds nothing is lost. If it fails too, recordPurgeFailure
-      // upserts the row — and if THAT fails as well, nothing more can be done
-      // here: the chats stay behind until someone purges them by hand, and
-      // these error lines are the only trace.
-      ctx.logger.error('conversations_purge_enqueue_failed', {
-        kind,
-        targetId,
-        err: err instanceof Error ? err : new Error(String(err)),
-      });
-    }
-    const key = purgeKey(kind, targetId);
-    // The sweep is already on it (it found the row we just inserted, or one a
-    // previous failure left). Its outcome — purge or reschedule — stands.
-    if (purging.has(key)) return;
-    purging.add(key);
-    try {
-      await purgeAndAnnounce(store, bus, ctx, kind, targetId, new Date());
-    } finally {
-      purging.delete(key);
-    }
-  }
 
   return {
     manifest: {
@@ -265,9 +132,6 @@ export function createConversationsPlugin(
         // auto-title pipeline (caller is @ax/conversation-titles' Phase
         // F chat:turn-end subscriber) plus future user-driven rename UI.
         'conversations:set-title',
-        // W3e (W3 spec §8): move a chat into a project, to another, or out.
-        // Caller: channel-web's PUT /api/chat/conversations/:id/project.
-        'conversations:set-project',
         // Phase A (routines foundation, 2026-05-14): mark a conversation
         // hidden so it disappears from list queries but remains readable
         // by id. Half-wired window OPEN: caller lands in Phase B
@@ -320,19 +184,6 @@ export function createConversationsPlugin(
         // workspace jsonl — so `workspace:list`/`read`/`apply` are no longer
         // called and are dropped from the manifest (I5: minimal capabilities).
       ],
-      // W3a (W3 spec §4.4). conversations:create checks a chat's projectId
-      // with projects:resolve. Optional, so a preset without @ax/projects
-      // still boots — and then any projectId is REFUSED, never dropped (a chat
-      // silently created outside the project it was asked for would run
-      // without the project's folder). The edge is one-way: projects never
-      // calls conversations (bootstrap rejects cycles through optionalCalls).
-      optionalCalls: [
-        {
-          hook: 'projects:resolve',
-          degradation:
-            'chats cannot be created in or moved into a project; conversations:create and conversations:set-project refuse any projectId (moving out still works)',
-        },
-      ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
       // TASK-66 (2026-05-30): also subscribe to the HOST-only display events
@@ -342,17 +193,13 @@ export function createConversationsPlugin(
       // TASK-718: agents:deleted hard-deletes the agent's conversations,
       // events and transcripts. The manifest has no field for hooks a plugin
       // FIRES; the one it fires in response (`conversations:purged`) is
-      // documented at its fire site, in purgeAndAnnounce (durable: see there).
+      // documented at its fire site, in purgeConversationsForDeletedAgent.
       subscribes: [
         'chat:turn-end',
         'session:terminate',
         'chat:turn-error',
         'chat:permission-request',
         'agents:deleted',
-        // W3a (§4.7, Q1): a deleted project's chats are purged for every
-        // user, the same way agents:deleted purges an agent's. Fires
-        // conversations:purged for them (purgeAndAnnounce).
-        'projects:deleted',
       ],
     },
 
@@ -371,8 +218,6 @@ export function createConversationsPlugin(
       await runConversationsMigration(db);
       const localStore = createConversationStore(db);
       _store = localStore;
-      busRef = bus;
-      stopped = false;
 
       bus.registerService<CreateInput, CreateOutput>(
         'conversations:create',
@@ -459,15 +304,6 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           setConversationTitle(localStore, bus, ctx, input),
-      );
-
-      // W3e (§8). Move a chat between projects. Same ACL posture as
-      // set-title, plus the projects:resolve gate create uses.
-      bus.registerService<SetProjectInput, SetProjectOutput>(
-        'conversations:set-project',
-        PLUGIN_NAME,
-        async (ctx, input) => setConversationProject(localStore, bus, ctx, input),
-        { returns: SetProjectOutputSchema },
       );
 
       // Phase A (routines foundation, 2026-05-14). Same ACL posture as
@@ -629,67 +465,18 @@ export function createConversationsPlugin(
         'agents:deleted',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          const agentId = validDeletedId(ctx, 'agents:deleted', 'agentId', payload?.agentId);
-          if (agentId !== undefined) {
-            await purgeForDeletion(localStore, bus, ctx, 'agent', agentId);
-          }
+          await purgeConversationsForDeletedAgent(localStore, bus, ctx, payload);
           return undefined;
         },
       );
-
-      // W3a (§4.7): a project was deleted — purge its chats for every user,
-      // exactly as agents:deleted does. @ax/projects fires `{ projectId }`
-      // once, after the row is gone; a repeat would find nothing. MUST NOT
-      // throw. A purge that fails is retried by the sweep below until it
-      // succeeds (see purgeAndAnnounce).
-      bus.subscribe<ProjectDeletedPayload>(
-        'projects:deleted',
-        PLUGIN_NAME,
-        async (ctx, payload) => {
-          const projectId = validDeletedId(ctx, 'projects:deleted', 'projectId', payload?.projectId);
-          if (projectId !== undefined) {
-            await purgeForDeletion(localStore, bus, ctx, 'project', projectId);
-          }
-          return undefined;
-        },
-      );
-
-      // The durable-purge retry sweep: failed purges are retried with
-      // backoff, and a pass shortly after init picks up rows a crash
-      // part-way through a purge left behind. unref() so the timers never
-      // keep a process alive on their own.
-      if (purgeSweepIntervalMs > 0) {
-        startupTimer = setTimeout(() => {
-          startupTimer = undefined;
-          sweepInBackground();
-        }, Math.min(PURGE_STARTUP_DELAY_MS, purgeSweepIntervalMs));
-        startupTimer.unref?.();
-        sweepTimer = setInterval(sweepInBackground, purgeSweepIntervalMs);
-        sweepTimer.unref?.();
-      }
     },
 
-    sweepPendingPurges,
-
     async shutdown() {
-      stopped = true;
-      if (startupTimer !== undefined) {
-        clearTimeout(startupTimer);
-        startupTimer = undefined;
-      }
-      if (sweepTimer !== undefined) {
-        clearInterval(sweepTimer);
-        sweepTimer = undefined;
-      }
-      // A pass in flight stops after its current target; wait for it so it
-      // never touches the database after the pool is closed.
-      if (sweepInFlight !== undefined) await sweepInFlight.catch(() => undefined);
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Drop our references so a re-init doesn't read a stale
       // store.
       db = undefined;
       _store = undefined;
-      busRef = undefined;
     },
   };
 }
@@ -723,20 +510,6 @@ interface SessionTerminatePayload {
 // the field is untrusted at the subscriber boundary like any other payload.
 interface AgentDeletedPayload {
   agentId?: unknown;
-}
-
-// projects:deleted fire payload (W3a). @ax/projects fires `{ projectId }`;
-// duck-typed here (no cross-plugin import) and validated like agentId above.
-interface ProjectDeletedPayload {
-  projectId?: unknown;
-}
-
-// projects:resolve (W3a §4.3). Only the call shape is needed here: success
-// means the actor (ctx.userId) can use `agentId` and `agentId` has a live
-// grant on the project's folder. The result's fields are not read.
-interface ProjectResolveInput {
-  projectId: string;
-  agentId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -778,168 +551,70 @@ interface PermissionRequestPayload {
 }
 
 /**
- * TASK-718 + W3a: the `agents:deleted` and `projects:deleted` subscribers.
+ * TASK-718: the `agents:deleted` subscriber. Deleting an agent used to leave
+ * every conversation, display event and transcript row it ever had behind, for
+ * good: nothing hard-deleted these tables, and every per-conversation hook
+ * answers 404 once the agent is gone, so nobody could see or remove them.
  *
- * Deleting an agent used to leave every conversation, display event and
- * transcript row it ever had behind, for good: nothing hard-deleted these
- * tables, and every per-conversation hook answers 404 once the agent is gone.
  * Product decision: conversations are deleted WITH the agent (no retention),
- * for every user who talked to it — hence `purgeForAgent` keys on agent_id
- * alone and includes soft-deleted and hidden rows. W3a (§4.7, Q1 decided)
- * does the same for a deleted project: its chats go for EVERY user, including
- * chats other members started, hidden and soft-deleted ones.
+ * for every user who talked to it. Hence `purgeForAgent` keys on agent_id alone
+ * and includes soft-deleted and hidden rows.
  *
- * Durable (retried until it succeeds). Both events fire ONCE, after the source
- * row is gone, so nobody will ever ask again. The subscriber therefore:
- *   1. records the debt in `conversations_v1_pending_purges` (idempotent);
- *   2. purges the chats AND deletes that row in ONE transaction — success and
- *      dequeue commit together;
- *   3. after the commit, announces `conversations:purged` for exactly the ids
- *      removed.
- * On failure the row stays with attempts+1, the error message and a backoff
- * (30 s · 2^(attempts−1), capped at 1 h), and the plugin's sweep retries it.
- * A crash anywhere before the commit leaves the row too, and the sweep's
- * first pass after restart picks it up. Re-delivery is a no-op: nothing left
- * to purge, nothing announced.
- *
- * NOT covered — said plainly: an event this subscriber never received. If the
- * process dies after @ax/agents / @ax/projects deleted its row but before (or
- * while) the event reached us and step 1 committed, there is no record that a
- * purge is owed, and those chats stay behind (still scoped to their own users,
- * unreadable through every per-conversation hook). Closing that needs the
- * source plugin to keep its own outbox / re-fire, which is outside this
- * package. Likewise a `conversations:purged` subscriber that fails is not
- * re-announced (the ids are gone once the purge commits).
- *
- * Order matters: purge (one transaction) FIRST, announce SECOND. The fire is
- * deliberately outside the transaction, so a subscriber never sees ids whose
- * deletion could still roll back, and a slow or failing subscriber can never
- * hold the purge open or undo it.
+ * Order matters: purge (one transaction) FIRST, announce SECOND. The
+ * `conversations:purged` fire below is deliberately outside the transaction, so
+ * a subscriber never sees ids whose deletion could still roll back, and a slow
+ * or failing subscriber can never hold the purge open or undo it.
  *
  * Subscriber-must-not-throw (K10): every failure (an invalid payload, a
  * database error, a fire that throws) is logged at `error` and swallowed. The
- * source row is already gone by the time this runs; failing here would only
- * tell its plugin about a problem it cannot act on.
+ * agent row is already gone by the time this runs; failing here would only tell
+ * @ax/agents about a problem it cannot act on.
  */
-function validDeletedId(
-  ctx: AgentContext,
-  hookName: 'agents:deleted' | 'projects:deleted',
-  field: 'agentId' | 'projectId',
-  value: unknown,
-): string | undefined {
-  // A payload without a non-empty string id is a caller bug. Refuse it HERE as
-  // well as in the store: nothing may ever reach a delete keyed on an empty or
-  // non-string value — nor be written to the pending-purge outbox.
-  if (typeof value === 'string' && value.length > 0) return value;
-  ctx.logger.error(PURGE_LOG[hookName === 'agents:deleted' ? 'agent' : 'project'].failed, {
-    [field]: value,
-    err: new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `'${field}' must be a non-empty string`,
-    }),
-  });
-  return undefined;
-}
-
-/** Log lines per kind — the names predate the outbox and are kept stable. */
-const PURGE_LOG: Record<PendingPurgeKind, { ok: string; failed: string; idField: string }> = {
-  agent: {
-    ok: 'conversations_purged_for_deleted_agent',
-    failed: 'conversations_purge_for_deleted_agent_failed',
-    idField: 'agentId',
-  },
-  project: {
-    ok: 'conversations_purged_for_deleted_project',
-    failed: 'conversations_purge_for_deleted_project_failed',
-    idField: 'projectId',
-  },
-};
-
-function purgeKey(kind: PendingPurgeKind, targetId: string): string {
-  return `${kind}:${targetId}`;
-}
-
-/** The error's message only (never a stack or a whole object), truncated. */
-function shortErrorMessage(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.length > PURGE_ERROR_MAX_CHARS ? `${msg.slice(0, PURGE_ERROR_MAX_CHARS)}…` : msg;
-}
-
-/**
- * One attempt, shared by the subscriber and the sweep: purge-and-dequeue in one
- * transaction, then announce; on failure, reschedule. Returns whether the purge
- * committed. Never throws.
- */
-async function purgeAndAnnounce(
+async function purgeConversationsForDeletedAgent(
   store: ConversationStore,
   bus: HookBus,
   ctx: AgentContext,
-  kind: PendingPurgeKind,
-  targetId: string,
-  now: Date,
-): Promise<boolean> {
-  const log = PURGE_LOG[kind];
-  let conversationIds: string[];
+  payload: AgentDeletedPayload,
+): Promise<void> {
+  const agentId = payload?.agentId;
   try {
-    conversationIds = await store.purgeAndDequeue(kind, targetId);
-  } catch (err) {
-    ctx.logger.error(log.failed, {
-      [log.idField]: targetId,
-      err: err instanceof Error ? err : new Error(String(err)),
-    });
-    try {
-      await store.recordPurgeFailure(kind, targetId, shortErrorMessage(err), now);
-    } catch (recordErr) {
-      // The pending row (if the enqueue landed) still exists with its old
-      // schedule, so the sweep will retry anyway — just without the backoff
-      // bump or the error text.
-      ctx.logger.error('conversations_purge_retry_record_failed', {
-        kind,
-        targetId,
-        err: recordErr instanceof Error ? recordErr : new Error(String(recordErr)),
+    // A payload that is not `{ agentId: <non-empty string> }` is a caller bug.
+    // Refuse it HERE as well as in the store: nothing may ever reach a delete
+    // keyed on an empty or non-string value.
+    if (typeof agentId !== 'string' || agentId.length === 0) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'agents:deleted',
+        message: "'agentId' must be a non-empty string",
       });
     }
-    return false;
-  }
-  ctx.logger.info(log.ok, { [log.idField]: targetId, count: conversationIds.length });
-  try {
-    await announcePurged(bus, ctx, conversationIds);
+    const conversationIds = await store.purgeForAgent(agentId);
+    ctx.logger.info('conversations_purged_for_deleted_agent', {
+      agentId,
+      count: conversationIds.length,
+    });
+
+    // `conversations:purged`: a subscriber hook this plugin FIRES for others
+    // (@ax/attachments deletes the rows it keeps per conversation). Payload is
+    // ConversationsPurgedEvent `{ conversationIds }`, at most
+    // CONVERSATIONS_PURGED_CHUNK_SIZE ids per fire so a subscriber's own query
+    // stays bounded however many conversations the agent had. Nothing is fired
+    // when nothing was purged. Not an IPC action; domain vocabulary only.
+    //
+    // Alternate impl: a different conversations backend fires the same event,
+    // and any store that keeps per-conversation data (a blob service, a search
+    // index) subscribes the same way.
+    for (let i = 0; i < conversationIds.length; i += CONVERSATIONS_PURGED_CHUNK_SIZE) {
+      await bus.fire('conversations:purged', ctx, {
+        conversationIds: conversationIds.slice(i, i + CONVERSATIONS_PURGED_CHUNK_SIZE),
+      } satisfies ConversationsPurgedEvent);
+    }
   } catch (err) {
-    // The purge is committed and dequeued; a failed announce is not retried.
-    ctx.logger.error('conversations_purged_announce_failed', {
-      kind,
-      targetId,
+    ctx.logger.error('conversations_purge_for_deleted_agent_failed', {
+      agentId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
-  }
-  return true;
-}
-
-/**
- * `conversations:purged`: a subscriber hook this plugin FIRES for others
- * (@ax/attachments deletes the rows it keeps per conversation). Payload is
- * ConversationsPurgedEvent `{ conversationIds }`, at most
- * CONVERSATIONS_PURGED_CHUNK_SIZE ids per fire so a subscriber's own query
- * stays bounded however many conversations an agent or project had. Nothing is
- * fired when nothing was purged. Not an IPC action; domain vocabulary only.
- *
- * Alternate impl: a different conversations backend fires the same event, and
- * any store that keeps per-conversation data (a blob service, a search index)
- * subscribes the same way.
- *
- * Callers invoke this only AFTER the purge transaction committed.
- */
-async function announcePurged(
-  bus: HookBus,
-  ctx: AgentContext,
-  conversationIds: string[],
-): Promise<void> {
-  for (let i = 0; i < conversationIds.length; i += CONVERSATIONS_PURGED_CHUNK_SIZE) {
-    await bus.fire('conversations:purged', ctx, {
-      conversationIds: conversationIds.slice(i, i + CONVERSATIONS_PURGED_CHUNK_SIZE),
-    } satisfies ConversationsPurgedEvent);
   }
 }
 
@@ -1486,8 +1161,6 @@ async function createConversation(
   input: CreateInput,
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
-  // W3a: validate before any I/O, so a malformed id never reaches a gate.
-  const projectId = validateOptionalProjectId(input.projectId, 'projectId');
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
   // creator; otherwise no conversation should ever exist for it. Phase B
   // (I5): we capture the resolved agent here — its workspaceRef gets
@@ -1514,16 +1187,6 @@ async function createConversation(
   // "the caller said nothing" and "the caller said undefined" stay the same
   // thing all the way to the INSERT.
   const origin = validateOptionalOrigin(input.origin, 'origin');
-  // W3a (§4.4): a chat in a project must be one its agent can use. Checked
-  // AFTER the agent gate (an unreachable agent is the more basic refusal) and
-  // BEFORE the insert, so a refusal writes nothing.
-  if (projectId !== undefined) {
-    await assertProjectResolvable(bus, ctx, 'conversations:create', {
-      projectId,
-      agentId: input.agentId,
-      userId: input.userId,
-    });
-  }
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
@@ -1532,170 +1195,8 @@ async function createConversation(
     workspaceRef,
     hidden,
     ...(origin === undefined ? {} : { origin }),
-    ...(projectId === undefined ? {} : { projectId }),
   });
   return conv;
-}
-
-/**
- * W3a (§4.4). Refuse a `projectId` the chat's agent can't use, AS the person
- * the chat is for.
- *
- * `projects:resolve` takes its actor from `ctx.userId`. The ctx this hook
- * receives is not that person: channel-web creates chats with a host init ctx
- * and names the user in the payload, the same way `agents:resolve` takes
- * `userId` in its payload above. So the call runs on a derived ctx whose
- * `userId` is `input.userId` — the user the row will belong to, which is the
- * only identity the stored chat ever acts as. A caller cannot borrow another
- * person's project access by passing their ctx.
- *
- * Refusals (one uniform shape, W2 style):
- *   - no `projects:resolve` service → `forbidden`. Refused, never dropped: a
- *     chat silently created outside the project it was asked for would run
- *     without the project's folder.
- *   - `forbidden` / `not-found` from projects → the same code, re-attributed
- *     to this plugin. Any other failure propagates unchanged. Every path
- *     writes nothing, and is logged as `conversations_project_refused`.
- */
-async function assertProjectResolvable(
-  bus: HookBus,
-  ctx: AgentContext,
-  hookName: 'conversations:create' | 'conversations:set-project',
-  args: { projectId: string; agentId: string; userId: string },
-): Promise<void> {
-  const refuse = (reason: string): void => {
-    logProjectRefused(ctx, hookName, reason, args);
-  };
-  if (!bus.hasService('projects:resolve')) {
-    refuse('projects-unavailable');
-    throw new PluginError({
-      code: 'forbidden',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: 'projects are not available',
-      reasonCode: 'projects-unavailable',
-    });
-  }
-  const actorCtx: AgentContext = { ...ctx, userId: args.userId };
-  try {
-    await bus.call<ProjectResolveInput, unknown>('projects:resolve', actorCtx, {
-      projectId: args.projectId,
-      agentId: args.agentId,
-    });
-  } catch (err) {
-    if (err instanceof PluginError && (err.code === 'forbidden' || err.code === 'not-found')) {
-      refuse(err.code);
-      throw new PluginError({
-        code: err.code,
-        plugin: PLUGIN_NAME,
-        hookName,
-        message: err.message,
-        cause: err,
-      });
-    }
-    refuse('resolve-failed');
-    throw err;
-  }
-}
-
-/** One warn line for every project refusal (W3a as-built item 2: logged, not tabled). */
-function logProjectRefused(
-  ctx: AgentContext,
-  hookName: string,
-  reason: string,
-  args: { projectId: string | null; agentId: string; userId: string; conversationId?: string },
-): void {
-  ctx.logger.warn('conversations_project_refused', {
-    hook: hookName,
-    reason,
-    actor: args.userId,
-    projectId: args.projectId,
-    agentId: args.agentId,
-    ...(args.conversationId === undefined ? {} : { conversationId: args.conversationId }),
-  });
-}
-
-/**
- * W3e (§8). Move a chat into a project, to another one, or out of one.
- *
- * Order, each step before any write:
- *   1. validate `projectId` (a string or null — absent is a confused caller);
- *   2. load the row with the owner pre-filter: foreign / missing / deleted all
- *      read `not-found`, before any gate, so no gate leaks existence;
- *   3. a routine's conversation → `forbidden` (its project is set on the
- *      routine; review 1, finding 5);
- *   4. `agents:resolve` — the person must still reach the chat's agent;
- *   5. into a project: `projects:resolve` AS the chat's owner, the same rule
- *      as create. Out (null) is always allowed: it only narrows;
- *   6. unchanged → no write.
- *
- * Fires nothing. The orchestrator compares the chat's project with the one
- * its live session opened with on the next turn (`project-changed`).
- */
-async function setConversationProject(
-  store: ConversationStore,
-  bus: HookBus,
-  ctx: AgentContext,
-  input: SetProjectInput,
-): Promise<SetProjectOutput> {
-  const hookName = 'conversations:set-project';
-  const raw: unknown = (input as { projectId?: unknown }).projectId;
-  if (raw === undefined) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: 'projectId must be a project id or null',
-    });
-  }
-  const projectId = raw === null ? null : (validateOptionalProjectId(raw, 'projectId') ?? null);
-  const notFound = (): PluginError =>
-    new PluginError({
-      code: 'not-found',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `conversation '${input.conversationId}' not found`,
-    });
-
-  const conv = await store.getByIdNotDeleted(input.conversationId);
-  if (conv === null || conv.userId !== input.userId) throw notFound();
-
-  if (conv.origin === 'routine') {
-    logProjectRefused(ctx, hookName, 'routine-conversation', {
-      projectId,
-      agentId: conv.agentId,
-      userId: input.userId,
-      conversationId: input.conversationId,
-    });
-    throw new PluginError({
-      code: 'forbidden',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: "a routine's chat can't be moved; set the project on the routine",
-      reasonCode: 'routine-conversation',
-    });
-  }
-
-  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
-
-  if (projectId !== null) {
-    await assertProjectResolvable(bus, ctx, hookName, {
-      projectId,
-      agentId: conv.agentId,
-      userId: input.userId,
-    });
-  }
-
-  if ((conv.projectId ?? null) === projectId) return { projectId };
-
-  const updated = await store.setProject({
-    conversationId: input.conversationId,
-    userId: input.userId,
-    projectId,
-  });
-  // No match means the row went away (or was deleted) after the load above.
-  if (!updated) throw notFound();
-  return { projectId };
 }
 
 async function setConversationTitle(
@@ -2087,11 +1588,6 @@ async function listConversations(
   ctx: AgentContext,
   input: ListInput,
 ): Promise<ListOutput> {
-  // W3a: validate the project filter before any I/O. No projects:resolve
-  // here: the list is user-scoped, so it can only ever return the caller's
-  // own chats, and a project the caller lost access to still names chats
-  // that are theirs.
-  const projectId = validateOptionalProjectId(input.projectId, 'projectId');
   // J1: when agentId is supplied, gate via agents:resolve. When absent,
   // ACL is implicit (filter by user_id only) — the user's own
   // conversations are always reachable to them.
@@ -2104,7 +1600,7 @@ async function listConversations(
       'conversations:list',
     );
   }
-  const rows = await store.listForUser(input.userId, input.agentId, projectId);
+  const rows = await store.listForUser(input.userId, input.agentId);
   return rows;
 }
 

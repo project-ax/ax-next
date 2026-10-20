@@ -8,7 +8,6 @@
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../core" },
-    { "path": "../sandbox-mount-protocol" },
-    { "path": "../sandbox-protocol" }
+    { "path": "../sandbox-mount-protocol" }
   ]
 }

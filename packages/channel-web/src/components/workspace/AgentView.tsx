@@ -20,12 +20,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowRight, Menu } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-} from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
@@ -49,7 +43,6 @@ import {
   agentConversationTarget,
 } from '@/lib/new-agent-return-focus';
 import { relativeDay } from '@/lib/workspace-time';
-import { isPlainClick, workspaceRoutePath } from '@/lib/workspace-route';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import {
@@ -241,15 +234,6 @@ interface Props {
     hidden?: boolean;
   } | null;
   onPendingReplyConsumed?: () => void;
-  /**
-   * W3a — a conversation the project page asked to open. Opened the way the
-   * rail opens a past one (read-only unless it is the current conversation),
-   * then handed back through `onOpenConversationConsumed`.
-   */
-  openConversationId?: string | null;
-  onOpenConversationConsumed?: () => void;
-  /** W3a — the project breadcrumb's link. Without it the strip is not drawn. */
-  onOpenProject?: (projectId: string) => void;
 }
 
 /*
@@ -392,9 +376,6 @@ export function AgentView({
   onChanged,
   pendingReply = null,
   onPendingReplyConsumed,
-  openConversationId = null,
-  onOpenConversationConsumed,
-  onOpenProject,
 }: Props) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   /*
@@ -649,17 +630,6 @@ export function AgentView({
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  /*
-    W3d-2 (D2) — the late re-reads after a turn in a project chat. The pass
-    that writes project memory runs after `done`, so the first re-read usually
-    lands before it. Two more reads, at about 3 s and 10 s, pick it up. Any
-    new send, conversation change or unmount clears them.
-  */
-  const lateReloadTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const cancelLateReloads = useCallback(() => {
-    for (const t of lateReloadTimers.current) clearTimeout(t);
-    lateReloadTimers.current = [];
-  }, []);
 
   /*
     TASK-688 — STOP.
@@ -724,7 +694,7 @@ export function AgentView({
   const decisionsRef = useRef(decisions);
   decisionsRef.current = decisions;
 
-  const load = useCallback(async (): Promise<AgentDetail | null> => {
+  const load = useCallback(async () => {
     try {
       const next = await workspaceApi.agent(agentId);
       /*
@@ -749,14 +719,12 @@ export function AgentView({
       );
       conversationRef.current = next.conversationId;
       setLoadError(null);
-      return next;
     } catch (e) {
       setDetail(null);
       // The operator's half goes to the console; the reader's half is chosen
       // from the kind, not carried out of the error as a string.
       logRequestFailure(e, 'workspace-agent');
       setLoadError(toReadOutcome(e));
-      return null;
     }
   }, [agentId]);
 
@@ -820,19 +788,6 @@ export function AgentView({
       cancelled = true;
     };
   }, [agentId, pastId, pastReload]);
-
-  /*
-    W3a — open the conversation the project page named, once the detail says
-    which one is current. The current one IS the live thread (pastId null); any
-    other goes through the rail's own door, `setPastId`.
-  */
-  const detailConversationId = detail?.conversationId;
-  const detailLoaded = detail !== null;
-  useEffect(() => {
-    if (openConversationId === null || !detailLoaded) return;
-    setPastId(openConversationId === detailConversationId ? null : openConversationId);
-    onOpenConversationConsumed?.();
-  }, [openConversationId, detailLoaded, detailConversationId, onOpenConversationConsumed]);
 
   /**
    * The approval notice's "Try again", for whichever read is behind it.
@@ -918,9 +873,8 @@ export function AgentView({
       abortRef.current?.abort();
       // A pending fallback would abort and re-read into a view nobody has.
       cancelStop();
-      cancelLateReloads();
     };
-  }, [agentId, cancelStop, cancelLateReloads]);
+  }, [agentId, cancelStop]);
 
   const streamFrom = useCallback(
     async (reqId: string) => {
@@ -930,7 +884,6 @@ export function AgentView({
       // A new turn supersedes any Stop still pending on the old one, and the
       // old turn's note.
       cancelStop();
-      cancelLateReloads();
       setStopNotice(null);
       setSaveRefusedNotice(null);
       // The conversation this turn runs in — what a save-refused notice from
@@ -994,21 +947,7 @@ export function AgentView({
           // gap until it lands (TASK-689): `load` settles after BOTH of its
           // outcomes have written state, so `finally` is the honest "landed".
           setRereading(true);
-          void load()
-            .then((next) => {
-              // W3d-2 (D2) — only a project chat gets the late re-reads.
-              if (next === null || (next.project ?? null) === null) return;
-              const conversation = next.conversationId;
-              cancelLateReloads();
-              lateReloadTimers.current = [3_000, 10_000].map((ms) =>
-                setTimeout(() => {
-                  // A turn in flight, or another conversation on screen: skip.
-                  if (abortRef.current !== ac || conversationRef.current !== conversation) return;
-                  void load();
-                }, ms),
-              );
-            })
-            .finally(() => setRereading(false));
+          void load().finally(() => setRereading(false));
           onChanged();
         },
         onError: (message, fix) => {
@@ -1089,7 +1028,7 @@ export function AgentView({
         },
       });
     },
-    [agentId, load, onChanged, onDecisionRaised, cancelStop, cancelLateReloads, resetLiveTurn],
+    [agentId, load, onChanged, onDecisionRaised, cancelStop, resetLiveTurn],
   );
 
   /*
@@ -1250,7 +1189,6 @@ export function AgentView({
       // and so is its "files weren't saved" (TASK-720).
       setStopNotice(null);
       setSaveRefusedNotice(null);
-      cancelLateReloads();
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
@@ -1296,7 +1234,7 @@ export function AgentView({
         });
       }
     },
-    [agentId, streamFrom, cancelLateReloads],
+    [agentId, streamFrom],
   );
 
   if (loadError !== null) {
@@ -1652,13 +1590,6 @@ export function AgentView({
       : `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
 
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
-  /*
-    W3a (frame 7) — the project the conversation ON SCREEN belongs to: the
-    excerpt's own read for a past one (falling back to its rail row while that
-    read is in flight), else the current conversation's.
-  */
-  const shownProject =
-    past !== null ? (pastDetail?.project ?? past.project ?? null) : (detail.project ?? null);
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
   const approvalRead: ApprovalRead = excerptOpening
     ? 'ok'
@@ -1683,7 +1614,6 @@ export function AgentView({
     onNew: async () => {
       const created = await conversationControls.create(agent.id);
       const next = await workspaceApi.agent(agent.id, created.conversationId);
-      cancelLateReloads();
       conversationRef.current = created.conversationId;
       setPastId(null);
       setSent(null);
@@ -1754,26 +1684,6 @@ export function AgentView({
           </header>}
           {!compactRail && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
           <h2 className="sr-only">Conversation</h2>
-          {shownProject !== null && onOpenProject && (
-            <Breadcrumb className="shrink-0 border-b border-border px-6 py-2" aria-label="Project">
-              <BreadcrumbList className="text-[12.5px]">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href={workspaceRoutePath({ kind: 'project', id: shownProject.projectId })}
-                    onClick={(e) => {
-                      if (!isPlainClick(e)) return;
-                      e.preventDefault();
-                      onOpenProject(shownProject.projectId);
-                    }}
-                    className="max-w-[32ch] truncate"
-                    title={shownProject.name}
-                  >
-                    {shownProject.name}
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          )}
 
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
@@ -2009,7 +1919,6 @@ export function AgentView({
                 grants={threadGrants}
                 onGrantResolved={onGrantResolved}
                 onGranted={onGranted}
-                onOpenProject={onOpenProject}
                 /*
                   WHICH conversation that `thread` is (TASK-418). This panel
                   swaps it under a component that is mounted once and un-keyed,

@@ -38,14 +38,6 @@ describe('rowToConversation Phase A fields', () => {
     ).toBe('routine:019c8e8d-abc0-7000-8000-000000000001');
     expect(rowToConversation({ ...base, hidden: false, external_key: null }).externalKey).toBeNull();
   });
-
-  // W3a (§4.4). A chat's project; NULL (or a row that predates the column,
-  // which a fixture models by omitting it) reads as null, never undefined.
-  it('maps project_id string, null and absent', () => {
-    expect(rowToConversation({ ...base, hidden: false, project_id: 'prj_1' }).projectId).toBe('prj_1');
-    expect(rowToConversation({ ...base, hidden: false, project_id: null }).projectId).toBeNull();
-    expect(rowToConversation({ ...base, hidden: false }).projectId).toBeNull();
-  });
 });
 
 describe('rowToConversation Phase B fields', () => {

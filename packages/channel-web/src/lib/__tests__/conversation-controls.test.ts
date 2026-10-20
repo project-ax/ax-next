@@ -36,30 +36,4 @@ describe('conversation controls through the CSRF guard', () => {
       }
     },
   );
-
-  it.each([['prj_1'], [null]] as const)(
-    'setProject(%j) PUTs { projectId } to the move route with the write headers',
-    async (projectId) => {
-      const fetchMock = vi.fn(async (_path: string, init: RequestInit) => {
-        const headers = new Headers(init.headers);
-        headers.set('origin', 'http://localhost:9090');
-        const rejection = evaluateCsrf(init.method!, Object.fromEntries(headers), { allowedOrigins: [] });
-        if (rejection) return new Response(JSON.stringify({ error: rejection.reason }), { status: 403 });
-        return new Response(JSON.stringify({ projectId }), { status: 200 });
-      });
-      vi.stubGlobal('fetch', fetchMock);
-      await expect(conversationControls.setProject('cnv/1', projectId)).resolves.toEqual({ projectId });
-      const [path, init] = fetchMock.mock.calls[0]!;
-      expect(path).toBe('/api/chat/conversations/cnv%2F1/project');
-      expect(init.method).toBe('PUT');
-      expect(new Headers(init.headers).get('x-requested-with')).toBe('ax-admin');
-      expect(new Headers(init.headers).get('content-type')).toBe('application/json');
-      expect(JSON.parse(init.body as string)).toEqual({ projectId });
-    },
-  );
-
-  it('setProject surfaces a refusal with its status', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'cannot-move-routine-chat' }), { status: 409 })));
-    await expect(conversationControls.setProject('cnv-1', 'prj_1')).rejects.toMatchObject({ status: 409 });
-  });
 });

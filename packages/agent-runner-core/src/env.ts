@@ -16,8 +16,6 @@
 // beats a confusing downstream error.
 // ---------------------------------------------------------------------------
 
-import { posix } from 'node:path';
-
 export interface RunnerEnv {
   runnerEndpoint: string;
   sessionId: string;
@@ -76,86 +74,6 @@ export interface RunnerEnv {
    */
   proxyToken?: string;
   memoryRoot?: string;
-  /**
-   * Shared folders mounted into this session (W2), host-stamped via
-   * `AX_SHARED_FOLDERS`. Each is a file-tool root ONLY: never cwd/HOME (see
-   * `runnerHomeDir`), never a source of settings, memory or skills. `readOnly`
-   * is advisory for the prompt — the mount is what enforces it. Absent when the
-   * sandbox mounted none.
-   */
-  sharedFolders?: readonly SharedFolderEnv[];
-}
-
-export interface SharedFolderEnv {
-  readonly id: string;
-  readonly path: string;
-  readonly readOnly: boolean;
-}
-
-/**
- * Shared-folder id shape. A deliberate COPY of `SHARED_FOLDER_ID_RE` in
- * `@ax/sandbox-protocol` (shared-folder-id.ts): runner-core stays independent
- * of that package (see the claude-sdk runner's mcp-server-drift guard). The
- * env test reads the protocol's source and fails if the two ever diverge.
- */
-export const SHARED_FOLDER_ID_RE = /^sf_[A-Za-z0-9_-]{1,64}$/;
-
-function isValidSharedFolderId(id: unknown): id is string {
-  return typeof id === 'string' && SHARED_FOLDER_ID_RE.test(id);
-}
-
-/** Matches the host side's cap on folders per session. */
-const MAX_SHARED_FOLDERS = 16;
-const SHARED_FOLDERS_EXPECTED =
-  `expected a JSON array of at most ${MAX_SHARED_FOLDERS} { id, path, readOnly } entries ` +
-  'with valid unique ids and unique absolute normalized paths';
-
-/**
- * Strictly parse `AX_SHARED_FOLDERS`. Host-controlled, but validated like the
- * rest of the env at the trust boundary: an unusable value fails boot with
- * `InvalidEnvError` naming only the variable, never the value.
- */
-function parseSharedFolders(raw: string): SharedFolderEnv[] {
-  const fail = (): never => {
-    throw new InvalidEnvError('AX_SHARED_FOLDERS', SHARED_FOLDERS_EXPECTED);
-  };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fail();
-  }
-  if (!Array.isArray(parsed) || parsed.length > MAX_SHARED_FOLDERS) return fail();
-  const ids = new Set<string>();
-  const paths = new Set<string>();
-  const out: SharedFolderEnv[] = [];
-  for (const entry of parsed as unknown[]) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return fail();
-    const keys = Object.keys(entry).sort();
-    if (keys.length !== 3 || keys[0] !== 'id' || keys[1] !== 'path' || keys[2] !== 'readOnly') {
-      return fail();
-    }
-    const { id, path, readOnly } = entry as Record<string, unknown>;
-    if (!isValidSharedFolderId(id)) return fail();
-    if (typeof readOnly !== 'boolean') return fail();
-    if (!isNormalizedAbsolutePath(path)) return fail();
-    if (ids.has(id) || paths.has(path)) return fail();
-    ids.add(id);
-    paths.add(path);
-    out.push({ id, path, readOnly });
-  }
-  return out;
-}
-
-const UNSAFE_PATH_CHARS = /[\u0000-\u001f\u007f`]/;
-
-function isNormalizedAbsolutePath(p: unknown): p is string {
-  if (typeof p !== 'string' || p.length < 2 || !p.startsWith('/')) return false;
-  // Control characters and backticks are refused: the path is interpolated into
-  // the system prompt inside a code span (sharedFoldersNote).
-  if (UNSAFE_PATH_CHARS.test(p) || p.endsWith('/')) return false;
-  if (posix.normalize(p) !== p) return false;
-  return !p.split('/').includes('..');
 }
 
 /** User work prefers durable files, then session scratch; agent state stays separate. */
@@ -264,9 +182,5 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   result.proxyToken = proxyToken;
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
-  // W2: deliberately NOT an input to runnerHomeDir — a shared folder is a
-  // file-tool root, never cwd/HOME.
-  const sharedFolders = opt('AX_SHARED_FOLDERS');
-  if (sharedFolders !== undefined) result.sharedFolders = parseSharedFolders(sharedFolders);
   return result;
 }

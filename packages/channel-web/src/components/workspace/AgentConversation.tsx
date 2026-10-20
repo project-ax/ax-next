@@ -83,7 +83,6 @@ import {
 import { ApprovalCard } from './ApprovalCard';
 import { GrantRow } from './GrantRow';
 import { MemoryUsedChip } from './MemoryUsedChip';
-import { ProjectMemoryChip } from './ProjectMemoryChip';
 import {
   COMPOSER_HOLD_COPY,
   DECISION_SESSION_EXPIRED,
@@ -329,8 +328,6 @@ interface Props {
    * caller's own shape.)
    */
   conversationKey?: string;
-  /** W3d-2 — open a project in place (the memory chip's link). Without it the link is a plain href. */
-  onOpenProject?: ((projectId: string) => void) | undefined;
 }
 
 export function AgentConversation({
@@ -356,7 +353,6 @@ export function AgentConversation({
   onGrantResolved,
   onGranted,
   conversationKey = 'one-conversation',
-  onOpenProject,
 }: Props) {
   /*
     TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
@@ -708,7 +704,6 @@ export function AgentConversation({
               find={find}
               {...(busyIds !== undefined ? { busyIds } : {})}
               {...(notices !== undefined ? { notices } : {})}
-              onOpenProject={onOpenProject}
             />
             );
           })}
@@ -1036,7 +1031,6 @@ function Message({
   notices,
   find,
   fieldKey,
-  onOpenProject,
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
@@ -1057,7 +1051,6 @@ function Message({
    * only the caller doing the mapping knows that — see `findFieldKey`.
    */
   fieldKey: string;
-  onOpenProject?: ((projectId: string) => void) | undefined;
 }) {
   if (m.kind === 'user') {
     const attachments = m.attachments ?? [];
@@ -1437,10 +1430,6 @@ function Message({
         */}
         {m.memoryUsed !== undefined && m.memoryUsed.statements.length > 0 && (
           <MemoryUsedChip used={m.memoryUsed} agentId={agent.id} />
-        )}
-        {/* W3d-2 — the project memory files this answer wrote. */}
-        {m.projectMemory !== undefined && m.projectMemory.files.length > 0 && (
-          <ProjectMemoryChip update={m.projectMemory} onOpenProject={onOpenProject} />
         )}
         {/*
           `at` is `''` on the live streaming frame (no committed instant until

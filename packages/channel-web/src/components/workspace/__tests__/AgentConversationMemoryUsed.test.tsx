@@ -96,21 +96,4 @@ describe('AgentConversation — the memory-used chip', () => {
     expect(c).not.toBeNull();
     expect(panel!.compareDocumentPosition(c!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
-
-  it('draws the project memory chip only when the answer wrote files (W3d-2)', () => {
-    const projectMemory = {
-      projectId: 'p1',
-      canEdit: true,
-      files: [{ versionId: 'v1', path: 'memory/people.md', change: 'created', undo: 'available' }],
-    };
-    const pm = (c: HTMLElement) => c.querySelector('[data-testid="workspace-project-memory"]');
-    const { container, unmount } = renderThread([
-      agentMsg(),
-      agentMsg({ id: 'r2', projectMemory: { ...projectMemory, files: [] } }),
-    ]);
-    expect(pm(container)).toBeNull();
-    unmount();
-    const drawn = renderThread([stepsMsg({ projectMemory })]);
-    expect(pm(drawn.container)?.textContent).toContain('Updated project memory · 1 file');
-  });
 });
