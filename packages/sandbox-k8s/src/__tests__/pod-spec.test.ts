@@ -1316,6 +1316,37 @@ describe('buildPodSpec', () => {
       expect(initCs(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeUndefined();
     });
 
+    // The user-files subPath is the per-agent subtree key: exactly one safe
+    // segment. An empty one would mount the whole export at /files; a deeper or
+    // dot-named one would mount something other than this agent's own subtree.
+    // Read-only doesn't make a wrong subtree safe (it would still expose other
+    // agents' files), so both access modes are refused.
+    it.each([['.shared'], ['a/b'], ['..'], [''], ['.'], ['agent abc'], ['agent-abc/']])(
+      'rejects a user-files subPath %j (fail closed)',
+      (subPath) => {
+        for (const readOnly of [false, true]) {
+          expect(() =>
+            buildPodSpec(
+              'm',
+              { ...baseInput, mounts: [{ ...nfsMount, subPath, readOnly }] },
+              baseResolved(),
+            ),
+          ).toThrow(/user-files.*single safe path segment/);
+        }
+      },
+    );
+
+    it('accepts a real agent id as the user-files subPath', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, subPath: 'agt_01HZX9K2Q7-abc' }] },
+        baseResolved(),
+      );
+      expect(runnerMounts(spec).find((m) => m.name === 'ax-mount-0')!.subPath).toBe(
+        'agt_01HZX9K2Q7-abc',
+      );
+    });
+
     it('adds no chown init when no mounts are yielded (no-mount path unchanged)', () => {
       const spec = buildPodSpec('m', baseInput, baseResolved());
       expect(initCs(spec).some((c) => c.name.endsWith('-chown'))).toBe(false);
@@ -1530,7 +1561,9 @@ describe('buildPodSpec', () => {
       expect(() =>
         buildPodSpec('m', { ...baseInput, mounts: [trailing, writableNfs] }, baseResolved()),
       ).toThrow(/aliases/);
-      const rootExport = { ...writableNfs, exportPath: '/', subPath: '' };
+      // A user-files subPath is one safe segment, and an empty one is refused
+      // before the alias check runs, so the root export reaches it via `vol1`.
+      const rootExport = { ...writableNfs, exportPath: '/', subPath: 'vol1' };
       expect(() =>
         buildPodSpec(
           'm',

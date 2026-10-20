@@ -482,6 +482,13 @@ function nfsSourcePath(exportPath: string, subPath: string): string {
   return posix.resolve('/', exportPath, subPath);
 }
 
+// A single safe path segment — the per-agent user-files subtree key. Mirrors
+// `SAFE_SEGMENT_RE` in user-files-ops.ts and the resolvers' agentId gate. No
+// `/`, `.`, `..`, whitespace or empty string, so a `role:'user-files'` mount is
+// only ever one agent's own subtree: never the whole export, a parent, a nested
+// path or a dot-named directory.
+const USER_FILES_SUBPATH_RE = /^[A-Za-z0-9_-]+$/;
+
 function validNfsSubPath(subPath: string): boolean {
   if (subPath.length === 0 || subPath.includes('\0')) return false;
   if (posix.isAbsolute(subPath)) return false;
@@ -494,6 +501,9 @@ function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
     switch (mount.kind) {
       case 'nfs': {
         const name = `ax-mount-${i}`;
+        if (mount.role === 'user-files' && !USER_FILES_SUBPATH_RE.test(mount.subPath)) {
+          throw new Error("a role:'user-files' mount subPath must be a single safe path segment");
+        }
         out.volumes.push({
           name,
           nfs: { server: mount.server, path: mount.exportPath },
