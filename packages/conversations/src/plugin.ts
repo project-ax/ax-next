@@ -809,8 +809,10 @@ async function purgeAndAnnounce(
   // `kind` is typed, but on the sweep's path it was read back from the
   // database. A kind with no PURGE_LOG entry is logged and skipped: reading
   // its log names would throw out of this function and end the sweep's pass,
-  // stranding every row behind it. duePurges reads only known kinds, so this
-  // is a guard, not a path anything takes today.
+  // stranding every row behind it. It is skipped WITHOUT rescheduling
+  // (recordPurgeFailure accepts only known kinds), so such a row would stay
+  // due and be logged again on every pass. What keeps one out of the queue
+  // is duePurges' kind filter, not this guard: nothing takes this path today.
   const log = Object.hasOwn(PURGE_LOG, kind) ? PURGE_LOG[kind] : undefined;
   if (log === undefined) {
     ctx.logger.error('conversations_purge_unknown_kind', { kind, targetId });

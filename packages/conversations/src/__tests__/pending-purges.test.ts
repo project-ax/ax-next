@@ -477,16 +477,17 @@ describe('durable purge — when the pending record itself cannot be written', (
 // pass and strands every row behind it. On the sweep's path a row's kind comes
 // back from the database.
 describe('durable purge — a pending row of a kind this build does not know', () => {
-  it('is logged and skipped, and the agent row behind it in the same pass is still purged', async () => {
+  it('is logged and skipped, an inherited name like constructor too, and the agent row behind them is still purged', async () => {
     const { plugin, pool, announced } = await makeHarness();
     const { ids } = await seed(pool, target);
     await pool.query(`INSERT INTO conversations_v1_pending_purges (kind, target_id) VALUES ('agent', $1)`, [target]);
     // The sweep logs through its own ctx, whose logger writes JSON lines to stdout.
     const stdout = vi.spyOn(process.stdout, 'write');
-    extraDue.rows = [{ kind: 'project', targetId: 'prj_gone' }];
+    // Every object inherits `constructor`: only an own-key lookup tells it from a PURGE_LOG entry.
+    extraDue.rows = [{ kind: 'project', targetId: 'prj_gone' }, { kind: 'constructor', targetId: 'ctor_gone' }];
     let lines: string[];
     try {
-      expect(await plugin.sweepPendingPurges(new Date(Date.now() + 60 * SEC))).toEqual({ attempted: 2, purged: 1 });
+      expect(await plugin.sweepPendingPurges(new Date(Date.now() + 60 * SEC))).toEqual({ attempted: 3, purged: 1 });
     } finally {
       extraDue.rows = [];
       lines = stdout.mock.calls.map(([chunk]) => String(chunk));
@@ -501,6 +502,7 @@ describe('durable purge — a pending row of a kind this build does not know', (
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(unknown).toEqual([
       expect.objectContaining({ level: 'error', msg: 'conversations_purge_unknown_kind', kind: 'project', targetId: 'prj_gone' }),
+      expect.objectContaining({ level: 'error', msg: 'conversations_purge_unknown_kind', kind: 'constructor', targetId: 'ctor_gone' }),
     ]);
   });
 });

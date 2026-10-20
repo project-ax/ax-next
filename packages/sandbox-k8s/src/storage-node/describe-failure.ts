@@ -21,7 +21,7 @@ function redactionList(env: Readonly<Record<string, string>>): string[] {
 
 function redact(text: string, env: Readonly<Record<string, string>>): string {
   for (const value of redactionList(env)) text = text.split(value).join('[redacted]');
-  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, REPORT_MAX_CHARS);
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').slice(0, REPORT_MAX_CHARS);
 }
 
 /**

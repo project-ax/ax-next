@@ -42,6 +42,12 @@ describe('describeFailure redaction', () => {
     expect(text).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect(text).toContain('first second');
   });
+  // NEL (U+0085) and the Unicode line and paragraph separators end a line in some log
+  // viewers; the other C1 controls (U+0080–U+009F) are terminal escapes, like C0's.
+  it('strips C1 controls and the Unicode line and paragraph separators too', () => {
+    const text = describeFailure(new Error('a\u0080b\u0085c\u009bd\u009fe\u2028f\u2029g'), {});
+    expect(text).toBe('Error: a b c d e f g');
+  });
 });
 
 // @kubernetes/client-node's ApiException puts the whole response in its message:
