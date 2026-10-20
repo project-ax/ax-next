@@ -15,11 +15,12 @@ knows what it's for and says how it's going.
 
 ## Resume here
 
-- **Now:** this design is proposed. Nothing is built.
+- **Now:** this design is proposed. §11 step 1, the revert, is TASK-903.
 - **Next, in order:**
-  1. §11 step 1, the revert PR: keep W1, revert projects and shared folders.
-  2. §11 steps 2–4: the keepers PR, resetting production and kind, tidying the board.
-  3. §12 PR 1: "Stay on top of something", end to end.
+  1. §11 steps 2–4: the keepers PR, resetting production and kind, tidying the board.
+     Don't deploy the reverted main to production before step 3's database wipe:
+     blob-gc and disk-quota fail closed on the projects holder rows it clears.
+  2. §12 PR 1: "Stay on top of something", end to end.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 

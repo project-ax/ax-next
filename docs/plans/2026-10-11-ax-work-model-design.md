@@ -1,8 +1,8 @@
 # AX Work Model (umbrella design)
 
-> **Paused 2026-10-20.** Superseded by the [Agent Tasks design](2026-10-20-agent-tasks-design.md)
-> once its revert lands (§11 there). Start from that doc's "Resume here", not this one's,
-> and don't start W3f or any later work item from here.
+> **Superseded 2026-10-20** by the [Agent Tasks design](2026-10-20-agent-tasks-design.md).
+> TASK-903 reverted W2 and W3 (#989, #991–#1001); W1 (#988) stays. Start from that doc's
+> "Resume here", not this one's, and don't start W3f or any later work item from here.
 
 **Status:** design approved in conversation on 2026-10-11; each work item gets its own spec and plan before it's built.
 **Owner:** Vinay · **Started:** 2026-10-11 · **Last updated:** 2026-10-12
@@ -21,6 +21,9 @@ clear home.
 
 ## Resume here
 
+- **2026-10-20: superseded.** TASK-903 reverted W2 and W3 (#989, #991–#1001)
+  and kept W1. Everything below is history. Continue from the
+  [Agent Tasks design](2026-10-20-agent-tasks-design.md)'s "Resume here".
 - **Now:** W1 (#988), W2 + W3a (#989, one squash) and the purge-retry follow-up
   (#991) are on main. W2 passed GKE pool acceptance on 2026-10-16; W3 spec §17
   records how W3a was built. W1 is in

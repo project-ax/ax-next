@@ -1,5 +1,9 @@
 # W3: projects (design)
 
+> **Superseded 2026-10-20** by the [Agent Tasks design](2026-10-20-agent-tasks-design.md).
+> Projects shipped and then came out again: TASK-903 reverted #989 and #991–#1001.
+> This doc is history. The code it cites is in git, e.g. `git show 092ce4b:<path>`.
+
 **Status:** draft, revised after review 1 (2026-10-12); see §16. **Owner:** Vinay.
 **Work item:** W3 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`,
 §5 and §13). It needs W1 (shipped, #988) and W2 (built on `feat/w2-shared-folders`,
