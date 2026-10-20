@@ -725,7 +725,8 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
   records only (never on a new assignment), and unmount the `shared/<folderId>`
   binds it names on release. Dropping it would let the helper boot but leave
   those binds attached when it frees the pod. Tested by booting reconcile over
-  such a record and annotation (TASK-904). Until this lands, every helper restart (an eviction, a node upgrade) is exposed.
+  such a record and annotation (TASK-904). Before TASK-904, every helper
+  restart (an eviction, a node upgrade) was exposed.
 - **Left in git history until something needs them:** the NFS
   `lookupcache=positive` static PV (#999) and `walk-read.ts` (TASK-899).
 
@@ -738,7 +739,9 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
   chat can still hold a record with `sharedFolders`. The database wipe doesn't
   touch any of this. Skip the drain only if step 2's leftover-key fix
   (TASK-904) is already in the image. The helper then boots over those records
-  and unmounts their shared-folder binds when it releases them.
+  and unmounts their shared-folder binds when it releases them, provided each
+  release succeeds. If one fails, the helper still exits at boot, and its
+  stderr names the pod and the cause.
 - Wipe the database and deploy the reverted main.
 - Delete the storage-helper pods by hand. Its DaemonSet uses `OnDelete`
   (`deploy/charts/ax-next/templates/shared-storage.yaml`), so pods don't roll
