@@ -1,5 +1,11 @@
 # W1: prompt contributions from several plugins (design)
 
+> **Note, 2026-10-20:** W1 stays on main, but the `brief` section described here
+> came in with W3 (#992) and went out with TASK-903's revert. Today's contract is
+> `rules`, `context` and `recall`, and no plugin registers an optional provider.
+> The [Agent Tasks design](2026-10-20-agent-tasks-design.md) (§4.2) adds `brief`
+> back as its first user.
+
 **Status:** draft, revised after review 1 (2026-10-12). See §10 for the review log. **Owner:** Vinay.
 **Work item:** W1 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`).
 It unblocks W3 (projects), W6 (goals, `docs/plans/2026-10-09-agent-goals-design.md`)
