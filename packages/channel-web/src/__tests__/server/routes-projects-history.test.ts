@@ -127,6 +127,10 @@ describe('project file history routes (W3d)', () => {
       gate('projects:restore-version', ctx, input as Record<string, unknown>, true);
       return { sha256: HASH, folderId: 'fld_secret' };
     });
+    bus.registerService('projects:undo-change', 'projects', async (ctx, input) => {
+      gate('projects:undo-change', ctx, input as Record<string, unknown>, true);
+      return { folderId: 'fld_secret' };
+    });
     bus.registerService('agents:list-for-user', 'agents', async () => ({
       agents: [{ id: 'ag-scout', displayName: 'Scout' }],
     }));
@@ -158,11 +162,18 @@ describe('project file history routes (W3d)', () => {
     return captured;
   };
 
+  const undo = async (projectId: string, versionId: string) => {
+    const { res, captured } = mkRes();
+    await h().undoProjectChange(mkReq({ projectId, versionId }), res);
+    return captured;
+  };
+
   describe('authentication', () => {
     it.each([
       ['history', () => history('prj_1', 'work/a.md')],
       ['preview', () => preview('prj_1', 'v6')],
       ['restore', () => restore('prj_1', 'v6')],
+      ['undo', () => undo('prj_1', 'v6')],
     ])('%s: 401 with no projects:* call', async (_n, run) => {
       user = null;
       expect(await run()).toMatchObject({ statusCode: 401, json: { error: 'unauthenticated' } });
@@ -360,6 +371,79 @@ describe('project file history routes (W3d)', () => {
       });
       await registerProjectsRoutes(reg, initCtx);
       const r = routes.find((x) => x.path === '/api/workspace/projects/:projectId/versions/:versionId/restore');
+      expect(r).toMatchObject({ method: 'POST' });
+      expect(r!.bypassCsrf).toBeUndefined();
+    });
+  });
+
+  describe('POST versions/:versionId/undo (W3d-2)', () => {
+    it('undoes as the person and answers an empty body (nothing from the hook rides along)', async () => {
+      expect(await undo('prj_1', 'v3')).toEqual({ statusCode: 200, json: {} });
+      expect(calls).toEqual([
+        { hook: 'projects:undo-change', userId: 'u-alice', input: { projectId: 'prj_1', versionId: 'v3' } },
+      ]);
+    });
+
+    it('a viewer is a 403; a stranger and an unknown project are one 404', async () => {
+      user = 'u-vic';
+      expect(await undo('prj_1', 'v3')).toEqual({ statusCode: 403, json: { error: 'forbidden' } });
+      user = 'u-eve';
+      const theirs = await undo('prj_1', 'v3');
+      expect(theirs).toEqual({ statusCode: 404, json: { error: 'version-not-found' } });
+      expect(await undo('prj_nope', 'v3')).toEqual(theirs);
+    });
+
+    it.each([
+      ['changed-since', 409, 'changed-since'],
+      ['not-undoable', 409, 'not-undoable'],
+      ['not-found', 404, 'version-not-found'],
+      ['read-only-path', 403, 'read-only-path'],
+      ['protected-path', 403, 'protected-path'],
+      ['conflict', 409, 'conflict'],
+      ['files-unavailable', 503, 'project-files-unavailable'],
+      ['invalid-payload', 400, 'invalid-payload'],
+    ])('%s → %i %s', async (code, status, error) => {
+      nextRefusal = code;
+      expect(await undo('prj_1', 'v3')).toEqual({ statusCode: status, json: { error } });
+    });
+
+    it('an over-long version id is a 404 with no call', async () => {
+      expect(await undo('prj_1', 'x'.repeat(129))).toEqual({ statusCode: 404, json: { error: 'version-not-found' } });
+      expect(calls).toEqual([]);
+    });
+
+    it('without the hook it is a 503, never a false success', async () => {
+      const bare = new HookBus();
+      bare.registerService('auth:require-user', 'auth', async () => ({ user: { id: 'u-alice', isAdmin: false } }));
+      const { res, captured } = mkRes();
+      await makeProjectsHandlers({ bus: bare, initCtx }).undoProjectChange(
+        mkReq({ projectId: 'prj_1', versionId: 'v3' }),
+        res,
+      );
+      expect(captured).toEqual({ statusCode: 503, json: { error: 'projects-unavailable' } });
+    });
+
+    it('a real fault is not dressed up as a refusal', async () => {
+      const faulty = new HookBus();
+      faulty.registerService('auth:require-user', 'auth', async () => ({ user: { id: 'u-alice', isAdmin: false } }));
+      faulty.registerService('projects:undo-change', 'projects', async () => {
+        throw new Error('db down');
+      });
+      const { res } = mkRes();
+      await expect(
+        makeProjectsHandlers({ bus: faulty, initCtx }).undoProjectChange(mkReq({ projectId: 'prj_1', versionId: 'v3' }), res),
+      ).rejects.toThrow('db down');
+    });
+
+    it('is registered CSRF-gated (no bypass)', async () => {
+      const reg = new HookBus();
+      const routes: Array<Record<string, unknown>> = [];
+      reg.registerService('http:register-route', 'http', async (_c, input) => {
+        routes.push(input as Record<string, unknown>);
+        return { unregister: () => {} };
+      });
+      await registerProjectsRoutes(reg, initCtx);
+      const r = routes.find((x) => x.path === '/api/workspace/projects/:projectId/versions/:versionId/undo');
       expect(r).toMatchObject({ method: 'POST' });
       expect(r!.bypassCsrf).toBeUndefined();
     });

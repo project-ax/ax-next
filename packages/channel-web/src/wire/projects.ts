@@ -209,3 +209,14 @@ export interface ProjectFileVersionPreview {
 export interface RestoreProjectFileVersionResponse {
   sha256: string;
 }
+
+/** W3d-2 — `POST …/versions/:versionId/undo`: an empty body on success. */
+export type UndoProjectChangeResponse = Record<string, never>;
+
+/**
+ * W3d-2 — the undo route's 409 bodies: something newer was recorded for that
+ * path (or it changed under the undo), or the change can't be reversed.
+ */
+export interface UndoProjectChangeRefusal {
+  error: 'changed-since' | 'not-undoable';
+}

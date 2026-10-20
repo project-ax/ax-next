@@ -640,6 +640,12 @@ export type ThreadMessage =
        * model recalled nothing (or nothing could be attributed to this answer).
        */
       memoryUsed?: MemoryUsed;
+      /**
+       * W3d-2 — the files under the project's `memory/` folder that this
+       * answer's exchange changed (from `projects:conversation-changes`).
+       * Absent outside a project, or when the exchange changed none.
+       */
+      projectMemory?: ProjectMemoryUpdate;
       /** Files published by this turn, persisted with the conversation. */
       attachments?: readonly ThreadAttachment[];
     }
@@ -664,6 +670,8 @@ export type ThreadMessage =
       attachments?: readonly ThreadAttachment[];
       /** See `memoryUsed` on the `agent` variant above — same field, same rule. */
       memoryUsed?: MemoryUsed;
+      /** See `projectMemory` on the `agent` variant above. */
+      projectMemory?: ProjectMemoryUpdate;
     }
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }
@@ -867,6 +875,24 @@ export interface MemoryUsedStatement extends FactMemoryStatement {
 export interface MemoryUsed {
   statements: MemoryUsedStatement[];
   visibility?: 'personal' | 'team';
+}
+
+/** One `memory/` file an answer's exchange changed (W3d-2). */
+export interface ProjectMemoryFile {
+  /** Opaque; the undo route's `:versionId`. */
+  versionId: string;
+  /** Project-relative, e.g. `memory/people.md`. Agent-authored text. */
+  path: string;
+  change: 'created' | 'edited' | 'deleted';
+  undo: 'available' | 'changed-since' | 'not-undoable';
+}
+
+/** What an answer's "Updated project memory" chip draws (W3d-2). */
+export interface ProjectMemoryUpdate {
+  projectId: string;
+  /** The person may edit the project's files (Undo is offered only then). */
+  canEdit: boolean;
+  files: ProjectMemoryFile[];
 }
 
 export interface FactMemoryPage {

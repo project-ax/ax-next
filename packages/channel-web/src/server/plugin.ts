@@ -726,6 +726,17 @@ export function createChannelWebServerPlugin(
             'POST /api/workspace/projects/:projectId/versions/:versionId/restore answers 503 projects-unavailable',
         },
         {
+          // W3d-2 — the "Updated project memory" chip under an answer. The
+          // read runs as the person; without it the chip never shows.
+          hook: 'projects:conversation-changes',
+          degradation: 'answers in a project chat carry no "Updated project memory" chip',
+        },
+        {
+          hook: 'projects:undo-change',
+          degradation:
+            'POST /api/workspace/projects/:projectId/versions/:versionId/undo answers 503 projects-unavailable',
+        },
+        {
           // "May this person manage this agent's sharing?" — who may own a new
           // project, and whether the project page offers rename/delete. The
           // hooks re-check; this only decides what to offer.

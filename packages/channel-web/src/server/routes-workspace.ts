@@ -250,6 +250,7 @@ export {
 } from './file-serving.js';
 import { workspaceFilePath } from './safe-path.js';
 import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
+import { attachProjectMemory, parseConversationChangesReply } from './project-memory.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
 // user-files tier is read through this hook rather than through `workspace:*`,
 // which is the git-backed governed tier. Types only, so no runtime coupling
@@ -4512,6 +4513,45 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
+   * W3d-2 — mark each answer with the `memory/` files its exchange changed in
+   * the chat's project (see `project-memory.ts`). Read AS THE PERSON — the
+   * same ctx `projectLabels` reads `projects:list` on — so the hook's own
+   * gate decides; a person who can no longer use the project gets not-found
+   * and no chip. Strictly additive, like `withMemoryUsed`: outside a project,
+   * without the hook, or on any failure, the thread comes back as built.
+   */
+  async function withProjectMemory(
+    userId: string,
+    projectId: string | null,
+    conversationId: string,
+    thread: ThreadMessage[],
+    turns: readonly TurnRow[],
+  ): Promise<ThreadMessage[]> {
+    if (projectId === null) return thread;
+    if (!bus.hasService('projects:conversation-changes')) return thread;
+    try {
+      const reply = parseConversationChangesReply(
+        await bus.call<{ projectId: string; conversationId: string }, unknown>(
+          'projects:conversation-changes',
+          agentWorkspaceCtx('@ax/channel-web', userId),
+          { projectId, conversationId },
+        ),
+      );
+      if (reply === null) {
+        initCtx.logger.warn('workspace_project_memory_reply_malformed', { projectId });
+        return thread;
+      }
+      return attachProjectMemory(thread, turns, projectId, reply);
+    } catch (err) {
+      initCtx.logger.warn('workspace_project_memory_read_failed', {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return thread;
+    }
+  }
+
+  /**
    * The `owner` triple `sandbox:read-user-files` keys the per-agent mount off.
    *
    * The mount resolvers read ONLY `agentId`; the rest of the triple is
@@ -6420,6 +6460,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           thread = await withMemoryUsed(
             agentId,
             userId,
+            threadConversationId,
+            thread,
+            got.turns ?? [],
+          );
+          thread = await withProjectMemory(
+            userId,
+            threadProjectId,
             threadConversationId,
             thread,
             got.turns ?? [],

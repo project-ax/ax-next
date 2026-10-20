@@ -587,7 +587,7 @@ describe('project routes (W3a)', () => {
     await expect(makeProjectsHandlers({ bus: faulty, initCtx }).getProject(mkReq({ projectId: 'prj_1' }), res)).rejects.toThrow();
   });
 
-  it('registers the eighteen routes, owner-candidates as an exact path, PATCH included, the file splats then history last', async () => {
+  it('registers the nineteen routes, owner-candidates as an exact path, PATCH included, the file splats then history last', async () => {
     const reg = new HookBus();
     const routes: Array<{ method: string; path: string; maxBodyBytes?: number; bypassCsrf?: boolean }> = [];
     reg.registerService('http:register-route', 'http', async (_c, input) => {
@@ -606,7 +606,7 @@ describe('project routes (W3a)', () => {
       return { unregister: () => {} };
     });
     const unregs = await registerProjectsRoutes(reg, initCtx);
-    expect(unregs).toHaveLength(18);
+    expect(unregs).toHaveLength(19);
     expect(routes).toEqual([
       { method: 'GET', path: '/api/workspace/projects' },
       { method: 'POST', path: '/api/workspace/projects' },
@@ -629,6 +629,8 @@ describe('project routes (W3a)', () => {
       { method: 'GET', path: '/api/workspace/projects/:projectId/history/*' },
       { method: 'GET', path: '/api/workspace/projects/:projectId/versions/:versionId' },
       { method: 'POST', path: '/api/workspace/projects/:projectId/versions/:versionId/restore' },
+      // W3d-2: undo one recorded change — a write, CSRF-gated too.
+      { method: 'POST', path: '/api/workspace/projects/:projectId/versions/:versionId/undo' },
     ]);
   });
 });
