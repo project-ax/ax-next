@@ -470,3 +470,60 @@ describe('storage-node activation failure reporting', () => {
     expect(log).toContain('refused'); expect(log).not.toContain('tok42');
   });
 });
+
+// A record reconcile cannot release keeps the helper unready. Its cause used to be
+// swallowed, so a boot exited with only "storage recovery pending". Reconcile also
+// runs every 2 s (main.ts), so each pod's cause is reported once per change.
+describe('storage-node recovery failure reporting', () => {
+  const recoveryLine = (podUid: string, cause: string) => `storage recovery failed for pod ${podUid}: ${cause}`;
+  /** A published assignment whose pod is gone, so reconcile releases it, and whose detach fails. */
+  async function stuckRelease() {
+    const f = engineFixture(); await f.make().assign(f.data);
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true); f.failUnmount(true);
+    return f;
+  }
+  it('reports which pod a boot could not release and why, and still rejects', async () => {
+    const f = await stuckRelease();
+    await expect(f.make().reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  it('reports a stuck record once, not on every reconcile pass', async () => {
+    const f = await stuckRelease(); const engine = f.make();
+    for (let pass = 0; pass < 3; pass++) await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  it('reports again when a record that recovered fails again, and when its cause changes', async () => {
+    const f = engineFixture(); await f.make().assign(f.data); const engine = f.make();
+    const outage = Object.assign(new Error('apiserver unavailable'), { code: 503 });
+    vi.mocked(f.authority.abandoned).mockRejectedValueOnce(outage).mockRejectedValueOnce(outage)
+      .mockResolvedValueOnce(false).mockRejectedValueOnce(outage).mockRejectedValueOnce(new Error('forbidden'));
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).resolves.toBeUndefined(); // The API is back and the session is live.
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    const outageLine = recoveryLine(f.data.podUid, '503: apiserver unavailable');
+    expect(f.reports).toEqual([outageLine, outageLine, recoveryLine(f.data.podUid, 'Error: forbidden')]);
+  });
+  it('forgets a pod once its ledger is gone, so a later failure under that uid reports again', async () => {
+    const f = await stuckRelease(); const engine = f.make();
+    const ledger = join(f.config.ledgerRoot, `${f.data.podUid}.json`); const saved = readFileSync(ledger, 'utf8');
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    f.failUnmount(false); await engine.release(identity(f.data)); // Released between passes.
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    writeFileSync(ledger, saved); f.mounted.add(join(f.volume, 'files')); f.failUnmount(true);
+    await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy'), recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  it('keeps a report to one line: a fixed prefix, the pod uid, a cause of at most 1024 characters, no bootstrap value', async () => {
+    const f = await stuckRelease();
+    vi.mocked(f.authority.stop).mockRejectedValue(new Error(`stop refused\n${'x'.repeat(5000)}\r\nmore`));
+    await expect(f.make().reconcile()).rejects.toThrow('storage recovery pending');
+    expect(f.reports).toHaveLength(1);
+    const [line] = f.reports as [string]; const prefix = recoveryLine(f.data.podUid, '');
+    expect(line.startsWith(`${prefix}Error: stop refused x`)).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(prefix.length + 1024);
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
+    for (const value of Object.values(f.data.bootstrap.env)) expect(line).not.toContain(value);
+  });
+});

@@ -39,6 +39,13 @@ export interface StorageNodeIo {
 
 export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
+  /**
+   * The recovery failure last reported per pod uid. Reconcile runs at boot and then every
+   * 2 s (main.ts), so a stuck record reports once per change of cause, not on every pass.
+   * An entry goes when its record recovers or its ledger is gone: a later failure reports
+   * again, and the map never outgrows the ledger.
+   */
+  private readonly recoveryFailures = new Map<string, string>();
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,
     private readonly command: (program: string, args: string[]) => void = (program, args) => {
       execFileSync(program, args, { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8192 });
@@ -233,18 +240,29 @@ export class StorageNodeEngine {
       });
     }
     let failed = false;
+    const present = new Set<string>();
     for (const file of readdirSync(this.config.ledgerRoot)) {
       if (!/^[0-9a-f-]{36}\.json$/.test(file)) continue;
+      const uid = file.slice(0, -5);
+      present.add(uid);
       try {
-        const uid = file.slice(0, -5);
         await this.serial(uid, async () => {
           // Assignment may finish while discovery or cleanup waits for this
           // lock. Decide from the current ledger, never a pre-lock snapshot.
           const record = this.load(uid);
           if (record && (!record.published || await this.authority.abandoned(record))) await this.releaseLocked(record);
         });
-      } catch { failed = true; }
+        this.recoveryFailures.delete(uid);
+      } catch (e) {
+        failed = true;
+        // No env to redact: a record never holds the bootstrap (StorageRecordSchema is
+        // strict), and recovery never reads one. describeFailure still keeps the cause to
+        // one bounded line; `uid` is 36 characters of [0-9a-f-] (the filter above).
+        const report = `storage recovery failed for pod ${uid}: ${describeFailure(e, {})}`;
+        if (this.recoveryFailures.get(uid) !== report) { this.recoveryFailures.set(uid, report); this.io.report(report); }
+      }
     }
+    for (const uid of this.recoveryFailures.keys()) if (!present.has(uid)) this.recoveryFailures.delete(uid);
     if (failed) throw new Error('storage recovery pending');
   }
 }
