@@ -597,6 +597,16 @@ describe('SkillsAppStore', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit skill' }));
     expect(await screen.findByTestId('skill-editor')).toBeTruthy();
   });
+  // A modal menu here leaves the page unclickable after its dialog removes
+  // the trigger (production, 2026-10-19).
+  it('the skill actions menu never locks the page', async () => {
+    mockListAgents.mockResolvedValue([]);
+    render(<SkillsAppStore isAdmin={false} agentId="a1" agentName="Alpha" />);
+    await screen.findByText('My helper');
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for my-helper' }), { button: 0, ctrlKey: false });
+    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+  });
   it('places unattached private skills in Browse and filters them by the search', async () => {
     mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
     render(<SkillsAppStore isAdmin={false} agentId="a1" />);

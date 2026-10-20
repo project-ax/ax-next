@@ -393,6 +393,15 @@ describe('Sign in again', () => {
 });
 
 describe('remove', () => {
+  // A modal menu here leaves the page unclickable after its dialog removes
+  // the trigger (production, 2026-10-19).
+  it('the connector menu never locks the page', async () => {
+    renderTab();
+    const menu = await openMenu('Linear');
+    expect(within(menu).getAllByRole('menuitem')).not.toHaveLength(0);
+    expect(document.body.style.pointerEvents).not.toBe('none');
+  });
+
   it('asks first, and Keep it changes nothing', async () => {
     renderTab();
     const menu = await openMenu('Linear');
