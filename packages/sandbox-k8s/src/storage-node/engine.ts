@@ -41,9 +41,11 @@ export class StorageNodeEngine {
   private readonly pending = new Map<string, Promise<unknown>>();
   /**
    * The recovery failure last reported per pod uid. Reconcile runs at boot and then every
-   * 2 s (main.ts), so a stuck record reports once per change of cause, not on every pass.
-   * An entry goes when its record recovers or its ledger is gone: a later failure reports
-   * again, and the map never outgrows the ledger.
+   * 2 s (main.ts), so a stuck record reports only when its line changes. That is once per
+   * cause only if the cause describes the same way every time: describeFailure drops what a
+   * Kubernetes API error carries per request, but an error whose own text changes on each
+   * attempt still reports on each pass. An entry goes when its record recovers or its ledger
+   * is gone: a later failure reports again, and the map never outgrows the ledger.
    */
   private readonly recoveryFailures = new Map<string, string>();
   constructor(private readonly config: StorageNodeConfig, private readonly authority: StorageAuthority,

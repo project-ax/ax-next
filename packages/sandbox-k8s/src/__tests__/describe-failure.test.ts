@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { ApiException } from '@kubernetes/client-node';
 import { describe, expect, it } from 'vitest';
 import { describeFailure, redactedError } from '../storage-node/describe-failure.js';
 
@@ -39,6 +41,40 @@ describe('describeFailure redaction', () => {
     expect(text.length).toBeLessThanOrEqual(1024);
     expect(text).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect(text).toContain('first second');
+  });
+});
+
+// @kubernetes/client-node's ApiException puts the whole response in its message:
+// "HTTP-Code: …\nMessage: …\nBody: <JSON>\nHeaders: <JSON>". An apiserver's headers
+// carry a per-request audit-id and date, so the same failure never read the same twice.
+describe('describeFailure on a Kubernetes API error', () => {
+  const forbidden = 'pods "standby" is forbidden: User "system:serviceaccount:ax:storage" cannot get resource "pods" in the namespace "ax"';
+  const status = { kind: 'Status', apiVersion: 'v1', metadata: {}, status: 'Failure', message: forbidden, reason: 'Forbidden', code: 403 };
+  /** The headers an apiserver answers with: new on every request. */
+  const headers = () => ({ 'audit-id': randomUUID(), date: new Date().toUTCString(), 'content-type': 'application/json' });
+
+  // The generated API classes pass the response text; the log and metrics helpers pass the parsed Status.
+  it.each<[string, unknown]>([['the response text', `${JSON.stringify(status)}\n`], ['a parsed object', status]])(
+    'describes a Status body (%s) as its HTTP code and message, the same on every request', (_shape, body) => {
+      const describeOne = () => describeFailure(new ApiException(403, 'Unknown API Status Code!', body, headers()), {});
+      const first = describeOne();
+      expect(first).toBe(`HTTP 403: ${forbidden}`);
+      expect(describeOne()).toBe(first);
+    });
+  it.each<[string, number, string, unknown, string]>([
+    ['an HTML page from a proxy', 502, 'Unknown API Status Code!', '<html><body>502 Bad Gateway</body></html>',
+      '502: HTTP-Code: 502 Message: Unknown API Status Code! Body: "<html><body>502 Bad Gateway</body></html>"'],
+    ['no body, as a 401 has', 401, 'Unauthorized', undefined, '401: HTTP-Code: 401 Message: Unauthorized Body: undefined'],
+  ])('keeps a body that is not a Status (%s) but drops the headers', (_shape, code, message, body, expected) => {
+    const describeOne = () => describeFailure(new ApiException(code, message, body, headers()), {});
+    expect(describeOne()).toBe(expected);
+    expect(describeOne()).toBe(expected);
+  });
+  it('still redacts the Status message, keeps it to one line and caps it', () => {
+    const body = JSON.stringify({ ...status, message: `webhook denied tok42\nsee ${'x'.repeat(5000)}` });
+    const text = describeFailure(new ApiException(403, 'Unknown API Status Code!', body, headers()), { AX_AUTH_TOKEN: 'tok42' });
+    expect(text.startsWith('HTTP 403: webhook denied [redacted] see x')).toBe(true);
+    expect(text).toHaveLength(1024);
   });
 });
 

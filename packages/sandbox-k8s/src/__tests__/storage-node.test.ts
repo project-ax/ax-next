@@ -3,6 +3,7 @@ import { constants, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, read
   rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ApiException } from '@kubernetes/client-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StorageNodeEngine, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
@@ -356,6 +357,15 @@ const unmounted = (f: ReturnType<typeof engineFixture>) =>
   f.command.mock.calls.filter(([program]) => program === 'umount').map(([, args]) => args.at(-1));
 const writeLedger = (f: ReturnType<typeof engineFixture>, record: unknown) =>
   writeFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), JSON.stringify(record));
+/**
+ * What the generated client throws for a refused request: the response text as the body,
+ * and that response's headers, which carry a per-request audit-id and date.
+ */
+function apiError(code: number, message: string): ApiException<string> {
+  const status = { kind: 'Status', apiVersion: 'v1', metadata: {}, status: 'Failure', message, code };
+  return new ApiException(code, 'Unknown API Status Code!', `${JSON.stringify(status)}\n`,
+    { 'audit-id': randomUUID(), date: new Date().toUTCString() });
+}
 
 describe('storage-node over leftover W2 shared-folder state (TASK-904)', () => {
   it('boots reconcile over a W2 recovery annotation with no local ledger and unmounts every bind it names', async () => {
@@ -469,6 +479,12 @@ describe('storage-node activation failure reporting', () => {
     const log = f.reports.join('\n');
     expect(log).toContain('refused'); expect(log).not.toContain('tok42');
   });
+  it('reports a Kubernetes API error as its HTTP code and Status message, without the response headers', async () => {
+    const f = engineFixture(); const conflict = 'Operation cannot be fulfilled on pods "standby": the object has been modified';
+    vi.mocked(f.authority.protect).mockRejectedValueOnce(apiError(409, conflict));
+    await expect(f.make().assign(f.data)).rejects.toThrow('activation failed');
+    expect(f.reports).toEqual([`storage activation failed for pod ${f.data.podUid}: HTTP 409: ${conflict}`]);
+  });
 });
 
 // A record reconcile cannot release keeps the helper unready. Its cause used to be
@@ -491,6 +507,19 @@ describe('storage-node recovery failure reporting', () => {
     const f = await stuckRelease(); const engine = f.make();
     for (let pass = 0; pass < 3; pass++) await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
     expect(f.reports).toEqual([recoveryLine(f.data.podUid, 'Error: busy')]);
+  });
+  // A real apiserver error is a fresh ApiException on every pass, each with its own
+  // headers. Described whole, every pass read differently and reported again.
+  it('reports a Kubernetes API error once across passes, as its HTTP code and Status message', async () => {
+    const data = input(); const f = engineFixture(data); const k = kubeFixture(data);
+    const forbidden = `pods "${data.podName}" is forbidden: User "system:serviceaccount:ax:storage" cannot get resource "pods" in the namespace "ax"`;
+    k.api.readPod = vi.fn(async () => { throw apiError(403, forbidden); });
+    const engine = new StorageNodeEngine(f.config, createStorageAuthority(k.api, 'node', 'pool'), f.command, f.io);
+    const { bootstrap, ...rest } = data;
+    writeLedger(f, { ...rest, assignmentId: bootstrap.assignmentId, published: true });
+    for (let pass = 0; pass < 3; pass++) await expect(engine.reconcile()).rejects.toThrow('storage recovery pending');
+    expect(k.api.readPod).toHaveBeenCalledTimes(3);
+    expect(f.reports).toEqual([recoveryLine(data.podUid, `HTTP 403: ${forbidden}`)]);
   });
   it('reports again when a record that recovered fails again, and when its cause changes', async () => {
     const f = engineFixture(); await f.make().assign(f.data); const engine = f.make();
