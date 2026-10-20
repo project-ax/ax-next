@@ -263,7 +263,7 @@ card). For each:
    seeding needed — the agent's first phase line creates the progress block (§6).
 2. Launch a **background** `general-purpose` agent running `yolo-ship` in
    **orchestrated mode** on that one card (`Agent`, `run_in_background: true`,
-   **`isolation: "worktree"`**), using the **code-lane dispatch prompt** in
+   **`isolation: "worktree"`**, `model: "sonnet"`, `effort: "high"`), using the **code-lane dispatch prompt** in
    `references/templates.md` — pass the card's `[TASK-ID]`, title, **body inline or as
    a local file path** (never "go read your card" — `item-list` is ~102 GraphQL points
    × 3 builders; see the template's `<TASK-BODY>` note), its **item node id**

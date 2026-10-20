@@ -8,7 +8,7 @@ user-invocable: true
 
 ## Overview
 
-One task → one worktree → phases (**brainstorm → design → implement → review → ship**). The heavy work (codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean. You make and **document** decisions instead of asking the user. Before the PR ever opens you review the whole branch locally with the **`ax-code-reviewer`** subagent (Opus 4.8, max effort) and address its findings; then you open the PR and you are not done until it is **CI-green**.
+One task → one worktree → phases (**brainstorm → design → implement → review → ship**). The heavy work (planning, codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean — and so each phase runs at the model and effort it earns (see Model + effort tiers). You make and **document** decisions instead of asking the user. Before the PR ever opens you review the whole branch locally with the **`ax-code-reviewer`** subagent (latest Opus, max effort) and address its findings; then you open the PR and you are not done until it is **CI-green**.
 
 This skill orchestrates other skills. It does not re-explain them — it sequences them and adds the autonomy contract + the ship loop.
 
@@ -28,6 +28,26 @@ The orchestrator (you) holds only: the plan file, project memory, and one-paragr
 - **Codebase exploration** → dispatch the `Explore` subagent. It returns conclusions, not file contents.
 - **Per-task implementation** → dispatch one subagent per plan task (subagent-driven-development). Each returns a short summary of what it changed + test status. ~50–100× context savings vs. doing it inline.
 - If your context climbs past ~250K, flush state to the plan file + memory and keep leaning on them. Don't try to hold everything.
+
+## Model + effort tiers
+
+Effort is set **per agent**, not per phase — so the phases that earn more thinking run in their own agents. A mistake in the plan is copied into every task after it; a mistake in a mechanical task is caught by its test. Spend accordingly.
+
+| Work | Who | Model | Effort |
+|---|---|---|---|
+| Brainstorm + design (Phases 1–2) | `ax-planner` subagent | latest Opus (pinned in its definition) | max (pinned) |
+| Coordination, gates, CI, handoff (Phases 0, 4, 6, 7) | **you**, the builder | Sonnet when auto-ship dispatches you | high |
+| Phase 3 task tagged `[tier: mechanical]` | implementer subagent | `model: "sonnet"` | `effort: "medium"` |
+| Phase 3 task tagged `[tier: integration]` | implementer subagent | `model: "sonnet"` | `effort: "high"` |
+| Phase 3 task tagged `[tier: sensitive]` | implementer subagent | `model: "opus"` | `effort: "max"` |
+| Per-task review after each implementer | review subagent | `model: "sonnet"` | `effort: "high"` |
+| CI failure whose cause isn't obvious (Phase 6) | debugging subagent | `model: "opus"` | `effort: "high"` |
+| Whole-branch review (Phase 5) | `ax-code-reviewer` | latest Opus (pinned) | max (pinned) |
+
+- **Pass `model` and `effort` on every implementer, per-task-review and debugging dispatch** — this table is the explicit instruction the Agent tool needs before it sets `effort`. The two pinned agents carry theirs in `.claude/agents/*.md`; pass nothing for them.
+- **Use aliases (`opus`, `sonnet`), never a dated model id.** An alias resolves to the newest model of that family, so the skill does not go stale the way the old `claude-opus-4-8` pin did.
+- **An untagged task is `integration`.** Don't re-decide a tier the planner set; if a task turns out harder than its tag (it hits a race, a boundary, or a migration mid-flight), re-dispatch it one tier up and log why in your decisions shard.
+- **Standalone runs:** you run at whatever the session uses. The subagent tiers above still apply.
 
 ## Progress reporting (live on the board)
 
@@ -103,23 +123,17 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
   worktree/branch copy only, never the main checkout (TASK-7 convention;
   `scripts/memory-write-target.sh` resolves the right dir).
 
-### Phase 1 — Brainstorm (run it autonomously)
-- **REQUIRED:** Use superpowers:brainstorming — but in self-answering mode. Generate the questions it would ask the user, then answer each one yourself from the codebase, `.claude/memory/`, CLAUDE.md, and architecture docs. Log each material answer to your decisions shard (rule 2).
-- **Predecessor learnings (orchestrated cards):** if your card body carries a `Predecessor learnings` block — lessons from cards in your family (same epic, parent, sibling, or one whose builder named you) merged before you — read it first and fold it into your approach. If a learning **invalidates this card's premise** (the design was built differently than this card assumed), don't guess: return `outcome: blocked` with the scope question so auto-ship routes it to Needs Input. If the card body cites a `design:` doc, read that for the full picture.
-- Use `Explore` subagents for any "how does X currently work?" question so the exploration doesn't bloat your context.
-- Output: a tight problem statement + chosen approach (a few paragraphs), not a transcript.
-- **Progress:** `brainstorm done — approach: <phrase>` (see Progress reporting).
-
-### Phase 2 — Design
-- **REQUIRED:** Use superpowers:writing-plans — produce a written plan broken into **independent, testable tasks**. Save it to a file (e.g. `docs/plans/<date>-<slug>.md` or the worktree root).
-- **REQUIRED for AX code:** Use ax-conventions — honor the six invariants; do the boundary-review checklist for any new/changed hook.
-- Apply a YAGNI pass ([[feedback_yagni_check_in_plans]]): mark each task "load-bearing at MVP or dead code?" — cut the dead.
-- If the task touches a sandbox boundary, IPC, plugin loading, untrusted content, or new dependencies, note that Phase 3 must run security-checklist.
-- **Progress:** `plan written — <N> tasks`.
+### Phases 1–2 — Brainstorm + design (dispatch `ax-planner`)
+- **REQUIRED:** Dispatch the **`ax-planner`** subagent (`subagent_type: ax-planner`) to do both phases. It runs at latest Opus / max effort, which you deliberately do not — this is the part of the card where extra thinking pays most. Dispatch it in the **plain no-`name` shape** and **without** `isolation: "worktree"`, for the same reasons as the reviewer (see the reviewer dispatch contract in Phase 5): a named teammate can't hand back its result, and a fresh worktree would plan against an empty branch.
+- **The dispatch prompt carries:** the `[TASK-ID]`, title and full card body (inline or a local file path — never "go read your card"), any `Predecessor learnings` block and cited `design:` doc, your **absolute worktree path** with "`cd <worktree path>` and run every command there", and the brief-hypotheses sentence from auto-ship's templates if you were handed one. Stay hands-off in the worktree until it returns.
+- **What it does** (its definition has the detail): self-answering brainstorming from the code, memory, CLAUDE.md and the architecture docs; asks what stale line made the card look true (rule 5); writes the plan with superpowers:writing-plans + ax-conventions (six invariants, boundary review, YAGNI pass per [[feedback_yagni_check_in_plans]]); flags tasks that need security-checklist; tags every task `[tier: mechanical | integration | sensitive]`; logs decisions to your card's decisions shard.
+- **`outcome: blocked`** means a predecessor learning or the code invalidated the card's premise. Don't plan around it yourself — return `outcome: blocked` with its scope question so auto-ship routes the card to Needs Input.
+- **Read the plan before you build it.** It is a hypothesis like any brief: if your reading contradicts it, say so in the decisions shard and fix the plan — don't comply silently. Commit the plan and the shard.
+- **Progress:** `brainstorm done — approach: <phrase>`, then `plan written — <N> tasks` (see Progress reporting).
 
 ### Phase 3 — Implement (subagent-driven)
-- **REQUIRED:** Use superpowers:subagent-driven-development — dispatch one subagent per plan task. Each subagent uses superpowers:test-driven-development (test first) and returns a summary. **Tier the subagent's model to the task** (its model-selection guidance): the cheapest/fastest model for mechanical 1–2 file tasks with a clear spec, a standard model for multi-file integration, the most capable only for design/judgment. Don't run every mechanical task on the top model.
-- After each task, review the returned diff against the plan (superpowers:requesting-code-review / receiving-code-review). Don't rubber-stamp; verify claims.
+- **REQUIRED:** Use superpowers:subagent-driven-development — dispatch one subagent per plan task. Each subagent uses superpowers:test-driven-development (test first) and returns a summary. **Dispatch each with the `model` + `effort` its `[tier: …]` tag maps to** in Model + effort tiers. Don't run every mechanical task on the top model.
+- After each task, review the returned diff against the plan (superpowers:requesting-code-review / receiving-code-review) — the review subagent gets `model: "sonnet"`, `effort: "high"`. Don't rubber-stamp; verify claims.
 - New hook surface or sensitive boundary touched → run security-checklist before moving on.
 - **Progress:** after each task, `task <k>/<N> done — <slug>` (trouble: `⚠ task <k>/<N> blocked — <why>`).
 
@@ -542,7 +556,7 @@ the one its definition now prescribes for mutation proofs: **its own detached wo
 sha you paste**, which costs one `pnpm install --frozen-lockfile && pnpm build` (7.6s + 17.1s
 measured on a warm store, 2026-09-17) and is paid only by a reviewer that wants to mutate.
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in your decisions shard (rule 2). The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and is read-only by instruction — not by capability, it has `Bash`, which is why the review window above exists — so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `origin/main`** — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly — **copy the `reviewer range:` line the block above printed**, rather than retyping a range from memory — and name the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in your decisions shard (rule 2). The agent pins its own model + effort (`model: opus` — the latest Opus — and `effort: max` in its definition) and is read-only by instruction — not by capability, it has `Bash`, which is why the review window above exists — so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in your decisions shard (rule 2). Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in your decisions shard (rule 2) any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-scope the range and re-dispatch the reviewer** on the updated branch — re-run the block above, because each round re-reads the current `origin/main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - **ASK THE VACUITY QUESTION IN EVERY REVIEW DISPATCH.** Add, verbatim: *"For each new or changed
@@ -742,7 +756,7 @@ digraph ship {
   success**, and status reads have flapped both ways for 15+ min (settle with several consecutive
   reads of specific run ids). Reporting `ci: green` off a partial set is how an untested head
   reaches the merge queue.
-- **On red**, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
+- **On red**, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. An obvious fix (a typo, a lint rule, a snapshot you meant to change) you make yourself; when the cause isn't obvious after one read of the failure, hand the investigation to a debugging subagent at `model: "opus"`, `effort: "high"` (Model + effort tiers) and apply its root cause rather than guessing at the Sonnet tier. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
 - A push that changes the diff materially invalidates the earlier review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done. Either way your **`reviewed-sha` does not move** unless a review actually ran on the new head: in orchestrated mode, report the old sha and label the commits after it (Phase 5), rather than quietly re-pointing it at the head.
 - **When CI is green, proceed to Phase 7** (auto-merge standalone, or hand off under orchestration). Do not declare done at a green PR — merging (or handing off) is the terminal step now.
 - **Progress:** `PR #<n> opened` on open; `⚠ CI red — <suite>` on red; `CI green ✅` when green.
@@ -808,7 +822,7 @@ reporting), then report the merge. Then you are done.
 | "The review is taking a while, I'll skip it" | A whole-branch max-effort review takes **tens of minutes — budget ~40** (measured 2026-08-23: 4 and 7.5 min of work delivered ~40 min apart). That is expected, not a hang. The subagent runs async; let it finish. Don't skip the gate on impatience. |
 | "The reviewer is hung, I'll re-dispatch" | Ask it for its findings first. A silent subagent is a **delivery** question before it is a **liveness** one — the review is usually already written. Re-dispatching first duplicates it and doubles the stall. |
 | "I'll give the reviewer a `name` so I can talk to it" | A `name` makes it a teammate whose final text is never delivered to you. That is the whole bug. Dispatch with no `name`; if you truly need one, you must also send it a message so it has an address to reply to. |
-| "Docs-only tweak, but I'll run the full review to be safe" | Skip the review for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The reviewer is fixed at Opus 4.8 / max effort — there's no tier to pad, just don't review non-code. |
+| "Docs-only tweak, but I'll run the full review to be safe" | Skip the review for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The reviewer is fixed at latest Opus / max effort — there's no tier to pad, just don't review non-code. |
 | "The review flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in your decisions shard (rule 2) with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once the review is clean. |
 | "auto-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
@@ -820,11 +834,10 @@ reporting), then report the merge. Then you are done.
 | Phase | Skill / tool |
 |---|---|
 | Isolate | superpowers:using-git-worktrees, `EnterWorktree`, claude-memory |
-| Brainstorm | superpowers:brainstorming, `Explore` subagent |
-| Design | superpowers:writing-plans, ax-conventions, security-checklist |
-| Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
+| Brainstorm + design | `ax-planner` subagent (latest Opus, max effort; plain no-`name` shape) — it runs superpowers:brainstorming, superpowers:writing-plans, ax-conventions, `Explore`, and tags each task's tier |
+| Implement | superpowers:subagent-driven-development, superpowers:test-driven-development — `model` + `effort` per task tier (Model + effort tiers) |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `origin/main` — scope the range with Phase 5's pre-dispatch block first; local `main` in a worktree is stale), superpowers:receiving-code-review. **Dispatch with NO `name`** — a named teammate cannot hand its findings back, which is what every past "hang" actually was. If it does go silent: retrieve via `SendMessage` FIRST, re-dispatch second, then fail loudly (`reviewer: hung`); never self-review and call it clean. |
+| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; latest Opus, max effort, whole branch vs `origin/main` — scope the range with Phase 5's pre-dispatch block first; local `main` in a worktree is stale), superpowers:receiving-code-review. **Dispatch with NO `name`** — a named teammate cannot hand its findings back, which is what every past "hang" actually was. If it does go silent: retrieve via `SendMessage` FIRST, re-dispatch second, then fail loudly (`reviewer: hung`); never self-review and call it clean. |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | **Orchestrated: CALL `<ABS-PATH>/.claude/auto-ship-hb.sh "<ITEM-ID>" "<line>"`** — never `source` the raw helper, it is gitignored and absent from your worktree (127). Standalone: `append_progress` per auto-ship `references/github-project.md` §6. Best-effort, shell-side, own card only; report the result in `progress:`. |

@@ -2,7 +2,7 @@
 name: ax-code-reviewer
 description: Maximum-rigor code reviewer for ax-next. Use for deep, adversarial review of a diff or branch before merge — correctness, the six CLAUDE.md invariants, boundary/security review, silent-failure hunting, and back-compat. Not a rubber stamp.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: opus
 effort: max
 color: red
 ---

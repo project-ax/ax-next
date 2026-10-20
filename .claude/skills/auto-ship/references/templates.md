@@ -3,7 +3,11 @@
 ## Code-lane dispatch prompt
 
 Dispatch via `Agent` with `run_in_background: true`,
-`subagent_type: "general-purpose"`. Substitute `<TASK-ID>`, `<TASK-TITLE>`,
+`subagent_type: "general-purpose"`, `model: "sonnet"`, `effort: "high"`. The builder
+coordinates — gates, CI, handoff — and hands the thinking-heavy phases to subagents that
+pin their own tier (`ax-planner` and `ax-code-reviewer` at latest Opus / max; see yolo-ship ›
+Model + effort tiers), so it does not need the top model or max effort itself. Three
+builders at max would burn session quota for CI polling. Substitute `<TASK-ID>`, `<TASK-TITLE>`,
 `<TASK-BODY>`, `<short-slug>`, `<ITEM-ID>` (the card's project-item node id), and
 `<HEARTBEAT-PATH>` (**absolute** path to the `.claude/auto-ship-hb.sh` written at run
 start — agents CALL it, they never `source` it).
