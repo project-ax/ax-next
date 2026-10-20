@@ -40,7 +40,7 @@ The last task corrects the design-doc lines this card came from.
 2. **A W2 session still live when the new helper boots.** Reconcile leaves it alone. Its later release unmounts the shared binds too. Pinned in Task 1 by `leaves a live W2 session alone at boot…`.
 3. **A database that already ran W3's version of the outbox.** That version has a wider CHECK and may hold a stale `project` row. The migration must be a no-op there, and the sweep must never retry the `project` row. Pinned in Task 2 by `a database that ran the reverted W3 migration…`.
 4. **An `agents:deleted` payload with a missing, empty or non-string `agentId`.** It must never write an outbox row. Pinned in Task 2 by the added assertion in the existing invalid-payload `it.each`.
-5. **A long or multi-line error message** (mount stderr, API text). The helper's report stays one line of at most 1024 characters, so it can't forge log lines. Pinned in Task 4 by `keeps a report to one line of at most 1024 characters`.
+5. **A long or multi-line error message** (mount stderr, API text). `describeFailure` keeps the description to one line of at most 1024 characters. A report line adds only a fixed prefix and a checked pod uid, so it can't forge log lines. Pinned in Task 4 by `keeps the description to one line of at most 1024 characters`, and for reconcile's report by `keeps a report to one line: a fixed prefix, the pod uid, …` (review follow-up).
 
 ## Source map
 

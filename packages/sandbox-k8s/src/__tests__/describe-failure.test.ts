@@ -34,7 +34,7 @@ describe('describeFailure redaction', () => {
   it('ignores empty values', () => {
     expect(describeFailure(new Error('plain message'), { AX_AUTH_TOKEN: '' })).toContain('plain message');
   });
-  it('keeps a report to one line of at most 1024 characters', () => {
+  it('keeps the description to one line of at most 1024 characters', () => {
     const text = describeFailure(new Error(`first\nsecond\r\n${'x'.repeat(5000)}`), {});
     expect(text.length).toBeLessThanOrEqual(1024);
     expect(text).not.toMatch(/[\u0000-\u001f\u007f]/);

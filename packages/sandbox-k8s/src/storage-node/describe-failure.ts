@@ -36,8 +36,10 @@ export function describeFailure(error: unknown, env: Readonly<Record<string, str
 
 /**
  * A stand-in for `error` to attach as a rethrown error's `cause`: a fresh Error
- * with the redacted message and the original's `name`/`code`, and no `cause`
- * or stack of its own. Never attach the original — a logger that
+ * with the redacted message and the original's `name`/`code`, and no `cause`.
+ * Its stack is its own: a header of that name and the redacted message, over
+ * the frames that created the stand-in. Neither the original's message nor
+ * its frames are kept. Never attach the original — a logger that
  * deep-serializes `cause` (pino does) would print the unredacted message.
  */
 export function redactedError(error: unknown, env: Readonly<Record<string, string>>): Error {
