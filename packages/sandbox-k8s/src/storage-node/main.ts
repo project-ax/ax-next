@@ -50,7 +50,10 @@ let reconciling = false;
 const timer = setInterval(() => {
   if (reconciling) return;
   reconciling = true;
-  void engine.retryReconcile().finally(() => { reconciling = false; });
+  // retryReconcile reports its own failures; the catch is a backstop so a throw while
+  // describing one can never become an unhandled rejection that stops the helper.
+  void engine.retryReconcile().catch(() => process.stderr.write('storage recovery pending\n'))
+    .finally(() => { reconciling = false; });
 }, 2000);
 const close = () => { clearInterval(timer); try { unlinkSync('/tmp/storage-ready'); } catch { /* already removed */ }
   server.close(() => process.exit(0)); };
