@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StorageNodeEngine, type StorageAuthority } from '../storage-node/engine.js';
 import { openDirectory } from '../storage-node/confined-directory.js';
 import { createStorageAuthority, type StorageKubeApi, type StorageObject } from '../storage-node/authority.js';
-import { StorageAssignmentSchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { StorageAssignmentSchema, StorageRecordSchema, STORAGE_FINALIZER, type StorageAssignment, type StorageIdentity } from '../storage-node/protocol.js';
+import { legacySharedFolderTargetParts } from '../storage-node/sources.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -58,7 +59,7 @@ function engineFixture(data = input()) {
   });
   const io = { directory, chown: vi.fn(), isTmpfs: vi.fn(() => true), mountInfo: () => [...mounted].map(path => `1 2 0:1 / ${path} rw - nfs source rw`).join('\n') };
   return { root, config, volume, data, authority, events, command, make: () => new StorageNodeEngine(config, authority, command, io),
-    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io };
+    failUnmount: (v: boolean) => { failUnmount = v; }, pretendSuccess: () => { pretendSuccess = true; }, io, mounted };
 }
 
 describe('storage-node ledger and lifecycle', () => {
@@ -331,4 +332,92 @@ it('does not equate an uncertain terminal Pod with stopped containers on the cur
     await vi.advanceTimersByTimeAsync(90001);await assertion;
     expect(f.api.patchFinalizers).not.toHaveBeenCalled();expect(f.api.deleteClaim).not.toHaveBeenCalled();
   } finally {vi.useRealTimers();}
+});
+
+// TASK-904. A W2-era helper (#989, reverted in #1004) bound shared folders at
+// ax-late/shared/<folderId> and named them in its ledger record and recovery
+// annotation. This helper never binds one. It must boot over those records and
+// undo every bind they name when it releases them.
+const W2_SHARED = [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_b', readOnly: true }];
+/** The record a W2 helper wrote: the assignment minus its bootstrap, plus sharedFolders. */
+function w2Record(data: StorageAssignment, published: boolean) {
+  const { bootstrap, ...rest } = data;
+  return { ...rest, sharedFolders: W2_SHARED, assignmentId: bootstrap.assignmentId, published };
+}
+/** The binds a W2 helper left attached on the pod's late volume. */
+function plantW2Binds(f: ReturnType<typeof engineFixture>, folders = ['sf_a', 'sf_b']) {
+  for (const parts of [['files'], ...folders.map(id => ['shared', id])]) {
+    const path = join(f.volume, ...parts); mkdirSync(path, { recursive: true }); f.mounted.add(path);
+  }
+}
+const unmounted = (f: ReturnType<typeof engineFixture>) =>
+  f.command.mock.calls.filter(([program]) => program === 'umount').map(([, args]) => args.at(-1));
+const writeLedger = (f: ReturnType<typeof engineFixture>, record: unknown) =>
+  writeFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), JSON.stringify(record));
+
+describe('storage-node over leftover W2 shared-folder state (TASK-904)', () => {
+  it('boots reconcile over a W2 recovery annotation with no local ledger and unmounts every bind it names', async () => {
+    const data = input(); const f = engineFixture(data); const k = kubeFixture(data);
+    const fence = { machineId: randomUUID(), bootId: randomUUID() };
+    k.pod.metadata!.finalizers = [STORAGE_FINALIZER]; k.claim.metadata!.finalizers = [STORAGE_FINALIZER];
+    // Written by the W2 helper during an earlier boot of this machine.
+    k.pod.metadata!.annotations!['ax.io/storage-recovery'] =
+      JSON.stringify({ version: 1, fence: { ...fence, bootId: randomUUID() }, record: w2Record(data, false) });
+    plantW2Binds(f);
+    const engine = new StorageNodeEngine(f.config, createStorageAuthority(k.api, 'node', 'pool', fence), f.command, f.io);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(unmounted(f)).toEqual([join(f.volume, 'files'), join(f.volume, 'shared/sf_a'), join(f.volume, 'shared/sf_b')]);
+    expect(f.mounted.size).toBe(0);
+    expect(k.api.deleteClaim).toHaveBeenCalledWith(data.claimName, data.claimUid);
+    expect(k.pod.metadata!.finalizers).toEqual([]); expect(k.claim.metadata!.finalizers).toEqual([]);
+    expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  it('boots reconcile over a W2 ledger record and releases an abandoned one, shared binds included', async () => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f); writeLedger(f, w2Record(f.data, true));
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(f.mounted.size).toBe(0); expect(f.authority.finish).toHaveBeenCalledOnce();
+    expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  it('leaves a live W2 session alone at boot; its later release unmounts the shared binds too', async () => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f); writeLedger(f, w2Record(f.data, true));
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(f.authority.stop).not.toHaveBeenCalled(); expect(f.mounted.size).toBe(3);
+    await engine.release(identity(f.data));
+    expect(f.events).toEqual(['stop', 'sync', 'umount', 'sync', 'umount', 'sync', 'umount', 'finish']);
+    expect(f.mounted.size).toBe(0); expect(readdirSync(f.config.ledgerRoot)).toEqual([]);
+  });
+  // W2 saved its record before binding anything, so a record can name a bind, or
+  // a whole `shared` directory, that was never made or is already gone.
+  it.each<[string, string[], string[]]>([
+    ['shared/sf_b', ['sf_a'], ['files', 'shared/sf_a']],
+    ['the whole shared directory', [], ['files']],
+  ])('still releases a W2 record whose shared bind is already gone (%s)', async (_missing, planted, expected) => {
+    const f = engineFixture(); const engine = f.make(); plantW2Binds(f, planted); writeLedger(f, w2Record(f.data, true));
+    vi.mocked(f.authority.abandoned).mockResolvedValue(true);
+    await expect(engine.reconcile()).resolves.toBeUndefined();
+    expect(unmounted(f)).toEqual(expected.map(parts => join(f.volume, parts)));
+    expect(f.authority.finish).toHaveBeenCalledOnce();
+  });
+  it('accepts sharedFolders on a record only, and only in the shape W2 wrote', () => {
+    const data = input();
+    expect(StorageAssignmentSchema.safeParse({ ...data, sharedFolders: W2_SHARED }).success).toBe(false);
+    expect(StorageRecordSchema.safeParse(w2Record(data, false)).success).toBe(true);
+    const seventeen = Array.from({ length: 17 }, (_, i) => ({ folderId: `sf_${String(i).padStart(2, '0')}`, readOnly: true }));
+    for (const sharedFolders of [[{ folderId: '../agent-b', readOnly: false }], [{ folderId: 'sf_a/..', readOnly: false }],
+      [{ folderId: 'agent-a', readOnly: false }], [{ folderId: 'sf_a', readOnly: 'no' }], [{ folderId: 'sf_a' }],
+      [{ folderId: 'sf_a', readOnly: false, path: '/etc' }], [{ folderId: 'sf_a', readOnly: false }, { folderId: 'sf_a', readOnly: true }],
+      [{ folderId: 'sf_b', readOnly: false }, { folderId: 'sf_a', readOnly: false }], [], seventeen]) {
+      expect(StorageRecordSchema.safeParse({ ...w2Record(data, false), sharedFolders }).success).toBe(false);
+    }
+  });
+  // The one place a folder id becomes path components re-checks it, so nothing
+  // that skipped the schema can reach `..`, `/` or a sibling of `shared`.
+  it('turns only a W2-shaped folder id into path components', () => {
+    expect(legacySharedFolderTargetParts('sf_a')).toEqual(['shared', 'sf_a']);
+    for (const id of ['', '.', '..', 'sf_', 'sf_.', 'sf_..', '../sf_a', 'sf_a/..', 'sf_a/b', 'sf_a\\b', 'agent-a',
+      'SF_a', 'sf_a\u0000', 'sf_a\n', `sf_${'a'.repeat(65)}`]) {
+      expect(() => legacySharedFolderTargetParts(id)).toThrow('invalid shared folder id');
+    }
+  });
 });

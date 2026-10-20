@@ -242,9 +242,13 @@ the operational teardown order in deploy/README.md, with parent resources delete
 The helper writes a secret-free recovery intent to the protected Pod before
 adding finalizers or binding storage. The strict record contains storage UIDs,
 roles, and agent identity. It contains no bootstrap environment or credentials.
-The helper can list Pods and UID-delete claims in its runner namespace; both
-operations check the configured pool prefix and the live owner chain. Cleanup
-retires the claim before freeing its Pod, preventing controller recreation.
+A record written by a W2-era helper (#989, reverted) may also list the
+shared-folder ids it bound under the late volume. The helper accepts that list
+on records only, never on a new assignment, and uses it only to unmount those
+binds on release (TASK-904). The helper can list Pods and UID-delete claims in
+its runner namespace; both operations check the configured pool prefix and the
+live owner chain. Cleanup retires the claim before freeing its Pod, preventing
+controller recreation.
 
 An empty local ledger is reconstructed from these records. Recovered assignments
 are retired, never reactivated with old credentials. A terminal Pod phase or
