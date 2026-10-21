@@ -1964,6 +1964,9 @@ importers:
 
   packages/routines-contract:
     dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
       croner:
         specifier: 8.1.2
         version: 8.1.2

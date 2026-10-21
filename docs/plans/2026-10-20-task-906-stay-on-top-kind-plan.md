@@ -40,7 +40,7 @@
 
 - `RoutineDefinition`, `RoutinePatch` and `RoutineView` carry `kind: 'repeat' | 'stay-on-top'` and `goodWhen: string | null`. So do `routines:get`, `routines:list`, `routine_get` and `routineApi.list`.
 - A `stay-on-top` routine always has `conversation: 'per-fire'` (TASK-907 binds reports by conversation) and `silenceToken: null` (TASK-908's report replaces silence). Its trigger is always `interval` or `cron`, never `webhook`.
-- **TASK-908:** the person-written `brief` section may contain only `name`, `promptBody`, `goodWhen`, `kind` (the fields `touchesTaskBrief` protects) and host text. `description`, `trigger`, `activeHours` and `enabled` change under Always Allow without a person seeing it, so none of them may become instructions in the brief.
+- **TASK-908:** the person-written `brief` section may contain only `name`, `promptBody`, `goodWhen`, `kind` (the fields `touchesTaskBrief` protects) and host text. `description`, `trigger`, `activeHours` and `enabled` change under Always Allow without a person seeing it, so none of them may become instructions in the brief. For any non-`repeat` kind, `validateDefinition` refuses invisible characters in those three text fields on every parse (read paths included), so none of the brief is text the card can't draw.
 - Exports to reuse rather than copy:
   - From `@ax/routines-contract`: `RoutineKindSchema`, `RoutineKind`, `TASK_CHECK_IN_FLOOR_SECONDS`, `touchesTaskBrief`, `routineTaskProposal`.
   - From channel-web: `describeCheckIns(trigger)` in `packages/channel-web/src/lib/task-schedule.ts`, and the `DecisionTask` wire type.

@@ -350,7 +350,12 @@ that grows forever.
     `@ax/routines-contract`, checked by tool-policy before consent can relax a
     hold). The agent can turn a routine into a task only by sending the whole
     brief in the same change, so the card shows all of it, not just the new
-    "going well when". That is what makes the `brief` section person-written.
+    "going well when". A task's name, instructions and "going well when" also
+    can't contain invisible characters: the contract refuses Unicode tag
+    characters, zero-width and bidi controls, stray variation selectors and
+    the rest of Unicode's default-ignorable set (`validateDefinition`), so no
+    part of the brief is text the card can't draw. That is what makes the
+    `brief` section person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
   removes it. Tasks PR 1 adds it back as its first user.
 
@@ -549,7 +554,8 @@ suggest a short body for known apps.
   approval rules. Nothing about a task widens them.
 - **The agent can't change what a task is for.** A task's brief (its name,
   instructions and "going well when") and its kind always need the person's
-  yes, even with Always Allow (§4.2). The schedule and active hours are
+  yes, even with Always Allow, and the brief can't hold invisible characters
+  that the card wouldn't draw (§4.2). The schedule and active hours are
   different: with Always Allow the agent can change them without asking, but
   never to check-ins less than 15 minutes apart. Who may create or change a
   task follows today's routine permissions (`agents:can-manage-routines`:

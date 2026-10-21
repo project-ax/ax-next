@@ -1,3 +1,4 @@
+import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 import { Cron } from 'croner';
 import { z } from 'zod';
 
@@ -90,6 +91,59 @@ export const RoutineEditableShape = {
   goodWhen: z.string().max(ROUTINE_GOOD_WHEN_MAX_CHARS).nullable(),
 };
 
+/*
+ * A task's brief can't hide text from the card that asks (TASK-906).
+ *
+ * A person approves a task's name, instructions and going-well-when on an
+ * approval card that draws them as text, so a character the browser doesn't
+ * draw would put words in the brief that nobody saw. Models read Unicode tag
+ * characters as the ASCII they shadow: "Keep the queue empty." followed by a
+ * tag-encoded sentence looks like the first five words and says more.
+ *
+ * Refused, for any kind but repeat:
+ *   - everything `HIDDEN_FORMAT_CHARS` matches: the shared fence's bidi,
+ *     zero-width and line-separator class (TASK-562), imported, never copied;
+ *   - C0 and C1 controls other than TAB, LF and CR, which instructions use as
+ *     layout (so not `REWRITES_THE_SURFACE`, which includes those three);
+ *   - `BRIEF_INVISIBLES`: what the shared class leaves out on purpose
+ *     (widening it changes eight packages; TASK-562 decisions row 3);
+ *   - a stray presentation selector (`STRAY_SELECTOR`).
+ * Repeat routines keep accepting all of it: what an agent may write there
+ * without asking is unchanged, and none of it is a task's brief.
+ *
+ * Every code point is written as an escape: an invisible character in source
+ * is the very thing this guards against.
+ */
+/** C0 and C1 controls, except TAB (U+0009), LF (U+000A) and CR (U+000D). */
+const BRIEF_CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+/**
+ * Unicode's default-ignorable code points that the shared class leaves out,
+ * minus the presentation selectors U+FE0E/U+FE0F (ordinary emoji, ruled on by
+ * `STRAY_SELECTOR`) and Mongolian's free variation selectors U+180B-U+180D and
+ * U+180F (ordinary Mongolian), plus the interlinear annotation controls
+ * U+FFF9-U+FFFB: the soft hyphen, the combining grapheme joiner, the Hangul and
+ * Khmer fillers, the Mongolian vowel separator, U+2065 and U+206A-U+206F, the
+ * variation selectors U+FE00-U+FE0D, U+FFF0-U+FFFB, the shorthand and musical
+ * format controls, and all of U+E0000-U+E0FFF: the tag characters, the
+ * supplementary variation selectors U+E0100-U+E01EF, and the unassigned code
+ * points around them. Disjoint from the shared class, so nothing of it is
+ * repeated here. The astral ranges need the `u` flag.
+ */
+const BRIEF_INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206A-\u206F\u3164\uFE00-\uFE0D\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
+/**
+ * A variation selector at the very start, or straight after another one. One
+ * U+FE0E or U+FE0F after a character picks text or emoji presentation, and
+ * that's ordinary emoji. A run of selectors after one base character draws as
+ * that one character and can carry bytes.
+ */
+const STRAY_SELECTOR = /(?:^|[\uFE00-\uFE0F\u{E0100}-\u{E01EF}])[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+const BRIEF_TEXT_FIELDS = [['name', 'name'], ['promptBody', 'instructions'], ['goodWhen', 'going-well-when']] as const;
+
+function hidesText(value: string): boolean {
+  return HIDDEN_FORMAT_CHARS.test(value) || BRIEF_CONTROLS.test(value) ||
+    BRIEF_INVISIBLES.test(value) || STRAY_SELECTOR.test(value);
+}
+
 function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx): void {
   if (new TextEncoder().encode(JSON.stringify(definition)).length > ROUTINE_DEFINITION_MAX_BYTES) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['promptBody'], message: 'Routine definition is too large.' });
@@ -100,6 +154,13 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
   const issue = (path: (string | number)[], message: string): void => {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path, message });
   };
+  // Not `=== 'stay-on-top'`: a future kind is a task too.
+  if (definition.kind !== 'repeat') {
+    for (const [field, label] of BRIEF_TEXT_FIELDS) {
+      const value = definition[field];
+      if (typeof value === 'string' && hidesText(value)) issue([field], `A task’s ${label} can’t contain invisible characters.`);
+    }
+  }
   switch (definition.kind) {
     case 'repeat':
       if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task that stays on top of something can say when it’s going well.');
