@@ -3755,6 +3755,47 @@ describe('channel-web agent-workspace BFF', () => {
         });
       });
 
+      it('projects a kind change with its whole brief, and no task for part of one (TASK-906)', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const change = (id: string, patch: Record<string, unknown>) =>
+          decision({
+            id,
+            call: {
+              id: `tu-${id}`,
+              name: 'routine_update',
+              input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch },
+            },
+          });
+        seed(
+          change('whole', {
+            kind: 'stay-on-top',
+            name: 'Zero open tickets',
+            promptBody: 'Keep the queue empty.',
+            goodWhen: 'No ticket open longer than an hour.',
+          }),
+          // The contract refuses a conversion that leaves out the name or the
+          // instructions, so it is never a task proposal: a card can't show a
+          // task the person sees only part of.
+          change('kind-only', { kind: 'stay-on-top' }),
+          change('kind-good-when', { kind: 'stay-on-top', goodWhen: 'No ticket open longer than an hour.' }),
+        );
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        expect((await getTask(h, 'whole')).task).toEqual({
+          action: 'change',
+          name: 'Zero open tickets',
+          instructions: { text: 'Keep the queue empty.', truncated: false },
+          goodWhen: { text: 'No ticket open longer than an hour.', truncated: false },
+          checksIn: null,
+        });
+        for (const id of ['kind-only', 'kind-good-when']) {
+          const { task, body } = await getTask(h, id);
+          expect({ id, task }).toEqual({ id, task: null });
+          // The raw request block still shows what was asked.
+          expect((body.decision['request'] as { input: string }).input).toContain('stay-on-top');
+        }
+      });
+
       it('fences goodWhen like the brief: a bidi override is spelled out, a tab becomes two spaces', async () => {
         registerAuth({ id: 'u1', isAdmin: false });
         seed(decision({ id: 'gw', call: taskCreate({ goodWhen: 'Inbox\u202Eat\tzero' }) }));
@@ -3787,24 +3828,24 @@ describe('channel-web agent-workspace BFF', () => {
 
       it('shows no task block when nothing in it would be drawn', async () => {
         registerAuth({ id: 'u1', isAdmin: false });
-        // `kind` alone makes it a task proposal, but none of the four display
-        // fields is in the patch: a heading over no rows. The raw request block
-        // still shows the change.
+        // A string `goodWhen` makes it a task proposal, but a blank one fences
+        // to nothing and none of the other display fields is in the patch: a
+        // heading over no rows. The raw request block still shows the change.
         seed(
           decision({
-            id: 'kind-only',
+            id: 'blank-good-when',
             call: {
               id: 'tu1',
               name: 'routine_update',
-              input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch: { kind: 'stay-on-top' } },
+              input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch: { goodWhen: '   ' } },
             },
           }),
         );
         registerReads();
         const h = makeWorkspaceHandlers({ bus, initCtx });
-        const { task, body } = await getTask(h, 'kind-only');
+        const { task, body } = await getTask(h, 'blank-good-when');
         expect(task).toBeNull();
-        expect((body.decision['request'] as { input: string }).input).toContain('stay-on-top');
+        expect((body.decision['request'] as { input: string }).input).toContain('goodWhen');
       });
 
       it('caps a long brief and says so', async () => {

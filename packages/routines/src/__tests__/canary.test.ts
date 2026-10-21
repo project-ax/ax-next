@@ -218,4 +218,31 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     const paused = await h.bus.call<unknown, RoutineView>('tool:execute:routine_update', ctx, update('direct-pause', weekly, { enabled: false }));
     expect(paused).toMatchObject({ routineId: weekly.routineId, enabled: false, name: weekly.name, promptBody: weekly.promptBody });
   });
+  it('with Always Allow granted, turning a repeat routine into a task needs its whole brief: part is refused, all of it asks (TASK-906)', async () => {
+    // `weekly`'s name and instructions were written under Always Allow, and no one has
+    // seen them. A conversion that sends only kind and goodWhen would make them a task's.
+    const { ctx, store, update, weekly } = await alwaysAllowed();
+    const current = async () => (await store.list({ agentId: h.agentId })).find(item => item.routineId === weekly.routineId);
+    const goodWhen = 'No ticket open longer than an hour.';
+    const partial = update('convert-partial', weekly, { kind: 'stay-on-top', goodWhen });
+    // 1. Refused at execute time, so no path that skips tool:pre-call can make it a task.
+    await expect(h.bus.call('tool:execute:routine_update', ctx, partial)).rejects.toMatchObject({ toolCode: 'validation' });
+    // And refused, not held, at pre-call: no card ever offers it.
+    const early = await h.bus.fire('tool:pre-call', ctx, partial);
+    expect(early.rejected).toBe(true);
+    expect(isHold(early)).toBe(false);
+    expect(await current()).toMatchObject({ kind: 'repeat', goodWhen: null, name: weekly.name, promptBody: weekly.promptBody, revision: weekly.revision });
+    // 2. The whole brief still asks, and reads as a task change.
+    const brief = { name: 'Zero open tickets', promptBody: 'Keep the queue empty.', goodWhen };
+    const whole = update('convert-whole', weekly, { kind: 'stay-on-top', ...brief });
+    const held = await h.bus.fire('tool:pre-call', ctx, whole);
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    const open = await h.bus.call<unknown, { decision: { summary: string } }>('decisions:get', ctx, { decisionId: held.hold.decisionId, userId: ctx.userId });
+    expect(open.decision.summary).toBe('Wants to change a task');
+    expect(await current()).toMatchObject({ kind: 'repeat', revision: weekly.revision });
+    // 3. One Allow once makes it exactly the task the person saw.
+    await h.bus.call('decisions:approve', ctx, { decisionId: held.hold.decisionId, userId: ctx.userId, approvalScope: 'once' });
+    expect(await current()).toMatchObject({ kind: 'stay-on-top', ...brief });
+  });
 });

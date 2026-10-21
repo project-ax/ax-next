@@ -2578,9 +2578,11 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
     fields.trigger === undefined
       ? null
       : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS);
-  // A change that touches none of the four fields drawn here (a patch of only
-  // `kind`) would be a heading over no rows. No block; the raw request block
-  // still shows the change.
+  // A change whose drawn fields all fence to nothing (a patch of only a blank
+  // `goodWhen`) would be a heading over no rows. No block; the raw request
+  // block still shows the change. A kind change always carries the name,
+  // instructions and goodWhen (the contract refuses one that doesn't), so it
+  // lands here only when all three are blank.
   if (name === null && instructions === null && goodWhen === null && checksIn === null) return null;
   return { action: proposal.action, name, instructions, goodWhen, checksIn };
 }

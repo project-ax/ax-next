@@ -8,7 +8,30 @@ export const RoutineListToolInputSchema = z.object({}).strict();
 export const RoutineGetToolInputSchema = z.object({ routineId: RoutineOpaqueStringSchema }).strict();
 export const RoutineCreateToolInputSchema = z.object({ requestId: RoutineOpaqueStringSchema, definition: RoutineDefinitionSchema }).strict();
 export const RoutineDeleteToolInputSchema = RoutineGetToolInputSchema.extend({ requestId: RoutineOpaqueStringSchema, expectedRevision: RoutineOpaqueStringSchema }).strict();
-export const RoutineUpdateToolInputSchema = RoutineDeleteToolInputSchema.extend({ patch: RoutinePatchSchema }).strict();
+
+/**
+ * TASK-906: the agent turns a routine into a task only by sending the whole
+ * brief. A repeat routine's name and instructions can be written under Always
+ * Allow without anyone seeing them, so a patch that sets `kind` alone (or with
+ * `goodWhen`) would put unseen text in a task's brief. The patch must carry
+ * its own `name`, `promptBody` and a non-null `goodWhen`, so the card that
+ * asks shows all of it. Checked on the parsed patch, whose own keys are what
+ * `applyRoutinePatch` merges. Agent tools only: a person converting a routine
+ * in Settings goes through `RoutineUpdateInputSchema`, which doesn't carry it.
+ */
+const RoutineUpdateToolPatchSchema = RoutinePatchSchema.superRefine((patch, ctx) => {
+  // Not `=== 'stay-on-top'`: a future kind is a task too.
+  if (!Object.hasOwn(patch, 'kind') || patch.kind === 'repeat') return;
+  const whole = Object.hasOwn(patch, 'name') && Object.hasOwn(patch, 'promptBody') &&
+    Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string';
+  if (!whole) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ['kind'],
+      message: 'To turn a routine into a task, send its name, promptBody and goodWhen in the same patch so the person sees the whole task.',
+    });
+  }
+});
+export const RoutineUpdateToolInputSchema = RoutineDeleteToolInputSchema.extend({ patch: RoutineUpdateToolPatchSchema }).strict();
 export const RoutineFireNowToolInputSchema = RoutineDeleteToolInputSchema;
 
 export const RoutineToolInputSchemas = {
@@ -79,6 +102,9 @@ export type RoutineTaskProposal =
  * approval wording and the approval card so they can't disagree. Never an
  * authority (that's `touchesTaskBrief`): anything unreadable is null. The
  * returned definition or patch is the parsed copy and is still agent-authored.
+ * A kind `change` always carries the whole brief (name, promptBody and
+ * goodWhen), because `RoutineUpdateToolInputSchema` refuses a conversion
+ * without it.
  */
 export function routineTaskProposal(call: { name: string; input: unknown }): RoutineTaskProposal {
   try {
@@ -165,7 +191,7 @@ export const RoutineToolDescriptions = {
   routine_list: 'List this agent’s routines, revisions, current status and permissions, including defaults.',
   routine_get: 'Read a routine’s complete current definition and revision. Read before editing. IDs and revisions are opaque.',
   routine_create: 'Create unattended interval, cron or webhook work. People call routines "tasks". kind "repeat" (the default) does the same job each time. kind "stay-on-top" is a "Stay on top of something" task: it needs goodWhen, an interval or cron schedule whose check-ins are at least 15 minutes apart, conversation "per-fire" and no silenceToken. Creating a "stay-on-top" task always asks the person, even with Always Allow. Other creates are held for approval unless Always Allow is enabled for this person and agent. Enabled controls scheduling. Use a new logical requestId and reuse it only for retries. Report success only after confirmation.',
-  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow. Other edits are held for approval unless Always Allow is enabled for this person and agent. A "stay-on-top" task keeps check-ins at least 15 minutes apart. Set enabled false to stop scheduling. Reuse requestId for retries.',
+  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow. To turn a routine into a task (a kind other than "repeat"), send its name, promptBody and goodWhen in the same patch so the person sees the whole task. Other edits are held for approval unless Always Allow is enabled for this person and agent. A "stay-on-top" task keeps check-ins at least 15 minutes apart. Set enabled false to stop scheduling. Reuse requestId for retries.',
   routine_delete: 'Delete an authored routine using its current expectedRevision. Requires Allow once approval; Always Allow does not cover deletion. Defaults use separate default controls. Reuse requestId for retries.',
   routine_fire_now: 'Fire an enabled routine now using its current expectedRevision. Reuse requestId for retries. Requires Allow once approval; Always Allow does not cover firing. Confirmation acknowledges dispatch acceptance; final execution status appears in history.',
 } as const;

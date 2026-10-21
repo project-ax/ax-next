@@ -364,6 +364,8 @@ const taskDef = RoutineDefinitionSchema.parse({
 const createCall = (definition: unknown): Call => ({ name: 'routine_create', input: { requestId: 'q', definition } });
 const upd = (patch: unknown): Call => ({ name: 'routine_update', input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch } });
 const mutation = { routineId: 'r', requestId: 'q', expectedRevision: 'v' };
+/** Turning a routine into a task, with the whole brief the person needs to see. */
+const wholeBrief = { kind: 'stay-on-top', name: 'Zero open tickets', promptBody: 'Keep the queue empty.', goodWhen: 'Queue empty.' } as const;
 const boom = (): never => { throw new Error('hostile input'); };
 /** Inputs no JSON body can produce. Reading them throws; neither helper may. */
 const hostileInputs = (): unknown[] => {
@@ -448,13 +450,14 @@ describe('routineTaskProposal (TASK-906)', () => {
 
   it('reads a goodWhen or non-repeat kind change as changing a task', () => {
     expect(routineTaskProposal(upd({ goodWhen: 'x' }))).toEqual({ action: 'change', patch: { goodWhen: 'x' } });
-    expect(routineTaskProposal(upd({ kind: 'stay-on-top', goodWhen: 'x' })))
-      .toEqual({ action: 'change', patch: { kind: 'stay-on-top', goodWhen: 'x' } });
+    // A kind change always carries the whole brief (the tool schema refuses one that doesn't).
+    expect(routineTaskProposal(upd(wholeBrief))).toEqual({ action: 'change', patch: wholeBrief });
   });
 
   it.each<[string, Call]>([
     ['a promptBody change', upd({ promptBody: 'x' })],
     ['a change back to repeat', upd({ kind: 'repeat', goodWhen: null })],
+    ['a kind change without the whole brief', upd({ kind: 'stay-on-top', goodWhen: 'x' })],
     ['a malformed update', { name: 'routine_update', input: { ...mutation, patch: { goodWhen: 'x', unknown: true } } }],
     ['routine_delete', { name: 'routine_delete', input: mutation }],
   ])('is null for %s', (_label, call) => {
@@ -475,7 +478,7 @@ describe('routineTaskProposal (TASK-906)', () => {
 
   it('every task proposal is a call that always asks', () => {
     const calls = [
-      createCall(taskDef), upd({ goodWhen: 'x' }), upd({ kind: 'stay-on-top' }), upd({ kind: 'stay-on-top', goodWhen: 'x' }),
+      createCall(taskDef), upd({ goodWhen: 'x' }), upd(wholeBrief), upd({ ...wholeBrief, trigger: { kind: 'interval', every: '1h' } }),
       upd(Object.create({ goodWhen: 'x' }, { enabled: { value: false, enumerable: true } })),
     ];
     for (const call of calls) {
@@ -485,11 +488,61 @@ describe('routineTaskProposal (TASK-906)', () => {
   });
 });
 
+// A repeat routine's name and instructions can be written under Always Allow
+// without anyone seeing them. Turning it into a task asks, and the person must
+// then see the whole task, not just the half of it the patch happens to change.
+describe('turning a routine into a task sends the whole brief (TASK-906)', () => {
+  const { name, promptBody, goodWhen } = wholeBrief;
+  const message = 'To turn a routine into a task, send its name, promptBody and goodWhen in the same patch so the person sees the whole task.';
+
+  it.each<[string, Record<string, unknown>]>([
+    ['kind alone', { kind: 'stay-on-top' }],
+    ['kind and goodWhen', { kind: 'stay-on-top', goodWhen }],
+    ['no name', { kind: 'stay-on-top', promptBody, goodWhen }],
+    ['no promptBody', { kind: 'stay-on-top', name, goodWhen }],
+    ['no goodWhen', { kind: 'stay-on-top', name, promptBody }],
+    ['a null goodWhen', { ...wholeBrief, goodWhen: null }],
+    ['other edits but no goodWhen', { kind: 'stay-on-top', name, promptBody, trigger: { kind: 'interval', every: '1h' } }],
+  ])('refuses a kind change with %s, in plain words on patch.kind', (_label, patch) => {
+    const result = RoutineUpdateToolInputSchema.safeParse(upd(patch).input);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({ path: ['patch', 'kind'], message }));
+    // The executor parses this same schema, and pre-call can't read it either: it asks, and no card calls it a task.
+    expect(RoutineToolInputSchemas.routine_update.safeParse(upd(patch).input).success).toBe(false);
+    expect(touchesTaskBrief(upd(patch))).toBe(true);
+    expect(routineTaskProposal(upd(patch))).toBeNull();
+  });
+
+  it('accepts a kind change that sends the whole brief, and the card reads all of it', () => {
+    expect(RoutineUpdateToolInputSchema.parse(upd(wholeBrief).input).patch).toEqual(wholeBrief);
+    expect(touchesTaskBrief(upd(wholeBrief))).toBe(true);
+    const more = { ...wholeBrief, description: 'Support queue', trigger: { kind: 'interval', every: '1h' } };
+    expect(routineTaskProposal(upd(more))).toEqual({ action: 'change', patch: more });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['a change back to repeat', { kind: 'repeat', goodWhen: null }],
+    ['kind repeat alone', { kind: 'repeat' }],
+    ['a goodWhen change', { goodWhen }],
+    ['an edit without kind', { name, enabled: false }],
+  ])('leaves %s to the other rules', (_label, patch) => {
+    expect(RoutineUpdateToolInputSchema.safeParse(upd(patch).input).success).toBe(true);
+  });
+
+  it('binds the agent tool only: the service schema Settings goes through still takes a partial conversion', () => {
+    const partial = { kind: 'stay-on-top' as const, goodWhen };
+    expect(RoutineUpdateToolInputSchema.safeParse(upd(partial).input).success).toBe(false);
+    expect(RoutineUpdateInputSchema.safeParse({ agentId: 'a', ...mutation, patch: partial }).success).toBe(true);
+    expect(applyRoutinePatch(repeatDef, partial)).toMatchObject({ ...partial, name: repeatDef.name, promptBody: repeatDef.promptBody });
+  });
+});
+
 describe('tells the model the task rules (TASK-906)', () => {
   it('says that a task and its brief always ask', () => {
     for (const text of ['People call routines "tasks".', 'goodWhen', '15 minutes', 'Creating a "stay-on-top" task always asks the person, even with Always Allow.']) {
       expect(RoutineToolDescriptions.routine_create).toContain(text);
     }
     expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
+    expect(RoutineToolDescriptions.routine_update).toContain('To turn a routine into a task (a kind other than "repeat"), send its name, promptBody and goodWhen in the same patch so the person sees the whole task.');
   });
 });
