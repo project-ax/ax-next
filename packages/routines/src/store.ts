@@ -6,7 +6,7 @@ import {
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckIn, RecordReportInput } from './types.js';
+import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckIn, RecordReportInput } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -62,19 +62,31 @@ function definitionColumns(d: RoutineDefinition) {
     kind: d.kind, good_when: d.goodWhen, spec_hash: inputHash(d)
   };
 }
+/**
+ * TASK-907. A task's state is its latest report, so it's there only when the
+ * report's status, update and time all are. A row with only some of them (a
+ * rollback, a hand edit) reads as never reported rather than failing every read
+ * of it, claimDue's included (TASK-913).
+ */
+function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | null {
+  if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
+  return { status: row.task_status, update: row.task_update, ask: row.task_ask, notes: row.agent_notes, reportedAt: row.task_reported_at };
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
-    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning
+    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row)
   });
 }
 function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
   return {
     id: Number(r.id), agentId: r.agent_id, routineId: r.routine_id, firedAt: r.fired_at, triggerSource: r.trigger_source,
-    conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning
+    conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning,
+    // Nested, so no column name reaches the view. A row with only part of a report has none (TASK-907, TASK-913).
+    report: r.report_status === null || r.report_update === null ? null : { status: r.report_status, update: r.report_update, ask: r.report_ask }
   };
 }
 function defaultRowToDetail(row: Selectable<DefaultRoutinesRow>): DefaultRoutineDetailRow {

@@ -33,7 +33,13 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
-    permissions: routinePermissions(row, userId, allowed) };
+    permissions: routinePermissions(row, userId, allowed), task: taskView(row) };
+}
+/** TASK-907. A repeat routine shows no task state, even state it kept from being a task. */
+function taskView(row: StoredRoutine): C.RoutineTaskView | null {
+  if (row.kind === 'repeat' || row.task === null) return null;
+  const { status, update, ask, reportedAt, notes } = row.task;
+  return { status, update, ask, reportedAt: reportedAt.toISOString(), notes };
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 function fireView({ id: _id, firedAt, ...row }: FireRow): C.RoutineFireView { return { ...row, firedAt: firedAt.toISOString() }; }

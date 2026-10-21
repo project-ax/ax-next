@@ -22,4 +22,5 @@ export const routineFixture: RoutineView = {
   lastError: null,
   lastWarning: null,
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
+  task: null,
 };

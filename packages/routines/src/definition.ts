@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { RoutineDefinitionObjectSchema, RoutineDefinitionSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
+import { RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
 import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
@@ -49,6 +49,13 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   definitionId: z.string().nullable(), definitionUpdatedAt: z.coerce.date().nullable(),
   nextRunAt: z.coerce.date().nullable(), lastRunAt: z.coerce.date().nullable(),
   lastStatus: z.enum(['ok', 'silenced', 'error']).nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),
+  // TASK-907. Types and the status enum only. No caps: claimDue parses every due row, so text a
+  // later card's higher cap let in must still read after a rollback (TASK-913). The default lets
+  // a receipt written before this field replay.
+  task: z.object({
+    status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+    notes: z.string().nullable(), reportedAt: z.coerce.date(),
+  }).strict().nullable().default(null),
 }).strict().superRefine((row, ctx) => {
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));
   if (!checked.success) for (const issue of checked.error.issues) ctx.addIssue(issue);

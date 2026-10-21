@@ -496,6 +496,8 @@ export const RoutineViewSchema = z.object({
   nextRunAt: RoutineInstantSchema.nullable(), lastRunAt: RoutineInstantSchema.nullable(),
   lastStatus: RoutineStatusSchema.nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),
   permissions: RoutinePermissionsSchema,
+  /** TASK-907. Null for a repeat routine and for a task that hasn't reported yet. */
+  task: RoutineTaskViewSchema.nullable(),
 }).strict().superRefine((view, ctx) => {
   const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key as keyof typeof view]]));
   validateDefinition(definition as RoutineDefinition, ctx);

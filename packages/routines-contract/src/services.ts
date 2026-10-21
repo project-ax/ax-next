@@ -52,6 +52,8 @@ export const RoutineFireViewSchema = z.object({
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
   conversationId: RoutineOpaqueStringSchema.nullable(), status: RoutineStatusSchema,
   error: z.string().nullable(), renderedPrompt: z.string().nullable(), warning: z.string().nullable(),
+  /** TASK-907. Null when the run made no report. */
+  report: RoutineFireReportViewSchema.nullable(),
 }).strict();
 export const RoutineRecentFiresOutputSchema = z.object({ fires: z.array(RoutineFireViewSchema) }).strict();
 export const RoutineRecentFiresForAgentOutputSchema = RoutineRecentFiresOutputSchema;

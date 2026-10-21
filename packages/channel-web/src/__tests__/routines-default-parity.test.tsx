@@ -19,7 +19,7 @@ beforeEach(() => {
     { defaultRoutineId: 'skill-reflection', name: 'Skill reflection', enabled: true },
   ]);
   vi.mocked(routineApi.getConsent).mockResolvedValue({ enabled: false, revision: 'none' });
-  vi.mocked(routineApi.recentFires).mockResolvedValue([{ agentId: 'a', routineId: heartbeat.routineId, firedAt: '2031-01-01T00:00:00Z', triggerSource: 'manual', status: 'ok', conversationId: 'preserved-default-conversation', error: null, renderedPrompt: 'Preserved default history', warning: null }]);
+  vi.mocked(routineApi.recentFires).mockResolvedValue([{ agentId: 'a', routineId: heartbeat.routineId, firedAt: '2031-01-01T00:00:00Z', triggerSource: 'manual', status: 'ok', conversationId: 'preserved-default-conversation', error: null, renderedPrompt: 'Preserved default history', warning: null, report: null }]);
   vi.mocked(routineApi.fireNow).mockResolvedValue({ status: 'ok' });
   vi.mocked(routineApi.setAgentDefaultEnabled).mockResolvedValue(undefined);
 });

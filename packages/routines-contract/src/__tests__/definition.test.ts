@@ -133,7 +133,7 @@ describe('webhooks', () => {
 });
 
 describe('public services and tools', () => {
-  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false } };
+  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null };
   it('round-trips the full view and forbids protected state and Date objects', () => {
     expect(RoutineViewSchema.parse(view)).toEqual(view);
     for (const extra of [{ ownerUserId: 'u' }, { specHash: 'hash' }, { nextRunAt: new Date() }, { nextRunAt: 'not-a-date' }, { permissions: { ...view.permissions, isAdmin: true } }]) expect(RoutineViewSchema.safeParse({ ...view, ...extra }).success).toBe(false);
@@ -173,7 +173,7 @@ describe('public services and tools', () => {
     expect(RoutineUpsertDefaultInputSchema.safeParse({ ...input, sourceMd: 'legacy' }).success).toBe(false);
   });
   it('round-trips history as ISO strings without row IDs', () => {
-    const fire = { agentId: 'a', routineId: 'r', firedAt: '2026-10-09T00:00:00.000Z', triggerSource: 'manual', conversationId: 'c', status: 'silenced', error: null, renderedPrompt: 'first\nsecond\n', warning: 'Unavailable connector' };
+    const fire = { agentId: 'a', routineId: 'r', firedAt: '2026-10-09T00:00:00.000Z', triggerSource: 'manual', conversationId: 'c', status: 'silenced', error: null, renderedPrompt: 'first\nsecond\n', warning: 'Unavailable connector', report: null };
     expect(RoutineRecentFiresOutputSchema.parse({ fires: [fire] })).toEqual({ fires: [fire] });
     expect(RoutineRecentFiresOutputSchema.safeParse({ fires: [{ ...fire, id: 1 }] }).success).toBe(false);
   });
@@ -236,7 +236,7 @@ describe('task kinds (TASK-906)', () => {
   const view = {
     ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false },
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null,
   };
 
   it('defaults kind to repeat and goodWhen to null', () => {
@@ -975,7 +975,7 @@ describe('a task’s brief can’t hide text from the card (TASK-906)', () => {
   });
 
   it('views recheck it, so a read never shows a task brief with hidden text', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false } };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${tags(' x')}` }).success).toBe(false);
   });
@@ -1157,7 +1157,7 @@ describe('a task’s brief can’t push text out of the card’s view (TASK-906)
   });
 
   it('views recheck it', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false } };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${'\n'.repeat(1000)}${payload}` }).success).toBe(false);
   });

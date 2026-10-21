@@ -33,6 +33,7 @@ const routine = {
   lastError: null,
   lastWarning: null,
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
+  task: null,
 };
 function req(
   body?: unknown,

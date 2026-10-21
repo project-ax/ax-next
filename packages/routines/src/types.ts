@@ -2,17 +2,23 @@ import type { RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/ro
 export type { ActiveHours, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
+/** TASK-907. A task's latest report and the notes it keeps between check-ins. Agent-written text. */
+export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; notes: string | null; reportedAt: Date };
 /** Below the hook bus. Owner identity is pinned independently from the editing actor. */
 export type StoredRoutine = RoutineDefinition & {
   agentId: string; routineId: string; revision: string; ownerUserId: string;
   definitionId: string | null; definitionUpdatedAt: Date | null;
   nextRunAt: Date | null; lastRunAt: Date | null;
   lastStatus: FireStatus | null; lastError: string | null; lastWarning: string | null;
+  /** TASK-907. Null until the first report. Kept when a task becomes a repeat routine; the views hide it then. */
+  task: StoredTaskState | null;
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
   triggerSource: FireSource; conversationId: string | null;
   status: FireStatus; error: string | null; renderedPrompt: string | null; warning: string | null;
+  /** TASK-907. Null when the run made no report. */
+  report: DispatchReport | null;
 }
 export interface RoutinesConfig {
   tickIntervalMs?: number; claimBatchSize?: number;

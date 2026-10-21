@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_REPORT_ASK_MAX_CHARS, ROUTINE_REPORT_STATUSES,
-  ROUTINE_REPORT_UPDATE_MAX_CHARS, RoutineFireReportViewSchema, RoutineReportFieldShape,
-  RoutineReportInputSchema, RoutineReportOutputSchema, RoutineReportStatusSchema,
-  RoutineReportToolInputSchema, RoutineTaskViewSchema, firstHiddenCharacter,
+  ROUTINE_REPORT_UPDATE_MAX_CHARS, RoutineDefinitionSchema, RoutineFireReportViewSchema,
+  RoutineFireViewSchema, RoutineReportFieldShape, RoutineReportInputSchema,
+  RoutineReportOutputSchema, RoutineReportStatusSchema, RoutineReportToolInputSchema,
+  RoutineTaskViewSchema, RoutineViewSchema, firstHiddenCharacter,
 } from '../index.js';
 
 // A task's report is text an agent writes during a check-in (TASK-907). The host
@@ -136,6 +137,37 @@ describe('a task’s report: its shape (TASK-907)', () => {
     expect(RoutineFireReportViewSchema.safeParse({ ...fire, notes: null }).success).toBe(false);
     expect(RoutineFireReportViewSchema.safeParse({ ...fire, reportedAt: task.reportedAt }).success).toBe(false);
     expect(RoutineFireReportViewSchema.safeParse({ ...fire, status: 'ok' }).success).toBe(false);
+  });
+
+  it('RoutineViewSchema requires task and RoutineFireViewSchema requires report', () => {
+    const brief = RoutineDefinitionSchema.parse({
+      name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+      kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+    });
+    const view = {
+      ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+      nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
+      permissions: { edit: true, stop: true, fire: true, manageSecret: false },
+    } as const;
+    const task = {
+      status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
+      reportedAt: '2026-10-21T10:02:00.000Z', notes: 'Order 1234 waits on a refund.',
+    } as const;
+    // Left out is refused: every view says whether there's a report, so no reader mistakes an old shape for "none".
+    expect(RoutineViewSchema.safeParse(view).success).toBe(false);
+    for (const value of [null, task]) expect(RoutineViewSchema.parse({ ...view, task: value })).toEqual({ ...view, task: value });
+    expect(RoutineViewSchema.safeParse({ ...view, task: { ...task, dispatchId: 'd' } }).success).toBe(false);
+    expect(RoutineViewSchema.safeParse({ ...view, task: { ...task, reportedAt: new Date() } }).success).toBe(false);
+    const fire = {
+      agentId: 'a', routineId: 'r', firedAt: '2026-10-21T10:00:00.000Z', triggerSource: 'tick', conversationId: 'c',
+      status: 'ok', error: null, renderedPrompt: 'Keep the support queue empty.', warning: null,
+    } as const;
+    const report = { status: task.status, update: task.update, ask: task.ask } as const;
+    expect(RoutineFireViewSchema.safeParse(fire).success).toBe(false);
+    for (const value of [null, report]) expect(RoutineFireViewSchema.parse({ ...fire, report: value })).toEqual({ ...fire, report: value });
+    // A run's report keeps no notes, and the store's flat columns never reach the view.
+    expect(RoutineFireViewSchema.safeParse({ ...fire, report: { ...report, notes: null } }).success).toBe(false);
+    expect(RoutineFireViewSchema.safeParse({ ...fire, report: null, reportStatus: 'on-track' }).success).toBe(false);
   });
 });
 
