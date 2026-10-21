@@ -352,9 +352,9 @@ sandbox:
     #
     # In blast-radius terms it is not a step up — the host already holds the
     # database, the blob store and every credential, so a compromised host was
-    # already a bad day. But "not a step up" is not "free", and if you do not
-    # need the browser, leave it empty and the browser will say it cannot
-    # reach the files rather than pretending the agent wrote nothing.
+    # already a bad day. But "not a step up" is not "free". Leave it empty and
+    # the browser still works: it reads through a short-lived pod per click
+    # instead (slower, and with a gap of its own; see the next paragraph).
     #
     # Leaving this empty is not as cautious as it looks. The pod-per-call
     # reader checks a path and then reads it, and an agent that swaps a folder
