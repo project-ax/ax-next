@@ -51,8 +51,10 @@ it('boots actual agents, teams and policy; enforces ACL/scoped grants and purges
     replay.state.set('decisions:routine-consent-grant', { userId, agentId, decisionId, expectedRevision, toolName: 'routine_create' });
     return h.bus.call('tool-policy:grant-routine-consent', replay, { decisionId, expectedRevision });
   }
+  // A well-formed repeat create: malformed input holds on purpose (TASK-906).
+  const createInput = { requestId: 'q', definition: { name: 'Weekly summary', promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' } } };
   async function verdict(userId: string, agentId: string) {
-    return (await h.bus.call<unknown, EvaluateResult>('tool-policy:evaluate', ctx(userId, agentId), { agentId, call: { name: 'routine_create', input: {} } })).verdict;
+    return (await h.bus.call<unknown, EvaluateResult>('tool-policy:evaluate', ctx(userId, agentId), { agentId, call: { name: 'routine_create', input: createInput } })).verdict;
   }
   await expect(grant('bob', personal, 'personal-other')).rejects.toMatchObject({ code: 'forbidden' });
   await grant('alice', personal, 'personal');

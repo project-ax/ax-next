@@ -2449,6 +2449,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/routines-contract':
+        specifier: workspace:*
+        version: link:../routines-contract
       kysely:
         specifier: 0.28.17
         version: 0.28.17

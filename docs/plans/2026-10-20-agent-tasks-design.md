@@ -344,10 +344,11 @@ that grows forever.
     observation event keyed by reqId, modelled on `chat:connectors-skipped`. A
     check-in whose brief didn't land is recorded as failed instead of running
     on outside content alone.
-  - **Always Allow doesn't cover a task's brief.** Today, Always Allow on
-    routine changes lets the agent rewrite instructions without asking. An
-    agent's edit to a task's "what to do" or "going well when" always needs a
-    yes. That is what makes the `brief` section person-written.
+  - **Always Allow doesn't cover a task's brief.** Done in TASK-906: creating a
+    task, and changing any routine's name, instructions, "going well when" or
+    kind, always needs a yes, even with Always Allow (`touchesTaskBrief` in
+    `@ax/routines-contract`, checked by tool-policy before consent can relax a
+    hold). That is what makes the `brief` section person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
   removes it. Tasks PR 1 adds it back as its first user.
 
