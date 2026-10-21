@@ -473,4 +473,31 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — resource caps (${SKIP_REASON}
     expect(out).toMatchObject({ kind: 'file', truncated: true });
     expect(out.kind === 'file' && out.contents.length).toBe(2 * 1024 * 1024);
   });
+
+  it('a file that grew after its stat is read to the end, or to the limit', async () => {
+    // The read's first buffer is sized from the leaf's stat, so a file that
+    // grew between the stat and the read starts in a buffer that is too small,
+    // and the buffer has to grow. The leaf's stat is rigged to say 1 byte.
+    const body = Buffer.from('0123456789'.repeat(100));
+    await fs.writeFile(path.join(tmp, 'grown.txt'), body);
+    const realOpen = fs.open;
+    const open = vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+      const fh = await realOpen(p, flags, mode);
+      if (String(p).endsWith('/grown.txt')) {
+        const realStat = fh.stat.bind(fh);
+        vi.spyOn(fh, 'stat').mockImplementation(async () => Object.assign(await realStat(), { size: 1 }));
+      }
+      return fh;
+    });
+    try {
+      const whole = await readConfinedByWalk(tmp, ['grown.txt'], { limitBytes: 4096, maxEntries: 10 });
+      expect(whole).toMatchObject({ kind: 'file', truncated: false });
+      expect(whole.kind === 'file' && Buffer.from(whole.contents).equals(body)).toBe(true);
+      const capped = await readConfinedByWalk(tmp, ['grown.txt'], { limitBytes: 100, maxEntries: 10 });
+      expect(capped).toMatchObject({ kind: 'file', truncated: true });
+      expect(capped.kind === 'file' && Buffer.from(capped.contents).equals(body.subarray(0, 100))).toBe(true);
+    } finally {
+      open.mockRestore();
+    }
+  });
 });
