@@ -6,7 +6,9 @@ import {
   RoutineCreateInputSchema, RoutineSecretInputSchema, RoutineUpdateInputSchema,
   RoutineToolInputSchemas, RoutineToolJsonSchemas, RoutineRecentFiresOutputSchema,
   RoutineUpsertDefaultInputSchema, RoutineGetDefaultOutputSchema,
+  RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, RoutineToolDescriptions,
   applyRoutinePatch, durationToSeconds, routineToolKind, validateWebhookPath,
+  touchesTaskBrief, routineTaskProposal,
 } from '../index.js';
 
 const base = {
@@ -343,5 +345,144 @@ describe('task kinds (TASK-906)', () => {
   it('the JSON schema offers both fields', () => {
     expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top'], default: 'repeat' });
     expect(contract.RoutineDefinitionJsonSchema.properties.goodWhen).toMatchObject({ default: null });
+  });
+});
+
+type Call = { name: string; input: unknown };
+const repeatDef = RoutineDefinitionSchema.parse({ name: 'Weekly summary', promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' } });
+const taskDef = RoutineDefinitionSchema.parse({
+  name: 'Zero open tickets', promptBody: 'Keep the queue empty.', kind: 'stay-on-top', goodWhen: 'Queue empty.',
+  trigger: { kind: 'interval', every: '15m' },
+});
+const createCall = (definition: unknown): Call => ({ name: 'routine_create', input: { requestId: 'q', definition } });
+const upd = (patch: unknown): Call => ({ name: 'routine_update', input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch } });
+const mutation = { routineId: 'r', requestId: 'q', expectedRevision: 'v' };
+const boom = (): never => { throw new Error('hostile input'); };
+/** Inputs no JSON body can produce. Reading them throws; neither helper may. */
+const hostileInputs = (): unknown[] => {
+  const trap = new Proxy({}, { get: boom, has: boom, ownKeys: boom, getOwnPropertyDescriptor: boom, getPrototypeOf: boom });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  return [trap, revoked.proxy, { requestId: 'q', definition: trap }, { ...mutation, get patch() { return boom(); } }, { ...mutation, patch: trap }];
+};
+
+describe('touchesTaskBrief (TASK-906)', () => {
+  it.each<[string, Call, boolean]>([
+    ['create repeat', createCall(repeatDef), false],
+    ['create stay-on-top', createCall(taskDef), true],
+    ['create malformed', { name: 'routine_create', input: {} }, true],
+    ['create invalid definition', createCall({ ...repeatDef, trigger: { kind: 'interval', every: '30s' } }), true],
+    ['create unknown kind', createCall({ ...repeatDef, kind: 'get-done' }), true],
+    ['create kind in another case', createCall({ ...repeatDef, Kind: 'stay-on-top' }), true],
+    ['create smuggled kind', createCall(JSON.parse('{"name":"n","promptBody":"p","trigger":{"kind":"interval","every":"15m"},"__proto__":{"kind":"stay-on-top"}}')), true],
+    ['update enabled', upd({ enabled: false }), false],
+    ['update trigger', upd({ trigger: { kind: 'interval', every: '2h' } }), false],
+    ['update description', upd({ description: 'x' }), false],
+    ['update every field outside the brief', upd({
+      description: 'x', enabled: false, trigger: { kind: 'interval', every: '2h' }, activeHours: null,
+      silenceToken: null, silenceMaxChars: 10, conversation: 'per-fire',
+    }), false],
+    ['update promptBody', upd({ promptBody: 'x' }), true],
+    ['update goodWhen', upd({ goodWhen: 'x' }), true],
+    ['update goodWhen null', upd({ goodWhen: null }), true],
+    ['update name', upd({ name: 'x' }), true],
+    ['update kind', upd({ kind: 'repeat' }), true],
+    ['update empty patch', upd({}), true],
+    ['update smuggled key', upd(JSON.parse('{"__proto__":{"promptBody":"x"}}')), true],
+    ['update brief key in another case', upd({ enabled: false, PromptBody: 'x' }), true],
+    ['update brief field beside the patch', { name: 'routine_update', input: { ...mutation, patch: { enabled: false }, promptBody: 'x' } }, true],
+    ['update non-object input null', { name: 'routine_update', input: null }, true],
+    ['update non-object input string', { name: 'routine_update', input: 'x' }, true],
+    ['routine_delete', { name: 'routine_delete', input: mutation }, false],
+    ['routine_fire_now', { name: 'routine_fire_now', input: mutation }, false],
+    ['Bash', { name: 'Bash', input: { command: 'ls' } }, false],
+  ])('%s', (_label, call, expected) => {
+    expect(touchesTaskBrief(call)).toBe(expected);
+  });
+
+  it('reads the input the way @ax/routines applies it: an inherited or hidden brief key still asks', () => {
+    // The plugin applies the strict schema's PARSED output, and zod reads a key through the
+    // prototype chain and non-enumerable properties. A check of the raw object's own keys misses both.
+    const inherited = Object.create({ promptBody: 'x' }, { enabled: { value: false, enumerable: true } });
+    const hidden = Object.defineProperty({ enabled: false }, 'promptBody', { value: 'x', enumerable: false });
+    for (const patch of [inherited, hidden]) {
+      expect(applyRoutinePatch(repeatDef, RoutineUpdateToolInputSchema.parse(upd(patch).input).patch).promptBody).toBe('x');
+      expect(touchesTaskBrief(upd(patch))).toBe(true);
+    }
+    const inheritedKind = Object.assign(Object.create({ kind: 'stay-on-top', goodWhen: 'Queue empty.' }), {
+      name: 'n', promptBody: 'p', trigger: { kind: 'interval', every: '15m' },
+    });
+    expect(RoutineCreateToolInputSchema.parse(createCall(inheritedKind).input).definition.kind).toBe('stay-on-top');
+    expect(touchesTaskBrief(createCall(inheritedKind))).toBe(true);
+  });
+
+  it('never throws, and asks, when it cannot read the call', () => {
+    const calls: unknown[] = [
+      ...hostileInputs().flatMap(input => [{ name: 'routine_create', input }, { name: 'routine_update', input }]),
+      { get name() { return boom(); }, input: {} }, null, undefined,
+    ];
+    for (const call of calls) {
+      let answer: boolean | undefined;
+      expect(() => { answer = touchesTaskBrief(call as Call); }).not.toThrow();
+      expect(answer).toBe(true);
+    }
+  });
+
+  it('answers false for any other tool without reading its input', () => {
+    for (const input of hostileInputs()) expect(touchesTaskBrief({ name: 'Bash', input })).toBe(false);
+  });
+});
+
+describe('routineTaskProposal (TASK-906)', () => {
+  it('reads a stay-on-top create as starting a task', () => {
+    expect(routineTaskProposal(createCall(taskDef))).toEqual({ action: 'start', definition: taskDef });
+    expect(routineTaskProposal(createCall(repeatDef))).toBeNull();
+  });
+
+  it('reads a goodWhen or non-repeat kind change as changing a task', () => {
+    expect(routineTaskProposal(upd({ goodWhen: 'x' }))).toEqual({ action: 'change', patch: { goodWhen: 'x' } });
+    expect(routineTaskProposal(upd({ kind: 'stay-on-top', goodWhen: 'x' })))
+      .toEqual({ action: 'change', patch: { kind: 'stay-on-top', goodWhen: 'x' } });
+  });
+
+  it.each<[string, Call]>([
+    ['a promptBody change', upd({ promptBody: 'x' })],
+    ['a change back to repeat', upd({ kind: 'repeat', goodWhen: null })],
+    ['a malformed update', { name: 'routine_update', input: { ...mutation, patch: { goodWhen: 'x', unknown: true } } }],
+    ['routine_delete', { name: 'routine_delete', input: mutation }],
+  ])('is null for %s', (_label, call) => {
+    expect(routineTaskProposal(call)).toBeNull();
+  });
+
+  it('never throws on a call it cannot read', () => {
+    const calls: unknown[] = [
+      ...hostileInputs().flatMap(input => [{ name: 'routine_create', input }, { name: 'routine_update', input }]),
+      { get name() { return boom(); }, input: {} }, null, undefined,
+    ];
+    for (const call of calls) {
+      let answer: unknown = 'unset';
+      expect(() => { answer = routineTaskProposal(call as Call); }).not.toThrow();
+      expect(answer).toBeNull();
+    }
+  });
+
+  it('every task proposal is a call that always asks', () => {
+    const calls = [
+      createCall(taskDef), upd({ goodWhen: 'x' }), upd({ kind: 'stay-on-top' }), upd({ kind: 'stay-on-top', goodWhen: 'x' }),
+      upd(Object.create({ goodWhen: 'x' }, { enabled: { value: false, enumerable: true } })),
+    ];
+    for (const call of calls) {
+      expect(routineTaskProposal(call)).not.toBeNull();
+      expect(touchesTaskBrief(call)).toBe(true);
+    }
+  });
+});
+
+describe('tells the model the task rules (TASK-906)', () => {
+  it('says that a task and its brief always ask', () => {
+    for (const text of ['People call routines "tasks".', 'goodWhen', '15 minutes', 'Creating a "stay-on-top" task always asks the person, even with Always Allow.']) {
+      expect(RoutineToolDescriptions.routine_create).toContain(text);
+    }
+    expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
   });
 });

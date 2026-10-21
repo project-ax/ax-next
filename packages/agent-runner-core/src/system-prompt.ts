@@ -443,6 +443,6 @@ export function operationalNotes(
 export function routineNote(): string {
   return 'Use the routine tools to schedule unattended work with interval, cron, or webhook triggers. ' +
     'Use routine_list/routine_get to read current definitions and routine_get before editing. ' +
-    'Creates and edits require approval unless the person enabled Always Allow for this agent. ' +
+    `Creates and edits require approval unless the person enabled Always Allow for this agent. Creating a "stay-on-top" task, or changing any routine's name, promptBody, goodWhen or kind, always asks the person. ` +
     'Report success only after the tool confirms it. Do not create routine files.';
 }

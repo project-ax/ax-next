@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema } from './definition.js';
+import {
+  RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema,
+  type RoutineDefinition, type RoutinePatch,
+} from './definition.js';
 
 export const RoutineListToolInputSchema = z.object({}).strict();
 export const RoutineGetToolInputSchema = z.object({ routineId: RoutineOpaqueStringSchema }).strict();
@@ -29,6 +32,73 @@ export function routineToolKind(name: string): 'read' | 'write' | null {
     case 'routine_list': case 'routine_get': return 'read';
     case 'routine_create': case 'routine_update': case 'routine_delete': case 'routine_fire_now': return 'write';
     default: return null;
+  }
+}
+
+/** A task's brief: what it is, what it does and when it's going well. A change to any of these always asks the person. */
+export const TASK_BRIEF_FIELDS = ['name', 'promptBody', 'goodWhen', 'kind'] as const;
+
+// Both helpers below read a call's input the way `@ax/routines` applies it: the
+// parsed output of the same strict tool schema, whose own keys are exactly what
+// `applyRoutinePatch` merges. zod also reads keys the raw object only inherits or
+// hides, so never test the raw input's own keys. Each reads `call.name` and
+// `call.input` once, looks nothing up and never throws: they run inside
+// `tool:pre-call`, where a thrown error is swallowed and the call goes on.
+
+/**
+ * TASK-906 authorization predicate: true when a call creates a task or changes a
+ * routine's brief, so Always Allow can't cover it. Anything unreadable is true.
+ */
+export function touchesTaskBrief(call: { name: string; input: unknown }): boolean {
+  try {
+    const name = call.name;
+    if (name === 'routine_create') {
+      const parsed = RoutineCreateToolInputSchema.safeParse(call.input);
+      // Not `=== 'stay-on-top'`: a future kind is a task too, and asks.
+      return !parsed.success || parsed.data.definition.kind !== 'repeat';
+    }
+    if (name === 'routine_update') {
+      const parsed = RoutineUpdateToolInputSchema.safeParse(call.input);
+      if (!parsed.success) return true;
+      const { patch } = parsed.data;
+      return TASK_BRIEF_FIELDS.some(key => Object.hasOwn(patch, key));
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export type RoutineTaskProposal =
+  | { action: 'start'; definition: RoutineDefinition }
+  | { action: 'change'; patch: RoutinePatch }
+  | null;
+
+/**
+ * TASK-906: the one reading of "is this call a task proposal", shared by the
+ * approval wording and the approval card so they can't disagree. Never an
+ * authority (that's `touchesTaskBrief`): anything unreadable is null. The
+ * returned definition or patch is the parsed copy and is still agent-authored.
+ */
+export function routineTaskProposal(call: { name: string; input: unknown }): RoutineTaskProposal {
+  try {
+    const name = call.name;
+    if (name === 'routine_create') {
+      const parsed = RoutineCreateToolInputSchema.safeParse(call.input);
+      return parsed.success && parsed.data.definition.kind !== 'repeat'
+        ? { action: 'start', definition: parsed.data.definition } : null;
+    }
+    if (name === 'routine_update') {
+      const parsed = RoutineUpdateToolInputSchema.safeParse(call.input);
+      if (!parsed.success) return null;
+      const { patch } = parsed.data;
+      const goodWhen = Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string';
+      const kind = Object.hasOwn(patch, 'kind') && patch.kind !== 'repeat';
+      return goodWhen || kind ? { action: 'change', patch } : null;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -94,8 +164,8 @@ export const RoutineToolJsonSchemas = {
 export const RoutineToolDescriptions = {
   routine_list: 'List this agent’s routines, revisions, current status and permissions, including defaults.',
   routine_get: 'Read a routine’s complete current definition and revision. Read before editing. IDs and revisions are opaque.',
-  routine_create: 'Create unattended interval, cron or webhook work. Creates are held for approval unless Always Allow is enabled for this person and agent. Enabled controls scheduling. Use a new logical requestId and reuse it only for retries. Report success only after confirmation.',
-  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Edits are held for approval unless Always Allow is enabled for this person and agent. Set enabled false to stop scheduling. Reuse requestId for retries.',
+  routine_create: 'Create unattended interval, cron or webhook work. People call routines "tasks". kind "repeat" (the default) does the same job each time. kind "stay-on-top" is a "Stay on top of something" task: it needs goodWhen, an interval or cron schedule whose check-ins are at least 15 minutes apart, conversation "per-fire" and no silenceToken. Creating a "stay-on-top" task always asks the person, even with Always Allow. Other creates are held for approval unless Always Allow is enabled for this person and agent. Enabled controls scheduling. Use a new logical requestId and reuse it only for retries. Report success only after confirmation.',
+  routine_update: 'Patch an authored routine using its current expectedRevision. Omitted fields stay unchanged; null clears optional fields. Trigger and activeHours replace complete objects. Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow. Other edits are held for approval unless Always Allow is enabled for this person and agent. A "stay-on-top" task keeps check-ins at least 15 minutes apart. Set enabled false to stop scheduling. Reuse requestId for retries.',
   routine_delete: 'Delete an authored routine using its current expectedRevision. Requires Allow once approval; Always Allow does not cover deletion. Defaults use separate default controls. Reuse requestId for retries.',
   routine_fire_now: 'Fire an enabled routine now using its current expectedRevision. Reuse requestId for retries. Requires Allow once approval; Always Allow does not cover firing. Confirmation acknowledges dispatch acceptance; final execution status appears in history.',
 } as const;
