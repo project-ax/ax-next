@@ -324,7 +324,7 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
     const list = await readConfinedUserFiles(root, 'docs');
     if (list.kind !== 'dir') throw new Error('expected dir');
     expect(list.entries).toEqual([{ name: 'note.md', kind: 'file' }]);
-    expect(await readConfinedUserFiles(root, 'docs/caf�.txt')).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(root, 'docs/caf\uFFFD.txt')).toEqual({ kind: 'absent' });
   });
 
   // --- the caps ---------------------------------------------------------
