@@ -427,4 +427,11 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     verdict: 'hold', capability: 'run a routine now', subject: 'agent', provenance: 'rule',
     irreversible: true, effect: ['spends', 'outward'],
   },
+  // A check-in's report is allowed outright (TASK-907): it reaches nothing
+  // outside the task it reports on, and @ax/routines refuses it anywhere but
+  // that task's own check-in.
+  {
+    id: 'routines.report', match: { tool: 'routine_report' }, providedBy: 'host',
+    verdict: 'allow', capability: 'report on a task', subject: 'agent', provenance: 'rule',
+  },
 ];
