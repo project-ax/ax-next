@@ -80,10 +80,17 @@ import {
 // `unsupported-platform`, rather than fall back to a reader with the window
 // above.
 //
-// KNOWN GAP. A listing stops after MAX_WALK_SKIPPED (1,000) skipped entries —
+// KNOWN GAPS. A listing stops after MAX_WALK_SKIPPED (1,000) skipped entries —
 // links and special files — so one folder of a million symlinks can't cost a
 // million stats. If that happens before the regular entries, the listing comes
 // back short, and the hook's dir answer has no field to say so.
+//
+// A file name that is not valid UTF-8 is left out of a listing. Node decodes
+// it with U+FFFD in place of the bad bytes, the walk's lstat of the re-encoded
+// name looks up different bytes and normally finds nothing (ENOENT), and the
+// entry is skipped, counting toward that same cap. Asked for by its mangled
+// name, it is absent. The reader this replaced listed it under the mangled
+// name, and opening it answered absent, so it was never readable here.
 //
 // READ-ONLY, structurally: nothing here opens a writable handle, and there is
 // no write/delete entry point to reach for by mistake.

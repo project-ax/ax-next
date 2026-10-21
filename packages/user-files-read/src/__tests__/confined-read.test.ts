@@ -310,6 +310,23 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
     }
   });
 
+  it('KNOWN GAP: a name that is not valid UTF-8 is left out of a listing', async () => {
+    // Node decodes the name with U+FFFD for the bad byte, so the walk's lstat
+    // of the re-encoded name finds nothing and the entry is skipped. Pinned so
+    // that changing it is a decision; see the header's KNOWN GAPS.
+    const docs = path.join(root, 'docs');
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x74, 0x78, 0x74]); // "café.txt" in Latin-1
+    await fs.writeFile(Buffer.concat([Buffer.from(`${docs}/`), latin1]), 'x');
+    // The fixture really is on disk under those bytes.
+    const raw = await fs.readdir(docs, { encoding: 'buffer' });
+    expect(raw.some((n) => n.equals(latin1))).toBe(true);
+
+    const list = await readConfinedUserFiles(root, 'docs');
+    if (list.kind !== 'dir') throw new Error('expected dir');
+    expect(list.entries).toEqual([{ name: 'note.md', kind: 'file' }]);
+    expect(await readConfinedUserFiles(root, 'docs/caf�.txt')).toEqual({ kind: 'absent' });
+  });
+
   // --- the caps ---------------------------------------------------------
 
   it('caps a file read at maxFileBytes and returns the PREFIX (not absent)', async () => {
