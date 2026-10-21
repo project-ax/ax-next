@@ -310,7 +310,7 @@ export function ApprovalCard({
               <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
             </div>
           )}
-          {/* The task it proposes, in its own fields — agent-authored, server-fenced (TASK-906). */}
+          {/* The brief it writes, in its own fields — agent-authored, server-fenced (TASK-906). */}
           {d.task && <DecisionTaskBlock task={d.task} agentName={agentName} className="mt-3" />}
           {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
           {d.request && <DecisionRequestBlock request={d.request} className="mt-3" />}

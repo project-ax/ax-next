@@ -1,13 +1,15 @@
 /**
- * DecisionTaskBlock — the task a held call proposes, in its own fields
+ * DecisionTaskBlock — the brief a held call writes, in its own fields
  * (TASK-906).
  *
- * When an agent asks to start a "Stay on top of something" task, or to give a
- * routine a going-well-when or a task kind, the request block shows the whole
- * call as JSON. That is complete, and it isn't how a person reads a brief. This
- * block shows what they're really agreeing to: the task's name, what the agent
- * will do, how they'll know it's going well, and when it checks in. A change
- * shows only the fields it changes.
+ * When an agent asks to start a "Stay on top of something" task, or to change
+ * a routine's name, instructions or going-well-when, the request block shows
+ * the whole call as JSON, cut short past 2000 characters. That isn't how a
+ * person reads a brief, and it isn't all of it. This block shows what they're
+ * really agreeing to, whole: the task's name, what the agent will do, how
+ * they'll know it's going well, and when it checks in. A change shows only the
+ * fields it changes, under "What changes", whatever the routine is (the server
+ * can't tell an existing task from a repeat routine).
  *
  * It sits ABOVE the request block, never instead of it: the fields it leaves
  * out (description, enabled, active hours) are approved too. Both renderers of

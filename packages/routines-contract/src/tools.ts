@@ -61,7 +61,7 @@ export function routineToolKind(name: string): 'read' | 'write' | null {
 /** A task's brief: what it is, what it does and when it's going well. A change to any of these always asks the person. */
 export const TASK_BRIEF_FIELDS = ['name', 'promptBody', 'goodWhen', 'kind'] as const;
 
-// Both helpers below read a call's input the way `@ax/routines` applies it: the
+// The helpers below read a call's input the way `@ax/routines` applies it: the
 // parsed output of the same strict tool schema, whose own keys are exactly what
 // `applyRoutinePatch` merges. zod also reads keys the raw object only inherits or
 // hides, so never test the raw input's own keys. Each reads `call.name` and
@@ -96,6 +96,30 @@ export type RoutineTaskProposal =
   | { action: 'start'; definition: RoutineDefinition }
   | { action: 'change'; patch: RoutinePatch }
   | null;
+/** What `routineBriefFields` reads: the same shape, where a `change` may be any routine's. */
+export type RoutineBriefFields = RoutineTaskProposal;
+
+/**
+ * A create's definition when it starts a task, or an update's patch. Null for
+ * a repeat create, any other tool and anything the strict tool schemas refuse.
+ */
+function readRoutineWrite(call: { name: string; input: unknown }): { start: RoutineDefinition } | { patch: RoutinePatch } | null {
+  try {
+    const name = call.name;
+    if (name === 'routine_create') {
+      const parsed = RoutineCreateToolInputSchema.safeParse(call.input);
+      // Not `=== 'stay-on-top'`: a future kind is a task too.
+      return parsed.success && parsed.data.definition.kind !== 'repeat' ? { start: parsed.data.definition } : null;
+    }
+    if (name === 'routine_update') {
+      const parsed = RoutineUpdateToolInputSchema.safeParse(call.input);
+      return parsed.success ? { patch: parsed.data.patch } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * TASK-906: the one reading of "is this call a task proposal", shared by the
@@ -107,25 +131,35 @@ export type RoutineTaskProposal =
  * without it.
  */
 export function routineTaskProposal(call: { name: string; input: unknown }): RoutineTaskProposal {
-  try {
-    const name = call.name;
-    if (name === 'routine_create') {
-      const parsed = RoutineCreateToolInputSchema.safeParse(call.input);
-      return parsed.success && parsed.data.definition.kind !== 'repeat'
-        ? { action: 'start', definition: parsed.data.definition } : null;
-    }
-    if (name === 'routine_update') {
-      const parsed = RoutineUpdateToolInputSchema.safeParse(call.input);
-      if (!parsed.success) return null;
-      const { patch } = parsed.data;
-      const goodWhen = Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string';
-      const kind = Object.hasOwn(patch, 'kind') && patch.kind !== 'repeat';
-      return goodWhen || kind ? { action: 'change', patch } : null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const write = readRoutineWrite(call);
+  if (write === null) return null;
+  if ('start' in write) return { action: 'start', definition: write.start };
+  const { patch } = write;
+  const goodWhen = Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string';
+  const kind = Object.hasOwn(patch, 'kind') && patch.kind !== 'repeat';
+  return goodWhen || kind ? { action: 'change', patch } : null;
+}
+
+/**
+ * TASK-906: the brief text a call writes, for the card that asks to draw
+ * whole. Wider than `routineTaskProposal`, which words the card: an update
+ * whose patch has its own `name`, `promptBody` or a string `goodWhen` is a
+ * `change` whatever the routine's kind. The card can't look the kind up (a
+ * lookup is a write, decisions row 10), and an edit of an existing task's
+ * instructions changes its brief, so it has to show whole there, not only in
+ * the request block, which cuts it short. A repeat routine's edit is drawn
+ * too, under the neutral "What changes", and still reads "Wants to edit a
+ * routine". Every task proposal is one of these, with the same action and
+ * fields. Never an authority; anything unreadable is null.
+ */
+export function routineBriefFields(call: { name: string; input: unknown }): RoutineBriefFields {
+  const write = readRoutineWrite(call);
+  if (write === null) return null;
+  if ('start' in write) return { action: 'start', definition: write.start };
+  const { patch } = write;
+  const text = Object.hasOwn(patch, 'name') || Object.hasOwn(patch, 'promptBody') ||
+    (Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string');
+  return text ? { action: 'change', patch } : null;
 }
 
 const opaque = { type: 'string', minLength: 1, maxLength: 256 };

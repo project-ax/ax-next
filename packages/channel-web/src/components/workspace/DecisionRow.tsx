@@ -349,7 +349,7 @@ export function DecisionRow({
               </div>
             )}
 
-            {/* The task it proposes, in its own fields — agent-authored, server-fenced (TASK-906). */}
+            {/* The brief it writes, in its own fields — agent-authored, server-fenced (TASK-906). */}
             {d.task && (
               <DecisionTaskBlock task={d.task} agentName={agent.name} className="mt-3 max-w-[660px]" />
             )}

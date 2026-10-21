@@ -117,7 +117,7 @@ import {
   ROUTINE_NAME_MAX_CHARS,
   RoutineCreateToolInputSchema,
   RoutineUpdateToolInputSchema,
-  routineTaskProposal,
+  routineBriefFields,
 } from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
@@ -734,7 +734,7 @@ type MemoryStatusInput = Record<string, never>;
  * `call.input` is MODEL-AUTHORED. Its text reaches the wire through exactly
  * two readers, both on open rows only: `wireRequest`, which fences and caps it
  * into the approval card's "what it will send" block (TASK-699), and
- * `wireTask`, which fences a proposed task's own fields (TASK-906). The
+ * `wireTask`, which fences a proposed brief's own fields (TASK-906). The
  * structure itself never crosses the wire.
  */
 interface StoredDecision {
@@ -2333,11 +2333,12 @@ export const DECISION_REQUEST_TOOL_MAX_CHARS = 120;
 export const DECISION_REQUEST_INPUT_MAX_CHARS = 2000;
 export const DECISION_REQUEST_INPUT_MAX_LINES = 40;
 /**
- * A proposed task's own fields, shown on an OPEN decision above the request
- * block (TASK-906). A person approves a task's brief on this card, so it shows
- * every valid brief WHOLE: approving a cut-off beginning would store text no
- * one saw. Each cap is sized from the contract so a valid field never reaches
- * it:
+ * A proposed brief's own fields, shown on an OPEN decision above the request
+ * block (TASK-906): a task create's, or the name, instructions and
+ * going-well-when a routine edit sets. A person approves a task's brief on
+ * this card, so it shows every valid brief WHOLE: approving a cut-off
+ * beginning would store text no one saw. Each cap is sized from the contract
+ * so a valid field never reaches it:
  *
  *   - The name is a routine name, at most `ROUTINE_NAME_MAX_CHARS` UTF-16
  *     units and so at most that many code points, and `fenceLine` never
@@ -2345,16 +2346,19 @@ export const DECISION_REQUEST_INPUT_MAX_LINES = 40;
  *   - The instructions and going-well-when: a valid task's text holds no
  *     control or format character but TAB, LF and CR (the contract refuses the
  *     rest), so `fenceBlock` grows it only by turning a TAB into two spaces, at
- *     most two code points out per code point in. A definition is at most
- *     `ROUTINE_DEFINITION_MAX_BYTES` of UTF-8 and every code point costs at
- *     least a byte, so twice that is never reached; goodWhen's 1024 fit inside.
+ *     most two code points out per code point in. A definition or a patch is
+ *     at most `ROUTINE_DEFINITION_MAX_BYTES` of UTF-8 and every code point
+ *     costs at least a byte, so twice that is never reached; goodWhen's 1024
+ *     fit inside.
  *   - Every line after the first costs a newline out of the character budget,
  *     so a line cap one past the character cap never binds first.
  *
  * `truncated` stays on the wire and the block keeps its note, for safety only:
- * just text the contract refuses as a task could still be cut. Past a
- * screenful the block scrolls, so the buttons stay near the question. The
- * schedule is one sentence.
+ * just text the contract refuses in a task's brief could still be cut, such as
+ * a repeat routine's edit full of controls, which `fenceBlock` spells out at
+ * six characters each (an edit like that to a task fails when it is applied).
+ * Past a screenful the block scrolls, so the buttons stay near the question.
+ * The schedule is one sentence.
  */
 export const DECISION_TASK_NAME_MAX_CHARS = ROUTINE_NAME_MAX_CHARS;
 export const DECISION_TASK_TEXT_MAX_CHARS = 2 * ROUTINE_DEFINITION_MAX_BYTES;
@@ -2535,7 +2539,7 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  * Two jobs, and nothing else. It DROPS the fields a renderer has no use for —
  * `call` above all, whose raw structure is model-authored; what survives of it
  * is `request`, a fenced text rendering on open rows only (TASK-699), and
- * `task`, a proposed task's own fields fenced the same way (TASK-906) — and it
+ * `task`, a proposed brief's own fields fenced the same way (TASK-906) — and it
  * FENCES every string that survives. See `Decision` in `../lib/workspace-types.ts` for the full account
  * of what goes and why.
  *
@@ -2576,15 +2580,23 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
 }
 
 /**
- * The task the held call proposes, in its own fields (TASK-906) — or `null`.
+ * The brief the held call writes, in its own fields (TASK-906) — or `null`.
  *
  * The same model-authored `call.input` that `wireRequest` renders, read a
- * second way: through the contract's `routineTaskProposal`, the one reading of
- * "is this call a task proposal" that `@ax/decisions` also words the summary
- * from, so the block and the headline can't disagree. That helper's parsed
- * copy is still agent-authored, so every string leaves through `fenceLine` or
- * `fenceBlock` and nothing else of it crosses. A field the call doesn't carry
- * is null, so a change shows only what it changes.
+ * second way: through the contract's `routineBriefFields`. That is a task
+ * create, or ANY routine edit that sets a name, instructions or a
+ * going-well-when. The projection can't look the routine up to learn whether
+ * it is a task (a lookup is a write; TASK-906 decisions row 10), and an edit
+ * of an existing task's instructions changes its brief, so it shows whole
+ * here and not only in the request block, which cuts it short. The summary
+ * stays `routineTaskProposal`'s (in `@ax/decisions`), so a repeat routine's
+ * edit still reads "Wants to edit a routine" over the neutral "What changes".
+ * Every task proposal is also one of these, so the block shows at least what
+ * the headline calls a task.
+ *
+ * The helper's parsed copy is still agent-authored, so every string leaves
+ * through `fenceLine` or `fenceBlock` and nothing else of it crosses. A field
+ * the call doesn't carry is null, so a change shows only what it changes.
  *
  * TOTAL, like `wireRequest`: the helper never throws and answers null for
  * anything it can't read, and so does `wireTask` when none of the four fields
@@ -2592,7 +2604,7 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
  */
 function wireTask(stored: StoredDecision): DecisionTask | null {
   if (!isOpenDecision(stored)) return null;
-  const proposal = routineTaskProposal({ name: stored.call?.name ?? '', input: stored.call?.input });
+  const proposal = routineBriefFields({ name: stored.call?.name ?? '', input: stored.call?.input });
   if (proposal === null) return null;
   const fields = proposal.action === 'start' ? proposal.definition : proposal.patch;
   const name = fenceLine(fields.name, DECISION_TASK_NAME_MAX_CHARS);
@@ -2603,10 +2615,10 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
       ? null
       : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS);
   // A change whose drawn fields all fence to nothing (a patch of only a blank
-  // `goodWhen`) would be a heading over no rows. No block; the raw request
-  // block still shows the change. A kind change always carries the name,
-  // instructions and goodWhen (the contract refuses one that doesn't), so it
-  // lands here only when all three are blank.
+  // `goodWhen` or blank instructions) would be a heading over no rows. No
+  // block; the raw request block still shows the change. A kind change always
+  // carries the name, instructions and goodWhen (the contract refuses one that
+  // doesn't), so it lands here only when all three are blank.
   if (name === null && instructions === null && goodWhen === null && checksIn === null) return null;
   return { action: proposal.action, name, instructions, goodWhen, checksIn };
 }
@@ -2668,7 +2680,7 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
         : null,
     // Agent-authored, fenced, open rows only — see `wireRequest`.
     request: wireRequest(stored),
-    // The same rules, for a proposed task's own fields — see `wireTask`.
+    // The same rules, for a proposed brief's own fields — see `wireTask`.
     task: wireTask(stored),
     primaryLabel:
       fenceLine(stored.primaryLabel, DECISION_LABEL_MAX_CHARS) ??

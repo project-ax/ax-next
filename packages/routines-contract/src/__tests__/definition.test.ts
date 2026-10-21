@@ -9,7 +9,7 @@ import {
   RoutineUpsertDefaultInputSchema, RoutineGetDefaultOutputSchema,
   RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, RoutineToolDescriptions,
   applyRoutinePatch, durationToSeconds, editableDefinition, routineToolKind, validateWebhookPath,
-  touchesTaskBrief, routineTaskProposal,
+  touchesTaskBrief, routineTaskProposal, routineBriefFields,
 } from '../index.js';
 
 const base = {
@@ -559,6 +559,80 @@ describe('routineTaskProposal (TASK-906)', () => {
       expect(routineTaskProposal(call)).not.toBeNull();
       expect(touchesTaskBrief(call)).toBe(true);
     }
+  });
+});
+
+// The card draws a brief from what the call writes, and it can't look the routine up to learn its kind
+// (decisions row 10). So an edit of a routine's name, instructions or going-well-when is drawn whatever
+// the routine is: an existing task's new instructions have to show whole, not only in the request
+// block, which cuts at 2000 characters. The wording stays `routineTaskProposal`'s.
+describe('routineBriefFields (TASK-906)', () => {
+  it('reads a task create as starting one, and a repeat create as nothing to draw', () => {
+    expect(routineBriefFields(createCall(taskDef))).toEqual({ action: 'start', definition: taskDef });
+    expect(routineBriefFields(createCall(repeatDef))).toBeNull();
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['instructions alone', { promptBody: 'Keep the queue empty.' }],
+    ['a name alone', { name: 'Zero open tickets' }],
+    ['a going-well-when alone', { goodWhen: 'Queue empty.' }],
+    ['instructions and a schedule', { promptBody: 'Keep the queue empty.', trigger: { kind: 'interval', every: '1h' } }],
+    ['a name and a pause', { name: 'Zero open tickets', enabled: false }],
+    ['the whole brief with a kind', wholeBrief],
+  ])('reads an edit of %s as a change, whatever the routine is', (_label, patch) => {
+    expect(routineBriefFields(upd(patch))).toEqual({ action: 'change', patch });
+  });
+
+  it.each<[string, Call]>([
+    ['a pause', upd({ enabled: false })],
+    ['a schedule change', upd({ trigger: { kind: 'interval', every: '2h' } })],
+    ['a going-well-when clear', upd({ goodWhen: null })],
+    ['a change back to repeat', upd({ kind: 'repeat', goodWhen: null })],
+    ['every field outside the brief', upd({
+      description: 'x', enabled: false, trigger: { kind: 'interval', every: '2h' }, activeHours: null,
+      silenceToken: null, silenceMaxChars: 10, conversation: 'per-fire',
+    })],
+    ['a malformed update', { name: 'routine_update', input: { ...mutation, patch: { promptBody: 'x', unknown: true } } }],
+    ['a kind change without the whole brief', upd({ kind: 'stay-on-top', goodWhen: 'x' })],
+    ['a malformed create', { name: 'routine_create', input: { requestId: 'q' } }],
+    ['routine_delete', { name: 'routine_delete', input: mutation }],
+    ['another tool', { name: 'Bash', input: { promptBody: 'x' } }],
+  ])('is null for %s', (_label, call) => {
+    expect(routineBriefFields(call)).toBeNull();
+  });
+
+  it('reads the input the way @ax/routines applies it: an inherited brief key is drawn', () => {
+    const inherited = Object.create({ promptBody: 'x' }, { enabled: { value: false, enumerable: true } });
+    expect(routineBriefFields(upd(inherited))).toEqual({ action: 'change', patch: { enabled: false, promptBody: 'x' } });
+  });
+
+  it('never throws on a call it cannot read', () => {
+    const calls: unknown[] = [
+      ...hostileInputs().flatMap(input => [{ name: 'routine_create', input }, { name: 'routine_update', input }]),
+      { get name() { return boom(); }, input: {} }, null, undefined,
+    ];
+    for (const call of calls) {
+      let answer: unknown = 'unset';
+      expect(() => { answer = routineBriefFields(call as Call); }).not.toThrow();
+      expect(answer).toBeNull();
+    }
+  });
+
+  it('draws at least what the wording calls a task: every task proposal is the same brief', () => {
+    const calls = [
+      createCall(taskDef), upd({ goodWhen: 'x' }), upd(wholeBrief), upd({ ...wholeBrief, trigger: { kind: 'interval', every: '1h' } }),
+    ];
+    for (const call of calls) {
+      expect(routineTaskProposal(call)).not.toBeNull();
+      expect(routineBriefFields(call)).toEqual(routineTaskProposal(call));
+    }
+  });
+
+  it('keeps the wording routine-shaped: an instructions edit is drawn but is not a task proposal, and it asks', () => {
+    const edit = upd({ promptBody: 'Keep the queue empty.' });
+    expect(routineTaskProposal(edit)).toBeNull();
+    expect(routineBriefFields(edit)).not.toBeNull();
+    for (const call of [edit, upd({ name: 'x' }), upd({ goodWhen: 'x' })]) expect(touchesTaskBrief(call)).toBe(true);
   });
 });
 
