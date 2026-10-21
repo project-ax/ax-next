@@ -177,7 +177,9 @@ export const RoutineEditableShape = {
  *     layout (so not `REWRITES_THE_SURFACE`, which includes those three);
  *   - `BRIEF_INVISIBLES`: what the shared class leaves out on purpose
  *     (widening it changes eight packages; TASK-562 decisions row 3);
- *   - a stray presentation selector (`STRAY_SELECTOR`);
+ *   - a stray presentation selector (`STRAY_SELECTOR`), and a Mongolian free
+ *     variation selector anywhere but straight after a Mongolian letter
+ *     (`STRAY_MONGOLIAN_SELECTOR`);
  *   - in the name, TAB, LF and CR: a name is one line, and TASK-908 puts it in
  *     the brief as one, so a line break in it would fake a second line there;
  *   - in the instructions and going-well-when, padding that pushes the rest
@@ -198,18 +200,22 @@ const BRIEF_CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
  * Unicode's default-ignorable code points that the shared class leaves out,
  * minus the presentation selectors U+FE0E/U+FE0F (ordinary emoji, ruled on by
  * `STRAY_SELECTOR`) and Mongolian's free variation selectors U+180B-U+180D and
- * U+180F (ordinary Mongolian), plus the interlinear annotation controls
- * U+FFF9-U+FFFB and the braille blank U+2800 (an empty cell: not whitespace,
- * so a run of it pads past the space rules below): the soft hyphen, the
- * combining grapheme joiner, the Hangul and Khmer fillers, the Mongolian vowel
- * separator, U+2065 and U+206A-U+206F, the variation selectors U+FE00-U+FE0D,
- * U+FFF0-U+FFFB, the shorthand and musical format controls, and all of
- * U+E0000-U+E0FFF: the tag characters, the supplementary variation selectors
- * U+E0100-U+E01EF, and the unassigned code points around them. Disjoint from
- * the shared class, so nothing of it is repeated here. The astral ranges need
- * the `u` flag.
+ * U+180F (ordinary after a Mongolian letter, ruled on by
+ * `STRAY_MONGOLIAN_SELECTOR`), plus characters that aren't default-ignorable
+ * but draw as nothing all the same: the interlinear annotation controls
+ * U+FFF9-U+FFFB, the Syriac abbreviation mark U+070F, the Egyptian hieroglyph
+ * format controls U+13430-U+1343F, the Khitan small script filler U+16FE4,
+ * the musical null notehead U+1D159, and the braille blank U+2800 (an empty
+ * cell: not whitespace, so a run of it pads past the space rules below).
+ * The default-ignorable part: the soft hyphen, the combining grapheme joiner,
+ * the Hangul and Khmer fillers, the Mongolian vowel separator, U+2065 and
+ * U+206A-U+206F, the variation selectors U+FE00-U+FE0D, U+FFF0-U+FFF8, the
+ * shorthand and musical format controls, and all of U+E0000-U+E0FFF: the tag
+ * characters, the supplementary variation selectors U+E0100-U+E01EF, and the
+ * unassigned code points around them. Disjoint from the shared class, so
+ * nothing of it is repeated here. The astral ranges need the `u` flag.
  */
-const BRIEF_INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206A-\u206F\u2800\u3164\uFE00-\uFE0D\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
+const BRIEF_INVISIBLES = /[\u00AD\u034F\u070F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206A-\u206F\u2800\u3164\uFE00-\uFE0D\uFFA0\uFFF0-\uFFFB\u{13430}-\u{1343F}\u{16FE4}\u{1BCA0}-\u{1BCA3}\u{1D159}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
 /**
  * A variation selector at the very start, or straight after another one. One
  * U+FE0E or U+FE0F after a character picks text or emoji presentation, and
@@ -217,11 +223,20 @@ const BRIEF_INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206
  * that one character and can carry bytes.
  */
 const STRAY_SELECTOR = /(?:^|[\uFE00-\uFE0F\u{E0100}-\u{E01EF}])[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+/**
+ * A Mongolian free variation selector (U+180B-U+180D, U+180F) that doesn't come
+ * straight after a Mongolian letter (U+1820-U+1878, U+1880-U+18AA): at the
+ * very start, after another selector, or after anything else. One after a
+ * letter picks that letter's written form, which is ordinary Mongolian; any
+ * other one draws as nothing and can carry bytes. No lookbehind, which older
+ * browsers that bundle this contract can't parse.
+ */
+const STRAY_MONGOLIAN_SELECTOR = /(?:^|[^\u1820-\u1878\u1880-\u18AA])[\u180B-\u180D\u180F]/u;
 const BRIEF_TEXT_FIELDS = [['name', 'name'], ['promptBody', 'instructions'], ['goodWhen', 'going-well-when']] as const;
 
 function hidesText(value: string): boolean {
   return HIDDEN_FORMAT_CHARS.test(value) || BRIEF_CONTROLS.test(value) ||
-    BRIEF_INVISIBLES.test(value) || STRAY_SELECTOR.test(value);
+    BRIEF_INVISIBLES.test(value) || STRAY_SELECTOR.test(value) || STRAY_MONGOLIAN_SELECTOR.test(value);
 }
 
 /** More than 16 whitespace characters in a row, LF aside: spaces, tabs, CR, and the no-break and wide spaces. */

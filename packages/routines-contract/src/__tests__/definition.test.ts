@@ -779,11 +779,12 @@ describe('a task’s brief can’t hide text from the card (TASK-906)', () => {
     for (const c of matched) expect(issuesOf({ ...task, promptBody: `a${c}b` }), hex(c)).toEqual([{ path: ['promptBody'], message: message('instructions') }]);
   });
 
-  it('refuses every default-ignorable code point except the presentation selectors and Mongolian’s free variation selectors', () => {
-    // Unicode's own list of code points a renderer draws as nothing. The two exceptions are
-    // ordinary text: an emoji's presentation selector (ruled on below) and the free variation
-    // selectors written Mongolian needs.
-    const allowed = new Set([0x180B, 0x180C, 0x180D, 0x180F, 0xFE0E, 0xFE0F]);
+  it('refuses every default-ignorable code point except the presentation selectors, wherever a letter can’t explain it', () => {
+    // Unicode's own list of code points a renderer draws as nothing. The one exception after an
+    // ordinary letter is an emoji's presentation selector (ruled on below). Mongolian's free
+    // variation selectors are ordinary only straight after a Mongolian letter, so after "a" they
+    // are refused too (see the Mongolian test).
+    const allowed = new Set([0xFE0E, 0xFE0F]);
     const ignorable = /\p{Default_Ignorable_Code_Point}/u;
     let checked = 0;
     for (let cp = 0; cp <= 0x10FFFF; cp++) {
@@ -795,6 +796,48 @@ describe('a task’s brief can’t hide text from the card (TASK-906)', () => {
     }
     expect(checked).toBeGreaterThan(4000);
     acceptedEverywhere('\u1820\u180B\u1821');
+  });
+
+  // Characters that aren't default-ignorable but draw as nothing all the same: Egyptian hieroglyph
+  // format controls, the Khitan small script filler, the Syriac abbreviation mark and the musical
+  // null notehead.
+  it.each(byCodePoint([
+    '\u{13430}', '\u{13435}', '\u{1343F}', '\u{16FE4}', '\u070F', '\u{1D159}',
+  ]))('refuses %s, which draws as nothing, in the name, the instructions and the going-well-when', (_codePoint, hidden) => {
+    refusedEverywhere(hidden);
+  });
+
+  describe('Mongolian free variation selectors', () => {
+    const SELECTORS = ['\u180B', '\u180C', '\u180D', '\u180F'];
+    // The first and last of both Mongolian letter ranges.
+    const LETTERS = ['\u1820', '\u1878', '\u1880', '\u18AA'];
+
+    it('accepts one straight after a Mongolian letter, which picks that letter’s written form', () => {
+      for (const letter of LETTERS) for (const selector of SELECTORS) acceptedEverywhere(`${letter}${selector}\u1821`);
+      // Several letters, each with its own selector.
+      acceptedEverywhere('\u1820\u180B\u1821\u180C\u1822\u180F');
+    });
+
+    it.each(byCodePoint(SELECTORS))('refuses %s anywhere a Mongolian letter doesn’t come right before it', (_codePoint, selector) => {
+      // After a space, an ASCII letter, a Mongolian digit, and the unassigned code points either side of the letters.
+      for (const before of [' ', 'a', '\u1819', '\u181F', '\u1879', '\u18AB']) {
+        for (const [field, label] of FIELDS) {
+          expect(issuesOf({ ...task, [field]: `Inbox${before}${selector} at zero` }), `${field} ${hex(before)}`).toEqual([{ path: [field], message: message(label) }]);
+        }
+      }
+      // At the very start.
+      for (const [field, label] of FIELDS) expect(issuesOf({ ...task, [field]: `${selector}Inbox` }), field).toEqual([{ path: [field], message: message(label) }]);
+    });
+
+    it('refuses a run of them, even after a Mongolian letter', () => {
+      for (const run of ['\u1820\u180B\u180C', '\u1820\u180F\u180F', `x${'\u180B\u180C\u180D\u180F'.repeat(1000)}`]) {
+        for (const [field, label] of FIELDS) {
+          // Kept inside each field's own length limit, so the selector rule is the only one that speaks.
+          const value = `Inbox ${run}`.slice(0, { name: 128, promptBody: undefined, goodWhen: 1024 }[field]);
+          expect(issuesOf({ ...task, [field]: value }), `${field} ${hex(run.slice(0, 4))}`).toEqual([{ path: [field], message: message(label) }]);
+        }
+      }
+    });
   });
 
   it('refuses a tag-encoded instruction the card would draw as nothing, before any card is made', () => {
