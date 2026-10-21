@@ -34,6 +34,30 @@ describe('routine permissions', () => {
     ).toBeVisible();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
+  it("says a task's instructions still ask once Always Allow is on (TASK-906)", async () => {
+    vi.mocked(routineApi.getConsent).mockResolvedValue({
+      enabled: true,
+      revision: 'v1',
+    });
+    render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
+    expect(
+      await screen.findByText(
+        "Caveman may create and edit routines for you. Delete, Fire now and a task's instructions still ask.",
+      ),
+    ).toBeVisible();
+  });
+  it('keeps the not-granted line as it was', async () => {
+    vi.mocked(routineApi.getConsent).mockResolvedValue({
+      enabled: false,
+      revision: 'v1',
+    });
+    render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
+    expect(
+      await screen.findByText(
+        'Choose Always Allow on a request from Caveman to permit future creates and edits.',
+      ),
+    ).toBeVisible();
+  });
   it('retains the grant on revoke failure and refreshes after success', async () => {
     vi.mocked(routineApi.getConsent).mockResolvedValue({
       enabled: true,

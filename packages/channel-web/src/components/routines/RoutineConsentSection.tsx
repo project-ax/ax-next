@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ALWAYS_ALLOW_STILL_ASKS } from '@/components/workspace/decision-copy';
 import { routineApi, type RoutineConsent } from '@/lib/routines';
 
 export function RoutineConsentSection({
@@ -91,7 +92,7 @@ export function RoutineConsentSection({
             </p>
             <p className="text-sm text-muted-foreground">
               {consent.enabled
-                ? `${agentName} may create and edit routines for you. Delete and Fire now still ask.`
+                ? `${agentName} may create and edit routines for you. ${ALWAYS_ALLOW_STILL_ASKS}`
                 : `Choose Always Allow on a request from ${agentName} to permit future creates and edits.`}
             </p>
           </div>

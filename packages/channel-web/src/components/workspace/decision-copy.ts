@@ -49,6 +49,26 @@ export const COMPOSER_HOLD_COPY =
   "We're waiting on your approval above — send is paused until you choose.";
 
 /**
+ * What Always Allow still leaves to the person (TASK-906). One copy for the
+ * three places that say it: under the Always Allow button on the in-thread
+ * card and on the Today row, and in Settings once it's granted. Three
+ * hand-kept copies drift, and this sentence changed once already.
+ *
+ * Delete and Fire now never relax. A task's brief doesn't either: creating a
+ * task, or changing any routine's name, instructions, going-well-when or kind
+ * (`touchesTaskBrief` in `@ax/routines-contract`, which tool-policy checks
+ * before consent can relax a hold). The rule reaches a little further than
+ * these words, since a repeat routine's name and instructions ask too. That
+ * is the safe direction: the line never claims more reach than the agent has.
+ */
+export const ALWAYS_ALLOW_STILL_ASKS = "Delete, Fire now and a task's instructions still ask.";
+
+/** The line under an Always Allow button. */
+export function alwaysAllowRoutinesLine(agentName: string): string {
+  return `Allow ${agentName} to create and edit routines for you. ${ALWAYS_ALLOW_STILL_ASKS}`;
+}
+
+/**
  * What a stale row leads with.
  *
  * Deliberately NOT "Nothing was sent" — the sentence this replaced. Most held

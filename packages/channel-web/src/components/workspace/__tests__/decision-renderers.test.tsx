@@ -35,6 +35,15 @@ import {
   DECISION_REQUEST_NO_INPUT,
   DECISION_REQUEST_TRUNCATED,
 } from '../DecisionRequestBlock';
+import {
+  DECISION_TASK_CHECKS_IN_LABEL,
+  DECISION_TASK_GOOD_WHEN_LABEL,
+  DECISION_TASK_HEADING_CHANGE,
+  DECISION_TASK_HEADING_START,
+  DECISION_TASK_NAME_LABEL,
+  DECISION_TASK_TRUNCATED,
+  decisionTaskInstructionsLabel,
+} from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 
@@ -403,5 +412,150 @@ describe('TASK-699 — both renderers show which tool and what it will send', ()
     const plain = decisionFixture();
     expect(cardText(plain)).not.toContain(DECISION_REQUEST_HEADING);
     expect(queueText(plain)).not.toContain(DECISION_REQUEST_HEADING);
+  });
+});
+
+describe('TASK-906 — both renderers show a proposed task as text', () => {
+  // Model-authored, so it carries markup, markdown and a line break: all three
+  // must reach the screen as the characters they are.
+  const HOSTILE = 'Keep the queue empty.\n<img src=x onerror=alert(1)>\n**Leave** enterprise customers to me.';
+  const GOOD_WHEN = 'No ticket open **longer** than an hour.';
+  const task: NonNullable<Decision['task']> = {
+    action: 'start',
+    name: 'Zero open tickets',
+    instructions: { text: HOSTILE, truncated: false },
+    goodWhen: { text: GOOD_WHEN, truncated: false },
+    checksIn: 'Runs every hour',
+  };
+  const held = decisionFixture({
+    summary: 'Wants to start a task',
+    routineOperation: 'routine_create',
+    task,
+  });
+
+  /** Both renderers of one row, to render one at a time and look inside. */
+  const both = (d: Decision) => [
+    <DecisionRow
+      key="q"
+      decision={d}
+      agent={agent}
+      expanded
+      onToggle={vi.fn()}
+      onOpenAgent={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+    />,
+    <ApprovalCard key="c" decision={d} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+  ];
+
+  it('uses the decided words', () => {
+    expect([
+      DECISION_TASK_HEADING_START,
+      DECISION_TASK_HEADING_CHANGE,
+      DECISION_TASK_NAME_LABEL,
+      decisionTaskInstructionsLabel('Scheduler'),
+      DECISION_TASK_GOOD_WHEN_LABEL,
+      DECISION_TASK_CHECKS_IN_LABEL,
+      DECISION_TASK_TRUNCATED,
+    ]).toEqual([
+      'The task',
+      'What changes',
+      'Name',
+      'What Scheduler will do',
+      'Going well when',
+      'Checks in',
+      'This is only the beginning. The full text is longer.',
+    ]);
+  });
+
+  it('the queue row and the in-thread card both show the name, instructions, going-well-when and schedule', () => {
+    for (const text of [queueText(held), cardText(held)]) {
+      expect(text).toContain('The task');
+      for (const label of ['Name', 'Going well when', 'Checks in']) expect(text).toContain(label);
+      for (const value of ['Zero open tickets', HOSTILE, GOOD_WHEN, 'Runs every hour']) {
+        expect(text).toContain(value);
+      }
+    }
+  });
+
+  it("labels the instructions with each renderer's agent name", () => {
+    expect(queueText(held)).toContain('What Scheduler will do');
+    // ApprovalCard's default `agentName`; `cardText` passes none.
+    expect(cardText(held)).toContain('What This agent will do');
+  });
+
+  it('draws every value as TEXT — markup and markdown never become elements', () => {
+    for (const ui of both(held)) {
+      const { container, unmount } = render(ui);
+      expect(container.querySelector('[data-testid="decision-task"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="decision-task"] img, [data-testid="decision-task"] strong'),
+      ).toBeNull();
+      // Nothing in the block turns model text into an attribute either.
+      expect(
+        container.querySelector('[data-testid="decision-task"] [title], [data-testid="decision-task"] [href]'),
+      ).toBeNull();
+      expect(screen.getByTestId('decision-task-instructions').textContent).toBe(HOSTILE);
+      expect(screen.getByTestId('decision-task-good-when').textContent).toBe(GOOD_WHEN);
+      unmount();
+    }
+  });
+
+  it('sits above the request block, which still shows the whole call', () => {
+    const withRequest = decisionFixture({
+      ...held,
+      request: { tool: 'routine_create', input: '{\n  "requestId": "r"\n}', truncated: false },
+    });
+    for (const ui of both(withRequest)) {
+      const { unmount } = render(ui);
+      const block = screen.getByTestId('decision-task');
+      const request = screen.getByTestId('decision-request');
+      expect(block.compareDocumentPosition(request) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('says when a field was cut, in both renderers', () => {
+    const cut = decisionFixture({ ...held, task: { ...task, instructions: { text: 'Keep the queue', truncated: true } } });
+    expect(queueText(cut)).toContain(DECISION_TASK_TRUNCATED);
+    expect(cardText(cut)).toContain(DECISION_TASK_TRUNCATED);
+    expect(queueText(held)).not.toContain(DECISION_TASK_TRUNCATED);
+    expect(cardText(held)).not.toContain(DECISION_TASK_TRUNCATED);
+  });
+
+  it('a change shows only what it changes', () => {
+    const change = decisionFixture({
+      summary: 'Wants to change a task',
+      routineOperation: 'routine_update',
+      task: {
+        action: 'change',
+        name: null,
+        instructions: null,
+        goodWhen: { text: 'Inbox at zero.', truncated: false },
+        checksIn: null,
+      },
+    });
+    for (const ui of both(change)) {
+      const { unmount } = render(ui);
+      const block = screen.getByTestId('decision-task');
+      expect(block.textContent).toContain(DECISION_TASK_HEADING_CHANGE);
+      expect(block.textContent).not.toContain(DECISION_TASK_HEADING_START);
+      expect([...block.querySelectorAll('dt')].map((dt) => dt.textContent)).toEqual([DECISION_TASK_GOOD_WHEN_LABEL]);
+      expect(screen.getByTestId('decision-task-good-when').textContent).toBe('Inbox at zero.');
+      expect(screen.queryByTestId('decision-task-instructions')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('a row with no task draws no block', () => {
+    const plain = decisionFixture();
+    for (const ui of both(plain)) {
+      const { container, unmount } = render(ui);
+      expect(container.querySelector('[data-testid="decision-task"]')).toBeNull();
+      unmount();
+    }
+    expect(queueText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
+    expect(cardText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
   });
 });

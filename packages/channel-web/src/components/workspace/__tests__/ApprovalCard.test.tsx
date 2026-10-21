@@ -173,7 +173,7 @@ describe('routine Always Allow', () => {
     render(<ApprovalCard agentName="Caveman" decision={decisionFixture({ approvalScopes: ['once', 'agent-routines'] })} onApprove={approve} onDismiss={vi.fn()} onUndo={vi.fn()} />);
     screen.getByRole('button', { name: 'Always Allow' }).click();
     expect(approve).toHaveBeenCalledWith('agent-routines');
-    expect(screen.getByText('Allow Caveman to create and edit routines for you. Delete and Fire now still ask.')).toBeVisible();
+    expect(screen.getByText("Allow Caveman to create and edit routines for you. Delete, Fire now and a task's instructions still ask.")).toBeVisible();
   });
   it('keeps scoped controls disabled during a pending action', () => {
     render(<ApprovalCard decision={decisionFixture({ approvalScopes: ['once', 'agent-routines'] })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} busy />);

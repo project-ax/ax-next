@@ -42,11 +42,13 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot, StateDotSlot, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { DecisionRequestBlock } from './DecisionRequestBlock';
+import { DecisionTaskBlock } from './DecisionTaskBlock';
 import {
   DECISION_NOTHING_YET,
   DECISION_STALE_ADVICE,
   DECISION_STALE_LEAD,
   DECISION_STALE_SUMMARY,
+  alwaysAllowRoutinesLine,
   decisionOutcome,
   expiresSoonNote,
   undoSecondsLeft,
@@ -347,6 +349,11 @@ export function DecisionRow({
               </div>
             )}
 
+            {/* The task it proposes, in its own fields — agent-authored, server-fenced (TASK-906). */}
+            {d.task && (
+              <DecisionTaskBlock task={d.task} agentName={agent.name} className="mt-3 max-w-[660px]" />
+            )}
+
             {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
             {d.request && (
               <DecisionRequestBlock request={d.request} className="mt-3 max-w-[660px]" />
@@ -415,7 +422,7 @@ export function DecisionRow({
               </Button>
             {d.approvalScopes?.includes('agent-routines') && <>
               <Button size="sm" variant="outline" disabled={busy} onClick={() => { armForResolution(); onApprove('agent-routines'); }}>Always Allow</Button>
-              <p className="text-xs text-muted-foreground">Allow {agent.name} to create and edit routines for you. Delete and Fire now still ask.</p>
+              <p className="text-xs text-muted-foreground">{alwaysAllowRoutinesLine(agent.name)}</p>
             </>}
               <Button
                 size="sm"
