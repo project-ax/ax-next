@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, promises as fs } from 'node:fs';
+import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -199,6 +200,19 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     });
   });
 
+  it('the root itself may be a symlink: it is trusted configuration, not agent-written', async () => {
+    // An operator's mount path can be reached through a link. Only the parts
+    // below the root are agent-written, and only those are opened O_NOFOLLOW.
+    const via = path.join(tmp, 'mount');
+    await fs.symlink(root, via);
+    expect(text(await readConfinedByWalk(via, ['docs', 'note.md'], LIMITS))).toBe('all good');
+    const r = await readConfinedByWalk(via, [], LIMITS);
+    expect(r.kind === 'dir' && r.entries.map((e) => e.name).sort()).toEqual([
+      'docs',
+      'hello.txt',
+    ]);
+  });
+
   it('a missing path is absent', async () => {
     expect(await readConfinedByWalk(root, ['nope.md'], LIMITS)).toMatchObject({
       kind: 'absent',
@@ -332,6 +346,24 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
         'docs',
         'hello.txt',
       ]);
+    });
+
+    it('a Unix socket leaf is absent, not an error', async () => {
+      // open(2) refuses a socket outright (ENXIO): a special file, not a
+      // storage failure.
+      const server = createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(path.join(root, 'sock'), resolve);
+      });
+      try {
+        expect(await readConfinedByWalk(root, ['sock'], LIMITS)).toMatchObject({
+          kind: 'absent',
+          reason: 'not-file-or-dir',
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
 
     it('a device leaf is absent', async () => {
