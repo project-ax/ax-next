@@ -8,6 +8,7 @@ const TOOL_MESSAGES = {
   'approval-required': 'This operation requires human approval.',
   'not-found': 'The routine is unavailable.',
   forbidden: 'This operation is not allowed for this person and agent.',
+  'not-in-check-in': 'This works only during a task check-in.',
   disabled: 'Enable the routine before firing it.',
   'cleanup-pending': 'Credential removal is pending. Retry after it completes.',
   unavailable: 'Routine management is temporarily unavailable.',

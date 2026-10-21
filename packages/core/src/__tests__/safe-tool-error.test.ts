@@ -29,4 +29,11 @@ describe('safe routine tool failures', () => {
     error.message = 'private bearer secret';
     expect(safeToolMessage(error.toolCode, error.field)).toBe('Routine input is invalid. Check the indicated field. Field: name');
   });
+  it('names the one place a task report works', () => {
+    const error = new SafeToolError('not-in-check-in', 'input');
+    expect(error.toolCode).toBe('not-in-check-in');
+    expect(error.field).toBe('input');
+    expect(error.message).toBe('This works only during a task check-in. Field: input');
+    expect(safeToolMessage('not-in-check-in', 'input')).toBe('This works only during a task check-in. Field: input');
+  });
 });
