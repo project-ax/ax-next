@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema,
+  RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema, RoutineReportFieldShape,
   type RoutineDefinition, type RoutinePatch,
 } from './definition.js';
 
@@ -33,6 +33,16 @@ const RoutineUpdateToolPatchSchema = RoutinePatchSchema.superRefine((patch, ctx)
 });
 export const RoutineUpdateToolInputSchema = RoutineDeleteToolInputSchema.extend({ patch: RoutineUpdateToolPatchSchema }).strict();
 export const RoutineFireNowToolInputSchema = RoutineDeleteToolInputSchema;
+/**
+ * TASK-907: a check-in's report. It names no task, run or conversation: the
+ * host ties it to the check-in it ran in from the session alone, so a model
+ * can't point it anywhere else. A plain strict object, because the JSON-schema
+ * parity test reads its `.shape`.
+ */
+export const RoutineReportToolInputSchema = z.object({
+  status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
+  ask: RoutineReportFieldShape.ask.default(null), notes: RoutineReportFieldShape.notes.optional(),
+}).strict();
 
 export const RoutineToolInputSchemas = {
   routine_list: RoutineListToolInputSchema,
@@ -49,6 +59,7 @@ export type RoutineCreateToolInput = z.output<typeof RoutineCreateToolInputSchem
 export type RoutineUpdateToolInput = z.output<typeof RoutineUpdateToolInputSchema>;
 export type RoutineDeleteToolInput = z.output<typeof RoutineDeleteToolInputSchema>;
 export type RoutineFireNowToolInput = z.output<typeof RoutineFireNowToolInputSchema>;
+export type RoutineReportToolInput = z.output<typeof RoutineReportToolInputSchema>;
 
 export function routineToolKind(name: string): 'read' | 'write' | null {
   switch (name) {

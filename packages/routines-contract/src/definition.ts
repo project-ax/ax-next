@@ -265,9 +265,10 @@ const BRIEF_HIDDEN: readonly RegExp[] = [HIDDEN_FORMAT_CHARS, BRIEF_CONTROLS, BR
  * The first character in `value` the card wouldn't draw, or null: its code
  * point, and its position counted in code points from 1, so an emoji before
  * it counts once although it is two UTF-16 units. The decision is the
- * patterns' own; only a refusal pays for counting the position.
+ * patterns' own; only a refusal pays for counting the position. A task's
+ * report refuses the same characters (TASK-907).
  */
-function firstHiddenCharacter(value: string): { codePoint: number; position: number } | null {
+export function firstHiddenCharacter(value: string): { codePoint: number; position: number } | null {
   let index = -1;
   for (const pattern of BRIEF_HIDDEN) {
     const match = pattern.exec(value);
@@ -419,6 +420,75 @@ export function applyRoutinePatch(current: RoutineDefinition, patch: RoutinePatc
 export const RoutinePermissionsSchema = z.object({ edit: z.boolean(), stop: z.boolean(), fire: z.boolean(), manageSecret: z.boolean() }).strict();
 export const RoutineInstantSchema = z.string().datetime({ offset: true });
 export const RoutineStatusSchema = z.enum(['ok', 'silenced', 'error']);
+
+/*
+ * A task's report (TASK-907): what a check-in says about how the task is going.
+ * The agent writes it, the host keeps it as the task's state, and it goes back
+ * to a model at the next check-in and in routine_list and routine_get. A person
+ * reads it on the task page, which is what keeps an instruction injected
+ * through a ticket in sight (the design's section 7), so the text can't say
+ * more than the page shows. Each text field:
+ *   - fits its cap, counted in UTF-16 units like the rest of the contract;
+ *   - has something on it to read. Null is the one way to say "nothing", so a
+ *     blank string is refused;
+ *   - refuses what `firstHiddenCharacter` finds, the brief's own rule;
+ *   - refuses a lone surrogate (half of a character), which a JSON body can
+ *     carry. Postgres refuses one in a JSON column and puts U+FFFD in its place
+ *     in a text one, so the stored report wouldn't be what the agent sent.
+ * An update is also one line, with no LF or CR. The other line breaks (U+2028,
+ * U+2029 and NEL) are invisible characters already. Padding (blank lines, runs
+ * of spaces) is allowed: a report is read, not approved.
+ *
+ * The rules hold at the writer's input only. Stored text and the views aren't
+ * re-checked, so a later change to a cap can't make a stored row unreadable
+ * (TASK-913).
+ */
+export const ROUTINE_REPORT_STATUSES = ['on-track', 'off-track', 'needs-you'] as const;
+export const RoutineReportStatusSchema = z.enum(ROUTINE_REPORT_STATUSES);
+export type RoutineReportStatus = z.output<typeof RoutineReportStatusSchema>;
+export const ROUTINE_REPORT_UPDATE_MAX_CHARS = 500;
+export const ROUTINE_REPORT_ASK_MAX_CHARS = 500;
+export const ROUTINE_AGENT_NOTES_MAX_CHARS = 2000;
+
+/** Half of a character. With the `u` flag a pair reads as one code point, so only a surrogate with no partner matches. */
+const LONE_SURROGATE = /\p{Surrogate}/u;
+
+/**
+ * One text field of a report: zod's own cap, then the first rule the text
+ * breaks, so it gets one reason. Text the cap refuses gets only the cap's
+ * reason and isn't scanned.
+ */
+function reportText(rule: { max: number; blank: string; oneLine: boolean }): z.ZodEffects<z.ZodString, string, string> {
+  return z.string().min(1).max(rule.max).superRefine((value, ctx) => {
+    if (value.length < 1 || value.length > rule.max) return;
+    const problem = value.trim() === '' ? rule.blank
+      : rule.oneLine && /[\n\r]/.test(value) ? 'An update is one line.'
+      : firstHiddenCharacter(value) !== null ? 'A report can’t contain invisible characters.'
+      : LONE_SURROGATE.test(value) ? 'A report can’t contain broken characters.'
+      : null;
+    if (problem !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  });
+}
+
+/**
+ * A report's fields as the agent writes them. `ask` and `notes` are nullable and
+ * required here, and each schema that uses them picks its own default: the tool
+ * fills a missing `ask` with null, and leaving `notes` out keeps the saved ones.
+ */
+export const RoutineReportFieldShape = {
+  status: RoutineReportStatusSchema,
+  update: reportText({ max: ROUTINE_REPORT_UPDATE_MAX_CHARS, blank: 'Say how the task is going.', oneLine: true }),
+  ask: reportText({ max: ROUTINE_REPORT_ASK_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
+  notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
+};
+
+/** A task's latest report and the notes it keeps between check-ins, as a read shows them. Stored text isn't re-capped (TASK-913). */
+export const RoutineTaskViewSchema = z.object({
+  status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+  reportedAt: RoutineInstantSchema, notes: z.string().nullable(),
+}).strict();
+export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;
+
 export const RoutineViewSchema = z.object({
   ...RoutineEditableShape,
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema, revision: RoutineOpaqueStringSchema,

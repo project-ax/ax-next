@@ -2,7 +2,8 @@ import { z } from 'zod';
 import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
-  RoutinePatchSchema, RoutineStatusSchema, RoutineViewSchema,
+  RoutinePatchSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
+  RoutineStatusSchema, RoutineViewSchema,
 } from './definition.js';
 
 export const ROUTINE_SECRET_MAX_BYTES = 64 * 1024;
@@ -31,6 +32,21 @@ export const RoutineSecretOutputSchema = z.object({ saved: z.literal(true) }).st
 const limit = z.number().int().min(1).max(ROUTINE_HISTORY_MAX_LIMIT).optional();
 export const RoutineRecentFiresInputSchema = RoutineKeySchema.extend({ limit }).strict();
 export const RoutineRecentFiresForAgentInputSchema = RoutineListInputSchema.extend({ limit, before: RoutineInstantSchema.optional() }).strict();
+/** One run's report, on its history row (TASK-907). The notes stay on the task. Stored text isn't re-capped (TASK-913). */
+export const RoutineFireReportViewSchema = z.object({
+  status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+}).strict();
+/**
+ * `routines:report` (TASK-907), the one writer of a task's state. The tool fills
+ * `agentId` and `dispatchId` from the host-set session, never from the model.
+ * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
+ */
+export const RoutineReportInputSchema = z.object({
+  agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
+  status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
+  ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
+}).strict();
+export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -92,6 +108,9 @@ export type RoutineRecentFiresOutput = z.output<typeof RoutineRecentFiresOutputS
 export type RoutineRecentFiresForAgentInput = z.output<typeof RoutineRecentFiresForAgentInputSchema>;
 export type RoutineRecentFiresForAgentOutput = z.output<typeof RoutineRecentFiresForAgentOutputSchema>;
 export type RoutineFireView = z.output<typeof RoutineFireViewSchema>;
+export type RoutineFireReportView = z.output<typeof RoutineFireReportViewSchema>;
+export type RoutineReportInput = z.output<typeof RoutineReportInputSchema>;
+export type RoutineReportOutput = z.output<typeof RoutineReportOutputSchema>;
 export type RoutineDefaultSummary = z.output<typeof RoutineDefaultSummarySchema>;
 export type RoutineListDefaultsInput = z.output<typeof RoutineListDefaultsInputSchema>;
 export type RoutineListDefaultsOutput = z.output<typeof RoutineListDefaultsOutputSchema>;
