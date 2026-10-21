@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, StoredRoutine } from './types.js';
-import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine } from './definition.js';
+import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 
 const PLUGIN = '@ax/routines';
@@ -15,7 +15,7 @@ export const ROUTINE_SERVICES = [
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
   const parsed = schema.safeParse(input);
-  if (!parsed.success) throw new SafeToolError('validation', 'input');
+  if (!parsed.success) throw validationError(parsed.error);
   return parsed.data;
 }
 export async function resolveRoutineAccess(bus: HookBus, store: RoutinesStore, ctx: AgentContext, agentId: string) {

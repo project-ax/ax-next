@@ -50,6 +50,7 @@ export const RoutineDefaultSummarySchema = z.object({
 export const RoutineListDefaultsOutputSchema = z.object({ defaults: z.array(RoutineDefaultSummarySchema) }).strict();
 export const RoutineGetDefaultOutputSchema = z.object({
   ...RoutineEditableShape, trigger: IntervalTriggerSchema,
+  kind: z.literal('repeat'), goodWhen: z.null(),
   defaultRoutineId: RoutineOpaqueStringSchema, updatedAt: RoutineInstantSchema,
 }).strict().superRefine((detail, ctx) => {
   const { defaultRoutineId: _id, updatedAt: _updated, ...definition } = detail;
@@ -58,6 +59,7 @@ export const RoutineGetDefaultOutputSchema = z.object({
 });
 export const RoutineUpsertDefaultInputSchema = RoutineDefinitionObjectSchema.extend({
   trigger: IntervalTriggerSchema, enabled: z.boolean().optional(),
+  kind: z.literal('repeat').default('repeat'), goodWhen: z.null().default(null),
 }).strict().superRefine((input, ctx) => {
   const result = RoutineDefinitionSchema.safeParse({ ...input, enabled: input.enabled ?? true });
   if (!result.success) for (const issue of result.error.issues) ctx.addIssue(issue);

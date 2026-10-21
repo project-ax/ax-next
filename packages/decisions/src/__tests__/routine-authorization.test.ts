@@ -165,6 +165,39 @@ const authorize = (h: TestHarness, c = call(), actor = ctx()) =>
   );
 const sweep = (h: TestHarness) => h.bus.call('decisions:sweep', ctx(), {});
 
+describe('task wording on a held proposal', () => {
+  it('stores task wording on a held task proposal (TASK-906)', async () => {
+    const h = await boot();
+    const create: ToolCall = {
+      id: 'c-task',
+      name: 'routine_create',
+      input: {
+        requestId: 'r-task',
+        definition: {
+          name: 'Zero open tickets',
+          promptBody: 'Keep the queue empty.',
+          kind: 'stay-on-top',
+          goodWhen: 'No ticket open longer than an hour.',
+          trigger: { kind: 'interval', every: '15m' },
+        },
+      },
+    };
+    expect((await held(h, create)).summary).toBe('Wants to start a task');
+    const update: ToolCall = {
+      id: 'c-task-u',
+      name: 'routine_update',
+      input: {
+        requestId: 'r-task-u',
+        routineId: 'rtn_a',
+        expectedRevision: 'rev_a',
+        patch: { goodWhen: 'x' },
+      },
+    };
+    expect((await held(h, update)).summary).toBe('Wants to change a task');
+    expect((await held(h, call('r-plain'))).summary).toBe('Wants to edit a routine');
+  });
+});
+
 describe('routine host authorization', () => {
   it('refuses direct execution, changed person, agent and input during and after grace', async () => {
     const h = await boot(true);

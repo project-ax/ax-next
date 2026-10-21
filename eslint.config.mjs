@@ -4,8 +4,10 @@
 // invariant 2: "plugins talk through the hook bus, not direct imports."
 //
 // Allowed @ax/* imports:
-//   @ax/routines-contract — browser-safe routine schemas and tool contracts;
-//                           no core, plugin, database or Node imports.
+//   @ax/routines-contract — browser-safe routine schemas and tool contracts.
+//                           Its one @ax import is @ax/core/surface-text, which
+//                           imports nothing; no other core, plugin, database
+//                           or Node imports.
 //   @ax/core              — the kernel, every plugin depends on it
 //   @ax/test-harness      — test-only, not in plugin runtime paths
 //   @ax/ipc-protocol      — pure-types wire-schema package; both host-side

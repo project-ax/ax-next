@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import { touchesTaskBrief } from '@ax/routines-contract';
 import type { Kysely } from 'kysely';
 import {
   createDbEgressAllowlistStore,
@@ -690,10 +691,16 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             : {};
           // The matched rule must speak first: deny and unopted holds never
           // consult or inherit consent. Actor/agent are host context only.
+          // A task's brief (creating a task, or changing a routine's name,
+          // instructions, going-well-when or kind) never inherits consent, so it
+          // stays a hold that `@ax/decisions` puts in front of a person
+          // (TASK-906). It is checked here, not in the pre-call gate, because
+          // `decisions:authorize-routine-call` asks this same service at execute
+          // time, and the runner sends that input separately from pre-call's.
           const staticResult = evaluate(rules, call, opts2);
           const eligibleHold = staticResult.verdict === 'hold' &&
             rules.some(rule => rule.id === staticResult.ruleId && consentRelaxes(rule));
-          const routineConsentAllowed = eligibleHold &&
+          const routineConsentAllowed = eligibleHold && !touchesTaskBrief(call) &&
             (input.agentId === undefined || input.agentId === ctx.agentId) &&
             await consentAllowed(ctx, ctx.agentId);
           const base = routineConsentAllowed

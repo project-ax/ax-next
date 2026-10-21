@@ -18,7 +18,7 @@
  * neither of them says "Sent".
  */
 import { act } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
@@ -35,6 +35,18 @@ import {
   DECISION_REQUEST_NO_INPUT,
   DECISION_REQUEST_TRUNCATED,
 } from '../DecisionRequestBlock';
+import {
+  DECISION_TASK_CHECKS_IN_LABEL,
+  DECISION_TASK_GOOD_WHEN_LABEL,
+  DECISION_TASK_HEADING_CHANGE,
+  DECISION_TASK_HEADING_START,
+  DECISION_TASK_NAME_LABEL,
+  DECISION_TASK_LINE_COLUMNS,
+  DECISION_TASK_SCROLL_NOTE,
+  DECISION_TASK_TRUNCATED,
+  DECISION_TASK_VISIBLE_LINES,
+  decisionTaskInstructionsLabel,
+} from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 
@@ -403,5 +415,297 @@ describe('TASK-699 — both renderers show which tool and what it will send', ()
     const plain = decisionFixture();
     expect(cardText(plain)).not.toContain(DECISION_REQUEST_HEADING);
     expect(queueText(plain)).not.toContain(DECISION_REQUEST_HEADING);
+  });
+});
+
+describe('TASK-906 — both renderers show a proposed task as text', () => {
+  // Model-authored, so it carries markup, markdown and a line break: all three
+  // must reach the screen as the characters they are.
+  const HOSTILE = 'Keep the queue empty.\n<img src=x onerror=alert(1)>\n**Leave** enterprise customers to me.';
+  const GOOD_WHEN = 'No ticket open **longer** than an hour.';
+  const task: NonNullable<Decision['task']> = {
+    action: 'start',
+    name: 'Zero open tickets',
+    instructions: { text: HOSTILE, truncated: false },
+    goodWhen: { text: GOOD_WHEN, truncated: false },
+    checksIn: 'Runs every hour',
+  };
+  const held = decisionFixture({
+    summary: 'Wants to start a task',
+    routineOperation: 'routine_create',
+    task,
+  });
+
+  /** Both renderers of one row, to render one at a time and look inside. */
+  const both = (d: Decision) => [
+    <DecisionRow
+      key="q"
+      decision={d}
+      agent={agent}
+      expanded
+      onToggle={vi.fn()}
+      onOpenAgent={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+    />,
+    <ApprovalCard key="c" decision={d} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+  ];
+
+  it('uses the decided words', () => {
+    expect([
+      DECISION_TASK_HEADING_START,
+      DECISION_TASK_HEADING_CHANGE,
+      DECISION_TASK_NAME_LABEL,
+      decisionTaskInstructionsLabel('Scheduler'),
+      DECISION_TASK_GOOD_WHEN_LABEL,
+      DECISION_TASK_CHECKS_IN_LABEL,
+      DECISION_TASK_TRUNCATED,
+      DECISION_TASK_SCROLL_NOTE,
+    ]).toEqual([
+      'The task',
+      'What changes',
+      'Name',
+      'What Scheduler will do',
+      'Going well when',
+      'Checks in',
+      'This is only the beginning. The full text is longer.',
+      'Scroll to read all of it.',
+    ]);
+  });
+
+  it('the queue row and the in-thread card both show the name, instructions, going-well-when and schedule', () => {
+    for (const text of [queueText(held), cardText(held)]) {
+      expect(text).toContain('The task');
+      for (const label of ['Name', 'Going well when', 'Checks in']) expect(text).toContain(label);
+      for (const value of ['Zero open tickets', HOSTILE, GOOD_WHEN, 'Runs every hour']) {
+        expect(text).toContain(value);
+      }
+    }
+  });
+
+  it("labels the instructions with each renderer's agent name", () => {
+    expect(queueText(held)).toContain('What Scheduler will do');
+    // ApprovalCard's default `agentName`; `cardText` passes none.
+    expect(cardText(held)).toContain('What This agent will do');
+  });
+
+  it('draws every value as TEXT — markup and markdown never become elements', () => {
+    for (const ui of both(held)) {
+      const { container, unmount } = render(ui);
+      expect(container.querySelector('[data-testid="decision-task"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="decision-task"] img, [data-testid="decision-task"] strong'),
+      ).toBeNull();
+      // Nothing in the block turns model text into an attribute either.
+      expect(
+        container.querySelector('[data-testid="decision-task"] [title], [data-testid="decision-task"] [href]'),
+      ).toBeNull();
+      expect(screen.getByTestId('decision-task-instructions').textContent).toBe(HOSTILE);
+      expect(screen.getByTestId('decision-task-good-when').textContent).toBe(GOOD_WHEN);
+      unmount();
+    }
+  });
+
+  it('sits above the request block, which still shows the whole call', () => {
+    const withRequest = decisionFixture({
+      ...held,
+      request: { tool: 'routine_create', input: '{\n  "requestId": "r"\n}', truncated: false },
+    });
+    for (const ui of both(withRequest)) {
+      const { unmount } = render(ui);
+      const block = screen.getByTestId('decision-task');
+      const request = screen.getByTestId('decision-request');
+      expect(block.compareDocumentPosition(request) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      unmount();
+    }
+  });
+
+  // The box shows twelve lines and then scrolls, and on systems that hide
+  // scrollbars nothing else says there is more. A field the box can't show
+  // whole says so under it, in both renderers. Two signals, either enough: the
+  // browser's own layout (the box's content taller than the box), and an
+  // estimate from the text that errs toward "scroll" for the narrowest box we
+  // lay out (a 360px phone). jsdom has no layout, so these tests pin the
+  // estimate, and mock the layout to pin the other half.
+  describe('says when a field is taller than its box', () => {
+    const lines = (n: number, separator = '\n') => Array.from({ length: n }, (_, i) => `Step ${i + 1}.`).join(separator);
+    const withFields = (instructions: string, goodWhen: string) =>
+      decisionFixture({
+        ...held,
+        task: {
+          ...task,
+          instructions: { text: instructions, truncated: false },
+          goodWhen: { text: goodWhen, truncated: false },
+        },
+      });
+    const noteCount = (text: string) => text.split(DECISION_TASK_SCROLL_NOTE).length - 1;
+    /** CJK ideographs, which take two columns each. Built from code points so the source holds none. */
+    const ideographs = (n: number) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 200))).join('');
+
+    it('pins the box: twelve lines of 28 columns', () => {
+      expect([DECISION_TASK_VISIBLE_LINES, DECISION_TASK_LINE_COLUMNS]).toEqual([12, 28]);
+    });
+
+    it('under each tall field, as muted text, for line breaks and for one long line', () => {
+      // 13 short lines, and one 2,000-character line with no line break at all.
+      const tall = withFields(lines(13), 'x'.repeat(2000));
+      for (const ui of both(tall)) {
+        const { unmount } = render(ui);
+        const notes = screen.getAllByText(DECISION_TASK_SCROLL_NOTE);
+        expect(notes).toHaveLength(2);
+        // Each note follows its own field.
+        expect(screen.getByTestId('decision-task-instructions').nextElementSibling).toBe(notes[0]);
+        expect(screen.getByTestId('decision-task-good-when').nextElementSibling).toBe(notes[1]);
+        for (const note of notes) expect(note).toHaveClass('text-muted-foreground');
+        unmount();
+      }
+    });
+
+    it('counts wrapped lines: a line of 29 columns takes two', () => {
+      const wrapped = withFields(Array(7).fill('y'.repeat(29)).join('\n'), Array(6).fill('y'.repeat(29)).join('\n'));
+      for (const text of [queueText(wrapped), cardText(wrapped)]) expect(noteCount(text)).toBe(1);
+    });
+
+    it('counts a wide character as two columns: CJK fills the box at half the characters', () => {
+      // 200 ideographs are 400 columns, fifteen lines; 200 narrow characters are eight.
+      const cjk = withFields(ideographs(200), 'z'.repeat(200));
+      for (const text of [queueText(cjk), cardText(cjk)]) expect(noteCount(text)).toBe(1);
+      // The review's case: one line of 700 ideographs.
+      const long = withFields(ideographs(700), 'Inbox at zero.');
+      for (const text of [queueText(long), cardText(long)]) expect(noteCount(text)).toBe(1);
+      // An emoji is wide too.
+      const emoji = withFields(Array.from({ length: 170 }, () => String.fromCodePoint(0x1f600)).join(''), 'Inbox at zero.');
+      for (const text of [queueText(emoji), cardText(emoji)]) expect(noteCount(text)).toBe(1);
+    });
+
+    it('treats CR and CRLF as line breaks too', () => {
+      const cr = withFields(lines(13, '\r'), lines(13, '\r\n'));
+      for (const text of [queueText(cr), cardText(cr)]) expect(noteCount(text)).toBe(2);
+    });
+
+    it('not for a field that fits: twelve lines, or one line of 336 columns', () => {
+      const fits = withFields(lines(12), 'z'.repeat(12 * 28));
+      for (const text of [queueText(fits), cardText(fits)]) expect(noteCount(text)).toBe(0);
+      const justOver = withFields(lines(12), 'z'.repeat(12 * 28 + 1));
+      for (const text of [queueText(justOver), cardText(justOver)]) expect(noteCount(text)).toBe(1);
+      for (const text of [queueText(held), cardText(held)]) expect(noteCount(text)).toBe(0);
+    });
+
+    describe('where the browser lays the box out', () => {
+      const layout = { scroll: 0, client: 0 };
+      let resized: (() => void)[] = [];
+      beforeEach(() => {
+        layout.scroll = 0;
+        layout.client = 0;
+        resized = [];
+        vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(() => layout.scroll);
+        vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(() => layout.client);
+        // A callback counts only while its observer watches something.
+        vi.stubGlobal(
+          'ResizeObserver',
+          class {
+            constructor(private readonly callback: () => void) {}
+            observe() {
+              resized.push(this.callback);
+            }
+            unobserve() {}
+            disconnect() {
+              resized = resized.filter((callback) => callback !== this.callback);
+            }
+          },
+        );
+      });
+      afterEach(() => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      });
+      const short = withFields('Keep the queue empty.', 'Inbox at zero.');
+
+      it('a short text whose box overflows says so: the layout is enough', () => {
+        layout.scroll = 300;
+        layout.client = 256;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(2);
+      });
+
+      it('a short text whose box doesn’t overflow says nothing, and a pixel of rounding isn’t overflow', () => {
+        layout.scroll = 42;
+        layout.client = 42;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(0);
+        layout.scroll = 43;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(0);
+      });
+
+      it('checks again when the box resizes, as a narrower window wraps the text', () => {
+        layout.scroll = 42;
+        layout.client = 42;
+        const { container, unmount } = render(both(short)[1]!);
+        expect(noteCount(container.textContent ?? '')).toBe(0);
+        expect(resized.length).toBeGreaterThan(0);
+        layout.scroll = 300;
+        layout.client = 256;
+        act(() => {
+          for (const callback of resized) callback();
+        });
+        expect(noteCount(container.textContent ?? '')).toBe(2);
+        // Unmounted, the box is watched no more.
+        unmount();
+        expect(resized).toEqual([]);
+      });
+
+      it('without ResizeObserver it still measures once, and the estimate still decides', () => {
+        vi.stubGlobal('ResizeObserver', undefined);
+        layout.scroll = 300;
+        layout.client = 256;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(2);
+        layout.scroll = 0;
+        layout.client = 0;
+        const tall = withFields(lines(13), 'Inbox at zero.');
+        for (const text of [queueText(tall), cardText(tall)]) expect(noteCount(text)).toBe(1);
+      });
+    });
+  });
+
+  it('says when a field was cut, in both renderers', () => {
+    const cut = decisionFixture({ ...held, task: { ...task, instructions: { text: 'Keep the queue', truncated: true } } });
+    expect(queueText(cut)).toContain(DECISION_TASK_TRUNCATED);
+    expect(cardText(cut)).toContain(DECISION_TASK_TRUNCATED);
+    expect(queueText(held)).not.toContain(DECISION_TASK_TRUNCATED);
+    expect(cardText(held)).not.toContain(DECISION_TASK_TRUNCATED);
+  });
+
+  it('a change shows only what it changes', () => {
+    const change = decisionFixture({
+      summary: 'Wants to change a task',
+      routineOperation: 'routine_update',
+      task: {
+        action: 'change',
+        name: null,
+        instructions: null,
+        goodWhen: { text: 'Inbox at zero.', truncated: false },
+        checksIn: null,
+      },
+    });
+    for (const ui of both(change)) {
+      const { unmount } = render(ui);
+      const block = screen.getByTestId('decision-task');
+      expect(block.textContent).toContain(DECISION_TASK_HEADING_CHANGE);
+      expect(block.textContent).not.toContain(DECISION_TASK_HEADING_START);
+      expect([...block.querySelectorAll('dt')].map((dt) => dt.textContent)).toEqual([DECISION_TASK_GOOD_WHEN_LABEL]);
+      expect(screen.getByTestId('decision-task-good-when').textContent).toBe('Inbox at zero.');
+      expect(screen.queryByTestId('decision-task-instructions')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('a row with no task draws no block', () => {
+    const plain = decisionFixture();
+    for (const ui of both(plain)) {
+      const { container, unmount } = render(ui);
+      expect(container.querySelector('[data-testid="decision-task"]')).toBeNull();
+      unmount();
+    }
+    expect(queueText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
+    expect(cardText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
   });
 });

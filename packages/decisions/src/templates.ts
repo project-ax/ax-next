@@ -8,6 +8,8 @@
  * this file. That is the H6 / invariant-5 line: model output must not be echoed
  * into a note the model reads back as instruction, nor onto a surface a human
  * reads as a factual claim about what their agent is about to do.
+ * (`routineTask` is the one input-derived value, and it is a closed enum --
+ * `'start' | 'change' | null` -- never input text.)
  *
  * `capability` and `toolName` arrive over the hook bus from `@ax/tool-policy`.
  * Today that is the in-repo rule table, but the boundary review names a
@@ -117,6 +119,13 @@ export interface DecisionTextInput {
    * Untrusted; fenced by the shared composer. Ignored for non-connector tools.
    */
   toolTitle?: string | null | undefined;
+  /**
+   * TASK-906 — whether a routine tool call is proposing to start or change a
+   * task (a "stay on top of something" routine). A closed enum derived from the
+   * call's input by `routineTaskProposal`; it is never input text. Ignored for
+   * every tool but `routine_create` / `routine_update`.
+   */
+  routineTask?: 'start' | 'change' | null | undefined;
 }
 
 /**
@@ -172,10 +181,26 @@ export function decisionText(input: DecisionTextInput): DecisionText {
     ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(
       input.toolName,
     )
-  )
+  ) {
+    const task =
+      input.routineTask === 'start' && input.toolName === 'routine_create'
+        ? 'start'
+        : input.routineTask === 'change' && input.toolName === 'routine_update'
+          ? 'change'
+          : null;
     return {
-      summary: `Wants to ${routineAction}`,
-      detail: 'Review the proposed routine change before allowing it.',
+      summary:
+        task === 'start'
+          ? 'Wants to start a task'
+          : task === 'change'
+            ? 'Wants to change a task'
+            : `Wants to ${routineAction}`,
+      detail:
+        task === 'start'
+          ? 'Review the task before allowing it.'
+          : task === 'change'
+            ? 'Review the change to this task before allowing it.'
+            : 'Review the proposed routine change before allowing it.',
       primaryLabel: 'Allow once',
       secondaryLabel: 'Show me the details',
       ghostLabel: 'Decline',
@@ -185,6 +210,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
           : 'The approved routine operation completed.',
       dismissedText: 'You declined this routine operation. Nothing ran.',
     };
+  }
   const capability = sanitizeCapability(input.capability);
   const { tool, verb } = rowToolName(input);
   const verbing = verb === 'use' ? 'using' : 'running';

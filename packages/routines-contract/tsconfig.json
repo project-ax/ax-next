@@ -2,5 +2,6 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist", "lib": ["ES2023", "DOM"], "types": [] },
   "include": ["src/**/*"],
-  "exclude": ["src/__tests__/**", "dist", "node_modules"]
+  "exclude": ["src/__tests__/**", "dist", "node_modules"],
+  "references": [{ "path": "../core" }]
 }

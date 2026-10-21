@@ -48,6 +48,16 @@ describe('routine list', () => {
       limit: 20,
     });
   });
+  it('renders a stay-on-top task like any authored routine', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([
+      { ...row, kind: 'stay-on-top', goodWhen: 'Inbox at zero.' },
+    ]);
+    show();
+    await screen.findByText(row.name);
+    expect(
+      screen.getByRole('button', { name: `Edit ${row.name}` }),
+    ).toBeVisible();
+  });
   it('uses read permissions for edit, stop, fire and secret controls', async () => {
     vi.mocked(routineApi.list).mockResolvedValue([
       {

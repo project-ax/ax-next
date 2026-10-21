@@ -344,10 +344,45 @@ that grows forever.
     observation event keyed by reqId, modelled on `chat:connectors-skipped`. A
     check-in whose brief didn't land is recorded as failed instead of running
     on outside content alone.
-  - **Always Allow doesn't cover a task's brief.** Today, Always Allow on
-    routine changes lets the agent rewrite instructions without asking. An
-    agent's edit to a task's "what to do" or "going well when" always needs a
-    yes. That is what makes the `brief` section person-written.
+  - **Always Allow doesn't cover a task's brief.** Done in TASK-906: creating a
+    task, and changing any routine's name, instructions, "going well when" or
+    kind, always needs a yes, even with Always Allow (`touchesTaskBrief` in
+    `@ax/routines-contract`, checked by tool-policy before consent can relax a
+    hold). The agent can turn a routine into a task only by sending the whole
+    brief in the same change, so the card shows all of it, not just the new
+    "going well when".
+  - **The card shows the brief it asks about, whole.** It draws the brief's
+    own fields for a task create and for any routine change that sets a
+    name, instructions or a "going well when" (`routineBriefFields`). The
+    card can't look up whether the routine is already a task, so it draws a
+    repeat routine's change too, under "What changes". The headline stays
+    "Wants to edit a routine" there. Every valid task brief is shown whole,
+    however long, so approving never stores text past a cut-off beginning.
+    Each long field scrolls in a box about twelve lines tall. Under it the
+    card says "Scroll to read all of it." when the browser's layout, or an
+    estimate from the text for a phone-width box, says it doesn't fit.
+  - **The brief can't hide text from that card.** For any kind but repeat,
+    `validateDefinition` refuses, in a task's name, instructions and "going
+    well when", the characters the contract knows draw as nothing. That
+    covers Unicode tag characters, zero-width and bidi controls, controls
+    other than tab and line breaks, and the rest of Unicode's
+    default-ignorable set. It also covers characters that aren't
+    default-ignorable but draw as nothing: blank braille, the interlinear
+    annotation controls, the Syriac abbreviation mark, the Egyptian
+    hieroglyph format controls, the Khitan small script filler and the
+    musical null notehead. Two selectors are ordinary only in place: a
+    presentation selector is refused at the start or after another selector,
+    and a Mongolian free variation selector anywhere but straight after a
+    Mongolian letter. The name is one line (no tab or line break). The
+    instructions and "going well when" can't pad their text out of the box's
+    view: once a field has text, it can't have more than two blank lines in
+    a row (a line of only spaces or combining marks counts as blank), more
+    than 16 spaces or tabs in a row, a combining mark at the start of a line
+    or after a space, or more than 8 marks on one character. A refusal in
+    Settings names the first hidden character and where it is. An agent's
+    refused change names its field when core's closed list has a name for
+    it. These rules and the card together are what make the `brief` section
+    person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
   removes it. Tasks PR 1 adds it back as its first user.
 
@@ -544,11 +579,22 @@ suggest a short body for known apps.
 
 - **No new reach.** A check-in uses the agent's own tools, connectors and
   approval rules. Nothing about a task widens them.
-- **The agent can't change what a task is for.** The brief, "going well when"
-  and the schedule belong to the person. Who may create or change a task
-  follows today's routine permissions (`agents:can-manage-routines`: personal
-  agent → its owner, team agent → team admins). Always Allow doesn't cover a
-  task's brief (§4.2).
+- **The agent can't change what a task is for.** A task's brief (its name,
+  instructions and "going well when") and its kind always need the person's
+  yes, even with Always Allow. The card that asks shows the whole brief and
+  says when a field needs scrolling. The brief can't hold the characters the
+  contract knows draw as nothing, or padding that pushes text out of the
+  card's view (§4.2). The schedule and active hours are different: with
+  Always Allow the agent can change them without asking, but never to a
+  schedule whose check-ins are less than 15 minutes apart on its own clock,
+  or one that doesn't keep checking in. (A cron is checked over 48 runs from
+  a fixed date and, for the gap those can miss, from each hour's last run to
+  the next hour's first. It can't use `?`, which croner fills in from the
+  clock, and it can't be a single date or a date that never comes, such as
+  31 February. A daylight-saving jump can still shorten one real gap a
+  year.) Who may create or change a task follows today's routine permissions
+  (`agents:can-manage-routines`: personal agent → its owner, team agent →
+  team admins).
 - **Only a person** marks a task done or resumes a paused one.
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.

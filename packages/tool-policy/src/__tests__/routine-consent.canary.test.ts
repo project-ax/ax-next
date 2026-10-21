@@ -46,8 +46,14 @@ const get = (h: TestHarness, ctx = actor(h), agentId = ctx.agentId) =>
   h.bus.call<unknown, RoutineConsent>('tool-policy:get-routine-consent', ctx, { agentId });
 const revoke = (h: TestHarness, ctx = actor(h)) =>
   h.bus.call<unknown, RoutineConsent>('tool-policy:revoke-routine-consent', ctx, { agentId: ctx.agentId });
-const evaluate = (h: TestHarness, name = 'routine_create', ctx = actor(h), agentId = ctx.agentId) =>
-  h.bus.call<unknown, EvaluateResult>('tool-policy:evaluate', ctx, { call: { name, input: {} }, agentId });
+// Well-formed repeat-routine inputs: malformed create/update input holds on
+// purpose (TASK-906, fail toward asking). Other names keep `{}`.
+const WELL_FORMED: Record<string, unknown> = {
+  routine_create: { requestId: 'q', definition: { name: 'Weekly summary', promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' } } },
+  routine_update: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch: { enabled: false } },
+};
+const evaluate = (h: TestHarness, name = 'routine_create', ctx = actor(h), agentId = ctx.agentId, input: unknown = WELL_FORMED[name] ?? {}) =>
+  h.bus.call<unknown, EvaluateResult>('tool-policy:evaluate', ctx, { call: { name, input }, agentId });
 async function query(sql: string) {
   const client = new pg.Client({ connectionString });
   await client.connect();
@@ -243,5 +249,33 @@ describe('durable routine consent registered services (Postgres)', () => {
     expect(await query("SELECT * FROM tool_policy_v1_routine_consent WHERE agent_id='agent-1'")).toHaveLength(0);
     expect(await query("SELECT * FROM tool_policy_v1_routine_consent_deliveries WHERE agent_id='agent-1'")).toHaveLength(0);
     expect(await get(h, actor(h, 'alice', 'agent-2'))).toMatchObject({ enabled: true });
+  });
+});
+
+describe("Always Allow never covers a task's brief (TASK-906)", () => {
+  const repeat = { name: 'Weekly summary', promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' } };
+  const task = { ...repeat, kind: 'stay-on-top', goodWhen: 'Queue empty.', trigger: { kind: 'interval', every: '15m' } };
+  const create = (definition: unknown) => ({ requestId: 'q', definition });
+  const update = (patch: unknown) => ({ routineId: 'r', requestId: 'q', expectedRevision: 'v', patch });
+  const creates = { ruleId: 'routines.create', capability: 'create routines' };
+  const edits = { ruleId: 'routines.update', capability: 'edit routines' };
+  it.each([
+    ['create repeat', 'allow', 'routine_create', create(repeat), creates],
+    ['update enabled', 'allow', 'routine_update', update({ enabled: false }), edits],
+    ['update trigger', 'allow', 'routine_update', update({ trigger: { kind: 'interval', every: '2h' } }), edits],
+    ['create stay-on-top', 'hold', 'routine_create', create(task), creates],
+    ['create malformed', 'hold', 'routine_create', {}, creates],
+    ['update promptBody', 'hold', 'routine_update', update({ promptBody: 'x' }), edits],
+    ['update goodWhen', 'hold', 'routine_update', update({ goodWhen: 'x' }), edits],
+    ['update name', 'hold', 'routine_update', update({ name: 'x' }), edits],
+    ['update kind', 'hold', 'routine_update', update({ kind: 'repeat' }), edits],
+    ['update empty patch', 'hold', 'routine_update', update({}), edits],
+  ] as const)('%s under live consent answers %s', async (_label, verdict, name, input, rule) => {
+    const h = await boot();
+    await grant(h);
+    // Consent is live for this agent and person, so a hold below is the carve-out speaking.
+    expect(await get(h)).toMatchObject({ enabled: true });
+    // The hold keeps the matched rule's id and capability: decisions' card text reads them.
+    expect(await evaluate(h, name, actor(h), 'agent-1', input)).toMatchObject({ verdict, ...rule });
   });
 });

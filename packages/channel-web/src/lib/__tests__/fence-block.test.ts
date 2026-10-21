@@ -11,7 +11,7 @@ describe('fenceBlock', () => {
   });
 
   it('spells out bidi, zero-width, line-separator and control characters instead of dropping them', () => {
-    const out = fenceBlock('a‮b​c d\u0007e﻿f', 100, 10)!;
+    const out = fenceBlock('a\u202Eb\u200Bc\u2028d\u0007e\uFEFFf', 100, 10)!;
     expect(out.text).toBe('a\\u202eb\\u200bc\\u2028d\\u0007e\\ufefff');
     expect(out.truncated).toBe(false);
   });
@@ -28,7 +28,7 @@ describe('fenceBlock', () => {
   });
 
   it('never splits an escape across the cap', () => {
-    const out = fenceBlock('abcd‮', 6, 10)!;
+    const out = fenceBlock('abcd\u202E', 6, 10)!;
     expect(out.text).toBe('abcd');
     expect(out.truncated).toBe(true);
   });
@@ -43,6 +43,22 @@ describe('fenceBlock', () => {
     const out = fenceBlock('x'.repeat(5_000_000), 2000, 40)!;
     expect(out.text).toHaveLength(2000);
     expect(out.truncated).toBe(true);
+  });
+
+  it('strips trailing whitespace in one pass, so a long blank run costs nothing (TASK-906)', () => {
+    // A whole task brief reaches this block now. `replace(/\s+$/, '')` backtracked over every
+    // interior run of whitespace, quadratic in its length: about two seconds for 65,000 spaces.
+    const value = `a${' '.repeat(120_000)}b${'  \n '.repeat(3)}`;
+    const started = performance.now();
+    const out = fenceBlock(value, 300_000, 100)!;
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(out).toEqual({ text: `a${' '.repeat(120_000)}b`, truncated: false });
+  });
+
+  it('still strips each trailing whitespace character the old pattern did', () => {
+    // The spaces that survive the fence: the rest of the whitespace set is escaped or dropped first.
+    const spaces = String.fromCodePoint(0x20, 0xa0, 0x1680, 0x2000, 0x200a, 0x202f, 0x205f, 0x3000);
+    expect(fenceBlock(`a${spaces}\n${spaces}`, 100, 10)).toEqual({ text: 'a', truncated: false });
   });
 
   it('exactly at the cap is not truncated', () => {

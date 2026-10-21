@@ -61,6 +61,8 @@ const empty = (): RoutineDefinition => ({
   silenceToken: null,
   silenceMaxChars: 300,
   conversation: 'per-fire',
+  kind: 'repeat',
+  goodWhen: null,
 });
 const editableKeys = [
   'name',
@@ -72,6 +74,8 @@ const editableKeys = [
   'silenceToken',
   'silenceMaxChars',
   'conversation',
+  'kind',
+  'goodWhen',
 ] as const;
 function changed(
   form: RoutineDefinition,
@@ -161,7 +165,7 @@ export function DefaultRoutineEditor(props: DefaultProps) {
       onPendingChange={props.onPendingChange}
       save={async (definition) => {
         if (definition.trigger.kind !== 'interval') return;
-        await props.onSave({ ...definition, trigger: definition.trigger });
+        await props.onSave({ ...definition, kind: 'repeat', goodWhen: null, trigger: definition.trigger });
       }}
     />
   );

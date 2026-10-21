@@ -49,11 +49,13 @@ import type { Decision } from '@/lib/workspace-api';
 import {
   DECISION_STALE_ADVICE,
   DECISION_STALE_LEAD,
+  alwaysAllowRoutinesLine,
   decisionOutcome,
   undoSecondsLeft,
 } from './decision-copy';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { DecisionRequestBlock } from './DecisionRequestBlock';
+import { DecisionTaskBlock } from './DecisionTaskBlock';
 import { useDecisionClock } from './use-decision-clock';
 import { FindHighlight, type FindView } from './ThreadFind';
 
@@ -308,6 +310,8 @@ export function ApprovalCard({
               <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
             </div>
           )}
+          {/* The brief it writes, in its own fields — agent-authored, server-fenced (TASK-906). */}
+          {d.task && <DecisionTaskBlock task={d.task} agentName={agentName} className="mt-3" />}
           {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
           {d.request && <DecisionRequestBlock request={d.request} className="mt-3" />}
           {/*
@@ -339,7 +343,7 @@ export function ApprovalCard({
             </Button>
             {d.approvalScopes?.includes('agent-routines') && <>
               <Button size="sm" variant="outline" disabled={busy} onClick={() => { armForResolution(); onApprove('agent-routines'); }}>Always Allow</Button>
-              <p className="text-xs text-muted-foreground">Allow {agentName} to create and edit routines for you. Delete and Fire now still ask.</p>
+              <p className="text-xs text-muted-foreground">{alwaysAllowRoutinesLine(agentName)}</p>
             </>}
             {onEdit && d.preview && !stale && <Button size="sm" className="h-8 max-md:h-11" variant="outline" disabled={busy}
               onClick={() => { setDraft(d.preview?.body ?? ''); setEditError(null); setEditing(true); }}>Edit first</Button>}

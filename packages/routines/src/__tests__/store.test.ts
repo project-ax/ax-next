@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
+import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, webhookInput, now } from './store-fixture.js';
-import { credentialRef, inputHash } from '../definition.js';
+import { createRequestHash, credentialRef, inputHash } from '../definition.js';
 const f = fixture();
 const update = (r: { agentId: string; routineId: string; revision: string }, patch: Record<string, unknown>, requestId = 'edit') => ({ agentId: r.agentId, routineId: r.routineId, expectedRevision: r.revision, actorUserId: 'other-editor', requestId, patch, now: new Date(now.getTime() + 5000), stopOnly: false });
+const taskInput = (requestId: string, goodWhen = 'Nothing waits more than a day.') => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
+  name: 'Inbox', promptBody: 'Keep the inbox under control.', trigger: { kind: 'interval', every: '15m' }, kind: 'stay-on-top', goodWhen,
+}) });
 describe('transactional authored store', () => {
   it('creates one row for concurrent retry and returns the committed result after response loss', async () => {
     const input = createInput(); const [a, b] = await Promise.all([f.store.createAuthored(input), f.store.createAuthored(input)]);
@@ -123,6 +127,37 @@ it('generates the approved opaque rtn identity for new authored routines and pre
   const row = await f.store.createAuthored(createInput('id-spelling'));
   expect(row.routineId).toMatch(/^rtn_[a-f0-9]{32}$/);
   expect((await f.store.createAuthored(createInput('id-spelling'))).routineId).toBe(row.routineId);
+});
+
+describe('task kind persistence', () => {
+  it('persists kind and goodWhen through create and update, and they enter spec_hash', async () => {
+    const created = await f.store.createAuthored(taskInput('task-a'));
+    expect(created).toMatchObject({ kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
+    expect(await f.store.findOne(created)).toEqual(created);
+    await f.store.createAuthored(taskInput('task-b', 'Nothing waits more than an hour.'));
+    const hashes = (await sql<{ spec_hash: string }>`SELECT spec_hash FROM routines_v1_definitions`.execute(f.db)).rows.map(r => r.spec_hash);
+    expect(hashes).toHaveLength(2); expect(hashes[0]).not.toBe(hashes[1]);
+    const edited = await f.store.updateAuthored(update(created, { goodWhen: 'new' }, 'good-when'));
+    expect(edited).toMatchObject({ kind: 'stay-on-top', goodWhen: 'new' });
+    expect(await f.store.findOne(created)).toEqual(edited);
+    await expect(f.store.updateAuthored(update(edited, { trigger: { kind: 'webhook', path: '/x' } }, 'to-webhook'))).rejects.toMatchObject({ toolCode: 'validation' });
+    expect(await f.store.findOne(created)).toEqual(edited);
+    const repeat = await f.store.updateAuthored(update(edited, { kind: 'repeat', goodWhen: null }, 'to-repeat'));
+    expect(await f.store.findOne(created)).toEqual(repeat); expect(repeat).toMatchObject({ kind: 'repeat', goodWhen: null });
+  });
+  it('the tick claim, a dispatch and a replayed receipt all carry a task’s kind and goodWhen', async () => {
+    const input = taskInput('task-claim'); const created = await f.store.createAuthored(input);
+    const task = { kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' };
+    expect(created).toMatchObject(task);
+    expect(await f.store.createAuthored(input)).toEqual(created);
+    expect(await f.store.findOperationReceipt({ agentId: 'a', actorUserId: 'editor', operation: 'create', requestId: 'task-claim', inputHash: createRequestHash(input) })).toEqual(created);
+    const claimed = await f.store.claimDue({ now: new Date(now.getTime() + 3_600_000), limit: 10, claimWindowMinutes: 1 });
+    expect(claimed).toEqual([expect.objectContaining({ routineId: created.routineId, ...task })]);
+    const fire = { agentId: 'a', routineId: created.routineId, actorUserId: 'owner', expectedRevision: created.revision, source: 'manual' as const, requestId: 'fire', now };
+    const accepted = await f.store.acceptDispatch(fire);
+    expect(accepted).toMatchObject({ replayed: false, accepted: { row: task } });
+    expect(await f.store.acceptDispatch(fire)).toEqual({ accepted: accepted!.accepted, replayed: true });
+  });
 });
 
 describe('enabled routines persistence and scheduling', () => {

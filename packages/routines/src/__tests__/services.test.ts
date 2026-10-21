@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { makeAgentContext } from '@ax/core';
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Summarize', trigger: { kind: 'interval', every: '1h' } });
@@ -16,6 +17,19 @@ describe('registered routine services with real agents', () => {
     expect(routines.filter(r => r.origin === 'default').map(r => r.name)).toEqual(['heartbeat']);
     await expect(h.bus.call('routines:get', h.owner, { agentId: h.teamAgentId, routineId: row.routineId })).rejects.toMatchObject({ toolCode: 'not-found' });
     await expect(h.bus.call('routines:list', h.teamAdmin, { agentId: h.agentId })).rejects.toMatchObject({ code: 'forbidden' });
+  });
+  it('a created task round-trips kind and goodWhen through routines:get, routines:list and routine_get', async () => {
+    h = await createRoutineHarness();
+    const task = RoutineDefinitionSchema.parse({ name: 'Inbox', promptBody: 'Keep the inbox under control.', trigger: { kind: 'interval', every: '15m' }, kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
+    const created = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'task', definition: task });
+    expect(created).toMatchObject({ kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
+    await expect(h.bus.call('routines:get', h.owner, { agentId: h.agentId, routineId: created.routineId })).resolves.toEqual(created);
+    await materializePersonalDefaults(h);
+    const { routines } = await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId });
+    expect(routines.filter(r => r.origin === 'authored')).toEqual([created]);
+    expect(routines.filter(r => r.origin === 'default')).toEqual([expect.objectContaining({ name: 'heartbeat', kind: 'repeat', goodWhen: null })]);
+    const agentCtx = makeAgentContext({ ...h.owner, agentId: h.agentId });
+    await expect(h.bus.call('tool:execute:routine_get', agentCtx, { id: 'get', name: 'routine_get', input: { routineId: created.routineId } })).resolves.toEqual(created);
   });
   it('pins team creator, lets another admin stop only, and denies ordinary member mutations', async () => {
     h = await createRoutineHarness(); const row = await create(h.teamAgentId);

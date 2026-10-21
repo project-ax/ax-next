@@ -47,7 +47,7 @@ describe('DecisionRow — pending', () => {
     renderRow(decisionFixture({approvalScopes:['once','agent-routines']}), true, {onApprove});
     screen.getByRole('button', {name:'Always Allow'}).click();
     expect(onApprove).toHaveBeenCalledWith('agent-routines');
-    expect(screen.getByText(/Scheduler.*create and edit routines/)).toBeVisible();
+    expect(screen.getByText("Allow Scheduler to create and edit routines for you. Delete, Fire now and a task's instructions still ask.")).toBeVisible();
   });
   it('shows what the decision was checked against', () => {
     renderRow(decisionFixture());
