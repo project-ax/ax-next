@@ -15,7 +15,7 @@
 - `kind` is `z.enum(['repeat', 'stay-on-top'])`, default `'repeat'`. Don't add `'get-done'` or any other value.
 - `goodWhen` is `z.string().max(1024).nullable()`, default `null`.
 - The floor for `stay-on-top` is 15 minutes (900 s). Repeat routines keep the 60 s interval floor.
-- The cron floor inspects 48 occurrences, starting from the fixed instant `2026-01-01T00:00:00.000Z` (decisions row 2).
+- The cron floor inspects 48 occurrences, starting from the fixed instant `2026-01-01T00:00:00.000Z` (decisions row 2). Review round 2 added the gap those can miss, from one hour's last run to the next hour's first (minute and hour sets read back through croner's public API, refused whatever the day fields say when hours 23 and 0 meet), and refuses `?` for a task, because croner fills it in from the clock.
 - No new hook, no hook rename, and no new external dependency. The only package edge added is `@ax/tool-policy → @ax/routines-contract`, which is allowed by the `crossPluginImports` allow-list in `eslint.config.mjs`. Only Task 4 changes `pnpm-lock.yaml`.
 - Model-authored text (name, `promptBody`, `goodWhen`, the cron expression) never reaches a string `@ax/decisions` writes. On the browser it crosses only inside the fenced `request` and `task` fields of an open decision, and it is drawn as React text: no markdown, no `dangerouslySetInnerHTML`.
 - TDD and the Bug Fix Policy apply: run each new test against unmodified code and watch it fail before you change the source. Where a task only adds regression guards over existing behaviour (Task 8), prove each guard with the mutation named in that task.

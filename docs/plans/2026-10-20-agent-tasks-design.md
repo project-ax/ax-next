@@ -557,9 +557,13 @@ suggest a short body for known apps.
   yes, even with Always Allow, and the brief can't hold invisible characters
   that the card wouldn't draw (§4.2). The schedule and active hours are
   different: with Always Allow the agent can change them without asking, but
-  never to check-ins less than 15 minutes apart. Who may create or change a
-  task follows today's routine permissions (`agents:can-manage-routines`:
-  personal agent → its owner, team agent → team admins).
+  never to a schedule whose check-ins are less than 15 minutes apart on its
+  own clock. (A cron is checked over 48 runs from a fixed date and, for the
+  gap those can miss, from each hour's last run to the next hour's first. It
+  can't use `?`, which croner fills in from the clock. A daylight-saving jump
+  can still shorten one real gap a year.) Who may create or change a task
+  follows today's routine permissions (`agents:can-manage-routines`: personal
+  agent → its owner, team agent → team admins).
 - **Only a person** marks a task done or resumes a paused one.
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.

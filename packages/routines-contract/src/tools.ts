@@ -140,7 +140,7 @@ const activeHours = {
 const trigger = {
   oneOf: [
     { type: 'object', additionalProperties: false, required: ['kind', 'every'], properties: { kind: { const: 'interval' }, every: { type: 'string', pattern: '^\\d+(s|m|h|d)$', description: 'Interval of at least 60 seconds (15 minutes for a "stay-on-top" task), within the valid date range.' } } },
-    { type: 'object', additionalProperties: false, required: ['kind', 'expr', 'tz'], properties: { kind: { const: 'cron' }, expr: { type: 'string', minLength: 1, maxLength: 256, description: 'Croner cron expression. For a "stay-on-top" task, runs must be at least 15 minutes apart.' }, tz: timezone } },
+    { type: 'object', additionalProperties: false, required: ['kind', 'expr', 'tz'], properties: { kind: { const: 'cron' }, expr: { type: 'string', minLength: 1, maxLength: 256, description: 'Croner cron expression. For a "stay-on-top" task, runs must be at least 15 minutes apart, and "?" is not allowed.' }, tz: timezone } },
     { type: 'object', additionalProperties: false, required: ['kind', 'path'], properties: {
       kind: { const: 'webhook' }, path: { type: 'string', maxLength: 128, pattern: '^/[A-Za-z0-9._/-]+$', description: 'Canonical absolute path. No empty, dot, dot-dot, trailing-slash or reserved /webhooks/ segments.' },
       events: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' } },

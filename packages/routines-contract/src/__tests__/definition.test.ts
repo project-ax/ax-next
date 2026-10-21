@@ -297,6 +297,11 @@ describe('task kinds (TASK-906)', () => {
     const crons = [
       { expr: '0 * * * *', tz: 'UTC' }, { expr: '*/10 * * * *', tz: 'UTC' },
       { expr: '0,50 1,3 * * *', tz: 'America/New_York' }, { expr: '0 0 29 2 *', tz: 'UTC' },
+      // Round 2: what the structural check decides, and "?", which croner fills in from the clock.
+      { expr: '0,15,30,59 0,2,4,6,8,10,12,14,16,18,20,23 * * 4,6,0', tz: 'UTC' },
+      { expr: '0,59 0,23 1,3,5,7,9,11,13,15,17,19,21,23,25,27,28 * *', tz: 'UTC' },
+      { expr: '0,30 9-17 * * 1-5', tz: 'UTC' }, { expr: '0,50 9,11 * * *', tz: 'UTC' },
+      { expr: '0,59 23 * * 1-5', tz: 'UTC' }, { expr: '0,? * * * *', tz: 'UTC' }, { expr: '? 9 * * *', tz: 'UTC' },
     ];
     const verdicts = (now: Date): boolean[] => {
       vi.useFakeTimers({ now });
@@ -306,16 +311,84 @@ describe('task kinds (TASK-906)', () => {
     };
     const first = verdicts(new Date('2026-03-08T06:30:00Z'));
     const second = verdicts(new Date('2031-07-01T00:00:00Z'));
+    // Minute 5: "0,?" would be :00 and :05.
+    const third = verdicts(new Date('2029-11-04T06:05:00Z'));
     expect(second).toEqual(first);
+    expect(third).toEqual(first);
     expect(first[2]).toBe(true);
+    expect(first.slice(4)).toEqual([false, false, true, true, true, false, false]);
   });
 
   it('checks the floor without starting a scheduler', () => {
     const timer = vi.spyOn(globalThis, 'setTimeout');
     try {
       RoutineDefinitionSchema.parse({ ...task, trigger: { kind: 'cron', expr: '0 * * * *', tz: 'UTC' } });
+      // The structural check's own probes too.
+      RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'cron', expr: '0,59 0,23 1,3,5,7,9,11,13,15,17,19,21,23,25,27,28 * *', tz: 'UTC' } });
+      RoutineDefinitionSchema.parse({ ...task, trigger: { kind: 'cron', expr: '0,50 9,11 * * *', tz: 'UTC' } });
       expect(timer).not.toHaveBeenCalled();
     } finally { timer.mockRestore(); }
+  });
+
+  describe('the floor sees a short gap however late it first comes', () => {
+    const floor = 'Check-ins need to be at least 15 minutes apart.';
+    const exprIssues = (expr: string, tz = 'UTC'): string[] => {
+      const result = RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'cron', expr, tz } });
+      return result.success ? [] : result.error.issues.filter(i => i.path.join('.') === 'trigger.expr').map(i => i.message);
+    };
+
+    it.each([
+      // 23:59 Saturday to 00:00 Sunday, one minute: the first short gap is run 95.
+      ['0,15,30,59 0,2,4,6,8,10,12,14,16,18,20,23 * * 4,6,0', 'UTC'],
+      // The same, with croner's optional seconds field first.
+      ['0 0,15,30,59 0,2,4,6,8,10,12,14,16,18,20,23 * * 4,6,0', 'UTC'],
+      // 23:59 on the 27th to 00:00 on the 28th.
+      ['0,59 0,23 1,3,5,7,9,11,13,15,17,19,21,23,25,27,28 * *', 'UTC'],
+      // The same schedule in a timezone: the fields are local time either way.
+      ['0,59 0,23 1,3,5,7,9,11,13,15,17,19,21,23,25,27,28 * *', 'Asia/Kolkata'],
+      // :50 to the next hour's :00, every hour.
+      ['0,50 * * * *', 'UTC'],
+      // 00:59 to 01:00. Starting at 01:00 in Paris, the 48 runs only just reach it (index 47); the
+      // consecutive-hours rule holds it however many runs are inspected.
+      ['0,15,30,59 0,1,3,5,7,9,11,13,15,17,19,21 * * *', 'Europe/Paris'],
+      // Decided: hours 23 and 0 refuse whatever the days say, so a Saturday-only schedule that never
+      // runs 23:59 then 00:00 is refused too. It fails toward asking for a longer-looking schedule.
+      ['0,59 0,23 * * 6', 'UTC'],
+    ])('refuses %s (%s) with the floor message on trigger.expr', (expr, tz) => {
+      expect(exprIssues(expr, tz)).toEqual([floor]);
+    });
+
+    it.each([
+      // :30 to the next hour's :00 is 30 minutes.
+      '0,30 9-17 * * 1-5',
+      // 9:50 to 11:00: the short wrap only matters between consecutive hours.
+      '0,50 9,11 * * *',
+      // Decided: one hour has no next hour of its own, so 23:59 is followed by 23:00 the next day,
+      // whatever the days are.
+      '0,59 23 * * *', '0,59 23 * * 1-5',
+      // Nicknames run once an hour or less.
+      '@hourly', '@daily', '@weekly',
+      '0 0 29 2 *', '*/15 * * * *', '0 0,15,30,45 * * * *',
+    ])('accepts %s', expr => {
+      expect(exprIssues(expr)).toEqual([]);
+    });
+
+    it('refuses “?” in a task’s schedule: croner fills it in from the clock, so its times change with when it’s read', () => {
+      for (const expr of ['0,? * * * *', '? 9 * * *', '0 9 ? * *', '? * * * * *']) {
+        expect(exprIssues(expr), expr).toEqual(['A task’s schedule can’t use “?”. Write the exact time instead.']);
+      }
+      // A repeat routine keeps it.
+      expect(RoutineDefinitionSchema.safeParse({ ...base, trigger: { kind: 'cron', expr: '? 9 * * *', tz: 'UTC' } }).success).toBe(true);
+    });
+
+    it('never throws, and an expression croner can’t read gets only the parse error', () => {
+      expect(exprIssues('0,59 0,23 * * 9')).toEqual(['Invalid cron expression or timezone.']);
+      expect(exprIssues(' 0,59 0,23 * * *')).toEqual(['Invalid cron expression or timezone.']);
+      expect(exprIssues('0,59 0,23 * * * * *')).toEqual(['Invalid cron expression or timezone.']);
+      expect(exprIssues('@sometimes')).toEqual(['Invalid cron expression or timezone.']);
+      // croner reads a ":" as a one-off date, which runs once.
+      expect(exprIssues('2026-11-01T09:00:00')).toEqual([]);
+    });
   });
 
   it('revalidates kind rules after a patch merges', () => {
@@ -545,6 +618,11 @@ describe('tells the model the task rules (TASK-906)', () => {
     }
     expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
     expect(RoutineToolDescriptions.routine_update).toContain('To turn a routine into a task (a kind other than "repeat"), send its name, promptBody and goodWhen in the same patch so the person sees the whole task.');
+  });
+  it('says a task’s cron can’t use “?”', () => {
+    for (const name of ['routine_create', 'routine_update'] as const) {
+      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a \\"stay-on-top\\" task, runs must be at least 15 minutes apart, and \\"?\\" is not allowed.');
+    }
   });
   it('says a task’s brief can’t hide text', () => {
     expect(RoutineToolDescriptions.routine_create).toContain('A task’s name, promptBody and goodWhen can’t contain invisible characters.');

@@ -12,7 +12,7 @@ export type RoutineKind = z.output<typeof RoutineKindSchema>;
 export const ROUTINE_GOOD_WHEN_MAX_CHARS = 1024;
 /** A "stay on top of something" task checks in no more often than this. */
 export const TASK_CHECK_IN_FLOOR_SECONDS = 900;
-/** How many occurrences of a cron the check-in floor inspects. */
+/** How many occurrences of a cron the check-in floor inspects. `cronWrapsTooSoon` covers the gap they can miss. */
 export const TASK_CRON_FLOOR_RUNS = 48;
 const TASK_CHECK_IN_FLOOR_MESSAGE = 'Check-ins need to be at least 15 minutes apart.';
 /** Fixed, so a saved definition's validity is a pure function of (expr, tz) and never changes with the clock. */
@@ -55,14 +55,82 @@ export const WebhookTriggerSchema = z.object({
   events: z.array(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'Invalid event name.')).max(32).optional(),
   hmac: WebhookHmacSchema.optional(),
 }).strict();
-function cronChecksInTooOften(expr: string, tz: string): boolean {
+const TASK_CRON_QUESTION_MARK_MESSAGE = 'A task’s schedule can’t use “?”. Write the exact time instead.';
+
+/**
+ * A cron's minute and hour fields, split the way croner 8.1.2 splits a pattern
+ * (`replace(/\s+/g, ' ').split(' ')`, no trim), so they're the fields it
+ * parsed: five, or six with seconds first. Null for what has no minute list to
+ * wrap: croner reads an expression with ':' as a one-off date, and a nickname
+ * (`@hourly`, `@daily`, ...) runs at minute 0 only.
+ */
+function cronMinuteAndHourFields(expr: string): { minute: string; hour: string } | null {
+  if (expr.includes(':') || expr.includes('@')) return null;
+  const parts = expr.replace(/\s+/g, ' ').split(' ');
+  if (parts.length === 5) return { minute: parts[0]!, hour: parts[1]! };
+  if (parts.length === 6) return { minute: parts[1]!, hour: parts[2]! };
+  return null;
+}
+
+/**
+ * The values one field takes, read back through croner's own parser: the
+ * runs of `pattern` within the fixed UTC hour (minutes) or day (hours) that
+ * starts at the floor's reference. UTC, so the answer depends on the field
+ * alone. Null when croner can't read it.
+ */
+function cronFieldValues(pattern: string, unit: 'minute' | 'hour'): number[] | null {
+  const start = TASK_CRON_FLOOR_FROM.getTime();
+  const end = start + (unit === 'minute' ? 3_600_000 : 86_400_000);
+  try {
+    const cron = new Cron(pattern, { timezone: 'UTC' });
+    const values: number[] = [];
+    // From a second before the start, so a run at the start itself counts.
+    for (let run = cron.nextRun(new Date(start - 1000)); run !== null && run.getTime() < end && values.length < 60; run = cron.nextRun(run)) {
+      values.push(unit === 'minute' ? run.getUTCMinutes() : run.getUTCHours());
+    }
+    return values;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The short gap the 48 runs can miss: from the last check-in of one hour to the
+ * first of the next, `60 - max + min` minutes. It comes on every matching day
+ * when the hours hold some h and h + 1, and wherever two matching days meet
+ * when they hold 23 and 0. The second is refused whatever the day fields say,
+ * which fails toward asking for a longer-looking schedule, never toward
+ * accepting a shorter one. False when a field can't be read, which leaves the
+ * 48-run verdict.
+ */
+function cronWrapsTooSoon(expr: string): boolean {
+  const fields = cronMinuteAndHourFields(expr);
+  if (fields === null) return false;
+  const minutes = cronFieldValues(`${fields.minute} * * * *`, 'minute');
+  if (minutes === null || minutes.length < 2) return false;
+  if ((60 - minutes[minutes.length - 1]! + minutes[0]!) * 60 >= TASK_CHECK_IN_FLOOR_SECONDS) return false;
+  const hours = cronFieldValues(`0 ${fields.hour} * * *`, 'hour');
+  if (hours === null) return false;
+  const present = new Set(hours);
+  return (present.has(23) && present.has(0)) || hours.some(hour => present.has(hour + 1));
+}
+
+/**
+ * The check-in floor for a cron task, as the issue message or null. A pure
+ * function of (expr, tz), so a saved task's validity never changes with the
+ * clock (read paths revalidate it). Never throws and never starts a scheduler.
+ */
+function cronFloorIssue(expr: string, tz: string): string | null {
+  // croner fills "?" in from the clock as it parses, so the times it stands
+  // for change with when the schedule is read. No floor can hold for that.
+  if (expr.includes('?')) return TASK_CRON_QUESTION_MARK_MESSAGE;
   let runs: Date[];
   try { runs = new Cron(expr, { timezone: tz }).nextRuns(TASK_CRON_FLOOR_RUNS, TASK_CRON_FLOOR_FROM); }
-  catch { return false; }
+  catch { return null; }
   for (let i = 1; i < runs.length; i++) {
-    if (runs[i]!.getTime() - runs[i - 1]!.getTime() < TASK_CHECK_IN_FLOOR_SECONDS * 1000) return true;
+    if (runs[i]!.getTime() - runs[i - 1]!.getTime() < TASK_CHECK_IN_FLOOR_SECONDS * 1000) return TASK_CHECK_IN_FLOOR_MESSAGE;
   }
-  return false;
+  return cronWrapsTooSoon(expr) ? TASK_CHECK_IN_FLOOR_MESSAGE : null;
 }
 
 export const RoutineTriggerSchema = z.discriminatedUnion('kind', [IntervalTriggerSchema, CronTriggerSchema, WebhookTriggerSchema])
@@ -174,8 +242,9 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
       if (trigger.kind === 'interval') {
         const seconds = durationToSeconds(trigger.every);
         if (seconds !== null && seconds < TASK_CHECK_IN_FLOOR_SECONDS) issue(['trigger', 'every'], TASK_CHECK_IN_FLOOR_MESSAGE);
-      } else if (trigger.kind === 'cron' && cronChecksInTooOften(trigger.expr, trigger.tz)) {
-        issue(['trigger', 'expr'], TASK_CHECK_IN_FLOOR_MESSAGE);
+      } else if (trigger.kind === 'cron') {
+        const floor = cronFloorIssue(trigger.expr, trigger.tz);
+        if (floor !== null) issue(['trigger', 'expr'], floor);
       }
       break;
     }
