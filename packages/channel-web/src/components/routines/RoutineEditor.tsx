@@ -74,6 +74,8 @@ const editableKeys = [
   'silenceToken',
   'silenceMaxChars',
   'conversation',
+  'kind',
+  'goodWhen',
 ] as const;
 function changed(
   form: RoutineDefinition,

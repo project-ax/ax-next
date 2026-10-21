@@ -86,6 +86,52 @@ describe('structured routine form', () => {
     ).not.toBeInTheDocument();
     expect(saved).toHaveBeenCalledTimes(1);
   });
+  describe('a stay-on-top task (TASK-906)', () => {
+    const task = {
+      ...row,
+      kind: 'stay-on-top' as const,
+      goodWhen: 'Inbox at zero.',
+      trigger: { kind: 'interval' as const, every: '1h' },
+    };
+    beforeEach(() => {
+      vi.mocked(routineApi.get).mockResolvedValue(task);
+    });
+    it("keeps a task's kind and goodWhen when Settings edits its instructions (TASK-906)", async () => {
+      edit();
+      await screen.findByDisplayValue(row.name);
+      fill('What should Caveman do?', 'Answer the easy ones.');
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() =>
+        expect(routineApi.update).toHaveBeenCalledWith({
+          agentId: 'a',
+          routineId: task.routineId,
+          requestId: expect.any(String),
+          expectedRevision: task.revision,
+          patch: { promptBody: 'Answer the easy ones.' },
+        }),
+      );
+    });
+    it('explains the check-in floor and blocks Save for a task under 15 minutes', async () => {
+      edit();
+      await screen.findByDisplayValue(row.name);
+      fill('Interval', '5m');
+      expect(
+        screen.getByText('Check-ins need to be at least 15 minutes apart.'),
+      ).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
+    it("explains that a task can't run from a webhook and blocks Save", async () => {
+      edit();
+      await screen.findByDisplayValue(row.name);
+      fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
+      expect(
+        screen.getByText(
+          'A task that stays on top of something checks in on a schedule, not from a webhook.',
+        ),
+      ).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
+  });
   it('fresh-reads edits and sends only changed fields, including nullable clears and complete nested replacements', async () => {
     vi.mocked(routineApi.get).mockResolvedValue({
       ...row,
