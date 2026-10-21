@@ -286,8 +286,8 @@ const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
 /**
  * A line with nothing on it to see: only whitespace and combining marks, which
  * draw on a character that isn't there. CR is whitespace, so CRLF text counts
- * the same. The invisible-character rule has already run, so nothing else that
- * draws as nothing is left.
+ * the same. The invisible-character rule runs first, so the other characters
+ * the contract knows draw as nothing are already refused.
  */
 const BLANK_LINE = /^[\p{M}\s]*$/u;
 /** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. */

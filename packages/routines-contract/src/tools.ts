@@ -122,13 +122,14 @@ function readRoutineWrite(call: { name: string; input: unknown }): { start: Rout
 }
 
 /**
- * TASK-906: the one reading of "is this call a task proposal", shared by the
- * approval wording and the approval card so they can't disagree. Never an
- * authority (that's `touchesTaskBrief`): anything unreadable is null. The
- * returned definition or patch is the parsed copy and is still agent-authored.
- * A kind `change` always carries the whole brief (name, promptBody and
- * goodWhen), because `RoutineUpdateToolInputSchema` refuses a conversion
- * without it.
+ * TASK-906: the one reading of "is this call a task proposal", which words the
+ * approval (`@ax/decisions`). The card draws from `routineBriefFields`, which
+ * reads every task proposal the same way, so the card never shows less than
+ * the wording calls a task. Never an authority (that's `touchesTaskBrief`):
+ * anything unreadable is null. The returned definition or patch is the parsed
+ * copy and is still agent-authored. A kind `change` always carries the whole
+ * brief (name, promptBody and goodWhen), because
+ * `RoutineUpdateToolInputSchema` refuses a conversion without it.
  */
 export function routineTaskProposal(call: { name: string; input: unknown }): RoutineTaskProposal {
   const write = readRoutineWrite(call);
