@@ -1,5 +1,6 @@
 import { retireAuthoredRoutines } from './retirement-migration.js';
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
+import type { RoutineKind } from '@ax/routines-contract';
 import {
   SKILL_REFLECTION_PROMPT,
   SKILL_REFLECTION_ROUTINE_NAME,
@@ -32,6 +33,9 @@ export interface RoutinesDefinitionsRow {
   updated_at: ColumnType<Date, Date | undefined, Date>;
   definition_id: string | null;
   definition_updated_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /** Version 3. Rows written without it, including materialized defaults, are 'repeat'. */
+  kind: ColumnType<RoutineKind, RoutineKind | undefined, RoutineKind>;
+  good_when: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -107,19 +111,51 @@ export interface RoutinesDatabase {
 }
 
 
-/** Versioned migration: a completed database never re-runs legacy seed/retirement SQL. */
+/** Versioned migration: a completed database never re-runs legacy seed/retirement SQL.
+ * Each version runs at most once, in order, in one transaction under one advisory lock.
+ */
 export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promise<void> {
   await db.transaction().execute(async trx => {
     await sql`SELECT pg_advisory_xact_lock(18427131)`.execute(trx);
     await sql`CREATE TABLE IF NOT EXISTS routines_schema_versions (version integer PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT now())`.execute(trx);
-    const done = await sql`SELECT version FROM routines_schema_versions WHERE version=2`.execute(trx);
-    if (done.rows.length > 0) return;
-    const columns = await sql<{ column_name: string }>`SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='routines_v1_definitions'`.execute(trx);
-    if (columns.rows.some(r => r.column_name === 'path')) await retireAuthoredRoutines(trx);
-    else if (columns.rows.length === 0) await createFreshSchema(trx);
-    await createLifecycleTables(trx);
-    await sql`INSERT INTO routines_schema_versions (version) VALUES (2)`.execute(trx);
+    const done = async (version: number) => (await sql`SELECT 1 FROM routines_schema_versions WHERE version=${version}`.execute(trx)).rows.length > 0;
+    if (!await done(2)) {
+      const columns = await sql<{ column_name: string }>`SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='routines_v1_definitions'`.execute(trx);
+      if (columns.rows.some(r => r.column_name === 'path')) await retireAuthoredRoutines(trx);
+      else if (columns.rows.length === 0) await createFreshSchema(trx);
+      await createLifecycleTables(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (2)`.execute(trx);
+    }
+    if (!await done(3)) {
+      await addTaskColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (3)`.execute(trx);
+    }
   });
+}
+
+/** Version 3: a routine's kind and its going-well-when. Existing rows become 'repeat'/NULL.
+ * Each statement only adds what is missing, so columns that already exist keep their values.
+ * default_routines_v1 gets no columns: defaults are always 'repeat', and materialized
+ * default rows take this column default.
+ */
+async function addTaskColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'repeat'`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS good_when TEXT`.execute(db);
+  // Named so a later kind can swap it.
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_definitions_kind_chk'
+           AND conrelid = 'routines_v1_definitions'::regclass
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          ADD CONSTRAINT routines_v1_definitions_kind_chk
+          CHECK (kind IN ('repeat', 'stay-on-top'));
+      END IF;
+    END $$;
+  `.execute(db);
 }
 
 async function createLifecycleTables(db: Kysely<RoutinesDatabase>): Promise<void> {

@@ -52,7 +52,8 @@ function definitionColumns(d: RoutineDefinition) {
   return {
     name: d.name, description: d.description, prompt_body: d.promptBody, enabled: d.enabled,
     trigger_kind: d.trigger.kind, trigger_spec: d.trigger as unknown, active_hours: d.activeHours as unknown,
-    silence_token: d.silenceToken, silence_max: d.silenceMaxChars, conversation: d.conversation, spec_hash: inputHash(d)
+    silence_token: d.silenceToken, silence_max: d.silenceMaxChars, conversation: d.conversation,
+    kind: d.kind, good_when: d.goodWhen, spec_hash: inputHash(d)
   };
 }
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
@@ -60,7 +61,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
-    definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
+    kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning
   });
 }
