@@ -27,6 +27,7 @@ import {
   DECISION_FALLBACK_SUMMARY,
   DECISION_PREVIEW_BODY_MAX_CHARS,
   DECISION_RECEIPT_MAX_CHARS,
+  DECISION_REQUEST_INPUT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   CONVERSATION_TITLE_MAX_CHARS,
   DECISION_RECEIPT_TAG,
@@ -41,6 +42,12 @@ import {
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import type { DecisionTask } from '../../lib/workspace-types.js';
 import { describeCheckIns } from '../../lib/task-schedule.js';
+import {
+  ROUTINE_DEFINITION_MAX_BYTES,
+  ROUTINE_GOOD_WHEN_MAX_CHARS,
+  ROUTINE_NAME_MAX_CHARS,
+  RoutineDefinitionSchema,
+} from '@ax/routines-contract';
 import { KICKOFF_TEXT } from '../../lib/bootstrap-kickoff.js';
 
 function mkReq(
@@ -3912,25 +3919,78 @@ describe('channel-web agent-workspace BFF', () => {
         expect((body.decision['request'] as { input: string }).input).toContain('goodWhen');
       });
 
-      it('caps a long brief and says so', async () => {
+      // A person approves a task's brief on this card, so the card shows every
+      // valid brief whole: approving a cut-off beginning would store text no
+      // one saw. `truncated` stays on the wire for safety only.
+      /** How many UTF-8 bytes of promptBody a valid task like `definition` has room for. */
+      const promptBudget = (definition: Record<string, unknown>): number =>
+        ROUTINE_DEFINITION_MAX_BYTES -
+        new TextEncoder().encode(JSON.stringify(RoutineDefinitionSchema.parse({ ...definition, promptBody: '' }))).length;
+
+      it('shows the longest valid brief whole, even where fencing grows it (TASK-906)', async () => {
         registerAuth({ id: 'u1', isAdmin: false });
+        const definition = taskCreate().input.definition;
+        const budget = promptBudget(definition);
+        // The longest instructions a task can have: one more byte and the contract refuses it.
+        const longest = 'z'.repeat(budget);
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: longest }).success).toBe(true);
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: `${longest}z` }).success).toBe(false);
+        // A TAB is the one thing in a valid task's text that fencing grows (to two spaces).
+        const tabs = `z${'\t'.repeat(Math.floor((budget - 2) / 2))}z`;
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: tabs }).success).toBe(true);
+        // goodWhen at its own maximum, all but one of it a TAB.
+        const goodWhen = `${'\t'.repeat(ROUTINE_GOOD_WHEN_MAX_CHARS - 1)}z`;
+        const name = 'n'.repeat(ROUTINE_NAME_MAX_CHARS);
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, name, goodWhen }).success).toBe(true);
         seed(
-          decision({ id: 'long', call: taskCreate({ promptBody: 'z'.repeat(50_000) }) }),
-          decision({
-            id: 'tall',
-            call: taskCreate({ promptBody: Array.from({ length: 100 }, (_, i) => `step ${i}`).join('\n') }),
-          }),
+          decision({ id: 'longest', call: taskCreate({ promptBody: longest }) }),
+          decision({ id: 'tabs', call: taskCreate({ promptBody: tabs }) }),
+          decision({ id: 'good-when', call: taskCreate({ name, goodWhen }) }),
         );
         registerReads();
         const h = makeWorkspaceHandlers({ bus, initCtx });
 
-        const long = (await getTask(h, 'long')).task!;
-        expect(long.instructions!.truncated).toBe(true);
-        expect([...long.instructions!.text].length).toBeLessThanOrEqual(2000);
+        expect((await getTask(h, 'longest')).task!.instructions).toEqual({ text: longest, truncated: false });
+        const grown = (await getTask(h, 'tabs')).task!.instructions!;
+        expect(grown).toEqual({ text: tabs.replaceAll('\t', '  '), truncated: false });
+        expect([...grown.text].length).toBeGreaterThan(64_000);
+        const task = (await getTask(h, 'good-when')).task!;
+        expect(task.goodWhen).toEqual({ text: goodWhen.replaceAll('\t', '  '), truncated: false });
+        expect(task.name).toBe(name);
+      });
 
-        const tall = (await getTask(h, 'tall')).task!;
-        expect(tall.instructions!.truncated).toBe(true);
-        expect(tall.instructions!.text.split('\n').length).toBeLessThanOrEqual(40);
+      it('shows a brief of many thousand lines whole (TASK-906)', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const definition = taskCreate().input.definition;
+        // "x" and a newline cost three bytes of the budget.
+        const lines = Math.floor((promptBudget(definition) - 1) / 3);
+        const tall = `${'x\n'.repeat(lines)}x`;
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: tall }).success).toBe(true);
+        seed(decision({ id: 'tall', call: taskCreate({ promptBody: tall }) }));
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const instructions = (await getTask(h, 'tall')).task!.instructions!;
+        expect(instructions).toEqual({ text: tall, truncated: false });
+        expect(instructions.text.split('\n').length).toBe(lines + 1);
+        expect(lines).toBeGreaterThan(20_000);
+      });
+
+      it('a brief too long to be a task is no task proposal, and the request block keeps its own cap', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const definition = taskCreate().input.definition;
+        seed(
+          decision({ id: 'too-long', call: taskCreate({ promptBody: 'z'.repeat(promptBudget(definition) + 1) }) }),
+          decision({ id: 'long-name', call: taskCreate({ name: 'n'.repeat(ROUTINE_NAME_MAX_CHARS + 1) }) }),
+        );
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        for (const id of ['too-long', 'long-name']) {
+          const { task } = await getTask(h, id);
+          expect({ id, task }).toEqual({ id, task: null });
+        }
+        const request = (await getTask(h, 'too-long')).body.decision['request'] as { input: string; truncated: boolean };
+        expect(request.truncated).toBe(true);
+        expect([...request.input].length).toBeLessThanOrEqual(DECISION_REQUEST_INPUT_MAX_CHARS);
       });
     });
 

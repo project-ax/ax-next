@@ -409,7 +409,7 @@ Inside a wave the tasks touch disjoint files, so they can run in separate worktr
       checksIn: string | null;
     }
     ```
-  - In `routes-workspace.ts`: `DECISION_TASK_NAME_MAX_CHARS = 128`, `DECISION_TASK_TEXT_MAX_CHARS = 2000`, `DECISION_TASK_TEXT_MAX_LINES = 40`, `DECISION_TASK_CHECKS_IN_MAX_CHARS = 200`, and `function wireTask(stored: StoredDecision): DecisionTask | null`.
+  - In `routes-workspace.ts`: `DECISION_TASK_NAME_MAX_CHARS = 128`, `DECISION_TASK_TEXT_MAX_CHARS = 2000`, `DECISION_TASK_TEXT_MAX_LINES = 40`, `DECISION_TASK_CHECKS_IN_MAX_CHARS = 200`, and `function wireTask(stored: StoredDecision): DecisionTask | null`. (Review round 2 raised the name and text caps so every valid brief shows whole: `ROUTINE_NAME_MAX_CHARS`, `2 * ROUTINE_DEFINITION_MAX_BYTES` characters, and lines one past that.)
 
 - [ ] **Step 1: Write the failing tests.**
   - **`task-schedule.test.ts`.** An `it.each` over interval `every` → output:

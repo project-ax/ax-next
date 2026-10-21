@@ -354,8 +354,10 @@ that grows forever.
     can't contain invisible characters: the contract refuses Unicode tag
     characters, zero-width and bidi controls, stray variation selectors and
     the rest of Unicode's default-ignorable set (`validateDefinition`), so no
-    part of the brief is text the card can't draw. That is what makes the
-    `brief` section person-written.
+    part of the brief is text the card can't draw. And the card shows every
+    valid brief whole, however long (it scrolls), so approving never stores
+    text past a cut-off beginning. That is what makes the `brief` section
+    person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
   removes it. Tasks PR 1 adds it back as its first user.
 
@@ -554,16 +556,17 @@ suggest a short body for known apps.
   approval rules. Nothing about a task widens them.
 - **The agent can't change what a task is for.** A task's brief (its name,
   instructions and "going well when") and its kind always need the person's
-  yes, even with Always Allow, and the brief can't hold invisible characters
-  that the card wouldn't draw (§4.2). The schedule and active hours are
-  different: with Always Allow the agent can change them without asking, but
-  never to a schedule whose check-ins are less than 15 minutes apart on its
-  own clock. (A cron is checked over 48 runs from a fixed date and, for the
-  gap those can miss, from each hour's last run to the next hour's first. It
-  can't use `?`, which croner fills in from the clock. A daylight-saving jump
-  can still shorten one real gap a year.) Who may create or change a task
-  follows today's routine permissions (`agents:can-manage-routines`: personal
-  agent → its owner, team agent → team admins).
+  yes, even with Always Allow. The card that asks shows the whole brief, and
+  the brief can't hold invisible characters it wouldn't draw (§4.2). The
+  schedule and active hours are different: with Always Allow the agent can
+  change them without asking, but never to a schedule whose check-ins are less
+  than 15 minutes apart on its own clock. (A cron is checked over 48 runs from
+  a fixed date and, for the gap those can miss, from each hour's last run to
+  the next hour's first. It can't use `?`, which croner fills in from the
+  clock. A daylight-saving jump can still shorten one real gap a year.) Who
+  may create or change a task follows today's routine permissions
+  (`agents:can-manage-routines`: personal agent → its owner, team agent → team
+  admins).
 - **Only a person** marks a task done or resumes a paused one.
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.

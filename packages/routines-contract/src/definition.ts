@@ -4,6 +4,8 @@ import { z } from 'zod';
 
 export const ROUTINE_DEFINITION_MAX_BYTES = 64 * 1024;
 export const ROUTINE_OPAQUE_STRING_MAX_CHARS = 256;
+/** A routine's name, in UTF-16 units (zod's `max`), so at most this many code points too. */
+export const ROUTINE_NAME_MAX_CHARS = 128;
 export const RoutineOpaqueStringSchema = z.string().min(1).max(ROUTINE_OPAQUE_STRING_MAX_CHARS);
 
 export const ROUTINE_KINDS = ['repeat', 'stay-on-top'] as const;
@@ -146,7 +148,7 @@ export const ActiveHoursSchema = z.object({
 }).strict();
 
 export const RoutineEditableShape = {
-  name: z.string().min(1).max(128),
+  name: z.string().min(1).max(ROUTINE_NAME_MAX_CHARS),
   description: z.string().max(2048),
   promptBody: z.string(),
   enabled: z.boolean(),

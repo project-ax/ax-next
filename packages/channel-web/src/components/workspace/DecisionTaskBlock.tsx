@@ -35,9 +35,10 @@ export const DECISION_TASK_TRUNCATED = 'This is only the beginning. The full tex
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
 const VALUE = 'text-[13px] leading-relaxed text-foreground';
-// The two prose fields keep the agent's own line breaks. The server caps them
-// at 40 lines; past a screenful they scroll here, the way the request block's
-// input does, so the buttons stay near the question they answer.
+// The two prose fields keep the agent's own line breaks. The server sends every
+// valid brief whole, however long, because the person is approving all of it;
+// past a screenful they scroll here, the way the request block's input does,
+// so the buttons stay near the question they answer.
 const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words';
 
 export function DecisionTaskBlock({

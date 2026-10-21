@@ -126,7 +126,10 @@ export function fenceBlock(
     out.push(piece);
     count += len;
   }
-  const text = out.join('').replace(/\s+$/, '');
+  // `trimEnd`, not `replace(/\s+$/, '')`: the same characters go, but the regex
+  // backtracks over every interior run of whitespace, quadratic in its length
+  // (seconds for a 64 KiB task brief of tabs, which TASK-906 shows whole).
+  const text = out.join('').trimEnd();
   if (text.trim().length === 0) return null;
   return { text, truncated };
 }

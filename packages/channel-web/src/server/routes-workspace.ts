@@ -112,7 +112,13 @@
  * so there is no flag to hide it behind (TASK-360 retired `agentWorkspace`).
  * Each handler is authenticated and owner-scoped on its own.
  */
-import { RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, routineTaskProposal } from '@ax/routines-contract';
+import {
+  ROUTINE_DEFINITION_MAX_BYTES,
+  ROUTINE_NAME_MAX_CHARS,
+  RoutineCreateToolInputSchema,
+  RoutineUpdateToolInputSchema,
+  routineTaskProposal,
+} from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
@@ -2328,13 +2334,31 @@ export const DECISION_REQUEST_INPUT_MAX_CHARS = 2000;
 export const DECISION_REQUEST_INPUT_MAX_LINES = 40;
 /**
  * A proposed task's own fields, shown on an OPEN decision above the request
- * block (TASK-906). The name is a routine name, which the contract caps at
- * 128. The instructions and going-well-when are agent-authored prose, so they
- * get the request input's room and line cap. The schedule is one sentence.
+ * block (TASK-906). A person approves a task's brief on this card, so it shows
+ * every valid brief WHOLE: approving a cut-off beginning would store text no
+ * one saw. Each cap is sized from the contract so a valid field never reaches
+ * it:
+ *
+ *   - The name is a routine name, at most `ROUTINE_NAME_MAX_CHARS` UTF-16
+ *     units and so at most that many code points, and `fenceLine` never
+ *     lengthens a line.
+ *   - The instructions and going-well-when: a valid task's text holds no
+ *     control or format character but TAB, LF and CR (the contract refuses the
+ *     rest), so `fenceBlock` grows it only by turning a TAB into two spaces, at
+ *     most two code points out per code point in. A definition is at most
+ *     `ROUTINE_DEFINITION_MAX_BYTES` of UTF-8 and every code point costs at
+ *     least a byte, so twice that is never reached; goodWhen's 1024 fit inside.
+ *   - Every line after the first costs a newline out of the character budget,
+ *     so a line cap one past the character cap never binds first.
+ *
+ * `truncated` stays on the wire and the block keeps its note, for safety only:
+ * just text the contract refuses as a task could still be cut. Past a
+ * screenful the block scrolls, so the buttons stay near the question. The
+ * schedule is one sentence.
  */
-export const DECISION_TASK_NAME_MAX_CHARS = 128;
-export const DECISION_TASK_TEXT_MAX_CHARS = 2000;
-export const DECISION_TASK_TEXT_MAX_LINES = 40;
+export const DECISION_TASK_NAME_MAX_CHARS = ROUTINE_NAME_MAX_CHARS;
+export const DECISION_TASK_TEXT_MAX_CHARS = 2 * ROUTINE_DEFINITION_MAX_BYTES;
+export const DECISION_TASK_TEXT_MAX_LINES = DECISION_TASK_TEXT_MAX_CHARS + 1;
 export const DECISION_TASK_CHECKS_IN_MAX_CHARS = 200;
 
 /**
