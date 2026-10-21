@@ -2563,23 +2563,26 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
  * is null, so a change shows only what it changes.
  *
  * TOTAL, like `wireRequest`: the helper never throws and answers null for
- * anything it can't read. Open rows only, for the same reason as the request.
+ * anything it can't read, and so does `wireTask` when none of the four fields
+ * the block draws survives. Open rows only, for the same reason as the request.
  */
 function wireTask(stored: StoredDecision): DecisionTask | null {
   if (!isOpenDecision(stored)) return null;
   const proposal = routineTaskProposal({ name: stored.call?.name ?? '', input: stored.call?.input });
   if (proposal === null) return null;
   const fields = proposal.action === 'start' ? proposal.definition : proposal.patch;
-  return {
-    action: proposal.action,
-    name: fenceLine(fields.name, DECISION_TASK_NAME_MAX_CHARS),
-    instructions: fenceBlock(fields.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES),
-    goodWhen: fenceBlock(fields.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES),
-    checksIn:
-      fields.trigger === undefined
-        ? null
-        : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS),
-  };
+  const name = fenceLine(fields.name, DECISION_TASK_NAME_MAX_CHARS);
+  const instructions = fenceBlock(fields.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
+  const goodWhen = fenceBlock(fields.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
+  const checksIn =
+    fields.trigger === undefined
+      ? null
+      : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS);
+  // A change that touches none of the four fields drawn here (a patch of only
+  // `kind`) would be a heading over no rows. No block; the raw request block
+  // still shows the change.
+  if (name === null && instructions === null && goodWhen === null && checksIn === null) return null;
+  return { action: proposal.action, name, instructions, goodWhen, checksIn };
 }
 
 export function toWireDecision(stored: StoredDecision, eligible = false): Decision {

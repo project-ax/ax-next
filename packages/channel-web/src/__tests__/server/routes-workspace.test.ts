@@ -40,6 +40,7 @@ import {
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import type { DecisionTask } from '../../lib/workspace-types.js';
+import { describeCheckIns } from '../../lib/task-schedule.js';
 import { KICKOFF_TEXT } from '../../lib/bootstrap-kickoff.js';
 
 function mkReq(
@@ -3752,6 +3753,58 @@ describe('channel-web agent-workspace BFF', () => {
           goodWhen: { text: 'Inbox at zero.', truncated: false },
           checksIn: null,
         });
+      });
+
+      it('fences goodWhen like the brief: a bidi override is spelled out, a tab becomes two spaces', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        seed(decision({ id: 'gw', call: taskCreate({ goodWhen: 'Inbox\u202Eat\tzero' }) }));
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const { task } = await getTask(h, 'gw');
+        expect(task!.goodWhen!.text).not.toContain('\u202E');
+        expect(task!.goodWhen!.text).not.toContain('\t');
+        expect(task!.goodWhen).toEqual({ text: 'Inbox\\u202eat  zero', truncated: false });
+      });
+
+      it('caps the checks-in sentence at 200 characters, even for a long cron', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        // Valid, hourly or slower, and past what `describeCron` narrates, so the
+        // sentence is the raw "Custom schedule: …" and longer than the cap.
+        const range = (from: number, to: number): string =>
+          Array.from({ length: to - from + 1 }, (_, i) => from + i).join(',');
+        const expr = `0 ${range(0, 23)} ${range(1, 31)} ${range(1, 12)} ${range(0, 6)}`;
+        const trigger = { kind: 'cron', expr, tz: 'UTC' } as const;
+        expect(describeCheckIns(trigger)!.length).toBeGreaterThan(200);
+        seed(decision({ id: 'long-cron', call: taskCreate({ trigger }) }));
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const { task } = await getTask(h, 'long-cron');
+        expect(task).not.toBeNull();
+        expect(task!.checksIn).not.toBeNull();
+        expect([...task!.checksIn!].length).toBeLessThanOrEqual(200);
+        expect(task!.checksIn!.endsWith('…')).toBe(true);
+      });
+
+      it('shows no task block when nothing in it would be drawn', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        // `kind` alone makes it a task proposal, but none of the four display
+        // fields is in the patch: a heading over no rows. The raw request block
+        // still shows the change.
+        seed(
+          decision({
+            id: 'kind-only',
+            call: {
+              id: 'tu1',
+              name: 'routine_update',
+              input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch: { kind: 'stay-on-top' } },
+            },
+          }),
+        );
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const { task, body } = await getTask(h, 'kind-only');
+        expect(task).toBeNull();
+        expect((body.decision['request'] as { input: string }).input).toContain('stay-on-top');
       });
 
       it('caps a long brief and says so', async () => {

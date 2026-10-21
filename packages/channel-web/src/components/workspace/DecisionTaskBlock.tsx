@@ -33,7 +33,7 @@ export const DECISION_TASK_GOOD_WHEN_LABEL = 'Going well when';
 export const DECISION_TASK_CHECKS_IN_LABEL = 'Checks in';
 export const DECISION_TASK_TRUNCATED = 'This is only the beginning. The full text is longer.';
 
-const LABEL = 'text-[11.5px] text-muted-foreground';
+const LABEL = 'text-[11.5px] text-muted-foreground break-words';
 const VALUE = 'text-[13px] leading-relaxed text-foreground';
 // The two prose fields keep the agent's own line breaks. The server caps them
 // at 40 lines; past a screenful they scroll here, the way the request block's
