@@ -58,13 +58,13 @@ import {
 // ordinary way an NFS export tells you it is having a bad day — answered
 // exactly like a directory the agent never created, and the Files tab told the
 // reader their agent had written nothing. So a path that VANISHED is `absent`
-// (see `VANISHED_ERRNOS`), and every other errno throws `UserFilesReadError`.
-// ESTALE is the one errno that can mean either. On the root it is the export
-// failing, and it throws. Below the root it is how NFS reports a folder or file
-// the walk already holds being deleted, so there it is `absent` (see `STALE`).
-// Telling those apart costs no secrecy: every errno the walk reports concerns
-// the root the caller chose or a directory the walk has already opened inside
-// it, so it says nothing about anyone else's files.
+// (see `VANISHED_ERRNOS`), and every other errno throws `UserFilesReadError`,
+// ESTALE included, at every depth. On real NFS a stale export fails a deep read
+// at depth 1 or 0 before it ever fails at the root, so an absence below the
+// root would say an agent wrote nothing while its export is down. Telling these
+// apart costs no secrecy: every errno the walk reports concerns the root the
+// caller chose or a directory the walk has already opened inside it, so it
+// says nothing about anyone else's files.
 //
 // WHAT IT REPLACED (TASK-899). This reader used to `realpath` the target, check
 // the result was under the root, and then open the path again, with O_NOFOLLOW
@@ -110,24 +110,10 @@ export { UserFilesReadError } from './errors.js';
  * The walk answers a component that is missing, a link or not a directory at
  * the moment it opens it by itself, so these arrive here from the other steps:
  * opening the root, listing, and the leaf's stat and read. On NFS the same race
- * can arrive as ESTALE instead, which is an absence only below the root: see
- * `STALE`.
+ * can arrive as ESTALE instead. That is not one of these: ESTALE is also what
+ * an export that is itself stale says, at any depth (see the header).
  */
 const VANISHED_ERRNOS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP']);
-
-/**
- * ESTALE: NFS saying a handle we already hold names something that is gone.
- *
- * Below the root (`depth >= 0`, the index of the path component whose step
- * failed) it is the race above. An agent that deletes a folder the walk is
- * inside makes the walk's next step fail ESTALE rather than ENOENT, so it is an
- * absence, which is true: those files are gone.
- *
- * On the root (`depth === -1`) it is the export itself in trouble, and it still
- * throws. With no path components the root is also the leaf, so a stale stat
- * or listing of the root is depth -1 and throws too.
- */
-const STALE = 'ESTALE';
 
 /**
  * A path segment longer than a filename may be (NAME_MAX: 255 bytes on every
@@ -141,12 +127,10 @@ const NAME_TOO_LONG = 'ENAMETOOLONG';
 
 /**
  * Whether a failed walk means the path is not there, rather than that the
- * storage would not answer. See the three constants above.
+ * storage would not answer. See the two constants above.
  */
 function isAbsence(err: WalkReadError): boolean {
-  if (err.code === undefined) return false;
-  if (VANISHED_ERRNOS.has(err.code) || err.code === NAME_TOO_LONG) return true;
-  return err.code === STALE && err.depth >= 0;
+  return err.code !== undefined && (VANISHED_ERRNOS.has(err.code) || err.code === NAME_TOO_LONG);
 }
 
 /**

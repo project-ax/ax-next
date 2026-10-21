@@ -11,7 +11,7 @@ import {
   readConfinedUserFiles,
   safeJoinUnderRoot,
 } from '../confined-read.js';
-import { MAX_WALK_PARTS, WalkPathError, readConfinedByWalk } from '../walk-read.js';
+import { MAX_WALK_PARTS, WalkPathError } from '../walk-read.js';
 
 // ---------------------------------------------------------------------------
 // The confinement spec, at the library level.
@@ -605,9 +605,6 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
 // listing, and the leaf handle's own `stat` and `read`.
 // ---------------------------------------------------------------------------
 
-/** The walk's own limits, for asserting where it failed. */
-const WALK_LIMITS = { limitBytes: 1024, maxEntries: 100 };
-
 /** A rejection shaped like the ones Node's fs hands back. */
 function errno(code: string): NodeJS.ErrnoException {
   const err: NodeJS.ErrnoException = new Error(`simulated ${code}`);
@@ -713,44 +710,28 @@ describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (
     await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth: -1 });
   });
 
-  // ESTALE is NFS saying a handle we already hold names something that is
-  // gone. Below the root that is an agent deleting a folder or file the walk is
-  // inside: the ordinary race ENOENT reports on a local disk. Each test asserts
-  // the depth the walk reports next to the adapter's answer, because the
-  // adapter's rule keys on it: -1 is the root, 0 and up is a path component.
+  // ESTALE is NFS saying a handle the walk holds names something that is gone.
+  // That is also what an export that is itself stale says, and on real NFS a
+  // stale export fails a deep read at depth 1 or 0 before it ever fails at the
+  // root. So ESTALE is a broken read at every depth, never an absence.
 
-  it('ESTALE opening a folder on the path is an absence: on NFS, a folder deleted mid-read', async () => {
-    failOpen((p) => p.endsWith('/docs'), 'ESTALE');
-    await expect(readConfinedByWalk(root, ['docs', 'note.md'], WALK_LIMITS)).rejects.toMatchObject({
-      code: 'ESTALE',
-      depth: 0,
-    });
-    expect(await readConfinedUserFiles(root, 'docs/note.md')).toEqual({ kind: 'absent' });
-  });
-
-  it('ESTALE opening the leaf is an absence too', async () => {
-    // The walk holds `docs` when it looks up `note.md`; if the agent deleted
-    // `docs` in between, NFS answers that lookup ESTALE.
-    failOpen((p) => p.endsWith('/note.md'), 'ESTALE');
-    await expect(readConfinedByWalk(root, ['docs', 'note.md'], WALK_LIMITS)).rejects.toMatchObject({
-      code: 'ESTALE',
-      depth: 1,
-    });
-    expect(await readConfinedUserFiles(root, 'docs/note.md')).toEqual({ kind: 'absent' });
-  });
-
-  it('ESTALE listing a folder is an absence, but listing the root itself still throws', async () => {
-    // With no parts the root is the leaf, so its listing fails at depth -1:
-    // the export going stale under a root listing is still a broken read.
-    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('ESTALE'));
-    await expect(readConfinedByWalk(root, ['docs'], WALK_LIMITS)).rejects.toMatchObject({
-      code: 'ESTALE',
-      depth: 0,
-    });
-    expect(await readConfinedUserFiles(root, 'docs')).toEqual({ kind: 'absent' });
-    const out = readConfinedUserFiles(root, undefined);
+  it.each([
+    ['opening a folder on the path', (p: string) => p.endsWith('/docs'), 0],
+    ['opening the leaf', (p: string) => p.endsWith('/note.md'), 1],
+  ])('ESTALE %s is a broken read, not an absence', async (_what, match, depth) => {
+    failOpen(match, 'ESTALE');
+    const out = readConfinedUserFiles(root, 'docs/note.md');
     await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
-    await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth: -1 });
+    await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
+  });
+
+  it('ESTALE listing a folder, or the root, throws too', async () => {
+    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('ESTALE'));
+    for (const [rel, depth] of [['docs', 0], [undefined, -1]] as const) {
+      const out = readConfinedUserFiles(root, rel);
+      await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+      await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
+    }
   });
 
   it('but a root that was never CREATED is an absence, not an error', async () => {
