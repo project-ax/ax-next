@@ -569,6 +569,9 @@ describe('turning a routine into a task sends the whole brief (TASK-906)', () =>
   const { name, promptBody, goodWhen } = wholeBrief;
   const message = 'To turn a routine into a task, send its name, promptBody and goodWhen in the same patch so the person sees the whole task.';
 
+  // The issue's message is the schema's own. The agent never sees it: the routines
+  // preflight answers any refused input with a generic validation error (decisions row 4),
+  // so the model learns the rule from routine_update's description, pinned below.
   it.each<[string, Record<string, unknown>]>([
     ['kind alone', { kind: 'stay-on-top' }],
     ['kind and goodWhen', { kind: 'stay-on-top', goodWhen }],
@@ -577,7 +580,7 @@ describe('turning a routine into a task sends the whole brief (TASK-906)', () =>
     ['no goodWhen', { kind: 'stay-on-top', name, promptBody }],
     ['a null goodWhen', { ...wholeBrief, goodWhen: null }],
     ['other edits but no goodWhen', { kind: 'stay-on-top', name, promptBody, trigger: { kind: 'interval', every: '1h' } }],
-  ])('refuses a kind change with %s, in plain words on patch.kind', (_label, patch) => {
+  ])('refuses a kind change with %s, with the schema issue on patch.kind', (_label, patch) => {
     const result = RoutineUpdateToolInputSchema.safeParse(upd(patch).input);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({ path: ['patch', 'kind'], message }));
