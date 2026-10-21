@@ -112,9 +112,10 @@ export interface FireDeps {
    * (TASK-679). The rule that keeps it to ONE row: whoever removes the
    * `pending` entry for a reqId writes that fire's row — the chat:turn-end
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
-   * `Map#delete` returns true to exactly one of them.
+   * `Map#delete` returns true to exactly one of them. It also binds each
+   * fire's conversation onto its dispatch row before the invoke (TASK-907).
    */
-  store: Pick<RoutinesStore, 'finishDispatch'>;
+  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation'>;
   purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
@@ -206,6 +207,14 @@ export function createFireRoutine(deps: FireDeps) {
       }
     } catch (err) { return fail(err); }
 
+    // TASK-907: the dispatch row learns its conversation before the agent
+    // starts, so routine_report can find the one open run it belongs to. A
+    // failed bind (the run or its agent closed meanwhile) is recorded like
+    // any other setup failure, and the agent never starts.
+    try {
+      await deps.store.bindDispatchConversation({ dispatchId, conversationId });
+    } catch (err) { return fail(err); }
+
     const fireCtx = makeAgentContext({
       reqId,
       sessionId,
@@ -220,10 +229,10 @@ export function createFireRoutine(deps: FireDeps) {
       // AgentContext.source.
       source: 'routine',
       // Human-authored label for a status line ("Right now this agent is…").
-      // Must be set here, at the moment the turn starts: @ax/routines only
-      // writes its fire row (the conversationId→routine join) at
-      // chat:turn-end, i.e. AFTER the turn it would describe, so there is no
-      // way to recover which routine is mid-flight once work has begun.
+      // Set here, when the turn starts: no hook tells another plugin which
+      // routine a turn belongs to. The dispatch row records this run's
+      // conversation before the invoke (TASK-907), but only routine_report
+      // reads that. A display label only; nothing may key off it (design §13).
       triggerLabel: row.name,
     });
 

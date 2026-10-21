@@ -162,9 +162,9 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
       );
 
       // A turn begins: this is the only moment the trigger label is knowable.
-      // `@ax/routines` stamps it on the context it mints for a scheduled fire;
-      // nothing recovers it afterwards, because the routine's fire row is not
-      // written until the turn has already ended.
+      // `@ax/routines` stamps it on the context it mints for a scheduled fire,
+      // and no hook recovers it afterwards: routines records which run a
+      // conversation belongs to (TASK-907), but only for its own routine_report.
       bus.subscribe<unknown>('chat:start', PLUGIN_NAME, async (ctx) => {
         observe(ctx, () => {
           const at = now();
