@@ -82,6 +82,28 @@ describe('the prose is host-authored', () => {
   });
 });
 
+describe('words a task hold as a task (TASK-906)', () => {
+  it('words a start as starting a task', () => {
+    const text = decisionText({ capability: null, toolName: 'routine_create', routineTask: 'start' });
+    expect(text.summary).toBe('Wants to start a task');
+    expect(text.detail).toBe('Review the task before allowing it.');
+    expect(text.primaryLabel).toBe('Allow once');
+  });
+
+  it('words a change as changing a task', () => {
+    const text = decisionText({ capability: null, toolName: 'routine_update', routineTask: 'change' });
+    expect(text.summary).toBe('Wants to change a task');
+    expect(text.detail).toBe('Review the change to this task before allowing it.');
+    expect(text.primaryLabel).toBe('Allow once');
+  });
+
+  it('keeps routine wording when routineTask is omitted', () => {
+    const text = decisionText({ capability: null, toolName: 'routine_create' });
+    expect(text.summary).toBe('Wants to create a routine');
+    expect(text.primaryLabel).toBe('Allow once');
+  });
+});
+
 describe('approvedText and dismissedText are BOTH authored', () => {
   // Design H1. The prototype this came from derived the dismissed line from
   // the approved one by regex and shipped "you took over — sent your reply"
