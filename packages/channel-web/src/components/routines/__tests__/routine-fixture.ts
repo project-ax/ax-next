@@ -14,6 +14,8 @@ export const routineFixture: RoutineView = {
   silenceToken: null,
   silenceMaxChars: 300,
   conversation: 'per-fire',
+  kind: 'repeat',
+  goodWhen: null,
   nextRunAt: null,
   lastRunAt: null,
   lastStatus: null,

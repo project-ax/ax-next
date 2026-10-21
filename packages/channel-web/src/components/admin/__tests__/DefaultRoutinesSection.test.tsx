@@ -148,6 +148,8 @@ describe('DefaultRoutinesSection', () => {
       silenceToken: null,
       silenceMaxChars: 300,
       conversation: 'shared',
+      kind: 'repeat',
+      goodWhen: null,
       activeHours: null,
       promptBody: 'check in',
     });

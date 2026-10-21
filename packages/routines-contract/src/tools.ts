@@ -43,8 +43,8 @@ const activeHours = {
 };
 const trigger = {
   oneOf: [
-    { type: 'object', additionalProperties: false, required: ['kind', 'every'], properties: { kind: { const: 'interval' }, every: { type: 'string', pattern: '^\\d+(s|m|h|d)$', description: 'Interval of at least 60 seconds, within the valid date range.' } } },
-    { type: 'object', additionalProperties: false, required: ['kind', 'expr', 'tz'], properties: { kind: { const: 'cron' }, expr: { type: 'string', minLength: 1, maxLength: 256, description: 'Croner cron expression.' }, tz: timezone } },
+    { type: 'object', additionalProperties: false, required: ['kind', 'every'], properties: { kind: { const: 'interval' }, every: { type: 'string', pattern: '^\\d+(s|m|h|d)$', description: 'Interval of at least 60 seconds (15 minutes for a "stay-on-top" task), within the valid date range.' } } },
+    { type: 'object', additionalProperties: false, required: ['kind', 'expr', 'tz'], properties: { kind: { const: 'cron' }, expr: { type: 'string', minLength: 1, maxLength: 256, description: 'Croner cron expression. For a "stay-on-top" task, runs must be at least 15 minutes apart.' }, tz: timezone } },
     { type: 'object', additionalProperties: false, required: ['kind', 'path'], properties: {
       kind: { const: 'webhook' }, path: { type: 'string', maxLength: 128, pattern: '^/[A-Za-z0-9._/-]+$', description: 'Canonical absolute path. No empty, dot, dot-dot, trailing-slash or reserved /webhooks/ segments.' },
       events: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' } },
@@ -64,6 +64,8 @@ const editableProperties = {
   silenceToken: { anyOf: [{ type: 'string', maxLength: 128 }, { type: 'null' }] },
   silenceMaxChars: { type: 'integer', minimum: 0, maximum: 65536 },
   conversation: { type: 'string', enum: ['per-fire', 'shared'] },
+  kind: { type: 'string', enum: ['repeat', 'stay-on-top'], description: 'What this is for. "repeat" (the default) does the same job each time. "stay-on-top" is a "Stay on top of something" task: it keeps checking and fixing something and never finishes, and it needs goodWhen.' },
+  goodWhen: { anyOf: [{ type: 'string', maxLength: 1024 }, { type: 'null' }], description: 'For a "stay-on-top" task only: how you and the person will know it is going well, in plain words, for example "No ticket stays open longer than an hour". Null for "repeat".' },
 };
 export const RoutineDefinitionJsonSchema = {
   type: 'object', additionalProperties: false, required: ['name', 'promptBody', 'trigger'],
@@ -71,6 +73,7 @@ export const RoutineDefinitionJsonSchema = {
     description: { ...editableProperties.description, default: '' }, enabled: { ...editableProperties.enabled, default: true },
     activeHours: { ...editableProperties.activeHours, default: null }, silenceToken: { ...editableProperties.silenceToken, default: null },
     silenceMaxChars: { ...editableProperties.silenceMaxChars, default: 300 }, conversation: { ...editableProperties.conversation, default: 'per-fire' },
+    kind: { ...editableProperties.kind, default: 'repeat' }, goodWhen: { ...editableProperties.goodWhen, default: null },
   },
 };
 export const RoutinePatchJsonSchema = {

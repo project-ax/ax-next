@@ -13,6 +13,7 @@ const base = {
   name: 'Morning brief', description: 'Catch up', promptBody: 'first\nsecond\n', enabled: true,
   trigger: { kind: 'interval' as const, every: '1h' }, activeHours: null,
   silenceToken: null, silenceMaxChars: 300, conversation: 'per-fire' as const,
+  kind: 'repeat' as const, goodWhen: null,
 };
 const webhook = (extra = {}) => ({ ...base, trigger: { kind: 'webhook', path: '/github', ...extra } });
 
@@ -221,5 +222,126 @@ describe('public services and tools', () => {
     const result = await build({ configFile: false, logLevel: 'silent', build: { write: false, lib: { entry: new URL('../index.ts', import.meta.url).pathname, formats: ['es'] } } });
     const outputs = Array.isArray(result) ? result : [result];
     for (const output of outputs) if ('output' in output) for (const item of output.output) if (item.type === 'chunk') expect(item.code).not.toMatch(/(?:node:|@ax\/core|__vite-browser-external)/);
+  });
+});
+
+describe('task kinds (TASK-906)', () => {
+  const task = {
+    ...base, kind: 'stay-on-top' as const, goodWhen: 'No ticket stays open longer than an hour.',
+    trigger: { kind: 'interval' as const, every: '15m' },
+  };
+  const view = {
+    ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+    nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false },
+  };
+
+  it('defaults kind to repeat and goodWhen to null', () => {
+    expect(RoutineDefinitionSchema.parse({ name: base.name, promptBody: base.promptBody, trigger: base.trigger }))
+      .toMatchObject({ kind: 'repeat', goodWhen: null });
+  });
+
+  it.each([
+    task,
+    { ...task, trigger: { kind: 'interval', every: '900s' } },
+    { ...task, trigger: { kind: 'interval', every: '1h' } },
+    { ...task, trigger: { kind: 'cron', expr: '0 * * * *', tz: 'UTC' } },
+    { ...task, trigger: { kind: 'cron', expr: '*/15 * * * *', tz: 'UTC' } },
+    { ...task, trigger: { kind: 'cron', expr: '0 9 * * 1-5', tz: 'America/New_York' } },
+  ])('accepts a stay-on-top task at the floor %#', value => {
+    expect(RoutineDefinitionSchema.parse(value)).toEqual(value);
+  });
+
+  it.each([
+    [{ ...base, goodWhen: 'x' }, ['goodWhen']],
+    [{ ...task, goodWhen: null }, ['goodWhen']],
+    [{ ...task, goodWhen: '   ' }, ['goodWhen']],
+    [{ ...task, goodWhen: 'a'.repeat(1025) }, ['goodWhen']],
+    [{ ...task, trigger: { kind: 'webhook', path: '/zendesk' } }, ['trigger']],
+    [{ ...task, conversation: 'shared' }, ['conversation']],
+    [{ ...task, silenceToken: 'ALL_GOOD' }, ['silenceToken']],
+    [{ ...task, trigger: { kind: 'interval', every: '14m' } }, ['trigger', 'every']],
+    [{ ...task, trigger: { kind: 'interval', every: '899s' } }, ['trigger', 'every']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/10 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/14 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/30 * * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+  ] as const)('rejects each per-kind rule with a field path %#', (value, path) => {
+    const result = RoutineDefinitionSchema.safeParse(value);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues.map(i => i.path)).toContainEqual([...path]);
+  });
+
+  it('words the check-in floor in plain words', () => {
+    const result = RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'interval', every: '14m' } });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.find(i => i.path.join('.') === 'trigger.every')?.message)
+        .toBe('Check-ins need to be at least 15 minutes apart.');
+    }
+  });
+
+  it('repeat keeps everything it allows today', () => {
+    expect(RoutineDefinitionSchema.safeParse({ ...base, trigger: { kind: 'interval', every: '60s' } }).success).toBe(true);
+    expect(RoutineDefinitionSchema.safeParse({
+      ...base, trigger: { kind: 'webhook', path: '/zendesk' }, silenceToken: 'OK', conversation: 'shared',
+    }).success).toBe(true);
+  });
+
+  it('the cron floor gives the same verdict whatever the clock says', () => {
+    const crons = [
+      { expr: '0 * * * *', tz: 'UTC' }, { expr: '*/10 * * * *', tz: 'UTC' },
+      { expr: '0,50 1,3 * * *', tz: 'America/New_York' }, { expr: '0 0 29 2 *', tz: 'UTC' },
+    ];
+    const verdicts = (now: Date): boolean[] => {
+      vi.useFakeTimers({ now });
+      try {
+        return crons.map(trigger => RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'cron', ...trigger } }).success);
+      } finally { vi.useRealTimers(); }
+    };
+    const first = verdicts(new Date('2026-03-08T06:30:00Z'));
+    const second = verdicts(new Date('2031-07-01T00:00:00Z'));
+    expect(second).toEqual(first);
+    expect(first[2]).toBe(true);
+  });
+
+  it('checks the floor without starting a scheduler', () => {
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      RoutineDefinitionSchema.parse({ ...task, trigger: { kind: 'cron', expr: '0 * * * *', tz: 'UTC' } });
+      expect(timer).not.toHaveBeenCalled();
+    } finally { timer.mockRestore(); }
+  });
+
+  it('revalidates kind rules after a patch merges', () => {
+    expect(() => applyRoutinePatch(task, { trigger: { kind: 'webhook', path: '/x' } })).toThrow();
+    expect(() => applyRoutinePatch(task, { kind: 'repeat' })).toThrow();
+    expect(applyRoutinePatch(task, { kind: 'repeat', goodWhen: null }).kind).toBe('repeat');
+    expect(applyRoutinePatch(base, { kind: 'stay-on-top', goodWhen: 'x' }).kind).toBe('stay-on-top');
+  });
+
+  it('RoutinePatchSchema accepts kind and a goodWhen clear', () => {
+    expect(RoutinePatchSchema.safeParse({ goodWhen: null }).success).toBe(true);
+    expect(RoutinePatchSchema.safeParse({ kind: 'stay-on-top' }).success).toBe(true);
+  });
+
+  it('views require kind and goodWhen and recheck them', () => {
+    expect(RoutineViewSchema.parse(view)).toEqual(view);
+    const { kind: _kind, ...withoutKind } = view;
+    expect(RoutineViewSchema.safeParse(withoutKind).success).toBe(false);
+    expect(RoutineViewSchema.safeParse({ ...view, trigger: { kind: 'webhook', path: '/x' } }).success).toBe(false);
+  });
+
+  it('default routines stay repeat', () => {
+    const { enabled: _enabled, ...input } = task;
+    expect(RoutineUpsertDefaultInputSchema.safeParse({ ...input, trigger: { kind: 'interval', every: '1h' } }).success).toBe(false);
+    const detail = { ...task, trigger: { kind: 'interval', every: '1h' }, defaultRoutineId: 'd', updatedAt: '2026-10-09T00:00:00.000Z' };
+    expect(RoutineGetDefaultOutputSchema.safeParse(detail).success).toBe(false);
+    const { kind: _k, ...noKind } = { ...base, defaultRoutineId: 'd', updatedAt: '2026-10-09T00:00:00.000Z' };
+    expect(RoutineGetDefaultOutputSchema.safeParse(noKind).success).toBe(false);
+  });
+
+  it('the JSON schema offers both fields', () => {
+    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top'], default: 'repeat' });
+    expect(contract.RoutineDefinitionJsonSchema.properties.goodWhen).toMatchObject({ default: null });
   });
 });
