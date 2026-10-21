@@ -771,7 +771,8 @@ Re-land these on their own merits, each with its test (Bug Fix Policy):
   such a record and annotation (TASK-904). Before TASK-904, every helper
   restart (an eviction, a node upgrade) was exposed.
 - **Left in git history until something needs them:** the NFS
-  `lookupcache=positive` static PV (#999) and `walk-read.ts` (TASK-899).
+  `lookupcache=positive` static PV (#999). `walk-read.ts` came back in
+  TASK-899 as the `/files` reader.
 
 ### Step 3: reset production and kind (an hour or two)
 

@@ -1,14 +1,17 @@
-import { promises as fs } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, promises as fs } from 'node:fs';
+import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { ReadUserFilesOutput } from '@ax/sandbox-mount-protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CONFINED_READ_LIMITS,
   UserFilesReadError,
-  confineByRealpath,
   readConfinedUserFiles,
   safeJoinUnderRoot,
 } from '../confined-read.js';
+import { MAX_WALK_PARTS, WalkPathError } from '../walk-read.js';
 
 // ---------------------------------------------------------------------------
 // The confinement spec, at the library level.
@@ -19,9 +22,47 @@ import {
 // against the reader itself, with no bus and no mount resolver in the way, so a
 // regression points at the line that broke rather than at a provider.
 //
+// `readConfinedUserFiles` is an adapter over the component walk in
+// walk-read.ts (TASK-899), and the walk needs Linux /proc. So every test that
+// reads real files is skipped where /proc is missing (a macOS laptop), and
+// runs in CI, which is ubuntu-latest. A skip there is not a pass. What the
+// adapter decides before it touches the disk (the lexical refusals, the depth
+// rule, the off-Linux refusal) runs everywhere.
+//
 // Every SECURITY case below is a real thing an untrusted agent can do inside
-// its own subtree, which it writes freely.
+// its own subtree, which it writes freely, up to and including swapping a
+// directory for a symlink while we are mid-read.
 // ---------------------------------------------------------------------------
+
+const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
+const SKIP_REASON = 'needs Linux /proc/self/fd (runs in CI on ubuntu-latest)';
+const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
+
+const SECRET = 'SECRET-do-not-return';
+
+/** The error a promise rejects with; fails the test if it resolves. */
+async function rejection(p: Promise<unknown>): Promise<Error> {
+  try {
+    await p;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('expected the promise to reject');
+}
+
+/** Run `fn` with `process.platform` reading 'darwin'. */
+async function asDarwin(fn: () => Promise<void>): Promise<void> {
+  const d = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...d, value: 'darwin' });
+  try {
+    await fn();
+  } finally {
+    Object.defineProperty(process, 'platform', d);
+  }
+}
+
+const text = (r: ReadUserFilesOutput): string =>
+  r.kind === 'file' ? Buffer.from(r.contents).toString('utf8') : '';
 
 let tmp: string;
 /** The agent's own subtree — the root a request is entitled to read. */
@@ -65,33 +106,81 @@ describe('safeJoinUnderRoot', () => {
   });
 });
 
-describe('confineByRealpath', () => {
-  it('returns the realpath of a target inside the root', async () => {
-    const got = await confineByRealpath(root, path.join(root, 'hello.txt'));
-    expect(got).toBe(path.join(root, 'hello.txt'));
+describe('readConfinedUserFiles — answered before the disk (every platform)', () => {
+  it('the default byte cap matches the k8s reader pod (1 MiB)', () => {
+    // Both realizations of `sandbox:read-user-files` must return the same
+    // bytes for the same file — a browser that shows a different amount of a
+    // file depending on which sandbox provider is loaded is unreasonable-about.
+    expect(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes).toBe(1024 * 1024);
   });
 
-  it('returns undefined for a target outside the root', async () => {
-    await fs.writeFile(path.join(tmp, 'outside.txt'), 'nope');
-    expect(await confineByRealpath(root, path.join(tmp, 'outside.txt'))).toBeUndefined();
+  it('SECURITY: a `..` relPath throws (our own caller is malformed)', async () => {
+    await fs.writeFile(path.join(tmp, 'secret'), 'TOPSECRET');
+    const err = await rejection(readConfinedUserFiles(root, '../secret'));
+    expect(err.message).toMatch(/\.\./);
+    // The walk's own path check refuses `..` too, with a message that also
+    // matches. Only the lexical guard (adapter step 1) throws a plain Error.
+    expect(err).not.toBeInstanceOf(WalkPathError);
   });
 
-  it('returns undefined for a missing target', async () => {
-    expect(await confineByRealpath(root, path.join(root, 'nope'))).toBeUndefined();
+  it('SECURITY: an absolute relPath throws', async () => {
+    const err = await rejection(readConfinedUserFiles(root, '/etc/passwd'));
+    expect(err.message).toMatch(/relative/);
+    expect(err).not.toBeInstanceOf(WalkPathError);
   });
 
-  it('SECURITY: does not confuse a sibling whose name PREFIXES the root', async () => {
-    // `<tmp>/agent-a-evil` starts with `<tmp>/agent-a` as a STRING but is a
-    // different directory. A `startsWith(root)` check without the separator
-    // would let it through.
-    const sibling = path.join(tmp, 'agent-a-evil');
-    await fs.mkdir(sibling, { recursive: true });
-    await fs.writeFile(path.join(sibling, 'secret'), 'SECRET');
-    expect(await confineByRealpath(root, path.join(sibling, 'secret'))).toBeUndefined();
+  it.each([
+    ['an empty segment', 'a//b'],
+    ['a trailing slash', 'docs/'],
+    ['a dot segment', 'x/./y'],
+    ['a NUL byte', 'notes\u0000.md'],
+  ])(
+    'a malformed path (%s) throws WalkPathError, not an answer (accepted behavior change)',
+    async (_name, rel) => {
+      // The reader this replaced served `docs/`, `a//b` and `x/./y`, and
+      // answered NUL as absent. channel-web's `workspaceFilePath` rejects all of
+      // these before they get here, so no shipped route can reach this.
+      const err = await rejection(readConfinedUserFiles(root, rel));
+      expect(err).toBeInstanceOf(WalkPathError);
+      expect(err).not.toBeInstanceOf(UserFilesReadError);
+      expect(err).toMatchObject({ code: 'invalid-path' });
+    },
+  );
+
+  it('a path deeper than MAX_WALK_PARTS is absent, not an error', async () => {
+    // The answer depends only on the path's text, so it is no oracle. A 5xx
+    // would invite a retry that can never succeed.
+    const deep = Array.from({ length: MAX_WALK_PARTS + 1 }, () => 'd').join('/');
+    expect(await readConfinedUserFiles(root, deep)).toEqual({ kind: 'absent' });
+  });
+
+  it('a path of exactly MAX_WALK_PARTS is not refused by the depth rule', async () => {
+    // The boundary: 33 parts answers `absent` from the text alone (above), 32
+    // goes on to the walk. Off Linux the walk is where the platform refusal
+    // lives, so reaching it is observable everywhere: the platform is stubbed
+    // so Linux CI runs this too, where a `>=` slip would answer `absent`.
+    const exact = Array.from({ length: MAX_WALK_PARTS }, () => 'd').join('/');
+    await asDarwin(async () => {
+      await expect(readConfinedUserFiles(root, exact)).rejects.toMatchObject({
+        code: 'unsupported-platform',
+      });
+    });
+  });
+
+  it('off Linux the reader refuses instead of answering', async () => {
+    // Without /proc every component open is ENOENT, so a reader that ran
+    // anyway would answer `absent` for everything: a Files tab that says the
+    // agent wrote nothing. The platform is stubbed so this runs, and has
+    // teeth, on Linux CI too, where hello.txt is there to be (wrongly) served.
+    await asDarwin(async () => {
+      const out = readConfinedUserFiles(root, 'hello.txt');
+      await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+      await expect(out).rejects.toMatchObject({ code: 'unsupported-platform' });
+    });
   });
 });
 
-describe('readConfinedUserFiles', () => {
+describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`, () => {
   it('lists the root directory', async () => {
     const out = await readConfinedUserFiles(root, undefined);
     expect(out.kind).toBe('dir');
@@ -99,6 +188,17 @@ describe('readConfinedUserFiles', () => {
     const byName = new Map(out.entries.map((e) => [e.name, e.kind]));
     expect(byName.get('hello.txt')).toBe('file');
     expect(byName.get('docs')).toBe('dir');
+  });
+
+  it("'.' and '' both read the root", async () => {
+    // The k8s provider sends '.' for the root. The walk's own splitter refuses
+    // '.', so this is the adapter's job, and without it every root listing on
+    // k8s would throw.
+    for (const rel of ['.', '']) {
+      const out = await readConfinedUserFiles(root, rel);
+      if (out.kind !== 'dir') throw new Error(`expected dir for ${JSON.stringify(rel)}`);
+      expect(out.entries.map((e) => e.name).sort()).toEqual(['docs', 'hello.txt']);
+    }
   });
 
   it('reads a nested file, exact bytes', async () => {
@@ -122,6 +222,17 @@ describe('readConfinedUserFiles', () => {
     expect(out.contents.byteLength).toBe(0);
   });
 
+  it("answers carry only the hook's fields", async () => {
+    // The walk's answers carry more: a `reason` on an absence (for tests and
+    // diagnostics, and telling a link from a missing file is exactly the
+    // oracle this surface must not offer) and `truncated` on a listing, which
+    // the hook's dir answer has no field for.
+    const file = await readConfinedUserFiles(root, 'hello.txt');
+    expect(Object.keys(file).sort()).toEqual(['contents', 'kind', 'truncated']);
+    const dir = await readConfinedUserFiles(root, 'docs');
+    expect(Object.keys(dir).sort()).toEqual(['entries', 'kind']);
+  });
+
   it('a missing path is absent', async () => {
     expect(await readConfinedUserFiles(root, 'nope/missing.txt')).toEqual({
       kind: 'absent',
@@ -134,17 +245,86 @@ describe('readConfinedUserFiles', () => {
     ).toEqual({ kind: 'absent' });
   });
 
+  it('a root that is a regular file is absent (ENOTDIR at the root open)', async () => {
+    // ENOTDIR is only reachable at the root open: below the root the walk
+    // answers a non-directory component itself.
+    const file = path.join(tmp, 'not-a-dir');
+    await fs.writeFile(file, 'x');
+    expect(await readConfinedUserFiles(file, undefined)).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(file, 'hello.txt')).toEqual({ kind: 'absent' });
+  });
+
+  it('a root that is a symlink loop is absent (ELOOP at the root open)', async () => {
+    const loop = path.join(tmp, 'loop');
+    await fs.symlink('loop', loop);
+    expect(await readConfinedUserFiles(loop, undefined)).toEqual({ kind: 'absent' });
+  });
+
+  it('a path of exactly MAX_WALK_PARTS components that exists is read', async () => {
+    // 31 directories and a file: the deepest path the depth rule lets through.
+    const dirs = Array.from({ length: MAX_WALK_PARTS - 1 }, () => 'd');
+    await fs.mkdir(path.join(root, ...dirs), { recursive: true });
+    await fs.writeFile(path.join(root, ...dirs, 'leaf.txt'), 'deep');
+    const out = await readConfinedUserFiles(root, [...dirs, 'leaf.txt'].join('/'));
+    expect(out.kind).toBe('file');
+    expect(text(out)).toBe('deep');
+  });
+
+  it('a path segment longer than a filename may be is absent, not an error', async () => {
+    // 256 bytes is one past NAME_MAX on every filesystem this runs on, so the
+    // open fails ENAMETOOLONG. Like the depth rule, the answer depends only on
+    // the path's text: no oracle, and a 5xx would invite a retry that can
+    // never succeed.
+    const long = 'x'.repeat(256);
+    expect(await readConfinedUserFiles(root, long)).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(root, `docs/${long}`)).toEqual({ kind: 'absent' });
+    // The shape that gets past the route: channel-web's path check caps a
+    // segment at 255 UTF-16 units, and these 128 are 256 bytes.
+    expect(await readConfinedUserFiles(root, 'é'.repeat(128))).toEqual({ kind: 'absent' });
+  });
+
   it('a fifo (not a file or dir) is absent', async () => {
-    // A device/socket/fifo is nothing a file browser should serve. Skipped
-    // where mkfifo is unavailable rather than asserted differently per-OS.
+    // A device/socket/fifo is nothing a file browser should serve. mkfifo is
+    // coreutils, so on the Linux boxes this runs on a failure is a broken
+    // fixture, not a reason to pass quietly.
     const fifo = path.join(root, 'pipe');
-    const { spawnSync } = await import('node:child_process');
-    const made = spawnSync('mkfifo', [fifo]);
-    if (made.status !== 0) return;
+    expect(spawnSync('mkfifo', [fifo]).status, `mkfifo ${fifo}`).toBe(0);
     expect(await readConfinedUserFiles(root, 'pipe')).toEqual({ kind: 'absent' });
     const list = await readConfinedUserFiles(root, undefined);
     if (list.kind !== 'dir') throw new Error('expected dir');
     expect(list.entries.map((e) => e.name)).not.toContain('pipe');
+  });
+
+  it('a Unix socket is absent', async () => {
+    // open(2) refuses a socket outright (ENXIO), unlike a FIFO, which it
+    // would block on. Either way it is nothing a file browser serves.
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(path.join(root, 'sock'), resolve);
+    });
+    try {
+      expect(await readConfinedUserFiles(root, 'sock')).toEqual({ kind: 'absent' });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('KNOWN GAP: a name that is not valid UTF-8 is left out of a listing', async () => {
+    // Node decodes the name with U+FFFD for the bad byte, so the walk's lstat
+    // of the re-encoded name finds nothing and the entry is skipped. Pinned so
+    // that changing it is a decision; see the header's KNOWN GAPS.
+    const docs = path.join(root, 'docs');
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x74, 0x78, 0x74]); // "café.txt" in Latin-1
+    await fs.writeFile(Buffer.concat([Buffer.from(`${docs}/`), latin1]), 'x');
+    // The fixture really is on disk under those bytes.
+    const raw = await fs.readdir(docs, { encoding: 'buffer' });
+    expect(raw.some((n) => n.equals(latin1))).toBe(true);
+
+    const list = await readConfinedUserFiles(root, 'docs');
+    if (list.kind !== 'dir') throw new Error('expected dir');
+    expect(list.entries).toEqual([{ name: 'note.md', kind: 'file' }]);
+    expect(await readConfinedUserFiles(root, 'docs/caf\uFFFD.txt')).toEqual({ kind: 'absent' });
   });
 
   // --- the caps ---------------------------------------------------------
@@ -225,25 +405,7 @@ describe('readConfinedUserFiles', () => {
     expect(out.entries).toHaveLength(5);
   });
 
-  it('the default byte cap matches the k8s reader pod (1 MiB)', () => {
-    // Both realizations of `sandbox:read-user-files` must return the same
-    // bytes for the same file — a browser that shows a different amount of a
-    // file depending on which sandbox provider is loaded is unreasonable-about.
-    expect(DEFAULT_CONFINED_READ_LIMITS.maxFileBytes).toBe(1024 * 1024);
-  });
-
   // --- confinement ------------------------------------------------------
-
-  it('SECURITY: a `..` relPath throws (our own caller is malformed)', async () => {
-    await fs.writeFile(path.join(tmp, 'secret'), 'TOPSECRET');
-    await expect(readConfinedUserFiles(root, '../secret')).rejects.toThrow(/\.\./);
-  });
-
-  it('SECURITY: an absolute relPath throws', async () => {
-    await expect(readConfinedUserFiles(root, '/etc/passwd')).rejects.toThrow(
-      /relative/,
-    );
-  });
 
   it('SECURITY: a FINAL-component symlink out of the root is absent and unlisted', async () => {
     await fs.writeFile(path.join(tmp, 'outside.txt'), 'OUTSIDE');
@@ -259,7 +421,8 @@ describe('readConfinedUserFiles', () => {
   it('SECURITY: an INTERMEDIATE symlink to a sibling subtree discloses nothing', async () => {
     // The disclosure a lexical `..` guard does NOT catch: the agent plants a
     // dir symlink inside its OWN subtree pointing at a sibling's, then reads
-    // through it. Only realpath confinement stops this.
+    // through it. Only a reader that refuses a link at every component stops
+    // this.
     const other = path.join(tmp, 'agent-b');
     await fs.mkdir(other, { recursive: true });
     await fs.writeFile(path.join(other, 'secret.txt'), 'AGENT-B-SECRET');
@@ -285,6 +448,18 @@ describe('readConfinedUserFiles', () => {
     });
   });
 
+  it('SECURITY: an in-root symlink is not followed either', async () => {
+    // Where a link points is never looked at. A realpath reader serves all
+    // three of these, because each one resolves to a path inside the root;
+    // the walk refuses them all, because each one IS a link at the moment it
+    // is opened. This is the deterministic proof that the reader is the walk.
+    await fs.symlink('hello.txt', path.join(root, 'alias.md'));
+    await fs.symlink('docs', path.join(root, 'alias'));
+    expect(await readConfinedUserFiles(root, 'alias.md')).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(root, 'alias/note.md')).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(root, 'alias')).toEqual({ kind: 'absent' });
+  });
+
   it('SECURITY: a symlink to the root ITSELF is still not served', async () => {
     // Escaping is not the only thing a link can do; a self-referential link is
     // still a link, and this surface serves files and dirs only.
@@ -293,6 +468,23 @@ describe('readConfinedUserFiles', () => {
     if (list.kind !== 'dir') throw new Error('expected dir');
     expect(list.entries.map((e) => e.name)).not.toContain('self');
   });
+
+  it.skipIf(IS_ROOT)(
+    'SECURITY: an intermediate directory the host may not search is a broken read, not an absence',
+    async () => {
+      // The walk has already opened `docs` inside this subtree when the lookup
+      // of `note.md` is refused, so saying "refused" rather than "absent"
+      // tells a prober nothing about anyone else's files (TASK-403).
+      await fs.chmod(path.join(root, 'docs'), 0o000);
+      try {
+        const out = readConfinedUserFiles(root, 'docs/note.md');
+        await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+        await expect(out).rejects.toMatchObject({ code: 'EACCES' });
+      } finally {
+        await fs.chmod(path.join(root, 'docs'), 0o755);
+      }
+    },
+  );
 
   it('SECURITY: the read never opens a writable handle — mtime and size unchanged', async () => {
     const target = path.join(root, 'hello.txt');
@@ -316,6 +508,103 @@ describe('readConfinedUserFiles', () => {
       await fs.chmod(root, 0o755);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // THE RACE. A child process swaps `a` between a real directory and a symlink
+  // to an outside directory with the same shape, as fast as it can, while this
+  // process reads `a/b/file.txt`. A check-then-open reader loses this race; a
+  // walk that pins each component's descriptor cannot, because a symlink at
+  // `a` fails its O_NOFOLLOW open at the moment we look.
+  // -------------------------------------------------------------------------
+  it(
+    'SECURITY: a directory swapped for a symlink mid-read never yields the secret',
+    async () => {
+      const outside = path.join(tmp, 'outside');
+      await fs.mkdir(path.join(outside, 'b'), { recursive: true });
+      await fs.writeFile(path.join(outside, 'b', 'file.txt'), SECRET);
+
+      const a = path.join(root, 'a');
+      const real = path.join(root, 'a.real');
+      const link = path.join(root, 'a.link');
+      await fs.mkdir(path.join(real, 'b'), { recursive: true });
+      await fs.writeFile(path.join(real, 'b', 'file.txt'), 'inside');
+      await fs.symlink(outside, link);
+
+      // The swapper: each round puts the real dir at `a`, then the link at
+      // `a`. rename(2) is atomic, so `a` is always one of {dir, link, absent}.
+      const swapper = spawn(
+        process.execPath,
+        [
+          '-e',
+          `
+          const fs = require('node:fs');
+          const [a, real, link] = process.argv.slice(1);
+          process.stdout.write('ready\\n');
+          for (;;) {
+            fs.renameSync(real, a); fs.renameSync(a, real);
+            fs.renameSync(link, a); fs.renameSync(a, link);
+          }
+          `,
+          a,
+          real,
+          link,
+        ],
+        { stdio: ['ignore', 'pipe', 'inherit'] },
+      );
+      try {
+        await new Promise<void>((resolve, reject) => {
+          swapper.once('error', reject);
+          swapper.once('exit', (code) => reject(new Error(`swapper exited early (${String(code)})`)));
+          swapper.stdout!.once('data', () => resolve());
+        });
+
+        // Every 7th first-walk open of `a` (the O_PATH one) fails ESTALE, in
+        // the shape Node really gives it, so the swap also races the ESTALE
+        // retry: a whole second walk, whose opens are O_RDONLY. The retry
+        // must be as unable to follow the link as the walk it replaces.
+        const O_PATH = 0o10000000;
+        const realOpen = fs.open;
+        let firstWalkOpens = 0;
+        let retries = 0;
+        vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+          if (path.basename(String(p)) === 'a') {
+            if ((Number(flags) & O_PATH) !== 0) {
+              if (++firstWalkOpens % 7 === 0) throw stale();
+            } else retries++;
+          }
+          return realOpen(p, flags, mode);
+        });
+
+        const counts = { inside: 0, absent: 0, other: 0 };
+        const deadline = Date.now() + 15_000;
+        let i = 0;
+        for (; i < 20_000 && Date.now() < deadline; i++) {
+          const r = await readConfinedUserFiles(root, 'a/b/file.txt');
+          const body = text(r);
+          expect(body).not.toContain(SECRET);
+          if (r.kind === 'file' && body === 'inside') counts.inside++;
+          else if (r.kind === 'absent') counts.absent++;
+          else counts.other++;
+        }
+        // The swapper really did interleave with the reads: we saw both the
+        // real file and a missing/linked `a`. Without both, the test proved
+        // nothing about the race.
+        expect(i).toBeGreaterThanOrEqual(5_000);
+        expect(counts.inside).toBeGreaterThan(0);
+        expect(counts.absent).toBeGreaterThan(0);
+        expect(counts.other).toBe(0);
+        // And some reads really did go through the retry.
+        expect(retries).toBeGreaterThan(0);
+      } finally {
+        vi.restoreAllMocks();
+        // Wait for it to die, so the cleanup's rm isn't racing its renames.
+        const exited = new Promise((resolve) => swapper.once('exit', resolve));
+        swapper.kill('SIGKILL');
+        if (swapper.exitCode === null && swapper.signalCode === null) await exited;
+      }
+    },
+    30_000,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -331,71 +620,130 @@ describe('readConfinedUserFiles', () => {
 // The errno is injected rather than provoked. A real `EIO` is not something a
 // test can arrange, and the alternatives that ARE arrangeable — `chmod 000` —
 // do nothing when the suite runs as root in a container, which is how this
-// would quietly stop testing anything.
+// would quietly stop testing anything. The injection points are the calls the
+// walk makes: `fs.open` for the root and every component, `fs.opendir` for a
+// listing, and the leaf handle's own `stat` and `read`.
 // ---------------------------------------------------------------------------
 
-/** A rejection shaped like the ones Node's fs hands back. */
+/** A rejection shaped like the ones Node's fs hands back: the name, and the number negated. */
 function errno(code: string): NodeJS.ErrnoException {
+  if (code === 'ESTALE') {
+    throw new Error("Node never reports ESTALE by name on Linux, so errno('ESTALE') tests nothing: use stale()");
+  }
   const err: NodeJS.ErrnoException = new Error(`simulated ${code}`);
   err.code = code;
+  err.errno = -os.constants.errno[code as keyof typeof os.constants.errno];
   return err;
 }
 
-describe('a read that FAILED is never reported as an absence', () => {
+/**
+ * ESTALE the way Node 24 really rejects with it on Linux, as measured on a real
+ * NFS export: libuv has no name for errno 116, so `code` is its fallback text
+ * and only `errno` carries the number.
+ */
+function stale(): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error('Unknown system error -116');
+  err.code = 'Unknown system error -116';
+  err.errno = -116;
+  return err;
+}
+
+/**
+ * Make the walk's opens of paths `match` picks reject with `err` (an errno
+ * name, or a factory): the first `times` of them, each after running `act`,
+ * the agent's move for a test that acts one out. Every other open is real.
+ */
+function failOpen(
+  match: (p: string) => boolean,
+  err: string | (() => Error),
+  { times = Infinity, act }: { times?: number; act?: () => Promise<unknown> } = {},
+): void {
+  const realOpen = fs.open;
+  const make = typeof err === 'string' ? () => errno(err) : err;
+  let left = times;
+  vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+    if (left > 0 && match(String(p))) {
+      left--;
+      await act?.();
+      throw make();
+    }
+    return realOpen(p, flags, mode);
+  });
+}
+
+/**
+ * Let every open through to the real `fs.open`, and hand the leaf handle the
+ * walk opens for `hello.txt` (always as `/proc/self/fd/<n>/hello.txt`) to
+ * `rig` before the walk gets it.
+ */
+function rigLeaf(rig: (fh: fs.FileHandle) => void): void {
+  const realOpen = fs.open;
+  vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+    const fh = await realOpen(p, flags, mode);
+    if (String(p).endsWith('/hello.txt')) rig(fh);
+    return fh;
+  });
+}
+
+describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (${SKIP_REASON})`, () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it('a listing that raises EIO throws rather than answering an empty dir', async () => {
-    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('EIO'));
+    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('EIO'));
     const out = readConfinedUserFiles(root, undefined);
     await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
     await expect(out).rejects.toMatchObject({ code: 'EIO' });
   });
 
   it('a listing that raises EACCES throws too', async () => {
-    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('EACCES'));
-    await expect(readConfinedUserFiles(root, 'docs')).rejects.toBeInstanceOf(
-      UserFilesReadError,
-    );
+    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('EACCES'));
+    const out = readConfinedUserFiles(root, 'docs');
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EACCES' });
   });
 
   it('but a directory that VANISHED mid-read is still an absence', async () => {
-    // The agent deleting its own folder between our stat and our listing is an
-    // ordinary race, not a failure, and it has always been `absent`.
-    vi.spyOn(fs, 'readdir').mockRejectedValue(errno('ENOENT'));
+    // The agent deleting its own folder between our open and our listing is
+    // an ordinary race, not a failure, and it has always been `absent`.
+    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('ENOENT'));
     expect(await readConfinedUserFiles(root, 'docs')).toEqual({ kind: 'absent' });
   });
 
   it('a file read that raises EIO throws rather than answering absent', async () => {
-    vi.spyOn(fs, 'open').mockRejectedValue(errno('EIO'));
-    await expect(readConfinedUserFiles(root, 'hello.txt')).rejects.toBeInstanceOf(
-      UserFilesReadError,
-    );
+    rigLeaf((fh) => {
+      vi.spyOn(fh, 'read').mockRejectedValue(errno('EIO'));
+    });
+    const out = readConfinedUserFiles(root, 'hello.txt');
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EIO' });
   });
 
   it('throws after a partial read followed by EIO instead of returning the prefix', async () => {
-    const handle = await fs.open(path.join(root, 'hello.txt'), 'r');
-    const read = vi.spyOn(handle, 'read')
-      .mockResolvedValueOnce({ bytesRead: 1, buffer: Buffer.from('h') })
-      .mockRejectedValueOnce(errno('EIO'));
-    const close = vi.spyOn(handle, 'close');
-    vi.spyOn(fs, 'open').mockResolvedValue(handle);
+    let leaf: fs.FileHandle | undefined;
+    rigLeaf((fh) => {
+      leaf = fh;
+      vi.spyOn(fh, 'read')
+        .mockResolvedValueOnce({ bytesRead: 1, buffer: Buffer.from('h') })
+        .mockRejectedValueOnce(errno('EIO'));
+      vi.spyOn(fh, 'close');
+    });
     const result = readConfinedUserFiles(root, 'hello.txt');
     await expect(result).rejects.toBeInstanceOf(UserFilesReadError);
     await expect(result).rejects.toMatchObject({ code: 'EIO' });
-    expect(read).toHaveBeenCalledTimes(2);
-    expect(close).toHaveBeenCalledOnce();
+    expect(leaf?.read).toHaveBeenCalledTimes(2);
+    expect(leaf?.close).toHaveBeenCalledOnce();
   });
 
   it('SECURITY: ELOOP stays an absence — that is O_NOFOLLOW doing its job', async () => {
     /*
-      The final component swapped for a symlink after confinement passed. We
-      refuse to follow it, and a path we refuse to follow is a path this
-      surface does not have. Turning THIS into an error would hand a prober a
-      way to tell "I planted a link here" from "nothing is here".
+      The leaf is a symlink at the instant we open it. We refuse to follow
+      it, and a path we refuse to follow is a path this surface does not have.
+      Turning THIS into an error would hand a prober a way to tell "I planted
+      a link here" from "nothing is here".
     */
-    vi.spyOn(fs, 'open').mockRejectedValue(errno('ELOOP'));
+    failOpen((p) => p.endsWith('/hello.txt'), 'ELOOP');
     expect(await readConfinedUserFiles(root, 'hello.txt')).toEqual({
       kind: 'absent',
     });
@@ -403,14 +751,65 @@ describe('a read that FAILED is never reported as an absence', () => {
 
   it('an unreachable ROOT throws — the whole mount being down is not an empty agent', async () => {
     /*
-      The production shape of this bug. The export goes away, `realpath` on the
+      The production shape of this bug. The export goes away, opening the
       agent's own subtree fails with `ESTALE`, and every read answers `absent`
       — so the Files tab tells everyone their agents have written nothing.
     */
-    vi.spyOn(fs, 'realpath').mockRejectedValue(errno('ESTALE'));
-    await expect(readConfinedUserFiles(root, undefined)).rejects.toBeInstanceOf(
-      UserFilesReadError,
-    );
+    failOpen((p) => p === root, stale);
+    const out = readConfinedUserFiles(root, undefined);
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth: -1 });
+  });
+
+  // ESTALE is NFS saying a handle the walk holds names something that is gone:
+  // the agent replaced or deleted a folder the walk was inside, or the export
+  // itself went stale. The walk walks once more, with opens that make NFS look
+  // again (walk-read.ts), and that answer stands. So ESTALE is never an absence
+  // by itself, at any depth: on real NFS a stale export fails at depth 1 and 0
+  // before it ever fails at the root. Every ESTALE here is stale(): the shape
+  // Node really reports.
+
+  it.each([
+    ['opening a folder on the path', (p: string) => p.endsWith('/docs'), 0],
+    ['opening the leaf', (p: string) => p.endsWith('/note.md'), 1],
+  ])('ESTALE %s that the retry meets again is a broken read, not an absence', async (_what, match, depth) => {
+    failOpen(match, stale);
+    const out = readConfinedUserFiles(root, 'docs/note.md');
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
+  });
+
+  it('ESTALE listing a folder, or the root, that the retry meets again throws too', async () => {
+    vi.spyOn(fs, 'opendir').mockRejectedValue(stale());
+    for (const [rel, depth] of [['docs', 0], [undefined, -1]] as const) {
+      const out = readConfinedUserFiles(root, rel);
+      await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+      await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
+    }
+  });
+
+  it('a folder the agent REPLACED is served by the retry', async () => {
+    // `rm -rf docs && mkdir docs` plus a new note, while this host's NFS cache
+    // still holds the old `docs`: the first walk's step into it fails ESTALE.
+    failOpen((p) => p.endsWith('/docs'), stale, {
+      times: 1,
+      act: async () => {
+        await fs.rm(path.join(root, 'docs'), { recursive: true });
+        await fs.mkdir(path.join(root, 'docs'));
+        await fs.writeFile(path.join(root, 'docs', 'note.md'), 'rewritten');
+      },
+    });
+    const out = await readConfinedUserFiles(root, 'docs/note.md');
+    expect(out).toMatchObject({ kind: 'file', truncated: false });
+    expect(text(out)).toBe('rewritten');
+  });
+
+  it('a folder the agent DELETED is absent: the retry finds nothing there', async () => {
+    failOpen((p) => p.endsWith('/docs'), stale, {
+      times: 1,
+      act: () => fs.rm(path.join(root, 'docs'), { recursive: true }),
+    });
+    expect(await readConfinedUserFiles(root, 'docs/note.md')).toEqual({ kind: 'absent' });
   });
 
   it('but a root that was never CREATED is an absence, not an error', async () => {
@@ -424,16 +823,17 @@ describe('a read that FAILED is never reported as an absence', () => {
     expect(await readConfinedUserFiles(neverWritten, undefined)).toEqual({
       kind: 'absent',
     });
-    expect(await confineByRealpath(neverWritten, neverWritten)).toBeUndefined();
   });
 
-  it('a stat that raises EIO throws; one that raises ENOENT does not', async () => {
-    const lstat = vi.spyOn(fs, 'lstat');
-    lstat.mockRejectedValueOnce(errno('EIO'));
-    await expect(readConfinedUserFiles(root, 'hello.txt')).rejects.toBeInstanceOf(
-      UserFilesReadError,
-    );
-    lstat.mockRejectedValueOnce(errno('ENOENT'));
+  it('a leaf stat that raises EIO throws; one that raises ENOENT does not', async () => {
+    let code = 'EIO';
+    rigLeaf((fh) => {
+      vi.spyOn(fh, 'stat').mockRejectedValueOnce(errno(code));
+    });
+    const out = readConfinedUserFiles(root, 'hello.txt');
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EIO' });
+    code = 'ENOENT';
     expect(await readConfinedUserFiles(root, 'hello.txt')).toEqual({
       kind: 'absent',
     });
@@ -443,8 +843,8 @@ describe('a read that FAILED is never reported as an absence', () => {
     /*
       Unchanged, and load-bearing. Confinement failures are the path-dependent
       answers, and a distinguishing one there is a free oracle for mapping
-      another tenant's subtree. Only failures AFTER confinement has proved the
-      path is ours are allowed to be loud.
+      another tenant's subtree. Only failures inside a directory the walk has
+      already proved is ours are allowed to be loud.
     */
     const sibling = path.join(tmp, 'agent-b');
     await fs.mkdir(sibling, { recursive: true });

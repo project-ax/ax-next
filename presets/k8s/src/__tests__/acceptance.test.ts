@@ -92,6 +92,9 @@ import { createRoutinesPlugin } from '@ax/routines';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
+// The /files reader is the Linux-only walk (/proc/self/fd); CI runs these on ubuntu.
+const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
+
 // ---------------------------------------------------------------------------
 // Phase 6.6 Task 9 — preset-k8s acceptance canary (Invariant I_R4).
 //
@@ -3197,7 +3200,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   // part in between — that the route is mounted, the splat is captured, the ACL
   // fires, and the bytes survive the trip.
   // ---------------------------------------------------------------------------
-  it(
+  it.skipIf(!ON_LINUX)(
     'F4 canary: the durable user-files tier is browsable over GET /api/workspace/agents/:id/user-files',
     { timeout: 180_000 },
     async () => {

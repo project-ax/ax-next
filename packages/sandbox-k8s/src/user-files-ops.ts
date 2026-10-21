@@ -513,6 +513,27 @@ export async function cleanupUserFiles(
 // cross into a sibling's subtree on the SAME export. The directory listing skips
 // any symlink child (`[ -L ]`) so a listed name can never disclose a foreign
 // path's contents on a follow-up read.
+//
+// KNOWN GAP (TASK-899, follow-up TASK-915): this script checks, then reads. It
+// confines with `realpath`, then reads or lists `$target` BY NAME. That is the
+// check-then-read shape TASK-899 removed from the host-mounted reader, which
+// now walks each path component without following symlinks. The pod mounts the
+// whole export, so an agent that swaps a directory on the path for a link
+// between the two steps could, in principle, have the pod read through it.
+//
+// Why it is out of scope here:
+//   - The walk is in-process Node over `/proc/self/fd`. This pod runs a POSIX
+//     shell script in the runner image, so "use the walk" would mean new
+//     security-critical shell code, or shipping Node code into the pod.
+//   - Production sets `sandbox.filestore.hostReadPath`, so this path runs only
+//     where the export is not mounted into the host.
+//   - The odds of winning the race here are lower, but nobody has measured
+//     them. W3b's race harness had to put the swapper and the reader on one
+//     mount, because across two NFS clients the reader kept seeing its own
+//     cached lookups. That lowers the odds. It is not a guarantee.
+//
+// Mitigation: set `sandbox.filestore.hostReadPath`. TASK-915 tracks closing the
+// gap in this script, or retiring the pod path.
 // ---------------------------------------------------------------------------
 
 /** Build the read script. Exported for a test that runs it through a real
@@ -661,11 +682,14 @@ function safeRelPath(relPath: string | undefined): string {
  * Realize `sandbox:read-user-files` for the k8s provider. Two realizations
  * behind one signature, chosen by `userFilesHostReadRoot`:
  *
- *   - SET   → a direct, confined filesystem read under `<root>/<subPath>`,
- *             because the chart mounted the export read-only into the host pod.
- *             No pod, no apiserver round-trip.
+ *   - SET   → a direct read under `<root>/<subPath>` that walks each path
+ *             component without following symlinks, because the chart mounted
+ *             the export read-only into the host pod. No pod, no apiserver
+ *             round-trip.
  *   - UNSET → a one-shot pod that mounts the export READ-ONLY and emits one
- *             bounded line for `relPath`, read back from `pods/log`.
+ *             bounded line for `relPath`, read back from `pods/log`. This
+ *             branch has a documented check-then-read gap (see the KNOWN GAP
+ *             note above `buildReadCommand`, TASK-915); the SET branch does not.
  *
  * Returns `{ kind: 'unavailable' }` when this deployment resolves no durable
  * tier for the owner at all, `{ kind: 'absent' }` when it has one and the path
@@ -697,9 +721,10 @@ export async function readUserFiles(
   // already serves in dev.
   //
   // `subPath` has been validated as ONE safe segment above, so the join cannot
-  // widen past this agent's subtree; the reader then realpath-confines
-  // everything under it, which is what stops an agent-planted symlink from
-  // crossing into a sibling's subtree on the same export.
+  // widen past this agent's subtree. The reader then opens every component of
+  // `rel` relative to the directory it already holds and refuses symlinks, which
+  // stops a planted or mid-read-swapped link from reaching a sibling's subtree
+  // on the same export.
   if (config.userFilesHostReadRoot.length > 0) {
     return readConfinedUserFiles(
       path.join(config.userFilesHostReadRoot, mount.subPath),

@@ -58,7 +58,17 @@ If the host crashes, hangs, or otherwise fails to call `killPod`, the pod doesn'
 
 ### Filesystem reach (host plugin side)
 
-The host plugin doesn't touch the filesystem at all. `grep -nE 'fs\\.|node:fs' packages/sandbox-k8s/src/*.ts` returns nothing — no `readFile`, no `writeFile`, no `mkdir`, no `unlink`. Everything goes through the k8s API. The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
+The host plugin reads three things from its own filesystem, and writes nothing.
+
+- **The k8s client's credentials.** `kc.loadFromCluster()` (`k8s-api.ts:119`) points the client at the pod's service-account token and CA certificate in `/var/run/secrets/kubernetes.io/serviceaccount/`, and reads the namespace file there. The client library reads the token and the CA itself when it makes a request, so those reads are not in our code. The kubeconfig fallback below it, `kc.loadFromDefault()` (`k8s-api.ts:125`), never runs with `@kubernetes/client-node` 1.4.0, because `loadFromCluster()` doesn't throw outside a cluster.
+- **The user-files export, read-only, when `userFilesHostReadRoot` is set.** The host reads an agent's files through `@ax/user-files-read` (imported in `user-files-ops.ts`), which walks each path component without following symlinks and has no write entry point. Unset, the host reads nothing from the export and a one-shot pod does it instead (see "Known limits").
+- **The storage-helper mTLS files, with the shared pool.** `storage-client.ts` calls `readFileSync` on the `ca.crt`, `tls.crt` and `tls.key` in the mounted secret.
+
+To check this, `grep -nE "node:fs|'fs|child_process|from '@ax/user-files-read'|loadFrom[A-Za-z]+[(]" packages/sandbox-k8s/src/*.ts` prints four lines: the two `loadFrom…` calls in `k8s-api.ts` (the first item), the library import in `user-files-ops.ts` (the second), and the only `fs` import, in `storage-client.ts`, which brings in `readFileSync` and nothing else (the third). So this plugin's own code has no `writeFile`, no `mkdir` and no `unlink`, and no child process to reach the disk another way. Everything else goes through the k8s API.
+
+The glob stops at the top of `src/` on purpose. `src/storage-node/` is the storage-helper pod's own program, and it does write, on its node. The host imports only constants, types and pure helpers from it, and `grep -n "storage-node/" packages/sandbox-k8s/src/*.ts` lists every one of those imports. One of them loads more than it uses: `storage-client.ts` takes the constant `STORAGE_REQUEST_MAX_BYTES` from `storage-node/engine.js`, so loading the host plugin also loads that module and the ones it imports, including `node:fs`'s `writeFileSync` and `fchownSync` and `node:child_process`'s `execFileSync`. They are loaded, never called: nothing on the host side calls into `engine.js`, and loading those modules only defines functions and constants.
+
+The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
 
 ### Git binary as of Phase 3
 
@@ -191,6 +201,8 @@ One new runtime dependency. Pinned exactly. The transitive surface is the price 
 - **No PodSecurity admission claim.** We set the right pod-spec fields, but we don't independently verify the cluster has `pod-security.kubernetes.io/enforce: restricted` (or stricter) on our namespace. A misconfigured cluster could let some other workload run privileged in our namespace, which is outside our blast radius but worth noting in the chart docs.
 - **gVisor opt-out is a foot-gun.** Setting `runtimeClassName: ''` is intentional (single-tenant trusted-model deploys exist), and we warn at boot, but a stderr write at init time is easy to miss in containerized log pipelines that bury startup output. A future hardening pass might require an explicit `iAcknowledgeNoGvisor: true` config flag rather than an empty string.
 - **Host SA RBAC scope is the chart's job.** This plugin can't audit its own RBAC at runtime — the Kubernetes API doesn't expose "what verbs am I allowed to call?" cleanly. We rely on the chart binding the host pod's SA to a Role with the documented minimum verbs (`pods: create/delete/get/list/watch` in one namespace). If the chart binds `cluster-admin`, the entire isolation story collapses. Task 19b's SECURITY.md is where the RBAC claim is enforced.
+
+- **The pod-per-call `/files` reader checks a path, then reads it (TASK-915).** With `sandbox.filestore.hostReadPath` unset, `buildReadCommand` (`user-files-ops.ts`) confines the target with `realpath` and then reads or lists it by name. The host-mounted reader no longer works that way. The pod mounts the whole export, so an agent that swaps a directory on the path for a link between the two steps could in principle have the pod read through it. We left it for now because the walk is in-process Node over `/proc/self/fd`, and this pod runs a shell script. Production sets `hostReadPath`, so the pod path only runs where the export isn't mounted into the host. Winning the race over two NFS clients is harder, because the reader tends to see its own cached lookups, but nobody has measured it for this pod. **Mitigation:** set `hostReadPath`. TASK-915 tracks the fix, either closing the gap in the script or retiring the pod path.
 
 ## What we don't know yet
 

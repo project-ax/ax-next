@@ -6846,9 +6846,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * there is something on the other side of it worth mapping.
      *
      * Below the ACL, the confinement is the sandbox provider's: it joins the
-     * validated agentId itself and realpath-confines every component under it
-     * (@ax/user-files-read), so an agent-planted symlink cannot walk out of its
-     * own subtree. This route does not get to decide which subtree it reads —
+     * validated agentId itself and walks every component under it without following a symlink
+     * (@ax/user-files-read), so an agent-planted link, even one swapped in
+     * mid-read, cannot walk out of its own subtree. This route does not get to decide which subtree it reads —
      * it hands over an `owner` and the provider resolves the mount. That is
      * deliberate: one place decides, and it is the place that already owns the
      * per-agent mount for the live session.
