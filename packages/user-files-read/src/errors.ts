@@ -1,9 +1,13 @@
 /**
  * The storage was there and would not answer.
  *
- * Thrown only from the post-confinement reads, so it can never be the first
- * thing a caller learns about a path — by the time one of these is possible,
- * the path has already been proved to exist inside the caller's own root.
+ * Thrown when a read that was allowed to proceed fails: opening the root the
+ * caller chose, or any component, listing or read inside a directory the walk
+ * has already opened under it, for any errno other than the path having
+ * vanished. Every one of those concerns the caller's own root or a directory
+ * already proved to be inside it, so none of them says anything about anyone
+ * else's files. It is also thrown, with code `unsupported-platform`, before any
+ * path is looked at, when this is not Linux.
  *
  * `code` is the raw errno (`EIO`, `ESTALE`, `EACCES`, …) when the filesystem
  * gave us one. It is for an operator reading a log: nothing user-facing should

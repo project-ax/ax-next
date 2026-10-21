@@ -11,7 +11,7 @@ import {
   readConfinedUserFiles,
   safeJoinUnderRoot,
 } from '../confined-read.js';
-import { MAX_WALK_PARTS } from '../walk-read.js';
+import { MAX_WALK_PARTS, WalkPathError } from '../walk-read.js';
 
 // ---------------------------------------------------------------------------
 // The confinement spec, at the library level.
@@ -39,6 +39,27 @@ const SKIP_REASON = 'needs Linux /proc/<pid>/fd (runs in CI on ubuntu-latest)';
 const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
 
 const SECRET = 'SECRET-do-not-return';
+
+/** The error a promise rejects with; fails the test if it resolves. */
+async function rejection(p: Promise<unknown>): Promise<Error> {
+  try {
+    await p;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('expected the promise to reject');
+}
+
+/** Run `fn` with `process.platform` reading 'darwin'. */
+async function asDarwin(fn: () => Promise<void>): Promise<void> {
+  const d = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...d, value: 'darwin' });
+  try {
+    await fn();
+  } finally {
+    Object.defineProperty(process, 'platform', d);
+  }
+}
 
 const text = (r: ReadUserFilesOutput): string =>
   r.kind === 'file' ? Buffer.from(r.contents).toString('utf8') : '';
@@ -95,14 +116,36 @@ describe('readConfinedUserFiles — answered before the disk (every platform)', 
 
   it('SECURITY: a `..` relPath throws (our own caller is malformed)', async () => {
     await fs.writeFile(path.join(tmp, 'secret'), 'TOPSECRET');
-    await expect(readConfinedUserFiles(root, '../secret')).rejects.toThrow(/\.\./);
+    const err = await rejection(readConfinedUserFiles(root, '../secret'));
+    expect(err.message).toMatch(/\.\./);
+    // The walk's own path check refuses `..` too, with a message that also
+    // matches. Only the lexical guard (adapter step 1) throws a plain Error.
+    expect(err).not.toBeInstanceOf(WalkPathError);
   });
 
   it('SECURITY: an absolute relPath throws', async () => {
-    await expect(readConfinedUserFiles(root, '/etc/passwd')).rejects.toThrow(
-      /relative/,
-    );
+    const err = await rejection(readConfinedUserFiles(root, '/etc/passwd'));
+    expect(err.message).toMatch(/relative/);
+    expect(err).not.toBeInstanceOf(WalkPathError);
   });
+
+  it.each([
+    ['an empty segment', 'a//b'],
+    ['a trailing slash', 'docs/'],
+    ['a dot segment', 'x/./y'],
+    ['a NUL byte', 'notes\u0000.md'],
+  ])(
+    'a malformed path (%s) throws WalkPathError, not an answer (accepted behavior change)',
+    async (_name, rel) => {
+      // The reader this replaced served `docs/`, `a//b` and `x/./y`, and
+      // answered NUL as absent. channel-web's `workspaceFilePath` rejects all of
+      // these before they get here, so no shipped route can reach this.
+      const err = await rejection(readConfinedUserFiles(root, rel));
+      expect(err).toBeInstanceOf(WalkPathError);
+      expect(err).not.toBeInstanceOf(UserFilesReadError);
+      expect(err).toMatchObject({ code: 'invalid-path' });
+    },
+  );
 
   it('a path deeper than MAX_WALK_PARTS is absent, not an error', async () => {
     // The answer depends only on the path's text, so it is no oracle. A 5xx
@@ -111,20 +154,29 @@ describe('readConfinedUserFiles — answered before the disk (every platform)', 
     expect(await readConfinedUserFiles(root, deep)).toEqual({ kind: 'absent' });
   });
 
+  it('a path of exactly MAX_WALK_PARTS is not refused by the depth rule', async () => {
+    // The boundary: 33 parts answers `absent` from the text alone (above), 32
+    // goes on to the walk. Off Linux the walk is where the platform refusal
+    // lives, so reaching it is observable everywhere: the platform is stubbed
+    // so Linux CI runs this too, where a `>=` slip would answer `absent`.
+    const exact = Array.from({ length: MAX_WALK_PARTS }, () => 'd').join('/');
+    await asDarwin(async () => {
+      await expect(readConfinedUserFiles(root, exact)).rejects.toMatchObject({
+        code: 'unsupported-platform',
+      });
+    });
+  });
+
   it('off Linux the reader refuses instead of answering', async () => {
     // Without /proc every component open is ENOENT, so a reader that ran
     // anyway would answer `absent` for everything: a Files tab that says the
     // agent wrote nothing. The platform is stubbed so this runs, and has
     // teeth, on Linux CI too, where hello.txt is there to be (wrongly) served.
-    const d = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    Object.defineProperty(process, 'platform', { ...d, value: 'darwin' });
-    try {
+    await asDarwin(async () => {
       const out = readConfinedUserFiles(root, 'hello.txt');
       await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
       await expect(out).rejects.toMatchObject({ code: 'unsupported-platform' });
-    } finally {
-      Object.defineProperty(process, 'platform', d);
-    }
+    });
   });
 });
 
@@ -191,6 +243,31 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
     expect(
       await readConfinedUserFiles(path.join(tmp, 'never-written'), undefined),
     ).toEqual({ kind: 'absent' });
+  });
+
+  it('a root that is a regular file is absent (ENOTDIR at the root open)', async () => {
+    // ENOTDIR is only reachable at the root open: below the root the walk
+    // answers a non-directory component itself.
+    const file = path.join(tmp, 'not-a-dir');
+    await fs.writeFile(file, 'x');
+    expect(await readConfinedUserFiles(file, undefined)).toEqual({ kind: 'absent' });
+    expect(await readConfinedUserFiles(file, 'hello.txt')).toEqual({ kind: 'absent' });
+  });
+
+  it('a root that is a symlink loop is absent (ELOOP at the root open)', async () => {
+    const loop = path.join(tmp, 'loop');
+    await fs.symlink('loop', loop);
+    expect(await readConfinedUserFiles(loop, undefined)).toEqual({ kind: 'absent' });
+  });
+
+  it('a path of exactly MAX_WALK_PARTS components that exists is read', async () => {
+    // 31 directories and a file: the deepest path the depth rule lets through.
+    const dirs = Array.from({ length: MAX_WALK_PARTS - 1 }, () => 'd');
+    await fs.mkdir(path.join(root, ...dirs), { recursive: true });
+    await fs.writeFile(path.join(root, ...dirs, 'leaf.txt'), 'deep');
+    const out = await readConfinedUserFiles(root, [...dirs, 'leaf.txt'].join('/'));
+    expect(out.kind).toBe('file');
+    expect(text(out)).toBe('deep');
   });
 
   it('a path segment longer than a filename may be is absent, not an error', async () => {

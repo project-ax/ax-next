@@ -122,7 +122,9 @@ const NAME_TOO_LONG = 'ENAMETOOLONG';
  */
 export interface ConfinedReadLimits {
   /**
-   * The most bytes one file read will pull into memory. A larger file is read
+   * The most bytes one file read will pull into memory. An integer from 0 to
+   * 16 MiB (16 * 1024 * 1024): anything else makes the read throw a
+   * `RangeError`. A larger file is read
    * as its first `maxFileBytes` bytes — a PREFIX, not an error and not an
    * `absent`. Rendering "no such file" over a 4 GB dataset the agent definitely
    * wrote would be a lie; handing back a prefix lets the consumer say "this is
@@ -136,7 +138,9 @@ export interface ConfinedReadLimits {
    */
   maxFileBytes: number;
   /**
-   * The most children one directory listing will carry. A directory with more
+   * The most children one directory listing will carry. An integer from 1 to
+   * 10,000: 0 or anything above makes the read throw a `RangeError`. A
+   * directory with more
    * is listed up to the cap. The caller is expected to SAY that the list is
    * short — see `truncated` on the route response. A silently-clipped listing
    * is a listing that lies about what the agent has.
@@ -203,8 +207,18 @@ export function safeJoinUnderRoot(
  * else — missing, a symlink at any depth, a socket, a device — with
  * `{ kind: 'absent' }`.
  *
- * Throws for a relPath malformed enough to be OUR bug (absolute, or containing
- * `..`), and `UserFilesReadError` when the storage is there and will not answer
+ * Throws for a relPath malformed enough to be OUR bug: absolute, containing
+ * `..` (both a plain `Error` from `safeJoinUnderRoot`), or not a clean
+ * `a/b/c` — an empty segment (`a//b`, a trailing `/`), a `.` segment, or NUL —
+ * which is a `WalkPathError` (code `invalid-path`; it is not a
+ * `UserFilesReadError`, and it is not exported from the package). The reader
+ * this replaced served `docs/`, `a//b` and `x/./y`, and answered NUL as absent.
+ * The shipped routes cannot reach any of these: channel-web's
+ * `workspaceFilePath` (`packages/channel-web/src/server/safe-path.ts`) answers
+ * every one of them with a 400 before the path gets here. A new caller must
+ * normalize its paths first.
+ *
+ * Throws `UserFilesReadError` when the storage is there and will not answer
  * — an unreachable root, a listing or a read that failed for any reason other
  * than the path having vanished underneath us — or when this is not Linux
  * (code `unsupported-platform`). Everything path-dependent stays `absent`: see
