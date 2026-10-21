@@ -23,6 +23,9 @@ import { startTestContainer, TEST_PROXY_AUTH_TOKEN } from '@ax/test-harness';
 
 import { createMemoryPlugins, type MemoryPresetConfig } from '../index.js';
 
+// The /files reader is the Linux-only walk (/proc/self/fd); CI runs these on ubuntu.
+const ON_LINUX = process.platform === 'linux' && fs.existsSync('/proc/self/fd');
+
 const ALICE = 'user-alice';
 const BOB = 'user-bob';
 const ROUTINES_ADMIN = 'routines-admin';
@@ -1530,7 +1533,7 @@ describe('@ax/preset-memory canary', () => {
       expect(dl.text).not.toContain('AX-SPA-SHELL');
     });
 
-    it('the durable tier: folder, file and download answer, not index.html', async () => {
+    it.skipIf(!ON_LINUX)('the durable tier: folder, file and download answer, not index.html', async () => {
       const root = await json(`/api/workspace/agents/${aliceFiles}/user-files`);
       expect(root.status).toBe(200);
       expect(root.body.kind).toBe('dir');
@@ -1606,7 +1609,7 @@ describe('@ax/preset-memory canary', () => {
         }
       });
 
-      it('double-encoded traversal is decoded once, so it is a literal filename that does not exist', async () => {
+      it.skipIf(!ON_LINUX)('double-encoded traversal is decoded once, so it is a literal filename that does not exist', async () => {
         for (const route of ROUTES) {
           const p = route(aliceFiles, '%252e%252e%252fsecret.txt');
           const r = await raw(p);
@@ -1629,7 +1632,7 @@ describe('@ax/preset-memory canary', () => {
         expect(r.status).toBe(400);
       });
 
-      it('an agent-planted symlink into a neighbours subtree does not read through', async () => {
+      it.skipIf(!ON_LINUX)('an agent-planted symlink into a neighbours subtree does not read through', async () => {
         for (const p of [
           `/api/workspace/agents/${aliceFiles}/user-files/link-to-bob/secret.txt`,
           `/api/workspace/agents/${aliceFiles}/download/user-files/link-to-bob/secret.txt`,
@@ -1667,7 +1670,7 @@ describe('@ax/preset-memory canary', () => {
         }
       });
 
-      it('a third user sees Alice as absent too, and Bob still reads his own files', async () => {
+      it.skipIf(!ON_LINUX)('a third user sees Alice as absent too, and Bob still reads his own files', async () => {
         const eve = await json(`/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`, EVE);
         expect(eve.status).toBe(404);
         const eveDurable = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs`, EVE);
