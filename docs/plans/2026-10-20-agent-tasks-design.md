@@ -348,7 +348,9 @@ that grows forever.
     task, and changing any routine's name, instructions, "going well when" or
     kind, always needs a yes, even with Always Allow (`touchesTaskBrief` in
     `@ax/routines-contract`, checked by tool-policy before consent can relax a
-    hold). That is what makes the `brief` section person-written.
+    hold). The agent can turn a routine into a task only by sending the whole
+    brief in the same change, so the card shows all of it, not just the new
+    "going well when". That is what makes the `brief` section person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
   removes it. Tasks PR 1 adds it back as its first user.
 
@@ -545,11 +547,13 @@ suggest a short body for known apps.
 
 - **No new reach.** A check-in uses the agent's own tools, connectors and
   approval rules. Nothing about a task widens them.
-- **The agent can't change what a task is for.** The brief, "going well when"
-  and the schedule belong to the person. Who may create or change a task
-  follows today's routine permissions (`agents:can-manage-routines`: personal
-  agent → its owner, team agent → team admins). Always Allow doesn't cover a
-  task's brief (§4.2).
+- **The agent can't change what a task is for.** A task's brief (its name,
+  instructions and "going well when") and its kind always need the person's
+  yes, even with Always Allow (§4.2). The schedule and active hours are
+  different: with Always Allow the agent can change them without asking, but
+  never to check-ins less than 15 minutes apart. Who may create or change a
+  task follows today's routine permissions (`agents:can-manage-routines`:
+  personal agent → its owner, team agent → team admins).
 - **Only a person** marks a task done or resumes a paused one.
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.

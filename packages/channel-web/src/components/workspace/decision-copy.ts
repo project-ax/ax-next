@@ -59,7 +59,8 @@ export const COMPOSER_HOLD_COPY =
  * (`touchesTaskBrief` in `@ax/routines-contract`, which tool-policy checks
  * before consent can relax a hold). The rule reaches a little further than
  * these words, since a repeat routine's name and instructions ask too. That
- * is the safe direction: the line never claims more reach than the agent has.
+ * is the safe direction (design H4): the line may overstate what the agent
+ * can do without asking, never understate it.
  */
 export const ALWAYS_ALLOW_STILL_ASKS = "Delete, Fire now and a task's instructions still ask.";
 

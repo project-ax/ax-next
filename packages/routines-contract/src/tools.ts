@@ -174,7 +174,7 @@ export const RoutineDefinitionJsonSchema = {
 };
 export const RoutinePatchJsonSchema = {
   type: 'object', additionalProperties: false, minProperties: 1, properties: editableProperties,
-  description: 'Only supplied fields change. Null clears activeHours or silenceToken. Trigger and activeHours replace complete objects.',
+  description: 'Only supplied fields change. Null clears activeHours, silenceToken or goodWhen. Trigger and activeHours replace complete objects.',
 };
 const mutationProperties = { routineId: opaque, requestId: opaque, expectedRevision: opaque };
 const mutationRequired = ['routineId', 'requestId', 'expectedRevision'];
