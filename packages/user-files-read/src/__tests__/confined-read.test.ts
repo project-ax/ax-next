@@ -558,6 +558,23 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
           swapper.stdout!.once('data', () => resolve());
         });
 
+        // Every 7th first-walk open of `a` (the O_PATH one) fails ESTALE, in
+        // the shape Node really gives it, so the swap also races the ESTALE
+        // retry: a whole second walk, whose opens are O_RDONLY. The retry
+        // must be as unable to follow the link as the walk it replaces.
+        const O_PATH = 0o10000000;
+        const realOpen = fs.open;
+        let firstWalkOpens = 0;
+        let retries = 0;
+        vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+          if (path.basename(String(p)) === 'a') {
+            if ((Number(flags) & O_PATH) !== 0) {
+              if (++firstWalkOpens % 7 === 0) throw stale();
+            } else retries++;
+          }
+          return realOpen(p, flags, mode);
+        });
+
         const counts = { inside: 0, absent: 0, other: 0 };
         const deadline = Date.now() + 15_000;
         let i = 0;
@@ -576,7 +593,10 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
         expect(counts.inside).toBeGreaterThan(0);
         expect(counts.absent).toBeGreaterThan(0);
         expect(counts.other).toBe(0);
+        // And some reads really did go through the retry.
+        expect(retries).toBeGreaterThan(0);
       } finally {
+        vi.restoreAllMocks();
         // Wait for it to die, so the cleanup's rm isn't racing its renames.
         const exited = new Promise((resolve) => swapper.once('exit', resolve));
         swapper.kill('SIGKILL');

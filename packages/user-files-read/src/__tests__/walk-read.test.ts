@@ -545,6 +545,59 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
       expect(opens.filter(([opened]) => opened === 'docs')).toHaveLength(2);
     });
 
+    it('only ESTALE is retried: an EIO that would not repeat still throws', async () => {
+      // One EIO, then every open is real, so a reader that retried on any
+      // WalkReadError would succeed on its second walk and hide the broken read.
+      const realOpen = fs.open;
+      let left = 1;
+      vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+        if (left > 0 && path.basename(String(p)) === 'docs') {
+          left--;
+          throw Object.assign(new Error('simulated EIO'), { code: 'EIO', errno: -5 });
+        }
+        return realOpen(p, flags, mode);
+      });
+      await expect(readConfinedByWalk(root, ['docs', 'note.md'], LIMITS)).rejects.toMatchObject({
+        name: 'WalkReadError',
+        code: 'EIO',
+        depth: 0,
+      });
+    });
+
+    it('SECURITY: the retry does not open a FIFO on the path: O_DIRECTORY keeps it from blocking', async () => {
+      // On the retry a directory is opened O_RDONLY, and an O_RDONLY open of a
+      // FIFO without O_NONBLOCK waits for a writer: an agent could park the
+      // host's request, and a libuv thread, forever. O_DIRECTORY refuses it
+      // (ENOTDIR). If it ever blocked, the race below reports it quickly
+      // instead of leaving the test to hang until its timeout.
+      const pipe = path.join(root, 'docs', 'pipe');
+      expect(spawnSync('mkfifo', [pipe]).status, `mkfifo ${pipe}`).toBe(0);
+      staleOpens('docs', 1);
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = new Promise<'blocked'>((resolve) => {
+        timer = setTimeout(() => resolve('blocked'), 3_000);
+      });
+      try {
+        const out = await Promise.race([readConfinedByWalk(root, ['docs', 'pipe', 'x'], LIMITS), timedOut]);
+        expect(out).toMatchObject({ kind: 'absent', reason: 'link-or-not-dir' });
+      } finally {
+        clearTimeout(timer);
+        // Let a parked open, if there is one, finish: a writer appears.
+        await (await fs.open(pipe, constants.O_RDWR | O_NONBLOCK)).close();
+      }
+    });
+
+    it('SECURITY: the retry opens a device on the path as a directory only, so never as a device', async () => {
+      // /dev/null is harmless to open, but the same open of a tty or a FIFO is
+      // not, so what is pinned is the flag: O_DIRECTORY on every open of it.
+      const opens = staleOpens('null', 1);
+      const r = await readConfinedByWalk('/dev', ['null', 'x'], LIMITS);
+      expect(r).toMatchObject({ kind: 'absent', reason: 'link-or-not-dir' });
+      const ofNull = opens.filter(([opened]) => opened === 'null');
+      expect(ofNull).toHaveLength(2);
+      for (const [, flags] of ofNull) expect(flags & O_DIRECTORY).toBe(O_DIRECTORY);
+    });
+
     it('SECURITY: the retry follows no symlink either: a folder swapped for a link out is absent', async () => {
       staleOpens('docs', 1, async () => {
         await fs.rm(path.join(root, 'docs'), { recursive: true });

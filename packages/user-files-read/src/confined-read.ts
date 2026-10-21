@@ -63,8 +63,8 @@ import {
 // being replaced or deleted by the agent, so the walk retries it once itself,
 // with opens that make NFS look again (walk-read.ts). A replaced folder is
 // then served, a deleted one comes back ENOENT and is absent, and ESTALE that
-// survives the retry throws, because that is what the export itself going
-// stale looks like. Telling these apart costs no secrecy: every errno the walk
+// survives the retry throws, because that means an export that went stale, or
+// a folder the agent is rewriting faster than a read finishes. Telling these apart costs no secrecy: every errno the walk
 // reports concerns the root the caller chose or a directory the walk has
 // already opened inside it, so it says nothing about anyone else's files.
 //
@@ -121,7 +121,7 @@ const VANISHED_ERRNOS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP']);
  * A path segment longer than a filename may be (NAME_MAX: 255 bytes on every
  * filesystem this runs on). No such file can exist, and the answer depends
  * only on the path's text, so it is no oracle; a 5xx would invite a retry that
- * can never succeed. The depth rule's reasoning, for length. It does reach us:
+ * can never succeed. The MAX_WALK_PARTS rule's reasoning, for length. It does reach us:
  * channel-web caps a segment at 255 UTF-16 units, and 128 two-byte characters
  * are 256 bytes.
  */

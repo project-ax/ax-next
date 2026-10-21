@@ -59,11 +59,15 @@ import { UserFilesReadError } from './errors.js';
 //   directory O_PATH skips NFS's close-to-open check, so the same walk again
 //   finds the same stale directory, until the cache times out (up to a
 //   minute). The retry opens the root and every intermediate O_RDONLY
-//   instead: still O_NOFOLLOW, still one name relative to the descriptor
-//   already held. An O_RDONLY open makes NFS check each directory with the
-//   server and look a stale one up again. So a replaced folder serves its new
-//   files, a deleted one is absent (ENOENT), and an export that is itself
-//   stale fails ESTALE again, which throws. Measured on a real NFSv3 export
+//   instead. Below the root, each is still O_NOFOLLOW and O_DIRECTORY, and
+//   still one name relative to the descriptor already held; the root, by
+//   design, is neither no-follow nor relative to a held descriptor. On the
+//   retry, O_DIRECTORY is what keeps a FIFO or device on the path from being
+//   opened: an O_RDONLY open of a FIFO without O_NONBLOCK would park a thread
+//   until a writer appears. An O_RDONLY open makes NFS check each directory
+//   with the server and look a stale one up again. So a replaced folder
+//   serves its new files, a deleted one is absent (ENOENT), and an export
+//   that is itself stale fails ESTALE again, which throws. Measured on a real NFSv3 export
 //   (TASK-899). The cost: on the retry, a search-only directory (above)
 //   throws EACCES, because O_RDONLY needs read permission. A broken read,
 //   never an absence.
