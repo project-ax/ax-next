@@ -238,9 +238,30 @@ const STRAY_SELECTOR = /(?:^|[\uFE00-\uFE0F\u{E0100}-\u{E01EF}])[\uFE00-\uFE0F\u
 const STRAY_MONGOLIAN_SELECTOR = /(?:^|[^\u1820-\u1878\u1880-\u18AA])[\u180B-\u180D\u180F]/u;
 const BRIEF_TEXT_FIELDS = [['name', 'name'], ['promptBody', 'instructions'], ['goodWhen', 'going-well-when']] as const;
 
-function hidesText(value: string): boolean {
-  return HIDDEN_FORMAT_CHARS.test(value) || BRIEF_CONTROLS.test(value) ||
-    BRIEF_INVISIBLES.test(value) || STRAY_SELECTOR.test(value) || STRAY_MONGOLIAN_SELECTOR.test(value);
+/**
+ * Each matches a stretch whose last code point is one the card wouldn't draw:
+ * a single character, or a selector with what makes it stray in front of it.
+ * None is global, so `exec` keeps no `lastIndex` between calls.
+ */
+const BRIEF_HIDDEN: readonly RegExp[] = [HIDDEN_FORMAT_CHARS, BRIEF_CONTROLS, BRIEF_INVISIBLES, STRAY_SELECTOR, STRAY_MONGOLIAN_SELECTOR];
+
+/**
+ * The first character in `value` the card wouldn't draw, or null: its code
+ * point, and its position counted in code points from 1, so an emoji before
+ * it counts once although it is two UTF-16 units. The decision is the
+ * patterns' own; only a refusal pays for counting the position.
+ */
+function firstHiddenCharacter(value: string): { codePoint: number; position: number } | null {
+  let index = -1;
+  for (const pattern of BRIEF_HIDDEN) {
+    const match = pattern.exec(value);
+    if (match === null) continue;
+    const points = [...match[0]];
+    const at = match.index + match[0].length - points[points.length - 1]!.length;
+    if (index === -1 || at < index) index = at;
+  }
+  if (index === -1) return null;
+  return { codePoint: value.codePointAt(index)!, position: [...value.slice(0, index)].length + 1 };
 }
 
 /** More than 16 whitespace characters in a row, LF aside: spaces, tabs, CR, and the no-break and wide spaces. */
@@ -270,7 +291,11 @@ function hasBlankLineRun(value: string): boolean {
 
 /** The one thing wrong with a field of a task's brief, in plain words, or null. */
 function briefFieldIssue(field: (typeof BRIEF_TEXT_FIELDS)[number][0], label: string, value: string): string | null {
-  if (hidesText(value)) return `A task’s ${label} can’t contain invisible characters.`;
+  const hidden = firstHiddenCharacter(value);
+  if (hidden !== null) {
+    const codePoint = hidden.codePoint.toString(16).toUpperCase().padStart(4, '0');
+    return `A task’s ${label} can’t contain invisible characters (U+${codePoint} at character ${hidden.position}).`;
+  }
   if (field === 'name') return /[\t\n\r]/.test(value) ? 'A task’s name can’t contain tabs or line breaks.' : null;
   // Blank text has nothing to push out of view, and a blank going-well-when is the kind's own rule.
   if (value.trim() === '') return null;

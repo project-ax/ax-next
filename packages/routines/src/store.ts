@@ -7,7 +7,7 @@ import {
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
 import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource } from './types.js';
-import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition } from './definition.js';
+import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema } from './dispatch.js';
 
 type DB = Kysely<RoutinesDatabase>;
@@ -182,7 +182,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         const current = await lockRoutine(trx, input);
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         let next: RoutineDefinition;
-        try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch { throw new SafeToolError('validation', 'input'); }
+        try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch (error) { throw validationError(error); }
         if (hasHmac(next)) await assertNoCleanup(trx, current);
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
         const row = await trx.updateTable('routines_v1_definitions').set({

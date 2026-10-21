@@ -7,7 +7,7 @@ import * as C from '@ax/routines-contract';
 import type { RoutinesStore, OperationKey } from './store.js';
 import {
   createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash,
-  editableDefinition, parseStoredRoutine,
+  editableDefinition, parseStoredRoutine, validationError,
 } from './definition.js';
 import { AcceptedDispatchSchema } from './dispatch.js';
 import { parseRoutineInput, routinePermissions, routineView } from './services.js';
@@ -89,7 +89,7 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
       const patch = (prepared.input as C.RoutineUpdateInput).patch;
       requireAllowed(permissions.edit || (permissions.stop && Object.keys(patch).length === 1 && patch.enabled === false));
       try { next = C.applyRoutinePatch(editableDefinition(row), patch); }
-      catch { throw new SafeToolError('validation', 'input'); }
+      catch (error) { throw validationError(error); }
     }
   }
   if (next?.trigger.kind === 'webhook') {

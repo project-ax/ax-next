@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
 import { RoutineDefinitionObjectSchema, RoutineDefinitionSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
-import { SafeToolError } from '@ax/core';
+import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
 export function opaqueId(prefix: string): string { return `${prefix}_${randomUUID().replaceAll('-', '')}`; }
@@ -14,9 +14,23 @@ export function inputHash(input: unknown): string {
     : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)])) : value;
   return createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex');
 }
+/**
+ * A refused routine input as a closed validation error that names its field
+ * (TASK-906): the first zod issue's path, without a tool or service input's
+ * `definition` or `patch` wrapper, joined with dots (`promptBody`,
+ * `trigger.expr`). `SafeToolError` keeps a field only when it is one of core's
+ * closed names and makes anything else (`goodWhen`, `kind`, an array index)
+ * `input`, so neither the input nor the schema's message reaches the agent.
+ * Anything that isn't a zod refusal is `input` too.
+ */
+export function validationError(error: unknown): SafeToolError {
+  const path = error instanceof z.ZodError ? error.issues[0]?.path ?? [] : [];
+  const field = path[0] === 'definition' || path[0] === 'patch' ? path.slice(1) : path;
+  return new SafeToolError('validation', field.join('.') as SafeToolField);
+}
 export function validateDefinition(input: unknown): RoutineDefinition {
   const parsed = RoutineDefinitionSchema.safeParse(input);
-  if (!parsed.success) throw new SafeToolError('validation', 'input');
+  if (!parsed.success) throw validationError(parsed.error);
   return parsed.data;
 }
 export function nextRun(definition: RoutineDefinition, now: Date): Date | null {
