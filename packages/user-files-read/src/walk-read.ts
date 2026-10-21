@@ -1,4 +1,5 @@
 import { existsSync, promises as fs, constants } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import type { UserFileDirEntry } from '@ax/sandbox-mount-protocol';
 import { UserFilesReadError } from './errors.js';
 
@@ -49,8 +50,8 @@ import { UserFilesReadError } from './errors.js';
 //   must not echo it to a client: telling "this is a symlink" apart from "this
 //   is missing" is a free oracle about a tree the reader may not otherwise see.
 // - Everything else that fails (EACCES, EIO, ESTALE, …) THROWS
-//   `WalkReadError` with the errno and the depth it failed at. A broken read is
-//   not an absence (TASK-403).
+//   `WalkReadError` with the errno's name and the depth it failed at. A broken
+//   read is not an absence (TASK-403).
 // ---------------------------------------------------------------------------
 
 /** No more path components than this, root excluded. */
@@ -140,9 +141,28 @@ export function splitRelPath(relPath: string): string[] {
   return parts;
 }
 
+/**
+ * Errno numbers to names. Where two names share a number (EAGAIN and
+ * EWOULDBLOCK), the first listed wins; Node names those itself anyway.
+ */
+const ERRNO_NAMES = new Map<number, string>();
+for (const [name, n] of Object.entries(osConstants.errno)) {
+  if (!ERRNO_NAMES.has(n)) ERRNO_NAMES.set(n, name);
+}
+
+/**
+ * The errno's name: `code`, when Node gave a real one. Node's names come from
+ * libuv, which has none for some errnos, ESTALE among them, and then `code` is
+ * text like 'Unknown system error -116'. So the name comes from `errno`
+ * instead, the number libuv reports negated. That is how a stale NFS handle
+ * reads `ESTALE` here, which `WalkReadError.code` promises.
+ */
 function errnoOf(err: unknown): string | undefined {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === 'string' ? code : undefined;
+  const e = err as { code?: unknown; errno?: unknown } | null;
+  const code = e?.code;
+  if (typeof code === 'string' && /^E[A-Z0-9]+$/.test(code)) return code;
+  const named = typeof e?.errno === 'number' ? ERRNO_NAMES.get(Math.abs(e.errno)) : undefined;
+  return named ?? (typeof code === 'string' ? code : undefined);
 }
 
 function absentReason(code: string | undefined): WalkAbsentReason | undefined {

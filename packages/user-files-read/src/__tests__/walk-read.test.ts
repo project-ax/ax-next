@@ -3,6 +3,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { getSystemErrorName } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserFilesReadError } from '../index.js';
 import {
@@ -421,6 +422,51 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
       await expect(readConfinedByWalk(root, ['docs'], LIMITS)).rejects.toMatchObject({
         code: 'EACCES',
       });
+    });
+  });
+
+  // ESTALE: on NFS a handle the walk holds can name a directory that is gone.
+  // Node 24 on Linux reports it only by number, because libuv has no name for
+  // errno 116, and the walk names it anyway.
+  describe('ESTALE, as Node reports it', () => {
+    /**
+     * ESTALE the way Node 24 really rejects with it on Linux, as measured on a
+     * real NFS export: libuv has no name for errno 116, so `code` is its
+     * fallback text and only `errno` carries the number.
+     */
+    function stale(): NodeJS.ErrnoException {
+      const err: NodeJS.ErrnoException = new Error('Unknown system error -116');
+      err.code = 'Unknown system error -116';
+      err.errno = -116;
+      return err;
+    }
+
+    /** Make the walk's opens of `name` ('<root>' for the root) reject with stale(). */
+    function staleOpens(name: string): void {
+      const realOpen = fs.open;
+      vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+        const opened = String(p) === root ? '<root>' : path.basename(String(p));
+        if (opened === name) throw stale();
+        return realOpen(p, flags, mode);
+      });
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('the injected error is the shape Node gives ESTALE here', () => {
+      // If Node ever names errno 116 itself, its `code` will say ESTALE and
+      // stale() is out of date.
+      expect(os.constants.errno.ESTALE).toBe(116);
+      expect(getSystemErrorName(-116)).toBe('Unknown system error -116');
+    });
+
+    it('a stale handle is reported as ESTALE, a name Node does not give it', async () => {
+      staleOpens('docs');
+      const out = readConfinedByWalk(root, ['docs', 'note.md'], LIMITS);
+      await expect(out).rejects.toMatchObject({ name: 'WalkReadError', code: 'ESTALE', depth: 0 });
+      await expect(out).rejects.toThrow('could not open a path component (ESTALE)');
     });
   });
 });

@@ -605,18 +605,38 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
 // listing, and the leaf handle's own `stat` and `read`.
 // ---------------------------------------------------------------------------
 
-/** A rejection shaped like the ones Node's fs hands back. */
+/** A rejection shaped like the ones Node's fs hands back: the name, and the number negated. */
 function errno(code: string): NodeJS.ErrnoException {
+  if (code === 'ESTALE') {
+    throw new Error("Node never reports ESTALE by name on Linux, so errno('ESTALE') tests nothing: use stale()");
+  }
   const err: NodeJS.ErrnoException = new Error(`simulated ${code}`);
   err.code = code;
+  err.errno = -os.constants.errno[code as keyof typeof os.constants.errno];
   return err;
 }
 
-/** Make the walk's opens of paths `match` picks reject with `code`; every other open is real. */
-function failOpen(match: (p: string) => boolean, code: string): void {
+/**
+ * ESTALE the way Node 24 really rejects with it on Linux, as measured on a real
+ * NFS export: libuv has no name for errno 116, so `code` is its fallback text
+ * and only `errno` carries the number.
+ */
+function stale(): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error('Unknown system error -116');
+  err.code = 'Unknown system error -116';
+  err.errno = -116;
+  return err;
+}
+
+/**
+ * Make the walk's opens of paths `match` picks reject with `err` (an errno
+ * name, or a factory). Every other open is real.
+ */
+function failOpen(match: (p: string) => boolean, err: string | (() => Error)): void {
   const realOpen = fs.open;
+  const make = typeof err === 'string' ? () => errno(err) : err;
   vi.spyOn(fs, 'open').mockImplementation((p, flags, mode) =>
-    match(String(p)) ? Promise.reject(errno(code)) : realOpen(p, flags, mode),
+    match(String(p)) ? Promise.reject(make()) : realOpen(p, flags, mode),
   );
 }
 
@@ -704,7 +724,7 @@ describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (
       agent's own subtree fails with `ESTALE`, and every read answers `absent`
       — so the Files tab tells everyone their agents have written nothing.
     */
-    failOpen((p) => p === root, 'ESTALE');
+    failOpen((p) => p === root, stale);
     const out = readConfinedUserFiles(root, undefined);
     await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
     await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth: -1 });
@@ -713,20 +733,21 @@ describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (
   // ESTALE is NFS saying a handle the walk holds names something that is gone.
   // That is also what an export that is itself stale says, and on real NFS a
   // stale export fails a deep read at depth 1 or 0 before it ever fails at the
-  // root. So ESTALE is a broken read at every depth, never an absence.
+  // root. So ESTALE is a broken read at every depth, never an absence. Every
+  // ESTALE here is stale(): the shape Node really reports.
 
   it.each([
     ['opening a folder on the path', (p: string) => p.endsWith('/docs'), 0],
     ['opening the leaf', (p: string) => p.endsWith('/note.md'), 1],
   ])('ESTALE %s is a broken read, not an absence', async (_what, match, depth) => {
-    failOpen(match, 'ESTALE');
+    failOpen(match, stale);
     const out = readConfinedUserFiles(root, 'docs/note.md');
     await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
     await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
   });
 
   it('ESTALE listing a folder, or the root, throws too', async () => {
-    vi.spyOn(fs, 'opendir').mockRejectedValue(errno('ESTALE'));
+    vi.spyOn(fs, 'opendir').mockRejectedValue(stale());
     for (const [rel, depth] of [['docs', 0], [undefined, -1]] as const) {
       const out = readConfinedUserFiles(root, rel);
       await expect(out).rejects.toBeInstanceOf(UserFilesReadError);

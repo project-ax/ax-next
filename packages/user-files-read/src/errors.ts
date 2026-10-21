@@ -9,9 +9,10 @@
  * else's files. It is also thrown, with code `unsupported-platform`, before any
  * path is looked at, when this is not Linux.
  *
- * `code` is the raw errno (`EIO`, `ESTALE`, `EACCES`, …) when the filesystem
- * gave us one. It is for an operator reading a log: nothing user-facing should
- * repeat it, because "ESTALE" is not a sentence anybody can act on.
+ * `code` is the errno's name (`EIO`, `ESTALE`, `EACCES`, …) when the filesystem
+ * gave us one, even one Node has no name for: on Linux, Node reports ESTALE
+ * only by number. It is for an operator reading a log: nothing user-facing
+ * should repeat it, because "ESTALE" is not a sentence anybody can act on.
  *
  * A plain `Error` subclass rather than a `PluginError` on purpose — this
  * package is a dependency-free library with no `@ax/core` import, and the
