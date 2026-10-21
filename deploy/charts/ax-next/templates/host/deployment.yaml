@@ -355,8 +355,8 @@ spec:
             # SECURITY: this is the widening documented in values.yaml — the
             # host gains read access to EVERY agent subtree, so cross-tenant
             # isolation moves from structural (no path at all) to code (the
-            # route's agents:resolve ACL + realpath confinement in
-            # @ax/user-files-read). Read-only end to end.
+            # route's agents:resolve ACL + the per-component
+            # no-follow walk in @ax/user-files-read). Read-only end to end.
             - name: AX_FILESTORE_HOST_READ_PATH
               value: {{ .Values.sandbox.filestore.hostReadPath | quote }}
             {{- end }}

@@ -58,7 +58,12 @@ If the host crashes, hangs, or otherwise fails to call `killPod`, the pod doesn'
 
 ### Filesystem reach (host plugin side)
 
-The host plugin doesn't touch the filesystem at all. `grep -nE 'fs\\.|node:fs' packages/sandbox-k8s/src/*.ts` returns nothing — no `readFile`, no `writeFile`, no `mkdir`, no `unlink`. Everything goes through the k8s API. The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
+The host plugin reads two things from its own filesystem, and writes nothing.
+
+- **The user-files export, read-only, when `userFilesHostReadRoot` is set.** The host reads an agent's files through `@ax/user-files-read`, which walks each path component without following symlinks. Unset, the host reads nothing from the export and a one-shot pod does it instead (see "Known limits").
+- **The storage-helper mTLS files, with the shared pool.** `storage-client.ts` calls `readFileSync` on the `ca.crt`, `tls.crt` and `tls.key` in the mounted secret.
+
+`grep -nE 'fs\\.|node:fs' packages/sandbox-k8s/src/*.ts` finds the `node:fs` import in `storage-client.ts`, so this section used to be wrong when it said the grep returns nothing. There is no `writeFile`, no `mkdir` and no `unlink`. Everything else goes through the k8s API. The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
 
 ### Git binary as of Phase 3
 
@@ -191,6 +196,8 @@ One new runtime dependency. Pinned exactly. The transitive surface is the price 
 - **No PodSecurity admission claim.** We set the right pod-spec fields, but we don't independently verify the cluster has `pod-security.kubernetes.io/enforce: restricted` (or stricter) on our namespace. A misconfigured cluster could let some other workload run privileged in our namespace, which is outside our blast radius but worth noting in the chart docs.
 - **gVisor opt-out is a foot-gun.** Setting `runtimeClassName: ''` is intentional (single-tenant trusted-model deploys exist), and we warn at boot, but a stderr write at init time is easy to miss in containerized log pipelines that bury startup output. A future hardening pass might require an explicit `iAcknowledgeNoGvisor: true` config flag rather than an empty string.
 - **Host SA RBAC scope is the chart's job.** This plugin can't audit its own RBAC at runtime — the Kubernetes API doesn't expose "what verbs am I allowed to call?" cleanly. We rely on the chart binding the host pod's SA to a Role with the documented minimum verbs (`pods: create/delete/get/list/watch` in one namespace). If the chart binds `cluster-admin`, the entire isolation story collapses. Task 19b's SECURITY.md is where the RBAC claim is enforced.
+
+- **The pod-per-call `/files` reader checks a path, then reads it (TASK-915).** With `sandbox.filestore.hostReadPath` unset, `buildReadCommand` (`user-files-ops.ts`) confines the target with `realpath` and then reads or lists it by name. The host-mounted reader no longer works that way. The pod mounts the whole export, so an agent that swaps a directory on the path for a link between the two steps could in principle have the pod read through it. We left it for now because the walk is in-process Node over `/proc/<pid>/fd`, and this pod runs a shell script. Production sets `hostReadPath`, so the pod path only runs where the export isn't mounted into the host. Winning the race over two NFS clients is harder, because the reader tends to see its own cached lookups, but nobody has measured it for this pod. **Mitigation:** set `hostReadPath`. TASK-915 tracks the fix, either closing the gap in the script or retiring the pod path.
 
 ## What we don't know yet
 

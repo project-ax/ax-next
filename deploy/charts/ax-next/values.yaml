@@ -346,15 +346,20 @@ sandbox:
     # isolation is structural — there is no path from the host process to the
     # export at all. Turn this on and the host can read every agent's subtree,
     # and the isolation becomes code: an `agents:resolve` check on the route
-    # plus realpath confinement in the reader (both tested, both required). The
-    # mount itself is read-only end to end, and nothing on the read path ever
-    # opens a writable handle.
+    # plus a reader that walks each path component without following symlinks
+    # (both tested, both required). The mount itself is read-only end to end,
+    # and nothing on the read path ever opens a writable handle.
     #
     # In blast-radius terms it is not a step up — the host already holds the
     # database, the blob store and every credential, so a compromised host was
     # already a bad day. But "not a step up" is not "free", and if you do not
     # need the browser, leave it empty and the browser will say it cannot
     # reach the files rather than pretending the agent wrote nothing.
+    #
+    # Leaving this empty is not as cautious as it looks. The pod-per-call
+    # reader checks a path and then reads it, and an agent that swaps a folder
+    # for a link at the right moment could in principle win that race. The
+    # host-mounted reader does not have that gap. Tracked in TASK-915.
     #
     # Requires `server` to be set as well (an empty server means no export to
     # mount). Opening this also opens the HOST pod's egress to the Filestore IP
