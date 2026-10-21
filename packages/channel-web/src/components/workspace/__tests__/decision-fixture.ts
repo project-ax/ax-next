@@ -9,8 +9,9 @@
  * compares what they say.
  *
  * It is the WIRE shape: no `call`, no `callFingerprint`, no `ownerUserId`. The
- * tool input reaches a renderer only as `request` (TASK-699) — already fenced
- * text, open rows only — and it is `null` here unless a test sets it.
+ * tool input reaches a renderer only as `request` (TASK-699) and `task`
+ * (TASK-906) — already fenced text, open rows only — and both are `null` here
+ * unless a test sets them.
  */
 import type { Decision } from '@/lib/workspace-api';
 
@@ -33,6 +34,7 @@ export function decisionFixture(over: Partial<Decision> = {}): Decision {
     detail: 'It clashes with the board prep.',
     preview: null,
     request: null,
+    task: null,
     primaryLabel: 'Move it',
     secondaryLabel: 'Pick another time',
     ghostLabel: 'Leave it',

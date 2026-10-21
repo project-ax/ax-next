@@ -112,7 +112,7 @@
  * so there is no flag to hide it behind (TASK-360 retired `agentWorkspace`).
  * Each handler is authenticated and owner-scoped on its own.
  */
-import { RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema } from '@ax/routines-contract';
+import { RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, routineTaskProposal } from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
@@ -149,6 +149,7 @@ import type {
   Decision,
   DecisionRequest,
   DecisionStatus,
+  DecisionTask,
   ExecutionPath,
   GrantRef,
   GrantRow,
@@ -163,6 +164,9 @@ import type {
 import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
+// A proposed task's schedule in words (TASK-906). Pure, no DOM, and it imports
+// its own sibling relatively, so the built server can load it.
+import { describeCheckIns } from '../lib/task-schedule.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The sentence a full storage limit answers a Rules Save with (TASK-719), and
 // the one test for "this refusal is the storage limit". The sentence is shared
@@ -721,10 +725,11 @@ type MemoryStatusInput = Record<string, never>;
  * plugins talk through the hook bus and never through each other's modules
  * (invariant 2).
  *
- * `call.input` is MODEL-AUTHORED. It is read in exactly one place —
- * `wireRequest`, which fences and caps it into the approval card's "what it
- * will send" block on an open row (TASK-699) — and the structure itself never
- * crosses the wire.
+ * `call.input` is MODEL-AUTHORED. Its text reaches the wire through exactly
+ * two readers, both on open rows only: `wireRequest`, which fences and caps it
+ * into the approval card's "what it will send" block (TASK-699), and
+ * `wireTask`, which fences a proposed task's own fields (TASK-906). The
+ * structure itself never crosses the wire.
  */
 interface StoredDecision {
   id: string;
@@ -2321,6 +2326,16 @@ export const DECISION_PREVIEW_BODY_MAX_CHARS = 2000;
 export const DECISION_REQUEST_TOOL_MAX_CHARS = 120;
 export const DECISION_REQUEST_INPUT_MAX_CHARS = 2000;
 export const DECISION_REQUEST_INPUT_MAX_LINES = 40;
+/**
+ * A proposed task's own fields, shown on an OPEN decision above the request
+ * block (TASK-906). The name is a routine name, which the contract caps at
+ * 128. The instructions and going-well-when are agent-authored prose, so they
+ * get the request input's room and line cap. The schedule is one sentence.
+ */
+export const DECISION_TASK_NAME_MAX_CHARS = 128;
+export const DECISION_TASK_TEXT_MAX_CHARS = 2000;
+export const DECISION_TASK_TEXT_MAX_LINES = 40;
+export const DECISION_TASK_CHECKS_IN_MAX_CHARS = 200;
 
 /**
  * What a control says when its authored label fences down to nothing.
@@ -2495,7 +2510,8 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  *
  * Two jobs, and nothing else. It DROPS the fields a renderer has no use for —
  * `call` above all, whose raw structure is model-authored; what survives of it
- * is `request`, a fenced text rendering on open rows only (TASK-699) — and it
+ * is `request`, a fenced text rendering on open rows only (TASK-699), and
+ * `task`, a proposed task's own fields fenced the same way (TASK-906) — and it
  * FENCES every string that survives. See `Decision` in `../lib/workspace-types.ts` for the full account
  * of what goes and why.
  *
@@ -2533,6 +2549,37 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
   if (json === undefined || json === '{}' || json === '[]' || json === 'null') json = undefined;
   const block = fenceBlock(json, DECISION_REQUEST_INPUT_MAX_CHARS, DECISION_REQUEST_INPUT_MAX_LINES);
   return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
+}
+
+/**
+ * The task the held call proposes, in its own fields (TASK-906) — or `null`.
+ *
+ * The same model-authored `call.input` that `wireRequest` renders, read a
+ * second way: through the contract's `routineTaskProposal`, the one reading of
+ * "is this call a task proposal" that `@ax/decisions` also words the summary
+ * from, so the block and the headline can't disagree. That helper's parsed
+ * copy is still agent-authored, so every string leaves through `fenceLine` or
+ * `fenceBlock` and nothing else of it crosses. A field the call doesn't carry
+ * is null, so a change shows only what it changes.
+ *
+ * TOTAL, like `wireRequest`: the helper never throws and answers null for
+ * anything it can't read. Open rows only, for the same reason as the request.
+ */
+function wireTask(stored: StoredDecision): DecisionTask | null {
+  if (!isOpenDecision(stored)) return null;
+  const proposal = routineTaskProposal({ name: stored.call?.name ?? '', input: stored.call?.input });
+  if (proposal === null) return null;
+  const fields = proposal.action === 'start' ? proposal.definition : proposal.patch;
+  return {
+    action: proposal.action,
+    name: fenceLine(fields.name, DECISION_TASK_NAME_MAX_CHARS),
+    instructions: fenceBlock(fields.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES),
+    goodWhen: fenceBlock(fields.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES),
+    checksIn:
+      fields.trigger === undefined
+        ? null
+        : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS),
+  };
 }
 
 export function toWireDecision(stored: StoredDecision, eligible = false): Decision {
@@ -2592,6 +2639,8 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
         : null,
     // Agent-authored, fenced, open rows only — see `wireRequest`.
     request: wireRequest(stored),
+    // The same rules, for a proposed task's own fields — see `wireTask`.
+    task: wireTask(stored),
     primaryLabel:
       fenceLine(stored.primaryLabel, DECISION_LABEL_MAX_CHARS) ??
       DECISION_FALLBACK_PRIMARY,

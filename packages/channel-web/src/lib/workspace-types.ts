@@ -125,7 +125,10 @@ export interface FreshnessPredicate {
  *     input, on open rows only — because an approval that does not show what
  *     it approves is a rubber stamp, and the owner chose showing the call over
  *     hiding it. The SSE frame still carries none of it, and a test asserts
- *     both halves.
+ *     both halves. `task` (TASK-906) is the same input read a second way: when
+ *     the call proposes a task, its name, instructions, going-well-when and
+ *     schedule, each fenced and capped on the server. It is agent-authored
+ *     too, open rows only too, and never on the SSE frame either.
  *   - `ownerUserId` is DROPPED: it is always the caller, so it says nothing,
  *     and a user id on a page is one more identifier to leak.
  *   - `callFingerprint` / `ruleId` / `consumedAt` / `replayClaimedAt` /
@@ -146,6 +149,15 @@ export interface DecisionRequest {
   input: string | null;
   /** True when the cap cut `input` short — render it as the beginning, not the whole. */
   truncated: boolean;
+}
+
+/** TASK-906 — a task-shaped routine proposal on an OPEN row. Every string is server-fenced, agent-authored data. */
+export interface DecisionTask {
+  action: 'start' | 'change';
+  name: string | null;
+  instructions: { text: string; truncated: boolean } | null;
+  goodWhen: { text: string; truncated: boolean } | null;
+  checksIn: string | null;
 }
 
 export const ROUTINE_DECISION_OPERATIONS = ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const;
@@ -197,6 +209,23 @@ export interface Decision {
    * or not serialisable); `tool` is always present when the block is.
    */
   request: DecisionRequest | null;
+  /**
+   * THE TASK THE HELD CALL PROPOSES (TASK-906), in its own fields — or null.
+   * Non-null only on an open row whose call starts a "Stay on top of
+   * something" task, or edits a routine to set a going-well-when or a task
+   * kind.
+   * `routineTaskProposal` in `@ax/routines-contract` decides that, and it is
+   * the same reading `@ax/decisions` words the summary from, so the block and
+   * the row's headline can't disagree.
+   *
+   * Agent-authored, exactly like `request`, and drawn the same way: React
+   * text, never markdown, never `dangerouslySetInnerHTML`. The server has
+   * fenced every string in it. A field the call doesn't carry is null, so a
+   * change shows only what it changes. It does not replace `request`: the
+   * fields it leaves out (description, enabled, active hours, conversation)
+   * are approved too, and the request block still shows them.
+   */
+  task: DecisionTask | null;
   primaryLabel: string;
   secondaryLabel: string;
   ghostLabel: string;
