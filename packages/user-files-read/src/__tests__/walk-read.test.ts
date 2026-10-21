@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { constants, existsSync, promises as fs } from 'node:fs';
 import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -425,10 +425,17 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     });
   });
 
-  // ESTALE: on NFS a handle the walk holds can name a directory that is gone.
-  // Node 24 on Linux reports it only by number, because libuv has no name for
-  // errno 116, and the walk names it anyway.
-  describe('ESTALE, as Node reports it', () => {
+  // ESTALE: on NFS a handle the walk holds can name a directory that is gone,
+  // because the agent replaced or deleted it and this host's NFS cache still
+  // holds the old one. The walk then walks once more, opening the root and
+  // every directory on the way O_RDONLY, which NFS revalidates with the
+  // server, and that answer stands. Proven on a real NFSv3 export (TASK-899);
+  // here the ESTALE is injected, and these pin the mechanism.
+  describe('ESTALE: one retry, from scratch, with opens NFS revalidates', () => {
+    const { O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = constants;
+    /** Linux's value on x86_64 and arm64; Node's fs.constants leaves it out. */
+    const O_PATH = 0o10000000;
+
     /**
      * ESTALE the way Node 24 really rejects with it on Linux, as measured on a
      * real NFS export: libuv has no name for errno 116, so `code` is its
@@ -441,14 +448,26 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
       return err;
     }
 
-    /** Make the walk's opens of `name` ('<root>' for the root) reject with stale(). */
-    function staleOpens(name: string): void {
+    /**
+     * Spy on the walk's opens. Records each one's name ('<root>' for the root)
+     * and flags, and makes the first `times` opens of `name` reject with
+     * stale(), each after running `act`, the agent's move.
+     */
+    function staleOpens(name: string, times: number, act?: () => Promise<unknown>): Array<[string, number]> {
+      const opens: Array<[string, number]> = [];
       const realOpen = fs.open;
+      let left = times;
       vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
         const opened = String(p) === root ? '<root>' : path.basename(String(p));
-        if (opened === name) throw stale();
+        opens.push([opened, Number(flags)]);
+        if (opened === name && left > 0) {
+          left--;
+          await act?.();
+          throw stale();
+        }
         return realOpen(p, flags, mode);
       });
+      return opens;
     }
 
     afterEach(() => {
@@ -463,11 +482,93 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     });
 
     it('a stale handle is reported as ESTALE, a name Node does not give it', async () => {
-      staleOpens('docs');
+      staleOpens('docs', Infinity);
       const out = readConfinedByWalk(root, ['docs', 'note.md'], LIMITS);
       await expect(out).rejects.toMatchObject({ name: 'WalkReadError', code: 'ESTALE', depth: 0 });
       await expect(out).rejects.toThrow('could not open a path component (ESTALE)');
     });
+
+    it('retries once from scratch, opening the root and each directory on the way O_RDONLY', async () => {
+      const opens = staleOpens('docs', 1);
+      expect(text(await readConfinedByWalk(root, ['docs', 'note.md'], LIMITS))).toBe('all good');
+      expect(opens).toEqual([
+        // The first walk, the one W3b proved on real NFS: O_PATH to pass through.
+        ['<root>', O_DIRECTORY | O_PATH],
+        ['docs', O_NOFOLLOW | O_PATH | O_DIRECTORY],
+        // The retry: O_RDONLY, which makes NFS check each directory with the
+        // server. Still O_NOFOLLOW below the root.
+        ['<root>', O_DIRECTORY | O_RDONLY],
+        ['docs', O_NOFOLLOW | O_RDONLY | O_DIRECTORY],
+        ['note.md', O_NOFOLLOW | O_RDONLY | O_NONBLOCK],
+      ]);
+    });
+
+    /** Make the first read of the first `name` leaf the walk opens reject with stale(). */
+    function staleRead(name: string): void {
+      const realOpen = fs.open;
+      let rigged = false;
+      vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+        const fh = await realOpen(p, flags, mode);
+        if (!rigged && path.basename(String(p)) === name) {
+          rigged = true;
+          vi.spyOn(fh, 'read').mockRejectedValueOnce(stale());
+        }
+        return fh;
+      });
+    }
+
+    const answer = (r: WalkReadOutput): string =>
+      r.kind === 'file'
+        ? `file:${text(r)}`
+        : r.kind === 'dir'
+          ? `dir:${r.entries.map((e) => e.name).join(',')}`
+          : `absent:${r.reason}`;
+
+    it.each([
+      ['opening the root', ['docs', 'note.md'], 'file:all good', () => staleOpens('<root>', 1)],
+      ['opening the leaf', ['docs', 'note.md'], 'file:all good', () => staleOpens('note.md', 1)],
+      ['reading the leaf', ['docs', 'note.md'], 'file:all good', () => staleRead('note.md')],
+      ['listing a directory', ['docs'], 'dir:note.md', () => vi.spyOn(fs, 'opendir').mockRejectedValueOnce(stale())],
+    ])('ESTALE %s is retried too, and the retry answers', async (_what, parts, expected, inject) => {
+      inject();
+      expect(answer(await readConfinedByWalk(root, parts, LIMITS))).toBe(expected);
+    });
+
+    it('ESTALE again on the retry throws: one retry, never two', async () => {
+      const opens = staleOpens('docs', 2);
+      await expect(readConfinedByWalk(root, ['docs', 'note.md'], LIMITS)).rejects.toMatchObject({
+        name: 'WalkReadError',
+        code: 'ESTALE',
+        depth: 0,
+      });
+      // Only two opens of `docs` were stale, so a third walk would have read the file.
+      expect(opens.filter(([opened]) => opened === 'docs')).toHaveLength(2);
+    });
+
+    it('SECURITY: the retry follows no symlink either: a folder swapped for a link out is absent', async () => {
+      staleOpens('docs', 1, async () => {
+        await fs.rm(path.join(root, 'docs'), { recursive: true });
+        await fs.symlink(outside, path.join(root, 'docs'));
+      });
+      const r = await readConfinedByWalk(root, ['docs', 'secret.txt'], LIMITS);
+      expect(r).toMatchObject({ kind: 'absent', reason: 'link-or-not-dir' });
+      expect(JSON.stringify(r)).not.toContain(SECRET);
+    });
+
+    it.skipIf(IS_ROOT)(
+      'on the retry, a search-only directory is a broken read (EACCES), never an absence',
+      async () => {
+        // O_RDONLY needs read permission, so the retry can't pass through a
+        // 0311 directory the way the first walk does. That's the price of
+        // making NFS look again, and it is paid only after an ESTALE.
+        await fs.chmod(path.join(root, 'docs'), 0o311);
+        staleOpens('note.md', 1);
+        await expect(readConfinedByWalk(root, ['docs', 'note.md'], LIMITS)).rejects.toMatchObject({
+          code: 'EACCES',
+          depth: 0,
+        });
+      },
+    );
   });
 });
 

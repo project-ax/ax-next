@@ -31,11 +31,12 @@ import { UserFilesReadError } from './errors.js';
 //
 // Decisions worth naming:
 //
-// - INTERMEDIATE components are opened O_PATH, not O_RDONLY. Passing through a
-//   directory should need search permission only, the reach a path lookup
-//   always needed, so a directory the agent made search-only (0311) still
-//   reads through. O_RDONLY would need read permission too. The LEAF is opened
-//   O_RDONLY because we read or list it.
+// - INTERMEDIATE components are opened O_PATH, not O_RDONLY (the ESTALE retry
+//   below is the one exception). Passing through a directory should need
+//   search permission only, the reach a path lookup always needed, so a
+//   directory the agent made search-only (0311) still reads through. O_RDONLY
+//   would need read permission too. The LEAF is opened O_RDONLY because we
+//   read or list it.
 // - The LEAF is opened O_NONBLOCK too. A FIFO opened O_RDONLY without it blocks
 //   until a writer appears — an agent could park the host's request forever.
 //   We open, fstat, and only read a regular file. A FIFO, socket, or device is
@@ -52,6 +53,20 @@ import { UserFilesReadError } from './errors.js';
 // - Everything else that fails (EACCES, EIO, ESTALE, …) THROWS
 //   `WalkReadError` with the errno's name and the depth it failed at. A broken
 //   read is not an absence (TASK-403).
+// - ESTALE gets ONE retry: a whole new walk, whose answer is final. On NFS a
+//   handle can name a directory that is gone: the agent replaced or deleted a
+//   folder, and this host's NFS caches still hold the old one. Opening a
+//   directory O_PATH skips NFS's close-to-open check, so the same walk again
+//   finds the same stale directory, until the cache times out (up to a
+//   minute). The retry opens the root and every intermediate O_RDONLY
+//   instead: still O_NOFOLLOW, still one name relative to the descriptor
+//   already held. An O_RDONLY open makes NFS check each directory with the
+//   server and look a stale one up again. So a replaced folder serves its new
+//   files, a deleted one is absent (ENOENT), and an export that is itself
+//   stale fails ESTALE again, which throws. Measured on a real NFSv3 export
+//   (TASK-899). The cost: on the retry, a search-only directory (above)
+//   throws EACCES, because O_RDONLY needs read permission. A broken read,
+//   never an absence.
 // ---------------------------------------------------------------------------
 
 /** No more path components than this, root excluded. */
@@ -155,7 +170,8 @@ for (const [name, n] of Object.entries(osConstants.errno)) {
  * libuv, which has none for some errnos, ESTALE among them, and then `code` is
  * text like 'Unknown system error -116'. So the name comes from `errno`
  * instead, the number libuv reports negated. That is how a stale NFS handle
- * reads `ESTALE` here, which `WalkReadError.code` promises.
+ * reads `ESTALE` here, which the ESTALE retry needs and `WalkReadError.code`
+ * promises.
  */
 function errnoOf(err: unknown): string | undefined {
   const e = err as { code?: unknown; errno?: unknown } | null;
@@ -189,7 +205,8 @@ const fdPath = (fd: number): string => `/proc/self/fd/${fd}`;
 
 /**
  * Read `parts` under the trusted `root`, opening every component relative to
- * the previous one's descriptor with O_NOFOLLOW. See the file header.
+ * the previous one's descriptor with O_NOFOLLOW. A walk that fails ESTALE is
+ * walked once more, and that answer stands. See the file header.
  *
  * `root` is the only path opened by name, and it MAY be a symlink (it is
  * trusted configuration, not agent-written). `parts` is untrusted.
@@ -214,14 +231,35 @@ export async function readConfinedByWalk(
     });
   }
 
+  try {
+    return await walkOnce(root, parts, opts, O_PATH);
+  } catch (err) {
+    if (!(err instanceof WalkReadError) || err.code !== 'ESTALE') throw err;
+  }
+  // The one retry: a whole new walk that passes through every directory with
+  // an open NFS revalidates. Its answer is final. See the file header.
+  return await walkOnce(root, parts, opts, constants.O_RDONLY);
+}
+
+/**
+ * One walk. `passThrough` is how the root and every directory on the way to
+ * the leaf are opened: O_PATH, or O_RDONLY on the ESTALE retry.
+ */
+async function walkOnce(
+  root: string,
+  parts: string[],
+  opts: WalkReadLimits,
+  passThrough: number,
+): Promise<WalkReadOutput> {
   const held: fs.FileHandle[] = [];
   try {
-    // The root: trusted, so no O_NOFOLLOW. O_PATH when we only pass through it.
+    // The root: trusted, so no O_NOFOLLOW. `passThrough` when we only pass
+    // through it.
     try {
       held.push(
         await fs.open(
           root,
-          constants.O_DIRECTORY | (parts.length > 0 ? O_PATH : constants.O_RDONLY),
+          constants.O_DIRECTORY | (parts.length > 0 ? passThrough : constants.O_RDONLY),
         ),
       );
     } catch (err) {
@@ -232,7 +270,7 @@ export async function readConfinedByWalk(
       const leaf = i === parts.length - 1;
       const flags =
         constants.O_NOFOLLOW |
-        (leaf ? constants.O_RDONLY | constants.O_NONBLOCK : O_PATH | constants.O_DIRECTORY);
+        (leaf ? constants.O_RDONLY | constants.O_NONBLOCK : passThrough | constants.O_DIRECTORY);
       try {
         held.push(await fs.open(`${fdPath(held.at(-1)!.fd)}/${parts[i]}`, flags));
       } catch (err) {

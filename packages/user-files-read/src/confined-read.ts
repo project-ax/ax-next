@@ -59,12 +59,14 @@ import {
 // exactly like a directory the agent never created, and the Files tab told the
 // reader their agent had written nothing. So a path that VANISHED is `absent`
 // (see `VANISHED_ERRNOS`), and every other errno throws `UserFilesReadError`,
-// ESTALE included, at every depth. On real NFS a stale export fails a deep read
-// at depth 1 or 0 before it ever fails at the root, so an absence below the
-// root would say an agent wrote nothing while its export is down. Telling these
-// apart costs no secrecy: every errno the walk reports concerns the root the
-// caller chose or a directory the walk has already opened inside it, so it
-// says nothing about anyone else's files.
+// ESTALE included. ESTALE is also how NFS reports a folder the walk holds
+// being replaced or deleted by the agent, so the walk retries it once itself,
+// with opens that make NFS look again (walk-read.ts). A replaced folder is
+// then served, a deleted one comes back ENOENT and is absent, and ESTALE that
+// survives the retry throws, because that is what the export itself going
+// stale looks like. Telling these apart costs no secrecy: every errno the walk
+// reports concerns the root the caller chose or a directory the walk has
+// already opened inside it, so it says nothing about anyone else's files.
 //
 // WHAT IT REPLACED (TASK-899). This reader used to `realpath` the target, check
 // the result was under the root, and then open the path again, with O_NOFOLLOW
@@ -110,8 +112,8 @@ export { UserFilesReadError } from './errors.js';
  * The walk answers a component that is missing, a link or not a directory at
  * the moment it opens it by itself, so these arrive here from the other steps:
  * opening the root, listing, and the leaf's stat and read. On NFS the same race
- * can arrive as ESTALE instead. That is not one of these: ESTALE is also what
- * an export that is itself stale says, at any depth (see the header).
+ * can arrive as ESTALE instead. That is not one of these: the walk retries it,
+ * and a path that is really gone comes back from the retry as ENOENT.
  */
 const VANISHED_ERRNOS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP']);
 
@@ -242,9 +244,10 @@ export function safeJoinUnderRoot(
  *
  * Throws `UserFilesReadError` when the storage is there and will not answer
  * — an unreachable root, a listing or a read that failed for any reason other
- * than the path having vanished underneath us — or when this is not Linux
- * (code `unsupported-platform`). Everything path-dependent stays `absent`: see
- * the header.
+ * than the path having vanished underneath us, a stale NFS handle the walk's
+ * one retry could not get past — or when this is not Linux (code
+ * `unsupported-platform`). Everything path-dependent stays `absent`: see the
+ * header.
  */
 export async function readConfinedUserFiles(
   root: string,

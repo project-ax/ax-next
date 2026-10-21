@@ -630,14 +630,25 @@ function stale(): NodeJS.ErrnoException {
 
 /**
  * Make the walk's opens of paths `match` picks reject with `err` (an errno
- * name, or a factory). Every other open is real.
+ * name, or a factory): the first `times` of them, each after running `act`,
+ * the agent's move for a test that acts one out. Every other open is real.
  */
-function failOpen(match: (p: string) => boolean, err: string | (() => Error)): void {
+function failOpen(
+  match: (p: string) => boolean,
+  err: string | (() => Error),
+  { times = Infinity, act }: { times?: number; act?: () => Promise<unknown> } = {},
+): void {
   const realOpen = fs.open;
   const make = typeof err === 'string' ? () => errno(err) : err;
-  vi.spyOn(fs, 'open').mockImplementation((p, flags, mode) =>
-    match(String(p)) ? Promise.reject(make()) : realOpen(p, flags, mode),
-  );
+  let left = times;
+  vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+    if (left > 0 && match(String(p))) {
+      left--;
+      await act?.();
+      throw make();
+    }
+    return realOpen(p, flags, mode);
+  });
 }
 
 /**
@@ -730,29 +741,55 @@ describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (
     await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth: -1 });
   });
 
-  // ESTALE is NFS saying a handle the walk holds names something that is gone.
-  // That is also what an export that is itself stale says, and on real NFS a
-  // stale export fails a deep read at depth 1 or 0 before it ever fails at the
-  // root. So ESTALE is a broken read at every depth, never an absence. Every
-  // ESTALE here is stale(): the shape Node really reports.
+  // ESTALE is NFS saying a handle the walk holds names something that is gone:
+  // the agent replaced or deleted a folder the walk was inside, or the export
+  // itself went stale. The walk walks once more, with opens that make NFS look
+  // again (walk-read.ts), and that answer stands. So ESTALE is never an absence
+  // by itself, at any depth: on real NFS a stale export fails at depth 1 and 0
+  // before it ever fails at the root. Every ESTALE here is stale(): the shape
+  // Node really reports.
 
   it.each([
     ['opening a folder on the path', (p: string) => p.endsWith('/docs'), 0],
     ['opening the leaf', (p: string) => p.endsWith('/note.md'), 1],
-  ])('ESTALE %s is a broken read, not an absence', async (_what, match, depth) => {
+  ])('ESTALE %s that the retry meets again is a broken read, not an absence', async (_what, match, depth) => {
     failOpen(match, stale);
     const out = readConfinedUserFiles(root, 'docs/note.md');
     await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
     await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
   });
 
-  it('ESTALE listing a folder, or the root, throws too', async () => {
+  it('ESTALE listing a folder, or the root, that the retry meets again throws too', async () => {
     vi.spyOn(fs, 'opendir').mockRejectedValue(stale());
     for (const [rel, depth] of [['docs', 0], [undefined, -1]] as const) {
       const out = readConfinedUserFiles(root, rel);
       await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
       await expect(out).rejects.toMatchObject({ code: 'ESTALE', depth });
     }
+  });
+
+  it('a folder the agent REPLACED is served by the retry', async () => {
+    // `rm -rf docs && mkdir docs` plus a new note, while this host's NFS cache
+    // still holds the old `docs`: the first walk's step into it fails ESTALE.
+    failOpen((p) => p.endsWith('/docs'), stale, {
+      times: 1,
+      act: async () => {
+        await fs.rm(path.join(root, 'docs'), { recursive: true });
+        await fs.mkdir(path.join(root, 'docs'));
+        await fs.writeFile(path.join(root, 'docs', 'note.md'), 'rewritten');
+      },
+    });
+    const out = await readConfinedUserFiles(root, 'docs/note.md');
+    expect(out).toMatchObject({ kind: 'file', truncated: false });
+    expect(text(out)).toBe('rewritten');
+  });
+
+  it('a folder the agent DELETED is absent: the retry finds nothing there', async () => {
+    failOpen((p) => p.endsWith('/docs'), stale, {
+      times: 1,
+      act: () => fs.rm(path.join(root, 'docs'), { recursive: true }),
+    });
+    expect(await readConfinedUserFiles(root, 'docs/note.md')).toEqual({ kind: 'absent' });
   });
 
   it('but a root that was never CREATED is an absence, not an error', async () => {
