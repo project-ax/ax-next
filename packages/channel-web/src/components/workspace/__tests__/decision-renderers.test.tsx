@@ -18,7 +18,7 @@
  * neither of them says "Sent".
  */
 import { act } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
@@ -41,7 +41,7 @@ import {
   DECISION_TASK_HEADING_CHANGE,
   DECISION_TASK_HEADING_START,
   DECISION_TASK_NAME_LABEL,
-  DECISION_TASK_LINE_CHARS,
+  DECISION_TASK_LINE_COLUMNS,
   DECISION_TASK_SCROLL_NOTE,
   DECISION_TASK_TRUNCATED,
   DECISION_TASK_VISIBLE_LINES,
@@ -523,12 +523,13 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
 
   // The box shows twelve lines and then scrolls, and on systems that hide
   // scrollbars nothing else says there is more. A field the box can't show
-  // whole says so under it, in both renderers. jsdom has no layout, so it is
-  // decided from the text: each line break starts a line, and a line wraps
-  // every DECISION_TASK_LINE_CHARS characters, an estimate that errs toward
-  // saying "scroll".
+  // whole says so under it, in both renderers. Two signals, either enough: the
+  // browser's own layout (the box's content taller than the box), and an
+  // estimate from the text that errs toward "scroll" for the narrowest box we
+  // lay out (a 360px phone). jsdom has no layout, so these tests pin the
+  // estimate, and mock the layout to pin the other half.
   describe('says when a field is taller than its box', () => {
-    const lines = (n: number) => Array.from({ length: n }, (_, i) => `Step ${i + 1}.`).join('\n');
+    const lines = (n: number, separator = '\n') => Array.from({ length: n }, (_, i) => `Step ${i + 1}.`).join(separator);
     const withFields = (instructions: string, goodWhen: string) =>
       decisionFixture({
         ...held,
@@ -539,9 +540,11 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
         },
       });
     const noteCount = (text: string) => text.split(DECISION_TASK_SCROLL_NOTE).length - 1;
+    /** CJK ideographs, which take two columns each. Built from code points so the source holds none. */
+    const ideographs = (n: number) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + (i % 200))).join('');
 
-    it('pins the box: twelve lines of about sixty characters', () => {
-      expect([DECISION_TASK_VISIBLE_LINES, DECISION_TASK_LINE_CHARS]).toEqual([12, 60]);
+    it('pins the box: twelve lines of 28 columns', () => {
+      expect([DECISION_TASK_VISIBLE_LINES, DECISION_TASK_LINE_COLUMNS]).toEqual([12, 28]);
     });
 
     it('under each tall field, as muted text, for line breaks and for one long line', () => {
@@ -559,17 +562,107 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       }
     });
 
-    it('counts wrapped lines too: lines of 61 characters wrap in two', () => {
-      const wrapped = withFields(Array(7).fill('y'.repeat(61)).join('\n'), Array(6).fill('y'.repeat(61)).join('\n'));
+    it('counts wrapped lines: a line of 29 columns takes two', () => {
+      const wrapped = withFields(Array(7).fill('y'.repeat(29)).join('\n'), Array(6).fill('y'.repeat(29)).join('\n'));
       for (const text of [queueText(wrapped), cardText(wrapped)]) expect(noteCount(text)).toBe(1);
     });
 
-    it('not for a field that fits: twelve lines, or one line of 720 characters', () => {
-      const fits = withFields(lines(12), 'z'.repeat(12 * 60));
+    it('counts a wide character as two columns: CJK fills the box at half the characters', () => {
+      // 200 ideographs are 400 columns, fifteen lines; 200 narrow characters are eight.
+      const cjk = withFields(ideographs(200), 'z'.repeat(200));
+      for (const text of [queueText(cjk), cardText(cjk)]) expect(noteCount(text)).toBe(1);
+      // The review's case: one line of 700 ideographs.
+      const long = withFields(ideographs(700), 'Inbox at zero.');
+      for (const text of [queueText(long), cardText(long)]) expect(noteCount(text)).toBe(1);
+      // An emoji is wide too.
+      const emoji = withFields(Array.from({ length: 170 }, () => String.fromCodePoint(0x1f600)).join(''), 'Inbox at zero.');
+      for (const text of [queueText(emoji), cardText(emoji)]) expect(noteCount(text)).toBe(1);
+    });
+
+    it('treats CR and CRLF as line breaks too', () => {
+      const cr = withFields(lines(13, '\r'), lines(13, '\r\n'));
+      for (const text of [queueText(cr), cardText(cr)]) expect(noteCount(text)).toBe(2);
+    });
+
+    it('not for a field that fits: twelve lines, or one line of 336 columns', () => {
+      const fits = withFields(lines(12), 'z'.repeat(12 * 28));
       for (const text of [queueText(fits), cardText(fits)]) expect(noteCount(text)).toBe(0);
-      const justOver = withFields(lines(12), 'z'.repeat(12 * 60 + 1));
+      const justOver = withFields(lines(12), 'z'.repeat(12 * 28 + 1));
       for (const text of [queueText(justOver), cardText(justOver)]) expect(noteCount(text)).toBe(1);
       for (const text of [queueText(held), cardText(held)]) expect(noteCount(text)).toBe(0);
+    });
+
+    describe('where the browser lays the box out', () => {
+      const layout = { scroll: 0, client: 0 };
+      let resized: (() => void)[] = [];
+      beforeEach(() => {
+        layout.scroll = 0;
+        layout.client = 0;
+        resized = [];
+        vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(() => layout.scroll);
+        vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(() => layout.client);
+        // A callback counts only while its observer watches something.
+        vi.stubGlobal(
+          'ResizeObserver',
+          class {
+            constructor(private readonly callback: () => void) {}
+            observe() {
+              resized.push(this.callback);
+            }
+            unobserve() {}
+            disconnect() {
+              resized = resized.filter((callback) => callback !== this.callback);
+            }
+          },
+        );
+      });
+      afterEach(() => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      });
+      const short = withFields('Keep the queue empty.', 'Inbox at zero.');
+
+      it('a short text whose box overflows says so: the layout is enough', () => {
+        layout.scroll = 300;
+        layout.client = 256;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(2);
+      });
+
+      it('a short text whose box doesn’t overflow says nothing, and a pixel of rounding isn’t overflow', () => {
+        layout.scroll = 42;
+        layout.client = 42;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(0);
+        layout.scroll = 43;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(0);
+      });
+
+      it('checks again when the box resizes, as a narrower window wraps the text', () => {
+        layout.scroll = 42;
+        layout.client = 42;
+        const { container, unmount } = render(both(short)[1]!);
+        expect(noteCount(container.textContent ?? '')).toBe(0);
+        expect(resized.length).toBeGreaterThan(0);
+        layout.scroll = 300;
+        layout.client = 256;
+        act(() => {
+          for (const callback of resized) callback();
+        });
+        expect(noteCount(container.textContent ?? '')).toBe(2);
+        // Unmounted, the box is watched no more.
+        unmount();
+        expect(resized).toEqual([]);
+      });
+
+      it('without ResizeObserver it still measures once, and the estimate still decides', () => {
+        vi.stubGlobal('ResizeObserver', undefined);
+        layout.scroll = 300;
+        layout.client = 256;
+        for (const text of [queueText(short), cardText(short)]) expect(noteCount(text)).toBe(2);
+        layout.scroll = 0;
+        layout.client = 0;
+        const tall = withFields(lines(13), 'Inbox at zero.');
+        for (const text of [queueText(tall), cardText(tall)]) expect(noteCount(text)).toBe(1);
+      });
     });
   });
 

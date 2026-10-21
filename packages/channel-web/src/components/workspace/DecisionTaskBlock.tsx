@@ -21,6 +21,7 @@
  * them as plain React text: no markdown, no HTML, and no attribute built from
  * them. `**bold**` stays two asterisks either side, and `<img>` stays text.
  */
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { cn } from '@/lib/utils';
 import type { DecisionTask } from '@/lib/workspace-types';
 import { DECISION_REQUEST_PROVENANCE } from './DecisionRequestBlock';
@@ -41,24 +42,70 @@ export const DECISION_TASK_TRUNCATED = 'This is only the beginning. The full tex
  */
 export const DECISION_TASK_VISIBLE_LINES = 12;
 /**
- * Where a line is taken to wrap, in characters. The narrowest box, inside the
- * in-thread card (604px), holds roughly 85 characters of 13px Inter on a
- * line, so sixty errs toward saying "scroll", in a narrower window too.
+ * Where a line is taken to wrap, in columns. The narrowest box we lay out is
+ * on a 360px phone (the shell is one column below `md`): about 214px of text
+ * in both the queue row (`pl-[46px] pr-5` inside `px-6`) and the in-thread
+ * card (avatar, gap and `p-3.5` inside `px-6`). Prose in 13px Inter averages
+ * about 6.5px a character, so 28 columns over-counts lines a little there and
+ * a lot on a desktop.
  */
-export const DECISION_TASK_LINE_CHARS = 60;
+export const DECISION_TASK_LINE_COLUMNS = 28;
 export const DECISION_TASK_SCROLL_NOTE = 'Scroll to read all of it.';
 
 /**
- * How many lines a field takes in its box, estimated from the text: each line
- * break starts a line, and a line wraps every `DECISION_TASK_LINE_CHARS`
- * characters (UTF-16 units, which counts an emoji as two and errs high again).
- * Layout isn't measured: tests run without it, and the estimate must hold
- * there too.
+ * Code points a renderer draws two columns wide: East Asian wide and fullwidth
+ * (Hangul, CJK, kana, Yi, fullwidth forms) and emoji. Whole blocks are counted
+ * where only part of one is wide, which errs wide.
  */
-function estimatedLines(text: string): number {
+const WIDE_RANGES: readonly (readonly [number, number])[] = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x2329, 0x232a], [0x23e9, 0x23f3], [0x25fd, 0x25fe],
+  [0x2600, 0x27bf], [0x2b00, 0x2bff], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3], [0xf900, 0xfaff],
+  [0xfe10, 0xfe19], [0xfe30, 0xfe6f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x16fe0, 0x18aff],
+  [0x1b000, 0x1b2ff], [0x1f000, 0x1faff], [0x20000, 0x3fffd],
+];
+function columns(codePoint: number): number {
+  return codePoint >= 0x1100 && WIDE_RANGES.some(([low, high]) => codePoint >= low && codePoint <= high) ? 2 : 1;
+}
+
+/**
+ * Whether a field is taller than its box by an estimate from the text alone:
+ * CR, LF and CRLF each start a line, and a line wraps every
+ * `DECISION_TASK_LINE_COLUMNS` columns. It errs toward "taller", and it holds
+ * where nothing is laid out (tests), so the note never rests on layout alone.
+ * Stops counting once the answer is known.
+ */
+function estimatedTallerThanBox(text: string): boolean {
   let lines = 0;
-  for (const line of text.split('\n')) lines += Math.max(1, Math.ceil(line.length / DECISION_TASK_LINE_CHARS));
-  return lines;
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    let width = 0;
+    for (const char of line) width += columns(char.codePointAt(0)!);
+    lines += Math.max(1, Math.ceil(width / DECISION_TASK_LINE_COLUMNS));
+    if (lines > DECISION_TASK_VISIBLE_LINES) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the box's content is taller than the box, as the browser laid it
+ * out: checked when the text changes and whenever the box resizes, as a
+ * narrower window wraps the text sooner. A pixel of rounding isn't overflow.
+ * False where nothing is laid out (jsdom reads every height as 0), and
+ * measured once where `ResizeObserver` is missing.
+ */
+function useOverflows(box: RefObject<HTMLElement | null>, text: string): boolean {
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (node === null) return;
+    const check = () => setOverflows(node.scrollHeight > node.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(check);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [box, text]);
+  return overflows;
 }
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
@@ -72,7 +119,8 @@ const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words';
 /**
  * One prose field: its label, the text, and what a person needs to know to
  * read all of it. On systems that hide scrollbars nothing else says the box
- * scrolls, so a field the box can't show whole says so under it. The contract
+ * scrolls, so a field the box can't show whole says so under it: when the
+ * browser's layout says so, or the text's own estimate does. The contract
  * keeps a task's padding short (no more than two blank lines or 16 spaces in
  * a row, no marks without a character), so what fills the box is text.
  */
@@ -85,13 +133,15 @@ function TaskProse({
   value: { text: string; truncated: boolean };
   testId: string;
 }) {
+  const box = useRef<HTMLElement>(null);
+  const overflows = useOverflows(box, value.text);
   return (
     <div className="flex flex-col gap-0.5">
       <dt className={LABEL}>{label}</dt>
-      <dd data-testid={testId} className={cn(VALUE, PROSE)}>
+      <dd ref={box} data-testid={testId} className={cn(VALUE, PROSE)}>
         {value.text}
       </dd>
-      {estimatedLines(value.text) > DECISION_TASK_VISIBLE_LINES && <dd className={LABEL}>{DECISION_TASK_SCROLL_NOTE}</dd>}
+      {(overflows || estimatedTallerThanBox(value.text)) && <dd className={LABEL}>{DECISION_TASK_SCROLL_NOTE}</dd>}
       {value.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
     </div>
   );
