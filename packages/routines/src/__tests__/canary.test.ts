@@ -152,6 +152,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
   });
   // TASK-906: the Always Allow carve-out for a task's brief, end to end through the
   // real tool-policy, decisions, agents and Postgres plugins.
+  type RoutineRef = Pick<RoutineView, 'routineId' | 'revision' | 'name' | 'promptBody' | 'enabled'>;
   async function alwaysAllowed() {
     h = await createRoutineHarness();
     // Unattended: an approval replays on the host straight away (decisions plugin.ts ~:876).
@@ -161,7 +162,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     const create = (requestId: string, extra = {}) => ({ id: requestId, name: 'routine_create', input: { requestId,
       definition: RoutineDefinitionSchema.parse({ name: requestId, promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' }, ...extra }) } });
     const taskCreate = (requestId: string) => create(requestId, { kind: 'stay-on-top', goodWhen: 'No ticket open longer than an hour.', trigger: { kind: 'interval', every: '15m' } });
-    const update = (requestId: string, row: RoutineView, patch: Record<string, unknown>) => ({ id: requestId, name: 'routine_update', input: {
+    const update = (requestId: string, row: RoutineRef, patch: Record<string, unknown>) => ({ id: requestId, name: 'routine_update', input: {
       requestId, routineId: row.routineId, expectedRevision: row.revision, patch } });
     const consent = () => h.bus.call<unknown, { enabled: boolean }>('tool-policy:get-routine-consent', ctx, { agentId: h.agentId });
     // Grant Always Allow the real way: approve a repeat create with the agent-routines scope.
@@ -172,7 +173,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     expect((await consent()).enabled).toBe(true);
     const weekly = (await store.list({ agentId: h.agentId })).find(row => row.name === 'weekly');
     expect(weekly).toBeDefined();
-    return { ctx, store, create, taskCreate, update, weekly: weekly as RoutineView };
+    return { ctx, store, create, taskCreate, update, weekly: weekly as RoutineRef };
   }
   it('with Always Allow granted, creating a task and editing its brief still ask, and one approval creates it (TASK-906)', async () => {
     const { ctx, store, create, taskCreate, update } = await alwaysAllowed();

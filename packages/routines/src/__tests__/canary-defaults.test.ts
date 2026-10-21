@@ -31,7 +31,7 @@ describe('default DB scheduler canary', () => {
     shared.mockRestore();
     await store.finishDispatch({ dispatchId: dispatch.accepted.dispatchId, outcome: { status: 'silenced', conversationId: 'conversation', error: null, renderedPrompt: row.promptBody, warning: null } });
     const original = (await store.getDefault(row.definitionId!))!;
-    await store.upsertDefault({ ...editableDefinition(original), trigger: { kind: 'interval', every: '1h' }, promptBody: 'updated' });
+    await store.upsertDefault({ ...editableDefinition(original), kind: 'repeat', goodWhen: null, trigger: { kind: 'interval', every: '1h' }, promptBody: 'updated' });
     await store.refreshStale({ now });
     const changed = (await store.findOne(row))!;
     expect(changed.routineId).toBe(row.routineId);

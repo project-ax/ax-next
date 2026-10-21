@@ -22,7 +22,8 @@ export const now = new Date('2031-01-01T00:00:00Z');
 export function createInput(requestId = 'create-1') {
   return {
     agentId: 'a', actorUserId: 'editor', ownerUserId: 'owner', requestId, now,
-    definition: RoutineDefinitionSchema.parse({ name: 'Check in', promptBody: '  first line\n\nsecond line\n', trigger: { kind: 'interval', every: '60s' } })
+    // Narrowed to a repeat routine: the default-routine upsert only accepts one.
+    definition: { ...RoutineDefinitionSchema.parse({ name: 'Check in', promptBody: '  first line\n\nsecond line\n', trigger: { kind: 'interval', every: '60s' } }), kind: 'repeat' as const, goodWhen: null },
   };
 }
 export function webhookInput(requestId = 'hook-1') {
