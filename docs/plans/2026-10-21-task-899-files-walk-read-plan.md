@@ -87,9 +87,14 @@ These failure modes are the likeliest to bite a real person, and no CI test full
 
 1. **A swap on production NFS.** Production is Filestore NFSv3 on the inline `nfs:` volume, with default lookupcache. The CI race test runs on a local filesystem. The walk's syscalls are the ones W3b proved on real NFS and ran in production, so this is a post-deploy smoke check (open an agent's Files tab), not a task.
 2. **Directly addressed in-root symlinks now 404.** A symlink inside the agent's own files used to be served when asked for by path; listings already hid them. Tasks 2 and 3 pin this with tests.
-3. **Errors past the first component now throw.** `EACCES` or `ESTALE` at an intermediate component used to answer 404 and now throws, which the route turns into a 5xx. Task 2 pins `EACCES`, and `ESTALE` is pinned at the root.
+3. **Errors past the first component now throw, and `ESTALE` gets one retry first.** `EACCES` or `EIO` at an intermediate component used to answer 404 and now throws, which the route turns into a 5xx.
+   - `ESTALE`, NFS's stale handle, gets one retry from the walk itself. The retry is a whole new walk that opens the root and every folder on the way `O_RDONLY`, so NFS revalidates them. A folder the agent replaced is then served, and a deleted one is a 404. `ESTALE` that survives the retry is a 5xx, never a 404, because that is what a stale export looks like.
+   - One cost: after an `ESTALE`, a search-only (0311) folder on the path is a 5xx (`EACCES`), because `O_RDONLY` needs read permission. The next read serves it.
+   - Tests pin `EACCES` and every `ESTALE` outcome, with the error shape Node really produces (`code: 'Unknown system error -116'`, `errno: -116`). A real NFSv3 harness measured each case; the table is in the decisions shard.
+   - Post-deploy check: have an agent regenerate a folder (`rm -rf out && mkdir out`, then write a file in it), and open that file in the Files tab. It should open, not error.
 4. **A path deeper than 32 components** answers 404 instead of being read. Task 2 pins this.
 5. **A directory with 1,000 or more symlinks or special files ahead of its regular entries.** The walk stops listing, and the hook's dir answer has no field to say the list was cut short. This is accepted and documented in the adapter comment and the decisions shard. It isn't testable deterministically, because readdir order depends on the filesystem.
+6. **A file name that isn't valid UTF-8 is left out of a listing.** Node decodes the name with U+FFFD in place of the bad bytes, the walk's lstat of the re-encoded name finds nothing, and the entry is skipped. Asked for by its mangled name, it's a 404. The old reader listed it under the mangled name and also answered 404 when it was opened, so it was never readable here; now it isn't shown either. A Linux test pins it, and the adapter comment documents it as a known gap.
 
 ## Files
 
@@ -400,10 +405,10 @@ export function readConfinedByWalk(root: string, parts: string[], opts: WalkRead
   - Compare the run's head SHA to the PR head.
 - **PR body:**
   - **Security review** block:
-    - **Sandbox:** reach narrows. Every component is opened relative to a held descriptor with `O_NOFOLLOW` (`O_PATH` for pass-through directories, `O_NONBLOCK` on the leaf), so no symlink is followed at any depth or moment. Caps are unchanged. It's Linux-only and loud elsewhere. The pod path is a documented gap with its follow-up card.
+    - **Sandbox:** reach narrows. Every component is opened relative to a held descriptor with `O_NOFOLLOW` (`O_PATH` for pass-through directories, or `O_RDONLY` on the one retry after `ESTALE` so NFS revalidates them; `O_NONBLOCK` on the leaf), so no symlink is followed at any depth or moment, on either walk. Caps are unchanged. It's Linux-only and loud elsewhere. The pod path is a documented gap with its follow-up card.
     - **Injection:** the route-validated `relPath` is lexically checked, split and walked. It never reaches a shell, prompt or SQL. File names and bytes are returned as data.
     - **Supply chain:** N/A — no `package.json` or lockfile change.
   - **Boundary review:** not needed. This changes internal implementation only, with no hook-signature change.
-  - **Behavior changes:** Review Focus items 2–5.
+  - **Behavior changes:** Review Focus items 2–6.
   - **Out of scope:** the pod path, with its follow-up card.
 - **Decisions shard:** add a row for any deviation from this plan to `.claude/memory/decisions/2026-10-21-TASK-899.md`, and commit it with the work.
