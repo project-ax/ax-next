@@ -58,12 +58,17 @@ If the host crashes, hangs, or otherwise fails to call `killPod`, the pod doesn'
 
 ### Filesystem reach (host plugin side)
 
-The host plugin reads two things from its own filesystem, and writes nothing.
+The host plugin reads three things from its own filesystem, and writes nothing.
 
-- **The user-files export, read-only, when `userFilesHostReadRoot` is set.** The host reads an agent's files through `@ax/user-files-read`, which walks each path component without following symlinks. Unset, the host reads nothing from the export and a one-shot pod does it instead (see "Known limits").
+- **The k8s client's credentials.** `kc.loadFromCluster()` (`k8s-api.ts:119`) points the client at the pod's service-account token and CA certificate in `/var/run/secrets/kubernetes.io/serviceaccount/`, and reads the namespace file there. The client library reads the token and the CA itself when it makes a request, so those reads are not in our code. The kubeconfig fallback below it, `kc.loadFromDefault()` (`k8s-api.ts:125`), never runs with `@kubernetes/client-node` 1.4.0, because `loadFromCluster()` doesn't throw outside a cluster.
+- **The user-files export, read-only, when `userFilesHostReadRoot` is set.** The host reads an agent's files through `@ax/user-files-read` (imported in `user-files-ops.ts`), which walks each path component without following symlinks and has no write entry point. Unset, the host reads nothing from the export and a one-shot pod does it instead (see "Known limits").
 - **The storage-helper mTLS files, with the shared pool.** `storage-client.ts` calls `readFileSync` on the `ca.crt`, `tls.crt` and `tls.key` in the mounted secret.
 
-`grep -nE 'fs\\.|node:fs' packages/sandbox-k8s/src/*.ts` finds the `node:fs` import in `storage-client.ts`, so this section used to be wrong when it said the grep returns nothing. There is no `writeFile`, no `mkdir` and no `unlink`. Everything else goes through the k8s API. The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
+To check this, `grep -nE "node:fs|'fs|child_process|from '@ax/user-files-read'|loadFrom[A-Za-z]+[(]" packages/sandbox-k8s/src/*.ts` prints four lines: the two `loadFrom…` calls in `k8s-api.ts` (the first item), the library import in `user-files-ops.ts` (the second), and the only `fs` import, in `storage-client.ts`, which brings in `readFileSync` and nothing else (the third). So this plugin's own code has no `writeFile`, no `mkdir` and no `unlink`, and no child process to reach the disk another way. Everything else goes through the k8s API.
+
+The glob stops at the top of `src/` on purpose. `src/storage-node/` is the storage-helper pod's own program, and it does write, on its node. The host imports only constants, types and pure helpers from it, and `grep -n "storage-node/" packages/sandbox-k8s/src/*.ts` lists every one of those imports.
+
+The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
 
 ### Git binary as of Phase 3
 
