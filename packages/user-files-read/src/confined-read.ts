@@ -48,9 +48,10 @@ import {
 // must look the same: a 400-vs-404 split on a path is a free oracle for mapping
 // someone else's subtree, and "absent" is also simply true from the caller's
 // side — this surface does not have that file. The walk records why a path was
-// absent (its `reason`) for a log; this adapter drops it on purpose. A path
-// deeper than MAX_WALK_PARTS components, or with a segment longer than a
-// filename may be, is absent too: both depend only on the path's text.
+// absent (its `reason`), for tests and diagnostics; this adapter drops it on
+// purpose, and nothing logs it. A path deeper than MAX_WALK_PARTS components,
+// or with a segment longer than a filename may be, is absent too: both depend
+// only on the path's text.
 //
 // A BROKEN READ IS NOT AN ABSENCE (TASK-403). `absent` used to swallow the
 // storage failing too: a listing that came back `EIO` or `ESTALE` — the
@@ -282,8 +283,9 @@ export async function readConfinedUserFiles(
     if (err instanceof WalkReadError && isAbsence(err)) return { kind: 'absent' };
     throw err;
   }
-  // 6. Only the hook's fields: the walk's `reason` is for a log, and the hook's
-  //    dir answer has no `truncated`.
+  // 6. Only the hook's fields: the walk's `reason` is for tests and
+  //    diagnostics, never a client, and the hook's dir answer has no
+  //    `truncated`.
   if (out.kind === 'absent') return { kind: 'absent' };
   if (out.kind === 'dir') return { kind: 'dir', entries: out.entries };
   return { kind: 'file', contents: out.contents, truncated: out.truncated };

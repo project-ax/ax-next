@@ -44,9 +44,10 @@ import { UserFilesReadError } from './errors.js';
 //   named, and never opened. Each child is lstat'd through the held directory
 //   descriptor — lstat does not follow the final component — and only regular
 //   files and directories are kept.
-// - "Absent" carries a `reason` for the caller's LOG. A caller must not echo
-//   it to a client: telling "this is a symlink" apart from "this is missing" is
-//   a free oracle about a tree the reader may not otherwise see.
+// - "Absent" carries a `reason`, for tests and diagnostics. Nothing logs it:
+//   the /files adapter (`readConfinedUserFiles`) drops it on purpose. A caller
+//   must not echo it to a client: telling "this is a symlink" apart from "this
+//   is missing" is a free oracle about a tree the reader may not otherwise see.
 // - Everything else that fails (EACCES, EIO, ESTALE, …) THROWS
 //   `WalkReadError` with the errno and the depth it failed at. A broken read is
 //   not an absence (TASK-403).
@@ -97,7 +98,8 @@ export class WalkReadError extends UserFilesReadError {
 }
 
 /**
- * Why a path is absent — for the caller's log ONLY, never a client response.
+ * Why a path is absent — for tests and diagnostics, never a client response.
+ * The /files adapter drops it on purpose, and nothing logs it.
  * - `missing`: a component does not exist (ENOENT).
  * - `link-or-not-dir`: a component is a symlink, or a non-directory where a
  *   directory was needed (ELOOP / ENOTDIR).

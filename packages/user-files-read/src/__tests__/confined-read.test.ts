@@ -223,10 +223,10 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
   });
 
   it("answers carry only the hook's fields", async () => {
-    // The walk's answers carry more: a `reason` on an absence (for a log, and
-    // telling a link from a missing file is exactly the oracle this surface
-    // must not offer) and `truncated` on a listing, which the hook's dir
-    // answer has no field for.
+    // The walk's answers carry more: a `reason` on an absence (for tests and
+    // diagnostics, and telling a link from a missing file is exactly the
+    // oracle this surface must not offer) and `truncated` on a listing, which
+    // the hook's dir answer has no field for.
     const file = await readConfinedUserFiles(root, 'hello.txt');
     expect(Object.keys(file).sort()).toEqual(['contents', 'kind', 'truncated']);
     const dir = await readConfinedUserFiles(root, 'docs');
