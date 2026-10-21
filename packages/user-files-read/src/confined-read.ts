@@ -74,9 +74,10 @@ import {
 // link's target 1,121 times in 20,000 reads, and the walk 0 times in 40,000
 // (W3b, 2026-10-17).
 //
-// LINUX ONLY. The walk works through /proc/<pid>/fd. Anywhere else this throws
-// `UserFilesReadError` with code `unsupported-platform`, rather than fall back
-// to a reader with the window above.
+// LINUX ONLY. The walk works through /proc/self/fd. Anywhere else, and on a
+// Linux host without procfs, this throws `UserFilesReadError` with code
+// `unsupported-platform`, rather than fall back to a reader with the window
+// above.
 //
 // KNOWN GAP. A listing stops after MAX_WALK_SKIPPED (1,000) skipped entries —
 // links and special files — so one folder of a million symlinks can't cost a

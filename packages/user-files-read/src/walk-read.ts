@@ -1,4 +1,4 @@
-import { promises as fs, constants } from 'node:fs';
+import { existsSync, promises as fs, constants } from 'node:fs';
 import type { UserFileDirEntry } from '@ax/sandbox-mount-protocol';
 import { UserFilesReadError } from './errors.js';
 
@@ -15,7 +15,7 @@ import { UserFilesReadError } from './errors.js';
 //
 // So this reader never resolves a path at all. It opens the trusted root, then
 // opens EACH component relative to the descriptor it already holds, through
-// `/proc/<pid>/fd/<fd>/<name>`, with O_NOFOLLOW. The kernel looks up exactly
+// `/proc/self/fd/<fd>/<name>`, with O_NOFOLLOW. The kernel looks up exactly
 // one name inside a directory we have pinned; if that name is a symlink at the
 // instant of the lookup, the open fails (ELOOP / ENOTDIR). Swapping it a
 // microsecond earlier or later changes which answer we give — the real file,
@@ -23,9 +23,10 @@ import { UserFilesReadError } from './errors.js';
 // path built from the parts anywhere in this file. Same pattern as the storage
 // node's `openDirectory` (sandbox-k8s/src/storage-node/confined-directory.ts).
 //
-// LINUX ONLY: the mechanism is /proc. Elsewhere this throws
-// `UserFilesReadError` with code `unsupported-platform` rather than quietly
-// answering `absent` for everything (/proc/... would just be ENOENT on macOS).
+// LINUX ONLY: the mechanism is /proc. Elsewhere, and on a Linux host without
+// procfs mounted, this throws `UserFilesReadError` with code
+// `unsupported-platform` rather than quietly answering `absent` for everything
+// (every /proc/... open would just be ENOENT).
 //
 // Decisions worth naming:
 //
@@ -159,7 +160,10 @@ function fail(what: string, err: unknown, depth: number): WalkReadError {
   });
 }
 
-const fdPath = (fd: number): string => `/proc/${process.pid}/fd/${fd}`;
+// `self`, not our pid. Descriptors belong to the process, so it names the same
+// directory, and it can never name another process: under a /proc from a
+// different pid namespace, our pid may belong to someone else.
+const fdPath = (fd: number): string => `/proc/self/fd/${fd}`;
 
 /**
  * Read `parts` under the trusted `root`, opening every component relative to
@@ -181,7 +185,7 @@ export async function readConfinedByWalk(
   if (!Number.isSafeInteger(opts.maxEntries) || opts.maxEntries < 1 || opts.maxEntries > MAX_WALK_ENTRIES) {
     throw new RangeError(`maxEntries must be an integer from 1 to ${MAX_WALK_ENTRIES}`);
   }
-  if (process.platform !== 'linux') {
+  if (process.platform !== 'linux' || !existsSync('/proc/self/fd')) {
     throw new WalkReadError('readConfinedByWalk needs Linux /proc', {
       code: 'unsupported-platform',
       depth: -1,

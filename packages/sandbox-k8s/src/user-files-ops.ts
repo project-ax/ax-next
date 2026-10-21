@@ -522,7 +522,7 @@ export async function cleanupUserFiles(
 // between the two steps could, in principle, have the pod read through it.
 //
 // Why it is out of scope here:
-//   - The walk is in-process Node over `/proc/<pid>/fd`. This pod runs a POSIX
+//   - The walk is in-process Node over `/proc/self/fd`. This pod runs a POSIX
 //     shell script in the runner image, so "use the walk" would mean new
 //     security-critical shell code, or shipping Node code into the pod.
 //   - Production sets `sandbox.filestore.hostReadPath`, so this path runs only

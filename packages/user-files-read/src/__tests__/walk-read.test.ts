@@ -3,7 +3,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserFilesReadError } from '../index.js';
 import {
   MAX_WALK_ENTRIES,
@@ -20,7 +20,7 @@ import {
 // The component walk behind the /files reader (TASK-899; first built in W3b).
 //
 // `readConfinedByWalk` opens every path component relative to the previous
-// component's descriptor, with O_NOFOLLOW, through /proc/<pid>/fd. That is a
+// component's descriptor, with O_NOFOLLOW, through /proc/self/fd. That is a
 // Linux-only mechanism, so everything that touches the disk is skipped where
 // /proc is missing (a macOS laptop) — and runs in CI, which is ubuntu-latest.
 // A skip there is not a pass. The lexical half (`splitRelPath`, the part and
@@ -33,8 +33,16 @@ import {
 // `readConfinedUserFiles`, in confined-read.test.ts.
 // ---------------------------------------------------------------------------
 
+// The walk's platform guard asks `existsSync('/proc/self/fd')`. This mock
+// passes every call through to the real one, so one test can report procfs
+// missing on a host that has it.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, existsSync: vi.fn(actual.existsSync) };
+});
+
 const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
-const SKIP_REASON = 'needs Linux /proc/<pid>/fd (runs in CI on ubuntu-latest)';
+const SKIP_REASON = 'needs Linux /proc/self/fd (runs in CI on ubuntu-latest)';
 const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
 
 const LIMITS = { limitBytes: 1024, maxEntries: 100 };
@@ -134,6 +142,31 @@ describe('readConfinedByWalk — off Linux', () => {
         UserFilesReadError,
       );
     } finally {
+      Object.defineProperty(process, 'platform', d);
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('a Linux host without /proc refuses the same way, instead of answering absent', async () => {
+    // Without procfs every component open is ENOENT there too. The platform
+    // reads 'linux' and only /proc/self/fd is reported missing, so this runs,
+    // and has teeth, on macOS and on Linux CI alike.
+    const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-walk-proc-')));
+    await fs.writeFile(path.join(tmp, 'x'), 'a real file the walk must not answer for');
+    const { existsSync: realExistsSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const d = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...d, value: 'linux' });
+    vi.mocked(existsSync).mockImplementation((p) =>
+      String(p) === '/proc/self/fd' ? false : realExistsSync(p),
+    );
+    try {
+      await expect(readConfinedByWalk(tmp, ['x'], LIMITS)).rejects.toMatchObject({
+        name: 'WalkReadError',
+        code: 'unsupported-platform',
+        depth: -1,
+      });
+    } finally {
+      vi.mocked(existsSync).mockImplementation(realExistsSync);
       Object.defineProperty(process, 'platform', d);
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
     }

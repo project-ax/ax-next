@@ -35,7 +35,7 @@ import { MAX_WALK_PARTS, WalkPathError, readConfinedByWalk } from '../walk-read.
 // ---------------------------------------------------------------------------
 
 const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
-const SKIP_REASON = 'needs Linux /proc/<pid>/fd (runs in CI on ubuntu-latest)';
+const SKIP_REASON = 'needs Linux /proc/self/fd (runs in CI on ubuntu-latest)';
 const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
 
 const SECRET = 'SECRET-do-not-return';
@@ -608,7 +608,7 @@ function failOpen(match: (p: string) => boolean, code: string): void {
 
 /**
  * Let every open through to the real `fs.open`, and hand the leaf handle the
- * walk opens for `hello.txt` (always as `/proc/<pid>/fd/<n>/hello.txt`) to
+ * walk opens for `hello.txt` (always as `/proc/self/fd/<n>/hello.txt`) to
  * `rig` before the walk gets it.
  */
 function rigLeaf(rig: (fh: fs.FileHandle) => void): void {
