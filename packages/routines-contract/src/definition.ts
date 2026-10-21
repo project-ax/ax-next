@@ -58,6 +58,8 @@ export const WebhookTriggerSchema = z.object({
   hmac: WebhookHmacSchema.optional(),
 }).strict();
 const TASK_CRON_QUESTION_MARK_MESSAGE = 'A task’s schedule can’t use “?”. Write the exact time instead.';
+const TASK_CRON_ONE_DATE_MESSAGE = 'A task that stays on top of something checks in again and again, so its schedule can’t be a single date.';
+const TASK_CRON_NEVER_MESSAGE = 'This schedule never checks in.';
 
 /**
  * A cron's minute and hour fields, split the way croner 8.1.2 splits a pattern
@@ -121,14 +123,28 @@ function cronWrapsTooSoon(expr: string): boolean {
  * The check-in floor for a cron task, as the issue message or null. A pure
  * function of (expr, tz), so a saved task's validity never changes with the
  * clock (read paths revalidate it). Never throws and never starts a scheduler.
+ * A task keeps checking in, so a schedule must repeat and must come at all.
  */
 function cronFloorIssue(expr: string, tz: string): string | null {
   // croner fills "?" in from the clock as it parses, so the times it stands
   // for change with when the schedule is read. No floor can hold for that.
   if (expr.includes('?')) return TASK_CRON_QUESTION_MARK_MESSAGE;
-  let runs: Date[];
-  try { runs = new Cron(expr, { timezone: tz }).nextRuns(TASK_CRON_FLOOR_RUNS, TASK_CRON_FLOOR_FROM); }
+  let cron: Cron;
+  // The trigger's own check reports an expression croner can't read.
+  try { cron = new Cron(expr, { timezone: tz }); }
   catch { return null; }
+  // croner reads an expression with a ":" past its first character as one
+  // date, and then has no pattern. An ISO date without a time has no ":", so
+  // croner refuses it as a pattern and the trigger's own check reports it.
+  if (cron.getPattern() === undefined) return TASK_CRON_ONE_DATE_MESSAGE;
+  let runs: Date[];
+  // A date no calendar has (31 February) sends croner's search, recursively,
+  // through every year to its limit: it finds nothing, or it runs out of stack
+  // first, depending on the pattern and on how deep the caller already is.
+  // Both mean the task never checks in, so the verdict stays pure.
+  try { runs = cron.nextRuns(TASK_CRON_FLOOR_RUNS, TASK_CRON_FLOOR_FROM); }
+  catch { return TASK_CRON_NEVER_MESSAGE; }
+  if (runs.length === 0) return TASK_CRON_NEVER_MESSAGE;
   for (let i = 1; i < runs.length; i++) {
     if (runs[i]!.getTime() - runs[i - 1]!.getTime() < TASK_CHECK_IN_FLOOR_SECONDS * 1000) return TASK_CHECK_IN_FLOOR_MESSAGE;
   }

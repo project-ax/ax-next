@@ -386,8 +386,48 @@ describe('task kinds (TASK-906)', () => {
       expect(exprIssues(' 0,59 0,23 * * *')).toEqual(['Invalid cron expression or timezone.']);
       expect(exprIssues('0,59 0,23 * * * * *')).toEqual(['Invalid cron expression or timezone.']);
       expect(exprIssues('@sometimes')).toEqual(['Invalid cron expression or timezone.']);
-      // croner reads a ":" as a one-off date, which runs once.
-      expect(exprIssues('2026-11-01T09:00:00')).toEqual([]);
+      // An ISO date croner won't read as a date (no time, so no ":") is no cron either.
+      expect(exprIssues('2026-11-01')).toEqual(['Invalid cron expression or timezone.']);
+      expect(exprIssues(':0 * * * *')).toEqual(['Invalid cron expression or timezone.']);
+    });
+
+    // A task keeps checking in. croner reads an expression with a ":" as one date, which
+    // runs once or, if it's past, never; and a date no calendar has never comes at all.
+    const oneDate = 'A task that stays on top of something checks in again and again, so its schedule can’t be a single date.';
+    const never = 'This schedule never checks in.';
+
+    it.each([
+      '2026-11-01T09:00:00', '2020-01-01T00:00:00', '2031-07-01T09:30:00Z', '2026-11-01 09:00',
+    ])('refuses the single date %s', expr => {
+      expect(exprIssues(expr)).toEqual([oneDate]);
+    });
+
+    it.each([
+      // 30 and 31 February, 31 April and June: no run from the fixed date to croner's limit.
+      '0 0 31 2 *', '0 0 30 2 *', '0 0 31 4,6 *', '0 9 31 11 *',
+      // Five impossible months send croner's search past the default stack; the verdict is the same.
+      '0 0 31 2,4,6,9,11 *',
+    ])('refuses %s, which never comes', expr => {
+      expect(exprIssues(expr)).toEqual([never]);
+      expect(exprIssues(expr, 'America/New_York')).toEqual([never]);
+    });
+
+    it('accepts a date that comes only every four years, and keeps both rules off repeat routines', () => {
+      expect(exprIssues('0 0 29 2 *')).toEqual([]);
+      for (const expr of ['2026-11-01T09:00:00', '0 0 31 2 *', '0 0 31 2,4,6,9,11 *']) {
+        expect(RoutineDefinitionSchema.safeParse({ ...base, trigger: { kind: 'cron', expr, tz: 'UTC' } }).success, expr).toBe(true);
+      }
+    });
+
+    it('gives the same verdict whatever the clock says', () => {
+      const exprs = ['2030-01-01T00:00:00', '0 0 31 2 *', '0 0 31 2,4,6,9,11 *', '0 0 29 2 *'];
+      const verdicts = (now: Date): string[][] => {
+        vi.useFakeTimers({ now });
+        try { return exprs.map(expr => exprIssues(expr)); } finally { vi.useRealTimers(); }
+      };
+      // Before the date, and after it.
+      expect(verdicts(new Date('2026-03-08T06:30:00Z'))).toEqual([[oneDate], [never], [never], []]);
+      expect(verdicts(new Date('2031-07-01T00:00:00Z'))).toEqual(verdicts(new Date('2026-03-08T06:30:00Z')));
     });
   });
 
@@ -697,9 +737,9 @@ describe('tells the model the task rules (TASK-906)', () => {
     expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
     expect(RoutineToolDescriptions.routine_update).toContain('To turn a routine into a task (a kind other than "repeat"), send its name, promptBody and goodWhen in the same patch so the person sees the whole task.');
   });
-  it('says a task’s cron can’t use “?”', () => {
+  it('says a task’s cron can’t use “?”, and has to keep checking in', () => {
     for (const name of ['routine_create', 'routine_update'] as const) {
-      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a \\"stay-on-top\\" task, runs must be at least 15 minutes apart, and \\"?\\" is not allowed.');
+      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a \\"stay-on-top\\" task, runs must be at least 15 minutes apart, the schedule must repeat (not a single date, nor a date that never comes, such as 31 February), and \\"?\\" is not allowed.');
     }
   });
   it('says a task’s brief can’t hide text', () => {
