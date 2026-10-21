@@ -1,4 +1,4 @@
-import type { RoutineDefinition } from '@ax/routines-contract';
+import type { RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
 export type { ActiveHours, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
@@ -24,4 +24,13 @@ export type AcceptedDispatch = {
 export type DispatchOutcome = {
   status: FireStatus; conversationId: string | null; error: string | null;
   renderedPrompt: string | null; warning: string | null;
+};
+/** TASK-907. One run's report: kept on its dispatch, then on its fire row. The notes stay on the task. */
+export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
+/** TASK-907. The one open run in a conversation, as `routine_report` finds it. */
+export type OpenCheckIn = { dispatchId: string; routineId: string; kind: RoutineKind; ownerUserId: string };
+/** TASK-907. `notes` left out keeps the task's notes; null clears them. */
+export type RecordReportInput = {
+  agentId: string; dispatchId: string; actorUserId: string;
+  report: DispatchReport; notes?: string | null; now: Date;
 };

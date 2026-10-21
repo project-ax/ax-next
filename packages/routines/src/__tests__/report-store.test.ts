@@ -1,0 +1,311 @@
+import { inspect } from 'node:util';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { sql } from 'kysely';
+import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { fixture, createInput, now } from './store-fixture.js';
+import type { RecordReportInput } from '../types.js';
+
+// TASK-907: a check-in's conversation, its report and the task's state. Task
+// state isn't on StoredRoutine yet, so the rows are read with SQL.
+const f = fixture();
+afterEach(() => { vi.restoreAllMocks(); });
+
+const later = new Date(now.getTime() + 60_000);
+const CLOSED = 'The routine run closed before it could start.';
+const onTrack = { status: 'on-track', update: 'Queue is empty.', ask: null } as const;
+const needsYou = { status: 'needs-you', update: 'Two tickets need a refund decision.', ask: 'Can I refund order 1234?' } as const;
+const outcome = { status: 'ok' as const, conversationId: 'c1', error: null, renderedPrompt: 'ran', warning: null };
+const taskInput = (requestId: string) => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
+  name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+  kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+}) });
+type Key = { agentId: string; routineId: string; revision: string };
+const accept = async (row: Key, requestId: string, at = now) => (await f.store.acceptDispatch({
+  agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
+}))!.accepted;
+const bound = async (row: Key, requestId: string, conversationId: string, at = now) => {
+  const accepted = await accept(row, requestId, at);
+  await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId });
+  return accepted;
+};
+const record = (dispatchId: string, over: Partial<RecordReportInput> = {}) =>
+  f.store.recordReport({ agentId: 'a', dispatchId, actorUserId: 'owner', report: onTrack, now: later, ...over } as RecordReportInput);
+const find = (agentId: string, conversationId: string) => f.store.findOpenDispatchByConversation({ agentId, conversationId });
+const finish = (dispatchId: string) => f.store.finishDispatch({ dispatchId, outcome });
+
+type DispatchRow = { conversation_id: string | null; report: unknown; accepted_at: Date; completed_at: Date | null };
+const dispatchRow = async (dispatchId: string) =>
+  (await sql<DispatchRow>`SELECT conversation_id, report, accepted_at, completed_at FROM routines_v1_dispatches WHERE dispatch_id = ${dispatchId}`.execute(f.db)).rows[0];
+const taskRow = async (routineId: string) => (await sql<Record<string, unknown>>`
+  SELECT task_status, task_update, task_ask, task_reported_at, task_report_accepted_at, agent_notes, revision, spec_hash, updated_at
+    FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
+const fireRow = async (dispatchId: string) => (await sql<Record<string, unknown>>`
+  SELECT status, error, report_status, report_update, report_ask FROM routines_v1_fires WHERE dispatch_id = ${dispatchId}`.execute(f.db)).rows[0];
+const fireReport = (report: { status: string; update: string; ask: string | null } | null) =>
+  ({ report_status: report?.status ?? null, report_update: report?.update ?? null, report_ask: report?.ask ?? null });
+const snapshot = async () => ({
+  dispatches: (await sql`SELECT * FROM routines_v1_dispatches ORDER BY dispatch_id`.execute(f.db)).rows,
+  definitions: (await sql`SELECT * FROM routines_v1_definitions ORDER BY routine_id`.execute(f.db)).rows,
+  fires: (await sql`SELECT * FROM routines_v1_fires ORDER BY id`.execute(f.db)).rows,
+});
+const agentRows = async (agentId: string) => ({
+  dispatches: (await sql`SELECT dispatch_id FROM routines_v1_dispatches WHERE agent_id = ${agentId}`.execute(f.db)).rows,
+  definitions: (await sql`SELECT routine_id FROM routines_v1_definitions WHERE agent_id = ${agentId}`.execute(f.db)).rows,
+  fires: (await sql`SELECT id FROM routines_v1_fires WHERE agent_id = ${agentId}`.execute(f.db)).rows,
+});
+const captureStderr = (): string[] => {
+  const lines: string[] = [];
+  vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write);
+  return lines;
+};
+
+describe("a check-in's conversation", () => {
+  it('binds a dispatch to its conversation once, and only while it is open', async () => {
+    const row = await f.store.createAuthored(taskInput('bind'));
+    const run = await accept(row, 'bind-fire');
+    await f.store.bindDispatchConversation({ dispatchId: run.dispatchId, conversationId: 'c1' });
+    expect(await find('a', 'c1')).toEqual({ dispatchId: run.dispatchId, routineId: row.routineId, kind: 'stay-on-top', ownerUserId: 'owner' });
+    await expect(f.store.bindDispatchConversation({ dispatchId: run.dispatchId, conversationId: 'c1' })).resolves.toBeUndefined();
+    await expect(f.store.bindDispatchConversation({ dispatchId: run.dispatchId, conversationId: 'c2' })).rejects.toMatchObject({ message: CLOSED });
+    expect((await dispatchRow(run.dispatchId))?.conversation_id).toBe('c1');
+    expect(await find('a', 'c2')).toBeNull();
+    expect(await finish(run.dispatchId)).toBe(true);
+    await expect(f.store.bindDispatchConversation({ dispatchId: run.dispatchId, conversationId: 'c1' })).rejects.toMatchObject({ message: CLOSED });
+    expect(await find('a', 'c1')).toBeNull();
+    await expect(f.store.bindDispatchConversation({ dispatchId: 'dispatch_unknown', conversationId: 'c3' })).rejects.toMatchObject({ message: CLOSED });
+    // A retired agent's run can't start, even while its row is still there.
+    const open = await accept(row, 'retired-fire');
+    await sql`INSERT INTO routines_v1_retired_agents (agent_id) VALUES ('a')`.execute(f.db);
+    await expect(f.store.bindDispatchConversation({ dispatchId: open.dispatchId, conversationId: 'c4' })).rejects.toMatchObject({ message: CLOSED });
+    expect((await dispatchRow(open.dispatchId))?.conversation_id).toBeNull();
+  });
+
+  it("finds no check-in when the conversation is ambiguous, another agent's or unknown", async () => {
+    const row = await f.store.createAuthored(taskInput('ambiguous'));
+    await bound(row, 'first', 'shared');
+    await bound(row, 'second', 'shared');
+    expect(await find('a', 'shared')).toBeNull();
+    const solo = await bound(row, 'solo', 'solo');
+    expect(await find('a', 'solo')).toMatchObject({ dispatchId: solo.dispatchId });
+    expect(await find('b', 'solo')).toBeNull();
+    expect(await find('a', 'nope')).toBeNull();
+    // A run whose task was deleted is still open in its conversation: it keeps
+    // the conversation ambiguous, and alone it has no task to report on.
+    const gone = await f.store.createAuthored(taskInput('gone'));
+    await bound(row, 'pair-kept', 'pair');
+    await bound(gone, 'pair-gone', 'pair');
+    await bound(gone, 'alone', 'alone');
+    await f.store.deleteAuthored({ agentId: 'a', routineId: gone.routineId, expectedRevision: gone.revision, actorUserId: 'owner', requestId: 'delete-gone', now });
+    expect(await find('a', 'pair')).toBeNull();
+    expect(await find('a', 'alone')).toBeNull();
+  });
+});
+
+describe("a check-in's report and the task's state", () => {
+  it('records a report on the run and the task without changing its revision', async () => {
+    const row = await f.store.createAuthored(taskInput('record'));
+    const run = await bound(row, 'record-fire', 'c1');
+    const before = await taskRow(row.routineId);
+    expect(before).toMatchObject({ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null });
+    expect(await record(run.dispatchId, { report: needsYou, notes: 'Order 1234 waits on a refund.' })).toBe(true);
+    const dispatch = await dispatchRow(run.dispatchId);
+    expect(dispatch?.report).toEqual(needsYou);
+    expect(await taskRow(row.routineId)).toEqual({
+      ...before, task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask,
+      task_reported_at: later, task_report_accepted_at: dispatch?.accepted_at, agent_notes: 'Order 1234 waits on a refund.',
+    });
+    // An approval held with the pre-report revision still applies.
+    await expect(f.store.updateAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner',
+      requestId: 'after-report', patch: { description: 'After the report.' }, now: later, stopOnly: false })).resolves.toMatchObject({ description: 'After the report.' });
+  });
+
+  it("copies the run's report onto its fire row at turn end; a run without one gets none", async () => {
+    const row = await f.store.createAuthored(taskInput('copy'));
+    const run = await bound(row, 'copy-fire', 'c1');
+    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await finish(run.dispatchId)).toBe(true);
+    expect(await fireRow(run.dispatchId)).toEqual({ status: 'ok', error: null, ...fireReport(needsYou) });
+    expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
+    const quiet = await bound(row, 'quiet-fire', 'c2');
+    expect(await finish(quiet.dispatchId)).toBe(true);
+    expect(await fireRow(quiet.dispatchId)).toEqual({ status: 'ok', error: null, ...fireReport(null) });
+    // A check-in that didn't report leaves the task's state as it was.
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update });
+  });
+
+  it('a second report in the same check-in replaces the first', async () => {
+    const row = await f.store.createAuthored(taskInput('replace'));
+    const run = await bound(row, 'replace-fire', 'c1');
+    const second = new Date(later.getTime() + 1000);
+    expect(await record(run.dispatchId, { report: onTrack })).toBe(true);
+    expect(await record(run.dispatchId, { report: needsYou, now: second })).toBe(true);
+    expect((await dispatchRow(run.dispatchId))?.report).toEqual(needsYou);
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, task_reported_at: second });
+    await finish(run.dispatchId);
+    expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
+  });
+
+  it('keeps, clears and replaces notes', async () => {
+    const row = await f.store.createAuthored(taskInput('notes'));
+    const run = await bound(row, 'notes-fire', 'c1');
+    const notes = async () => (await taskRow(row.routineId))?.agent_notes;
+    await record(run.dispatchId, { notes: 'A' });
+    expect(await notes()).toBe('A');
+    await record(run.dispatchId);
+    expect(await notes()).toBe('A');
+    // A key that's there but undefined is still "left out".
+    await record(run.dispatchId, { notes: undefined });
+    expect(await notes()).toBe('A');
+    await record(run.dispatchId, { notes: null });
+    expect(await notes()).toBeNull();
+    await record(run.dispatchId, { notes: 'B' });
+    expect(await notes()).toBe('B');
+  });
+
+  it("an older check-in's late report lands on its own run but never overwrites a newer one's task state", async () => {
+    const row = await f.store.createAuthored(taskInput('two-runs'));
+    const older = await bound(row, 'older', 'old', now);
+    const newer = await bound(row, 'newer', 'new', new Date(now.getTime() + 1000));
+    expect(await record(newer.dispatchId, { report: needsYou, notes: 'Newer notes.' })).toBe(true);
+    expect(await record(older.dispatchId, { report: onTrack, notes: 'Older notes.', now: new Date(later.getTime() + 5000) })).toBe(true);
+    const newerState = { task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, agent_notes: 'Newer notes.', task_reported_at: later, task_report_accepted_at: newer.acceptedAt };
+    expect(await taskRow(row.routineId)).toMatchObject(newerState);
+    expect((await dispatchRow(older.dispatchId))?.report).toEqual(onTrack);
+    expect((await dispatchRow(newer.dispatchId))?.report).toEqual(needsYou);
+    expect(await finish(newer.dispatchId)).toBe(true);
+    expect(await finish(older.dispatchId)).toBe(true);
+    expect(await fireRow(older.dispatchId)).toMatchObject(fireReport(onTrack));
+    expect(await fireRow(newer.dispatchId)).toMatchObject(fireReport(needsYou));
+    expect(await taskRow(row.routineId)).toMatchObject(newerState);
+    // Reporting at the same moment, the run accepted later still owns the task.
+    for (let i = 0; i < 3; i++) {
+      const first = await bound(row, `race-old-${i}`, `race-old-${i}`, new Date(now.getTime() + 10_000 * (i + 1)));
+      const second = await bound(row, `race-new-${i}`, `race-new-${i}`, new Date(now.getTime() + 10_000 * (i + 1) + 1000));
+      await Promise.all([record(first.dispatchId, { report: onTrack }), record(second.dispatchId, { report: needsYou })]);
+      expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_report_accepted_at: second.acceptedAt });
+    }
+  });
+
+  it('refuses without writing', async () => {
+    const task = await f.store.createAuthored(taskInput('refuse-task'));
+    const repeat = await f.store.createAuthored(createInput('refuse-repeat'));
+    const deleted = await f.store.createAuthored(taskInput('refuse-deleted'));
+    const finished = await bound(task, 'finished', 'c-finished');
+    expect(await finish(finished.dispatchId)).toBe(true);
+    const unbound = await accept(task, 'unbound');
+    const repeatRun = await bound(repeat, 'repeat-run', 'c-repeat');
+    const orphan = await bound(deleted, 'orphan', 'c-orphan');
+    await f.store.deleteAuthored({ agentId: 'a', routineId: deleted.routineId, expectedRevision: deleted.revision, actorUserId: 'owner', requestId: 'delete', now });
+    const open = await bound(task, 'open', 'c-open');
+    const before = await snapshot();
+    expect(await record(finished.dispatchId)).toBe(false);
+    expect(await record(unbound.dispatchId)).toBe(false);
+    expect(await record(repeatRun.dispatchId)).toBe(false);
+    expect(await record(orphan.dispatchId)).toBe(false);
+    expect(await record(open.dispatchId, { actorUserId: 'intruder' })).toBe(false);
+    expect(await record('dispatch_unknown')).toBe(false);
+    expect(await record(open.dispatchId, { agentId: 'b' })).toBe(false);
+    expect(await snapshot()).toEqual(before);
+    // The same run, asked properly, records: the refusals above were about what they changed.
+    expect(await record(open.dispatchId)).toBe(true);
+    // A retired agent's run refuses, even while its rows are still there.
+    await sql`INSERT INTO routines_v1_retired_agents (agent_id) VALUES ('a')`.execute(f.db);
+    const retired = await snapshot();
+    expect(await record(open.dispatchId, { report: needsYou })).toBe(false);
+    expect(await snapshot()).toEqual(retired);
+  });
+
+  it('a report and the turn end race to one consistent answer', async () => {
+    const row = await f.store.createAuthored(taskInput('race'));
+    for (let i = 0; i < 6; i++) {
+      const run = await bound(row, `race-${i}`, `c-race-${i}`);
+      const [recorded, finished] = await Promise.all([record(run.dispatchId, { report: needsYou }), finish(run.dispatchId)]);
+      expect(finished).toBe(true);
+      expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(recorded ? needsYou : null));
+      expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
+    }
+  });
+
+  it("a person's edit mid-check-in doesn't drop the report", async () => {
+    const row = await f.store.createAuthored(taskInput('edit'));
+    const run = await bound(row, 'edit-fire', 'c1');
+    const edited = await f.store.updateAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner',
+      requestId: 'edit', patch: { description: 'Edited.' }, now: later, stopOnly: false });
+    expect(edited.revision).not.toBe(row.revision);
+    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, revision: edited.revision });
+    await finish(run.dispatchId);
+    expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
+  });
+
+  it('a host restart after the report keeps it on the run', async () => {
+    const row = await f.store.createAuthored(taskInput('restart'));
+    const run = await bound(row, 'restart-fire', 'c1');
+    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    expect(await fireRow(run.dispatchId)).toEqual({ status: 'error', error: 'The routine run was interrupted by a host restart.', ...fireReport(needsYou) });
+    expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you' });
+  });
+
+  it('an agent deleted mid-check-in takes the report with it', async () => {
+    const row = await f.store.createAuthored(taskInput('purge'));
+    const run = await bound(row, 'purge-fire', 'c1');
+    expect(await record(run.dispatchId, { notes: 'Remember the refund.' })).toBe(true);
+    expect(await finish(run.dispatchId)).toBe(true);
+    await f.store.purgeAgent('a');
+    expect(await agentRows('a')).toEqual({ dispatches: [], definitions: [], fires: [] });
+    const other = await f.store.createAuthored({ ...taskInput('purge-b'), agentId: 'b' });
+    const late = await bound(other, 'late', 'c-late');
+    await f.store.purgeAgent('b');
+    expect(await f.store.recordReport({ agentId: 'b', dispatchId: late.dispatchId, actorUserId: 'owner', report: needsYou, notes: 'Too late.', now: later })).toBe(false);
+    expect(await agentRows('b')).toEqual({ dispatches: [], definitions: [], fires: [] });
+  });
+});
+
+describe("a stored report finishDispatch can't read", () => {
+  it.each([
+    ["a status it doesn't know", { status: 'done', update: 'Hidden words.', ask: null }],
+    ['a missing field', { status: 'on-track', update: 'Hidden words.' }],
+    ['an extra field', { status: 'on-track', update: 'Hidden words.', ask: null, notes: 'Hidden words.' }],
+    ['a bare string', 'Hidden words.'],
+  ])('is dropped, and the run still finishes at boot (%s)', async (_label, stored) => {
+    const row = await f.store.createAuthored(taskInput('unreadable'));
+    const run = await bound(row, 'unreadable-fire', 'c1');
+    await sql`UPDATE routines_v1_dispatches SET report = ${JSON.stringify(stored)}::jsonb WHERE dispatch_id = ${run.dispatchId}`.execute(f.db);
+    const lines = captureStderr();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    vi.restoreAllMocks();
+    expect(lines.filter(line => line.startsWith('[ax/routines]'))).toEqual([`[ax/routines] dropped an unreadable report for dispatch ${run.dispatchId}\n`]);
+    expect(lines.join('')).not.toContain('Hidden words');
+    expect(await fireRow(run.dispatchId)).toMatchObject({ status: 'error', ...fireReport(null) });
+    expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
+  });
+
+  it('a JSON null is no report, and says nothing', async () => {
+    const row = await f.store.createAuthored(taskInput('json-null'));
+    const run = await bound(row, 'json-null-fire', 'c1');
+    await sql`UPDATE routines_v1_dispatches SET report = 'null'::jsonb WHERE dispatch_id = ${run.dispatchId}`.execute(f.db);
+    const lines = captureStderr();
+    expect(await finish(run.dispatchId)).toBe(true);
+    vi.restoreAllMocks();
+    expect(lines.filter(line => line.startsWith('[ax/routines]'))).toEqual([]);
+    expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(null));
+  });
+});
+
+it('a report the database refuses fails naming only its run, and writes nothing', async () => {
+  const row = await f.store.createAuthored(taskInput('refused'));
+  const run = await bound(row, 'refused-fire', 'c1');
+  const before = await snapshot();
+  // A lone surrogate: JSON can carry one, and Postgres refuses it in a jsonb
+  // column with an error that quotes the text. The contract refuses it first;
+  // this is the store's own floor.
+  const error = await record(run.dispatchId, { report: { status: 'on-track', update: 'Queue \uD800 is empty.', ask: null }, notes: 'Secret notes.' })
+    .then(() => null, (e: unknown) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(`Could not save the report for dispatch ${run.dispatchId} (SQLSTATE 22P02).`);
+  expect((error as Error).cause).toBeUndefined();
+  expect(inspect(error, { depth: 10, showHidden: true })).not.toMatch(/Queue|Secret/);
+  expect(await snapshot()).toEqual(before);
+});
