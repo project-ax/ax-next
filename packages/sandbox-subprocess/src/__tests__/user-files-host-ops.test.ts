@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -25,6 +25,11 @@ import {
 // ---------------------------------------------------------------------------
 
 const PLUGIN = '@ax/sandbox-subprocess';
+
+// The host-read is the per-component no-follow walk, which needs Linux /proc.
+// Off Linux it throws `unsupported-platform` (TASK-899), so the tests that read
+// real files skip there. CI runs them on ubuntu.
+const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
 
 function ctx() {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
@@ -90,7 +95,7 @@ describe('readUserFiles (subprocess host-read)', () => {
     expect(out).toEqual({ kind: 'unavailable' });
   });
 
-  it('lists the mount root directory (dir kind)', async () => {
+  it.skipIf(!ON_LINUX)('lists the mount root directory (dir kind)', async () => {
     await seedAgentFiles('agent-a');
     const bus = busWithLocaldir();
     const out = await readUserFiles(ctx(), bus, PLUGIN, {
@@ -103,7 +108,7 @@ describe('readUserFiles (subprocess host-read)', () => {
     expect(byName.get('docs')).toBe('dir');
   });
 
-  it('reads a file under the mount (file kind, exact bytes)', async () => {
+  it.skipIf(!ON_LINUX)('reads a file under the mount (file kind, exact bytes)', async () => {
     await seedAgentFiles('agent-a');
     const bus = busWithLocaldir();
     const out = await readUserFiles(ctx(), bus, PLUGIN, {
@@ -115,7 +120,7 @@ describe('readUserFiles (subprocess host-read)', () => {
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('# note');
   });
 
-  it('returns absent for a missing path', async () => {
+  it.skipIf(!ON_LINUX)('returns absent for a missing path', async () => {
     await seedAgentFiles('agent-a');
     const bus = busWithLocaldir();
     const out = await readUserFiles(ctx(), bus, PLUGIN, {
@@ -149,7 +154,7 @@ describe('readUserFiles (subprocess host-read)', () => {
     ).rejects.toThrow(/relative/);
   });
 
-  it('SECURITY: a symlink at the target is treated as absent (never followed)', async () => {
+  it.skipIf(!ON_LINUX)('SECURITY: a symlink at the target is treated as absent (never followed)', async () => {
     const dir = await seedAgentFiles('agent-a');
     // Plant a symlink inside the mount pointing OUTSIDE it.
     await fs.writeFile(path.join(root, 'outside.txt'), 'OUTSIDE');
@@ -171,10 +176,10 @@ describe('readUserFiles (subprocess host-read)', () => {
   // SECURITY REGRESSION (cross-tenant disclosure, HIGH): the agent can plant an
   // INTERMEDIATE symlink inside its OWN subtree pointing at a sibling agent's
   // subtree, then read THROUGH it. A lexical relPath guard (`..`/absolute) does
-  // NOT catch this — only realpath-confinement does. Reading
+  // NOT catch this — only the per-component walk does. Reading
   // `escape/secret.txt` where `escape -> <root>/agent-b` must yield ABSENT, not
   // agent-b's file.
-  it('SECURITY: an INTERMEDIATE symlink to a sibling agent subtree does NOT disclose its files', async () => {
+  it.skipIf(!ON_LINUX)('SECURITY: an INTERMEDIATE symlink to a sibling agent subtree does NOT disclose its files', async () => {
     const dirA = await seedAgentFiles('agent-a');
     const dirB = await seedAgentFiles('agent-b');
     await fs.writeFile(path.join(dirB, 'secret.txt'), 'AGENT-B-SECRET');
@@ -208,7 +213,23 @@ describe('readUserFiles (subprocess host-read)', () => {
     ).toBe('AGENT-B-SECRET');
   });
 
-  it('SECURITY: an INTERMEDIATE symlink to an absolute host path does NOT disclose it', async () => {
+  it.skipIf(!ON_LINUX)('SECURITY: an in-root symlink is absent: the host-read is the per-component walk', async () => {
+    // A realpath reader serves both of these (they stay inside the subtree);
+    // only the walk refuses a symlink at any depth, so this pins the reader.
+    const dir = await seedAgentFiles('agent-a');
+    await fs.symlink('hello.txt', path.join(dir, 'alias.md'));
+    await fs.symlink('docs', path.join(dir, 'alias'));
+    const bus = busWithLocaldir();
+    for (const relPath of ['alias.md', 'alias/note.md']) {
+      const out = await readUserFiles(ctx(), bus, PLUGIN, {
+        owner: ownerFromAgentId('agent-a', 'u1'),
+        relPath,
+      });
+      expect(out).toEqual({ kind: 'absent' });
+    }
+  });
+
+  it.skipIf(!ON_LINUX)('SECURITY: an INTERMEDIATE symlink to an absolute host path does NOT disclose it', async () => {
     const dirA = await seedAgentFiles('agent-a');
     // A symlink to the host filesystem root.
     await fs.symlink('/', path.join(dirA, 'rootlink'));
@@ -220,7 +241,7 @@ describe('readUserFiles (subprocess host-read)', () => {
     expect(out).toEqual({ kind: 'absent' });
   });
 
-  it('SECURITY: never opens a writable handle — the file is unchanged after a read', async () => {
+  it.skipIf(!ON_LINUX)('SECURITY: never opens a writable handle — the file is unchanged after a read', async () => {
     const dir = await seedAgentFiles('agent-a');
     const before = await fs.stat(path.join(dir, 'hello.txt'));
     const bus = busWithLocaldir();

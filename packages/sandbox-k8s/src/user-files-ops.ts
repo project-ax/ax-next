@@ -721,9 +721,10 @@ export async function readUserFiles(
   // already serves in dev.
   //
   // `subPath` has been validated as ONE safe segment above, so the join cannot
-  // widen past this agent's subtree; the reader then realpath-confines
-  // everything under it, which is what stops an agent-planted symlink from
-  // crossing into a sibling's subtree on the same export.
+  // widen past this agent's subtree. The reader then opens every component of
+  // `rel` relative to the directory it already holds and refuses symlinks, which
+  // stops a planted or mid-read-swapped link from reaching a sibling's subtree
+  // on the same export.
   if (config.userFilesHostReadRoot.length > 0) {
     return readConfinedUserFiles(
       path.join(config.userFilesHostReadRoot, mount.subPath),

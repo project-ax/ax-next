@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +29,11 @@ import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
 // ---------------------------------------------------------------------------
 
 const CONFIG = resolveConfig({ hostIpcUrl: 'http://h:80', namespace: 'ax-test' });
+
+// The host-mounted reader is the per-component no-follow walk, which needs
+// Linux /proc. Off Linux it throws `unsupported-platform` (TASK-899), so the
+// tests that read real files skip there. CI runs them on ubuntu.
+const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
 
 function ctx() {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
@@ -538,7 +543,7 @@ describe('readUserFiles (host-mounted realization)', () => {
     return dir;
   }
 
-  it('lists the agent subtree WITHOUT creating a pod', async () => {
+  it.skipIf(!ON_LINUX)('lists the agent subtree WITHOUT creating a pod', async () => {
     await seed('agent-abc');
     const api = makeMockK8sApi();
     const { bus, seen } = busWithNfs();
@@ -556,7 +561,7 @@ describe('readUserFiles (host-mounted realization)', () => {
     expect(byName.get('docs')).toBe('dir');
   });
 
-  it('reads a nested file, exact bytes, no pod', async () => {
+  it.skipIf(!ON_LINUX)('reads a nested file, exact bytes, no pod', async () => {
     await seed('agent-abc');
     const api = makeMockK8sApi();
     const { bus } = busWithNfs();
@@ -569,7 +574,7 @@ describe('readUserFiles (host-mounted realization)', () => {
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('# note');
   });
 
-  it('returns absent for a missing path', async () => {
+  it.skipIf(!ON_LINUX)('returns absent for a missing path', async () => {
     await seed('agent-abc');
     const api = makeMockK8sApi();
     const { bus } = busWithNfs();
@@ -591,20 +596,29 @@ describe('readUserFiles (host-mounted realization)', () => {
     expect(api.creates).toHaveLength(0);
   });
 
-  it('CROSS-TENANT: the read is confined to THIS agent subPath', async () => {
+  it('CROSS-TENANT: a traversal relPath is refused before any read', async () => {
     await seed('agent-abc');
     const other = await seed('agent-xyz');
     await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
     const api = makeMockK8sApi();
     const { bus } = busWithNfs();
-    // A traversal is refused outright (our own caller would be malformed)…
+    // A traversal is refused outright (our own caller would be malformed).
     await expect(
       readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
         owner: ownerFromAgentId('agent-abc', 'u1'),
         relPath: '../agent-xyz/secret.txt',
       }),
     ).rejects.toBeInstanceOf(PluginError);
-    // …and an INTERMEDIATE symlink planted in agent-abc's own subtree, which no
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it.skipIf(!ON_LINUX)('CROSS-TENANT: an intermediate symlink to a sibling subtree discloses nothing', async () => {
+    await seed('agent-abc');
+    const other = await seed('agent-xyz');
+    await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    // An INTERMEDIATE symlink planted in agent-abc's own subtree, which no
     // lexical guard catches, discloses nothing.
     await fs.symlink(other, path.join(hostRoot, 'agent-abc', 'escape'));
     expect(
@@ -616,7 +630,39 @@ describe('readUserFiles (host-mounted realization)', () => {
     expect(api.creates).toHaveLength(0);
   });
 
-  it('SECURITY: never opens a writable handle — a read-only root still reads', async () => {
+  it.skipIf(!ON_LINUX)('an in-root symlink is absent: the host-mounted read is the per-component walk', async () => {
+    // A realpath reader serves both of these (they stay inside the subtree);
+    // only the walk refuses a symlink at any depth, so this pins the reader.
+    const dir = await seed('agent-abc');
+    await fs.symlink('hello.txt', path.join(dir, 'alias.md'));
+    await fs.symlink('docs', path.join(dir, 'alias'));
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    for (const relPath of ['alias.md', 'alias/note.md']) {
+      expect(
+        await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+          owner: ownerFromAgentId('agent-abc', 'u1'),
+          relPath,
+        }),
+      ).toEqual({ kind: 'absent' });
+    }
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it.skipIf(!ON_LINUX)('an agent that has never written anything reads as absent, not an error', async () => {
+    // No seed: the agent's subtree does not exist yet. This is production's
+    // most common case, and it must not be a 5xx.
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    expect(
+      await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+        owner: ownerFromAgentId('agent-abc', 'u1'),
+      }),
+    ).toEqual({ kind: 'absent' });
+    expect(api.creates).toHaveLength(0);
+  });
+
+  it.skipIf(!ON_LINUX)('SECURITY: never opens a writable handle — a read-only root still reads', async () => {
     // In production the host volumeMount is `readOnly: true`. A writable temp
     // dir would hide a reader that opened for write, so take write away.
     const dir = await seed('agent-abc');

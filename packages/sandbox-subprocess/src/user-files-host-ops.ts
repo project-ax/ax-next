@@ -40,10 +40,12 @@ import type {
 //   - The caller-supplied `relPath` is confined to the resolved mount subtree
 //     by `@ax/user-files-read` — the ONE confined reader, shared with the k8s
 //     provider's host-mounted realization. Read its header for the full walk:
-//     lexical `..`/absolute rejection, realpath confinement of every
-//     component (this is what catches an INTERMEDIATE symlink the agent
-//     planted), `O_NOFOLLOW` on the final open, symlink children dropped from
-//     listings, and caps on bytes + entries.
+//     lexical `..`/absolute rejection, then a per-component `O_NOFOLLOW` walk
+//     that refuses a symlink at any depth (planted by the agent, or swapped in
+//     mid-read), symlink children dropped from listings, and caps on bytes +
+//     entries. Off Linux the read throws `unsupported-platform` instead of
+//     falling back to a check-then-open read. No shipped entry point pairs this
+//     provider with the Files routes, and its real-file tests run on Linux (CI).
 //   - cleanup deletes ONLY the resolved `hostPath` (a single per-agent subtree
 //     keyed off the validated agentId) — never a sibling agent's subtree
 //     (cross-tenant safety, design §9). Resolving via the SAME validated
@@ -118,10 +120,10 @@ function unrealizable(kind: string, pluginName: string): PluginError {
  * included. The mount resolves before any path is looked at, so telling them
  * apart costs no secrecy about which paths exist.
  *
- * The read itself — the LEXICAL guard on the caller's relPath, the realpath
- * confinement that catches an intermediate agent-planted symlink, the
- * `O_NOFOLLOW` final open, the dropped symlink children, and the size/listing
- * caps — lives in `@ax/user-files-read` and is shared with the k8s provider's
+ * The read itself — the LEXICAL guard on the caller's relPath, the
+ * per-component `O_NOFOLLOW` walk that refuses a symlink at any depth (planted
+ * by the agent, or swapped in mid-read), the dropped symlink children, and the
+ * size/listing caps — lives in `@ax/user-files-read` and is shared with the k8s provider's
  * host-mounted realization. It is a library rather than a copy on purpose:
  * path confinement is the load-bearing cross-tenant property on this surface,
  * and a second copy is a second place a fix has to land.

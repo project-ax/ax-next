@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTestHarness } from '@ax/test-harness';
@@ -13,6 +13,10 @@ import type {
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 import { TEST_PROXY_CONFIG } from './proxy-config.js';
+
+// The host-read is the per-component no-follow walk, which needs Linux /proc;
+// off Linux it throws `unsupported-platform` (TASK-899). CI runs this on ubuntu.
+const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
 
 // ---------------------------------------------------------------------------
 // filestore-user-files Phase 1 — CANARY acceptance (design §12).
@@ -173,7 +177,7 @@ describe('filestore-user-files canary (subprocess + localDir)', () => {
   // to its durable mount, the HOST reads it back READ-ONLY via the real
   // `sandbox:read-user-files` hook (the web-UI path), without entering a live
   // sandbox and without granting write.
-  it('the host reads an agent file back via sandbox:read-user-files (read-only)', async () => {
+  it.skipIf(!ON_LINUX)('the host reads an agent file back via sandbox:read-user-files (read-only)', async () => {
     const userFilesRootDir = await fs.mkdtemp(
       path.join(process.env.TMPDIR ?? '/tmp', 'ax-userfiles-'),
     );

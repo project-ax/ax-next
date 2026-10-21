@@ -152,7 +152,7 @@ export interface SandboxK8sConfig {
    * WHAT THIS COSTS, stated plainly: without it the host has NO access to any
    * agent subtree and cross-tenant isolation is STRUCTURAL. With it the host
    * can read every agent's files and that isolation becomes CODE — the route's
-   * `agents:resolve` ACL plus the realpath confinement in
+   * `agents:resolve` ACL plus the per-component no-follow walk in
    * `@ax/user-files-read`. The mount must be `readOnly: true`; nothing on this
    * path ever opens a writable handle. See SECURITY.md and the host-read note
    * in user-files-ops.ts.
