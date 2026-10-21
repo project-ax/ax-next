@@ -177,7 +177,15 @@ export const RoutineEditableShape = {
  *     layout (so not `REWRITES_THE_SURFACE`, which includes those three);
  *   - `BRIEF_INVISIBLES`: what the shared class leaves out on purpose
  *     (widening it changes eight packages; TASK-562 decisions row 3);
- *   - a stray presentation selector (`STRAY_SELECTOR`).
+ *   - a stray presentation selector (`STRAY_SELECTOR`);
+ *   - in the name, TAB, LF and CR: a name is one line, and TASK-908 puts it in
+ *     the brief as one, so a line break in it would fake a second line there;
+ *   - in the instructions and going-well-when, padding that pushes the rest
+ *     out of view: more than two blank lines in a row (a blank line holds only
+ *     whitespace) or more than 16 whitespace characters in a row. The card
+ *     draws each in a box that shows about twelve lines and then scrolls, with
+ *     no scrollbar on systems that hide it, so "Keep the queue empty." over a
+ *     screen of blank lines would hide the sentence below them.
  * Repeat routines keep accepting all of it: what an agent may write there
  * without asking is unchanged, and none of it is a task's brief.
  *
@@ -191,15 +199,17 @@ const BRIEF_CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
  * minus the presentation selectors U+FE0E/U+FE0F (ordinary emoji, ruled on by
  * `STRAY_SELECTOR`) and Mongolian's free variation selectors U+180B-U+180D and
  * U+180F (ordinary Mongolian), plus the interlinear annotation controls
- * U+FFF9-U+FFFB: the soft hyphen, the combining grapheme joiner, the Hangul and
- * Khmer fillers, the Mongolian vowel separator, U+2065 and U+206A-U+206F, the
- * variation selectors U+FE00-U+FE0D, U+FFF0-U+FFFB, the shorthand and musical
- * format controls, and all of U+E0000-U+E0FFF: the tag characters, the
- * supplementary variation selectors U+E0100-U+E01EF, and the unassigned code
- * points around them. Disjoint from the shared class, so nothing of it is
- * repeated here. The astral ranges need the `u` flag.
+ * U+FFF9-U+FFFB and the braille blank U+2800 (an empty cell: not whitespace,
+ * so a run of it pads past the space rules below): the soft hyphen, the
+ * combining grapheme joiner, the Hangul and Khmer fillers, the Mongolian vowel
+ * separator, U+2065 and U+206A-U+206F, the variation selectors U+FE00-U+FE0D,
+ * U+FFF0-U+FFFB, the shorthand and musical format controls, and all of
+ * U+E0000-U+E0FFF: the tag characters, the supplementary variation selectors
+ * U+E0100-U+E01EF, and the unassigned code points around them. Disjoint from
+ * the shared class, so nothing of it is repeated here. The astral ranges need
+ * the `u` flag.
  */
-const BRIEF_INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206A-\u206F\u3164\uFE00-\uFE0D\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
+const BRIEF_INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2065\u206A-\u206F\u2800\u3164\uFE00-\uFE0D\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
 /**
  * A variation selector at the very start, or straight after another one. One
  * U+FE0E or U+FE0F after a character picks text or emoji presentation, and
@@ -214,21 +224,50 @@ function hidesText(value: string): boolean {
     BRIEF_INVISIBLES.test(value) || STRAY_SELECTOR.test(value);
 }
 
+/** More than 16 whitespace characters in a row, LF aside: spaces, tabs, CR, and the no-break and wide spaces. */
+const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
+
+/** More than two blank lines in a row. A blank line holds only whitespace, so CRLF text counts the same. */
+function hasBlankLineRun(value: string): boolean {
+  let blank = 0;
+  for (const line of value.split('\n')) {
+    blank = line.trim() === '' ? blank + 1 : 0;
+    if (blank > 2) return true;
+  }
+  return false;
+}
+
+/** The one thing wrong with a field of a task's brief, in plain words, or null. */
+function briefFieldIssue(field: (typeof BRIEF_TEXT_FIELDS)[number][0], label: string, value: string): string | null {
+  if (hidesText(value)) return `A task’s ${label} can’t contain invisible characters.`;
+  if (field === 'name') return /[\t\n\r]/.test(value) ? 'A task’s name can’t contain tabs or line breaks.' : null;
+  // Blank text has nothing to push out of view, and a blank going-well-when is the kind's own rule.
+  if (value.trim() === '') return null;
+  if (hasBlankLineRun(value)) return `A task’s ${label} can’t have more than two blank lines in a row.`;
+  if (BRIEF_SPACE_RUN.test(value)) return `A task’s ${label} can’t have more than 16 spaces or tabs in a row.`;
+  return null;
+}
+
 function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx): void {
-  if (new TextEncoder().encode(JSON.stringify(definition)).length > ROUTINE_DEFINITION_MAX_BYTES) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['promptBody'], message: 'Routine definition is too large.' });
-  }
-  if (definition.trigger.kind === 'webhook' && definition.activeHours !== null) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['activeHours'], message: 'Webhook routines cannot have active hours.' });
-  }
+  // A field gets one issue from here, so a person reads one reason for it.
+  const flagged = new Set<string | number>();
   const issue = (path: (string | number)[], message: string): void => {
+    flagged.add(path[0]!);
     ctx.addIssue({ code: z.ZodIssueCode.custom, path, message });
   };
+  if (new TextEncoder().encode(JSON.stringify(definition)).length > ROUTINE_DEFINITION_MAX_BYTES) {
+    issue(['promptBody'], 'Routine definition is too large.');
+  }
+  if (definition.trigger.kind === 'webhook' && definition.activeHours !== null) {
+    issue(['activeHours'], 'Webhook routines cannot have active hours.');
+  }
   // Not `=== 'stay-on-top'`: a future kind is a task too.
   if (definition.kind !== 'repeat') {
     for (const [field, label] of BRIEF_TEXT_FIELDS) {
       const value = definition[field];
-      if (typeof value === 'string' && hidesText(value)) issue([field], `A task’s ${label} can’t contain invisible characters.`);
+      if (flagged.has(field) || typeof value !== 'string') continue;
+      const problem = briefFieldIssue(field, label, value);
+      if (problem !== null) issue([field], problem);
     }
   }
   switch (definition.kind) {
@@ -236,7 +275,9 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
       if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task that stays on top of something can say when it’s going well.');
       break;
     case 'stay-on-top': {
-      if (definition.goodWhen === null || definition.goodWhen.trim() === '') issue(['goodWhen'], 'Say how we’ll know this task is going well.');
+      if (!flagged.has('goodWhen') && (definition.goodWhen === null || definition.goodWhen.trim() === '')) {
+        issue(['goodWhen'], 'Say how we’ll know this task is going well.');
+      }
       const { trigger } = definition;
       if (trigger.kind === 'webhook') issue(['trigger'], 'A task that stays on top of something checks in on a schedule, not from a webhook.');
       if (definition.conversation !== 'per-fire') issue(['conversation'], 'A task that stays on top of something starts a fresh conversation for each check-in.');

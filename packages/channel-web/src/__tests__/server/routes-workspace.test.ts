@@ -3986,11 +3986,16 @@ describe('channel-web agent-workspace BFF', () => {
         const longest = 'z'.repeat(budget);
         expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: longest }).success).toBe(true);
         expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: `${longest}z` }).success).toBe(false);
-        // A TAB is the one thing in a valid task's text that fencing grows (to two spaces).
-        const tabs = `z${'\t'.repeat(Math.floor((budget - 2) / 2))}z`;
+        // A TAB is the one thing in a valid task's text that fencing grows (to two
+        // spaces), and a task's text holds at most 16 in a row. Each run and its
+        // "z" cost 33 bytes of the budget (JSON writes a TAB as two).
+        const run = `${'\t'.repeat(16)}z`;
+        const tabs = `z${run.repeat(Math.floor((budget - 1) / 33))}`;
         expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: tabs }).success).toBe(true);
-        // goodWhen at its own maximum, all but one of it a TAB.
-        const goodWhen = `${'\t'.repeat(ROUTINE_GOOD_WHEN_MAX_CHARS - 1)}z`;
+        expect(RoutineDefinitionSchema.safeParse({ ...definition, promptBody: `${tabs}${run}` }).success).toBe(false);
+        // goodWhen at its own maximum, nearly all of it TABs.
+        const goodWhen = `${run.repeat(60)}zzzz`;
+        expect(goodWhen).toHaveLength(ROUTINE_GOOD_WHEN_MAX_CHARS);
         const name = 'n'.repeat(ROUTINE_NAME_MAX_CHARS);
         expect(RoutineDefinitionSchema.safeParse({ ...definition, name, goodWhen }).success).toBe(true);
         seed(

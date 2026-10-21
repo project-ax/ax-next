@@ -34,6 +34,15 @@ export function decisionTaskInstructionsLabel(agentName: string): string {
 export const DECISION_TASK_GOOD_WHEN_LABEL = 'Going well when';
 export const DECISION_TASK_CHECKS_IN_LABEL = 'Checks in';
 export const DECISION_TASK_TRUNCATED = 'This is only the beginning. The full text is longer.';
+/**
+ * How many lines the prose box shows before it scrolls: `max-h-64` is 16rem,
+ * and a line of `VALUE` text is 13px × 1.625, so twelve fit and the thirteenth
+ * doesn't.
+ */
+export const DECISION_TASK_VISIBLE_LINES = 12;
+export function decisionTaskScrollNote(lines: number): string {
+  return `Scroll to read all ${lines} lines.`;
+}
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
 const VALUE = 'text-[13px] leading-relaxed text-foreground';
@@ -42,6 +51,36 @@ const VALUE = 'text-[13px] leading-relaxed text-foreground';
 // past a screenful they scroll here, the way the request block's input does,
 // so the buttons stay near the question they answer.
 const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words';
+
+/**
+ * One prose field: its label, the text, and what a person needs to know to
+ * read all of it. On systems that hide scrollbars nothing else says the box
+ * scrolls, so a field with more lines than the box shows says how many it
+ * has. It counts line breaks, so one long paragraph that only wraps past the
+ * box gets no note. The contract keeps a task's padding short (no more than
+ * two blank lines or 16 spaces in a row), so what fills the box is text.
+ */
+function TaskProse({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: { text: string; truncated: boolean };
+  testId: string;
+}) {
+  const lines = value.text.split('\n').length;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className={LABEL}>{label}</dt>
+      <dd data-testid={testId} className={cn(VALUE, PROSE)}>
+        {value.text}
+      </dd>
+      {lines > DECISION_TASK_VISIBLE_LINES && <dd className={LABEL}>{decisionTaskScrollNote(lines)}</dd>}
+      {value.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
+    </div>
+  );
+}
 
 export function DecisionTaskBlock({
   task,
@@ -68,22 +107,14 @@ export function DecisionTaskBlock({
           </div>
         )}
         {task.instructions !== null && (
-          <div className="flex flex-col gap-0.5">
-            <dt className={LABEL}>{decisionTaskInstructionsLabel(agentName)}</dt>
-            <dd data-testid="decision-task-instructions" className={cn(VALUE, PROSE)}>
-              {task.instructions.text}
-            </dd>
-            {task.instructions.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
-          </div>
+          <TaskProse
+            label={decisionTaskInstructionsLabel(agentName)}
+            value={task.instructions}
+            testId="decision-task-instructions"
+          />
         )}
         {task.goodWhen !== null && (
-          <div className="flex flex-col gap-0.5">
-            <dt className={LABEL}>{DECISION_TASK_GOOD_WHEN_LABEL}</dt>
-            <dd data-testid="decision-task-good-when" className={cn(VALUE, PROSE)}>
-              {task.goodWhen.text}
-            </dd>
-            {task.goodWhen.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
-          </div>
+          <TaskProse label={DECISION_TASK_GOOD_WHEN_LABEL} value={task.goodWhen} testId="decision-task-good-when" />
         )}
         {task.checksIn !== null && (
           <div className="flex flex-col gap-0.5">

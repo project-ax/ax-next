@@ -42,7 +42,9 @@ import {
   DECISION_TASK_HEADING_START,
   DECISION_TASK_NAME_LABEL,
   DECISION_TASK_TRUNCATED,
+  DECISION_TASK_VISIBLE_LINES,
   decisionTaskInstructionsLabel,
+  decisionTaskScrollNote,
 } from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
@@ -458,6 +460,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       DECISION_TASK_GOOD_WHEN_LABEL,
       DECISION_TASK_CHECKS_IN_LABEL,
       DECISION_TASK_TRUNCATED,
+      decisionTaskScrollNote(40),
     ]).toEqual([
       'The task',
       'What changes',
@@ -466,6 +469,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       'Going well when',
       'Checks in',
       'This is only the beginning. The full text is longer.',
+      'Scroll to read all 40 lines.',
     ]);
   });
 
@@ -514,6 +518,45 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       expect(block.compareDocumentPosition(request) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       unmount();
     }
+  });
+
+  // The box shows twelve lines and then scrolls, and on systems that hide
+  // scrollbars nothing else says there is more. Past twelve, both renderers
+  // say how many lines there are, under the field.
+  it('says how many lines a tall field has, under it, in both renderers', () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `Step ${i + 1}.`).join('\n');
+    expect(DECISION_TASK_VISIBLE_LINES).toBe(12);
+    const tall = decisionFixture({
+      ...held,
+      task: {
+        ...task,
+        instructions: { text: lines(13), truncated: false },
+        goodWhen: { text: lines(40), truncated: false },
+      },
+    });
+    for (const ui of both(tall)) {
+      const { unmount } = render(ui);
+      const instructions = screen.getByTestId('decision-task-instructions');
+      const goodWhen = screen.getByTestId('decision-task-good-when');
+      const instructionsNote = screen.getByText(decisionTaskScrollNote(13));
+      const goodWhenNote = screen.getByText(decisionTaskScrollNote(40));
+      // Each note follows its own field, and it is muted text.
+      expect(instructions.nextElementSibling).toBe(instructionsNote);
+      expect(goodWhen.nextElementSibling).toBe(goodWhenNote);
+      for (const note of [instructionsNote, goodWhenNote]) expect(note).toHaveClass('text-muted-foreground');
+      unmount();
+    }
+    // Twelve lines fit the box: no note.
+    const fits = decisionFixture({
+      ...held,
+      task: {
+        ...task,
+        instructions: { text: lines(12), truncated: false },
+        goodWhen: { text: lines(12), truncated: false },
+      },
+    });
+    for (const text of [queueText(fits), cardText(fits)]) expect(text).not.toContain('Scroll to read all');
+    for (const text of [queueText(held), cardText(held)]) expect(text).not.toContain('Scroll to read all');
   });
 
   it('says when a field was cut, in both renderers', () => {
