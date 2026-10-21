@@ -7,7 +7,7 @@ import {
   RoutineToolInputSchemas, RoutineToolJsonSchemas, RoutineRecentFiresOutputSchema,
   RoutineUpsertDefaultInputSchema, RoutineGetDefaultOutputSchema,
   RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, RoutineToolDescriptions,
-  applyRoutinePatch, durationToSeconds, routineToolKind, validateWebhookPath,
+  applyRoutinePatch, durationToSeconds, editableDefinition, routineToolKind, validateWebhookPath,
   touchesTaskBrief, routineTaskProposal,
 } from '../index.js';
 
@@ -266,6 +266,9 @@ describe('task kinds (TASK-906)', () => {
     [{ ...task, trigger: { kind: 'interval', every: '899s' } }, ['trigger', 'every']],
     [{ ...task, trigger: { kind: 'cron', expr: '*/10 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
     [{ ...task, trigger: { kind: 'cron', expr: '*/14 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+    // :00 :16 :32 :48 then :00 again: the 12-minute gap only shows at the hour boundary, so a floor that
+    // inspects too few runs passes it.
+    [{ ...task, trigger: { kind: 'cron', expr: '*/16 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
     [{ ...task, trigger: { kind: 'cron', expr: '*/30 * * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
   ] as const)('rejects each per-kind rule with a field path %#', (value, path) => {
     const result = RoutineDefinitionSchema.safeParse(value);
@@ -331,6 +334,10 @@ describe('task kinds (TASK-906)', () => {
     const { kind: _kind, ...withoutKind } = view;
     expect(RoutineViewSchema.safeParse(withoutKind).success).toBe(false);
     expect(RoutineViewSchema.safeParse({ ...view, trigger: { kind: 'webhook', path: '/x' } }).success).toBe(false);
+  });
+
+  it('editableDefinition keeps kind and goodWhen', () => {
+    expect(editableDefinition(RoutineViewSchema.parse(view))).toMatchObject({ kind: 'stay-on-top', goodWhen: task.goodWhen });
   });
 
   it('default routines stay repeat', () => {

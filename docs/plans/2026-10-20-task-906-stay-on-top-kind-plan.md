@@ -30,7 +30,7 @@
 
 ## Review Focus
 
-1. **A cron whose short gap only shows at an hour boundary.** `*/14 * * * *` fires at :56 and then :00, a 4-minute gap. It must be rejected for a task even though "every 14 minutes" reads as fine. Pinned in Task 1 (`*/14` row).
+1. **A cron whose short gap only shows at an hour boundary.** `*/16 * * * *` fires at :00, :16, :32, :48 and then :00 again, a 12-minute gap. It must be rejected for a task even though "every 16 minutes" reads as fine, and only a floor that inspects enough runs sees it. Pinned in Task 1 (`*/16` row, added in review; `*/14` is rejected by its plain 14-minute gaps).
 2. **A task saved today has to stay valid on every future date.** The floor verdict must not depend on the clock, or `routines:list` and the tick's `claimDue` throw for a stored row. Pinned in Task 1 by `the cron floor gives the same verdict whatever the clock says`.
 3. **An agent with Always Allow.** Pausing a task (`{enabled:false}`) or rescheduling it must not ask. Rewriting its instructions, name or going-well-when, or creating a task, must ask. Pinned in Task 4's table and end to end in Task 9.
 4. **Model text that looks like markup or markdown on the approval card.** `<img onerror>`, `**bold**`, a U+202E override. It shows as literal text, fenced the same way as `request`. Pinned in Tasks 6 and 7.
