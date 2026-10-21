@@ -707,7 +707,7 @@ describe('tells the model the task rules (TASK-906)', () => {
   });
   it('says a task’s brief can’t pad text out of view, and its name is one line', () => {
     for (const name of ['routine_create', 'routine_update'] as const) {
-      expect(RoutineToolDescriptions[name]).toContain('A task’s name is one line, and its promptBody and goodWhen can’t have more than two blank lines or 16 spaces or tabs in a row.');
+      expect(RoutineToolDescriptions[name]).toContain('A task’s name is one line, and its promptBody and goodWhen can’t have more than two blank lines or 16 spaces or tabs in a row, a combining mark at the start of a line or after a space, or more than 8 combining marks on one character.');
     }
   });
 });
@@ -983,6 +983,70 @@ describe('a task’s brief can’t push text out of the card’s view (TASK-906)
       [`Keep the queue empty.${'\u2800'.repeat(5000)}${payload}`, 'A task’s instructions can’t contain invisible characters.'],
     ];
     for (const [promptBody, message] of probes) expect(issuesOf({ ...task, promptBody })).toEqual([{ path: ['promptBody'], message }]);
+  });
+
+  // A combining mark draws on the character before it, so a line of nothing but marks is blank on
+  // screen, a mark with nothing before it floats, and a tall stack of them draws over the lines
+  // around it. All three can hide text the same way blank lines do.
+  describe('combining marks', () => {
+    const baseless = (label: string): string => `A task’s ${label} can’t have an accent or other combining mark at the start of a line or after a space.`;
+    const stack = (label: string): string => `A task’s ${label} can’t stack more than 8 accents or other combining marks on one character.`;
+    /** Marks of each kind: nonspacing (acute, grave, a combining strikethrough), spacing (Devanagari visarga) and enclosing (a circle). */
+    const MARKS = ['\u0301', '\u0300', '\u0336', '\u0903', '\u20DD', '\u1AB0'];
+
+    it('counts a line of nothing but marks as blank', () => {
+      for (const mark of MARKS) {
+        // The review's shape: the first mark sits on the period, then every line holds one mark alone.
+        const text = `Keep the queue empty.${`${mark}\n`.repeat(300)}${payload}`;
+        for (const [field, label] of TEXT_FIELDS) {
+          expect(issuesOf({ ...task, [field]: text }), `${field} ${mark.codePointAt(0)!.toString(16)}`).toEqual([{ path: [field], message: blankLines(label) }]);
+        }
+      }
+      // Marks and spaces together are blank too.
+      expect(issuesOf({ ...task, promptBody: `Keep.\n \u0301 \n\t\u0301\u0300\n\u0301\n${payload}` })).toEqual([{ path: ['promptBody'], message: blankLines('instructions') }]);
+    });
+
+    it('refuses a mark at the start of a line, at the very start, or after a space', () => {
+      for (const mark of MARKS) {
+        for (const text of [
+          `Keep the queue empty.\n${mark}${payload}`,
+          `Keep the queue empty.\r\n${mark}${payload}`,
+          `${mark}Keep the queue empty.`,
+          `Keep the queue ${mark}empty.`,
+          `Keep the queue\t${mark}empty.`,
+          `Keep the queue\u00A0${mark}empty.`,
+        ]) {
+          for (const [field, label] of TEXT_FIELDS) {
+            expect(issuesOf({ ...task, [field]: text }), `${field} ${JSON.stringify(text)}`).toEqual([{ path: [field], message: baseless(label) }]);
+          }
+        }
+      }
+    });
+
+    it('refuses more than 8 marks on one character, and accepts 8', () => {
+      for (const [field, label] of TEXT_FIELDS) {
+        expect(issuesOf({ ...task, [field]: `Keep the queue empty${'\u0301'.repeat(9)}.` }), field).toEqual([{ path: [field], message: stack(label) }]);
+        expect(issuesOf({ ...task, [field]: `Keep the queue empty${'\u0301\u0300\u0336'.repeat(3)}.` }), field).toEqual([{ path: [field], message: stack(label) }]);
+        expect(issuesOf({ ...task, [field]: `Keep the queue empty${'\u0301'.repeat(8)}.` }), field).toEqual([]);
+      }
+      // The review's probe: five hundred strikethroughs on one letter.
+      expect(issuesOf({ ...task, promptBody: `Keep the queue empty.${'\u0336'.repeat(500)}` })).toEqual([{ path: ['promptBody'], message: stack('instructions') }]);
+    });
+
+    it.each([
+      ['café, composed', 'caf\u00E9'],
+      ['café, decomposed', 'cafe\u0301'],
+      ['Vietnamese, composed', 'Ti\u1EBFng Vi\u1EC7t'],
+      ['Vietnamese, decomposed', 'Ti\u1EBFng Vi\u1EC7t'.normalize('NFD')],
+      ['Hindi', '\u0928\u092E\u0938\u094D\u0924\u0947'],
+      ['Thai', '\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E35'],
+      ['a keycap', '1\uFE0F\u20E3'],
+    ])('accepts ordinary text with marks: %s', (_label, text) => {
+      expect(text.normalize('NFD')).toMatch(/\p{M}/u);
+      for (const [field] of TEXT_FIELDS) {
+        expect(issuesOf({ ...task, [field]: `Keep ${text} at zero.\n${text}\n\n${text}` }), field).toEqual([]);
+      }
+    });
   });
 
   it('accepts two blank lines, normal indentation and 16 spaces in a row', () => {

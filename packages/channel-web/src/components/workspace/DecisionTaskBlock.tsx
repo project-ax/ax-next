@@ -40,8 +40,25 @@ export const DECISION_TASK_TRUNCATED = 'This is only the beginning. The full tex
  * doesn't.
  */
 export const DECISION_TASK_VISIBLE_LINES = 12;
-export function decisionTaskScrollNote(lines: number): string {
-  return `Scroll to read all ${lines} lines.`;
+/**
+ * Where a line is taken to wrap, in characters. The narrowest box, inside the
+ * in-thread card (604px), holds roughly 85 characters of 13px Inter on a
+ * line, so sixty errs toward saying "scroll", in a narrower window too.
+ */
+export const DECISION_TASK_LINE_CHARS = 60;
+export const DECISION_TASK_SCROLL_NOTE = 'Scroll to read all of it.';
+
+/**
+ * How many lines a field takes in its box, estimated from the text: each line
+ * break starts a line, and a line wraps every `DECISION_TASK_LINE_CHARS`
+ * characters (UTF-16 units, which counts an emoji as two and errs high again).
+ * Layout isn't measured: tests run without it, and the estimate must hold
+ * there too.
+ */
+function estimatedLines(text: string): number {
+  let lines = 0;
+  for (const line of text.split('\n')) lines += Math.max(1, Math.ceil(line.length / DECISION_TASK_LINE_CHARS));
+  return lines;
 }
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
@@ -55,10 +72,9 @@ const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words';
 /**
  * One prose field: its label, the text, and what a person needs to know to
  * read all of it. On systems that hide scrollbars nothing else says the box
- * scrolls, so a field with more lines than the box shows says how many it
- * has. It counts line breaks, so one long paragraph that only wraps past the
- * box gets no note. The contract keeps a task's padding short (no more than
- * two blank lines or 16 spaces in a row), so what fills the box is text.
+ * scrolls, so a field the box can't show whole says so under it. The contract
+ * keeps a task's padding short (no more than two blank lines or 16 spaces in
+ * a row, no marks without a character), so what fills the box is text.
  */
 function TaskProse({
   label,
@@ -69,14 +85,13 @@ function TaskProse({
   value: { text: string; truncated: boolean };
   testId: string;
 }) {
-  const lines = value.text.split('\n').length;
   return (
     <div className="flex flex-col gap-0.5">
       <dt className={LABEL}>{label}</dt>
       <dd data-testid={testId} className={cn(VALUE, PROSE)}>
         {value.text}
       </dd>
-      {lines > DECISION_TASK_VISIBLE_LINES && <dd className={LABEL}>{decisionTaskScrollNote(lines)}</dd>}
+      {estimatedLines(value.text) > DECISION_TASK_VISIBLE_LINES && <dd className={LABEL}>{DECISION_TASK_SCROLL_NOTE}</dd>}
       {value.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
     </div>
   );

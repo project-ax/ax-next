@@ -41,10 +41,11 @@ import {
   DECISION_TASK_HEADING_CHANGE,
   DECISION_TASK_HEADING_START,
   DECISION_TASK_NAME_LABEL,
+  DECISION_TASK_LINE_CHARS,
+  DECISION_TASK_SCROLL_NOTE,
   DECISION_TASK_TRUNCATED,
   DECISION_TASK_VISIBLE_LINES,
   decisionTaskInstructionsLabel,
-  decisionTaskScrollNote,
 } from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
@@ -460,7 +461,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       DECISION_TASK_GOOD_WHEN_LABEL,
       DECISION_TASK_CHECKS_IN_LABEL,
       DECISION_TASK_TRUNCATED,
-      decisionTaskScrollNote(40),
+      DECISION_TASK_SCROLL_NOTE,
     ]).toEqual([
       'The task',
       'What changes',
@@ -469,7 +470,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       'Going well when',
       'Checks in',
       'This is only the beginning. The full text is longer.',
-      'Scroll to read all 40 lines.',
+      'Scroll to read all of it.',
     ]);
   });
 
@@ -521,42 +522,55 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
   });
 
   // The box shows twelve lines and then scrolls, and on systems that hide
-  // scrollbars nothing else says there is more. Past twelve, both renderers
-  // say how many lines there are, under the field.
-  it('says how many lines a tall field has, under it, in both renderers', () => {
+  // scrollbars nothing else says there is more. A field the box can't show
+  // whole says so under it, in both renderers. jsdom has no layout, so it is
+  // decided from the text: each line break starts a line, and a line wraps
+  // every DECISION_TASK_LINE_CHARS characters, an estimate that errs toward
+  // saying "scroll".
+  describe('says when a field is taller than its box', () => {
     const lines = (n: number) => Array.from({ length: n }, (_, i) => `Step ${i + 1}.`).join('\n');
-    expect(DECISION_TASK_VISIBLE_LINES).toBe(12);
-    const tall = decisionFixture({
-      ...held,
-      task: {
-        ...task,
-        instructions: { text: lines(13), truncated: false },
-        goodWhen: { text: lines(40), truncated: false },
-      },
+    const withFields = (instructions: string, goodWhen: string) =>
+      decisionFixture({
+        ...held,
+        task: {
+          ...task,
+          instructions: { text: instructions, truncated: false },
+          goodWhen: { text: goodWhen, truncated: false },
+        },
+      });
+    const noteCount = (text: string) => text.split(DECISION_TASK_SCROLL_NOTE).length - 1;
+
+    it('pins the box: twelve lines of about sixty characters', () => {
+      expect([DECISION_TASK_VISIBLE_LINES, DECISION_TASK_LINE_CHARS]).toEqual([12, 60]);
     });
-    for (const ui of both(tall)) {
-      const { unmount } = render(ui);
-      const instructions = screen.getByTestId('decision-task-instructions');
-      const goodWhen = screen.getByTestId('decision-task-good-when');
-      const instructionsNote = screen.getByText(decisionTaskScrollNote(13));
-      const goodWhenNote = screen.getByText(decisionTaskScrollNote(40));
-      // Each note follows its own field, and it is muted text.
-      expect(instructions.nextElementSibling).toBe(instructionsNote);
-      expect(goodWhen.nextElementSibling).toBe(goodWhenNote);
-      for (const note of [instructionsNote, goodWhenNote]) expect(note).toHaveClass('text-muted-foreground');
-      unmount();
-    }
-    // Twelve lines fit the box: no note.
-    const fits = decisionFixture({
-      ...held,
-      task: {
-        ...task,
-        instructions: { text: lines(12), truncated: false },
-        goodWhen: { text: lines(12), truncated: false },
-      },
+
+    it('under each tall field, as muted text, for line breaks and for one long line', () => {
+      // 13 short lines, and one 2,000-character line with no line break at all.
+      const tall = withFields(lines(13), 'x'.repeat(2000));
+      for (const ui of both(tall)) {
+        const { unmount } = render(ui);
+        const notes = screen.getAllByText(DECISION_TASK_SCROLL_NOTE);
+        expect(notes).toHaveLength(2);
+        // Each note follows its own field.
+        expect(screen.getByTestId('decision-task-instructions').nextElementSibling).toBe(notes[0]);
+        expect(screen.getByTestId('decision-task-good-when').nextElementSibling).toBe(notes[1]);
+        for (const note of notes) expect(note).toHaveClass('text-muted-foreground');
+        unmount();
+      }
     });
-    for (const text of [queueText(fits), cardText(fits)]) expect(text).not.toContain('Scroll to read all');
-    for (const text of [queueText(held), cardText(held)]) expect(text).not.toContain('Scroll to read all');
+
+    it('counts wrapped lines too: lines of 61 characters wrap in two', () => {
+      const wrapped = withFields(Array(7).fill('y'.repeat(61)).join('\n'), Array(6).fill('y'.repeat(61)).join('\n'));
+      for (const text of [queueText(wrapped), cardText(wrapped)]) expect(noteCount(text)).toBe(1);
+    });
+
+    it('not for a field that fits: twelve lines, or one line of 720 characters', () => {
+      const fits = withFields(lines(12), 'z'.repeat(12 * 60));
+      for (const text of [queueText(fits), cardText(fits)]) expect(noteCount(text)).toBe(0);
+      const justOver = withFields(lines(12), 'z'.repeat(12 * 60 + 1));
+      for (const text of [queueText(justOver), cardText(justOver)]) expect(noteCount(text)).toBe(1);
+      for (const text of [queueText(held), cardText(held)]) expect(noteCount(text)).toBe(0);
+    });
   });
 
   it('says when a field was cut, in both renderers', () => {

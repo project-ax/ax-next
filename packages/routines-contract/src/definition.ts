@@ -183,11 +183,15 @@ export const RoutineEditableShape = {
  *   - in the name, TAB, LF and CR: a name is one line, and TASK-908 puts it in
  *     the brief as one, so a line break in it would fake a second line there;
  *   - in the instructions and going-well-when, padding that pushes the rest
- *     out of view: more than two blank lines in a row (a blank line holds only
- *     whitespace) or more than 16 whitespace characters in a row. The card
- *     draws each in a box that shows about twelve lines and then scrolls, with
- *     no scrollbar on systems that hide it, so "Keep the queue empty." over a
- *     screen of blank lines would hide the sentence below them.
+ *     out of view: more than two blank lines in a row (a blank line holds
+ *     nothing to see, only whitespace and combining marks), a combining mark
+ *     with no character to draw on (at the start of a line or after
+ *     whitespace), more than 8 combining marks on one character (a stack that
+ *     tall draws over the lines around it), or more than 16 whitespace
+ *     characters in a row. The card draws each in a box that shows about
+ *     twelve lines and then scrolls, with no scrollbar on systems that hide
+ *     it, so "Keep the queue empty." over a screen of blank lines would hide
+ *     the sentence below them.
  * Repeat routines keep accepting all of it: what an agent may write there
  * without asking is unchanged, and none of it is a task's brief.
  *
@@ -242,11 +246,23 @@ function hidesText(value: string): boolean {
 /** More than 16 whitespace characters in a row, LF aside: spaces, tabs, CR, and the no-break and wide spaces. */
 const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
 
-/** More than two blank lines in a row. A blank line holds only whitespace, so CRLF text counts the same. */
+/**
+ * A line with nothing on it to see: only whitespace and combining marks, which
+ * draw on a character that isn't there. CR is whitespace, so CRLF text counts
+ * the same. The invisible-character rule has already run, so nothing else that
+ * draws as nothing is left.
+ */
+const BLANK_LINE = /^[\p{M}\s]*$/u;
+/** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. */
+const BASELESS_MARK = /(?:^|\s)\p{M}/u;
+/** More than 8 combining marks in a row, on one character. Ordinary text stacks two or three. */
+const MARK_STACK = /\p{M}{9}/u;
+
+/** More than two blank lines in a row. */
 function hasBlankLineRun(value: string): boolean {
   let blank = 0;
   for (const line of value.split('\n')) {
-    blank = line.trim() === '' ? blank + 1 : 0;
+    blank = BLANK_LINE.test(line) ? blank + 1 : 0;
     if (blank > 2) return true;
   }
   return false;
@@ -259,6 +275,8 @@ function briefFieldIssue(field: (typeof BRIEF_TEXT_FIELDS)[number][0], label: st
   // Blank text has nothing to push out of view, and a blank going-well-when is the kind's own rule.
   if (value.trim() === '') return null;
   if (hasBlankLineRun(value)) return `A task’s ${label} can’t have more than two blank lines in a row.`;
+  if (BASELESS_MARK.test(value)) return `A task’s ${label} can’t have an accent or other combining mark at the start of a line or after a space.`;
+  if (MARK_STACK.test(value)) return `A task’s ${label} can’t stack more than 8 accents or other combining marks on one character.`;
   if (BRIEF_SPACE_RUN.test(value)) return `A task’s ${label} can’t have more than 16 spaces or tabs in a row.`;
   return null;
 }
