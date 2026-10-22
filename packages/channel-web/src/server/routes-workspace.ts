@@ -4112,22 +4112,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     userId: string,
   ): Promise<{ ok: true; tasks: TaskRow[] } | { ok: false }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
       const read = bus.call<RoutinesListInput, TaskListOutput>(
         'routines:list',
         agentWorkspaceCtx(agent.id, userId),
         { agentId: agent.id },
       );
-      // Abandoned on a timeout; keep its eventual rejection from going unhandled.
-      read.catch(() => undefined);
+      // After the deadline nobody is waiting on this read, so its eventual
+      // failure is logged here: the deadline line alone loses the cause.
+      read.catch((err: unknown) => {
+        if (!timedOut) return;
+        initCtx.logger.warn('workspace_tasks_late_read_failed', {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(`routines:list did not answer within ${TASKS_AGENT_READ_DEADLINE_MS}ms`),
-            ),
-          TASKS_AGENT_READ_DEADLINE_MS,
-        );
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(
+            new Error(`routines:list did not answer within ${TASKS_AGENT_READ_DEADLINE_MS}ms`),
+          );
+        }, TASKS_AGENT_READ_DEADLINE_MS);
       });
       const out = await Promise.race([read, deadline]);
       return { ok: true, tasks: toTaskRows(agent, out.routines) };
@@ -6697,7 +6704,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         else unavailableAgents.push({ agentId: agent.id, agentName: agent.displayName });
       }
       if (agents.length > 0 && unavailableAgents.length === agents.length) {
-        res.status(503).json({ error: 'tasks-unavailable' });
+        res.status(503).json({ error: 'tasks-read-failed' });
         return;
       }
       res.status(200).json({ tasks, unavailableAgents } satisfies TasksResponse);

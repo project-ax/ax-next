@@ -185,6 +185,7 @@ describe('useTasks (TASK-909)', () => {
 
     await act(async () => d2.resolve(page('B')));
     await act(async () => d1.reject(new WorkspaceApiError('/tasks', 500)));
-    expect(result.current.state.kind).toBe('ready');
+    // A stale failure must not mark the newer, good answer as out of date.
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
   });
 });

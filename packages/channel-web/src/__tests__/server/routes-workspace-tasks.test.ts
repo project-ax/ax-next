@@ -120,6 +120,8 @@ interface World {
   slow: Set<string>;
   /** Agents whose `routines:list` never answers. */
   hang: Set<string>;
+  /** Agents whose `routines:list` fails this long after it was asked. */
+  lateFailure: Map<string, number>;
   /** False is a deployment without @ax/routines: no `routines:list` at all. */
   routines: boolean;
   /** Set: `agents:list-for-user` throws this. */
@@ -146,6 +148,7 @@ function setup(over: Partial<World> = {}) {
     failures: new Map(),
     slow: new Set(),
     hang: new Set(),
+    lateFailure: new Map(),
     routines: true,
     rosterFailure: null,
     ...over,
@@ -177,6 +180,11 @@ function setup(over: Partial<World> = {}) {
         listCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input });
         if (world.hang.has(input.agentId)) {
           await new Promise(() => {});
+        }
+        const lateMs = world.lateFailure.get(input.agentId);
+        if (lateMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, lateMs));
+          throw new Error('pool exhausted after a long wait');
         }
         if (world.slow.has(input.agentId)) {
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -556,6 +564,32 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     }
   });
 
+  it('still logs why an agent failed when it fails after the page gave up on it', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(initCtx.logger, 'warn');
+    try {
+      const { get } = setup({
+        rows: [stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') })],
+        lateFailure: new Map([['a2', TASKS_AGENT_READ_DEADLINE_MS + 2_000]]),
+      });
+      const pending = get();
+      await vi.advanceTimersByTimeAsync(TASKS_AGENT_READ_DEADLINE_MS);
+      const captured = await pending;
+      expect(bodyOf(captured).unavailableAgents).toEqual([
+        { agentId: 'a2', agentName: 'Juniper' },
+      ]);
+      expect(warn).not.toHaveBeenCalledWith('workspace_tasks_late_read_failed', expect.anything());
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(warn).toHaveBeenCalledWith('workspace_tasks_late_read_failed', {
+        agentId: 'a2',
+        error: expect.stringContaining('pool exhausted'),
+      });
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('answers 503 when no agent could be read, so the page does not call it a partial list', async () => {
     const { get } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') })],
@@ -566,7 +600,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     });
     const captured = await get();
     expect(captured.statusCode).toBe(503);
-    expect(captured.body).toEqual({ error: 'tasks-unavailable' });
+    expect(captured.body).toEqual({ error: 'tasks-read-failed' });
   });
 
   it('answers an empty list for a person with no agents', async () => {

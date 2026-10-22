@@ -18,7 +18,7 @@
  * Rows are not links, and have no hover look, until TASK-910 adds the task
  * page. A row that looks clickable and isn't is worse than a plain one.
  */
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useState, type ReactNode } from 'react';
 import { ChevronDown, ListChecks } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -148,7 +148,8 @@ function TaskBoard({
   // New rows are dated against the clock now, not when the page first opened:
   // the interval below only runs while a row has a report, so a retry that
   // brings the first reported row in would otherwise read a stale `now`.
-  useEffect(() => setNow(new Date()), [tasks]);
+  // A layout effect, so the stale time never reaches the screen.
+  useLayoutEffect(() => setNow(new Date()), [tasks]);
   const anyReported = tasks.some((t) => t.task !== null);
   useEffect(() => {
     if (!anyReported) return;
