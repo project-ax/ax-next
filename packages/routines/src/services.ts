@@ -2,7 +2,7 @@ import { SafeToolError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
-import type { AcceptedDispatch, FireRow, StoredRoutine } from './types.js';
+import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 
@@ -42,6 +42,20 @@ function taskView(row: StoredRoutine): C.RoutineTaskView | null {
   return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
+/** TASK-907. Every reason a report is refused: the tool's lookup, the hook's own context check, and the store's under its locks. */
+export type ReportRefusalReason = 'no-source' | 'no-conversation' | Extract<OpenCheckInLookup, { run: null }>['reason'] | 'wrong-kind' | 'wrong-owner' | ReportRefusal;
+/**
+ * TASK-907. A refused report, for the agent and for the operator. The agent gets
+ * the closed "only during a task check-in" and nothing more; the operator gets
+ * one info line with where it was refused (`tool`, the read-only lookup at
+ * pre-call and execute, or `hook`, routines:report), a fixed reason and ids.
+ * Never the report's text.
+ */
+export function reportRefused(ctx: AgentContext, stage: 'tool' | 'hook', reason: ReportRefusalReason, ids: { dispatchId?: string; routineId?: string } = {}): SafeToolError {
+  const conversation = typeof ctx.conversationId === 'string' && ctx.conversationId.length > 0 ? { conversationId: ctx.conversationId } : {};
+  ctx.logger.info('routines_report_refused', { stage, reason, agentId: ctx.agentId, ...conversation, ...ids });
+  return new SafeToolError('not-in-check-in', 'input');
+}
 function fireView({ id: _id, firedAt, ...row }: FireRow): C.RoutineFireView { return { ...row, firedAt: firedAt.toISOString() }; }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;
@@ -159,10 +173,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
     const { agentId, dispatchId, notes, ...report } = input;
     const conversationId = ctx.conversationId;
-    if (ctx.source !== 'routine' || typeof conversationId !== 'string' || conversationId.length === 0 || agentId !== ctx.agentId)
-      throw new SafeToolError('not-in-check-in', 'input');
-    const recorded = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
-    if (!recorded) throw new SafeToolError('not-in-check-in', 'input');
+    if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
+    if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
+    if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
+    const outcome = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
+    if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
     return { recorded: true as const };
   });
 }

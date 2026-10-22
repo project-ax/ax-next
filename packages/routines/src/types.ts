@@ -39,6 +39,10 @@ export type DispatchOutcome = {
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
 /** TASK-907. The one open run in a conversation, as `routine_report` finds it. */
 export type OpenCheckIn = { dispatchId: string; routineId: string; kind: RoutineKind; ownerUserId: string };
+/** TASK-907. What `routine_report`'s lookup found in a conversation: its one open run, or why there's none to report on. */
+export type OpenCheckInLookup = { run: OpenCheckIn } | { run: null; reason: 'no-open-run' | 'ambiguous' | 'routine-gone' };
+/** TASK-907. Why `recordReport` wrote nothing, decided under the run's locks: fixed words an operator's log can carry. */
+export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'routine-gone' | 'kind' | 'owner';
 /**
  * TASK-907. `conversationId` is the conversation the report came from (host-set
  * context); the run must be bound to it. `notes` left out keeps the task's

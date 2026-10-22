@@ -6,7 +6,7 @@ import {
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckIn, RecordReportInput } from './types.js';
+import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -29,10 +29,14 @@ export interface RoutinesStore {
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
   bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
-  /** TASK-907. The one open run of this agent in this conversation, or null for none or more than one. Takes no lock. */
-  findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckIn | null>;
-  /** TASK-907. The one writer of a task's state. False, with nothing written, unless the run is an open check-in, bound to the report's conversation, of a stay-on-top task its actor owns. */
-  recordReport(input: RecordReportInput): Promise<boolean>;
+  /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
+  findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
+  /**
+   * TASK-907. The one writer of a task's state. `'recorded'`, or why nothing was
+   * written: the run must be an open check-in, bound to the report's
+   * conversation, of a stay-on-top task its actor owns, on a live agent.
+   */
+  recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
@@ -373,22 +377,26 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId).where('d.completed_at', 'is', null)
         .limit(2).execute();
       const [row] = rows;
-      if (rows.length !== 1 || row === undefined || row.kind === null || row.owner_user_id === null) return null;
-      return { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id };
+      if (row === undefined) return { run: null, reason: 'no-open-run' };
+      if (rows.length > 1) return { run: null, reason: 'ambiguous' };
+      if (row.kind === null || row.owner_user_id === null) return { run: null, reason: 'routine-gone' };
+      return { run: { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id } };
     },
     async recordReport(input) {
       return db.transaction().execute(async trx => {
         // finishDispatch's order (agent fence, dispatch row, definition row), so the two serialize.
-        if (!await lockLiveAgent(trx, input.agentId)) return false;
+        if (!await lockLiveAgent(trx, input.agentId)) return 'agent-retired';
         const dispatch = await trx.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'agent_id', 'routine_id', 'accepted_at', 'completed_at', 'conversation_id'])
           .where('dispatch_id', '=', input.dispatchId).where('agent_id', '=', input.agentId).forUpdate().executeTakeFirst();
         // The whole binding, under the run's row lock: open, and bound to the conversation the report came from.
         // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
-        if (!dispatch || dispatch.completed_at !== null) return false;
-        if (dispatch.conversation_id !== input.conversationId) return false;
+        if (!dispatch || dispatch.completed_at !== null) return 'run-closed';
+        if (dispatch.conversation_id !== input.conversationId) return 'not-bound';
         const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id'])
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
-        if (!definition || definition.kind !== 'stay-on-top' || definition.owner_user_id !== input.actorUserId) return false;
+        if (!definition) return 'routine-gone';
+        if (definition.kind !== 'stay-on-top') return 'kind';
+        if (definition.owner_user_id !== input.actorUserId) return 'owner';
         const { status, update, ask } = input.report;
         try {
           // A later report in the same check-in replaces this one.
@@ -406,7 +414,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         } catch (error) {
           throw reportWriteError(dispatch.dispatch_id, error);
         }
-        return true;
+        return 'recorded';
       });
     },
     async advance(input) {

@@ -10,7 +10,7 @@ import {
   editableDefinition, parseStoredRoutine, validationError,
 } from './definition.js';
 import { AcceptedDispatchSchema } from './dispatch.js';
-import { parseRoutineInput, routinePermissions, routineView } from './services.js';
+import { parseRoutineInput, reportRefused, routinePermissions, routineView } from './services.js';
 
 const PLUGIN = '@ax/routines';
 const names = Object.keys(C.RoutineToolInputSchemas) as C.RoutineToolName[];
@@ -38,17 +38,21 @@ function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeTo
  * agent, conversation and source off the session row the runner's token
  * resolves to, and the input names no task, run or conversation. Read-only, so
  * pre-call can run it too; `routines:report` checks the run again under its
- * locks before it writes. The one refusal says only that this isn't a check-in.
+ * locks before it writes. The one refusal tells the agent only that this isn't
+ * a check-in; an info line tells the operator why (`reportRefused`).
  */
 async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'ctx' | 'call'>): Promise<Prepared> {
   const { notes, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
   const conversationId = ctx.conversationId;
-  if (ctx.source !== 'routine' || typeof conversationId !== 'string' || conversationId.length === 0)
-    throw new SafeToolError('not-in-check-in', 'input');
-  const run = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId });
+  if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
+  if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
+  const lookup = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId });
+  if (lookup.run === null) throw reportRefused(ctx, 'tool', lookup.reason);
+  const { run } = lookup;
+  const ids = { dispatchId: run.dispatchId, routineId: run.routineId };
   // `=== 'stay-on-top'`, not `!== 'repeat'`: a write path fails closed for a kind it doesn't know.
-  if (run === null || run.kind !== 'stay-on-top' || run.ownerUserId !== ctx.userId)
-    throw new SafeToolError('not-in-check-in', 'input');
+  if (run.kind !== 'stay-on-top') throw reportRefused(ctx, 'tool', 'wrong-kind', ids);
+  if (run.ownerUserId !== ctx.userId) throw reportRefused(ctx, 'tool', 'wrong-owner', ids);
   // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
   return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) } };
 }

@@ -4,6 +4,8 @@ import { sql, type RawBuilder } from 'kysely';
 import { makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineFireView, type RoutineListToolOutput, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { expectOneRefusal, logged } from './support/report-log.js';
+import { createRoutinesStore } from '../store.js';
 
 // TASK-907: routine_report, the tool a task's check-in reports with. Its input
 // names no task, run or conversation. The host ties the call to the one open
@@ -249,6 +251,39 @@ describe('routine_report (TASK-907)', () => {
     await checkIn(task, 'control', async ctx => {
       expect(await report(runner(ctx), call)).toStrictEqual({ recorded: true });
     });
+  });
+
+  it('every refusal leaves one info line for the operator: a fixed reason and ids, none of the report', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    const repeat = await create(REPEAT, 'repeat');
+    const call = reportCall({ status: 'on-track', update: 'SECRET update', ask: 'SECRET ask?', notes: 'SECRET notes' });
+    /** One refused call, at pre-call and at execute: each leaves its own line. */
+    async function refused(label: string, ctx: AgentContext, reason: string): Promise<void> {
+      const early = logged(ctx);
+      expect(await h.bus.fire('tool:pre-call', early.ctx, call), label).toMatchObject({ rejected: true, reason: NOT_IN_CHECK_IN });
+      expectOneRefusal(early.lines, { stage: 'tool', reason }, /SECRET/, `${label} (pre-call)`);
+      const late = logged(ctx);
+      await expect(report(late.ctx, call), label).rejects.toMatchObject({ toolCode: 'not-in-check-in' });
+      expectOneRefusal(late.lines, { stage: 'tool', reason }, /SECRET/, `${label} (execute)`);
+    }
+    await checkIn(task, 'task-run', async ctx => {
+      await refused('an ordinary chat', makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'chat', conversationId: 'chat' }), 'no-source');
+      await refused('a routine run with no conversation', makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', source: 'routine' }), 'no-conversation');
+      await refused('a conversation no run is in', runner(ctx, { conversationId: 'elsewhere' }), 'no-open-run');
+      await refused("someone other than the task's owner", runner(ctx, { userId: 'intruder' }), 'wrong-owner');
+      // A second open run in the same conversation: the lookup can't tell which one reports.
+      const store = createRoutinesStore(h.db);
+      const extra = (await store.acceptDispatch({ agentId: task.agentId, routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', source: 'manual', requestId: 'extra', now: new Date() }))!.accepted;
+      await store.bindDispatchConversation({ dispatchId: extra.dispatchId, conversationId: ctx.conversationId! });
+      await refused('two open runs in one conversation', runner(ctx), 'ambiguous');
+      await store.finishDispatch({ dispatchId: extra.dispatchId, outcome: { status: 'ok', conversationId: null, error: null, renderedPrompt: null, warning: null } });
+      // The run's own report records, and leaves no refusal line.
+      const control = logged(runner(ctx));
+      expect(await report(control.ctx, call)).toStrictEqual({ recorded: true });
+      expect(control.lines).toEqual([]);
+    });
+    await checkIn(repeat, 'repeat-run', async ctx => { await refused("a repeat routine's check-in", runner(ctx), 'wrong-kind'); });
   });
 
   it('routine_report takes only its four fields, and a refusal names the field', async () => {
