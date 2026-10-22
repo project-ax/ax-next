@@ -1,5 +1,7 @@
 # TASK-908 Check-in brief, landed veto and check-in message Implementation Plan
 
+> **As built, read with the decisions shard.** Where this plan and `.claude/memory/decisions/2026-10-22-TASK-908.md` disagree, the decisions win. In particular: routines schema version 5 adds one index (row 22, so "no migration" below is stale), the capture refusal asks about every pass with a conversation whatever its source (rows 22 and 23), and the landed veto also needs the provider to have actually sent the brief (row 24). Rows count the shard's dated rows, from 1.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A "stay on top" task's check-in is a short, fresh run that gets a person-written brief in W1's `brief` section and a check-in message carrying the agent's own notes and recent reports. A check-in whose brief didn't land never runs, and is recorded as failed.
