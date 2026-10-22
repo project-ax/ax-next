@@ -18,6 +18,7 @@ export const ROUTINE_TOOL_HOOKS = names.map(name => `tool:execute:${name}`);
 const activities: Record<C.RoutineToolName, string> = {
   routine_list: 'Reading routines', routine_get: 'Reading a routine', routine_create: 'Creating a routine',
   routine_update: 'Updating a routine', routine_delete: 'Deleting a routine', routine_fire_now: 'Starting a routine',
+  routine_report: 'Reporting on a task',
 };
 export const ROUTINE_TOOL_DESCRIPTORS: ToolDescriptor[] = names.map(name => ({
   name, description: C.RoutineToolDescriptions[name], inputSchema: C.RoutineToolJsonSchemas[name],
@@ -31,12 +32,36 @@ function safeFailure(error: unknown): SafeToolError {
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 
+/**
+ * TASK-907. A check-in's report, tied to the run it came from by the session
+ * alone. Every fact read here is host-set: the IPC listener takes the person,
+ * agent, conversation and source off the session row the runner's token
+ * resolves to, and the input names no task, run or conversation. Read-only, so
+ * pre-call can run it too; `routines:report` checks the run again under its
+ * locks before it writes. The one refusal says only that this isn't a check-in.
+ */
+async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'ctx' | 'call'>): Promise<Prepared> {
+  const { notes, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
+  const conversationId = ctx.conversationId;
+  if (ctx.source !== 'routine' || typeof conversationId !== 'string' || conversationId.length === 0)
+    throw new SafeToolError('not-in-check-in', 'input');
+  const run = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId });
+  // `=== 'stay-on-top'`, not `!== 'repeat'`: a write path fails closed for a kind it doesn't know.
+  if (run === null || run.kind !== 'stay-on-top' || run.ownerUserId !== ctx.userId)
+    throw new SafeToolError('not-in-check-in', 'input');
+  // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
+  return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) } };
+}
+
 /** Read-only validation. Ownership reconciliation belongs to management get/list, never preflight. */
 async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared> {
   if (C.routineToolKind(call?.name) === null) throw new SafeToolError('validation', 'input');
   const name = call.name as C.RoutineToolName;
   // Validate before touching policy/decisions or loading any private state.
   parseRoutineInput(C.RoutineToolInputSchemas[name], call.input);
+  // A report is the run's own output, not routine management: it answers to the
+  // check-in it ran in, never to agents:resolve or agents:can-manage-routines.
+  if (name === 'routine_report') return prepareReport({ store, ctx, call });
   const { agent } = await bus.call<unknown, { agent: { ownerType: 'user' | 'team'; ownerId: string } }>(
     'agents:resolve', ctx, { agentId: ctx.agentId, userId: ctx.userId });
   const { allowed } = await bus.call<unknown, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });
@@ -51,11 +76,18 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   } else if (name === 'routine_update') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineUpdateToolInputSchema, call.input) };
     prepared = { hook: 'routines:update', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'update', inputHash: updateRequestHash(input) } };
-  } else {
+  } else if (name === 'routine_delete' || name === 'routine_fire_now') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineDeleteToolInputSchema, call.input) };
     const fire = name === 'routine_fire_now';
     prepared = { hook: fire ? 'routines:fire-now' : 'routines:delete', input,
       receiptKey: { ...scope, requestId: input.requestId, operation: fire ? 'dispatch' : 'delete', inputHash: fire ? dispatchRequestHash({ ...input, source: 'manual' }) : deleteRequestHash(input) } };
+  } else {
+    // Every tool has its own branch, so one this code doesn't know is refused,
+    // never read as another tool's call (TASK-907). The `never` makes a new
+    // tool without a branch a build error.
+    const _unhandled: never = name;
+    void _unhandled;
+    throw new SafeToolError('validation', 'input');
   }
   // Completed exact operations may have removed the row or advanced its revision.
   // Access above remains live even on this path; receipts are never returned raw.
