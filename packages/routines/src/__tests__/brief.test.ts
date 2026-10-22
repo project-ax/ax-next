@@ -190,6 +190,11 @@ describe('no brief, no check-in (TASK-908)', () => {
     expect(pending.get('rA')!.brief).toBe('sent');
     expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toBeUndefined();
     expect(pending.get('rA')!.brief).toBe('landed');
+    // A second ask, or a repeated event, never takes a confirmed run back.
+    expect(checkInBrief(pending, runCtx())).toEqual({ brief: renderTaskBrief(row) });
+    expect(pending.get('rA')!.brief).toBe('landed');
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toBeUndefined();
+    expect(pending.get('rA')!.brief).toBe('landed');
   });
 
   it('the veto follows the host-set ctx.reqId, never the reqId a payload names', () => {
@@ -223,6 +228,9 @@ describe('no brief, no check-in (TASK-908)', () => {
     // Ids and a length only: no brief text in the log.
     expect(JSON.stringify(lines)).not.toContain('Check the queue.');
     expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [] })).toEqual({ rejected: true, reason: 'brief-too-long' });
+    // An orchestrator that listed every provider that answered, `{}` included, still can't confirm it.
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toEqual({ rejected: true, reason: 'brief-too-long' });
+    expect(pending.get('rA')!.brief).toBe('too-long');
   });
 
   it("briefRunError words a vetoed task run's error, and leaves everything else alone", () => {

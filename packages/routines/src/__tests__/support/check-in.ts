@@ -35,7 +35,7 @@ export type CheckInOptions = {
   /**
    * What `chat:system-prompt-landed` lists. Left out, it is what the
    * orchestrator would send: the routines provider when its answer had a
-   * non-empty `brief`, or when no such provider is registered; `[]` otherwise.
+   * non-empty `brief`; `[]` otherwise.
    * `null` skips the event, as a spawn path that forgot it would.
    */
   landed?: readonly string[] | null;
@@ -92,7 +92,7 @@ async function orchestrate(ctx: AgentContext, bus: HookBus, input: unknown, turn
     const registered = bus.hasService(ROUTINES_AUGMENT_PROVIDER);
     if (registered) brief = await bus.call(ROUTINES_AUGMENT_PROVIDER, ctx, {});
     if (opts.landed !== null) {
-      const providers = opts.landed ?? (!registered || hasBrief(brief) ? [ROUTINES_AUGMENT_PROVIDER] : []);
+      const providers = opts.landed ?? (hasBrief(brief) ? [ROUTINES_AUGMENT_PROVIDER] : []);
       const landed = await bus.fire(SYSTEM_PROMPT_LANDED_HOOK, ctx, { reqId: ctx.reqId, providers: [...providers] });
       if (landed.rejected) return { kind: 'terminated', reason: `system-prompt:${landed.reason}` };
     }

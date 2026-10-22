@@ -1,6 +1,6 @@
 # TASK-908 Check-in brief, landed veto and check-in message Implementation Plan
 
-> **As built, read with the decisions shard.** Where this plan and `.claude/memory/decisions/2026-10-22-TASK-908.md` disagree, the decisions win. In particular: routines schema version 5 adds one index (row 22, so "no migration" below is stale), the capture refusal asks about every pass with a conversation whatever its source (rows 22 and 23), and the landed veto also needs the provider to have actually sent the brief (row 24). Rows count the shard's dated rows, from 1.
+> **As built, read with the decisions shard.** Where this plan and `.claude/memory/decisions/2026-10-22-TASK-908.md` disagree, the decisions win. In particular: routines schema version 5 adds one index (row 22, so "no migration" below is stale), the capture refusal asks about every pass with a conversation whatever its source (rows 22 and 23), the landed veto also needs the provider to have actually sent the brief (row 24), and Check now's opening reads "Check now: this check-in was started outside its schedule." (row 24, replacing the copy below). Rows count the shard's dated rows, from 1.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

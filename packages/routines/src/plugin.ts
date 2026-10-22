@@ -71,7 +71,8 @@ export function createRoutinesPlugin(
         // Slice 6 — what a routine fire's turn went without (keyed by reqId).
         'chat:connectors-skipped',
         // TASK-908 — whose system-prompt contributions landed; a task
-        // check-in whose brief isn't listed is refused (keyed by reqId).
+        // check-in whose brief wasn't sent or isn't listed is refused (keyed
+        // by reqId).
         SYSTEM_PROMPT_LANDED_HOOK,
         // TASK-908 — memory asks before it learns from a conversation; a task
         // check-in's is refused.
@@ -175,8 +176,9 @@ export function createRoutinesPlugin(
 
       // TASK-908 — no brief, no check-in. The orchestrator fires this (awaited,
       // bounded) on every fresh spawn, after building the system prompt and
-      // before any session opens. A pending task check-in whose brief isn't
-      // listed is refused, and the turn ends `system-prompt:<reason>`. A map
+      // before any session opens. A pending task check-in whose brief wasn't
+      // sent, or isn't listed, is refused, and the turn ends
+      // `system-prompt:<reason>`. A map
       // read and write only. Fails closed: if working it out throws, a pending
       // task run is refused anyway.
       bus.subscribe<unknown>(

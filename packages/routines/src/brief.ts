@@ -85,7 +85,8 @@ export function briefFits(brief: string): boolean {
 // ---------------------------------------------------------------------------
 // No brief, no check-in (TASK-908, design §7). The provider hands a task
 // check-in its brief, the orchestrator says whose contributions landed, and a
-// check-in whose brief isn't on that list is refused before its turn runs. A
+// check-in whose brief wasn't sent, or isn't on that list, is refused before
+// its turn runs. A
 // check-in that never got the confirmation at all is failed at turn end (the
 // belt, in plugin.ts).
 // ---------------------------------------------------------------------------
@@ -139,8 +140,9 @@ export function checkInBrief(pending: PendingFires, ctx: AgentContext): SystemPr
 /**
  * The `chat:system-prompt-landed` veto: a task check-in whose brief wasn't
  * sent, or isn't listed, is refused, and one whose sent brief is listed is
- * marked landed for the belt. Anything that isn't a pending task run passes. The run is the one
- * under the host-set `ctx.reqId`, never one the payload names: an earlier
+ * marked landed for the belt. Anything that isn't a pending task run passes.
+ * The run is the one under the host-set `ctx.reqId`, never one the payload
+ * names: an earlier
  * subscriber may have rewritten the payload, and it must not be able to point
  * this at another check-in and disarm that one's belt. Fails closed: a
  * payload that doesn't parse, or names another reqId, can't confirm anything,
@@ -154,8 +156,10 @@ export function briefLandedVeto(pending: PendingFires, ctx: AgentContext, payloa
   // Listed is not enough: the brief must be one this provider actually sent.
   // A payload that names the provider for a run it answered `{}` (rewritten by
   // an earlier subscriber, or an orchestrator that lists every provider that
-  // answered) confirms nothing.
-  if (readable && entry.brief === 'sent' && parsed.data.providers.includes(ROUTINES_AUGMENT_PROVIDER)) {
+  // answered) confirms nothing. `landed` implies sent, so a repeated event for
+  // a confirmed run confirms it again rather than refusing it.
+  const sent = entry.brief === 'sent' || entry.brief === 'landed';
+  if (readable && sent && parsed.data.providers.includes(ROUTINES_AUGMENT_PROVIDER)) {
     entry.brief = 'landed';
     return undefined;
   }
