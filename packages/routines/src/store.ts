@@ -411,9 +411,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     },
     async isTaskConversation(input) {
       // A left join: a run whose routine was deleted still counts (`kind` is
-      // null), the safe direction for memory capture. No index of its own:
-      // TASK-907's partial index covers open runs, and a finished run's lookup
-      // scans one agent's dispatch rows, which is fine at MVP sizes.
+      // null), the safe direction for memory capture. Memory asks this for
+      // every capture pass, ordinary chats included, so it reads through
+      // version 5's `routines_v1_dispatches_conversation` index.
       const row = await db.selectFrom('routines_v1_dispatches as d')
         .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
         .select('d.dispatch_id')

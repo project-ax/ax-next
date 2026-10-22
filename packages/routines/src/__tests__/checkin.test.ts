@@ -252,6 +252,15 @@ describe('memory capture of a check-in (TASK-908)', () => {
     });
     await expect.poll(async () => (await storedRuns(task)).length).toBe(1);
     expect(await preCapture(runCtx)).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
+    // A pass that isn't the routine's own is refused too: memory's cursor stays where the refusals left it,
+    // so any pass that got through would read every check-in turn they skipped.
+    const asPerson = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: runCtx.conversationId!, source: 'user' });
+    expect(await h.bus.fire('memory:pre-capture', asPerson, { conversationId: runCtx.conversationId })).toMatchObject({ rejected: true, reason: 'task-check-in' });
+    const noSource = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: runCtx.conversationId! });
+    expect(await h.bus.fire('memory:pre-capture', noSource, { conversationId: runCtx.conversationId })).toMatchObject({ rejected: true, reason: 'task-check-in' });
+    // The person's own chat on the same agent is captured as before.
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat', source: 'user' });
+    expect(await h.bus.fire('memory:pre-capture', chat, { conversationId: 'chat' })).toMatchObject({ rejected: false });
   });
 
   it("a repeat routine's run conversation is captured as before", async () => {
