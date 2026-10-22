@@ -149,6 +149,23 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
   return outcome.status === 'error' ? { kind: 'failed' } : { kind: 'committed', output: { status: 'ok' } };
 }
 
+/**
+ * TASK-907. `routines:list` keeps a task's notes (the Tasks page reads them), but
+ * the tool leaves them out: a list holds every routine and reaches every chat, and
+ * "how's the support queue?" needs the report alone. The projection is explicit and
+ * the strict output schema then enforces it, so a notes key can't ride along.
+ */
+function listToolOutput(output: unknown): C.RoutineListToolOutput {
+  const { routines } = C.RoutineListOutputSchema.parse(output);
+  return C.RoutineListToolOutputSchema.parse({
+    routines: routines.map(({ task, ...routine }) => {
+      if (task === null) return { ...routine, task };
+      const { notes: _notes, ...report } = task;
+      return { ...routine, task: report };
+    }),
+  });
+}
+
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
   bus.subscribe<ToolCall>('tool:pre-call', PLUGIN, async (ctx, call) => {
     if (C.routineToolKind(call.name) === null) return;
@@ -170,7 +187,10 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       try { prepared = await prepare({ bus, store, ctx, call }); }
       catch (error) { throw safeFailure(error); }
       if (!prepared.receiptKey) {
-        try { return await bus.call(prepared.hook, ctx, prepared.input); }
+        try {
+          const output = await bus.call(prepared.hook, ctx, prepared.input);
+          return call.name === 'routine_list' ? listToolOutput(output) : output;
+        }
         catch (error) { throw safeFailure(error); }
       }
       let authorization: { authorizationId: string; requestId: string };

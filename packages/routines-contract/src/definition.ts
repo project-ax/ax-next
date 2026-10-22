@@ -489,19 +489,38 @@ export const RoutineTaskViewSchema = z.object({
 }).strict();
 export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;
 
-export const RoutineViewSchema = z.object({
+/** What a task's report shows when its notes stay out of the read: the list tool's view (TASK-907). */
+export const RoutineTaskListViewSchema = RoutineTaskViewSchema.omit({ notes: true });
+export type RoutineTaskListView = z.output<typeof RoutineTaskListViewSchema>;
+
+const RoutineViewShape = {
   ...RoutineEditableShape,
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema, revision: RoutineOpaqueStringSchema,
   origin: z.enum(['authored', 'default']), defaultRoutineId: RoutineOpaqueStringSchema.nullable(),
   nextRunAt: RoutineInstantSchema.nullable(), lastRunAt: RoutineInstantSchema.nullable(),
   lastStatus: RoutineStatusSchema.nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),
   permissions: RoutinePermissionsSchema,
+};
+function validateView(view: Record<string, unknown>, ctx: z.RefinementCtx): void {
+  const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key]]));
+  validateDefinition(definition as RoutineDefinition, ctx);
+}
+export const RoutineViewSchema = z.object({
+  ...RoutineViewShape,
   /** TASK-907. Null for a repeat routine and for a task that hasn't reported yet. */
   task: RoutineTaskViewSchema.nullable(),
-}).strict().superRefine((view, ctx) => {
-  const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key as keyof typeof view]]));
-  validateDefinition(definition as RoutineDefinition, ctx);
-});
+}).strict().superRefine(validateView);
+/**
+ * A routine as `routine_list` shows it (TASK-907): the same view, with a task's
+ * report but not its notes. A list reaches every chat and holds every routine,
+ * so up to 2,000 characters of agent-written text per task would ride along
+ * each time; "how's the support queue?" needs the report alone. `routine_get`
+ * and the `routines:*` services keep the notes.
+ */
+export const RoutineListToolViewSchema = z.object({
+  ...RoutineViewShape,
+  task: RoutineTaskListViewSchema.nullable(),
+}).strict().superRefine(validateView);
 export type RoutinePermissions = z.output<typeof RoutinePermissionsSchema>;
 export type RoutineView = z.output<typeof RoutineViewSchema>;
 

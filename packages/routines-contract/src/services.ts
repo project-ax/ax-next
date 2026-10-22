@@ -3,7 +3,7 @@ import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
-  RoutineStatusSchema, RoutineViewSchema,
+  RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
 } from './definition.js';
 
 export const ROUTINE_SECRET_MAX_BYTES = 64 * 1024;
@@ -12,6 +12,8 @@ export const RoutineListInputSchema = z.object({ agentId: RoutineOpaqueStringSch
 export const RoutineKeySchema = z.object({ agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema }).strict();
 export const RoutineGetInputSchema = RoutineKeySchema;
 export const RoutineListOutputSchema = z.object({ routines: z.array(RoutineViewSchema) }).strict();
+/** What the `routine_list` tool returns: the service's list, without any task's notes (TASK-907). */
+export const RoutineListToolOutputSchema = z.object({ routines: z.array(RoutineListToolViewSchema) }).strict();
 export const RoutineGetOutputSchema = RoutineViewSchema;
 export const RoutineCreateInputSchema = RoutineListInputSchema.extend({ requestId: RoutineOpaqueStringSchema, definition: RoutineDefinitionSchema }).strict();
 export const RoutineCreateOutputSchema = RoutineViewSchema;
@@ -94,6 +96,7 @@ export type RoutineKey = z.output<typeof RoutineKeySchema>;
 export type RoutineListInput = z.output<typeof RoutineListInputSchema>;
 export type RoutineListOutput = z.output<typeof RoutineListOutputSchema>;
 export type RoutineGetInput = z.output<typeof RoutineGetInputSchema>;
+export type RoutineListToolOutput = z.output<typeof RoutineListToolOutputSchema>;
 export type RoutineGetOutput = z.output<typeof RoutineGetOutputSchema>;
 export type RoutineCreateInput = z.output<typeof RoutineCreateInputSchema>;
 export type RoutineCreateOutput = z.output<typeof RoutineCreateOutputSchema>;

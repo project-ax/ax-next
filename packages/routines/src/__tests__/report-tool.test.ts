@@ -2,7 +2,7 @@ import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql, type RawBuilder } from 'kysely';
 import { makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
-import { RoutineDefinitionSchema, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, type RoutineFireView, type RoutineListToolOutput, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 
 // TASK-907: routine_report, the tool a task's check-in reports with. Its input
@@ -113,6 +113,25 @@ describe('routine_report (TASK-907)', () => {
     const fires = await history(task);
     expect(fires).toHaveLength(1);
     expect(fires[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
+  });
+
+  it('routine_list shows a task’s report without its notes, and routine_get shows both', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const execute = <T,>(name: string, input: Record<string, unknown>) =>
+      h.bus.call<ToolCall, T>(`tool:execute:${name}`, chat, { id: name, name, input });
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    const list = await execute<RoutineListToolOutput>('routine_list', {});
+    const listed = list.routines.find(row => row.routineId === task.routineId);
+    expect(listed?.task).toEqual(shown);
+    expect('notes' in listed!.task!).toBe(false);
+    expect(JSON.stringify(list)).not.toContain(NOTES);
+    expect((await execute<RoutineView>('routine_get', { routineId: task.routineId })).task).toEqual({ ...shown, notes: NOTES });
+    // The service hook keeps them: the Tasks page reads them from there.
+    expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId }))
+      .routines.find(row => row.routineId === task.routineId)?.task?.notes).toBe(NOTES);
   });
 
   it("routine_report refuses outside its own task's check-in, writing nothing", async () => {
