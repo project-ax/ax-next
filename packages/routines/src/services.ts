@@ -41,7 +41,9 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * sharing a task is a later feature (design §14, question 8). Whoever can see the
  * routine still sees the routine. Decided here, where every view is made (list,
  * get, create, update, their replays, the tools' recovery), so no caller (a tool,
- * the Settings routes, the Tasks page) needs a rule of its own. A repeat routine
+ * the Settings routes, the Tasks page) needs a rule of its own for these two. It covers
+ * `task` and `report` only: a fire's `renderedPrompt` is not gated here (TASK-908's
+ * check-in message must not land in it, or this must gate it). A repeat routine
  * shows none either: changing a kind clears it, and this hides any a row holds anyway.
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
