@@ -27,7 +27,7 @@ const REPEAT = { name: 'Daily', promptBody: 'Check outstanding work.', trigger: 
 const NEEDS_YOU = { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?' } as const;
 const NOTES = 'Order 1234 waits on a refund.';
 const NOT_IN_CHECK_IN = 'This works only during a task check-in. Field: input';
-const INVALID = 'Routine input is invalid. Check the indicated field. Field: input';
+const INVALID = (field: string) => `Routine input is invalid. Check the indicated field. Field: ${field}`;
 const UNAVAILABLE = 'Routine management is temporarily unavailable. Field: input';
 
 const create = (definition: Record<string, unknown>, requestId: string) => h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
@@ -171,23 +171,26 @@ describe('routine_report (TASK-907)', () => {
     });
   });
 
-  it('routine_report takes only its four fields', async () => {
+  it('routine_report takes only its four fields, and a refusal names the field', async () => {
     await start();
     const task = await create(TASK, 'task');
     const valid = { status: 'on-track', update: 'Queue is empty.', ask: null };
-    const invalid: Array<[string, Record<string, unknown>]> = [
-      ['an input naming a routine', { ...valid, routineId: task.routineId }],
-      ['an unknown key', { ...valid, steps: ['Answer ticket 1234'] }],
-      ['an update of 501 characters', { ...valid, update: 'a'.repeat(501) }],
-      ['an update with a line feed', { ...valid, update: 'Queue is empty.\nNothing waits.' }],
-      ['an update with a carriage return', { ...valid, update: 'Queue is empty.\rNothing waits.' }],
-      ['notes of 2,001 characters', { ...valid, notes: 'n'.repeat(2001) }],
-      ['notes with a tag character', { ...valid, notes: 'Keep going.\u{E0049}' }],
+    const invalid: Array<[string, Record<string, unknown>, string]> = [
+      ['an input naming a routine', { ...valid, routineId: task.routineId }, 'input'],
+      ['an unknown key', { ...valid, steps: ['Answer ticket 1234'] }, 'input'],
+      ['a status it doesn’t know', { ...valid, status: 'done' }, 'status'],
+      ['an update of 501 characters', { ...valid, update: 'a'.repeat(501) }, 'update'],
+      ['an update with a line feed', { ...valid, update: 'Queue is empty.\nNothing waits.' }, 'update'],
+      ['an update with a carriage return', { ...valid, update: 'Queue is empty.\rNothing waits.' }, 'update'],
+      ['a blank ask', { ...valid, ask: ' ' }, 'ask'],
+      ['notes of 2,001 characters', { ...valid, notes: 'n'.repeat(2001) }, 'notes'],
+      ['notes with a tag character', { ...valid, notes: 'Keep going.\u{E0049}' }, 'notes'],
     ];
     await checkIn(task, 'run', async ctx => {
-      for (const [label, input] of invalid) {
-        await expect(report(runner(ctx), reportCall(input)), label).rejects.toMatchObject({ toolCode: 'validation', field: 'input' });
-        expect(await h.bus.fire('tool:pre-call', runner(ctx), reportCall(input)), label).toMatchObject({ rejected: true, reason: INVALID });
+      for (const [label, input, field] of invalid) {
+        // The fixed template and the field's name: the rule's own words ("An update is one line.") never reach the agent.
+        await expect(report(runner(ctx), reportCall(input)), label).rejects.toMatchObject({ toolCode: 'validation', field, message: INVALID(field) });
+        expect(await h.bus.fire('tool:pre-call', runner(ctx), reportCall(input)), label).toMatchObject({ rejected: true, reason: INVALID(field) });
       }
       expect(await written()).toEqual(NOTHING);
       // At the caps exactly, it records.

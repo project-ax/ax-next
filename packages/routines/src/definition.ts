@@ -18,10 +18,10 @@ export function inputHash(input: unknown): string {
  * A refused routine input as a closed validation error that names its field
  * (TASK-906): the first zod issue's path, without a tool or service input's
  * `definition` or `patch` wrapper, joined with dots (`promptBody`,
- * `trigger.expr`). `SafeToolError` keeps a field only when it is one of core's
- * closed names and makes anything else (`goodWhen`, `kind`, an array index)
- * `input`, so neither the input nor the schema's message reaches the agent.
- * Anything that isn't a zod refusal is `input` too.
+ * `trigger.expr`, a report's `update`). `SafeToolError` keeps a field only when
+ * it is one of core's closed names and makes anything else (`goodWhen`, `kind`,
+ * an array index) `input`, so neither the input nor the schema's message
+ * reaches the agent. Anything that isn't a zod refusal is `input` too.
  */
 export function validationError(error: unknown): SafeToolError {
   const path = error instanceof z.ZodError ? error.issues[0]?.path ?? [] : [];

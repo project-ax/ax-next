@@ -36,4 +36,14 @@ describe('safe routine tool failures', () => {
     expect(error.message).toBe('This works only during a task check-in. Field: input');
     expect(safeToolMessage('not-in-check-in', 'input')).toBe('This works only during a task check-in. Field: input');
   });
+  it('names a task report’s own fields (TASK-907)', () => {
+    for (const field of ['status', 'update', 'ask', 'notes'] as const) {
+      const error = new SafeToolError('validation', field);
+      expect(error.field).toBe(field);
+      expect(error.message).toBe(`Routine input is invalid. Check the indicated field. Field: ${field}`);
+      expect(safeToolMessage('validation', field)).toBe(error.message);
+    }
+    // The view's name for the notes is no input field.
+    expect(new SafeToolError('validation', 'agentNotes' as SafeToolField).field).toBe('input');
+  });
 });

@@ -92,14 +92,16 @@ describe('routines:report (TASK-907)', () => {
     const run = await bound(row, 'run');
     const valid = { agentId: 'a', dispatchId: run.dispatchId, ...needsYou };
     const { ask: _ask, ...noAsk } = valid;
-    const invalid: Array<[string, Record<string, unknown>]> = [
-      ['an extra routineId', { ...valid, routineId: row.routineId }],
-      ['an update on two lines', { ...valid, update: 'Queue is empty.\nNothing waits.' }],
-      ['a missing ask', noAsk],
+    const invalid: Array<[string, Record<string, unknown>, string]> = [
+      ['an extra routineId', { ...valid, routineId: row.routineId }, 'input'],
+      ['an update on two lines', { ...valid, update: 'Queue is empty.\nNothing waits.' }, 'update'],
+      ['a status it doesn’t know', { ...valid, status: 'done' }, 'status'],
+      ['a missing ask', noAsk, 'ask'],
+      ['blank notes', { ...valid, notes: '\n' }, 'notes'],
     ];
     const before = await snapshot();
-    for (const [label, input] of invalid) {
-      await expect(report(bus, input), label).rejects.toMatchObject({ toolCode: 'validation' });
+    for (const [label, input, field] of invalid) {
+      await expect(report(bus, input), label).rejects.toMatchObject({ toolCode: 'validation', field });
     }
     expect(await snapshot()).toEqual(before);
     expect(await report(bus, valid)).toStrictEqual({ recorded: true });
