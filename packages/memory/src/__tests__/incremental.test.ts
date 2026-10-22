@@ -667,7 +667,9 @@ describe('a conversation another plugin refuses is not captured (TASK-908)', () 
     // letting the error escape.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const env = await setup();
+    let asked = 0;
     env.h.bus.subscribe('memory:pre-capture', 'test-thrower', async () => {
+      asked += 1;
       throw new Error('lookup failed');
     });
     const routine = env.ctx({ conversationId: TASK_CONV, source: 'routine' });
@@ -675,8 +677,34 @@ describe('a conversation another plugin refuses is not captured (TASK-908)', () 
     await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1', routine);
     await idle(env);
 
+    // The subscriber really ran (and threw); the pass went on regardless.
+    expect(asked).toBe(1);
     expect(env.h.llmCalls).toHaveLength(1);
     expect(env.rows()).toHaveLength(2);
+  });
+
+  it('a fire that itself rejects records nothing: no rows, no model call, cursor untouched', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    const realFire = env.h.bus.fire.bind(env.h.bus) as (...a: unknown[]) => Promise<unknown>;
+    let fires = 0;
+    vi.spyOn(env.h.bus, 'fire').mockImplementation((async (hook: string, ...rest: unknown[]) => {
+      if (hook === 'memory:pre-capture') {
+        fires += 1;
+        throw new Error('bus exploded');
+      }
+      return realFire(hook, ...rest);
+    }) as never);
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+
+    expect(fires).toBe(1);
+    expect(env.rows()).toEqual([]);
+    expect(env.h.llmCalls).toHaveLength(0);
+    expect(env.storage.has(cursorKey(CONV))).toBe(false);
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).map((e) => e.bindings.reason)).toEqual(['observer-threw']);
+    expect(eventsNamed(env.h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
   });
 
   it('a subscriber that never answers is skipped at the 10 s bound, and the pass goes on', async () => {

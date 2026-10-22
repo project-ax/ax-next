@@ -959,6 +959,11 @@ describe('a run another plugin refuses is not captured (TASK-908)', () => {
 
     expect(asked).toEqual([]);
     expect(readRows(h.databasePath)).toHaveLength(1);
+
+    // Paired with a run that HAS a conversation, which is asked: without the
+    // gate `asked` would stay empty here too.
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-asked', source: 'routine' }) });
+    expect(asked).toEqual([{ conversationId: 'conv-asked' }]);
   });
 });
 
