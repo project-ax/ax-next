@@ -16,12 +16,43 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  checkInWhen,
   localDayKey,
   localDayLabel,
   localTime,
   relativeDay,
   timeAgo,
+  updateStamp,
 } from '../workspace-time';
+
+describe('checkInWhen / updateStamp', () => {
+  const now = new Date(2026, 9, 22, 12, 0);
+  const at = (d: Date): string => localTime(d.toISOString()) as string;
+  const day = (offset: number, h = 10, min = 2): Date =>
+    new Date(2026, 9, 22 + offset, h, min);
+
+  it('says when a check-in was or will be, on the reader’s calendar', () => {
+    expect(checkInWhen(day(0).toISOString(), now)).toBe(`at ${at(day(0))}`);
+    expect(checkInWhen(day(1, 9, 0).toISOString(), now)).toBe(`tomorrow at ${at(day(1, 9, 0))}`);
+    expect(checkInWhen(day(-1, 16, 58).toISOString(), now)).toBe(
+      `yesterday at ${at(day(-1, 16, 58))}`,
+    );
+    const later = day(4);
+    const label = later.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    expect(checkInWhen(later.toISOString(), now)).toBe(`on ${label} at ${at(later)}`);
+    expect(checkInWhen('nope', now)).toBeNull();
+  });
+
+  it('stamps an update with its time, and its day when that isn’t today', () => {
+    expect(updateStamp(day(0).toISOString(), now)).toBe(at(day(0)));
+    expect(updateStamp(day(-1).toISOString(), now)).toBe(`Yesterday, ${at(day(-1))}`);
+    expect(updateStamp('nope', now)).toBeNull();
+  });
+});
 
 /** Local wall-clock, so the assertions mean the same thing in any zone. */
 const local = (

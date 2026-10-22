@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { groupTasks, taskGroup } from '../task-groups.js';
+import { TASK_GROUP_LABELS, groupTasks, taskGroup } from '../task-groups.js';
+
+describe('shared status words', () => {
+  it('words each mark the same way on every page', () => {
+    expect(TASK_GROUP_LABELS).toEqual({
+      'needs-you': 'Needs you',
+      'off-track': 'Off track',
+      'on-track': 'On track',
+      'no-update': 'No update yet',
+      paused: 'Paused',
+    });
+  });
+
+  it('groups a task page’s detail like a Tasks row', () => {
+    expect(taskGroup({ enabled: false, task: { status: 'needs-you' } })).toBe('paused');
+    expect(taskGroup({ enabled: true, task: null })).toBe('no-update');
+    expect(taskGroup({ enabled: true, task: { status: 'off-track' } })).toBe('off-track');
+  });
+});
 import type { TaskRow, TaskRowReport } from '../workspace-types.js';
 
 function row(over: Partial<TaskRow> = {}): TaskRow {

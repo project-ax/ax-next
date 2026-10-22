@@ -121,3 +121,32 @@ export function timeAgo(iso: string, now: Date = new Date()): string | null {
   if (hours < 24) return `${hours} hr ago`;
   return relativeDay(iso, now);
 }
+
+/**
+ * When a check-in happened or will: "at 10:02 AM" today, "tomorrow at 9:00 AM",
+ * "yesterday at 4:58 PM", else "on Mon, Oct 20 at 10:02 AM". The reader's time
+ * zone. `null` on an instant it can't read.
+ */
+export function checkInWhen(iso: string, now: Date = new Date()): string | null {
+  const time = localTime(iso);
+  if (time === null) return null;
+  const d = new Date(iso);
+  const dayOffset = Math.round(
+    (new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() -
+      new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) /
+      86_400_000,
+  );
+  if (dayOffset === 0) return `at ${time}`;
+  if (dayOffset === 1) return `tomorrow at ${time}`;
+  if (dayOffset === -1) return `yesterday at ${time}`;
+  const day = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  return `on ${day} at ${time}`;
+}
+
+/** An Updates entry's time: the clock today, else the day and the clock. `null` on an instant it can't read. */
+export function updateStamp(iso: string, now: Date = new Date()): string | null {
+  const time = localTime(iso);
+  if (time === null) return null;
+  const d = new Date(iso);
+  return localDayKey(d) === localDayKey(now) ? time : `${localDayLabel(d, now)}, ${time}`;
+}

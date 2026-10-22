@@ -39,21 +39,13 @@ import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readAlertVariant } from '@/lib/read-register';
-import { groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
+import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import { useTasks, type TasksReadError } from '@/lib/workspace-tasks';
 import { timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { WorkspaceHeader } from './WorkspaceHeader';
-
-/** The group words. Move them to a shared module when a second surface needs them. */
-const TASK_GROUP_LABELS: Record<ActiveTaskGroup, string> = {
-  'needs-you': 'Needs you',
-  'off-track': 'Off track',
-  'on-track': 'On track',
-  'no-update': 'No update yet',
-};
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
 const AGO_TICK_MS = 30_000;
