@@ -29,7 +29,8 @@
 //      person's own words, host-sourced, never agent-writable — because the
 //      Memory tab promises the agent reads them before EVERY run, including
 //      this one; and, in a task check-in, @ax/routines' brief (the task's
-//      name, what to do and going well when, which only people write), so a
+//      name, what to do and going well when, which an agent may draft but only
+//      the person's yes can set), so a
 //      check-in run by an agent still in its first-run chat still knows what
 //      it is for.
 //      Recalled / agent-derived memory (profile, recent, digest) is NOT

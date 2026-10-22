@@ -6,6 +6,7 @@ import {
   reject,
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   SYSTEM_PROMPT_LANDED_HOOK,
+  type AgentContext,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -708,6 +709,24 @@ describe('chat:system-prompt-landed (TASK-908)', () => {
         payload: { reqId: 'req-landed-1', providers: [`${OPT}routines`, `${REQ}memory`] },
       },
     ]);
+  });
+
+  // TASK-908 review: @ax/routines recognises a check-in only from the ctx it is
+  // called with, so the provider must get the invoke's own host-set context.
+  it("an optional provider is called with the invoke's own reqId, source, agent, person and conversation", async () => {
+    let got: AgentContext | undefined;
+    const s = await setup({
+      providers: [[`${OPT}routines`, async (ctx: AgentContext) => { got = ctx; return { brief: 'B' }; }]],
+    });
+    const invokeCtx = makeAgentContext({
+      reqId: 'req-routine-1', sessionId: 'routine-session', agentId: 'test-agent', userId: 'test-user',
+      conversationId: 'conv-check-in', source: 'routine',
+      logger: createLogger({ reqId: 'req-routine-1', writer: (line) => s.logs.push(JSON.parse(line) as LogLine) }),
+    });
+    const outcome = await s.h.bus.call<unknown, AgentOutcome>('agent:invoke', invokeCtx, { message: { role: 'user', content: 'Scheduled check-in.' } });
+    expect(outcome.kind).toBe('complete');
+    expect(got).toMatchObject({ reqId: 'req-routine-1', source: 'routine', agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-check-in' });
+    expect(s.trace.lastSystemPromptAugment).toBe('B');
   });
 
   it('a failed required provider lands nothing: providers is []', async () => {

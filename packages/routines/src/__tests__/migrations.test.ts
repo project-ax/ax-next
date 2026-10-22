@@ -1,11 +1,11 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { CompiledQuery, Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 import { ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
-import { createRoutinesStore } from '../store.js';
+import { createRoutinesStore, taskConversationQuery } from '../store.js';
 import { runRoutinesMigration as legacyMigration } from './fixtures/legacy-migration.js';
 import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_SEED_HASH, SKILL_REFLECTION_STRATA_SEED_HASH } from '../reflection-prompt.js';
 let container: StartedPostgreSqlContainer; let db: Kysely<RoutinesDatabase>;
@@ -122,11 +122,10 @@ describe('versioned routines migration', () => {
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_conversation'`.execute(db)).rows).toHaveLength(1);
     expect((await sql`SELECT dispatch_id FROM routines_v1_dispatches`.execute(db)).rows).toEqual([{ dispatch_id: 'd_done' }]);
     // The planner may still pick a scan on a tiny table; with scans priced out, the store's own query reads the index.
+    const compiled = taskConversationQuery(db, { agentId: 'a', conversationId: 'c_done' }).compile();
     await db.connection().execute(async conn => {
       await sql`SET enable_seqscan = off`.execute(conn);
-      const plan = (await sql<{ 'QUERY PLAN': string }>`EXPLAIN SELECT d.dispatch_id FROM routines_v1_dispatches d
-        LEFT JOIN routines_v1_definitions r ON r.agent_id = d.agent_id AND r.routine_id = d.routine_id
-        WHERE d.agent_id = 'a' AND d.conversation_id = 'c_done' AND (r.kind IS NULL OR r.kind <> 'repeat') LIMIT 1`.execute(conn)).rows
+      const plan = (await conn.executeQuery<{ 'QUERY PLAN': string }>(CompiledQuery.raw(`EXPLAIN ${compiled.sql}`, [...compiled.parameters]))).rows
         .map(row => row['QUERY PLAN']).join('\n');
       await sql`RESET enable_seqscan`.execute(conn);
       expect(plan).toContain('routines_v1_dispatches_conversation');

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MEMORY_PRE_CAPTURE_HOOK, MemoryPreCapturePayloadSchema } from '../index.js';
+import { MEMORY_PRE_CAPTURE_HOOK, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema } from '../index.js';
 
 describe('memory:pre-capture contract (TASK-908)', () => {
   it('names the event', () => expect(MEMORY_PRE_CAPTURE_HOOK).toBe('memory:pre-capture'));
+  it('bounds each subscriber at 10 s', () => expect(MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS).toBe(10_000));
   it('accepts a conversation id', () =>
     expect(MemoryPreCapturePayloadSchema.parse({ conversationId: 'c' })).toEqual({ conversationId: 'c' }));
   it('drops an unknown key instead of refusing the payload', () =>

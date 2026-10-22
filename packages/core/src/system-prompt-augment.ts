@@ -20,10 +20,10 @@ import { z } from 'zod';
 // section, by service name. Only `rules` and `brief` reach bootstrap mode.
 //
 // `rules` is for text a person wrote that no agent can change. `brief` is what
-// this session is for, built only from what people wrote plus the provider's
-// own fixed text, and no agent can change any of it: a task's name, what to do
-// and going well when, which change only with the person's yes, even under
-// Always Allow. It reaches bootstrap mode so a check-in run by an agent still
+// this session is for, built only from person-approved text plus the
+// provider's own fixed text, and no agent can change any of it on its own: a
+// task's name, what to do and going well when, which an agent may draft but
+// which change only with the person's yes, even under Always Allow. It reaches bootstrap mode so a check-in run by an agent still
 // in its first-run chat knows what it is for. `context` and `recall` may carry
 // agent- or third-party-written text, and the provider frames it as
 // information, never as instructions or as another section.

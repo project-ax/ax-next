@@ -1,5 +1,6 @@
 import {
   MEMORY_PRE_CAPTURE_HOOK,
+  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS as CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
   PluginError,
   parseModelRef,
   type AgentContext,
@@ -172,8 +173,9 @@ export const CHAT_END_HOOK = 'chat:end';
  * refuses instead of throwing, as @ax/routines does when its lookup fails.
  * Ten seconds is far longer than one read of the host's own database should
  * take, and no person waits on it: every pass is detached from the turn.
+ * Defined in `@ax/core`, which subscribers read too; re-exported here.
  */
-export const MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS = 10_000;
+export const MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS = CORE_MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS;
 
 /** Logged at `info` when a `memory:pre-capture` subscriber refuses a pass. */
 export const CAPTURE_REFUSED_EVENT = 'memory_capture_refused';

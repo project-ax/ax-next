@@ -3026,6 +3026,8 @@ export function createOrchestrator(
     } catch (err) {
       ctx.logger.warn('chat_system_prompt_landed_fire_failed', {
         name: err instanceof Error ? err.name : 'unknown',
+        // A PluginError's code is a fixed token, safe to log; never the message.
+        ...(err instanceof PluginError ? { code: err.code } : {}),
       });
     }
     // TASK-22 — pre-waiter early-return: surface on the SSE so the client

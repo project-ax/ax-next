@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { makeAgentContext, type AgentContext } from '@ax/core';
+import { makeAgentContext, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, type AgentContext } from '@ax/core';
 import { CAPTURE_CHECK_DEADLINE_MS, taskCaptureVeto } from '../capture.js';
 
 // TASK-908: routines refuses memory capture of a task check-in's conversation,
@@ -53,8 +53,23 @@ describe('taskCaptureVeto (TASK-908)', () => {
   });
 
   it('answers inside memory\'s own subscriber bound, so a slow lookup is refused, not skipped', () => {
-    // @ax/memory's MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, which memory's incremental.test.ts pins at 10 s (no cross-plugin import).
-    expect(CAPTURE_CHECK_DEADLINE_MS).toBeLessThan(10_000);
+    expect(CAPTURE_CHECK_DEADLINE_MS).toBeLessThan(MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS);
+  });
+
+  it("a payload rewritten by an earlier subscriber can't steer it off the host-set conversation", async () => {
+    const tasks = new Set(['c-task']);
+    const store = { isTaskConversation: vi.fn(async ({ conversationId }: { conversationId: string }) => tasks.has(conversationId)) };
+    // The pass is on a task conversation, but the payload now names an ordinary chat.
+    expect(await taskCaptureVeto(store, routineRun({ conversationId: 'c-task' }), { conversationId: 'c-chat' })).toEqual({ rejected: true, reason: 'task-check-in' });
+    // And a payload naming a task conversation is refused whatever ctx says.
+    expect(await taskCaptureVeto(store, routineRun({ conversationId: 'c-chat' }), { conversationId: 'c-task' })).toEqual({ rejected: true, reason: 'task-check-in' });
+    expect(await taskCaptureVeto(store, routineRun({ conversationId: 'c-chat' }), { conversationId: 'c-chat' })).toBeUndefined();
+  });
+
+  it('a logger that throws doesn’t stop the refusal', async () => {
+    const ctx = { ...routineRun(), logger: { ...routineRun().logger, warn: () => { throw new Error('log sink down'); } } };
+    expect(await taskCaptureVeto(storeAnswering(new Error('database unavailable')), ctx, { conversationId: 'c-task' }))
+      .toEqual({ rejected: true, reason: 'task-check-in' });
   });
 
   it('refuses when the lookup throws', async () => {

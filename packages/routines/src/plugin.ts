@@ -80,6 +80,22 @@ export function createRoutinesPlugin(
       ],
     },
     async init({ bus }) {
+      // TASK-908 — memory doesn't learn from a task check-in (decisions rows
+      // 14 and 22). Subscribed first, before the database is ready, so a
+      // capture pass that arrives while this plugin is still starting (a
+      // runner reporting into a freshly restarted host, say) is answered
+      // rather than missed. Until the store is ready the lookup waits, inside
+      // the veto's own deadline, so a slow start refuses instead of letting
+      // the pass through. Answered from routines' own dispatch rows, not the
+      // in-flight record, so a pass after the run finished, or after a
+      // restart, is refused too.
+      let storeReady!: (ready: RoutinesStore) => void;
+      const ready = new Promise<RoutinesStore>(resolve => { storeReady = resolve; });
+      bus.subscribe<unknown>(
+        MEMORY_PRE_CAPTURE_HOOK, PLUGIN_NAME,
+        (ctx, payload) => taskCaptureVeto({ isTaskConversation: async input => (await ready).isTaskConversation(input) }, ctx, payload),
+      );
+
       const initCtx = makeAgentContext({
         sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system',
       });
@@ -92,6 +108,7 @@ export function createRoutinesPlugin(
       const localStore = store;
       const localDb = db;
       await localStore.interruptAbandonedDispatches();
+      storeReady(localStore);
       lifetime = createRoutineLifetime();
       const effects = lifetime;
       const pending: PendingFires = new Map();
@@ -166,20 +183,12 @@ export function createRoutinesPlugin(
           try {
             return briefLandedVeto(pending, ctx, payload);
           } catch {
-            ctx.logger.warn('routines_system_prompt_landed_failed', { agentId: ctx.agentId });
             const entry = pending.get(ctx.reqId);
-            return entry !== undefined && isTaskRun(entry.row) ? refuseCheckIn(entry, ctx) : undefined;
+            const refusal = entry !== undefined && isTaskRun(entry.row) ? refuseCheckIn(entry, ctx) : undefined;
+            try { ctx.logger.warn('routines_system_prompt_landed_failed', { agentId: ctx.agentId }); } catch { /* the answer stands */ }
+            return refusal;
           }
         },
-      );
-
-      // TASK-908 — memory doesn't learn from a task check-in (decisions row
-      // 14). Answered from routines' own dispatch rows, not the in-flight
-      // record, so a pass after the run finished, or after a host restart, is
-      // refused too.
-      bus.subscribe<unknown>(
-        MEMORY_PRE_CAPTURE_HOOK, PLUGIN_NAME,
-        (ctx, payload) => taskCaptureVeto(localStore, ctx, payload),
       );
 
       bus.subscribe<{

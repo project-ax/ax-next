@@ -311,7 +311,9 @@ without a summary. That isn't worth fixing on a page that is going away.
    reply, Check now or an update from another app also starts one.
 2. **The host writes the brief**, in two parts (§4.2).
 3. **The agent works** with its usual tools and connectors. Sending, paying and
-   other outward actions still wait for a person's OK.
+   other outward actions wait for a person's OK unless the person has already
+   allowed that tool (Always Allow), so the brief tells the agent to treat
+   every outward action as final (TASK-908).
 4. **It reports** with one `routine_report` call: status, a one-line update,
    what it needs, steps, and notes for next time.
 5. **People see it.** The Tasks list and the task's Updates thread show the

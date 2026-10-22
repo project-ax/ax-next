@@ -77,6 +77,18 @@ export interface RoutinesStore {
   disabledDefaultIdsForAgent(agentId: string): Promise<string[]>;
   removeMaterializedDefault(input: { agentId: string; defaultRoutineId: string }): Promise<void>;
 }
+/**
+ * `isTaskConversation`'s one query, exported so a test can check the planner
+ * reads it through version 5's index.
+ */
+export function taskConversationQuery(db: Kysely<RoutinesDatabase>, input: { agentId: string; conversationId: string }) {
+  return db.selectFrom('routines_v1_dispatches as d')
+    .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
+    .select('d.dispatch_id')
+    .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
+    .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
+    .limit(1);
+}
 function definitionColumns(d: RoutineDefinition) {
   return {
     name: d.name, description: d.description, prompt_body: d.promptBody, enabled: d.enabled,
@@ -414,13 +426,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       // null), the safe direction for memory capture. Memory asks this for
       // every capture pass, ordinary chats included, so it reads through
       // version 5's `routines_v1_dispatches_conversation` index.
-      const row = await db.selectFrom('routines_v1_dispatches as d')
-        .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
-        .select('d.dispatch_id')
-        .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
-        .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
-        .limit(1).executeTakeFirst();
-      return row !== undefined;
+      return (await taskConversationQuery(db, input).executeTakeFirst()) !== undefined;
     },
     async recordReport(input) {
       return db.transaction().execute(async trx => {

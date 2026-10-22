@@ -74,7 +74,7 @@ export type {
   SystemPromptAugmentOutput,
   SystemPromptLandedPayload,
 } from './system-prompt-augment.js';
-export { MEMORY_PRE_CAPTURE_HOOK, MemoryPreCapturePayloadSchema } from './memory-capture.js';
+export { MEMORY_PRE_CAPTURE_HOOK, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema } from './memory-capture.js';
 export type { MemoryPreCapturePayload } from './memory-capture.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
