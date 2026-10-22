@@ -221,6 +221,8 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     }
     expect(RoutineUpdateToolOutputSchema.safeParse(view).success).toBe(false);
     expect(RoutineToolDescriptions.routine_update).toContain('The answer shows a task’s latest report as routine_list does, without its agentNotes.');
+    // A retry of an edit that went through answers from its receipt, which keeps no task state.
+    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task null, so read the task with routine_get.');
   });
 });
 
