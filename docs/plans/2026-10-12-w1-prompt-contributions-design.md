@@ -1,10 +1,12 @@
 # W1: prompt contributions from several plugins (design)
 
-> **Note, 2026-10-20:** W1 stays on main, but the `brief` section described here
-> came in with W3 (#992) and went out with TASK-903's revert. Today's contract is
-> `rules`, `context` and `recall`, and no plugin registers an optional provider.
-> The [Agent Tasks design](2026-10-20-agent-tasks-design.md) (§4.2) adds `brief`
-> back as its first user.
+> **Note, 2026-10-22:** the `brief` section described here came in with W3
+> (#992), went out with TASK-903's revert, and is back with Agent Tasks
+> (TASK-908). `@ax/routines` returns a task check-in's brief from
+> `system-prompt:augment:optional:routines`, and the orchestrator fires
+> `chat:system-prompt-landed { reqId, providers }` after building the augment,
+> so a check-in whose brief didn't land is refused. See the
+> [Agent Tasks design](2026-10-20-agent-tasks-design.md) §4.2.
 
 **Status:** draft, revised after review 1 (2026-10-12). See §10 for the review log. **Owner:** Vinay.
 **Work item:** W1 of the AX Work Model (`docs/plans/2026-10-11-ax-work-model-design.md`).
@@ -123,7 +125,7 @@ A provider returns one body per section:
 | Section | What goes there | Today | Later | Bootstrap mode |
 |---|---|---|---|---|
 | `rules` | Text a person wrote that no agent can change (required providers only) | Memory's "Rules From Your User" | A tenant policy | Included |
-| `brief` | What this session is for, built only from what people wrote plus the provider's fixed text (§11) | The project block (W3) | | Included |
+| `brief` | What this session is for, built only from what people wrote plus the provider's fixed text (§11) | A task check-in's brief (`@ax/routines`) | | Included |
 | `context` | What this session is working on | (nothing) | Project instructions and memory index (W3), the goal (W6), open tasks (W13) | Left out |
 | `recall` | Things remembered from earlier sessions | Memory's recalled sections | | Left out |
 
@@ -408,4 +410,10 @@ bar as `rules`: text no agent can change. Two differences, both accepted:
   reach another person's agent's first-run prompt. Listed in W3 §17 item 11.
 
 Memory-only prompts are unchanged, byte for byte, in both modes.
+
+**Since TASK-908 (2026-10-22).** The section's user is now a task check-in,
+not a project. Its three fields (the task's name, what to do and going well
+when) change only with the person's yes, even under Always Allow (TASK-906),
+which keeps `brief` person-written. The agent's own notes and reports go in
+the check-in message, never in `brief`.
 
