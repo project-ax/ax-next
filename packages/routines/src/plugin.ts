@@ -184,10 +184,14 @@ export function createRoutinesPlugin(
         async (ctx, payload) => {
           try {
             return briefLandedVeto(pending, ctx, payload);
-          } catch {
+          } catch (err) {
             const entry = pending.get(ctx.reqId);
             const refusal = entry !== undefined && isTaskRun(entry.row) ? refuseCheckIn(entry, ctx) : undefined;
-            try { ctx.logger.warn('routines_system_prompt_landed_failed', { agentId: ctx.agentId }); } catch { /* the answer stands */ }
+            try {
+              ctx.logger.warn('routines_system_prompt_landed_failed', {
+                agentId: ctx.agentId, name: err instanceof Error ? err.name : 'unknown',
+              });
+            } catch { /* the answer stands */ }
             return refusal;
           }
         },
