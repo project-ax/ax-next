@@ -3216,6 +3216,14 @@ export function receiptToActivityEvent(
 }
 
 /**
+ * How long the Tasks page waits for one agent's `routines:list` before it
+ * names that agent as unavailable and answers with the rest (TASK-909). The
+ * bus's own bound is two minutes, and one stalled agent would otherwise hold
+ * the whole page that long. The late read keeps running; its answer is dropped.
+ */
+export const TASKS_AGENT_READ_DEADLINE_MS = 10_000;
+
+/**
  * Is this task the caller's own? (TASK-909 decisions row 2)
  *
  * The view carries no owner, so this reads what the services already decided
@@ -4103,12 +4111,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     agent: { id: string; displayName: string },
     userId: string,
   ): Promise<{ ok: true; tasks: TaskRow[] } | { ok: false }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const out = await bus.call<RoutinesListInput, TaskListOutput>(
+      const read = bus.call<RoutinesListInput, TaskListOutput>(
         'routines:list',
         agentWorkspaceCtx(agent.id, userId),
         { agentId: agent.id },
       );
+      // Abandoned on a timeout; keep its eventual rejection from going unhandled.
+      read.catch(() => undefined);
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`routines:list did not answer within ${TASKS_AGENT_READ_DEADLINE_MS}ms`),
+            ),
+          TASKS_AGENT_READ_DEADLINE_MS,
+        );
+      });
+      const out = await Promise.race([read, deadline]);
       return { ok: true, tasks: toTaskRows(agent, out.routines) };
     } catch (err) {
       initCtx.logger.warn('workspace_tasks_read_failed', {
@@ -4116,6 +4137,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         error: err instanceof Error ? err.message : String(err),
       });
       return { ok: false };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -6644,22 +6667,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * session is read from the request: no agent or routine id comes from the
      * params, the query or the body.
      *
-     * One agent that can't be read doesn't take the page down: its tasks are
+     * One agent that can't be read, or doesn't answer within
+     * `TASKS_AGENT_READ_DEADLINE_MS`, doesn't take the page down: its tasks are
      * missing and it is named in `unavailableAgents`, so the page can say so
-     * instead of looking complete (decisions row 7). A roster failure fails the
-     * route, because the roster IS the page. Without `routines:list` (no
-     * @ax/routines in this deployment) nobody can have a task, so the answer is
-     * an honest empty list.
+     * instead of looking complete (decisions row 7). When NO agent could be
+     * read the answer is 503, so the page says it couldn't load rather than
+     * "some may be missing". A roster failure fails the route, because the
+     * roster IS the page: an empty 200 would read as "No tasks yet". Without
+     * `routines:list` (no @ax/routines in this deployment) nobody can have a
+     * task, so the answer is an honest empty list, without reading the roster.
      */
     async tasks(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
 
-      const agents = await listAgents(userId);
       if (!bus.hasService('routines:list')) {
         res.status(200).json({ tasks: [], unavailableAgents: [] } satisfies TasksResponse);
         return;
       }
+      const agents = await listAgents(userId);
 
       const reads = await Promise.all(
         agents.map(async (agent) => ({ agent, read: await tasksForAgent(agent, userId) })),
@@ -6669,6 +6695,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       for (const { agent, read } of reads) {
         if (read.ok) tasks.push(...read.tasks);
         else unavailableAgents.push({ agentId: agent.id, agentName: agent.displayName });
+      }
+      if (agents.length > 0 && unavailableAgents.length === agents.length) {
+        res.status(503).json({ error: 'tasks-unavailable' });
+        return;
       }
       res.status(200).json({ tasks, unavailableAgents } satisfies TasksResponse);
     },

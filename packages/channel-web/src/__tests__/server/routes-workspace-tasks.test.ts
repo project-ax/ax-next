@@ -18,7 +18,10 @@ import {
   RoutineViewSchema,
   type RoutineReportStatus,
 } from '@ax/routines-contract';
-import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
+import {
+  TASKS_AGENT_READ_DEADLINE_MS,
+  makeWorkspaceHandlers,
+} from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import type { TasksResponse } from '../../lib/workspace-types.js';
 import { groupTasks } from '../../lib/task-groups.js';
@@ -115,8 +118,12 @@ interface World {
   failures: Map<string, Error>;
   /** Agents whose `routines:list` answers a beat late, so answers land out of roster order. */
   slow: Set<string>;
+  /** Agents whose `routines:list` never answers. */
+  hang: Set<string>;
   /** False is a deployment without @ax/routines: no `routines:list` at all. */
   routines: boolean;
+  /** Set: `agents:list-for-user` throws this. */
+  rosterFailure: Error | null;
 }
 
 interface ListCall {
@@ -138,7 +145,9 @@ function setup(over: Partial<World> = {}) {
     managers: { a1: ['alice'], a2: ['alice'] },
     failures: new Map(),
     slow: new Set(),
+    hang: new Set(),
     routines: true,
+    rosterFailure: null,
     ...over,
   };
   const bus = new HookBus();
@@ -156,6 +165,7 @@ function setup(over: Partial<World> = {}) {
     'agents',
     async (_ctx: AgentContext, input: { userId: string; teamIds?: string[] }) => {
       rosterCalls.push(input.userId);
+      if (world.rosterFailure !== null) throw world.rosterFailure;
       return { agents: world.rosters[input.userId] ?? [] };
     },
   );
@@ -165,6 +175,9 @@ function setup(over: Partial<World> = {}) {
       'routines',
       async (ctx: AgentContext, input: { agentId: string }) => {
         listCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input });
+        if (world.hang.has(input.agentId)) {
+          await new Promise(() => {});
+        }
         if (world.slow.has(input.agentId)) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
@@ -182,12 +195,15 @@ function setup(over: Partial<World> = {}) {
   }
 
   const handlers = makeWorkspaceHandlers({ bus, initCtx });
+  /** What the last request wrote, kept even when the handler throws. */
+  let last: CapturedRes | null = null;
   async function get(req: RouteRequest = mkReq()): Promise<CapturedRes> {
     const { res, captured } = mkRes();
+    last = captured;
     await handlers.tasks(req, res);
     return captured;
   }
-  return { get, rosterCalls, listCalls };
+  return { get, rosterCalls, listCalls, lastWritten: () => last };
 }
 
 function bodyOf(captured: CapturedRes): TasksResponse {
@@ -480,6 +496,85 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(scoped.statusCode).toBe(200);
     expect(scoped.body).toEqual(bare.body);
     expect(listCalls.some((c) => c.input.agentId === 'a3' || c.agentId === 'a3')).toBe(false);
+  });
+
+  it('fails the route, rather than answering an empty list, when the roster cannot be read', async () => {
+    // An empty 200 here would tell the page "No tasks yet" during an agents-store outage.
+    const { get, listCalls, lastWritten } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') })],
+      rosterFailure: new Error('agents store is down'),
+    });
+    await expect(get()).rejects.toThrow('agents store is down');
+    expect(lastWritten()?.statusCode).not.toBe(200);
+    expect(lastWritten()?.body).toBeUndefined();
+    expect(listCalls).toEqual([]);
+  });
+
+  it('answers an empty list without reading the roster when this deployment has no routines', async () => {
+    const { get, rosterCalls } = setup({
+      routines: false,
+      rosterFailure: new Error('agents store is down'),
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ tasks: [], unavailableAgents: [] });
+    expect(rosterCalls).toEqual([]);
+  });
+
+  it('names an agent that does not answer in time, and lists the rest', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(initCtx.logger, 'warn');
+    try {
+      const { get } = setup({
+        rows: [
+          stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') }),
+          stored({ agentId: 'a2', routineId: 't2' }),
+        ],
+        hang: new Set(['a2']),
+      });
+      let done = false;
+      const pending = get().then((c) => {
+        done = true;
+        return c;
+      });
+      await vi.advanceTimersByTimeAsync(TASKS_AGENT_READ_DEADLINE_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const captured = await pending;
+      expect(captured.statusCode).toBe(200);
+      expect(routineIds(captured)).toEqual(['t1']);
+      expect(bodyOf(captured).unavailableAgents).toEqual([
+        { agentId: 'a2', agentName: 'Juniper' },
+      ]);
+      expect(warn).toHaveBeenCalledWith('workspace_tasks_read_failed', {
+        agentId: 'a2',
+        error: expect.stringContaining('did not answer'),
+      });
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers 503 when no agent could be read, so the page does not call it a partial list', async () => {
+    const { get } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') })],
+      failures: new Map([
+        ['a1', new Error('connection terminated unexpectedly')],
+        ['a2', new Error('connection terminated unexpectedly')],
+      ]),
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'tasks-unavailable' });
+  });
+
+  it('answers an empty list for a person with no agents', async () => {
+    const { get, listCalls } = setup({ rosters: {} });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ tasks: [], unavailableAgents: [] });
+    expect(listCalls).toEqual([]);
   });
 
   it('keeps a paused task, marked not enabled', async () => {
