@@ -43,6 +43,12 @@ export interface RoutinesStore {
    * conversation, of a stay-on-top task its actor owns, on a live agent.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
+  /**
+   * TASK-910. The person clears a task's agent notes. Owner only, decided under
+   * the routine's row lock. No run accepted at or before the clear can write
+   * notes again (`recordReport`). Touches nothing else in the row.
+   */
+  clearAgentNotes(input: RoutineKey & { actorUserId: string; now: Date }): Promise<'cleared' | 'not-found' | 'forbidden'>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
@@ -438,12 +444,16 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
         if (!dispatch || dispatch.completed_at !== null) return 'run-closed';
         if (dispatch.conversation_id !== input.conversationId) return 'not-bound';
-        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id'])
+        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'agent_notes_cleared_at'])
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         if (!definition) return 'routine-gone';
         if (definition.kind !== 'stay-on-top') return 'kind';
         if (definition.owner_user_id !== input.actorUserId) return 'owner';
         const { status, update, ask } = input.report;
+        // TASK-910: a run accepted at or before the person last cleared the notes read the notes
+        // they cleared, so it can't write any back. The rest of its report lands as usual.
+        const clearedAt = definition.agent_notes_cleared_at;
+        const writesNotes = input.notes !== undefined && (clearedAt === null || clearedAt.getTime() < dispatch.accepted_at.getTime());
         try {
           // A later report in the same check-in replaces this one.
           await trx.updateTable('routines_v1_dispatches').set({ report: JSON.stringify({ status, update, ask }) })
@@ -454,13 +464,36 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           await trx.updateTable('routines_v1_definitions').set({
             task_status: status, task_update: update, task_ask: ask,
             task_reported_at: input.now, task_report_accepted_at: dispatch.accepted_at,
-            ...(input.notes !== undefined ? { agent_notes: input.notes } : {}),
+            ...(writesNotes ? { agent_notes: input.notes } : {}),
           }).where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id)
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
         } catch (error) {
           throw reportWriteError(dispatch.dispatch_id, error);
         }
         return 'recorded';
+      });
+    },
+    async clearAgentNotes(input) {
+      return db.transaction().execute(async trx => {
+        // The agent fence, then the definition row. The open runs are read without a lock, so this
+        // can't deadlock with recordReport (fence, dispatch row, definition row): a report waiting
+        // on this row re-reads it once the clear commits, and sees the new stamp.
+        if (!await lockLiveAgent(trx, input.agentId)) return 'not-found';
+        const row = await trx.selectFrom('routines_v1_definitions').select('owner_user_id')
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        if (!row) return 'not-found';
+        if (row.owner_user_id !== input.actorUserId) return 'forbidden';
+        // Never earlier than the start of any run still open, whatever this host's clock says. A run
+        // reads the notes when acceptDispatch takes this row lock, so every run that read the old
+        // notes is either still open, and counted here, or finished, and can't report any more
+        // (migrations.ts, addNotesClearedColumn). No other column moves.
+        await trx.updateTable('routines_v1_definitions').set({
+          agent_notes: null,
+          agent_notes_cleared_at: sql<Date>`GREATEST(${input.now}::timestamptz, (
+            SELECT max(accepted_at) FROM routines_v1_dispatches
+             WHERE agent_id = ${input.agentId} AND routine_id = ${input.routineId} AND completed_at IS NULL))`,
+        }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        return 'cleared';
       });
     },
     async advance(input) {
