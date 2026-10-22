@@ -69,7 +69,8 @@
       "esbuild@>=0.27.3 <0.28.1": ">=0.28.1 <0.29.0",
       "proxy-addr@<2.0.8": ">=2.0.8 <3.0.0",
       "source-map-js@<1.2.2": ">=1.2.2 <2.0.0",
-      "postcss-selector-parser@<7.1.6": ">=7.1.6 <8.0.0"
+      "postcss-selector-parser@<7.1.6": ">=7.1.6 <8.0.0",
+      "vitest@>=5.0.0 <5.0.3": "5.0.3"
     },
     "patchedDependencies": {
       "testcontainers@11.14.0": "patches/testcontainers@11.14.0.patch",
