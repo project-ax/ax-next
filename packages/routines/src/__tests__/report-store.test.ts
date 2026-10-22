@@ -238,6 +238,22 @@ describe("a check-in's report and the task's state", () => {
     expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
   });
 
+  it("a run still open across a kind round trip can report into the restarted task: it is a live check-in of the same routine", async () => {
+    const row = await f.store.createAuthored(taskInput('round-trip'));
+    const run = await bound(row, 'round-trip-fire', 'c1');
+    const edit = (current: Key, requestId: string, patch: Record<string, unknown>) => f.store.updateAuthored({
+      agentId: 'a', routineId: row.routineId, expectedRevision: current.revision, actorUserId: 'owner', requestId, patch, now: later, stopOnly: false });
+    // R1 is open. The routine becomes a repeat routine and then a task again: the task starts over.
+    const repeat = await edit(row, 'to-repeat', { kind: 'repeat', goodWhen: null });
+    const again = await edit(repeat, 'to-task', { kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.' });
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: null, task_update: null, task_report_accepted_at: null, agent_notes: null, revision: again.revision });
+    // R1 never closed, and the task is a task again, so its report is accepted: the restarted task shows R1's report.
+    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask });
+    await finish(run.dispatchId);
+    expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
+  });
+
   it('a host restart after the report keeps it on the run', async () => {
     const row = await f.store.createAuthored(taskInput('restart'));
     const run = await bound(row, 'restart-fire', 'c1');
