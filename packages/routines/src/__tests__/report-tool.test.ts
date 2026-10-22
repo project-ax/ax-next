@@ -161,6 +161,45 @@ describe('routine_report (TASK-907)', () => {
       .task?.agentNotes).toBe(NOTES);
   });
 
+  it("a team agent's task shows its state only in its owner's chats", async () => {
+    await start();
+    // The owner makes a task on the team agent, so it's theirs; the team's other people share the agent.
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const chatOf = (person: AgentContext) => makeAgentContext({ ...person, agentId: h.teamAgentId, conversationId: `chat-${person.userId}` });
+    const execute = <T,>(ctx: AgentContext, call: ToolCall) => h.bus.call<ToolCall, T>(`tool:execute:${call.name}`, ctx, call);
+    const getCall: ToolCall = { id: 'get', name: 'routine_get', input: { routineId: task.routineId } };
+    const listCall: ToolCall = { id: 'list', name: 'routine_list', input: {} };
+    const listed = (output: RoutineListToolOutput) => output.routines.find(row => row.routineId === task.routineId);
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    for (const person of [h.teamMember, h.teamAdmin]) {
+      const chat = chatOf(person);
+      const got = await execute<RoutineView>(chat, getCall);
+      const list = await execute<RoutineListToolOutput>(chat, listCall);
+      expect(got.task, person.userId).toBeNull();
+      expect(listed(list)?.task, person.userId).toBeNull();
+      for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask]) expect(JSON.stringify([got, list]), person.userId).not.toContain(text);
+    }
+    // A team admin may stop someone else's task. The edit's answer shows none of its state either.
+    const admin = chatOf(h.teamAdmin);
+    const stop: ToolCall = { id: 'stop', name: 'routine_update', input: { requestId: 'stop', routineId: task.routineId, expectedRevision: task.revision, patch: { enabled: false } } };
+    await h.bus.fire('tool:pre-call', admin, stop);
+    const { decisions } = await h.bus.call<unknown, { decisions: Array<{ id: string; call: ToolCall }> }>('decisions:list', admin, { userId: admin.userId });
+    await h.bus.call('decisions:approve', admin, { decisionId: decisions.find(decision => decision.call.input.requestId === 'stop')!.id, userId: admin.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const stopped = await execute<RoutineListToolOutput['routines'][number]>(admin, stop);
+    expect(stopped).toMatchObject({ enabled: false, task: null });
+    expect(JSON.stringify(stopped)).not.toContain(NEEDS_YOU.update);
+    // The owner's own chats with the agent show it.
+    const mine = chatOf(h.owner);
+    expect((await execute<RoutineView>(mine, getCall)).task).toEqual({ ...shown, agentNotes: NOTES });
+    expect(listed(await execute<RoutineListToolOutput>(mine, listCall))?.task).toEqual(shown);
+    // The services are unchanged: the Tasks page decides its own visibility (TASK-909).
+    expect((await h.bus.call<unknown, RoutineView>('routines:get', h.teamMember, { agentId: h.teamAgentId, routineId: task.routineId })).task)
+      .toEqual({ ...shown, agentNotes: NOTES });
+  });
+
   it('a new task’s routine_create answer has no task state to show', async () => {
     await start();
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });

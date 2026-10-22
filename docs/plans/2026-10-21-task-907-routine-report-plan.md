@@ -590,7 +590,7 @@ In §4.5, the "Agent tool" cell becomes "`routine_report`, executed on the host.
   - **The text.** Every field is length-capped and refuses invisible characters. It is stored as plain text and never interpreted or put into host-built strings.
   - **Injection persistence.**
     - Text injected through a ticket can persist in `notes` and `update`.
-    - It returns to the model in later check-ins (slice 3), and today in `routine_get` in ordinary chats (`routine_list` and `routine_update` show the report but leave the agent notes out).
+    - It returns to the model in later check-ins (slice 3), and today in `routine_get` in the task owner's ordinary chats (`routine_list` and `routine_update` show the report but leave the agent notes out). Other people's chats with a team agent see no task state: the routine tools show `task: null` unless `ctx.userId` owns the task.
     - What limits it: outward actions are still held for approval; the tool descriptions frame the text as notes; and the text can't hide from the person.
     - Not mitigated yet: visible injected text stays until a person clears it. Clearing notes from the task page is a later slice.
   - **Reach.** None new: the report touches only its own task's state.

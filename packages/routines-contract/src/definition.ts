@@ -514,7 +514,8 @@ export const RoutineViewSchema = z.object({
   ...RoutineViewShape,
   /**
    * TASK-907. Null for a repeat routine, for a task that hasn't reported yet,
-   * and in an exact replay's answer: a receipt keeps no task state.
+   * and in an exact replay's answer: a receipt keeps no task state. The routine
+   * tools also show null for a task another person owns.
    */
   task: RoutineTaskViewSchema.nullable(),
 }).strict().superRefine(validateView);
