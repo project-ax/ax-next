@@ -512,7 +512,10 @@ function validateView(view: Record<string, unknown>, ctx: z.RefinementCtx): void
 }
 export const RoutineViewSchema = z.object({
   ...RoutineViewShape,
-  /** TASK-907. Null for a repeat routine and for a task that hasn't reported yet. */
+  /**
+   * TASK-907. Null for a repeat routine, for a task that hasn't reported yet,
+   * and in an exact replay's answer: a receipt keeps no task state.
+   */
   task: RoutineTaskViewSchema.nullable(),
 }).strict().superRefine(validateView);
 /**

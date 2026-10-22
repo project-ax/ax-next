@@ -119,6 +119,23 @@ function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
   throw new Error('Unknown routine receipt operation');
 }
+/**
+ * TASK-907. What a receipt keeps of its result: all of it but a task's state. A
+ * receipt lives as long as its request row, and the state is agent-written text
+ * (a report, the agent's notes) that the task row already holds, once, where a
+ * person can see and clear it. So an exact replay answers with `task: null`: a
+ * replay answers from its receipt, never from a fresh read. The live answer is
+ * the effect's own, state and all, so `acceptDispatch`'s `accepted.row.task` is
+ * still what it read under the row lock.
+ */
+function receiptCopy(operation: string, result: unknown): unknown {
+  if (operation === 'create' || operation === 'update') return { ...(result as StoredRoutine), task: null };
+  if (operation === 'dispatch') {
+    const accepted = result as AcceptedDispatch;
+    return { ...accepted, row: { ...accepted.row, task: null } };
+  }
+  return result;
+}
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
@@ -155,7 +172,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
       const result = await effect(trx);
       // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
       if (result === null) { await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', key.agentId).where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute(); return result; }
-      await trx.updateTable('routines_v1_requests').set({ result: JSON.stringify(result) }).where('agent_id', '=', key.agentId)
+      await trx.updateTable('routines_v1_requests').set({ result: JSON.stringify(receiptCopy(key.operation, result)) }).where('agent_id', '=', key.agentId)
         .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute();
       return parseReceipt(key.operation, result) as T;
     });

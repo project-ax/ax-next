@@ -67,15 +67,38 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
     const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
     expect(edited.task).toEqual(task);
-    // A later check-in moves the task on, and replaying the edit still shows what
-    // the edit showed: a receipt replays its snapshot, not the task as it is now.
+    // A later check-in moves the task on. Replaying the edit answers from its
+    // receipt, which keeps no task state: the edit's answer, with task null.
     await checkIn(edited, 'after-edit', { at: later, report: onTrack });
     expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: NOTES });
-    expect(await bus.call('routines:update', owner, edit)).toEqual(edited);
+    expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
     // The next check-in's dispatch holds the state as acceptDispatch read it,
     // notes included: TASK-908's check-in message takes them from there.
     const next = await f.store.acceptDispatch({ agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now });
     expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later });
+  });
+
+  it("receipts keep no copy of a task's state; the live answers keep it", async () => {
+    const bus = services();
+    const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
+    await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
+    const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
+    const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
+    expect(edited.task).toEqual({ ...needsYou, reportedAt: now.toISOString(), agentNotes: NOTES });
+    // The next check-in's live accept still hands over the state as it read it under the row lock (TASK-908).
+    const dispatch = { agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now } as const;
+    const next = await f.store.acceptDispatch(dispatch);
+    expect(next?.replayed).toBe(false);
+    expect(next?.accepted.row.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now });
+    // The receipts (the create, both accepts, the edit) hold none of the agent's text.
+    const receipts = (await sql<{ operation: string; result: unknown }>`SELECT operation, result FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation, request_id`.execute(f.db)).rows;
+    expect(receipts.map(receipt => receipt.operation)).toEqual(['create', 'dispatch', 'dispatch', 'update']);
+    for (const text of [NOTES, needsYou.update, needsYou.ask]) expect(JSON.stringify(receipts)).not.toContain(text);
+    // So an exact replay answers with no task state: the receipt's answer, as replays always are, never a fresh read.
+    expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
+    const replay = await f.store.acceptDispatch(dispatch);
+    expect(replay?.replayed).toBe(true);
+    expect(replay?.accepted.row.task).toBeNull();
   });
 
   it('a repeat routine and a task that never reported have task: null', async () => {
