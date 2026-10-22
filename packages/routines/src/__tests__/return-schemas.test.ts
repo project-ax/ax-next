@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as C from '@ax/routines-contract';
-import { routineView, ROUTINE_SERVICES } from '../services.js';
+import { routinePermissions, routineView, ROUTINE_SERVICES } from '../services.js';
 import type { StoredRoutine } from '../types.js';
 const row: StoredRoutine = {
   ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
@@ -36,6 +36,10 @@ describe('canonical routine return schemas', () => {
       reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
+    // Anyone but its owner sees the routine without its task state.
+    const teammate = routineView(task, 'teammate', true);
+    expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), task: null });
+    expect(C.RoutineViewSchema.parse(teammate)).toEqual(teammate);
     // A repeat routine shows none, even when its row holds some.
     const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
     expect(repeat.task).toBeNull();

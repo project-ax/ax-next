@@ -154,48 +154,27 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
 }
 
 /**
- * TASK-907. `routines:list` and `routines:update` keep a task's agent notes (the
- * Tasks page reads them), but their tools leave them out: a list holds every
- * routine and reaches every chat, and "how's the support queue?" needs the report
- * alone; an edit's answer needs no notes at all. Only routine_get, read before
- * working on a task, carries them. The projection is explicit and the strict
- * output schemas then enforce it, so an agentNotes key can't ride along.
+ * TASK-907. `routines:list` and `routines:update` keep a task's agent notes for
+ * its owner (the Tasks page reads them), but their tools leave them out: a list
+ * holds every routine and reaches every chat, and "how's the support queue?"
+ * needs the report alone; an edit's answer needs no notes at all. Only
+ * routine_get, read before working on a task, carries them. The projection is
+ * explicit and the strict output schemas then enforce it, so an agentNotes key
+ * can't ride along. Who sees a task's state at all is the services' rule
+ * (`routineView`): anyone but the owner gets `task: null` before it gets here.
  */
 function withoutAgentNotes({ task, ...routine }: C.RoutineView) {
   if (task === null) return { ...routine, task };
   const { agentNotes: _agentNotes, ...report } = task;
   return { ...routine, task: report };
 }
-/**
- * TASK-907. A task's state goes back only into its owner's chats. A check-in runs
- * as the task's owner, with what only they can reach, so its report and notes can
- * carry it; on a team agent, every other person's chats with that agent see
- * `task: null`. A view carries no owner, so the rows are read here, after the
- * service's read, and only when some view has state to hide. A routine gone by
- * then shows none. The `routines:*` services stay as they are: the Tasks page
- * decides its own visibility (TASK-909).
- */
-async function ownersTasksOnly<V extends { routineId: string; task: object | null }>(store: RoutinesStore, ctx: AgentContext, views: V[]): Promise<V[]> {
-  const withState = views.filter(view => view.task !== null);
-  if (withState.length === 0) return views;
-  const rows = withState.length === 1
-    ? [await store.findOne({ agentId: ctx.agentId, routineId: withState[0]!.routineId })]
-    : await store.list({ agentId: ctx.agentId });
-  const owned = new Set(rows.flatMap(row => row !== null && row.ownerUserId === ctx.userId ? [row.routineId] : []));
-  return views.map(view => view.task === null || owned.has(view.routineId) ? view : { ...view, task: null });
-}
-async function listToolOutput(store: RoutinesStore, ctx: AgentContext, output: unknown): Promise<C.RoutineListToolOutput> {
+function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
-  return C.RoutineListToolOutputSchema.parse({ routines: await ownersTasksOnly(store, ctx, routines.map(withoutAgentNotes)) });
-}
-async function getToolOutput(store: RoutinesStore, ctx: AgentContext, output: unknown): Promise<C.RoutineView> {
-  const [view] = await ownersTasksOnly(store, ctx, [C.RoutineGetOutputSchema.parse(output)]);
-  return view!;
+  return C.RoutineListToolOutputSchema.parse({ routines: routines.map(withoutAgentNotes) });
 }
 /** Every answer routine_update gives leaves here: live, replayed by the service, or recovered from its receipt. */
-async function updateToolOutput(store: RoutinesStore, ctx: AgentContext, output: unknown): Promise<C.RoutineUpdateToolOutput> {
-  const [view] = await ownersTasksOnly(store, ctx, [withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output))]);
-  return C.RoutineUpdateToolOutputSchema.parse(view);
+function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
+  return C.RoutineUpdateToolOutputSchema.parse(withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output)));
 }
 
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
@@ -221,9 +200,7 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       if (!prepared.receiptKey) {
         try {
           const output = await bus.call(prepared.hook, ctx, prepared.input);
-          if (call.name === 'routine_list') return await listToolOutput(store, ctx, output);
-          if (call.name === 'routine_get') return await getToolOutput(store, ctx, output);
-          return output;
+          return call.name === 'routine_list' ? listToolOutput(output) : output;
         }
         catch (error) { throw safeFailure(error); }
       }
@@ -285,7 +262,7 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       await settle('succeeded');
       if (call.name !== 'routine_update') return output;
       // The edit has happened whatever the projection does; if it fails, it fails closed.
-      try { return await updateToolOutput(store, ctx, output); }
+      try { return updateToolOutput(output); }
       catch (error) { throw safeFailure(error); }
     });
     await bus.call('tool:register', makeAgentContext({ sessionId: 'init', agentId: PLUGIN, userId: 'system' }), descriptor);

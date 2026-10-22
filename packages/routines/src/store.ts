@@ -22,6 +22,12 @@ export interface RoutinesStore {
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
+  /**
+   * TASK-907. Who owns each of these routines now, for deciding who may see a
+   * run's report. A routine that's gone has no entry. Reads only the owner, so a
+   * row another read couldn't parse can't fail a history read.
+   */
+  routineOwners(input: { agentId: string; routineIds: readonly string[] }): Promise<Map<string, string>>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
@@ -556,6 +562,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .where('routine_id', '=', input.routineId)
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
+    },
+
+    async routineOwners(input) {
+      if (input.routineIds.length === 0) return new Map();
+      const rows = await db.selectFrom('routines_v1_definitions').select(['routine_id', 'owner_user_id'])
+        .where('agent_id', '=', input.agentId).where('routine_id', 'in', [...input.routineIds]).execute();
+      return new Map(rows.map(row => [row.routine_id, row.owner_user_id]));
     },
 
     async upsertDefault(input) {

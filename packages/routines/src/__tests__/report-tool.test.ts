@@ -163,25 +163,39 @@ describe('routine_report (TASK-907)', () => {
       .task?.agentNotes).toBe(NOTES);
   });
 
-  it("a team agent's task shows its state only in its owner's chats", async () => {
+  it("a team agent's task shows its state only to its owner, in the services and so in every tool", async () => {
     await start();
     // The owner makes a task on the team agent, so it's theirs; the team's other people share the agent.
     const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
     await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const key = { agentId: h.teamAgentId, routineId: task.routineId };
     const chatOf = (person: AgentContext) => makeAgentContext({ ...person, agentId: h.teamAgentId, conversationId: `chat-${person.userId}` });
     const execute = <T,>(ctx: AgentContext, call: ToolCall) => h.bus.call<ToolCall, T>(`tool:execute:${call.name}`, ctx, call);
-    const getCall: ToolCall = { id: 'get', name: 'routine_get', input: { routineId: task.routineId } };
-    const listCall: ToolCall = { id: 'list', name: 'routine_list', input: {} };
-    const listed = (output: RoutineListToolOutput) => output.routines.find(row => row.routineId === task.routineId);
+    const mineOf = <V extends { routineId: string }>(views: V[]) => views.find(view => view.routineId === task.routineId);
+    /**
+     * Every read a person has of the task: the services, which the Settings routes (and the Tasks page)
+     * serve as they are, and the tools in that person's own chat with the agent.
+     */
+    async function reads(person: AgentContext) {
+      const chat = chatOf(person);
+      return {
+        list: mineOf((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', person, { agentId: h.teamAgentId })).routines),
+        get: await h.bus.call<unknown, RoutineView>('routines:get', person, key),
+        fires: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', person, key)).fires,
+        agentFires: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', person, { agentId: h.teamAgentId })).fires,
+        listTool: mineOf((await execute<RoutineListToolOutput>(chat, { id: 'list', name: 'routine_list', input: {} })).routines),
+        getTool: await execute<RoutineView>(chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } }),
+      };
+    }
     const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
     for (const person of [h.teamMember, h.teamAdmin]) {
-      const chat = chatOf(person);
-      const got = await execute<RoutineView>(chat, getCall);
-      const list = await execute<RoutineListToolOutput>(chat, listCall);
-      expect(got.task, person.userId).toBeNull();
-      expect(listed(list)?.task, person.userId).toBeNull();
-      for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask]) expect(JSON.stringify([got, list]), person.userId).not.toContain(text);
+      const seen = await reads(person);
+      // The routine itself stays visible to them; only its task state, and each run's report, is the owner's.
+      expect(seen.get, person.userId).toMatchObject({ routineId: task.routineId, name: TASK.name, kind: 'stay-on-top', task: null });
+      for (const view of [seen.list, seen.listTool, seen.getTool]) expect(view?.task, person.userId).toBeNull();
+      for (const fires of [seen.fires, seen.agentFires]) expect(fires.map(fire => fire.report), person.userId).toEqual([null]);
+      for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask]) expect(JSON.stringify(seen), person.userId).not.toContain(text);
     }
     // A team admin may stop someone else's task. The edit's answer shows none of its state either.
     const admin = chatOf(h.teamAdmin);
@@ -193,13 +207,11 @@ describe('routine_report (TASK-907)', () => {
     const stopped = await execute<RoutineListToolOutput['routines'][number]>(admin, stop);
     expect(stopped).toMatchObject({ enabled: false, task: null });
     expect(JSON.stringify(stopped)).not.toContain(NEEDS_YOU.update);
-    // The owner's own chats with the agent show it.
-    const mine = chatOf(h.owner);
-    expect((await execute<RoutineView>(mine, getCall)).task).toEqual({ ...shown, agentNotes: NOTES });
-    expect(listed(await execute<RoutineListToolOutput>(mine, listCall))?.task).toEqual(shown);
-    // The services are unchanged: the Tasks page decides its own visibility (TASK-909).
-    expect((await h.bus.call<unknown, RoutineView>('routines:get', h.teamMember, { agentId: h.teamAgentId, routineId: task.routineId })).task)
-      .toEqual({ ...shown, agentNotes: NOTES });
+    // The owner sees all of it: the services carry the agent notes, routine_list leaves them out.
+    const mine = await reads(h.owner);
+    for (const view of [mine.list, mine.get, mine.getTool]) expect(view?.task).toEqual({ ...shown, agentNotes: NOTES });
+    expect(mine.listTool?.task).toEqual(shown);
+    for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([NEEDS_YOU]);
   });
 
   it('a new task’s routine_create answer has no task state to show', async () => {

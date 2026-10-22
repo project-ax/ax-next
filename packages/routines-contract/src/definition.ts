@@ -514,8 +514,8 @@ export const RoutineViewSchema = z.object({
   ...RoutineViewShape,
   /**
    * TASK-907. Null for a repeat routine, for a task that hasn't reported yet,
-   * and in an exact replay's answer: a receipt keeps no task state. The routine
-   * tools also show null for a task another person owns.
+   * for anyone but the task's owner (whoever can see the routine still sees the
+   * routine), and in an exact replay's answer: a receipt keeps no task state.
    */
   task: RoutineTaskViewSchema.nullable(),
 }).strict().superRefine(validateView);
@@ -525,7 +525,7 @@ export const RoutineViewSchema = z.object({
  * and holds every routine, so up to 2,000 characters of agent-written text per
  * task would ride along each time; "how's the support queue?" needs the report
  * alone, and an edit's answer needs no notes at all. `routine_get` and the
- * `routines:*` services keep the agent notes.
+ * `routines:*` services keep the agent notes, for the task's owner.
  */
 export const RoutineListToolViewSchema = z.object({
   ...RoutineViewShape,
