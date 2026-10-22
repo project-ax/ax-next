@@ -5,6 +5,7 @@
  *        one (the rail's read-only past-conversation view)
  * GET  /api/workspace/activity         — THE event feed (one collection)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
+ * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
  * GET  /api/workspace/agents/:agentId/files/*
@@ -68,17 +69,19 @@
  *     records zero calls.
  *
  *     Everything NOT in that list is gated DIFFERENTLY on purpose, and none
- *     of it reads workspace files or memory. `/state`, `/route` and the
- *     UNSCOPED branch of `/activity` fan out over `agents:list-for-user` —
+ *     of it reads workspace files or memory. `/state`, `/route`, `/tasks` and
+ *     the UNSCOPED branch of `/activity` fan out over `agents:list-for-user` —
  *     there the roster IS the ACL, and it is a different predicate
  *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
- *     strictly narrower in practice. `/grants` filters the in-memory
- *     card-owner map on the authenticated userId. The `/decisions` LIST route
- *     reads the caller's OWN decisions first and then drops rows whose agent
- *     it cannot reach, so a resolve failure there is a filtered row rather
- *     than a 404 — note that is the list route only; `/decisions/:decisionId`
- *     and its approve/dismiss/undo siblings DO 404, through
- *     `loadOwnedDecision`.
+ *     strictly narrower in practice. `/tasks` is checked again per agent:
+ *     `routines:list` runs `agents:resolve` for the caller itself and shows a
+ *     task's state only to its owner (TASK-907). `/grants` filters the
+ *     in-memory card-owner map on the authenticated userId. The `/decisions`
+ *     LIST route reads the caller's OWN decisions first and then drops rows
+ *     whose agent it cannot reach, so a resolve failure there is a filtered
+ *     row rather than a 404 — note that is the list route only;
+ *     `/decisions/:decisionId` and its approve/dismiss/undo siblings DO 404,
+ *     through `loadOwnedDecision`.
  *
  *     Spelled out because the blanket claim this comment used to make —
  *     "every per-agent read is gated by `agents:resolve`" — was not true, and
@@ -115,10 +118,12 @@
 import {
   ROUTINE_DEFINITION_MAX_BYTES,
   ROUTINE_NAME_MAX_CHARS,
+  ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineCreateToolInputSchema,
   RoutineUpdateToolInputSchema,
   routineBriefFields,
 } from '@ax/routines-contract';
+import type { RoutineView } from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
@@ -162,8 +167,11 @@ import type {
   PastConversation,
   PermissionRow,
   RailActivity,
+  TaskRow,
+  TasksResponse,
   ThreadAttachment,
   ThreadMessage,
+  UnavailableAgent,
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
@@ -677,6 +685,19 @@ interface RoutinesListInput {
 }
 interface RoutinesListOutput {
   routines: RoutineRow[];
+}
+
+/**
+ * What the Tasks page (TASK-909) reads off one `routines:list` view. The bus
+ * has already parsed the answer through `RoutineListOutputSchema` (the
+ * service's `returns`), so these fields are read, not validated again.
+ */
+type TaskListView = Pick<
+  RoutineView,
+  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task'
+>;
+interface TaskListOutput {
+  routines: TaskListView[];
 }
 
 /**
@@ -3195,6 +3216,64 @@ export function receiptToActivityEvent(
 }
 
 /**
+ * Is this task the caller's own? (TASK-909 decisions row 2)
+ *
+ * The view carries no owner, so this reads what the services already decided
+ * for this caller: they show `task` only to the routine's owner (`taskView`),
+ * and give `permissions.fire` only to an owner who may manage the agent's
+ * routines (`routinePermissions`). On a personal agent every routine is the
+ * viewer's (`reconcileOwners`); on a team agent, everyone else's tasks fail
+ * both halves.
+ *
+ * The accepted gap: a task that has never reported, owned by someone who can
+ * no longer manage the agent's routines (a team admin who lost the role), is
+ * left out until its first report. Design PR 4, where team members start
+ * tasks that run as themselves, must keep `fire` true for an owner who may
+ * run their own task, or revisit this.
+ */
+function isOwnTask(view: TaskListView): boolean {
+  return view.task !== null || view.permissions.fire;
+}
+
+/**
+ * One agent's `routines:list` views → the Tasks page's rows (TASK-909).
+ *
+ * Keeps the caller's own tasks (`isOwnTask`), where a task is any kind but
+ * `repeat`, so design PR 3's `get-done` appears without a change here. Each
+ * row is built field by field, never spread from the view, so nothing rides
+ * along that the page doesn't draw (decisions row 5): the ask and the agent's
+ * notes never leave the server.
+ *
+ * The name and the update are agent-written and fenced HERE, at the boundary,
+ * to one line. The update is capped at the report writer's own limit, because
+ * stored text isn't re-checked against the writer's rules (TASK-913) and the
+ * view schema has no cap. `agentName` is the roster's string as-is, the same
+ * one `/state` sends.
+ */
+function toTaskRows(
+  agent: { id: string; displayName: string },
+  views: readonly TaskListView[],
+): TaskRow[] {
+  return views
+    .filter((view) => view.kind !== 'repeat' && isOwnTask(view))
+    .map((view) => ({
+      agentId: agent.id,
+      agentName: agent.displayName,
+      routineId: view.routineId,
+      name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
+      enabled: view.enabled,
+      task:
+        view.task === null
+          ? null
+          : {
+              status: view.task.status,
+              update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
+              reportedAt: view.task.reportedAt,
+            },
+    }));
+}
+
+/**
  * Is this a "the row isn't yours / isn't there" answer, or a real failure?
  *
  * Only the first kind may be degraded into an empty thread or a 404. A generic
@@ -4006,6 +4085,38 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       return null;
     }
     return names;
+  }
+
+  /**
+   * One agent's slice of the Tasks page (TASK-909): its `routines:list`, read
+   * as the caller, projected to the caller's own task rows (`toTaskRows`).
+   *
+   * Read through `agentWorkspaceCtx`, so `routines:list` runs `agents:resolve`
+   * for the caller itself: the roster picked the agent, and the service checks
+   * it again. Any throw, a refusal included, is `{ ok: false }` and a warn
+   * line, so the page can name the agent it couldn't read while the others
+   * still come back (TASK-909 decisions row 7). A refusal here is a race with
+   * the roster read (the agent was deleted or unshared since), and it costs
+   * one "couldn't load" line until the next load.
+   */
+  async function tasksForAgent(
+    agent: { id: string; displayName: string },
+    userId: string,
+  ): Promise<{ ok: true; tasks: TaskRow[] } | { ok: false }> {
+    try {
+      const out = await bus.call<RoutinesListInput, TaskListOutput>(
+        'routines:list',
+        agentWorkspaceCtx(agent.id, userId),
+        { agentId: agent.id },
+      );
+      return { ok: true, tasks: toTaskRows(agent, out.routines) };
+    } catch (err) {
+      initCtx.logger.warn('workspace_tasks_read_failed', {
+        agentId: agent.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { ok: false };
+    }
   }
 
   /**
@@ -6523,6 +6634,45 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({ events, nextBefore } satisfies ActivityResponse);
     },
 
+    /**
+     * GET /api/workspace/tasks — the Tasks page (TASK-909): every task the
+     * caller owns, on every agent in their roster, in roster order.
+     *
+     * The roster is the ACL, as on `/state` and the unscoped `/activity`, and
+     * each agent's `routines:list` checks it again for the caller. The list is
+     * owner-only (`isOwnTask`, TASK-909 decisions row 2). Nothing but the
+     * session is read from the request: no agent or routine id comes from the
+     * params, the query or the body.
+     *
+     * One agent that can't be read doesn't take the page down: its tasks are
+     * missing and it is named in `unavailableAgents`, so the page can say so
+     * instead of looking complete (decisions row 7). A roster failure fails the
+     * route, because the roster IS the page. Without `routines:list` (no
+     * @ax/routines in this deployment) nobody can have a task, so the answer is
+     * an honest empty list.
+     */
+    async tasks(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      const agents = await listAgents(userId);
+      if (!bus.hasService('routines:list')) {
+        res.status(200).json({ tasks: [], unavailableAgents: [] } satisfies TasksResponse);
+        return;
+      }
+
+      const reads = await Promise.all(
+        agents.map(async (agent) => ({ agent, read: await tasksForAgent(agent, userId) })),
+      );
+      const tasks: TaskRow[] = [];
+      const unavailableAgents: UnavailableAgent[] = [];
+      for (const { agent, read } of reads) {
+        if (read.ok) tasks.push(...read.tasks);
+        else unavailableAgents.push({ agentId: agent.id, agentName: agent.displayName });
+      }
+      res.status(200).json({ tasks, unavailableAgents } satisfies TasksResponse);
+    },
+
     /** GET /api/workspace/agents/:agentId */
     async agentDetail(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -8775,6 +8925,12 @@ export async function registerWorkspaceRoutes(
       method: 'GET',
       path: '/api/workspace/activity',
       handler: handlers.activity as unknown as RouteHandler,
+    },
+    {
+      // TASK-909 — the Tasks page: the caller's own tasks, across their roster.
+      method: 'GET',
+      path: '/api/workspace/tasks',
+      handler: handlers.tasks as unknown as RouteHandler,
     },
     {
       method: 'GET',

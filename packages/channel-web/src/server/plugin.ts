@@ -59,6 +59,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     TASK-231 adds no hard call either: the
 //     activity feed reads the optional routines:recent-fires-for-agent and
 //     routines:list, and degrades to an empty feed without them.
+//     TASK-909 adds no hard call either: the Tasks page (GET
+//     /api/workspace/tasks) reads the optional routines:list and answers an
+//     empty list without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -285,11 +288,14 @@ export function createChannelWebServerPlugin(
         },
         {
           // Same feed: this supplies the routine's AUTHORED name for each row.
-          // Without it the rows are labelled with their routine path — a worse
-          // label, but never a wrong one, and never a dropped row.
+          // Without it the rows say "Routine unavailable" — a worse label, but
+          // never a wrong one, and never a dropped row. The Tasks page
+          // (TASK-909, GET /api/workspace/tasks) reads this hook too, as its
+          // only source: without it nobody can have a task, so it answers an
+          // empty list.
           hook: 'routines:list',
           degradation:
-            'Activity rows are labelled with the routine path instead of its authored name',
+            'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective
