@@ -57,20 +57,20 @@ describe('accepted DB fire dispatch', () => {
     expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Review literal {{payload.title}}');
   });
   it('binds the run\'s conversation onto its dispatch before the agent is invoked', async () => {
-    let seen: { dispatchId: string } | null | undefined;
+    let seen: { run: { dispatchId: string } | null } | undefined;
     const h = await setup({ invoke: async ctx => { seen = await f.store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId: ctx.conversationId! }); return { kind: 'complete' }; } });
     await h.fire(h.accepted);
     await expect.poll(() => seen).not.toBeUndefined();
-    expect(seen?.dispatchId).toBe(h.accepted.dispatchId);
+    expect(seen?.run?.dispatchId).toBe(h.accepted.dispatchId);
     const bound = await sql<{ conversation_id: string | null }>`SELECT conversation_id FROM routines_v1_dispatches WHERE dispatch_id = ${h.accepted.dispatchId}`.execute(f.db);
     expect(bound.rows[0]?.conversation_id).toBe('c');
   });
   it('binds a shared conversation too', async () => {
-    let seen: { dispatchId: string } | null | undefined;
+    let seen: { run: { dispatchId: string } | null } | undefined;
     const h = await setup({ definition: { conversation: 'shared' }, invoke: async ctx => { seen = await f.store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId: ctx.conversationId! }); return { kind: 'complete' }; } });
     await h.fire(h.accepted);
     await expect.poll(() => seen).not.toBeUndefined();
-    expect(seen?.dispatchId).toBe(h.accepted.dispatchId);
+    expect(seen?.run?.dispatchId).toBe(h.accepted.dispatchId);
     const bound = await sql<{ conversation_id: string | null }>`SELECT conversation_id FROM routines_v1_dispatches WHERE dispatch_id = ${h.accepted.dispatchId}`.execute(f.db);
     expect(bound.rows[0]?.conversation_id).toBe('c');
   });

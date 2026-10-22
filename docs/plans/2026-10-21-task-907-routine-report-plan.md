@@ -42,7 +42,7 @@
 
 ## For the sibling cards (TASK-908 and later): what this card guarantees
 
-- From the moment `agent:invoke` is called, every fire's dispatch row has its `conversation_id`. `store.findOpenDispatchByConversation` is the lookup.
+- From the moment `agent:invoke` is called, every fire's dispatch row has its `conversation_id`. `store.findOpenDispatchByConversation` is the lookup: it returns `{ run }`, or `{ run: null, reason }` with `reason` one of `no-open-run`, `ambiguous` or `routine-gone`.
 - `accepted.row.task` (an `AcceptedDispatch`'s row) is the task state as `acceptDispatch` read it under its row lock: `{ status, update, ask, agentNotes, reportedAt } | null`. TASK-908's check-in message can take the agent's notes from `agentNotes`. That is the live accept's row: receipts keep no task state, so a replayed accept (`replayed: true`) carries `task: null`, and no caller dispatches a replay. The last three updates are the newest fire rows' `report`.
 - One name per side: the agent *sends* its notes as `notes` (the `routine_report` input, and `routines:report`'s), and every stored shape and read *shows* them as `agentNotes` (`StoredTaskState`, `RoutineTaskViewSchema`, the `agent_notes` column), so a reader knows who wrote them.
 - A check-in that ends without a report gets a fire row with `report: null`, and the task keeps its previous state. "No recent update" and failure counting are design PR 2.
