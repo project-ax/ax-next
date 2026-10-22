@@ -61,7 +61,15 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
   const conversationId = ctx.conversationId;
   if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
   if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
-  const lookup = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId });
+  const lookup = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId }).catch((error: unknown) => {
+    // No run to name yet, so this line carries the ids the lookup was given, which the host set, and the database's
+    // own words: a select over those two ids, so nothing in the message can quote the report. The agent still gets
+    // the closed "unavailable" (`safeFailure`). Pre-call and the call each run this lookup, so each leaves a line.
+    ctx.logger.warn('routines_report_failed', {
+      stage: 'lookup', agentId: ctx.agentId, conversationId, err: error instanceof Error ? error.message : 'not an Error',
+    });
+    throw error;
+  });
   if (lookup.run === null) throw reportRefused(ctx, 'tool', lookup.reason);
   const { run } = lookup;
   const ids = { dispatchId: run.dispatchId, routineId: run.routineId };

@@ -274,6 +274,31 @@ describe('routine_report (TASK-907)', () => {
     }
   });
 
+  it('a failed lookup leaves one warn line for the operator, from pre-call and from the call: the ids and the database\'s words, none of the report', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    const call = reportCall({ status: 'on-track', update: 'SECRET update', ask: 'SECRET ask?', notes: 'SECRET notes' });
+    await checkIn(task, 'run', async ctx => {
+      await sql`ALTER TABLE routines_v1_dispatches RENAME TO report_tool_test_dispatches`.execute(h.db);
+      try {
+        const expected = { level: 'warn', stage: 'lookup', agentId: ctx.agentId, conversationId: ctx.conversationId!, err: expect.stringMatching(/routines_v1_dispatches/) };
+        const keys = ['level', 'ts', 'reqId', 'msg', 'stage', 'agentId', 'conversationId', 'err'];
+        const lineOf = (lines: readonly string[]) => lines.map(line => JSON.parse(line) as Record<string, unknown>);
+        const preCall = logged(runner(ctx));
+        expect(await h.bus.fire('tool:pre-call', preCall.ctx, call)).toMatchObject({ rejected: true, reason: UNAVAILABLE });
+        const execute = logged(runner(ctx));
+        await expect(report(execute.ctx, call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
+        for (const { lines } of [preCall, execute]) {
+          expect(lineOf(lines)).toEqual([expect.objectContaining({ msg: 'routines_report_failed', ...expected })]);
+          for (const key of Object.keys(lineOf(lines)[0]!)) expect(keys, key).toContain(key);
+          expect(lines.join('\n')).not.toMatch(/SECRET/);
+        }
+      } finally {
+        await sql`ALTER TABLE report_tool_test_dispatches RENAME TO routines_v1_dispatches`.execute(h.db);
+      }
+    });
+  });
+
   it('a new task’s routine_create answer has no task state to show', async () => {
     await start();
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
