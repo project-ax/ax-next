@@ -37,7 +37,7 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
-import { ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
+import { ROUTINE_REPORT_STATUSES, RoutineStatusSchema } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
@@ -93,6 +93,7 @@ CounterRow,
   ThreadAttachment,
   ThreadMessage,
   UserFileEntry,
+  TaskDetail,
   TasksResponse,
   UserFilesAnswer,
   WorkspaceAgent,
@@ -442,6 +443,75 @@ function isTasksResponse(b: unknown): boolean {
     Array.isArray(b.unavailableAgents) &&
     b.unavailableAgents.every(isUnavailableAgent)
   );
+}
+
+function isStringOrNull(v: unknown): v is string | null {
+  return v === null || isString(v);
+}
+
+/** A task's latest report on its own page: the Tasks row's fields, plus the ask and the agent's notes. */
+function isTaskDetailReport(v: unknown): boolean {
+  return isRecord(v) && isTaskReport(v) && isStringOrNull(v.ask) && isStringOrNull(v.agentNotes);
+}
+
+/** What the agent reported at one check-in in Updates. */
+function isTaskUpdateReport(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
+    isStringOrNull(v.update)
+  );
+}
+
+/** One check-in. Its status is a fire's, from the routines contract, not a second copy of the words. */
+function isTaskUpdate(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.firedAt) &&
+    RoutineStatusSchema.options.some((s) => s === v.status) &&
+    isStringOrNull(v.error) &&
+    (v.report === null || isTaskUpdateReport(v.report))
+  );
+}
+
+function isTaskPermissions(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    typeof v.fire === 'boolean' &&
+    typeof v.stop === 'boolean' &&
+    typeof v.edit === 'boolean'
+  );
+}
+
+function isTaskBrief(v: unknown): boolean {
+  return isRecord(v) && isStringOrNull(v.promptBody) && isStringOrNull(v.goodWhen);
+}
+
+/**
+ * A task page's body, every field `TaskDetail` declares. The page reads them
+ * during render (`permissions.fire`, `brief.promptBody`, each update's report),
+ * so one missing object would crash it instead of saying "couldn't load".
+ */
+function isTaskDetail(b: unknown): boolean {
+  return (
+    isRecord(b) &&
+    isString(b.agentName) &&
+    isString(b.name) &&
+    typeof b.enabled === 'boolean' &&
+    isString(b.revision) &&
+    isTaskPermissions(b.permissions) &&
+    isStringOrNull(b.schedule) &&
+    isStringOrNull(b.nextCheckAt) &&
+    isTaskBrief(b.brief) &&
+    (b.task === null || isTaskDetailReport(b.task)) &&
+    Array.isArray(b.updates) &&
+    b.updates.every(isTaskUpdate)
+  );
+}
+
+/** A task's address under `/api/workspace`, each id encoded on its own. */
+function taskPath(agentId: string, routineId: string): string {
+  return `/tasks/${encodeURIComponent(agentId)}/${encodeURIComponent(routineId)}`;
 }
 
 
@@ -861,6 +931,33 @@ export const workspaceApi = {
   tasks: async () => {
     const body = await req<unknown>('/tasks');
     return checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
+  },
+
+  /**
+   * One task's own page (TASK-910). The server answers 404 for a task that
+   * isn't there and for one that isn't the caller's, alike, so a stranger
+   * can't learn that an id exists.
+   */
+  task: async (agentId: string, routineId: string) => {
+    const path = taskPath(agentId, routineId);
+    const body = await req<unknown>(path);
+    return checkedRead<TaskDetail>(path, body, isTaskDetail);
+  },
+
+  /**
+   * Clear a task's agent notes (TASK-910). Only the task's owner may, and the
+   * server decides that; a refusal is a 404. The answer is checked like
+   * `forgetMemory`'s: "Notes cleared." is a claim, so it rests on the server
+   * saying so.
+   */
+  clearTaskNotes: async (agentId: string, routineId: string) => {
+    const path = `${taskPath(agentId, routineId)}/notes`;
+    const body = await req<unknown>(path, { method: 'DELETE' });
+    return checkedRead<{ cleared: true }>(
+      path,
+      body,
+      (v) => isRecord(v) && !Array.isArray(v) && v.cleared === true,
+    );
   },
 
   approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
