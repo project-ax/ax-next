@@ -307,6 +307,8 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         agentId: 'a2',
         error: expect.stringContaining('connection terminated'),
       });
+      // It failed at once, so it is not a late failure.
+      expect(warn).not.toHaveBeenCalledWith('workspace_tasks_late_read_failed', expect.anything());
     } finally {
       warn.mockRestore();
     }
