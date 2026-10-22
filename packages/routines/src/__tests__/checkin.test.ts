@@ -202,6 +202,18 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_TOO_LONG, renderedPrompt: null });
   });
 
+  it('a veto that throws while working it out still refuses a pending task check-in', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    await h.checkIn(task, 'run', async (ctx, bus) => {
+      // A payload that throws when read: the subscriber can't work out the answer, so it refuses.
+      const poisoned = { get reqId(): string { throw new Error('unreadable'); }, providers: [ROUTINES_AUGMENT_PROVIDER] };
+      expect(await bus.fire('chat:system-prompt-landed', ctx, poisoned)).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'brief-missing' });
+    }, { landed: null });
+    // Nothing confirmed the brief, so the belt fails the run too.
+    expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED });
+  });
+
   it('repeat routines are untouched: no brief, no veto, no belt', async () => {
     h = await createCheckInHarness();
     const repeat = await create(REPEAT, 'repeat');
