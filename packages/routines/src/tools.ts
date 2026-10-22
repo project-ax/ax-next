@@ -150,17 +150,17 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
 }
 
 /**
- * TASK-907. `routines:list` keeps a task's notes (the Tasks page reads them), but
- * the tool leaves them out: a list holds every routine and reaches every chat, and
- * "how's the support queue?" needs the report alone. The projection is explicit and
- * the strict output schema then enforces it, so a notes key can't ride along.
+ * TASK-907. `routines:list` keeps a task's agent notes (the Tasks page reads them),
+ * but the tool leaves them out: a list holds every routine and reaches every chat,
+ * and "how's the support queue?" needs the report alone. The projection is explicit
+ * and the strict output schema then enforces it, so an agentNotes key can't ride along.
  */
 function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
   return C.RoutineListToolOutputSchema.parse({
     routines: routines.map(({ task, ...routine }) => {
       if (task === null) return { ...routine, task };
-      const { notes: _notes, ...report } = task;
+      const { agentNotes: _agentNotes, ...report } = task;
       return { ...routine, task: report };
     }),
   });

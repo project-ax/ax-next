@@ -43,7 +43,8 @@
 ## For the sibling cards (TASK-908 and later): what this card guarantees
 
 - From the moment `agent:invoke` is called, every fire's dispatch row has its `conversation_id`. `store.findOpenDispatchByConversation` is the lookup.
-- `accepted.row.task` (an `AcceptedDispatch`'s row) is the task state as `acceptDispatch` read it under its row lock: `{ status, update, ask, notes, reportedAt } | null`. TASK-908's check-in message can take the notes from it. The last three updates are the newest fire rows' `report`.
+- `accepted.row.task` (an `AcceptedDispatch`'s row) is the task state as `acceptDispatch` read it under its row lock: `{ status, update, ask, agentNotes, reportedAt } | null`. TASK-908's check-in message can take the agent's notes from `agentNotes`. The last three updates are the newest fire rows' `report`.
+- One name per side: the agent *sends* its notes as `notes` (the `routine_report` input, and `routines:report`'s), and every stored shape and read *shows* them as `agentNotes` (`StoredTaskState`, `RoutineTaskViewSchema`, the `agent_notes` column), so a reader knows who wrote them.
 - A check-in that ends without a report gets a fire row with `report: null`, and the task keeps its previous state. "No recent update" and failure counting are design PR 2.
 - `routine_report` refuses with `not-in-check-in` anywhere but a `stay-on-top` task's own open check-in, run by its owner from a routine session. Design PR 3 (`get-done`) must add its kind in two places: `prepareReport` in `packages/routines/src/tools.ts` and `recordReport` in `packages/routines/src/store.ts`. If the statuses change, it must also swap the named CHECKs `routines_v1_definitions_task_status_chk` and `routines_v1_fires_report_status_chk`.
 - Report text has already passed the writer's caps and refused invisible characters. It is still agent-authored, so frame it as the agent's own notes wherever it returns to a model.
@@ -598,7 +599,7 @@ In §4.5, the "Agent tool" cell becomes "`routine_report`, executed on the host.
   - **Alternate implementation:** an external task tracker (Linear, Asana) storing status updates, or a SQLite-backed routines store, behind the same hook.
   - **Payload names that might leak:** none.
     - `dispatchId` is an opaque host id already on routines' surface.
-    - `status`, `update`, `ask`, `notes` and `reportedAt` are domain words.
+    - `status`, `update`, `ask`, `notes` (the report's input), `agentNotes` (the views) and `reportedAt` are domain words.
     - The hook never carries a conversation id.
   - **Subscriber risk:** none, because nobody subscribes to a service hook. Callers must not key off `triggerLabel` or parse session ids; a check-in's identity is its conversation (§13).
   - **Wire surface:** `routine_report`'s zod and JSON schemas live in `@ax/routines-contract/src/tools.ts` with the other routine tools. `routines:report` is not an IPC action: the model reaches it only through `tool:execute:routine_report`.

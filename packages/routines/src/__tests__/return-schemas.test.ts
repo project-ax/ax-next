@@ -27,13 +27,13 @@ describe('canonical routine return schemas', () => {
       }),
       task: {
         status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-        notes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'),
+        agentNotes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'),
       },
     };
     const projected = routineView(task, 'owner', true);
     expect(projected.task).toEqual({
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-      reportedAt: '2030-01-01T00:05:00.000Z', notes: 'Order 1234 waits on a refund.',
+      reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
     // A repeat routine shows none, even when its row holds some.

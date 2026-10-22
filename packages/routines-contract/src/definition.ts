@@ -482,15 +482,20 @@ export const RoutineReportFieldShape = {
   notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
 };
 
-/** A task's latest report and the notes it keeps between check-ins, as a read shows them. Stored text isn't re-capped (TASK-913). */
+/**
+ * A task's latest report and the notes it keeps between check-ins, as a read
+ * shows them. The agent sends its notes as the report's `notes`; a read names
+ * them `agentNotes`, so whoever reads them knows who wrote them. Stored text
+ * isn't re-capped (TASK-913).
+ */
 export const RoutineTaskViewSchema = z.object({
   status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
-  reportedAt: RoutineInstantSchema, notes: z.string().nullable(),
+  reportedAt: RoutineInstantSchema, agentNotes: z.string().nullable(),
 }).strict();
 export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;
 
-/** What a task's report shows when its notes stay out of the read: the list tool's view (TASK-907). */
-export const RoutineTaskListViewSchema = RoutineTaskViewSchema.omit({ notes: true });
+/** What a task's report shows when its agent notes stay out of the read: the list tool's view (TASK-907). */
+export const RoutineTaskListViewSchema = RoutineTaskViewSchema.omit({ agentNotes: true });
 export type RoutineTaskListView = z.output<typeof RoutineTaskListViewSchema>;
 
 const RoutineViewShape = {
@@ -512,10 +517,10 @@ export const RoutineViewSchema = z.object({
 }).strict().superRefine(validateView);
 /**
  * A routine as `routine_list` shows it (TASK-907): the same view, with a task's
- * report but not its notes. A list reaches every chat and holds every routine,
- * so up to 2,000 characters of agent-written text per task would ride along
- * each time; "how's the support queue?" needs the report alone. `routine_get`
- * and the `routines:*` services keep the notes.
+ * report but not its agent notes. A list reaches every chat and holds every
+ * routine, so up to 2,000 characters of agent-written text per task would ride
+ * along each time; "how's the support queue?" needs the report alone.
+ * `routine_get` and the `routines:*` services keep the agent notes.
  */
 export const RoutineListToolViewSchema = z.object({
   ...RoutineViewShape,

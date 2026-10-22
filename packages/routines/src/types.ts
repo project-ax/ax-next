@@ -2,8 +2,12 @@ import type { RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/ro
 export type { ActiveHours, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
-/** TASK-907. A task's latest report and the notes it keeps between check-ins. Agent-written text. */
-export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; notes: string | null; reportedAt: Date };
+/**
+ * TASK-907. A task's latest report and the notes it keeps between check-ins
+ * (`agentNotes`, the `agent_notes` column; the report's input calls them
+ * `notes`). Agent-written text.
+ */
+export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date };
 /** Below the hook bus. Owner identity is pinned independently from the editing actor. */
 export type StoredRoutine = RoutineDefinition & {
   agentId: string; routineId: string; revision: string; ownerUserId: string;

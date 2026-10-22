@@ -108,7 +108,7 @@ describe('routine_report (TASK-907)', () => {
     // agents and decisions nothing, and calls the one writer of a task's state.
     expect(hooks).toEqual(['tool:execute:routine_report', 'routines:report']);
     const { task: state } = await get(task);
-    expect(state).toEqual({ ...NEEDS_YOU, notes: NOTES, reportedAt: expect.any(String) });
+    expect(state).toEqual({ ...NEEDS_YOU, agentNotes: NOTES, reportedAt: expect.any(String) });
     expect(new Date(state!.reportedAt).toISOString()).toBe(state!.reportedAt);
     const fires = await history(task);
     expect(fires).toHaveLength(1);
@@ -126,12 +126,12 @@ describe('routine_report (TASK-907)', () => {
     const list = await execute<RoutineListToolOutput>('routine_list', {});
     const listed = list.routines.find(row => row.routineId === task.routineId);
     expect(listed?.task).toEqual(shown);
-    expect('notes' in listed!.task!).toBe(false);
+    for (const key of ['agentNotes', 'notes']) expect(key in listed!.task!, key).toBe(false);
     expect(JSON.stringify(list)).not.toContain(NOTES);
-    expect((await execute<RoutineView>('routine_get', { routineId: task.routineId })).task).toEqual({ ...shown, notes: NOTES });
+    expect((await execute<RoutineView>('routine_get', { routineId: task.routineId })).task).toEqual({ ...shown, agentNotes: NOTES });
     // The service hook keeps them: the Tasks page reads them from there.
     expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId }))
-      .routines.find(row => row.routineId === task.routineId)?.task?.notes).toBe(NOTES);
+      .routines.find(row => row.routineId === task.routineId)?.task?.agentNotes).toBe(NOTES);
   });
 
   it("routine_report refuses outside its own task's check-in, writing nothing", async () => {
@@ -193,7 +193,7 @@ describe('routine_report (TASK-907)', () => {
       // At the caps exactly, it records.
       expect(await report(runner(ctx), reportCall({ ...valid, update: 'a'.repeat(500), notes: 'n'.repeat(2000) }))).toStrictEqual({ recorded: true });
     });
-    expect((await get(task)).task).toMatchObject({ status: 'on-track', update: 'a'.repeat(500), ask: null, notes: 'n'.repeat(2000) });
+    expect((await get(task)).task).toMatchObject({ status: 'on-track', update: 'a'.repeat(500), ask: null, agentNotes: 'n'.repeat(2000) });
     expect((await history(task)).map(fire => fire.report)).toEqual([{ status: 'on-track', update: 'a'.repeat(500), ask: null }]);
   });
 
@@ -210,12 +210,12 @@ describe('routine_report (TASK-907)', () => {
     await checkIn(task, 'run', async ctx => {
       for (const input of reports) {
         expect(await report(runner(ctx), reportCall(input))).toStrictEqual({ recorded: true });
-        notes.push((await get(task)).task?.notes);
+        notes.push((await get(task)).task?.agentNotes);
       }
     });
     expect(notes).toEqual(['A', 'A', null, 'B']);
     const last = { status: 'needs-you', update: 'A refund waits on you.', ask: 'Can I refund order 1234?' };
-    expect((await get(task)).task).toMatchObject({ ...last, notes: 'B' });
+    expect((await get(task)).task).toMatchObject({ ...last, agentNotes: 'B' });
     // The run's history row carries its last report.
     expect((await history(task)).map(fire => fire.report)).toEqual([last]);
   });

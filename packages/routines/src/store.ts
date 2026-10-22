@@ -70,7 +70,7 @@ function definitionColumns(d: RoutineDefinition) {
  */
 function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | null {
   if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
-  return { status: row.task_status, update: row.task_update, ask: row.task_ask, notes: row.agent_notes, reportedAt: row.task_reported_at };
+  return { status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at };
 }
 /**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit

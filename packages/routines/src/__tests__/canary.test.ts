@@ -365,7 +365,7 @@ describe('task check-in report canary (TASK-907)', () => {
     expect(answer).toStrictEqual({ recorded: true });
     // No decision of any kind: the report is the run's own output, not something to ask the person about.
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, notes: NOTES, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
     expect((await history(task))[0]?.report).toEqual(NEEDS_YOU);

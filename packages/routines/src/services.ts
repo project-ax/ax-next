@@ -38,8 +38,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
 /** TASK-907. A repeat routine shows no task state. Changing a kind clears it; this hides any a row holds anyway. */
 function taskView(row: StoredRoutine): C.RoutineTaskView | null {
   if (row.kind === 'repeat' || row.task === null) return null;
-  const { status, update, ask, reportedAt, notes } = row.task;
-  return { status, update, ask, reportedAt: reportedAt.toISOString(), notes };
+  const { status, update, ask, reportedAt, agentNotes } = row.task;
+  return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 function fireView({ id: _id, firedAt, ...row }: FireRow): C.RoutineFireView { return { ...row, firedAt: firedAt.toISOString() }; }

@@ -54,7 +54,7 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   // a receipt written before this field replay.
   task: z.object({
     status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
-    notes: z.string().nullable(), reportedAt: z.coerce.date(),
+    agentNotes: z.string().nullable(), reportedAt: z.coerce.date(),
   }).strict().nullable().default(null),
 }).strict().superRefine((row, ctx) => {
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));

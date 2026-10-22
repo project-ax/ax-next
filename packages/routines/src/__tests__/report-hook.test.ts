@@ -53,7 +53,7 @@ describe('routines:report (TASK-907)', () => {
     const run = await bound(row, 'run');
     expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES })).toStrictEqual({ recorded: true });
     // The task's state, stamped by the hook's own clock.
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, notes: NOTES, reportedAt });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt });
     // The run's report reaches its history row when the turn ends. The notes stay on the task.
     expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome })).toBe(true);
     expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([needsYou]);
@@ -110,7 +110,7 @@ describe('routines:report (TASK-907)', () => {
     const row = await f.store.createAuthored(taskInput('task'));
     const run = await bound(row, 'run');
     const base = { agentId: 'a', dispatchId: run.dispatchId, ...needsYou };
-    const notes = async () => (await f.store.findOne(row))?.task?.notes;
+    const notes = async () => (await f.store.findOne(row))?.task?.agentNotes;
     await report(bus, { ...base, notes: NOTES });
     expect(await notes()).toBe(NOTES);
     await report(bus, base);

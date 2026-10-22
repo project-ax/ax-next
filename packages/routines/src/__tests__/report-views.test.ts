@@ -60,7 +60,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
     expect(created.task).toBeNull();
     await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
-    const task = { ...needsYou, reportedAt: now.toISOString(), notes: NOTES };
+    const task = { ...needsYou, reportedAt: now.toISOString(), agentNotes: NOTES };
     expect((await get(bus, created.routineId)).task).toEqual(task);
     expect((await list(bus)).map(view => view.task)).toEqual([task]);
     // create and update share the view. An edit shows the state and never mints it.
@@ -70,12 +70,12 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // A later check-in moves the task on, and replaying the edit still shows what
     // the edit showed: a receipt replays its snapshot, not the task as it is now.
     await checkIn(edited, 'after-edit', { at: later, report: onTrack });
-    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), notes: NOTES });
+    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: NOTES });
     expect(await bus.call('routines:update', owner, edit)).toEqual(edited);
     // The next check-in's dispatch holds the state as acceptDispatch read it,
     // notes included: TASK-908's check-in message takes them from there.
     const next = await f.store.acceptDispatch({ agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now });
-    expect(next?.accepted.row.task).toEqual({ ...onTrack, notes: NOTES, reportedAt: later });
+    expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later });
   });
 
   it('a repeat routine and a task that never reported have task: null', async () => {
@@ -130,7 +130,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const next = await checkIn(again, 'next', { at: later });
     expect(next.row.task).toBeNull();
     expect(await f.store.recordReport({ agentId: 'a', dispatchId: next.dispatchId, actorUserId: 'owner', report: onTrack, now: later })).toBe(true);
-    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), notes: null });
+    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: null });
   });
 
   it('a routine turned into a task brings no state with it, even state it held as a repeat routine', async () => {
@@ -140,7 +140,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await f.db.updateTable('routines_v1_definitions').set({
       task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, task_reported_at: now, task_report_accepted_at: now, agent_notes: NOTES,
     }).where('routine_id', '=', row.routineId).execute();
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, notes: NOTES, reportedAt: now });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now });
     const task = await f.store.updateAuthored({
       agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'to-task', now, stopOnly: false,
       patch: { kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.', trigger: { kind: 'interval', every: '15m' } },
@@ -206,7 +206,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const row = await f.store.createAuthored(taskInput('long'));
     const long = { status: 'off-track', update: 'u'.repeat(3000), ask: 'a'.repeat(3000) } as const;
     await finish((await checkIn(row, 'long-run', { report: long, notes: 'n'.repeat(9000) })).dispatchId);
-    const task = { ...long, notes: 'n'.repeat(9000) };
+    const task = { ...long, agentNotes: 'n'.repeat(9000) };
     expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now });
     expect((await get(bus, row.routineId)).task).toEqual({ ...task, reportedAt: now.toISOString() });
     const { fires } = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });

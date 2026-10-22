@@ -12,7 +12,7 @@ export const RoutineListInputSchema = z.object({ agentId: RoutineOpaqueStringSch
 export const RoutineKeySchema = z.object({ agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema }).strict();
 export const RoutineGetInputSchema = RoutineKeySchema;
 export const RoutineListOutputSchema = z.object({ routines: z.array(RoutineViewSchema) }).strict();
-/** What the `routine_list` tool returns: the service's list, without any task's notes (TASK-907). */
+/** What the `routine_list` tool returns: the service's list, without any task's agent notes (TASK-907). */
 export const RoutineListToolOutputSchema = z.object({ routines: z.array(RoutineListToolViewSchema) }).strict();
 export const RoutineGetOutputSchema = RoutineViewSchema;
 export const RoutineCreateInputSchema = RoutineListInputSchema.extend({ requestId: RoutineOpaqueStringSchema, definition: RoutineDefinitionSchema }).strict();
