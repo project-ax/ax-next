@@ -169,7 +169,9 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // context, for the run's own agent; then the store requires the run to be open, bound to that
   // context's conversation, and a check-in of a stay-on-top task its actor owns, all under the
   // run's row lock. It writes nothing when it refuses. A database failure stays an internal error
-  // that names only the run, and isn't retried.
+  // that names only the run. The hook tries the write once, but the tool answers the failure as the
+  // closed "unavailable", a 503, which the runner's IPC client retries up to its 5xx cap: a retry
+  // runs the whole report again, and a report that lands just replaces the run's report.
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
     const { agentId, dispatchId, notes, ...report } = input;
     const conversationId = ctx.conversationId;
