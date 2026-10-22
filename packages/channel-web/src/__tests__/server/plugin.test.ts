@@ -776,6 +776,21 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
         },
         {
+          hook: 'routines:get',
+          degradation:
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) answers 404, because without @ax/routines there are no tasks',
+        },
+        {
+          hook: 'routines:recent-fires',
+          degradation:
+            'the task page answers 404, as it does without routines:get (both come from @ax/routines)',
+        },
+        {
+          hook: 'routines:clear-notes',
+          degradation:
+            'Clear notes on the task page (DELETE /api/workspace/tasks/:agentId/:routineId/notes) answers 503 and the notes stay',
+        },
+        {
           hook: 'connectors:list-effective',
           degradation:
             'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and adding a key-based connector all answer 503 (there is no list of what this agent may use to check against)',

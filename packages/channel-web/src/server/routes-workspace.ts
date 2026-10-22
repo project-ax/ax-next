@@ -6,6 +6,8 @@
  * GET  /api/workspace/activity         — THE event feed (one collection)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
  * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
+ * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
+ * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the agent's notes on that task (TASK-910)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
  * GET  /api/workspace/agents/:agentId/files/*
@@ -54,9 +56,13 @@
  *     that is every `/api/workspace/agents/:agentId…` route — the detail
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
- *     and `memory/rules` — plus the agent-scoped branch of `/activity`. The
- *     order on each is: `authOr401` → empty-id 400 → `resolveAgentOr404` →
- *     (path validation) → read. Nothing reads before the resolve.
+ *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
+ *     the task page's two routes, `/tasks/:agentId/:routineId` and its
+ *     `/notes` (TASK-910), which reach the agent's tasks rather than its
+ *     files. The order on each is: `authOr401` → empty-id 400 →
+ *     `resolveAgentOr404` → (path validation) → read. Nothing reads before
+ *     the resolve. The task page then shows only the caller's own task
+ *     (`isOwnTask`), and reads no run history before deciding that.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -116,17 +122,20 @@
  * Each handler is authenticated and owner-scoped on its own.
  */
 import {
+  ROUTINE_AGENT_NOTES_MAX_CHARS,
   ROUTINE_DEFINITION_MAX_BYTES,
   ROUTINE_NAME_MAX_CHARS,
+  ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineCreateToolInputSchema,
   RoutineUpdateToolInputSchema,
   routineBriefFields,
 } from '@ax/routines-contract';
-import type { RoutineView } from '@ax/routines-contract';
+import type { RoutineFireView, RoutineView } from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
+  SafeToolError,
   isRejection,
   makeAgentContext,
   makeReqId,
@@ -167,8 +176,10 @@ import type {
   PastConversation,
   PermissionRow,
   RailActivity,
+  TaskDetail,
   TaskRow,
   TasksResponse,
+  TaskUpdate,
   ThreadAttachment,
   ThreadMessage,
   UnavailableAgent,
@@ -178,9 +189,10 @@ import type {
 import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
-// A proposed task's schedule in words (TASK-906). Pure, no DOM, and it imports
-// its own sibling relatively, so the built server can load it.
-import { describeCheckIns } from '../lib/task-schedule.js';
+// A proposed task's schedule in words (TASK-906), and a task page's header
+// phrase (TASK-910). Pure, no DOM, and it imports its own sibling relatively,
+// so the built server can load it.
+import { checkInSchedule, describeCheckIns } from '../lib/task-schedule.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The sentence a full storage limit answers a Rules Save with (TASK-719), and
 // the one test for "this refusal is the storage limit". The sentence is shared
@@ -698,6 +710,42 @@ type TaskListView = Pick<
 >;
 interface TaskListOutput {
   routines: TaskListView[];
+}
+
+/**
+ * What the task page (TASK-910) reads off one `routines:get` view, and off
+ * each of its `routines:recent-fires` rows. The bus has already parsed both
+ * answers through the services' `returns` (`RoutineGetOutputSchema`,
+ * `RoutineRecentFiresOutputSchema`), so these fields are read, not validated
+ * again.
+ */
+type TaskDetailView = Pick<
+  RoutineView,
+  | 'kind'
+  | 'name'
+  | 'enabled'
+  | 'revision'
+  | 'permissions'
+  | 'trigger'
+  | 'activeHours'
+  | 'nextRunAt'
+  | 'promptBody'
+  | 'goodWhen'
+  | 'task'
+>;
+type TaskFireView = Pick<RoutineFireView, 'firedAt' | 'status' | 'error' | 'report'>;
+interface TaskKeyInput {
+  agentId: string;
+  routineId: string;
+}
+interface TaskFiresInput extends TaskKeyInput {
+  limit: number;
+}
+interface TaskFiresOutput {
+  fires: TaskFireView[];
+}
+interface TaskClearNotesOutput {
+  cleared: true;
 }
 
 /**
@@ -3238,8 +3286,11 @@ export const TASKS_AGENT_READ_DEADLINE_MS = 10_000;
  * left out until its first report. Design PR 4, where team members start
  * tasks that run as themselves, must keep `fire` true for an owner who may
  * run their own task, or revisit this.
+ *
+ * The task page (TASK-910) uses it too, so a task's own page opens for
+ * exactly the tasks the Tasks page lists, and for no one else.
  */
-function isOwnTask(view: TaskListView): boolean {
+function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
   return view.task !== null || view.permissions.fire;
 }
 
@@ -3279,6 +3330,138 @@ function toTaskRows(
               reportedAt: view.task.reportedAt,
             },
     }));
+}
+
+/** How many check-ins a task page's Updates thread shows, newest first (TASK-910). */
+const TASK_UPDATES_LIMIT = 50;
+
+/**
+ * How much of a task's agent notes its page carries (TASK-910 decisions row
+ * 10). Visible notes are the design's §7 mitigation for an instruction
+ * injected through something the agent read, so the page always shows
+ * everything the next check-in will: its message reads the notes' first
+ * `ROUTINE_AGENT_NOTES_MAX_CHARS` UTF-16 units. `fenceBlock` writes at most
+ * six code points for one of those (a hidden character spelled out as
+ * `\uXXXX`), so six times that is never reached, and every line after the
+ * first costs one of them as a newline, so one line past their count never
+ * binds first. Stored notes aren't re-capped (TASK-913): a longer row shows
+ * more than the check-in reads, never less.
+ */
+const TASK_NOTES_MAX_CHARS = 6 * ROUTINE_AGENT_NOTES_MAX_CHARS;
+const TASK_NOTES_MAX_LINES = ROUTINE_AGENT_NOTES_MAX_CHARS + 1;
+
+/**
+ * Is this a routines service saying "not yours" or "not there", or a real
+ * failure? (TASK-910 decisions row 11)
+ *
+ * A refusal is the task page's 404, the same one an id nobody has gets, so a
+ * stranger can't learn that a task exists. `validation` is an id from the URL
+ * that can't name a routine at all. Anything else (an outage, a timeout) fails
+ * the request, because "we don't know" must never render as "there is no
+ * such task" (design H7). `SafeToolError` is checked first: it is a
+ * `PluginError` too, with code `invalid-payload`, and only its `toolCode`
+ * says which refusal it is.
+ */
+function isTaskRefusal(err: unknown): boolean {
+  if (err instanceof SafeToolError) {
+    return (
+      err.toolCode === 'not-found' ||
+      err.toolCode === 'forbidden' ||
+      err.toolCode === 'validation'
+    );
+  }
+  return err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden');
+}
+
+/** A task's two ids from the URL, trimmed; or a 400 written, and null. */
+function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | null {
+  const agentId = (req.params.agentId ?? '').trim();
+  const routineId = (req.params.routineId ?? '').trim();
+  if (agentId.length === 0 || routineId.length === 0) {
+    res.status(400).json({ error: 'missing-task-id' });
+    return null;
+  }
+  return { agentId, routineId };
+}
+
+/**
+ * One task's `routines:get` view and its check-ins → its own page (TASK-910).
+ *
+ * Built field by field, never spread from the view, so nothing rides along
+ * that the page doesn't draw (TASK-909 decisions row 5's rule): no
+ * `manageSecret`, and of each check-in no `triggerSource`, `conversationId`,
+ * `ask`, `renderedPrompt` or `warning` (decisions row 10).
+ *
+ * Everything the agent wrote is fenced HERE, at the boundary: the update and
+ * the ask to one line at the report writer's own caps, because stored text
+ * isn't re-checked against the writer's rules (TASK-913) and the view schema
+ * has no cap; the notes as a block that keeps their lines and spells hidden
+ * characters out rather than dropping them (`TASK_NOTES_MAX_CHARS`); a failed
+ * check-in's recorded reason to one line, and no reason at all for a check-in
+ * that finished. The brief is the person's own text, fenced with the approval
+ * card's caps (TASK-906): the view schema refuses an invalid brief, and a
+ * valid one never reaches them, so it shows whole. The schedule phrase
+ * carries the trigger's own time zone, so it is fenced too. `agentName` is
+ * the roster's string as-is, the same one `/state` sends.
+ */
+function toTaskDetail(
+  agent: { displayName: string },
+  view: TaskDetailView,
+  fires: readonly TaskFireView[],
+): TaskDetail {
+  return {
+    agentName: agent.displayName,
+    name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
+    enabled: view.enabled,
+    revision: view.revision,
+    permissions: {
+      fire: view.permissions.fire,
+      stop: view.permissions.stop,
+      edit: view.permissions.edit,
+    },
+    schedule: fenceLine(
+      checkInSchedule(view.trigger, view.activeHours),
+      DECISION_TASK_CHECKS_IN_MAX_CHARS,
+    ),
+    nextCheckAt: view.nextRunAt,
+    brief: {
+      promptBody:
+        fenceBlock(view.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES)
+          ?.text ?? null,
+      goodWhen:
+        fenceBlock(view.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES)
+          ?.text ?? null,
+    },
+    task:
+      view.task === null
+        ? null
+        : {
+            status: view.task.status,
+            update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
+            ask: fenceLine(view.task.ask, ROUTINE_REPORT_ASK_MAX_CHARS),
+            agentNotes:
+              fenceBlock(view.task.agentNotes, TASK_NOTES_MAX_CHARS, TASK_NOTES_MAX_LINES)
+                ?.text ?? null,
+            reportedAt: view.task.reportedAt,
+          },
+    updates: fires.map(toTaskUpdate),
+  };
+}
+
+/** One check-in → one entry in a task's Updates thread (TASK-910). */
+function toTaskUpdate(fire: TaskFireView): TaskUpdate {
+  return {
+    firedAt: fire.firedAt,
+    status: fire.status,
+    error: fire.status === 'error' ? fenceLine(fire.error, ACTIVITY_DETAIL_MAX_CHARS) : null,
+    report:
+      fire.report === null
+        ? null
+        : {
+            status: fire.report.status,
+            update: fenceLine(fire.report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
+          },
+  };
 }
 
 /**
@@ -6710,6 +6893,93 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({ tasks, unavailableAgents } satisfies TasksResponse);
     },
 
+    /**
+     * GET /api/workspace/tasks/:agentId/:routineId — one task's own page
+     * (TASK-910): its latest update, brief, agent notes and Updates thread.
+     *
+     * The house order for a per-agent read, then the page's own rule
+     * (decisions row 11): `authOr401` → ids (400) → `resolveAgentOr404` →
+     * `routines:get` as the caller → the caller's own task (`isOwnTask`, the
+     * Tasks page's rule, reused) → only then `routines:recent-fires`. No run
+     * history is read before the ownership decision. A repeat routine,
+     * someone else's task, a routine that isn't there and an agent the caller
+     * can't reach all answer 404, never 403, so a stranger can't learn that an
+     * id exists. Without @ax/routines nobody has a task, so that is a 404 too.
+     *
+     * Any other failure fails the request, a failed history read included:
+     * "we don't know" must not render as "no updates yet" (design H7), so the
+     * page says it couldn't load and offers Try again.
+     */
+    async taskDetail(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      if (!bus.hasService('routines:get') || !bus.hasService('routines:recent-fires')) {
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
+      if (agent === null) return;
+
+      const ctx = agentWorkspaceCtx(key.agentId, userId);
+      let view: TaskDetailView;
+      try {
+        view = await bus.call<TaskKeyInput, TaskDetailView>('routines:get', ctx, key);
+      } catch (err) {
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      if (view.kind === 'repeat' || !isOwnTask(view)) {
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      const { fires } = await bus.call<TaskFiresInput, TaskFiresOutput>(
+        'routines:recent-fires',
+        ctx,
+        { ...key, limit: TASK_UPDATES_LIMIT },
+      );
+      res.status(200).json(toTaskDetail(agent, view, fires));
+    },
+
+    /**
+     * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the
+     * agent's notes on one task (TASK-910, decisions row 12).
+     *
+     * `authOr401` → ids (400) → without `routines:clear-notes`, 503 (an
+     * `*-unavailable` answer means the hook isn't there) →
+     * `resolveAgentOr404` → `routines:clear-notes` as the caller. It doesn't
+     * read the task first: the service decides ownership under the routine's
+     * row lock, and a check here could only race it. A refusal is the page's
+     * own 404. CSRF is @ax/http-server's global guard for state-changing
+     * methods, which the browser meets with `x-requested-with: ax-admin`.
+     */
+    async clearTaskNotes(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      if (!bus.hasService('routines:clear-notes')) {
+        res.status(503).json({ error: 'task-notes-unavailable' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
+      if (agent === null) return;
+      try {
+        await bus.call<TaskKeyInput, TaskClearNotesOutput>(
+          'routines:clear-notes',
+          agentWorkspaceCtx(key.agentId, userId),
+          key,
+        );
+      } catch (err) {
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({ cleared: true } satisfies TaskClearNotesOutput);
+    },
+
     /** GET /api/workspace/agents/:agentId */
     async agentDetail(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -8968,6 +9238,17 @@ export async function registerWorkspaceRoutes(
       method: 'GET',
       path: '/api/workspace/tasks',
       handler: handlers.tasks as unknown as RouteHandler,
+    },
+    {
+      // TASK-910 — one task's own page, and Clear notes on it.
+      method: 'GET',
+      path: '/api/workspace/tasks/:agentId/:routineId',
+      handler: handlers.taskDetail as unknown as RouteHandler,
+    },
+    {
+      method: 'DELETE',
+      path: '/api/workspace/tasks/:agentId/:routineId/notes',
+      handler: handlers.clearTaskNotes as unknown as RouteHandler,
     },
     {
       method: 'GET',
