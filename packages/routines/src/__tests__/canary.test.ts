@@ -470,6 +470,11 @@ describe('PR 1 backend canary (TASK-908)', () => {
     });
     const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
     expect(fires[0]).toMatchObject({ status: 'ok', renderedPrompt: null, report: { status: 'on-track', update: 'Queue is empty.', ask: null } });
+    // TASK-910: the person clears the agent's notes on the task page. The task keeps its revision.
+    expect(await h.bus.call('routines:clear-notes', h.owner, { agentId: h.agentId, routineId: task.routineId })).toStrictEqual({ cleared: true });
+    const cleared = await h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: h.agentId, routineId: task.routineId });
+    expect(cleared.task?.agentNotes).toBeNull();
+    expect(cleared.revision).toBe(listed.find(row => row.routineId === task.routineId)?.revision);
     // Memory won't learn from the check-in's conversation.
     const runner = makeAgentContext({ userId: h.owner.userId, agentId: h.agentId, sessionId: 'memory', conversationId: checkInCtx!.conversationId!, source: 'routine' });
     expect(await h.bus.fire('memory:pre-capture', runner, { conversationId: checkInCtx!.conversationId })).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });

@@ -448,7 +448,7 @@ the model that people call routines "tasks".
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
-| Hooks | `routines:report`, `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
+| Hooks | `routines:report`, `routines:clear-notes`, `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
 | channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |
 
@@ -626,8 +626,10 @@ suggest a short body for known apps.
   length-capped and rendered as plain text. Notes and agent-added steps return
   in the next check-in, framed as the agent's own notes. An instruction injected
   through a ticket could persist that way, so notes are visible and clearable
-  on the task page and outward actions stay held. Updates from other apps are
-  fenced as outside content in the message and never reach the system prompt.
+  on the task page and outward actions stay held. Clearing holds against a
+  check-in already running: one that started before the clear still reports,
+  but can’t put notes back (TASK-910). Updates from other apps are fenced as
+  outside content in the message and never reach the system prompt.
 - **Cost stays bounded.** Check-ins are fresh, small sessions. The shortest
   schedule is 15 minutes, "respond within" caps update check-ins, usage limits
   apply as they do now, and five failed check-ins in a row pause the task.
@@ -870,9 +872,10 @@ ask" list.
 
 ## 13. Boundary review notes (for the implementation PRs)
 
-- **New hooks:** `routines:report`, `routines:reply`, `routines:set-steps`,
-  `routines:complete`, `routines:reopen`; task state on `routines:list` and
-  `routines:get`; the `system-prompt:augment:optional:routines` provider; the
+- **New hooks:** `routines:report`, `routines:clear-notes` (TASK-910),
+  `routines:reply`, `routines:set-steps`, `routines:complete`,
+  `routines:reopen`; task state on `routines:list` and `routines:get`; the
+  `system-prompt:augment:optional:routines` provider; the
   veto-capable `chat:system-prompt-landed { reqId: string; providers: string[] }`
   (TASK-908, modelled on `chat:connectors-skipped`); and the veto-capable
   `memory:pre-capture { conversationId: string }`, which memory fires before it
@@ -931,3 +934,5 @@ ask" list.
 | 2026-10-22 | Decided | A task run's check-in message is not stored on the run (`renderedPrompt: null`): it carries the owner's notes and reports, and every member of a team agent can read run history. It lives in the check-in's own hidden conversation (TASK-908). |
 | 2026-10-22 | Decided | Memory doesn't learn from task check-ins. Memory asks `memory:pre-capture` before each pass, and routines refuses a task check-in's conversation, whoever's pass it is, failing closed on a slow lookup (TASK-908). |
 | 2026-10-22 | Decided | A routine run of an agent with an explicit tool list always sees `routine_report`; its host gate still refuses it outside a task's own check-in (TASK-908). |
+| 2026-10-22 | Decided | A person clears a task’s agent notes on its task page (`routines:clear-notes`). Only the task’s owner may, whether or not they still manage the agent’s tasks, since the owner is the only person shown them. A check-in that started before the clear can’t write notes again; it still reports (TASK-910). |
+| 2026-10-22 | Decided | A routine’s next run, as every view shows it, honours its active hours, so the task page’s “Next check” is when it will really run (TASK-910). |
