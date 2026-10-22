@@ -414,6 +414,6 @@ Memory-only prompts are unchanged, byte for byte, in both modes.
 **Since TASK-908 (2026-10-22).** The section's user is now a task check-in,
 not a project. Its three fields (the task's name, what to do and going well
 when) change only with the person's yes, even under Always Allow (TASK-906),
-which keeps `brief` person-written. The agent's own notes and reports go in
+which keeps `brief` person-approved: an agent may draft those fields, but only the person's yes sets them. The agent's own notes and reports go in
 the check-in message, never in `brief`.
 

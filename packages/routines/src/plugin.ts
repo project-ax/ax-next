@@ -106,9 +106,11 @@ export function createRoutinesPlugin(
       await runRoutinesMigration(db);
       store = createRoutinesStore(db);
       const localStore = store;
+      // The capture check needs only the migrated schema: bound conversations
+      // survive the abandoned-run pass below, so it needn't wait for that.
+      storeReady(localStore);
       const localDb = db;
       await localStore.interruptAbandonedDispatches();
-      storeReady(localStore);
       lifetime = createRoutineLifetime();
       const effects = lifetime;
       const pending: PendingFires = new Map();
@@ -209,9 +211,11 @@ export function createRoutinesPlugin(
         // is recorded as failed, whatever its turn said. Its report, if it
         // sent one, stays on the row.
         if (isTaskRun(pf.row) && pf.brief !== 'landed') {
-          ctx.logger.warn('routines_check_in_brief_unconfirmed', {
-            agentId: pf.row.agentId, routineId: pf.row.routineId, dispatchId: pf.dispatchId,
-          });
+          try {
+            ctx.logger.warn('routines_check_in_brief_unconfirmed', {
+              agentId: pf.row.agentId, routineId: pf.row.routineId, dispatchId: pf.dispatchId,
+            });
+          } catch { /* the run is still recorded below */ }
           try {
             await localStore.finishDispatch({ dispatchId: pf.dispatchId, outcome: {
               conversationId: pf.conversationId,

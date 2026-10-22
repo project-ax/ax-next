@@ -66,6 +66,11 @@ describe('taskCaptureVeto (TASK-908)', () => {
     expect(await taskCaptureVeto(store, routineRun({ conversationId: 'c-chat' }), { conversationId: 'c-chat' })).toBeUndefined();
   });
 
+  it('a payload that throws when read is refused, not skipped', async () => {
+    const poisoned = { get conversationId(): string { throw new Error('unreadable'); } };
+    expect(await taskCaptureVeto(storeAnswering(false), routineRun(), poisoned)).toEqual({ rejected: true, reason: 'task-check-in' });
+  });
+
   it('a logger that throws doesn’t stop the refusal', async () => {
     const ctx = { ...routineRun(), logger: { ...routineRun().logger, warn: () => { throw new Error('log sink down'); } } };
     expect(await taskCaptureVeto(storeAnswering(new Error('database unavailable')), ctx, { conversationId: 'c-task' }))

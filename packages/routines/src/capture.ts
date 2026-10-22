@@ -39,14 +39,16 @@ export async function taskCaptureVeto(
   payload: unknown,
   deadlineMs = CAPTURE_CHECK_DEADLINE_MS,
 ): Promise<Rejection | undefined> {
-  const parsed = MemoryPreCapturePayloadSchema.safeParse(payload);
-  const ids = new Set<string>();
-  if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) ids.add(ctx.conversationId);
-  if (parsed.success) ids.add(parsed.data.conversationId);
-  if (ids.size === 0) return undefined;
   const refusal = reject({ reason: 'task-check-in' });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Read inside the try: a payload an earlier subscriber rewrote into
+    // something that throws when read is refused, not skipped by the bus.
+    const parsed = MemoryPreCapturePayloadSchema.safeParse(payload);
+    const ids = new Set<string>();
+    if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) ids.add(ctx.conversationId);
+    if (parsed.success) ids.add(parsed.data.conversationId);
+    if (ids.size === 0) return undefined;
     const deadline = new Promise<never>((_resolve, rejectDeadline) => {
       timer = setTimeout(() => rejectDeadline(new Error(`capture check took longer than ${deadlineMs} ms`)), deadlineMs);
       timer.unref?.();
