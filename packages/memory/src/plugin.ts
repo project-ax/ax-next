@@ -1,10 +1,12 @@
 import {
+  MEMORY_PRE_CAPTURE_HOOK,
   PluginError,
   parseModelRef,
   type AgentContext,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
+  type MemoryPreCapturePayload,
   type Plugin,
 } from '@ax/core';
 
@@ -155,6 +157,26 @@ export const MEMORY_STATUS_HOOK = 'memory:status';
 
 /** The hook the observer observes. */
 export const CHAT_END_HOOK = 'chat:end';
+
+/**
+ * How long each `memory:pre-capture` subscriber may take to answer (TASK-908).
+ *
+ * Memory asks before every extraction pass that has a conversation (see
+ * `observe()`). A subscriber still deciding at the bound is skipped by the
+ * bus, and its answer, a veto included, no longer counts: the pass goes on
+ * and is captured. That fails open, on purpose. Passes for one conversation
+ * run one after another (`incremental.ts`), so an unbounded ask would hold
+ * every later pass, the final `chat:end` one included, behind one hung
+ * subscriber. A subscriber that must refuse when it can't decide has to
+ * answer inside the bound, and a throw is skipped like a timeout, so it
+ * refuses instead of throwing, as @ax/routines does when its lookup fails.
+ * Ten seconds is far longer than one read of the host's own database should
+ * take, and no person waits on it: every pass is detached from the turn.
+ */
+export const MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS = 10_000;
+
+/** Logged at `info` when a `memory:pre-capture` subscriber refuses a pass. */
+export const CAPTURE_REFUSED_EVENT = 'memory_capture_refused';
 
 /**
  * The model every memory operation runs on — design §3.0's extractor, pinned.
@@ -1440,16 +1462,22 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         // Fire-and-forget. `void` rather than `await`, and the whole body is
         // already non-throwing, so there is nothing here for `fire` to log.
         //
-        // NOTE this deliberately does NOT skip `ctx.source === 'routine'` the
-        // way `@ax/memory-strata`'s observer did (deleted in TASK-608). Strata's
-        // memory was the
-        // agent's own episodic tree, which a scheduled fire would have polluted
-        // with its own internal work. This store is owner-scoped statements,
-        // and design §3.2 settles the case explicitly: "Conversations with no
-        // live person — a routine run — carry the routine owner's id", which
-        // is a rule for how a routine's statements are STORED, not a reason
-        // not to store them. `owner.ts` says the same in as many words and
-        // does not branch on `source`.
+        // NOTE memory still does NOT skip `ctx.source === 'routine'` as a
+        // class, the way `@ax/memory-strata`'s observer did (deleted in
+        // TASK-608). Strata's memory was the agent's own episodic tree, which
+        // a scheduled fire would have polluted with its own internal work.
+        // This store is owner-scoped statements, and design §3.2 settles the
+        // case explicitly: "Conversations with no live person — a routine run
+        // — carry the routine owner's id", which is a rule for how a
+        // routine's statements are STORED, not a reason not to store them.
+        // `owner.ts` says the same in as many words and does not branch on
+        // `source`.
+        //
+        // What memory DOES skip is a pass a `memory:pre-capture` subscriber
+        // refuses (TASK-908, see `observe()`), and @ax/routines refuses a
+        // task check-in's conversation. A repeat routine's runs are captured
+        // as before. A refusal leaves the cursor where it is, so a later pass
+        // that isn't refused reads those turns too.
         //
         // What `source` DOES change is attribution (TASK-616): a routine
         // turn's rows are stored with no conversation, because a routine's
@@ -1626,12 +1654,14 @@ interface ObserveDeps {
  * why that is load-bearing rather than tidy.
  *
  * Shared by the legacy `chat:end` path and the incremental passes
- * (TASK-625): access, the provider check, the wrapped provider and engine
- * calls, the paused-state bookkeeping and the failure events live here once.
- * `produce` supplies only WHAT is extracted. Resolves `true` when the
- * producer returned (whatever it reported) and `false` when anything threw —
- * the incremental pass keeps its cursor on `false`, so the turns are tried
- * again.
+ * (TASK-625): the capture ask (TASK-908), access, the provider check, the
+ * wrapped provider and engine calls, the paused-state bookkeeping and the
+ * failure events live here once. `produce` supplies only WHAT is extracted.
+ * Resolves `true` when the producer returned (whatever it reported) and
+ * `false` when anything threw — the incremental pass keeps its cursor on
+ * `false`, so the turns are tried again. A refused pass resolves `true`
+ * without running the producer: a refusal is a decision, not a failure, and
+ * the cursor never moved.
  */
 async function observe(
   bus: HookBus,
@@ -1642,6 +1672,36 @@ async function observe(
 ): Promise<boolean> {
   const userId = typeof ctx.userId === 'string' && ctx.userId !== '' ? ctx.userId : undefined;
   try {
+    // Ask first (TASK-908). Any plugin may refuse to let memory learn from a
+    // conversation, and @ax/routines refuses a task check-in's. The ask comes
+    // before access, the transcript, the cursor, the model and the store, so
+    // a refused pass reads nothing, writes nothing and leaves its cursor
+    // where it was. If the fire itself throws, the catch below records
+    // nothing either. A subscriber that throws, or misses the bound, is
+    // skipped by the bus and the pass goes on (see
+    // MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS). With no conversation there
+    // is nothing to refuse, and memory doesn't ask.
+    const conversationId = ctx.conversationId;
+    if (typeof conversationId === 'string' && conversationId !== '') {
+      const asked = await bus.fire<MemoryPreCapturePayload>(
+        MEMORY_PRE_CAPTURE_HOOK,
+        ctx,
+        { conversationId },
+        { subscriberTimeoutMs: MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS },
+      );
+      if (asked.rejected) {
+        // `info`: a refusal is a decision, not a fault. Ids and the
+        // subscriber's own reason only, never conversation text.
+        ctx.logger.info(CAPTURE_REFUSED_EVENT, {
+          agentId: ctx.agentId,
+          refusedBy: asked.source,
+          reason: asked.reason,
+          ...(trigger !== undefined ? { trigger } : {}),
+        });
+        return true;
+      }
+    }
+
     // Access from `ctx`, resolved through `agents:resolve` BEFORE any
     // provider or engine call. This THROWS for a context with no owner (an
     // owner-less canary session) and for a caller whose membership was

@@ -1,8 +1,15 @@
 import Database from 'better-sqlite3';
-import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import {
+  HookBus,
+  PluginError,
+  makeAgentContext,
+  reject,
+  type AgentContext,
+  type MemoryPreCapturePayload,
+} from '@ax/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createMemoryPlugin } from '../plugin.js';
+import { CAPTURE_REFUSED_EVENT, createMemoryPlugin } from '../plugin.js';
 import { buildBatchKey } from '../observer.js';
 import { EXTRACTION_SYSTEM_PROMPT } from '../extraction-prompt.js';
 import { OBSERVER_FAILED_EVENT, NO_CREDENTIAL_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
@@ -907,6 +914,51 @@ describe('a routine run is not a conversation the person had (TASK-616)', () => 
     expect(new Set(readRows(h.databasePath).map((r) => r.conversation_id))).toEqual(
       new Set(['conv-u', 'conv-unset']),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('a run another plugin refuses is not captured (TASK-908)', () => {
+  // No `conversations:get` or `storage:*` in this harness, so every run below
+  // takes the chat:end-only path.
+  const CHECK_IN = [
+    { role: 'user', content: 'Scheduled check-in. Your notes: call Acme back.' },
+    { role: 'assistant', content: 'Called Acme back; the queue is empty.' },
+  ];
+
+  it('with incremental extraction off, a refused run records nothing', async () => {
+    const h = await withLlm(() => reply(extraction([fact()])));
+    h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-refuser', async (_ctx, payload) =>
+      payload.conversationId === 'conv-task' ? reject({ reason: 'task-check-in' }) : undefined,
+    );
+
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-task', source: 'routine' }), messages: CHECK_IN });
+
+    expect(readRows(h.databasePath)).toHaveLength(0);
+    expect(h.llmCalls).toHaveLength(0);
+    // This path names no trigger, so its line carries none.
+    expect(eventsNamed(h.logs, CAPTURE_REFUSED_EVENT).map((e) => [e.level, e.bindings])).toEqual([
+      ['info', { agentId: 'agent-1', refusedBy: 'test-refuser', reason: 'task-check-in' }],
+    ]);
+
+    // The refusal is about that conversation: another routine run still records.
+    await chatEnd(h, { ctx: h.ctx({ conversationId: 'conv-other', source: 'routine' }), messages: CHECK_IN });
+    expect(readRows(h.databasePath)).toHaveLength(1);
+  });
+
+  it('a run with no conversation is not asked, and is captured as before', async () => {
+    const h = await withLlm(() => reply(extraction([fact()])));
+    const asked: unknown[] = [];
+    h.bus.subscribe('memory:pre-capture', 'test-observer', async (_ctx, payload) => {
+      asked.push(payload);
+      return undefined;
+    });
+
+    await chatEnd(h, { ctx: h.ctx() });
+
+    expect(asked).toEqual([]);
+    expect(readRows(h.databasePath)).toHaveLength(1);
   });
 });
 
