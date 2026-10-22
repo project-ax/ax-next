@@ -4,7 +4,7 @@ import { HookBus, makeAgentContext } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { registerRoutineServices } from '../services.js';
-import { parseStoredRoutine } from '../definition.js';
+import { parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
 import { AcceptedDispatchSchema } from '../dispatch.js';
 import type { DispatchReport } from '../types.js';
 
@@ -94,6 +94,15 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const receipts = (await sql<{ operation: string; result: unknown }>`SELECT operation, result FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation, request_id`.execute(f.db)).rows;
     expect(receipts.map(receipt => receipt.operation)).toEqual(['create', 'dispatch', 'dispatch', 'update']);
     for (const text of [NOTES, needsYou.update, needsYou.ask]) expect(JSON.stringify(receipts)).not.toContain(text);
+    // They leave the task key out rather than store null, so code from before this field, whose strict
+    // schema has no task key, still reads them after a rollback.
+    const keyed = (await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests WHERE result ? 'task' OR result->'row' ? 'task'`.execute(f.db)).rows[0];
+    expect(keyed?.n).toBe(0);
+    const beforeThisField = StoredRoutineSchema.innerType().omit({ task: true });
+    for (const { operation, result } of receipts) {
+      const routine = operation === 'dispatch' ? (result as { row: unknown }).row : result;
+      expect(beforeThisField.safeParse(routine).success, operation).toBe(true);
+    }
     // So an exact replay answers with no task state: the receipt's answer, as replays always are, never a fresh read.
     expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
     const replay = await f.store.acceptDispatch(dispatch);

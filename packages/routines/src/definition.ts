@@ -50,8 +50,9 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   nextRunAt: z.coerce.date().nullable(), lastRunAt: z.coerce.date().nullable(),
   lastStatus: z.enum(['ok', 'silenced', 'error']).nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),
   // TASK-907. Types and the status enum only. No caps: claimDue parses every due row, so text a
-  // later card's higher cap let in must still read after a rollback (TASK-913). The default lets
-  // a receipt written before this field replay.
+  // later card's higher cap let in must still read after a rollback (TASK-913). The default fills
+  // it in for a receipt, which leaves the key out (store.ts, receiptCopy), as did any written
+  // before this field.
   task: z.object({
     status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
     agentNotes: z.string().nullable(), reportedAt: z.coerce.date(),

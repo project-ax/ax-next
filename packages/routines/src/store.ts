@@ -133,19 +133,22 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * TASK-907. What a receipt keeps of its result: all of it but a task's state. A
  * receipt lives as long as its request row, and the state is agent-written text
  * (a report, the agent's notes) that the task row already holds, once, where a
- * person can see and clear it. So an exact replay answers with `task: null`: a
- * replay answers from its receipt, never from a fresh read. The live answer is
- * the effect's own, state and all, so `acceptDispatch`'s `accepted.row.task` is
- * still what it read under the row lock.
+ * person can see and clear it. The `task` key is left out, not stored as null,
+ * so code from before the field (whose strict schema has no such key) still
+ * reads the receipt after a rollback; `.default(null)` fills it in on read. So
+ * an exact replay answers with `task: null`: a replay answers from its receipt,
+ * never from a fresh read. The live answer is the effect's own, state and all,
+ * so `acceptDispatch`'s `accepted.row.task` is still what it read under the row lock.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
-  if (operation === 'create' || operation === 'update') return { ...(result as StoredRoutine), task: null };
+  if (operation === 'create' || operation === 'update') return withoutTask(result as StoredRoutine);
   if (operation === 'dispatch') {
     const accepted = result as AcceptedDispatch;
-    return { ...accepted, row: { ...accepted.row, task: null } };
+    return { ...accepted, row: withoutTask(accepted.row) };
   }
   return result;
 }
+function withoutTask({ task: _task, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
