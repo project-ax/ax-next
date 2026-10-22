@@ -234,6 +234,42 @@ describe("a check-in's report and the task's state", () => {
     }
   });
 
+  it('a report racing an edit that changes the kind always ends the same way: a repeat routine holds no task state', async () => {
+    const NO_STATE = { task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null };
+    const toRepeat = (row: Key, requestId: string) => f.store.updateAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision,
+      actorUserId: 'owner', requestId, patch: { kind: 'repeat', goodWhen: null }, now: later, stopOnly: false });
+    // Each order on its own. The edit first: the report sees the new kind under the row lock and is refused.
+    const editFirst = await f.store.createAuthored(taskInput('edit-first'));
+    const editFirstRun = await bound(editFirst, 'edit-first-run', 'c-edit-first');
+    await toRepeat(editFirst, 'edit-first-edit');
+    expect(await record(editFirstRun, { report: needsYou, notes: 'Race notes.' })).toBe('kind');
+    expect(await taskRow(editFirst.routineId)).toMatchObject(NO_STATE);
+    // The report first: it lands, and the edit clears it in the same statement that changes the kind.
+    const reportFirst = await f.store.createAuthored(taskInput('report-first'));
+    const reportFirstRun = await bound(reportFirst, 'report-first-run', 'c-report-first');
+    expect(await record(reportFirstRun, { report: needsYou, notes: 'Race notes.' })).toBe('recorded');
+    await toRepeat(reportFirst, 'report-first-edit');
+    expect(await taskRow(reportFirst.routineId)).toMatchObject(NO_STATE);
+    // Raced: whichever takes the definition's row lock first, the same end state, and never a deadlock.
+    // Started together, the report usually wins (the edit makes more round trips before it locks the
+    // row); every other time the report waits one timer tick and the edit usually wins.
+    for (let i = 0; i < 25; i++) {
+      const row = await f.store.createAuthored(taskInput(`kind-race-${i}`));
+      const run = await bound(row, `kind-race-run-${i}`, `c-kind-race-${i}`);
+      const editing = toRepeat(row, `kind-race-edit-${i}`);
+      const report = () => record(run, { report: needsYou, notes: 'Race notes.' });
+      const reporting = i % 2 === 0 ? report() : new Promise(resolve => setTimeout(resolve, 0)).then(report);
+      const [edited, recorded] = await Promise.all([editing, reporting]);
+      expect(['recorded', 'kind'], `race ${i}`).toContain(recorded);
+      expect(edited, `race ${i}`).toMatchObject({ kind: 'repeat', task: null });
+      expect(await taskRow(row.routineId), `race ${i}`).toMatchObject({ ...NO_STATE, revision: edited.revision });
+      // The run keeps its own report, for its history row, exactly when it landed first.
+      expect((await dispatchRow(run.dispatchId))?.report, `race ${i}`).toEqual(recorded === 'recorded' ? needsYou : null);
+      expect(await finish(run.dispatchId), `race ${i}`).toBe(true);
+      expect(await fireRow(run.dispatchId), `race ${i}`).toMatchObject(fireReport(recorded === 'recorded' ? needsYou : null));
+    }
+  });
+
   it("a person's edit mid-check-in doesn't drop the report", async () => {
     const row = await f.store.createAuthored(taskInput('edit'));
     const run = await bound(row, 'edit-fire', 'c1');
