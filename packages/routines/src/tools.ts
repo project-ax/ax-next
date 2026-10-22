@@ -26,9 +26,24 @@ export const ROUTINE_TOOL_DESCRIPTORS: ToolDescriptor[] = names.map(name => ({
 }));
 type Dependencies = { bus: HookBus; store: RoutinesStore };
 type Invocation = Dependencies & { ctx: AgentContext; call: ToolCall };
-type Prepared = { hook: string; input: unknown; receiptKey?: OperationKey };
+/** TASK-907. The check-in a report is for, as `prepareReport` found it. */
+type ReportRun = { dispatchId: string; routineId: string };
+type Prepared = { hook: string; input: unknown; receiptKey?: OperationKey; run?: ReportRun };
 function safeFailure(error: unknown): SafeToolError {
   return error instanceof SafeToolError ? new SafeToolError(error.toolCode, error.field) : new SafeToolError('unavailable', 'input');
+}
+/**
+ * TASK-907. A report the hook couldn't write. The agent gets the closed
+ * "unavailable" (`safeFailure`), and the operator this one warn line: the run,
+ * its task and the hook's message. A failed write's message names only the run
+ * and the SQLSTATE (store.ts, `reportWriteError`), and the hook's other
+ * statements carry no report text, so no message can quote it. A refusal is a
+ * `SafeToolError` with a line of its own (`reportRefused`).
+ */
+function reportFailed(ctx: AgentContext, run: ReportRun, error: unknown): void {
+  ctx.logger.warn('routines_report_failed', {
+    agentId: ctx.agentId, conversationId: ctx.conversationId, ...run, err: error instanceof Error ? error.message : 'not an Error',
+  });
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 
@@ -54,7 +69,7 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
   if (run.kind !== 'stay-on-top') throw reportRefused(ctx, 'tool', 'wrong-kind', ids);
   if (run.ownerUserId !== ctx.userId) throw reportRefused(ctx, 'tool', 'wrong-owner', ids);
   // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
-  return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) } };
+  return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) }, run: ids };
 }
 
 /** Read-only validation. Ownership reconciliation belongs to management get/list, never preflight. */
@@ -202,7 +217,10 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
           const output = await bus.call(prepared.hook, ctx, prepared.input);
           return call.name === 'routine_list' ? listToolOutput(output) : output;
         }
-        catch (error) { throw safeFailure(error); }
+        catch (error) {
+          if (prepared.run !== undefined && !(error instanceof SafeToolError)) reportFailed(ctx, prepared.run, error);
+          throw safeFailure(error);
+        }
       }
       let authorization: { authorizationId: string; requestId: string };
       let binding: z.output<typeof executionBindingSchema>;

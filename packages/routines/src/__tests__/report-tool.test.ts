@@ -4,7 +4,7 @@ import { sql, type RawBuilder } from 'kysely';
 import { makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineFireView, type RoutineListToolOutput, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
-import { expectOneRefusal, logged } from './support/report-log.js';
+import { expectOneFailure, expectOneRefusal, logged } from './support/report-log.js';
 import { createRoutinesStore } from '../store.js';
 
 // TASK-907: routine_report, the tool a task's check-in reports with. Its input
@@ -378,5 +378,50 @@ describe('routine_report (TASK-907)', () => {
       }
     });
     expect((await history(task)).map(fire => fire.report)).toEqual([null]);
+  });
+
+  it('a failed write leaves one warn line for the operator: the run, its task and why, none of the report', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    const call = reportCall({ status: 'on-track', update: 'SECRET update', ask: 'SECRET ask?', notes: 'SECRET notes' });
+    await checkIn(task, 'run', async ctx => {
+      const { run } = await createRoutinesStore(h.db).findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId: ctx.conversationId! });
+      const ids = { agentId: ctx.agentId, conversationId: ctx.conversationId!, dispatchId: run!.dispatchId, routineId: task.routineId };
+      // The write fails, and Postgres quotes the row it refused. The line keeps the run's id and the SQLSTATE.
+      await sql`ALTER TABLE routines_v1_definitions ADD CONSTRAINT report_tool_test_refuses CHECK (task_update NOT LIKE 'SECRET%')`.execute(h.db);
+      try {
+        const write = logged(runner(ctx));
+        await expect(report(write.ctx, call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
+        expectOneFailure(write.lines, ids, new RegExp(`dispatch ${run!.dispatchId} \\(SQLSTATE 23514\\)`), /SECRET/, 'a refused write');
+      } finally {
+        await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT report_tool_test_refuses`.execute(h.db);
+      }
+      // A failure before the write (here the agent fence's read) leaves the same line, in the database's own words.
+      await sql`ALTER TABLE routines_v1_retired_agents RENAME TO report_tool_test_retired_agents`.execute(h.db);
+      try {
+        const fence = logged(runner(ctx));
+        await expect(report(fence.ctx, call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
+        expectOneFailure(fence.lines, ids, /routines_v1_retired_agents/, /SECRET/, 'a failed fence');
+      } finally {
+        await sql`ALTER TABLE report_tool_test_retired_agents RENAME TO routines_v1_retired_agents`.execute(h.db);
+      }
+      // A refusal isn't a failure: when the hook refuses (the task changed hands between the tool's lookup and the
+      // write), it leaves its own refusal line and no failure line.
+      const callThrough = h.bus.call.bind(h.bus);
+      vi.spyOn(h.bus, 'call').mockImplementation(async (hook: string, hookCtx: AgentContext, input: unknown) => {
+        if (hook === 'routines:report') await sql`UPDATE routines_v1_definitions SET owner_user_id = 'someone-else' WHERE routine_id = ${task.routineId}`.execute(h.db);
+        return callThrough(hook, hookCtx, input);
+      });
+      try {
+        const refused = logged(runner(ctx));
+        await expect(report(refused.ctx, call)).rejects.toMatchObject({ toolCode: 'not-in-check-in' });
+        expectOneRefusal(refused.lines, { stage: 'hook', reason: 'owner' }, /SECRET/, 'a refusal');
+        expect(refused.lines.filter(line => (JSON.parse(line) as { msg?: string }).msg === 'routines_report_failed')).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+        await sql`UPDATE routines_v1_definitions SET owner_user_id = ${h.owner.userId} WHERE routine_id = ${task.routineId}`.execute(h.db);
+      }
+      expect(await written()).toEqual(NOTHING);
+    });
   });
 });
