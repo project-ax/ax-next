@@ -3,7 +3,7 @@
  * machine.
  *
  * It lives inside `TasksPage`, not the shell, so it only fetches while the
- * Tasks route is mounted (decisions row 12).
+ * Tasks route is mounted (TASK-909 decisions row 10).
  *
  * Two kinds of failure, because the page says two different things: a 401 is
  * "sign in again" (`expired`); everything else, a 404 from a host that predates
