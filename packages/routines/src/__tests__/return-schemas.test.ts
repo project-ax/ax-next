@@ -41,9 +41,10 @@ describe('canonical routine return schemas', () => {
     expect(repeat.task).toBeNull();
     expect(C.RoutineViewSchema.parse(repeat)).toEqual(repeat);
   });
-  it('declares every canonical service, including the host-only secret lifecycle', () => {
-    expect(ROUTINE_SERVICES).toHaveLength(15);
+  it("declares every canonical service, including the host-only secret lifecycle and a check-in's report", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(16);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
+    expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
   });
 });

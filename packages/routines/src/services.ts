@@ -10,7 +10,7 @@ const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
-  'set-agent-default-enabled', 'list-agent-defaults',
+  'set-agent-default-enabled', 'list-agent-defaults', 'report',
 ].map(name => `routines:${name}`);
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
@@ -149,5 +149,14 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     await access(ctx, input.agentId);
     const disabled = new Set(await store.disabledDefaultIdsForAgent(input.agentId));
     return { defaults: (await store.listDefaults()).map(row => ({ defaultRoutineId: row.defaultRoutineId, name: row.name, enabled: !disabled.has(row.defaultRoutineId) })) };
+  });
+  // TASK-907. A check-in's report is the run's own output, not routine management, so there's no
+  // access check here. The store re-checks the run under its locks and writes nothing when it
+  // refuses. A database failure stays an internal error that names only the run, and isn't retried.
+  register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
+    const { agentId, dispatchId, notes, ...report } = input;
+    const recorded = await store.recordReport({ agentId, dispatchId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
+    if (!recorded) throw new SafeToolError('not-in-check-in', 'input');
+    return { recorded: true as const };
   });
 }
