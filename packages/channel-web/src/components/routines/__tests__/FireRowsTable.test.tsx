@@ -39,6 +39,7 @@ const firstFire: Fire = {
   warning: null,
   conversationId: 'cnv_1',
   renderedPrompt: 'first fire prompt',
+  report: null,
 };
 
 const secondFire: Fire = {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { lintCapability } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
+import { evaluate } from '../evaluate.js';
 import { capabilityRows, hostProvidedTools } from '../plugin.js';
 
 describe('BUILTIN_RULES', () => {
@@ -272,6 +273,7 @@ describe('BUILTIN_RULES', () => {
         'routine_update',
         'routine_delete',
         'routine_fire_now',
+        'routine_report',
         'web_search',
       ].sort(),
     );
@@ -289,6 +291,16 @@ describe('BUILTIN_RULES', () => {
         'Write',
       ].sort(),
     );
+  });
+
+  it('a check-in report is allowed and described', () => {
+    expect(evaluate(BUILTIN_RULES, { name: 'routine_report', input: {} })).toMatchObject({
+      verdict: 'allow',
+      ruleId: 'routines.report',
+      capability: 'report on a task',
+      irreversible: false,
+      effect: [],
+    });
   });
 
   it('TASK-416: the sandbox six are never offered up as host-provided', () => {

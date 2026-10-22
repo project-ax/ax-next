@@ -6,9 +6,9 @@ import {
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, AcceptedDispatch, DispatchOutcome, FireRow, FireSource } from './types.js';
+import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
-import { AcceptedDispatchSchema, DispatchOutcomeSchema } from './dispatch.js';
+import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -22,11 +22,27 @@ export interface RoutinesStore {
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
+  /**
+   * TASK-907. Who owns each of these routines now, for deciding who may see a
+   * run's report. A routine that's gone has no entry. Reads only the owner, so a
+   * row another read couldn't parse can't fail a history read.
+   */
+  routineOwners(input: { agentId: string; routineIds: readonly string[] }): Promise<Map<string, string>>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
+  /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
+  bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
+  /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
+  findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
+  /**
+   * TASK-907. The one writer of a task's state. `'recorded'`, or why nothing was
+   * written: the run must be an open check-in, bound to the report's
+   * conversation, of a stay-on-top task its actor owns, on a live agent.
+   */
+  recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
@@ -56,19 +72,46 @@ function definitionColumns(d: RoutineDefinition) {
     kind: d.kind, good_when: d.goodWhen, spec_hash: inputHash(d)
   };
 }
+/**
+ * TASK-907. A task's state is its latest report, so it's there only when the
+ * report's status, update and time all are. A row with only some of them (a
+ * rollback, a hand edit) reads as never reported rather than failing every read
+ * of it, claimDue's included (TASK-913).
+ */
+function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | null {
+  if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
+  return { status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at };
+}
+/**
+ * TASK-907. A task's state belongs to the kind it was reported under, so an edit
+ * that changes a routine's kind sets these in the same statement. A task turned
+ * into a repeat routine and back starts over: the report and notes it held
+ * before the edit don't come back, and the next check-in gets none.
+ *
+ * "Starts over" is about what is stored, not about runs. A run still open from
+ * before the round trip (stay-on-top, repeat, stay-on-top) is a live check-in of
+ * the same routine, and clearing `task_report_accepted_at` lets it report into
+ * the restarted task. That is accepted: the report is still that routine's own,
+ * and it lands on that run too.
+ */
+const NO_TASK_STATE = {
+  task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+} as const;
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
-    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning
+    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row)
   });
 }
 function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
   return {
     id: Number(r.id), agentId: r.agent_id, routineId: r.routine_id, firedAt: r.fired_at, triggerSource: r.trigger_source,
-    conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning
+    conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning,
+    // Nested, so no column name reaches the view. A row with only part of a report has none (TASK-907, TASK-913).
+    report: r.report_status === null || r.report_update === null ? null : { status: r.report_status, update: r.report_update, ask: r.report_ask }
   };
 }
 function defaultRowToDetail(row: Selectable<DefaultRoutinesRow>): DefaultRoutineDetailRow {
@@ -86,6 +129,26 @@ function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
   throw new Error('Unknown routine receipt operation');
 }
+/**
+ * TASK-907. What a receipt keeps of its result: all of it but a task's state. A
+ * receipt lives as long as its request row, and the state is agent-written text
+ * (a report, the agent's notes) that the task row already holds, once, where a
+ * person can see and clear it. The `task` key is left out, not stored as null,
+ * so code from before the field (whose strict schema has no such key) still
+ * reads the receipt after a rollback; `.default(null)` fills it in on read. So
+ * an exact replay answers with `task: null`: a replay answers from its receipt,
+ * never from a fresh read. The live answer is the effect's own, state and all,
+ * so `acceptDispatch`'s `accepted.row.task` is still what it read under the row lock.
+ */
+function receiptCopy(operation: string, result: unknown): unknown {
+  if (operation === 'create' || operation === 'update') return withoutTask(result as StoredRoutine);
+  if (operation === 'dispatch') {
+    const accepted = result as AcceptedDispatch;
+    return { ...accepted, row: withoutTask(accepted.row) };
+  }
+  return result;
+}
+function withoutTask({ task: _task, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
@@ -122,7 +185,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
       const result = await effect(trx);
       // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
       if (result === null) { await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', key.agentId).where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute(); return result; }
-      await trx.updateTable('routines_v1_requests').set({ result: JSON.stringify(result) }).where('agent_id', '=', key.agentId)
+      await trx.updateTable('routines_v1_requests').set({ result: JSON.stringify(receiptCopy(key.operation, result)) }).where('agent_id', '=', key.agentId)
         .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute();
       return parseReceipt(key.operation, result) as T;
     });
@@ -130,6 +193,28 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505' && 'constraint' in error && error.constraint === 'routines_v1_webhook_path_unique') throw new SafeToolError('webhook-path-conflict', 'trigger.path');
     throw error;
   }
+}
+/** TASK-907. fire.ts records this as the fire's error when the bind fails. */
+export const RUN_CLOSED = 'The routine run closed before it could start.';
+/**
+ * A run's stored report, for its fire row. SQL NULL (or a JSON null) is no
+ * report. Anything else the schema refuses is unreadable and also becomes no
+ * report: `interruptAbandonedDispatches` finishes runs during plugin init, so a
+ * throw here would stop the host booting.
+ */
+function storedReport(value: unknown): { report: DispatchReport | null; unreadable: boolean } {
+  if (value === null || value === undefined) return { report: null, unreadable: false };
+  const parsed = DispatchReportSchema.safeParse(value);
+  return parsed.success ? { report: parsed.data, unreadable: false } : { report: null, unreadable: true };
+}
+/**
+ * A refused write can quote what it was sent (Postgres puts it in the error's
+ * `where` or `detail`), and a report's text is the agent's. Keep only the run's
+ * id and the SQLSTATE, and drop the original error.
+ */
+function reportWriteError(dispatchId: string, error: unknown): Error {
+  const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
+  return new Error(`Could not save the report for dispatch ${dispatchId}${code === null ? '' : ` (SQLSTATE ${code})`}.`);
 }
 function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string): OperationKey {
   return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hash };
@@ -187,7 +272,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
-          next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt
+          next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
+          ...(next.kind === current.kind ? {} : NO_TASK_STATE),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -254,21 +340,90 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     },
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
-      return db.transaction().execute(async trx => {
+      let unreadable = false;
+      const finished = await db.transaction().execute(async trx => {
         const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
         if (!dispatch || dispatch.completed_at) return false;
+        const stored = storedReport(dispatch.report);
+        unreadable = stored.unreadable;
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
-          error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning
+          error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning,
+          report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
         }).execute();
-        await trx.updateTable('routines_v1_dispatches').set({ completed_at: new Date() }).where('dispatch_id', '=', input.dispatchId).execute();
+        // The fire row has the report now; one copy of the text is enough (TASK-907).
+        await trx.updateTable('routines_v1_dispatches').set({ completed_at: new Date(), report: null }).where('dispatch_id', '=', input.dispatchId).execute();
         await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
           .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
         return true;
+      });
+      // After commit, so a rolled-back finish doesn't claim a drop. Only the id: the text is the agent's.
+      if (finished && unreadable) process.stderr.write(`[ax/routines] dropped an unreadable report for dispatch ${input.dispatchId}\n`);
+      return finished;
+    },
+    async bindDispatchConversation(input) {
+      await db.transaction().execute(async trx => {
+        const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
+        if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) throw new Error(RUN_CLOSED);
+        // Once bound, a run stays in its conversation.
+        const bound = await trx.updateTable('routines_v1_dispatches').set({ conversation_id: input.conversationId })
+          .where('dispatch_id', '=', input.dispatchId).where('agent_id', '=', candidate.agent_id).where('completed_at', 'is', null)
+          .where(eb => eb.or([eb('conversation_id', 'is', null), eb('conversation_id', '=', input.conversationId)]))
+          .executeTakeFirst();
+        if (bound.numUpdatedRows !== 1n) throw new Error(RUN_CLOSED);
+      });
+    },
+    async findOpenDispatchByConversation(input) {
+      // A left join: a run whose routine was deleted is still an open run in
+      // this conversation, so it still makes the conversation ambiguous.
+      const rows = await db.selectFrom('routines_v1_dispatches as d')
+        .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
+        .select(['d.dispatch_id', 'd.routine_id', 'r.kind', 'r.owner_user_id'])
+        .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId).where('d.completed_at', 'is', null)
+        .limit(2).execute();
+      const [row] = rows;
+      if (row === undefined) return { run: null, reason: 'no-open-run' };
+      if (rows.length > 1) return { run: null, reason: 'ambiguous' };
+      if (row.kind === null || row.owner_user_id === null) return { run: null, reason: 'routine-gone' };
+      return { run: { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id } };
+    },
+    async recordReport(input) {
+      return db.transaction().execute(async trx => {
+        // finishDispatch's order (agent fence, dispatch row, definition row), so the two serialize.
+        if (!await lockLiveAgent(trx, input.agentId)) return 'agent-retired';
+        const dispatch = await trx.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'agent_id', 'routine_id', 'accepted_at', 'completed_at', 'conversation_id'])
+          .where('dispatch_id', '=', input.dispatchId).where('agent_id', '=', input.agentId).forUpdate().executeTakeFirst();
+        // The whole binding, under the run's row lock: open, and bound to the conversation the report came from.
+        // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
+        if (!dispatch || dispatch.completed_at !== null) return 'run-closed';
+        if (dispatch.conversation_id !== input.conversationId) return 'not-bound';
+        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id'])
+          .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
+        if (!definition) return 'routine-gone';
+        if (definition.kind !== 'stay-on-top') return 'kind';
+        if (definition.owner_user_id !== input.actorUserId) return 'owner';
+        const { status, update, ask } = input.report;
+        try {
+          // A later report in the same check-in replaces this one.
+          await trx.updateTable('routines_v1_dispatches').set({ report: JSON.stringify({ status, update, ask }) })
+            .where('dispatch_id', '=', dispatch.dispatch_id).execute();
+          // The run accepted last owns the task's state, whatever order the runs report in. There's
+          // no revision clause, so an edit during the check-in can't drop its report, and the state
+          // never moves revision, spec_hash or updated_at.
+          await trx.updateTable('routines_v1_definitions').set({
+            task_status: status, task_update: update, task_ask: ask,
+            task_reported_at: input.now, task_report_accepted_at: dispatch.accepted_at,
+            ...(input.notes !== undefined ? { agent_notes: input.notes } : {}),
+          }).where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id)
+            .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
+        } catch (error) {
+          throw reportWriteError(dispatch.dispatch_id, error);
+        }
+        return 'recorded';
       });
     },
     async advance(input) {
@@ -410,6 +565,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .where('routine_id', '=', input.routineId)
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
+    },
+
+    async routineOwners(input) {
+      if (input.routineIds.length === 0) return new Map();
+      const rows = await db.selectFrom('routines_v1_definitions').select(['routine_id', 'owner_user_id'])
+        .where('agent_id', '=', input.agentId).where('routine_id', 'in', [...input.routineIds]).execute();
+      return new Map(rows.map(row => [row.routine_id, row.owner_user_id]));
     },
 
     async upsertDefault(input) {

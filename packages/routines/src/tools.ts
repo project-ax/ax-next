@@ -10,7 +10,7 @@ import {
   editableDefinition, parseStoredRoutine, validationError,
 } from './definition.js';
 import { AcceptedDispatchSchema } from './dispatch.js';
-import { parseRoutineInput, routinePermissions, routineView } from './services.js';
+import { parseRoutineInput, reportRefused, routinePermissions, routineView } from './services.js';
 
 const PLUGIN = '@ax/routines';
 const names = Object.keys(C.RoutineToolInputSchemas) as C.RoutineToolName[];
@@ -18,6 +18,7 @@ export const ROUTINE_TOOL_HOOKS = names.map(name => `tool:execute:${name}`);
 const activities: Record<C.RoutineToolName, string> = {
   routine_list: 'Reading routines', routine_get: 'Reading a routine', routine_create: 'Creating a routine',
   routine_update: 'Updating a routine', routine_delete: 'Deleting a routine', routine_fire_now: 'Starting a routine',
+  routine_report: 'Reporting on a task',
 };
 export const ROUTINE_TOOL_DESCRIPTORS: ToolDescriptor[] = names.map(name => ({
   name, description: C.RoutineToolDescriptions[name], inputSchema: C.RoutineToolJsonSchemas[name],
@@ -25,11 +26,59 @@ export const ROUTINE_TOOL_DESCRIPTORS: ToolDescriptor[] = names.map(name => ({
 }));
 type Dependencies = { bus: HookBus; store: RoutinesStore };
 type Invocation = Dependencies & { ctx: AgentContext; call: ToolCall };
-type Prepared = { hook: string; input: unknown; receiptKey?: OperationKey };
+/** TASK-907. The check-in a report is for, as `prepareReport` found it. */
+type ReportRun = { dispatchId: string; routineId: string };
+type Prepared = { hook: string; input: unknown; receiptKey?: OperationKey; run?: ReportRun };
 function safeFailure(error: unknown): SafeToolError {
   return error instanceof SafeToolError ? new SafeToolError(error.toolCode, error.field) : new SafeToolError('unavailable', 'input');
 }
+/**
+ * TASK-907. A report the hook couldn't write. The agent gets the closed
+ * "unavailable" (`safeFailure`), and the operator this one warn line: the run,
+ * its task and the hook's message. A failed write's message names only the run
+ * and the SQLSTATE (store.ts, `reportWriteError`), and the hook's other
+ * statements carry no report text, so no message can quote it. A refusal is a
+ * `SafeToolError` with a line of its own (`reportRefused`).
+ */
+function reportFailed(ctx: AgentContext, run: ReportRun, error: unknown): void {
+  ctx.logger.warn('routines_report_failed', {
+    agentId: ctx.agentId, conversationId: ctx.conversationId, ...run, err: error instanceof Error ? error.message : 'not an Error',
+  });
+}
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
+
+/**
+ * TASK-907. A check-in's report, tied to the run it came from by the session
+ * alone. Every fact read here is host-set: the IPC listener takes the person,
+ * agent, conversation and source off the session row the runner's token
+ * resolves to, and the input names no task, run or conversation. Read-only, so
+ * pre-call can run it too; `routines:report` checks the run again under its
+ * locks before it writes. The one refusal tells the agent only that this isn't
+ * a check-in; an info line tells the operator why (`reportRefused`).
+ */
+async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'ctx' | 'call'>): Promise<Prepared> {
+  const { notes, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
+  const conversationId = ctx.conversationId;
+  if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
+  if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
+  const lookup = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId }).catch((error: unknown) => {
+    // No run to name yet, so this line carries the ids the lookup was given, which the host set, and the database's
+    // own words: a select over those two ids, so nothing in the message can quote the report. The agent still gets
+    // the closed "unavailable" (`safeFailure`). Pre-call and the call each run this lookup, so each leaves a line.
+    ctx.logger.warn('routines_report_failed', {
+      stage: 'lookup', agentId: ctx.agentId, conversationId, err: error instanceof Error ? error.message : 'not an Error',
+    });
+    throw error;
+  });
+  if (lookup.run === null) throw reportRefused(ctx, 'tool', lookup.reason);
+  const { run } = lookup;
+  const ids = { dispatchId: run.dispatchId, routineId: run.routineId };
+  // `=== 'stay-on-top'`, not `!== 'repeat'`: a write path fails closed for a kind it doesn't know.
+  if (run.kind !== 'stay-on-top') throw reportRefused(ctx, 'tool', 'wrong-kind', ids);
+  if (run.ownerUserId !== ctx.userId) throw reportRefused(ctx, 'tool', 'wrong-owner', ids);
+  // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
+  return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) }, run: ids };
+}
 
 /** Read-only validation. Ownership reconciliation belongs to management get/list, never preflight. */
 async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared> {
@@ -37,6 +86,9 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   const name = call.name as C.RoutineToolName;
   // Validate before touching policy/decisions or loading any private state.
   parseRoutineInput(C.RoutineToolInputSchemas[name], call.input);
+  // A report is the run's own output, not routine management: it answers to the
+  // check-in it ran in, never to agents:resolve or agents:can-manage-routines.
+  if (name === 'routine_report') return prepareReport({ store, ctx, call });
   const { agent } = await bus.call<unknown, { agent: { ownerType: 'user' | 'team'; ownerId: string } }>(
     'agents:resolve', ctx, { agentId: ctx.agentId, userId: ctx.userId });
   const { allowed } = await bus.call<unknown, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });
@@ -51,11 +103,18 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   } else if (name === 'routine_update') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineUpdateToolInputSchema, call.input) };
     prepared = { hook: 'routines:update', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'update', inputHash: updateRequestHash(input) } };
-  } else {
+  } else if (name === 'routine_delete' || name === 'routine_fire_now') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineDeleteToolInputSchema, call.input) };
     const fire = name === 'routine_fire_now';
     prepared = { hook: fire ? 'routines:fire-now' : 'routines:delete', input,
       receiptKey: { ...scope, requestId: input.requestId, operation: fire ? 'dispatch' : 'delete', inputHash: fire ? dispatchRequestHash({ ...input, source: 'manual' }) : deleteRequestHash(input) } };
+  } else {
+    // Every tool has its own branch, so one this code doesn't know is refused,
+    // never read as another tool's call (TASK-907). The `never` makes a new
+    // tool without a branch a build error.
+    const _unhandled: never = name;
+    void _unhandled;
+    throw new SafeToolError('validation', 'input');
   }
   // Completed exact operations may have removed the row or advanced its revision.
   // Access above remains live even on this path; receipts are never returned raw.
@@ -117,6 +176,39 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
   return outcome.status === 'error' ? { kind: 'failed' } : { kind: 'committed', output: { status: 'ok' } };
 }
 
+/**
+ * TASK-907. `routines:list` and `routines:update` keep a task's agent notes for
+ * its owner (the Tasks page reads them), but their tools leave them out: a list
+ * holds every routine and reaches every chat, and "how's the support queue?"
+ * needs the report alone; an edit's answer needs no notes at all. Only
+ * routine_get, read before working on a task, carries them. The projection is
+ * explicit and the strict output schemas then enforce it, so an agentNotes key
+ * can't ride along. Who sees a task's state at all is the services' rule
+ * (`routineView`): anyone but the owner gets `task: null` before it gets here.
+ */
+function withoutAgentNotes({ task, ...routine }: C.RoutineView) {
+  if (task === null) return { ...routine, task };
+  const { agentNotes: _agentNotes, ...report } = task;
+  return { ...routine, task: report };
+}
+function listToolOutput(output: unknown): C.RoutineListToolOutput {
+  const { routines } = C.RoutineListOutputSchema.parse(output);
+  return C.RoutineListToolOutputSchema.parse({ routines: routines.map(withoutAgentNotes) });
+}
+/**
+ * Every answer routine_update gives leaves here: live, replayed by the service, or
+ * recovered from its receipt. It runs after the edit has settled, so it reads
+ * nothing (TASK-907), and it can't refuse a view a producer makes: the live and
+ * replayed answers passed the service's `returns` schema, which is the first
+ * parse here, and a recovered one is routineView over a receipt that passed
+ * StoredRoutineSchema (the same definition rules, and ids the host made). The
+ * strict check differs from that schema only by the agent notes the projection
+ * takes out.
+ */
+function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
+  return C.RoutineUpdateToolOutputSchema.parse(withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output)));
+}
+
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
   bus.subscribe<ToolCall>('tool:pre-call', PLUGIN, async (ctx, call) => {
     if (C.routineToolKind(call.name) === null) return;
@@ -138,8 +230,14 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       try { prepared = await prepare({ bus, store, ctx, call }); }
       catch (error) { throw safeFailure(error); }
       if (!prepared.receiptKey) {
-        try { return await bus.call(prepared.hook, ctx, prepared.input); }
-        catch (error) { throw safeFailure(error); }
+        try {
+          const output = await bus.call(prepared.hook, ctx, prepared.input);
+          return call.name === 'routine_list' ? listToolOutput(output) : output;
+        }
+        catch (error) {
+          if (prepared.run !== undefined && !(error instanceof SafeToolError)) reportFailed(ctx, prepared.run, error);
+          throw safeFailure(error);
+        }
       }
       let authorization: { authorizationId: string; requestId: string };
       let binding: z.output<typeof executionBindingSchema>;
@@ -197,7 +295,12 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
         } else return pending();
       }
       await settle('succeeded');
-      return output;
+      if (call.name !== 'routine_update') return output;
+      // The edit has happened, and nothing from here can say otherwise: the answer is a projection
+      // that reads nothing and can't refuse a real view (updateToolOutput). The catch only keeps a
+      // raw error from escaping if that ever stopped being true.
+      try { return updateToolOutput(output); }
+      catch (error) { throw safeFailure(error); }
     });
     await bus.call('tool:register', makeAgentContext({ sessionId: 'init', agentId: PLUGIN, userId: 'system' }), descriptor);
   }

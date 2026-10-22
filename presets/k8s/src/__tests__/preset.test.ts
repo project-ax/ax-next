@@ -1489,7 +1489,7 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
 
   it('routines registers host tools and the static webhook router without workspace subscriptions', () => {
     const routines = createK8sPlugins(stubConfig).find(p => p.manifest.name === '@ax/routines')!;
-    for (const tool of ['list', 'get', 'create', 'update', 'delete', 'fire_now']) {
+    for (const tool of ['list', 'get', 'create', 'update', 'delete', 'fire_now', 'report']) {
       expect(routines.manifest.registers).toContain(`tool:execute:routine_${tool}`);
     }
     expect(routines.manifest.calls).toContain('http:register-route');

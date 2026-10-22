@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   RoutineDefinitionSchema,
+  type RoutineFireView,
   type RoutineView,
 } from '@ax/routines-contract';
 import {
@@ -284,6 +285,117 @@ describe('human REST through registered DB services and real agent ACL', () => {
       invalid.res,
     );
     expect(invalid.status).toBe(400);
+  });
+  it("serves a team task's state and its runs' reports only to the task's owner", async () => {
+    // TASK-907: the routes serve the routines services' answers as they are, so
+    // the services decide. The member's browser gets the routine, not its state.
+    h = await createRoutineHarness({ authenticatedUserId: 'member' });
+    const task = await h.bus.call<unknown, RoutineView>(
+      'routines:create',
+      h.owner,
+      {
+        agentId: h.teamAgentId,
+        requestId: 'task',
+        definition: RoutineDefinitionSchema.parse({
+          name: 'Support queue',
+          promptBody: 'Keep the support queue empty.',
+          trigger: { kind: 'interval', every: '15m' },
+          kind: 'stay-on-top',
+          goodWhen: 'No ticket waits longer than an hour.',
+        }),
+      },
+    );
+    const report = {
+      status: 'needs-you',
+      update: 'Two tickets wait on a refund rule.',
+      ask: 'Can refunds over $50 go out without you?',
+    } as const;
+    const notes = 'Order 1234 waits on a refund.';
+    // One check-in of the owner's task reports, the way routines:report records it.
+    const store = createRoutinesStore(h.db);
+    const run = await store.acceptDispatch({
+      agentId: task.agentId,
+      routineId: task.routineId,
+      expectedRevision: task.revision,
+      actorUserId: 'owner',
+      source: 'manual',
+      requestId: 'run',
+      now: new Date(),
+    });
+    const dispatchId = run!.accepted.dispatchId;
+    await store.bindDispatchConversation({
+      dispatchId,
+      conversationId: 'check-in',
+    });
+    expect(
+      await store.recordReport({
+        agentId: task.agentId,
+        dispatchId,
+        conversationId: 'check-in',
+        actorUserId: 'owner',
+        report,
+        notes,
+        now: new Date(),
+      }),
+    ).toBe('recorded');
+    expect(
+      await store.finishDispatch({
+        dispatchId,
+        outcome: {
+          status: 'ok',
+          conversationId: 'check-in',
+          error: null,
+          renderedPrompt: null,
+          warning: null,
+        },
+      }),
+    ).toBe(true);
+    const routes = createRoutinesAdminHandlers({ bus: h.bus });
+    const params = { agentId: task.agentId, routineId: task.routineId };
+    const listed = response();
+    await routes.list(req(undefined, { agentId: task.agentId }), listed.res);
+    const got = response();
+    await routes.get(req(undefined, params), got.res);
+    const fires = response();
+    await routes.fires(req(undefined, params), fires.res);
+    expect([listed.status, got.status, fires.status]).toEqual([200, 200, 200]);
+    expect(
+      (listed.body as { routines: RoutineView[] }).routines.map((view) => [
+        view.routineId,
+        view.task,
+      ]),
+    ).toEqual([[task.routineId, null]]);
+    expect((got.body as { routine: RoutineView }).routine).toMatchObject({
+      routineId: task.routineId,
+      kind: 'stay-on-top',
+      task: null,
+    });
+    expect(
+      (fires.body as { fires: RoutineFireView[] }).fires.map(
+        (fire) => fire.report,
+      ),
+    ).toEqual([null]);
+    const served = JSON.stringify([listed.body, got.body, fires.body]);
+    for (const text of [notes, report.update, report.ask])
+      expect(served).not.toContain(text);
+    // The owner's own reads have all of it.
+    expect(
+      (await h.bus.call<unknown, RoutineView>('routines:get', h.owner, params))
+        .task,
+    ).toEqual({
+      ...report,
+      agentNotes: notes,
+      reportedAt: expect.any(String),
+    });
+    expect(
+      (
+        await h.bus.call<unknown, { fires: RoutineFireView[] }>(
+          'routines:recent-fires',
+          h.owner,
+          params,
+        )
+      ).fires.map((fire) => fire.report),
+    ).toEqual([report]);
   });
   it('does not disclose a team receiver token to a member who can view the agent', async () => {
     h = await createRoutineHarness({ authenticatedUserId: 'member' });

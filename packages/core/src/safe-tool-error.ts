@@ -8,6 +8,7 @@ const TOOL_MESSAGES = {
   'approval-required': 'This operation requires human approval.',
   'not-found': 'The routine is unavailable.',
   forbidden: 'This operation is not allowed for this person and agent.',
+  'not-in-check-in': 'This works only during a task check-in.',
   disabled: 'Enable the routine before firing it.',
   'cleanup-pending': 'Credential removal is pending. Retry after it completes.',
   unavailable: 'Routine management is temporarily unavailable.',
@@ -16,7 +17,9 @@ const TOOL_FIELDS = ['input','name','description','promptBody','enabled','trigge
   'trigger.every','trigger.expr','trigger.tz','trigger.path','trigger.events',
   'trigger.hmac','trigger.hmac.header','trigger.hmac.algorithm','trigger.hmac.prefix',
   'activeHours','activeHours.start','activeHours.end','activeHours.tz',
-  'silenceToken','silenceMaxChars','conversation','routineId','expectedRevision','requestId'] as const;
+  'silenceToken','silenceMaxChars','conversation','routineId','expectedRevision','requestId',
+  // A task check-in's report (TASK-907): routine_report's own input fields.
+  'status','update','ask','notes'] as const;
 export type SafeToolCode = keyof typeof TOOL_MESSAGES;
 export type SafeToolField = typeof TOOL_FIELDS[number];
 

@@ -1,9 +1,9 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { createRoutinesStore } from '../store.js';
-import { isHold, makeAgentContext } from '@ax/core';
+import { isHold, makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
 import type { Clock } from '../clock.js';
@@ -285,5 +285,106 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     await expect(h.bus.call('routines:update', ctx, { agentId: h.agentId, routineId: task.routineId, requestId: 'settings-hide', expectedRevision: task.revision, patch: { promptBody } }))
       .rejects.toMatchObject({ toolCode: 'validation', field: 'promptBody' });
     expect(await store.findOne({ agentId: h.agentId, routineId: task.routineId })).toMatchObject({ promptBody: 'Keep the queue empty.', revision: task.revision });
+  });
+});
+
+// TASK-907: a task's check-in reports with routine_report, end to end through the real
+// tool-policy, decisions and agents plugins and Postgres. Nothing holds the report, and the
+// task, its run and routine_get all show it.
+describe('task check-in report canary (TASK-907)', () => {
+  /** The agent's turn in the next check-in. `checkIn` sets it. */
+  let script: (ctx: AgentContext, bus: HookBus) => Promise<void> = async () => {};
+  async function start(): Promise<void> {
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => { await script(ctx, bus); return { kind: 'complete' }; } });
+    // Unattended: a hold would replay on the host at once, so a missing hold shows up as a decision row below.
+    h.setAttended(false);
+  }
+  afterEach(() => { script = async () => {}; });
+
+  const TASK = {
+    name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+    kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+  };
+  const NEEDS_YOU = { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?' } as const;
+  const NOTES = 'Order 1234 waits on a refund.';
+  const reportCall = (input: Record<string, unknown>): ToolCall => ({ id: 'report', name: 'routine_report', input });
+  const createTask = () => h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+    agentId: h.agentId, requestId: 'task', definition: RoutineDefinitionSchema.parse(TASK),
+  });
+  const get = (view: RoutineView) => h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: view.agentId, routineId: view.routineId });
+  const list = async () => (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId })).routines;
+  const history = async (view: RoutineView) => (await h.bus.call<unknown, { fires: RoutineFireView[] }>(
+    'routines:recent-fires', h.owner, { agentId: view.agentId, routineId: view.routineId })).fires;
+
+  /** The context a tool call from a check-in's runner reaches the host with, as the IPC listener mints it. */
+  const runner = (ctx: AgentContext): AgentContext => makeAgentContext({
+    userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', conversationId: ctx.conversationId!, source: 'routine',
+  });
+
+  /**
+   * One check-in of `view`, started with Check now: `body` runs as the agent's turn, and the turn then ends
+   * the way a runner ends it. A failure inside the turn fails the test (without the rethrow, fire.ts would
+   * swallow a failed assertion and the turn would still end).
+   */
+  async function checkIn(view: RoutineView, requestId: string, body: (ctx: AgentContext, bus: HookBus) => Promise<void>): Promise<void> {
+    let ended!: (failure: { error: unknown } | null) => void;
+    const turn = new Promise<{ error: unknown } | null>(resolve => { ended = resolve; });
+    script = async (ctx, bus) => {
+      let failure: { error: unknown } | null = null;
+      try { await body(ctx, bus); }
+      catch (error) { failure = { error }; }
+      finally {
+        try { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); }
+        finally { ended(failure); }
+      }
+    };
+    await h.bus.call('routines:fire-now', h.owner, { agentId: view.agentId, routineId: view.routineId, expectedRevision: view.revision, requestId });
+    const failure = await turn;
+    if (failure !== null) throw failure.error;
+  }
+
+  const everyDecision = async () => {
+    const all = await Promise.all(['pending', 'executed', 'approved-pending-agent', 'dismissed', 'stale', 'expired'].map(status =>
+      h.bus.call<unknown, { decisions: Array<{ call: { name: string } }> }>('decisions:list', h.owner, { userId: 'owner', status })));
+    return all.flatMap(out => out.decisions);
+  };
+
+  it('a task check-in reports through routine_report: nothing holds it, and the task, its run and routine_get show the report', async () => {
+    await start();
+    const task = await createTask();
+    const call = reportCall({ ...NEEDS_YOU, notes: NOTES });
+    let answer: unknown;
+    await checkIn(task, 'run', async ctx => {
+      const host = runner(ctx);
+      const early = await h.bus.fire('tool:pre-call', host, call);
+      expect(early.rejected).toBe(false);
+      expect(isHold(early)).toBe(false);
+      expect(await h.bus.call('tool-policy:evaluate', host, { agentId: h.agentId, call })).toMatchObject({ verdict: 'allow', ruleId: 'routines.report' });
+      answer = await h.bus.call('tool:execute:routine_report', host, call);
+    });
+    expect(answer).toStrictEqual({ recorded: true });
+    // No decision of any kind: the report is the run's own output, not something to ask the person about.
+    expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
+    expect((await get(task)).task).toEqual(shown);
+    expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
+    expect((await history(task))[0]?.report).toEqual(NEEDS_YOU);
+    // The model's own read, from an ordinary chat, shows the same task.
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const read = await h.bus.call<unknown, RoutineView>('tool:execute:routine_get', chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } });
+    expect(read.task).toEqual(shown);
+  });
+
+  it('outside a check-in, routine_report is refused at pre-call and at execute, and changes nothing', async () => {
+    await start();
+    const task = await createTask();
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const call = reportCall({ ...NEEDS_YOU, notes: NOTES });
+    const early = await h.bus.fire('tool:pre-call', chat, call);
+    expect(early).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'This works only during a task check-in. Field: input' });
+    expect(isHold(early)).toBe(false);
+    await expect(h.bus.call('tool:execute:routine_report', chat, call)).rejects.toMatchObject({ toolCode: 'not-in-check-in' });
+    expect((await get(task)).task).toBeNull();
+    expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
   });
 });

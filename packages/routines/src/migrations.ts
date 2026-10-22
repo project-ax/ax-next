@@ -1,6 +1,6 @@
 import { retireAuthoredRoutines } from './retirement-migration.js';
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
-import type { RoutineKind } from '@ax/routines-contract';
+import type { RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
 import {
   SKILL_REFLECTION_PROMPT,
   SKILL_REFLECTION_ROUTINE_NAME,
@@ -36,6 +36,19 @@ export interface RoutinesDefinitionsRow {
   /** Version 3. Rows written without it, including materialized defaults, are 'repeat'. */
   kind: ColumnType<RoutineKind, RoutineKind | undefined, RoutineKind>;
   good_when: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 4 (TASK-907). A task's latest report, written only by `recordReport`,
+   * and the notes it keeps between check-ins. NULL until the first report, and
+   * NULL again after an edit that changes the routine's kind (`updateAuthored`).
+   * `task_report_accepted_at` is the reporting run's acceptance time: the run
+   * accepted last owns this state. A report never touches `revision` or `updated_at`.
+   */
+  task_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
+  task_update: ColumnType<string | null, string | null | undefined, string | null>;
+  task_ask: ColumnType<string | null, string | null | undefined, string | null>;
+  task_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  task_report_accepted_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  agent_notes: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -51,6 +64,10 @@ export interface RoutinesFiresRow {
   rendered_prompt: string | null;
   /** Slice 6 — "Gmail isn't signed in on Bob, so this run went without it." */
   warning: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Version 4 (TASK-907). The run's report, copied from its dispatch when it finishes; NULL when it made none. */
+  report_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
+  report_update: ColumnType<string | null, string | null | undefined, string | null>;
+  report_ask: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface DefaultRoutinesRow {
@@ -98,6 +115,10 @@ export interface DispatchesRow {
   dispatch_id: string; agent_id: string; routine_id: string; revision: string;
   req_id: string; accepted_at: Date; completed_at: Date | null;
   trigger_source: 'tick' | 'manual' | 'webhook';
+  /** Version 4 (TASK-907). The run's conversation, bound once before its agent starts. */
+  conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
+  report: ColumnType<unknown | null, string | null | undefined, string | null>;
 }
 export interface RoutinesDatabase {
   routines_v1_retired_agents: { agent_id: string; retired_at: Generated<Date> };
@@ -130,7 +151,61 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addTaskColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (3)`.execute(trx);
     }
+    if (!await done(4)) {
+      await addReportColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (4)`.execute(trx);
+    }
   });
+}
+
+/** Version 4 (TASK-907): a run's conversation and report, a task's state, and each fire's report.
+ * Every statement only adds what is missing, so existing rows keep their values and read back
+ * with no report. NULL passes both CHECKs. Named so a later status can swap them.
+ */
+async function addReportColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS conversation_id TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS report JSONB`.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS routines_v1_dispatches_open_conversation
+      ON routines_v1_dispatches (agent_id, conversation_id) WHERE completed_at IS NULL
+  `.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_status TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_update TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_ask TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_reported_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_report_accepted_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS agent_notes TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS report_status TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS report_update TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS report_ask TEXT`.execute(db);
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_definitions_task_status_chk'
+           AND conrelid = 'routines_v1_definitions'::regclass
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          ADD CONSTRAINT routines_v1_definitions_task_status_chk
+          CHECK (task_status IN ('on-track', 'off-track', 'needs-you'));
+      END IF;
+    END $$;
+  `.execute(db);
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_fires_report_status_chk'
+           AND conrelid = 'routines_v1_fires'::regclass
+      ) THEN
+        ALTER TABLE routines_v1_fires
+          ADD CONSTRAINT routines_v1_fires_report_status_chk
+          CHECK (report_status IN ('on-track', 'off-track', 'needs-you'));
+      END IF;
+    END $$;
+  `.execute(db);
 }
 
 /** Version 3: a routine's kind and its going-well-when. Existing rows become 'repeat'/NULL.

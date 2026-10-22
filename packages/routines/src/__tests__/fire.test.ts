@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'kysely';
 import { HookBus, PluginError, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
@@ -10,12 +11,13 @@ import type { StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
-function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null }; }
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null }; }
 async function setup(options: {
   resolveError?: PluginError;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
   grace?: number;
   definition?: object;
+  bind?: () => Promise<void>;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
@@ -30,7 +32,7 @@ async function setup(options: {
   bus.registerService('conversations:create', 'test', conversation);
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
-  const fire = createFireRoutine({ bus, pending, store: f.store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
+  const fire = createFireRoutine({ bus, pending, store: options.bind ? { ...f.store, bindDispatchConversation: options.bind } : f.store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
   cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
   return { bus, row, accepted, pending, invoked, conversation, shared, fire };
 }
@@ -53,6 +55,32 @@ describe('accepted DB fire dispatch', () => {
     const h = await setup({ definition: { promptBody: 'Review {{payload.title}}' } });
     await h.fire(h.accepted, { title: 'literal {{payload.title}}' });
     expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Review literal {{payload.title}}');
+  });
+  it('binds the run\'s conversation onto its dispatch before the agent is invoked', async () => {
+    let seen: { run: { dispatchId: string } | null } | undefined;
+    const h = await setup({ invoke: async ctx => { seen = await f.store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId: ctx.conversationId! }); return { kind: 'complete' }; } });
+    await h.fire(h.accepted);
+    await expect.poll(() => seen).not.toBeUndefined();
+    expect(seen?.run?.dispatchId).toBe(h.accepted.dispatchId);
+    const bound = await sql<{ conversation_id: string | null }>`SELECT conversation_id FROM routines_v1_dispatches WHERE dispatch_id = ${h.accepted.dispatchId}`.execute(f.db);
+    expect(bound.rows[0]?.conversation_id).toBe('c');
+  });
+  it('binds a shared conversation too', async () => {
+    let seen: { run: { dispatchId: string } | null } | undefined;
+    const h = await setup({ definition: { conversation: 'shared' }, invoke: async ctx => { seen = await f.store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId: ctx.conversationId! }); return { kind: 'complete' }; } });
+    await h.fire(h.accepted);
+    await expect.poll(() => seen).not.toBeUndefined();
+    expect(seen?.run?.dispatchId).toBe(h.accepted.dispatchId);
+    const bound = await sql<{ conversation_id: string | null }>`SELECT conversation_id FROM routines_v1_dispatches WHERE dispatch_id = ${h.accepted.dispatchId}`.execute(f.db);
+    expect(bound.rows[0]?.conversation_id).toBe('c');
+  });
+  it('a bind failure fails the fire before the agent runs', async () => {
+    const h = await setup({ bind: async () => { throw new Error('database unavailable'); } });
+    const result = await h.fire(h.accepted);
+    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect(h.pending.size).toBe(0);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
   });
   it.each(['forbidden', 'not-found'])('records %s from another provider without purging a live agent', async (code) => {
     const h = await setup({ resolveError: new PluginError({ code, plugin: 'teams', hookName: 'teams:is-member', message: 'denied' }) });

@@ -397,7 +397,11 @@ there. The zero-plumbing answer:
   `agent:invoke` (in `packages/routines/src/fire.ts`, between creating the
   conversation and invoking the agent).
 - The tool looks up the open dispatch for the host-set `ctx.conversationId` and
-  agent, and refuses if there is none.
+  agent. It refuses unless the call comes from a routine run (`ctx.source`),
+  exactly one open check-in has that conversation, and that check-in belongs to
+  a "stay on top" task run as the calling person. `routines:report` checks the
+  whole binding again, the run's own conversation included, under its row lock,
+  before it writes (TASK-907).
 
 This holds because every task check-in has its own hidden conversation. The
 heavier alternative carries a host-set run id through the same path W3 used for
@@ -424,7 +428,7 @@ the model that people call routines "tasks".
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
-| Agent tool | `routine_report`, executed on the host, available only inside a check-in (§4.3). |
+| Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
 | Hooks | `routines:report`, `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
 | channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |

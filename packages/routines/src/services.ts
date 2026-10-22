@@ -2,7 +2,7 @@ import { SafeToolError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
-import type { AcceptedDispatch, FireRow, StoredRoutine } from './types.js';
+import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 
@@ -10,7 +10,7 @@ const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
-  'set-agent-default-enabled', 'list-agent-defaults',
+  'set-agent-default-enabled', 'list-agent-defaults', 'report',
 ].map(name => `routines:${name}`);
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
@@ -33,10 +33,54 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
-    permissions: routinePermissions(row, userId, allowed) };
+    permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId) };
+}
+/**
+ * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
+ * with what only they can reach, so its report and agent notes can carry that, and
+ * sharing a task is a later feature (design §14, question 8). Whoever can see the
+ * routine still sees the routine. Decided here, where every view is made (list,
+ * get, create, update, their replays, the tools' recovery), so no caller (a tool,
+ * the Settings routes, the Tasks page) needs a rule of its own for these two. It covers
+ * `task` and `report` only: a fire's `renderedPrompt` is not gated here (TASK-908's
+ * check-in message must not land in it, or this must gate it). A repeat routine
+ * shows none either: changing a kind clears it, and this hides any a row holds anyway.
+ */
+function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
+  if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
+  const { status, update, ask, reportedAt, agentNotes } = row.task;
+  return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
-function fireView({ id: _id, firedAt, ...row }: FireRow): C.RoutineFireView { return { ...row, firedAt: firedAt.toISOString() }; }
+/** TASK-907. Every reason a report is refused: the tool's lookup, the hook's own context check, and the store's under its locks. */
+export type ReportRefusalReason = 'no-source' | 'no-conversation' | Extract<OpenCheckInLookup, { run: null }>['reason'] | 'wrong-kind' | 'wrong-owner' | ReportRefusal;
+/**
+ * TASK-907. A refused report, for the agent and for the operator. The agent gets
+ * the closed "only during a task check-in" and nothing more; the operator gets
+ * one info line with where it was refused (`tool`, the read-only lookup at
+ * pre-call and execute, or `hook`, routines:report), a fixed reason and ids.
+ * Never the report's text.
+ */
+export function reportRefused(ctx: AgentContext, stage: 'tool' | 'hook', reason: ReportRefusalReason, ids: { dispatchId?: string; routineId?: string } = {}): SafeToolError {
+  const conversation = typeof ctx.conversationId === 'string' && ctx.conversationId.length > 0 ? { conversationId: ctx.conversationId } : {};
+  ctx.logger.info('routines_report_refused', { stage, reason, agentId: ctx.agentId, ...conversation, ...ids });
+  return new SafeToolError('not-in-check-in', 'input');
+}
+/**
+ * TASK-907. A run's report is its task's state as that run left it, so it goes
+ * where the task's state goes: only to the routine's owner (`taskView`). The owners
+ * are read only when some run has a report, and a run whose routine is gone shows none.
+ */
+async function fireViews(store: RoutinesStore, agentId: string, userId: string, fires: FireRow[]): Promise<C.RoutineFireView[]> {
+  const reported = [...new Set(fires.flatMap(fire => fire.report === null ? [] : [fire.routineId]))];
+  const owners = reported.length === 0 ? new Map<string, string>() : await store.routineOwners({ agentId, routineIds: reported });
+  return fires.map(({ id: _id, firedAt, report, ...fire }) => {
+    // Fails closed: a report shows only when an owner is found and it is this person.
+    // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
+    const owner = owners.get(fire.routineId);
+    return { ...fire, firedAt: firedAt.toISOString(), report: owner !== undefined && owner === userId ? report : null };
+  });
+}
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;
   admitDispatch?: <T>(effect: () => Promise<T>) => Promise<T>;
@@ -107,12 +151,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     return result.replayed ? { status: 'ok' as const } : dispatch(result.accepted);
   }));
   register('recent-fires', C.RoutineRecentFiresInputSchema, C.RoutineRecentFiresOutputSchema, async (ctx, input) => {
-    await access(ctx, input.agentId); return { fires: (await store.recentFires({ agentId: input.agentId, routineId: input.routineId, ...(input.limit === undefined ? {} : { limit: input.limit }) })).map(fireView) };
+    await access(ctx, input.agentId);
+    const fires = await store.recentFires({ agentId: input.agentId, routineId: input.routineId, ...(input.limit === undefined ? {} : { limit: input.limit }) });
+    return { fires: await fireViews(store, input.agentId, ctx.userId, fires) };
   });
   register('recent-fires-for-agent', C.RoutineRecentFiresForAgentInputSchema, C.RoutineRecentFiresForAgentOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     const { before } = input;
-    return { fires: (await store.recentFiresForAgent({ agentId: input.agentId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) })).map(fireView) };
+    const fires = await store.recentFiresForAgent({ agentId: input.agentId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
+    return { fires: await fireViews(store, input.agentId, ctx.userId, fires) };
   });
   register('set-webhook-secret', C.RoutineSecretInputSchema, C.RoutineSecretOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
@@ -143,5 +190,25 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     await access(ctx, input.agentId);
     const disabled = new Set(await store.disabledDefaultIdsForAgent(input.agentId));
     return { defaults: (await store.listDefaults()).map(row => ({ defaultRoutineId: row.defaultRoutineId, name: row.name, enabled: !disabled.has(row.defaultRoutineId) })) };
+  });
+  // TASK-907. A check-in's report is the run's own output, not routine management, so there's no
+  // access check here. The hook checks the whole binding itself, whoever calls it: a routine run's
+  // context, for the run's own agent; then the store requires the run to be open, bound to that
+  // context's conversation, and a check-in of a stay-on-top task its actor owns, all under the
+  // run's row lock. It writes nothing when it refuses. It tries the write once. A failed write
+  // throws an error naming only the run and the SQLSTATE (store.ts, reportWriteError); its other
+  // statements (the fence, the locked reads, the commit) carry no report text, so their errors
+  // can't quote it either. The tool logs a failure as one routines_report_failed warn line and
+  // answers the closed "unavailable", a 503, which the runner's IPC client retries up to its 5xx
+  // cap: a retry runs the whole report again, and a report that lands just replaces the run's report.
+  register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
+    const { agentId, dispatchId, notes, ...report } = input;
+    const conversationId = ctx.conversationId;
+    if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
+    if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
+    if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
+    const outcome = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
+    if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
+    return { recorded: true as const };
   });
 }

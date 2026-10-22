@@ -29,10 +29,10 @@ describe('routine consent policy', () => {
 
   it('declares exact host rules with create/update approval, delete once and irreversible fire once', () => {
     const selected = BUILTIN_RULES.filter(r => r.match.tool.startsWith('routine_'));
-    expect(selected.map(r => r.match.tool).sort()).toEqual(['routine_create', 'routine_delete', 'routine_fire_now', 'routine_get', 'routine_list', 'routine_update']);
+    expect(selected.map(r => r.match.tool).sort()).toEqual(['routine_create', 'routine_delete', 'routine_fire_now', 'routine_get', 'routine_list', 'routine_report', 'routine_update']);
     for (const r of selected) {
       expect(r.providedBy).toBe('host');
-      expect(r.verdict).toBe(['routine_list', 'routine_get'].includes(r.match.tool) ? 'allow' : 'hold');
+      expect(r.verdict).toBe(['routine_list', 'routine_get', 'routine_report'].includes(r.match.tool) ? 'allow' : 'hold');
       expect(r.routineConsent).toBe(['routine_create', 'routine_update'].includes(r.match.tool) ? 'create-update' : undefined);
       expect(r.irreversible === true).toBe(r.match.tool === 'routine_fire_now');
       expect(r.effect).toEqual(r.match.tool === 'routine_fire_now' ? ['spends', 'outward'] : undefined);
