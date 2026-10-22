@@ -55,6 +55,7 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
         case 'not-found':
           return notFound(message);
         case 'forbidden':
+        case 'not-in-check-in':
         case 'approval-required':
           return { status: 403, body: { error: { code: 'HOOK_REJECTED', message } } };
         case 'revision-conflict':
@@ -64,8 +65,14 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
         case 'cleanup-pending':
           return { status: 409, body: { error: { code: 'HOOK_REJECTED', message } } };
         case 'unavailable':
-        default:
           return { status: 503, body: { error: { code: 'INTERNAL', message } } };
+        default: {
+          // Compile-time: a new SafeToolCode without a case above fails tsc here.
+          // Runtime: a mutated/unknown code still lands on the closed 503.
+          const unmapped: never = err.toolCode;
+          void unmapped;
+          return { status: 503, body: { error: { code: 'INTERNAL', message } } };
+        }
       }
     }
     if (err instanceof PluginError) {

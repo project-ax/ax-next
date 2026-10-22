@@ -7,7 +7,7 @@ async function dispatch(error: Error) {
   return toolExecuteHostHandler({ call: { id: 'call1', name: 'example', input: {} } }, makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: createLogger({ reqId: 'safe-tool-test', writer: () => {} }) }), bus);
 }
 describe('safe host tool failures', () => {
-  it.each([['validation', 400, 'VALIDATION'], ['revision-conflict', 409, 'HOOK_REJECTED'], ['webhook-path-conflict', 409, 'HOOK_REJECTED'], ['request-conflict', 409, 'HOOK_REJECTED'], ['approval-required', 403, 'HOOK_REJECTED'], ['not-found', 404, 'NOT_FOUND'], ['forbidden', 403, 'HOOK_REJECTED'], ['disabled', 409, 'HOOK_REJECTED'], ['cleanup-pending', 409, 'HOOK_REJECTED'], ['unavailable', 503, 'INTERNAL']] as const)('maps %s to actionable wire status', async (code, status, wireCode) => {
+  it.each([['validation', 400, 'VALIDATION'], ['revision-conflict', 409, 'HOOK_REJECTED'], ['webhook-path-conflict', 409, 'HOOK_REJECTED'], ['request-conflict', 409, 'HOOK_REJECTED'], ['approval-required', 403, 'HOOK_REJECTED'], ['not-found', 404, 'NOT_FOUND'], ['forbidden', 403, 'HOOK_REJECTED'], ['not-in-check-in', 403, 'HOOK_REJECTED'], ['disabled', 409, 'HOOK_REJECTED'], ['cleanup-pending', 409, 'HOOK_REJECTED'], ['unavailable', 503, 'INTERNAL']] as const)('maps %s to actionable wire status', async (code, status, wireCode) => {
     expect(await dispatch(new SafeToolError(code, 'input'))).toEqual({ status, body: { error: { code: wireCode, message: safeToolMessage(code, 'input') } } });
   });
   it('recomputes the closed message even if error.message was mutated', async () => {
