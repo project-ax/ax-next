@@ -22,13 +22,16 @@
 //      wakes up inside the bootstrap script; nothing else is injected (no
 //      floor, no notes, no identity files) EXCEPT, when cwd is not the governed
 //      root, a short path note (`bootstrapPathNote`), plus output-directory
-//      guidance when a user-files or scratch tier is wired — and the `rules` section of
-//      the host augment (TASK-524, W1): bodies a required provider returned
-//      under `rules`, carried separately as
-//      `agentConfig.systemPromptBootstrapAugment` and prepended on top. Today
-//      that is only @ax/memory's `## Rules From Your User` — the person's own
-//      words, host-sourced, never agent-writable — because the Memory tab
-//      promises the agent reads them before EVERY run, including this one.
+//      guidance when a user-files or scratch tier is wired — and the `rules`
+//      and `brief` sections of the host augment (TASK-524, W1), carried
+//      separately as `agentConfig.systemPromptBootstrapAugment` and prepended
+//      on top. Today that is @ax/memory's `## Rules From Your User` — the
+//      person's own words, host-sourced, never agent-writable — because the
+//      Memory tab promises the agent reads them before EVERY run, including
+//      this one; and, in a task check-in, @ax/routines' brief (the task's
+//      name, what to do and going well when, which only people write), so a
+//      check-in run by an agent still in its first-run chat still knows what
+//      it is for.
 //      Recalled / agent-derived memory (profile, recent, digest) is NOT
 //      `rules` and stays out: keeping it away from the identity
 //      conversation is what the exclusivity is for.
@@ -290,7 +293,7 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  * @param augment the joined host `system-prompt:augment:*` contributions (e.g. the
  *   @ax/memory block), prepended on top in normal mode. Empty string =>
  *   no prepend. NEVER used in bootstrap mode.
- * @param bootstrapAugment the `rules`-section SUBSET of those contributions
+ * @param bootstrapAugment the `rules` + `brief` SUBSET of those contributions
  *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so
  *   normal mode ignores it (the full `augment` already carries it). Empty
  *   string => bootstrap prompt byte-identical to before TASK-524.
