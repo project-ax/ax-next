@@ -150,20 +150,25 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
 }
 
 /**
- * TASK-907. `routines:list` keeps a task's agent notes (the Tasks page reads them),
- * but the tool leaves them out: a list holds every routine and reaches every chat,
- * and "how's the support queue?" needs the report alone. The projection is explicit
- * and the strict output schema then enforces it, so an agentNotes key can't ride along.
+ * TASK-907. `routines:list` and `routines:update` keep a task's agent notes (the
+ * Tasks page reads them), but their tools leave them out: a list holds every
+ * routine and reaches every chat, and "how's the support queue?" needs the report
+ * alone; an edit's answer needs no notes at all. Only routine_get, read before
+ * working on a task, carries them. The projection is explicit and the strict
+ * output schemas then enforce it, so an agentNotes key can't ride along.
  */
+function withoutAgentNotes({ task, ...routine }: C.RoutineView) {
+  if (task === null) return { ...routine, task };
+  const { agentNotes: _agentNotes, ...report } = task;
+  return { ...routine, task: report };
+}
 function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
-  return C.RoutineListToolOutputSchema.parse({
-    routines: routines.map(({ task, ...routine }) => {
-      if (task === null) return { ...routine, task };
-      const { agentNotes: _agentNotes, ...report } = task;
-      return { ...routine, task: report };
-    }),
-  });
+  return C.RoutineListToolOutputSchema.parse({ routines: routines.map(withoutAgentNotes) });
+}
+/** Every answer routine_update gives leaves here: live, replayed by the service, or recovered from its receipt. */
+function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
+  return C.RoutineUpdateToolOutputSchema.parse(withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output)));
 }
 
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
@@ -249,7 +254,10 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
         } else return pending();
       }
       await settle('succeeded');
-      return output;
+      if (call.name !== 'routine_update') return output;
+      // The edit has happened whatever the projection does; if it fails, it fails closed.
+      try { return updateToolOutput(output); }
+      catch (error) { throw safeFailure(error); }
     });
     await bus.call('tool:register', makeAgentContext({ sessionId: 'init', agentId: PLUGIN, userId: 'system' }), descriptor);
   }

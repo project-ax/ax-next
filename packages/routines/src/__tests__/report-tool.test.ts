@@ -134,6 +134,47 @@ describe('routine_report (TASK-907)', () => {
       .routines.find(row => row.routineId === task.routineId)?.task?.agentNotes).toBe(NOTES);
   });
 
+  it('routine_update answers with a task’s report but not its agent notes, live and replayed', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const edit: ToolCall = { id: 'edit', name: 'routine_update', input: {
+      requestId: 'edit', routineId: task.routineId, expectedRevision: (await get(task)).revision, patch: { description: 'Edited.' } } };
+    // An edit that isn't the brief is held unless Always Allow: approve it once, the way a person would.
+    await h.bus.fire('tool:pre-call', chat, edit);
+    const { decisions } = await h.bus.call<unknown, { decisions: Array<{ id: string; call: ToolCall }> }>('decisions:list', chat, { userId: chat.userId });
+    const held = decisions.find(decision => decision.call.input.requestId === 'edit')!;
+    await h.bus.call('decisions:approve', chat, { decisionId: held.id, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    const answer = await h.bus.call<ToolCall, RoutineListToolOutput['routines'][number]>('tool:execute:routine_update', chat, edit);
+    expect(answer).toMatchObject({ description: 'Edited.', task: shown });
+    for (const key of ['agentNotes', 'notes']) expect(key in answer.task!, key).toBe(false);
+    expect(JSON.stringify(answer)).not.toContain(NOTES);
+    // An exact retry replays the edit's answer: still no notes.
+    const replay = await h.bus.call<ToolCall, unknown>('tool:execute:routine_update', chat, edit);
+    expect(replay).toMatchObject({ description: 'Edited.', revision: answer.revision });
+    expect(JSON.stringify(replay)).not.toContain(NOTES);
+    // routine_get still has them, for the work they're for.
+    expect((await h.bus.call<ToolCall, RoutineView>('tool:execute:routine_get', chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } }))
+      .task?.agentNotes).toBe(NOTES);
+  });
+
+  it('a new task’s routine_create answer has no task state to show', async () => {
+    await start();
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const call: ToolCall = { id: 'create', name: 'routine_create', input: { requestId: 'new-task', definition: TASK } };
+    await h.bus.fire('tool:pre-call', chat, call);
+    const { decisions } = await h.bus.call<unknown, { decisions: Array<{ id: string; call: ToolCall }> }>('decisions:list', chat, { userId: chat.userId });
+    await h.bus.call('decisions:approve', chat, { decisionId: decisions.find(decision => decision.call.input.requestId === 'new-task')!.id, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const created = await h.bus.call<ToolCall, RoutineView>('tool:execute:routine_create', chat, call);
+    expect(created).toMatchObject({ kind: 'stay-on-top', task: null });
+    // Its replay is the same answer.
+    expect(await h.bus.call<ToolCall, RoutineView>('tool:execute:routine_create', chat, call)).toEqual(created);
+  });
+
   it("routine_report refuses outside its own task's check-in, writing nothing", async () => {
     await start();
     const task = await create(TASK, 'task');

@@ -516,11 +516,12 @@ export const RoutineViewSchema = z.object({
   task: RoutineTaskViewSchema.nullable(),
 }).strict().superRefine(validateView);
 /**
- * A routine as `routine_list` shows it (TASK-907): the same view, with a task's
- * report but not its agent notes. A list reaches every chat and holds every
- * routine, so up to 2,000 characters of agent-written text per task would ride
- * along each time; "how's the support queue?" needs the report alone.
- * `routine_get` and the `routines:*` services keep the agent notes.
+ * A routine as `routine_list` and `routine_update` show it (TASK-907): the same
+ * view, with a task's report but not its agent notes. A list reaches every chat
+ * and holds every routine, so up to 2,000 characters of agent-written text per
+ * task would ride along each time; "how's the support queue?" needs the report
+ * alone, and an edit's answer needs no notes at all. `routine_get` and the
+ * `routines:*` services keep the agent notes.
  */
 export const RoutineListToolViewSchema = z.object({
   ...RoutineViewShape,

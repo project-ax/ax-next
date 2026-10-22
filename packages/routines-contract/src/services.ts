@@ -20,6 +20,8 @@ export const RoutineCreateOutputSchema = RoutineViewSchema;
 export const RoutineDeleteInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, expectedRevision: RoutineOpaqueStringSchema }).strict();
 export const RoutineUpdateInputSchema = RoutineDeleteInputSchema.extend({ patch: RoutinePatchSchema }).strict();
 export const RoutineUpdateOutputSchema = RoutineViewSchema;
+/** What the `routine_update` tool returns: the edited routine as `routine_list` shows it, without its task's agent notes (TASK-907). */
+export const RoutineUpdateToolOutputSchema = RoutineListToolViewSchema;
 export const RoutineDeleteOutputSchema = z.object({ deleted: z.literal(true), cleanupPending: z.boolean() }).strict();
 export const RoutineFireNowInputSchema = RoutineDeleteInputSchema;
 export const RoutineFireNowOutputSchema = z.object({ status: z.enum(['ok', 'error']) }).strict();
@@ -102,6 +104,7 @@ export type RoutineCreateInput = z.output<typeof RoutineCreateInputSchema>;
 export type RoutineCreateOutput = z.output<typeof RoutineCreateOutputSchema>;
 export type RoutineUpdateInput = z.output<typeof RoutineUpdateInputSchema>;
 export type RoutineUpdateOutput = z.output<typeof RoutineUpdateOutputSchema>;
+export type RoutineUpdateToolOutput = z.output<typeof RoutineUpdateToolOutputSchema>;
 export type RoutineDeleteInput = z.output<typeof RoutineDeleteInputSchema>;
 export type RoutineDeleteOutput = z.output<typeof RoutineDeleteOutputSchema>;
 export type RoutineFireNowInput = z.output<typeof RoutineFireNowInputSchema>;
