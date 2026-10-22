@@ -89,7 +89,7 @@ function parseFields(expr: string): Fields | null {
 }
 
 /** `0 2` → "2:00 AM". 12-hour because that is how most people read a clock. */
-function clockTime(minute: string, hour: string): string {
+export function clockTime(minute: string, hour: string): string {
   const h = Number(hour);
   const m = Number(minute);
   const suffix = h < 12 ? 'AM' : 'PM';
@@ -122,14 +122,14 @@ function describeFields(f: Fields): string | null {
 
   // Interval shapes: every N minutes / every N hours / every minute.
   if (dom === '*' && dow === '*') {
-    if (minute === '*' && hour === '*') return 'Runs every minute';
+    if (minute === '*' && hour === '*') return 'every minute';
     const everyMin = minute.match(/^\*\/(\d{1,2})$/);
     if (everyMin !== null && hour === '*') {
-      return `Runs every ${everyMin[1]} minutes`;
+      return `every ${everyMin[1]} minutes`;
     }
     const everyHour = hour.match(/^\*\/(\d{1,2})$/);
     if (everyHour !== null && minute === '0') {
-      return `Runs every ${everyHour[1]} hours`;
+      return `every ${everyHour[1]} hours`;
     }
   }
 
@@ -137,18 +137,18 @@ function describeFields(f: Fields): string | null {
   if (!isFixed(minute) || !isFixed(hour)) return null;
   const at = clockTime(minute, hour);
 
-  if (dom === '*' && dow === '*') return `Runs at ${at}, every day`;
+  if (dom === '*' && dow === '*') return `at ${at}, every day`;
 
-  if (dom === '*' && dow === '1-5') return `Runs at ${at}, every weekday`;
+  if (dom === '*' && dow === '1-5') return `at ${at}, every weekday`;
 
   if (dom === '*' && isFixed(dow)) {
     // Cron accepts both 0 and 7 for Sunday.
     const name = DAY_NAMES[Number(dow) % 7];
-    return name === undefined ? null : `Runs at ${at}, every ${name}`;
+    return name === undefined ? null : `at ${at}, every ${name}`;
   }
 
   if (dow === '*' && isFixed(dom)) {
-    return `Runs at ${at} on the ${ordinal(Number(dom))} of each month`;
+    return `at ${at} on the ${ordinal(Number(dom))} of each month`;
   }
 
   return null;
@@ -160,7 +160,7 @@ function describeFields(f: Fields): string | null {
  * Never throws: a half-typed expression is the normal state of an input someone
  * is still filling in.
  */
-export function describeCron(expr: string, timezone?: string): CronDescription {
+export function describeCronPhrase(expr: string, timezone?: string): CronDescription {
   const fields = parseFields(expr);
   if (fields === null) return { kind: 'invalid' };
   const described = describeFields(fields);
@@ -169,4 +169,12 @@ export function describeCron(expr: string, timezone?: string): CronDescription {
     ? ` (${timezone.trim()})`
     : '';
   return { kind: 'described', text: `${described}${tz}` };
+}
+
+/** Like `describeCronPhrase`, as a sentence: "Runs at 2:00 AM, every day". */
+export function describeCron(expr: string, timezone?: string): CronDescription {
+  const phrase = describeCronPhrase(expr, timezone);
+  return phrase.kind === 'described'
+    ? { kind: 'described', text: `Runs ${phrase.text}` }
+    : phrase;
 }

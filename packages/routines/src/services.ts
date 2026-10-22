@@ -5,12 +5,13 @@ import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
+import { advanceToNextActiveWindow } from './active-hours.js';
 
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
-  'set-agent-default-enabled', 'list-agent-defaults', 'report',
+  'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes',
 ].map(name => `routines:${name}`);
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
@@ -29,9 +30,11 @@ export function routinePermissions(row: StoredRoutine, userId: string, allowed: 
   return { edit: own, stop: allowed && row.definitionId === null, fire: allowed && row.ownerUserId === userId, manageSecret: own };
 }
 export function routineView(row: StoredRoutine, userId: string, allowed: boolean): C.RoutineView {
+  // The tick skips a run outside the active hours and re-arms it at the next window's start (tick.ts), so that's when it will run (TASK-910).
+  const nextRunAt = row.nextRunAt === null || row.activeHours === null ? row.nextRunAt : advanceToNextActiveWindow(row.nextRunAt, row.activeHours);
   return { ...editableDefinition(row), agentId: row.agentId, routineId: row.routineId, revision: row.revision,
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
-    nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
+    nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId) };
 }
@@ -211,5 +214,20 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const outcome = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
     if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
     return { recorded: true as const };
+  });
+  // TASK-910. The person clears a task's agent notes on its task page. Only the task's owner may,
+  // whether or not they still manage the agent's tasks: the owner is the only person the notes are
+  // shown to (taskView), and clearing removes agent-written text, so it can't add reach. So there's
+  // no `allowed` check, but agents:resolve still runs first and refuses an agent the caller can't
+  // reach. The store decides ownership under the routine's row lock, and after it answers no run
+  // accepted at or before the clear can write notes again. Neither a tool nor an IPC action, so no
+  // model can call it. The log line carries ids only: the notes are the agent's text.
+  register('clear-notes', C.RoutineClearNotesInputSchema, C.RoutineClearNotesOutputSchema, async (ctx, input) => {
+    await access(ctx, input.agentId);
+    const outcome = await store.clearAgentNotes({ ...input, actorUserId: ctx.userId, now: now() });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    ctx.logger.info('routines_notes_cleared', { agentId: input.agentId, routineId: input.routineId });
+    return { cleared: true as const };
   });
 }

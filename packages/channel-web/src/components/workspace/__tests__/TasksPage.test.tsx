@@ -7,6 +7,7 @@
  * asserted verbatim because it is decided (TASK-909 decisions row 11), and its
  * apostrophe is U+2019, not the ASCII one.
  */
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
@@ -17,6 +18,7 @@ import type {
   TasksResponse,
   UnavailableAgent,
 } from '@/lib/workspace-types';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { TasksPage } from '../TasksPage';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -66,6 +68,13 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** The page, with the shell's `navigate` stood in for by a spy. */
+function renderPage(leading?: ReactNode) {
+  const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
+  const view = render(<TasksPage leading={leading} onNavigate={onNavigate} />);
+  return { ...view, onNavigate };
+}
+
 /** The group headings, in page order, as text. */
 function groupHeadings(): string[] {
   return screen.queryAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '');
@@ -87,7 +96,7 @@ afterEach(() => {
 describe('TasksPage (TASK-909)', () => {
   it('shows the title and subtitle while it loads', () => {
     tasksMock.mockReturnValue(new Promise<TasksResponse>(() => {}));
-    render(<TasksPage leading={<button type="button">Open navigation</button>} />);
+    renderPage(<button type="button">Open navigation</button>);
     expect(screen.getByRole('heading', { level: 1, name: 'Tasks' })).toBeInTheDocument();
     expect(screen.getByText('What your agents are looking after')).toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
@@ -106,7 +115,7 @@ describe('TasksPage (TASK-909)', () => {
         }),
       ]),
     );
-    render(<TasksPage />);
+    renderPage();
     await screen.findByText('Morning inbox');
     expect(groupHeadings()).toEqual(['Needs you · 2', 'On track · 1', 'No update yet · 1']);
 
@@ -127,7 +136,7 @@ describe('TasksPage (TASK-909)', () => {
         row('Old inbox', { enabled: false, task: report('needs-you') }),
       ]),
     );
-    const first = render(<TasksPage />);
+    const first = renderPage();
     await screen.findByText('Support queue');
     expect(groupHeadings()).toEqual(['Needs you · 1']);
     expect(screen.queryByText('Old inbox')).not.toBeInTheDocument();
@@ -147,7 +156,7 @@ describe('TasksPage (TASK-909)', () => {
         row('Old digest', { enabled: false }),
       ]),
     );
-    render(<TasksPage />);
+    renderPage();
     expect(await screen.findByRole('button', { name: 'Show 2 paused tasks' })).toBeInTheDocument();
     // Every task paused is still not "no tasks".
     expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
@@ -155,7 +164,7 @@ describe('TasksPage (TASK-909)', () => {
 
   it('teaches the one way in when there are no tasks', async () => {
     tasksMock.mockResolvedValue(page([]));
-    render(<TasksPage />);
+    renderPage();
     expect(await screen.findByText('No tasks yet')).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -170,7 +179,7 @@ describe('TasksPage (TASK-909)', () => {
 
   it('says which agents could not be read, and never claims the list is empty', async () => {
     tasksMock.mockResolvedValueOnce(page([], [JUNIPER]));
-    const first = render(<TasksPage />);
+    const first = renderPage();
     expect(
       await screen.findByText(
         'We couldn’t load tasks from Juniper just now, so some may be missing.',
@@ -184,7 +193,7 @@ describe('TasksPage (TASK-909)', () => {
     tasksMock
       .mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })], [JUNIPER, QUILL]))
       .mockReturnValueOnce(refresh.promise);
-    render(<TasksPage />);
+    renderPage();
     const note = await screen.findByText(
       'We couldn’t load tasks from Juniper and Quill just now, so some may be missing.',
     );
@@ -210,7 +219,7 @@ describe('TasksPage (TASK-909)', () => {
     tasksMock
       .mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })], [JUNIPER]))
       .mockRejectedValueOnce(new WorkspaceApiError('/tasks', 503));
-    render(<TasksPage />);
+    renderPage();
     const partial = 'We couldn’t load tasks from Juniper just now, so some may be missing.';
     fireEvent.click(
       within((await screen.findByText(partial)).closest('[role="alert"]') as HTMLElement).getByRole(
@@ -239,11 +248,13 @@ describe('TasksPage (TASK-909)', () => {
     tasksMock.mockResolvedValue(
       page([row(NAME, { task: report('on-track', { update: UPDATE }) })]),
     );
-    const { container } = render(<TasksPage />);
+    const { container } = renderPage();
     const update = await screen.findByTitle(UPDATE);
     expect(update.textContent).toBe(UPDATE);
     expect(screen.getByTitle(NAME).textContent).toBe(NAME);
-    expect(container.querySelector('ul strong, ul b, ul a, ul img')).toBeNull();
+    expect(container.querySelector('ul strong, ul b, ul img')).toBeNull();
+    // The one link is the row's own (TASK-910), never one the update wrote.
+    expect(container.querySelectorAll('ul a')).toHaveLength(1);
   });
 
   it('keeps the whole name and update in a title', async () => {
@@ -251,7 +262,7 @@ describe('TasksPage (TASK-909)', () => {
       'Keep every enterprise customer’s support ticket under an hour, weekends included';
     const UPDATE = `${'Two invoices are three days old and one is waiting on Acme. '.repeat(8)}End.`;
     tasksMock.mockResolvedValue(page([row(NAME, { task: report('needs-you', { update: UPDATE }) })]));
-    render(<TasksPage />);
+    renderPage();
     expect(await screen.findByText(NAME)).toHaveAttribute('title', NAME);
     expect(screen.getByText(UPDATE)).toHaveAttribute('title', UPDATE);
   });
@@ -270,7 +281,7 @@ describe('TasksPage (TASK-909)', () => {
         row('Weekly digest', { agentId: 'a2', agentName: 'Juniper' }),
       ]),
     );
-    render(<TasksPage />);
+    renderPage();
     expect(await screen.findByText('Caveman · checked 4 min ago')).toBeInTheDocument();
     const digest = screen.getByText('Weekly digest').closest('li') as HTMLElement;
     expect(within(digest).getByText('Juniper').textContent).toBe('Juniper');
@@ -301,7 +312,7 @@ describe('TasksPage (TASK-909)', () => {
           }),
         ]),
       );
-    render(<TasksPage />);
+    renderPage();
     const retry = await screen.findByRole('button', { name: 'Try again' });
     // Nothing on the first answer had a time, so no clock was running.
     vi.setSystemTime(later);
@@ -324,7 +335,7 @@ describe('TasksPage (TASK-909)', () => {
         row('Weekly digest'),
       ]),
     );
-    render(<TasksPage />);
+    renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Show 1 paused task' }));
     expect(screen.getByText('Caveman · checked 4 min ago')).toBeInTheDocument();
 
@@ -338,7 +349,7 @@ describe('TasksPage (TASK-909)', () => {
     tasksMock
       .mockRejectedValueOnce(new WorkspaceApiError('/tasks', 500))
       .mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })]));
-    render(<TasksPage />);
+    renderPage();
     expect(
       await screen.findByText('We couldn’t load your tasks just now. Nothing was lost.'),
     ).toBeInTheDocument();
@@ -352,10 +363,30 @@ describe('TasksPage (TASK-909)', () => {
 
   it('asks to sign in again when the session ended, with nothing to retry', async () => {
     tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 401));
-    render(<TasksPage />);
+    renderPage();
     expect(await screen.findByText(HTTP_SESSION_ENDED)).toBeInTheDocument();
     // Signing in is not a repair, so the register is the default one.
     expect(screen.getByRole('alert').className).not.toContain('destructive');
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  it('each task opens its page', async () => {
+    tasksMock.mockResolvedValue(
+      page([row('Support queue', { routineId: 't1', task: report('needs-you') })]),
+    );
+    const { onNavigate } = renderPage();
+    const link = await screen.findByRole('link', { name: /Support queue/ });
+    expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1');
+
+    fireEvent.click(link, { ctrlKey: true });
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: 'task',
+      agentId: 'a1',
+      routineId: 't1',
+    });
   });
 });

@@ -14,7 +14,7 @@
  * Parsing is deliberately lenient — the deepest prefix we understand wins,
  * and a tail we don't understand is dropped. A link with a typo in the tab
  * should still open the right agent. The one thing it is strict about is the
- * agent id: see `parseAgentId`.
+ * agent and routine ids: see `parseIdSegment`.
  */
 
 /** The tabs an agent view offers, in the order they appear. */
@@ -55,6 +55,7 @@ export const DEFAULT_SETTINGS_SECTION: AgentSettingsSection = 'instructions';
 export type WorkspaceRoute =
   | { kind: 'today' }
   | { kind: 'tasks' }
+  | { kind: 'task'; agentId: string; routineId: string }
   | { kind: 'activity' }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
@@ -84,7 +85,8 @@ function isAgentTab(segment: string): segment is AgentTab {
 }
 
 /**
- * Decode one path segment into an agent id, or `null` if it can't be one.
+ * Decode one path segment into an agent id or a routine id (it guards both),
+ * or `null` if it can't be one.
  *
  * Two refusals, both about a link someone else wrote:
  *
@@ -96,7 +98,7 @@ function isAgentTab(segment: string): segment is AgentTab {
  *   would normalize the request onto a DIFFERENT endpoint before sending it.
  *   A slash needs no such guard: it encodes to `%2F` and stays one segment.
  */
-function parseAgentId(segment: string): string | null {
+function parseIdSegment(segment: string): string | null {
   let id: string;
   try {
     id = decodeURIComponent(segment);
@@ -118,11 +120,18 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
 
   const [, section, third, fourth, fifth] = segments;
   if (section === undefined) return TODAY;
-  if (section === 'tasks') return { kind: 'tasks' };
+  if (section === 'tasks') {
+    // `/workspace/tasks/<agentId>/<routineId>` is one task's page. Anything
+    // else under `tasks` is the list; a tail past the routine id is dropped.
+    const agentId = third === undefined ? null : parseIdSegment(third);
+    const routineId = fourth === undefined ? null : parseIdSegment(fourth);
+    if (agentId !== null && routineId !== null) return { kind: 'task', agentId, routineId };
+    return { kind: 'tasks' };
+  }
   if (section === 'activity') return { kind: 'activity' };
   if (section !== 'agents' || third === undefined) return TODAY;
 
-  const id = parseAgentId(third);
+  const id = parseIdSegment(third);
   if (id === null) return TODAY;
 
   if (fourth === 'settings') {
@@ -155,6 +164,8 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       return WORKSPACE_ROOT_PATH;
     case 'tasks':
       return `${WORKSPACE_ROOT_PATH}/tasks`;
+    case 'task':
+      return `${WORKSPACE_ROOT_PATH}/tasks/${encodeURIComponent(route.agentId)}/${encodeURIComponent(route.routineId)}`;
     case 'activity':
       return `${WORKSPACE_ROOT_PATH}/activity`;
     case 'agent': {

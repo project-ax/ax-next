@@ -8,10 +8,10 @@
  * the shipped chat wire.
  *
  * Views are addressable: `/workspace`, `/workspace/tasks`,
- * `/workspace/activity`, and `/workspace/agents/<id>[/<tab>]`. The grammar
- * lives in `@/lib/workspace-route`; this file owns the history calls. No server route
- * backs those paths and none is needed — `@ax/static-files` serves the SPA on
- * any unclaimed path.
+ * `/workspace/tasks/<agentId>/<routineId>`, `/workspace/activity`, and
+ * `/workspace/agents/<id>[/<tab>]`. The grammar lives in `@/lib/workspace-route`;
+ * this file owns the history calls. No server route backs those paths and none
+ * is needed — `@ax/static-files` serves the SPA on any unclaimed path.
  *
  * The demo strip that used to sit along the top — three canned scenarios and a
  * global stop — went with the mock backend it drove. So did the "New agent"
@@ -62,6 +62,7 @@ import {
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
 import { ActivityFeed } from './ActivityFeed';
+import { TaskPage } from './TaskPage';
 import { TasksPage } from './TasksPage';
 import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
@@ -802,7 +803,8 @@ function Inner({
   */
   const navProps = {
     agents: board.agents,
-    route: route.kind === 'agent-settings' ? 'agent' : route.kind,
+    route:
+      route.kind === 'agent-settings' ? 'agent' : route.kind === 'task' ? 'tasks' : route.kind,
     activeAgentId: routeAgentId(route),
     pendingCount: pending,
     rosterOpen,
@@ -927,7 +929,16 @@ function Inner({
             </>
           )}
 
-          {route.kind === 'tasks' && <TasksPage leading={navTrigger} />}
+          {route.kind === 'tasks' && <TasksPage leading={navTrigger} onNavigate={navigate} />}
+          {route.kind === 'task' && (
+            <TaskPage
+              key={JSON.stringify([route.agentId, route.routineId])}
+              agentId={route.agentId}
+              routineId={route.routineId}
+              leading={navTrigger}
+              onNavigate={navigate}
+            />
+          )}
 
           {route.kind === 'activity' && (
             <>

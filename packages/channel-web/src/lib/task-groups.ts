@@ -1,3 +1,4 @@
+import type { RoutineReportStatus } from '@ax/routines-contract';
 import type { TaskRow } from './workspace-types.js';
 
 export type TaskGroup = 'needs-you' | 'off-track' | 'on-track' | 'no-update' | 'paused';
@@ -10,8 +11,20 @@ export const ACTIVE_TASK_GROUPS: readonly ActiveTaskGroup[] = [
   'no-update',
 ];
 
+/** The group words, the same on the Tasks page and a task's own page. */
+export const TASK_GROUP_LABELS: Record<TaskGroup, string> = {
+  'needs-you': 'Needs you',
+  'off-track': 'Off track',
+  'on-track': 'On track',
+  'no-update': 'No update yet',
+  paused: 'Paused',
+};
+
 /** Which group a task sits in. Paused wins over whatever the last report said. */
-export function taskGroup(row: TaskRow): TaskGroup {
+export function taskGroup(row: {
+  enabled: boolean;
+  task: { status: RoutineReportStatus } | null;
+}): TaskGroup {
   if (!row.enabled) return 'paused';
   if (row.task === null) return 'no-update';
   return row.task.status;

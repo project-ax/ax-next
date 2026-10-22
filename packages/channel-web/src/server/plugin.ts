@@ -62,6 +62,10 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     TASK-909 adds no hard call either: the Tasks page (GET
 //     /api/workspace/tasks) reads the optional routines:list and answers an
 //     empty list without it.
+//     TASK-910 adds no hard call either: the task page reads the optional
+//     routines:get and routines:recent-fires and answers 404 without them,
+//     and clears notes through the optional routines:clear-notes, answering
+//     503 without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -296,6 +300,26 @@ export function createChannelWebServerPlugin(
           hook: 'routines:list',
           degradation:
             'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
+        },
+        {
+          // TASK-910 — the task page reads the task itself, and only for the
+          // caller's own task, then its check-ins. Both come from
+          // @ax/routines, so the page answers 404 without either.
+          hook: 'routines:get',
+          degradation:
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) answers 404, because without @ax/routines there are no tasks',
+        },
+        {
+          hook: 'routines:recent-fires',
+          degradation:
+            'the task page answers 404, as it does without routines:get (both come from @ax/routines)',
+        },
+        {
+          // TASK-910 — Clear notes. The service decides who may (the task's
+          // owner), under its own lock.
+          hook: 'routines:clear-notes',
+          degradation:
+            'Clear notes on the task page (DELETE /api/workspace/tasks/:agentId/:routineId/notes) answers 503 and the notes stay',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

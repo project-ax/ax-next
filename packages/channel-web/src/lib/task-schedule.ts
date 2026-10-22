@@ -18,8 +18,8 @@
  * The output carries the trigger's own text (a cron expression, a timezone),
  * so a caller putting it on the wire fences it first.
  */
-import type { RoutineTrigger } from '@ax/routines-contract';
-import { describeCron } from './cron-describe.js';
+import type { ActiveHours, RoutineTrigger } from '@ax/routines-contract';
+import { clockTime, describeCron, describeCronPhrase } from './cron-describe.js';
 
 const UNIT_WORDS = { s: 'second', m: 'minute', h: 'hour', d: 'day' } as const;
 
@@ -46,4 +46,42 @@ export function describeCheckIns(trigger: RoutineTrigger): string | null {
     default:
       return null;
   }
+}
+
+/** `'09:00'` → "9:00 AM"; the day's two edges read as "midnight". */
+function hm(time: string): string {
+  if (time === '00:00' || time === '24:00') return 'midnight';
+  const [hour = '0', minute = '0'] = time.split(':');
+  return clockTime(String(Number(minute)), String(Number(hour)));
+}
+
+/**
+ * How often a task checks in, as the words after "checks in" (TASK-910), or
+ * null when it doesn't check in on a schedule. Carries the trigger's own time
+ * zone, so a caller fences it.
+ */
+export function checkInSchedule(
+  trigger: RoutineTrigger,
+  activeHours: ActiveHours | null,
+): string | null {
+  let phrase: string | null = null;
+  switch (trigger.kind) {
+    case 'interval': {
+      const match = /^(\d+)(s|m|h|d)$/.exec(trigger.every);
+      if (match === null) return null;
+      const n = Number(match[1]);
+      const unit = UNIT_WORDS[match[2] as keyof typeof UNIT_WORDS];
+      phrase = n === 1 ? `every ${unit}` : `every ${n} ${unit}s`;
+      break;
+    }
+    case 'cron': {
+      const described = describeCronPhrase(trigger.expr, trigger.tz);
+      phrase = described.kind === 'described' ? described.text : 'on a custom schedule';
+      break;
+    }
+    default:
+      return null;
+  }
+  if (activeHours === null) return phrase;
+  return `${phrase}, ${hm(activeHours.start)} to ${hm(activeHours.end)} (${activeHours.tz})`;
 }

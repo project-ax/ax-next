@@ -1335,3 +1335,47 @@ export interface TasksResponse {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
 }
+
+/**
+ * A task's latest report, for its own page (TASK-910). `update`, `ask` and
+ * `agentNotes` are text the agent wrote; the server fenced them before they
+ * left it, and the page draws them as plain text.
+ */
+export interface TaskDetailReport {
+  status: RoutineReportStatus;
+  update: string | null;
+  ask: string | null;
+  agentNotes: string | null;
+  reportedAt: string;
+}
+
+/** One check-in in a task's Updates thread. */
+export interface TaskUpdate {
+  /** When the check-in started, ISO. */
+  firedAt: string;
+  status: 'ok' | 'silenced' | 'error';
+  /** The recorded reason, one fenced line, only when status is 'error'. */
+  error: string | null;
+  /** What the agent reported at that check-in; `update` is agent-written and fenced. */
+  report: { status: RoutineReportStatus; update: string | null } | null;
+}
+
+/** Everything a task's own page shows (TASK-910). */
+export interface TaskDetail {
+  agentName: string;
+  name: string;
+  enabled: boolean;
+  /** Check now's and Pause/Resume's `expectedRevision`. */
+  revision: string;
+  /** fire: start a check-in. stop: pause. edit: resume. As the routines services decide them. */
+  permissions: { fire: boolean; stop: boolean; edit: boolean };
+  /** The words after "checks in", or null. */
+  schedule: string | null;
+  /** When the next check-in is due, ISO; null when paused. */
+  nextCheckAt: string | null;
+  /** The person-written brief, fenced. */
+  brief: { promptBody: string | null; goodWhen: string | null };
+  task: TaskDetailReport | null;
+  /** Newest first, at most 50. */
+  updates: TaskUpdate[];
+}

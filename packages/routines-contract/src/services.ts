@@ -44,6 +44,7 @@ export const RoutineFireReportViewSchema = z.object({
  * `routines:report` (TASK-907), the one writer of a task's state. The tool fills
  * `agentId` and `dispatchId` from the host-set session, never from the model.
  * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
+ * A run accepted at or before the person last cleared the notes can't change them (TASK-910).
  */
 export const RoutineReportInputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
@@ -51,6 +52,14 @@ export const RoutineReportInputSchema = z.object({
   ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
 }).strict();
 export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) }).strict();
+/**
+ * `routines:clear-notes` (TASK-910): the person clears a task's agent notes,
+ * the text its next check-in reads (design §7). Only the routine's owner may.
+ * No run accepted at or before the clear can write notes again. It never
+ * changes the routine's revision.
+ */
+export const RoutineClearNotesInputSchema = RoutineKeySchema;
+export const RoutineClearNotesOutputSchema = z.object({ cleared: z.literal(true) }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -132,3 +141,5 @@ export type RoutineSetAgentDefaultEnabledInput = z.output<typeof RoutineSetAgent
 export type RoutineSetAgentDefaultEnabledOutput = z.output<typeof RoutineSetAgentDefaultEnabledOutputSchema>;
 export type RoutineListAgentDefaultsInput = z.output<typeof RoutineListAgentDefaultsInputSchema>;
 export type RoutineListAgentDefaultsOutput = z.output<typeof RoutineListAgentDefaultsOutputSchema>;
+export type RoutineClearNotesInput = z.output<typeof RoutineClearNotesInputSchema>;
+export type RoutineClearNotesOutput = z.output<typeof RoutineClearNotesOutputSchema>;

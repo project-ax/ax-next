@@ -62,6 +62,8 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     expect(routes).toContain('GET /api/workspace/state');
     expect(routes).toContain('GET /api/workspace/activity');
     expect(routes).toContain('GET /api/workspace/tasks');
+    expect(routes).toContain('GET /api/workspace/tasks/:agentId/:routineId');
+    expect(routes).toContain('DELETE /api/workspace/tasks/:agentId/:routineId/notes');
     expect(routes).toContain('GET /api/workspace/agents/:agentId');
     expect(routes).toContain('POST /api/workspace/route');
     expect(routes).toContain('GET /api/workspace/grants');

@@ -40,6 +40,8 @@ export interface RoutinesDefinitionsRow {
    * Version 4 (TASK-907). A task's latest report, written only by `recordReport`,
    * and the notes it keeps between check-ins. NULL until the first report, and
    * NULL again after an edit that changes the routine's kind (`updateAuthored`).
+   * `agent_notes` alone is NULL again after the person clears them
+   * (`routines:clear-notes`, TASK-910).
    * `task_report_accepted_at` is the reporting run's acceptance time: the run
    * accepted last owns this state. A report never touches `revision` or `updated_at`.
    */
@@ -49,6 +51,13 @@ export interface RoutinesDefinitionsRow {
   task_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   task_report_accepted_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   agent_notes: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 6 (TASK-910). The moment the person last cleared the agent notes, or
+   * NULL if they never have: no run accepted at or before it may write notes
+   * again (`recordReport`). Written only by `clearAgentNotes`; see
+   * `addNotesClearedColumn` for why it can be later than the clear itself.
+   */
+  agent_notes_cleared_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -159,7 +168,27 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addConversationIndex(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (5)`.execute(trx);
     }
+    if (!await done(6)) {
+      await addNotesClearedColumn(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (6)`.execute(trx);
+    }
   });
+}
+
+/** Version 6 (TASK-910): when the person last cleared a task's agent notes.
+ * A check-in reads the notes in its check-in message when it starts, so an
+ * instruction injected through them can come back in that run's next report.
+ * After a clear, `recordReport` refuses notes from any run accepted at or
+ * before this moment; the rest of the report still lands. `clearAgentNotes`
+ * stores the later of its own clock and the start of the routine's latest
+ * open run (GREATEST), so every run that could have read the old notes is
+ * covered even if the host clock stepped back between that run's start and
+ * the clear. A run that starts in the same millisecond is refused too, the
+ * safe direction. Additive and nullable, with no backfill: existing rows read
+ * NULL (never cleared), and code from before this version ignores the column.
+ */
+async function addNotesClearedColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS agent_notes_cleared_at TIMESTAMPTZ`.execute(db);
 }
 
 /** Version 5 (TASK-908): every run's conversation, open or finished, is indexed. Memory asks

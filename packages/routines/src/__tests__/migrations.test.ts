@@ -70,7 +70,7 @@ describe('versioned routines migration', () => {
     await runRoutinesMigration(db); await runRoutinesMigration(db);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions WHERE routine_id='r_old'`.execute(db)).rows).toEqual([{ kind: 'repeat', good_when: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_old' })).toMatchObject({ kind: 'repeat', goodWhen: null });
-    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
   });
   it('refuses an unknown kind at the database', async () => {
     await runRoutinesMigration(db);
@@ -83,7 +83,7 @@ describe('versioned routines migration', () => {
     if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_kind_chk`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 3`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
     expect(await kindChecks()).toBe(1);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions`.execute(db)).rows).toEqual([{ kind: 'stay-on-top', good_when: 'Nothing waits a day.' }]);
   });
@@ -95,7 +95,7 @@ describe('versioned routines migration', () => {
     await sql`INSERT INTO routines_v1_dispatches (dispatch_id,agent_id,routine_id,revision,req_id,accepted_at,completed_at,trigger_source) VALUES ('d_open','a','r_task','rev_task','req_open','2031-01-01T00:00:00Z',NULL,'tick')`.execute(db);
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status) VALUES ('a','r_task','d_done','2030-12-31T23:45:00Z','tick','c_done','ok')`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
     expect(await reportColumns()).toEqual({
       dispatches: [{ dispatch_id: 'd_open', conversation_id: null, report: null }],
       definitions: [{ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null }],
@@ -118,7 +118,7 @@ describe('versioned routines migration', () => {
     await sql`DROP INDEX routines_v1_dispatches_conversation`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 5`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_conversation'`.execute(db)).rows).toHaveLength(1);
     expect((await sql`SELECT dispatch_id FROM routines_v1_dispatches`.execute(db)).rows).toEqual([{ dispatch_id: 'd_done' }]);
     // The planner may still pick a scan on a tiny table; with scans priced out, the store's own query reads the index.
@@ -153,12 +153,30 @@ describe('versioned routines migration', () => {
     const before = await reportColumns();
     await sql`DELETE FROM routines_schema_versions WHERE version = 4`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
     expect(await constraintCount('routines_v1_definitions_task_status_chk', 'routines_v1_definitions')).toBe(1);
     expect(await constraintCount('routines_v1_fires_report_status_chk', 'routines_v1_fires')).toBe(1);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_open_conversation'`.execute(db)).rows).toHaveLength(1);
     expect(await reportColumns()).toEqual(before);
     expect(before.definitions).toEqual([{ task_status: 'needs-you', task_update: 'Two tickets are late.', task_ask: 'Can I refund order 1234?',
       task_reported_at: new Date('2031-01-01T00:10:00Z'), task_report_accepted_at: new Date('2031-01-01T00:00:00Z'), agent_notes: 'Order 1234 waits on a refund.' }]);
+  });
+  it('version 6 adds agent_notes_cleared_at; existing rows read back with none (TASK-910)', async () => {
+    const cleared = async () => (await sql`SELECT agent_notes, agent_notes_cleared_at FROM routines_v1_definitions WHERE routine_id='r_task'`.execute(db)).rows;
+    await runRoutinesMigration(db);
+    await sql`ALTER TABLE routines_v1_definitions DROP COLUMN IF EXISTS agent_notes_cleared_at`.execute(db);
+    await sql`DELETE FROM routines_schema_versions WHERE version = 6`.execute(db);
+    // A version-5 task whose check-in left notes.
+    await insertTask(sql`,agent_notes`, sql`,'Order 1234 waits on a refund.'`);
+    await runRoutinesMigration(db); await runRoutinesMigration(db);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await cleared()).toEqual([{ agent_notes: 'Order 1234 waits on a refund.', agent_notes_cleared_at: null }]);
+    expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' })).toMatchObject({ routineId: 'r_task', kind: 'stay-on-top' });
+    // Finishing version 6 over the column it added keeps the column's values.
+    await sql`UPDATE routines_v1_definitions SET agent_notes = NULL, agent_notes_cleared_at = '2031-01-01T00:00:00Z' WHERE routine_id='r_task'`.execute(db);
+    await sql`DELETE FROM routines_schema_versions WHERE version = 6`.execute(db);
+    await runRoutinesMigration(db);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await cleared()).toEqual([{ agent_notes: null, agent_notes_cleared_at: new Date('2031-01-01T00:00:00Z') }]);
   });
 });

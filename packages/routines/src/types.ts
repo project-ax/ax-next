@@ -46,7 +46,8 @@ export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'rout
 /**
  * TASK-907. `conversationId` is the conversation the report came from (host-set
  * context); the run must be bound to it. `notes` left out keeps the task's
- * notes; null clears them.
+ * notes; null clears them. A run accepted at or before the last clear can't
+ * change the notes (TASK-910).
  */
 export type RecordReportInput = {
   agentId: string; dispatchId: string; conversationId: string; actorUserId: string;

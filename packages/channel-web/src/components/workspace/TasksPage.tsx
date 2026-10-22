@@ -15,8 +15,7 @@
  * or `<img>` in an update shows as those characters. Each clamped one keeps
  * the whole fenced value in a `title` (TASK-436).
  *
- * Rows are not links, and have no hover look, until TASK-910 adds the task
- * page. A row that looks clickable and isn't is worse than a plain one.
+ * Each row opens its task page (TASK-910) through a real link, so it can open in a new tab too.
  */
 import { useEffect, useId, useLayoutEffect, useState, type ReactNode } from 'react';
 import { ChevronDown, ListChecks } from 'lucide-react';
@@ -39,21 +38,15 @@ import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readAlertVariant } from '@/lib/read-register';
-import { groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
+import { routeLinkProps } from '@/lib/route-link';
+import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTasks, type TasksReadError } from '@/lib/workspace-tasks';
 import { timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { WorkspaceHeader } from './WorkspaceHeader';
-
-/** The group words. Move them to a shared module when a second surface needs them. */
-const TASK_GROUP_LABELS: Record<ActiveTaskGroup, string> = {
-  'needs-you': 'Needs you',
-  'off-track': 'Off track',
-  'on-track': 'On track',
-  'no-update': 'No update yet',
-};
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
 const AGO_TICK_MS = 30_000;
@@ -65,7 +58,13 @@ const LOAD_COPY: Record<TasksReadError, string> = {
   failed: 'We couldn’t load your tasks just now. Nothing was lost.',
 };
 
-export function TasksPage({ leading }: { leading?: ReactNode }) {
+export function TasksPage({
+  leading,
+  onNavigate,
+}: {
+  leading?: ReactNode;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
   const { state, retry } = useTasks();
   return (
     <>
@@ -90,6 +89,7 @@ export function TasksPage({ leading }: { leading?: ReactNode }) {
               unavailableAgents={state.unavailableAgents}
               refreshing={state.refreshing}
               refreshFailed={state.refreshFailed}
+              onNavigate={onNavigate}
               onRetry={retry}
             />
           )}
@@ -132,12 +132,14 @@ function TaskBoard({
   unavailableAgents,
   refreshing,
   refreshFailed,
+  onNavigate,
   onRetry,
 }: {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
   refreshing: boolean;
   refreshFailed: boolean;
+  onNavigate: (route: WorkspaceRoute) => void;
   onRetry: () => void;
 }) {
   const { groups, paused } = groupTasks(tasks);
@@ -206,9 +208,9 @@ function TaskBoard({
         </Empty>
       )}
       {groups.map(({ group, rows }) => (
-        <TaskGroupSection key={group} group={group} rows={rows} now={now} />
+        <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
       ))}
-      {paused.length > 0 && <PausedTasks rows={paused} now={now} />}
+      {paused.length > 0 && <PausedTasks rows={paused} now={now} onNavigate={onNavigate} />}
     </>
   );
 }
@@ -217,10 +219,12 @@ function TaskGroupSection({
   group,
   rows,
   now,
+  onNavigate,
 }: {
   group: ActiveTaskGroup;
   rows: TaskRow[];
   now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const headingId = useId();
   return (
@@ -234,13 +238,21 @@ function TaskGroupSection({
           <span className="text-muted-foreground">· {rows.length}</span>
         </span>
       </h2>
-      <TaskList rows={rows} now={now} />
+      <TaskList rows={rows} now={now} onNavigate={onNavigate} />
     </section>
   );
 }
 
 /** Only a person resumes a paused task, so paused tasks wait behind a toggle, closed at first. */
-function PausedTasks({ rows, now }: { rows: TaskRow[]; now: Date }) {
+function PausedTasks({
+  rows,
+  now,
+  onNavigate,
+}: {
+  rows: TaskRow[];
+  now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
   const [open, setOpen] = useState(false);
   const count = rows.length;
   return (
@@ -263,20 +275,30 @@ function PausedTasks({ rows, now }: { rows: TaskRow[]; now: Date }) {
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <TaskList rows={rows} now={now} />
+        <TaskList rows={rows} now={now} onNavigate={onNavigate} />
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function TaskList({ rows, now }: { rows: TaskRow[]; now: Date }) {
+function TaskList({
+  rows,
+  now,
+  onNavigate,
+}: {
+  rows: TaskRow[];
+  now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
+  // `overflow-hidden`: a row's hover fill must follow the card's rounded
+  // corners, and its focus ring is drawn inside the row for the same reason.
   return (
-    <Card>
+    <Card className="overflow-hidden">
       <ul>
         {rows.map((row, i) => (
           <li key={`${row.agentId}:${row.routineId}`}>
             {i > 0 && <Separator />}
-            <TaskItem row={row} now={now} />
+            <TaskItem row={row} now={now} onNavigate={onNavigate} />
           </li>
         ))}
       </ul>
@@ -290,11 +312,25 @@ function TaskList({ rows, now }: { rows: TaskRow[]; now: Date }) {
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
  */
-function TaskItem({ row, now }: { row: TaskRow; now: Date }) {
+function TaskItem({
+  row,
+  now,
+  onNavigate,
+}: {
+  row: TaskRow;
+  now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
   const ago = row.task === null ? null : timeAgo(row.task.reportedAt, now);
   const update = row.task?.update ?? null;
   return (
-    <div className="flex min-w-0 flex-col gap-1 px-5 py-3">
+    <a
+      {...routeLinkProps(
+        { kind: 'task', agentId: row.agentId, routineId: row.routineId },
+        onNavigate,
+      )}
+      className="flex min-w-0 flex-col gap-1 px-5 py-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    >
       <span className="truncate text-[13px] font-medium" title={row.name}>
         {row.name}
       </span>
@@ -306,6 +342,6 @@ function TaskItem({ row, now }: { row: TaskRow; now: Date }) {
           {update}
         </p>
       )}
-    </div>
+    </a>
   );
 }
