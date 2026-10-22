@@ -163,6 +163,41 @@ describe('routine_report (TASK-907)', () => {
       .task?.agentNotes).toBe(NOTES);
   });
 
+  it('a successful edit answers with what it did, and reads nothing once it has settled', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const edit: ToolCall = { id: 'edit', name: 'routine_update', input: {
+      requestId: 'edit', routineId: task.routineId, expectedRevision: (await get(task)).revision, patch: { description: 'Edited.' } } };
+    await h.bus.fire('tool:pre-call', chat, edit);
+    const { decisions } = await h.bus.call<unknown, { decisions: Array<{ id: string; call: ToolCall }> }>('decisions:list', chat, { userId: chat.userId });
+    await h.bus.call('decisions:approve', chat, { decisionId: decisions.find(decision => decision.call.input.requestId === 'edit')!.id, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    // Once the edit has settled, no routine can be read. An answer that still needed a read would call
+    // an edit that happened "unavailable", and the agent would tell the person it failed.
+    const callJoined = h.bus.callJoined.bind(h.bus);
+    let settled = false;
+    vi.spyOn(h.bus, 'callJoined').mockImplementation(async (hook: string, hookCtx: AgentContext, input: unknown) => {
+      const result = await callJoined(hook, hookCtx, input);
+      if (hook === 'decisions:settle-routine-call') {
+        await sql`ALTER TABLE routines_v1_definitions RENAME TO report_tool_test_definitions`.execute(h.db);
+        settled = true;
+      }
+      return result;
+    });
+    let answer: unknown;
+    try { answer = await h.bus.call<ToolCall, unknown>('tool:execute:routine_update', chat, edit); }
+    finally {
+      vi.restoreAllMocks();
+      if (settled) await sql`ALTER TABLE report_tool_test_definitions RENAME TO routines_v1_definitions`.execute(h.db);
+    }
+    expect(settled).toBe(true);
+    expect(answer).toMatchObject({ description: 'Edited.', task: { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) } });
+    expect(JSON.stringify(answer)).not.toContain(NOTES);
+    expect((await get(task)).description).toBe('Edited.');
+  });
+
   it("a team agent's task shows its state only to its owner, in the services and so in every tool", async () => {
     await start();
     // The owner makes a task on the team agent, so it's theirs; the team's other people share the agent.

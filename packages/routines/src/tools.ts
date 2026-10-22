@@ -187,7 +187,16 @@ function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
   return C.RoutineListToolOutputSchema.parse({ routines: routines.map(withoutAgentNotes) });
 }
-/** Every answer routine_update gives leaves here: live, replayed by the service, or recovered from its receipt. */
+/**
+ * Every answer routine_update gives leaves here: live, replayed by the service, or
+ * recovered from its receipt. It runs after the edit has settled, so it reads
+ * nothing (TASK-907), and it can't refuse a view a producer makes: the live and
+ * replayed answers passed the service's `returns` schema, which is the first
+ * parse here, and a recovered one is routineView over a receipt that passed
+ * StoredRoutineSchema (the same definition rules, and ids the host made). The
+ * strict check differs from that schema only by the agent notes the projection
+ * takes out.
+ */
 function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
   return C.RoutineUpdateToolOutputSchema.parse(withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output)));
 }
@@ -279,7 +288,9 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       }
       await settle('succeeded');
       if (call.name !== 'routine_update') return output;
-      // The edit has happened whatever the projection does; if it fails, it fails closed.
+      // The edit has happened, and nothing from here can say otherwise: the answer is a projection
+      // that reads nothing and can't refuse a real view (updateToolOutput). The catch only keeps a
+      // raw error from escaping if that ever stopped being true.
       try { return updateToolOutput(output); }
       catch (error) { throw safeFailure(error); }
     });
