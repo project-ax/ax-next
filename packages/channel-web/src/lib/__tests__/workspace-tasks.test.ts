@@ -56,6 +56,7 @@ describe('useTasks (TASK-909)', () => {
       tasks: body.tasks,
       unavailableAgents: body.unavailableAgents,
       refreshing: false,
+      refreshFailed: false,
     });
     expect(tasksMock).toHaveBeenCalledTimes(1);
   });
@@ -106,6 +107,7 @@ describe('useTasks (TASK-909)', () => {
       tasks: first.tasks,
       unavailableAgents: [],
       refreshing: true,
+      refreshFailed: false,
     });
 
     const second = page('Sweep', 'Digest');
@@ -115,7 +117,50 @@ describe('useTasks (TASK-909)', () => {
       tasks: second.tasks,
       unavailableAgents: [],
       refreshing: false,
+      refreshFailed: false,
     });
+  });
+
+  it('keeps the rows on screen when a refresh fails, and says so', async () => {
+    const first: TasksResponse = {
+      tasks: [row('r-1', 'Sweep')],
+      unavailableAgents: [{ agentId: 'a-ada', agentName: 'Ada' }],
+    };
+    tasksMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 503));
+    await act(async () => result.current.retry());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      tasks: first.tasks,
+      unavailableAgents: first.unavailableAgents,
+      refreshing: false,
+      refreshFailed: true,
+    });
+
+    // The next good answer clears the note.
+    const second = page('Sweep');
+    tasksMock.mockResolvedValueOnce(second);
+    await act(async () => result.current.retry());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      tasks: second.tasks,
+      unavailableAgents: [],
+      refreshing: false,
+      refreshFailed: false,
+    });
+  });
+
+  it('stops showing the rows when a refresh finds the session ended', async () => {
+    tasksMock.mockResolvedValueOnce(page('Sweep'));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 401));
+    await act(async () => result.current.retry());
+    expect(result.current.state).toEqual({ kind: 'failed', error: 'expired' });
   });
 
   it('drops an older answer that lands after a newer one', async () => {

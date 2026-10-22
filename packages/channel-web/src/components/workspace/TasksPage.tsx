@@ -89,6 +89,7 @@ export function TasksPage({ leading }: { leading?: ReactNode }) {
               tasks={state.tasks}
               unavailableAgents={state.unavailableAgents}
               refreshing={state.refreshing}
+              refreshFailed={state.refreshFailed}
               onRetry={retry}
             />
           )}
@@ -130,11 +131,13 @@ function TaskBoard({
   tasks,
   unavailableAgents,
   refreshing,
+  refreshFailed,
   onRetry,
 }: {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
   refreshing: boolean;
+  refreshFailed: boolean;
   onRetry: () => void;
 }) {
   const { groups, paused } = groupTasks(tasks);
@@ -142,6 +145,10 @@ function TaskBoard({
   // "checked 4 min ago" keeps moving on a tab left open, but the clock only
   // runs while a row (a paused one included) has a report to date.
   const [now, setNow] = useState(() => new Date());
+  // New rows are dated against the clock now, not when the page first opened:
+  // the interval below only runs while a row has a report, so a retry that
+  // brings the first reported row in would otherwise read a stale `now`.
+  useEffect(() => setNow(new Date()), [tasks]);
   const anyReported = tasks.some((t) => t.task !== null);
   useEffect(() => {
     if (!anyReported) return;
@@ -155,13 +162,20 @@ function TaskBoard({
         No title: this sits over rows the page can still show, and it knows
         nothing about the tasks it couldn't load (`lib/read-register.ts`).
       */}
-      {unavailableAgents.length > 0 && (
+      {(refreshFailed || unavailableAgents.length > 0) && (
         <Alert variant="destructive">
           <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="min-w-0">
-              We couldn’t load tasks from{' '}
-              {AGENT_LIST.format(unavailableAgents.map((a) => a.agentName))} just now, so
-              some may be missing.
+            <span className="flex min-w-0 flex-col gap-1">
+              {refreshFailed && (
+                <span>We couldn’t refresh your tasks just now, so this list may be out of date.</span>
+              )}
+              {unavailableAgents.length > 0 && (
+                <span>
+                  We couldn’t load tasks from{' '}
+                  {AGENT_LIST.format(unavailableAgents.map((a) => a.agentName))} just now, so
+                  some may be missing.
+                </span>
+              )}
             </span>
             <Button
               variant="secondary"

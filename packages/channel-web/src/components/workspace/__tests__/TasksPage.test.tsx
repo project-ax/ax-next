@@ -206,6 +206,33 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.getByText('Support queue')).toBeInTheDocument();
   });
 
+  it('keeps the rows when Try again fails, and says the list may be out of date', async () => {
+    tasksMock
+      .mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })], [JUNIPER]))
+      .mockRejectedValueOnce(new WorkspaceApiError('/tasks', 503));
+    render(<TasksPage />);
+    const partial = 'We couldn’t load tasks from Juniper just now, so some may be missing.';
+    fireEvent.click(
+      within((await screen.findByText(partial)).closest('[role="alert"]') as HTMLElement).getByRole(
+        'button',
+        { name: 'Try again' },
+      ),
+    );
+    expect(
+      await screen.findByText(
+        'We couldn’t refresh your tasks just now, so this list may be out of date.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Support queue')).toBeInTheDocument();
+    expect(screen.getByText(partial)).toBeInTheDocument();
+    expect(
+      screen.queryByText('We couldn’t load your tasks just now. Nothing was lost.'),
+    ).not.toBeInTheDocument();
+    // One alert, one way to try again.
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+  });
+
   it('draws an update with markdown or HTML as plain text', async () => {
     const UPDATE = '**Done** <b>3</b> [docs](https://x.test) <img src=x onerror=alert(1)>';
     const NAME = '**Weekly** <b>digest</b>';
@@ -253,6 +280,33 @@ describe('TasksPage (TASK-909)', () => {
       vi.advanceTimersByTime(120_000);
     });
     expect(screen.getByText('Caveman · checked 6 min ago')).toBeInTheDocument();
+  });
+
+  it('dates rows a retry brings in against the clock now, not when the page opened', async () => {
+    const OPENED = new Date('2026-10-22T12:00:00.000Z');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(OPENED);
+    const later = new Date(OPENED.getTime() + 15 * 60_000);
+    tasksMock
+      .mockResolvedValueOnce(page([row('Weekly digest')], [JUNIPER]))
+      .mockResolvedValueOnce(
+        page([
+          row('Weekly digest'),
+          row('Support queue', {
+            agentId: 'a2',
+            agentName: 'Juniper',
+            task: report('on-track', {
+              reportedAt: new Date(later.getTime() - 4 * 60_000).toISOString(),
+            }),
+          }),
+        ]),
+      );
+    render(<TasksPage />);
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    // Nothing on the first answer had a time, so no clock was running.
+    vi.setSystemTime(later);
+    fireEvent.click(retry);
+    expect(await screen.findByText('Juniper · checked 4 min ago')).toBeInTheDocument();
   });
 
   it('keeps the clock running when the only report is on a paused task', async () => {

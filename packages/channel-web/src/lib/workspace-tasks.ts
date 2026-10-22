@@ -9,6 +9,11 @@
  * "sign in again" (`expired`); everything else, a 404 from a host that predates
  * the route included, is "couldn't load" with Try again (`failed`). The list
  * route never answers 403 or 404 itself, so `gone` has nothing to mean here.
+ *
+ * A Try again that fails while rows are on screen keeps them, marked
+ * `refreshFailed`, the way the activity feed keeps its rows: wiping a list the
+ * person was reading to say "couldn't load" throws away the last good answer.
+ * An expired session still clears them, because there is nothing to retry.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { logRequestFailure } from './http';
@@ -26,6 +31,8 @@ export type TasksState =
       unavailableAgents: UnavailableAgent[];
       /** A Try again is in flight; the rows on screen are the last good answer. */
       refreshing: boolean;
+      /** The last Try again failed; the rows on screen are the last good answer. */
+      refreshFailed: boolean;
     }
   | { kind: 'failed'; error: TasksReadError };
 
@@ -45,12 +52,18 @@ export function useTasks(): { state: TasksState; retry: () => void } {
           tasks: page.tasks,
           unavailableAgents: page.unavailableAgents,
           refreshing: false,
+          refreshFailed: false,
         });
       },
       (e: unknown) => {
         if (latest.current !== mine) return;
         logRequestFailure(e, 'workspace-tasks');
-        setState({ kind: 'failed', error: toReadOutcome(e) === 'expired' ? 'expired' : 'failed' });
+        const error: TasksReadError = toReadOutcome(e) === 'expired' ? 'expired' : 'failed';
+        setState((s) =>
+          s.kind === 'ready' && error === 'failed'
+            ? { ...s, refreshing: false, refreshFailed: true }
+            : { kind: 'failed', error },
+        );
       },
     );
   }, []);
