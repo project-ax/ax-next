@@ -1,5 +1,7 @@
 import type { Plugin } from '@ax/core';
-import { makeAgentContext, SYSTEM_PROMPT_LANDED_HOOK, SystemPromptAugmentOutputSchema } from '@ax/core';
+import {
+  makeAgentContext, MEMORY_PRE_CAPTURE_HOOK, SYSTEM_PROMPT_LANDED_HOOK, SystemPromptAugmentOutputSchema,
+} from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
@@ -19,6 +21,7 @@ import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
 import {
   BRIEF_UNCONFIRMED, briefLandedVeto, checkInBrief, isTaskRun, refuseCheckIn, ROUTINES_AUGMENT_PROVIDER,
 } from './brief.js';
+import { taskCaptureVeto } from './capture.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
@@ -70,6 +73,9 @@ export function createRoutinesPlugin(
         // TASK-908 — whose system-prompt contributions landed; a task
         // check-in whose brief isn't listed is refused (keyed by reqId).
         SYSTEM_PROMPT_LANDED_HOOK,
+        // TASK-908 — memory asks before it learns from a conversation; a task
+        // check-in's is refused.
+        MEMORY_PRE_CAPTURE_HOOK,
         'agents:deleted',
       ],
     },
@@ -165,6 +171,15 @@ export function createRoutinesPlugin(
             return entry !== undefined && isTaskRun(entry.row) ? refuseCheckIn(entry, ctx) : undefined;
           }
         },
+      );
+
+      // TASK-908 — memory doesn't learn from a task check-in (decisions row
+      // 14). Answered from routines' own dispatch rows, not the in-flight
+      // record, so a pass after the run finished, or after a host restart, is
+      // refused too.
+      bus.subscribe<unknown>(
+        MEMORY_PRE_CAPTURE_HOOK, PLUGIN_NAME,
+        (ctx, payload) => taskCaptureVeto(localStore, ctx, payload),
       );
 
       bus.subscribe<{

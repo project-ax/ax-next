@@ -53,6 +53,13 @@ export interface RoutinesStore {
    * came in between. `limit` is clamped to 1-10. The text is agent-written.
    */
   recentReports(input: RoutineKey & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
+  /**
+   * TASK-908. Whether `conversationId` is a task check-in's conversation on
+   * `agentId`: some run of that agent, open or finished, is bound to it, and
+   * its routine isn't a repeat routine, or is gone. Read from routines' own
+   * dispatch rows, so the answer survives a host restart mid-check-in.
+   */
+  isTaskConversation(input: { agentId: string; conversationId: string }): Promise<boolean>;
   findOperationReceipt(input: OperationKey): Promise<unknown | null>;
   withLockedWebhookSecret(input: RoutineSecretInput, effect: () => Promise<void>): Promise<{ saved: true }>;
   pendingCleanup(input: { limit: number }): Promise<CleanupJob[]>;
@@ -401,6 +408,19 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       if (rows.length > 1) return { run: null, reason: 'ambiguous' };
       if (row.kind === null || row.owner_user_id === null) return { run: null, reason: 'routine-gone' };
       return { run: { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id } };
+    },
+    async isTaskConversation(input) {
+      // A left join: a run whose routine was deleted still counts (`kind` is
+      // null), the safe direction for memory capture. No index of its own:
+      // TASK-907's partial index covers open runs, and a finished run's lookup
+      // scans one agent's dispatch rows, which is fine at MVP sizes.
+      const row = await db.selectFrom('routines_v1_dispatches as d')
+        .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
+        .select('d.dispatch_id')
+        .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
+        .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
+        .limit(1).executeTakeFirst();
+      return row !== undefined;
     },
     async recordReport(input) {
       return db.transaction().execute(async trx => {

@@ -416,3 +416,39 @@ describe('recentReports (TASK-908)', () => {
     expect((await recent(row.routineId, 50)).map(r => r.firedAt)).toEqual(Array.from({ length: 10 }, (_, i) => minute(11 - i)));
   });
 });
+
+describe('isTaskConversation (TASK-908)', () => {
+  const isTask = (agentId: string, conversationId: string) => f.store.isTaskConversation({ agentId, conversationId });
+
+  it("a stay-on-top run's conversation is a task conversation, open and after it finished", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'task-fire', 'c-task');
+    expect(await isTask('a', 'c-task')).toBe(true);
+    expect(await finish(run.dispatchId)).toBe(true);
+    expect(await isTask('a', 'c-task')).toBe(true);
+  });
+
+  it("a repeat routine's conversation is not", async () => {
+    const row = await f.store.createAuthored(createInput('repeat'));
+    const run = await bound(row, 'repeat-fire', 'c-repeat');
+    expect(await isTask('a', 'c-repeat')).toBe(false);
+    await finish(run.dispatchId);
+    expect(await isTask('a', 'c-repeat')).toBe(false);
+  });
+
+  it('an unknown conversation, and the same id on another agent, are not', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    await bound(row, 'task-fire', 'c-task');
+    expect(await isTask('a', 'c-unknown')).toBe(false);
+    expect(await isTask('b', 'c-task')).toBe(false);
+  });
+
+  it('a run whose routine was deleted still counts', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'task-fire', 'c-gone');
+    await finish(run.dispatchId);
+    await f.store.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'delete', now });
+    expect(await f.store.findOne(row)).toBeNull();
+    expect(await isTask('a', 'c-gone')).toBe(true);
+  });
+});

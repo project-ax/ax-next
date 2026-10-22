@@ -240,3 +240,27 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     });
   });
 });
+
+describe('memory capture of a check-in (TASK-908)', () => {
+  const preCapture = (ctx: AgentContext) => h.bus.fire('memory:pre-capture', routineRunner(ctx), { conversationId: ctx.conversationId });
+
+  it("the task's check-in conversation is refused for memory during and after the run", async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    const { ctx: runCtx } = await h.checkIn(task, 'run', async ctx => {
+      expect(await preCapture(ctx)).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
+    });
+    await expect.poll(async () => (await storedRuns(task)).length).toBe(1);
+    expect(await preCapture(runCtx)).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
+  });
+
+  it("a repeat routine's run conversation is captured as before", async () => {
+    // A harness of its own: this one gives every run the same conversation id.
+    h = await createCheckInHarness();
+    const repeat = await create(REPEAT, 'repeat');
+    const { ctx: repeatCtx } = await h.checkIn(repeat, 'repeat-run', async ctx => {
+      expect(await preCapture(ctx)).toMatchObject({ rejected: false });
+    });
+    expect(await preCapture(repeatCtx)).toMatchObject({ rejected: false });
+  });
+});
