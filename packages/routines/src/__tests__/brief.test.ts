@@ -135,12 +135,13 @@ describe('no brief, no check-in (TASK-908)', () => {
       runCtx({ reqId: 'rRepeat', conversationId: 'conv-r' }),
     ];
     for (const ctx of strangers) expect(checkInBrief(pending, ctx), JSON.stringify({ ...ctx, logger: undefined })).toEqual({});
-    expect([...pending.values()].map(e => e.brief)).toEqual(['waiting', 'waiting']);
+    expect([...pending.values()].map(e => e.brief)).toEqual(['sent', 'waiting']);
   });
 
   it("two open runs of one task: each run's brief and veto follow its own reqId", () => {
     const row = storedRow(TASK);
     const pending: PendingFires = new Map([['rA', entry(row, 'conv-a')], ['rB', entry(row, 'conv-b')]]);
+    expect(checkInBrief(pending, runCtx({ reqId: 'rA', conversationId: 'conv-a' }))).toEqual({ brief: renderTaskBrief(row) });
     expect(briefLandedVeto(pending, runCtx({ reqId: 'rA', conversationId: 'conv-a' }), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toBeUndefined();
     expect(pending.get('rA')!.brief).toBe('landed');
     expect(briefLandedVeto(pending, runCtx({ reqId: 'rB', conversationId: 'conv-b' }), { reqId: 'rB', providers: [] }))
@@ -168,7 +169,26 @@ describe('no brief, no check-in (TASK-908)', () => {
     expect(briefLandedVeto(pending, runCtx({ reqId: 'r-unknown' }), null)).toBeUndefined();
     expect(briefLandedVeto(pending, runCtx({ reqId: 'rRepeat', conversationId: 'conv-r' }), { reqId: 'rRepeat', providers: [] })).toBeUndefined();
     // An extra field is ignored, not refused.
+    expect(checkInBrief(pending, runCtx())).toHaveProperty('brief');
     expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER], extra: 1 })).toBeUndefined();
+    expect(pending.get('rA')!.brief).toBe('landed');
+  });
+
+  it('a payload that lists the provider for a brief it never sent confirms nothing', () => {
+    const row = storedRow(TASK);
+    const pending: PendingFires = new Map([['rA', entry(row)]]);
+    // The provider was never asked (or answered `{}`), yet the payload lists it.
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] }))
+      .toEqual({ rejected: true, reason: 'brief-missing' });
+    expect(pending.get('rA')!.brief).toBe('waiting');
+    // A forged context got `{}` from the provider, so the run's own veto still refuses.
+    expect(checkInBrief(pending, runCtx({ conversationId: 'conv-other' }))).toEqual({});
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] }))
+      .toMatchObject({ rejected: true });
+    // Once the provider really sent it, the same payload confirms it.
+    expect(checkInBrief(pending, runCtx())).toEqual({ brief: renderTaskBrief(row) });
+    expect(pending.get('rA')!.brief).toBe('sent');
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toBeUndefined();
     expect(pending.get('rA')!.brief).toBe('landed');
   });
 

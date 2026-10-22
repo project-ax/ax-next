@@ -38,13 +38,14 @@ export interface PendingFire {
   /** What `chat:connectors-skipped` said this fire's turn went without. */
   skips: SkippedConnector[];
   /**
-   * Where a task check-in's brief stands (TASK-908): `waiting` until
-   * `chat:system-prompt-landed` lists the routines provider (`landed`), or
-   * `too-long` when the provider found it over the prompt cap and didn't send
-   * it. A task run that ends its turn short of `landed` is recorded as failed.
-   * Unused for a repeat routine's run.
+   * Where a task check-in's brief stands (TASK-908): `waiting` until the
+   * routines provider hands the orchestrator the brief (`sent`), then `landed`
+   * once `chat:system-prompt-landed` lists the provider for a brief it really
+   * sent. `too-long` when the provider found it over the prompt cap and didn't
+   * send it. A task run that ends its turn short of `landed` is recorded as
+   * failed. Unused for a repeat routine's run.
    */
-  brief: 'waiting' | 'landed' | 'too-long';
+  brief: 'waiting' | 'sent' | 'landed' | 'too-long';
   onTurnEnd: (turn: { contentBlocks?: unknown[] }) => Promise<void>;
 }
 export type PendingFires = Map<string, PendingFire>;
