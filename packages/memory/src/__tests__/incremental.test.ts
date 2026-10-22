@@ -1,13 +1,24 @@
 import Database from 'better-sqlite3';
-import { PluginError, type AgentContext, type LlmCallInput } from '@ax/core';
+import {
+  PluginError,
+  reject,
+  type AgentContext,
+  type LlmCallInput,
+  type MemoryPreCapturePayload,
+} from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NO_CREDENTIAL_EVENT, OBSERVER_FAILED_EVENT, OBSERVER_RUN_EVENT } from '../failure.js';
 import { cursorKey } from '../incremental.js';
 import { buildTurnRangeBatchKey } from '../observer.js';
-import type { MemoryPluginConfig } from '../plugin.js';
+import {
+  CAPTURE_REFUSED_EVENT,
+  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS,
+  type MemoryPluginConfig,
+} from '../plugin.js';
 import {
   ALICE,
+  DEFAULT_AGENT,
   eventsNamed,
   makeMemoryHarness,
   type MemoryHarness,
@@ -588,6 +599,167 @@ describe('every statement records the turn it came from', () => {
     expect(rows[0]?.batch_key).toBe(
       buildTurnRangeBatchKey({ conversationId: 'conv-routine', ownerUserId: ALICE, firstTurnId: '0', lastTurnId: '1' }),
     );
+  });
+});
+
+describe('a conversation another plugin refuses is not captured (TASK-908)', () => {
+  const TASK_CONV = 'conv-task';
+
+  it('a refused routine conversation records nothing on its turn passes or its final pass', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    // The way @ax/routines refuses a task check-in's conversation.
+    env.h.bus.subscribe<MemoryPreCapturePayload>('memory:pre-capture', 'test-refuser', async (_ctx, payload) =>
+      payload.conversationId === TASK_CONV ? reject({ reason: 'task-check-in' }) : undefined,
+    );
+    const calls = vi.spyOn(env.h.bus, 'call');
+    const task = env.ctx({ conversationId: TASK_CONV, source: 'routine' });
+
+    await env.exchange('Scheduled check-in. Your notes: call Acme back.', 'Called Acme back; the queue is empty.', 'req-1', task);
+    await idle(env);
+    await env.chatEnd(task);
+
+    expect(env.rows()).toEqual([]);
+    expect(env.h.llmCalls).toHaveLength(0);
+    // Refused before anything else: the transcript is never read, and the
+    // cursor is neither read nor moved.
+    const called = calls.mock.calls.map(([hook]) => hook);
+    for (const hook of ['conversations:get', 'storage:get', 'storage:set', 'llm:call:openrouter', 'memory:facts:record']) {
+      expect(called).not.toContain(hook);
+    }
+    // Each refused pass says who refused and why, and none reads as a failure.
+    expect(eventsNamed(env.h.logs, CAPTURE_REFUSED_EVENT).map((e) => [e.level, e.bindings])).toEqual([
+      ['info', { agentId: DEFAULT_AGENT, refusedBy: 'test-refuser', reason: 'task-check-in', trigger: 'idle' }],
+      ['info', { agentId: DEFAULT_AGENT, refusedBy: 'test-refuser', reason: 'task-check-in', trigger: 'chat-end' }],
+    ]);
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT)).toEqual([]);
+  });
+
+  it('an unrefused conversation is captured as before, and the event names it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    const asked: unknown[] = [];
+    env.h.bus.subscribe('memory:pre-capture', 'test-observer', async (ctx, payload) => {
+      asked.push({ payload, agentId: ctx.agentId, userId: ctx.userId, source: ctx.source });
+      return undefined;
+    });
+    const routine = env.ctx({ conversationId: 'conv-other', source: 'routine' });
+
+    await env.exchange('Reflect on deploy procedures.', 'Run migrations, then restart workers.', 'req-1', routine);
+    await idle(env);
+    await env.chatEnd(routine);
+
+    // Stored exactly as TASK-616 stores a routine turn.
+    expect(env.rows().map((r) => [r.value, r.conversation_id, r.source_turn_id])).toEqual([
+      ['Reflect on deploy procedures.', null, '0'],
+      ['Run migrations, then restart workers.', null, '1'],
+    ]);
+    // Asked before each pass (the idle one and the final one). The payload
+    // names the conversation and nothing else; who and what ride on the ctx.
+    const expected = { payload: { conversationId: 'conv-other' }, agentId: DEFAULT_AGENT, userId: ALICE, source: 'routine' };
+    expect(asked).toEqual([expected, expected]);
+    expect(eventsNamed(env.h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
+  });
+
+  it("a throwing subscriber doesn't stop capture", async () => {
+    // The bus isolates a subscriber that throws, so a throw is not a veto.
+    // That is why @ax/routines refuses when its own lookup fails, instead of
+    // letting the error escape.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    let asked = 0;
+    env.h.bus.subscribe('memory:pre-capture', 'test-thrower', async () => {
+      asked += 1;
+      throw new Error('lookup failed');
+    });
+    const routine = env.ctx({ conversationId: TASK_CONV, source: 'routine' });
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1', routine);
+    await idle(env);
+
+    // The subscriber really ran (and threw); the pass went on regardless.
+    expect(asked).toBe(1);
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows()).toHaveLength(2);
+  });
+
+  it('a fire that itself rejects records nothing: no rows, no model call, cursor untouched', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    const realFire = env.h.bus.fire.bind(env.h.bus) as (...a: unknown[]) => Promise<unknown>;
+    let fires = 0;
+    vi.spyOn(env.h.bus, 'fire').mockImplementation((async (hook: string, ...rest: unknown[]) => {
+      if (hook === 'memory:pre-capture') {
+        fires += 1;
+        throw new Error('bus exploded');
+      }
+      return realFire(hook, ...rest);
+    }) as never);
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+
+    expect(fires).toBe(1);
+    expect(env.rows()).toEqual([]);
+    expect(env.h.llmCalls).toHaveLength(0);
+    expect(env.storage.has(cursorKey(CONV))).toBe(false);
+    expect(eventsNamed(env.h.logs, OBSERVER_FAILED_EVENT).map((e) => e.bindings.reason)).toEqual(['observer-threw']);
+    expect(eventsNamed(env.h.logs, CAPTURE_REFUSED_EVENT)).toEqual([]);
+  });
+
+  it('a subscriber that never answers is skipped at the 10 s bound, and the pass goes on', async () => {
+    // Passes for one conversation run one after another, so an unbounded ask
+    // would hold every later pass, the final one included, behind a hung
+    // subscriber. The bound fails open: no answer in time is no objection.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    env.h.bus.subscribe('memory:pre-capture', 'test-hung', () => new Promise<undefined>(() => {}));
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await vi.advanceTimersByTimeAsync(IDLE_MS);
+    await vi.advanceTimersByTimeAsync(MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS - 1);
+    // Still waiting for the answer, so nothing has been extracted yet.
+    expect(env.h.llmCalls).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await env.h.settleObserver();
+    expect(env.h.llmCalls).toHaveLength(1);
+    expect(env.rows()).toHaveLength(2);
+    expect(eventsNamed(env.h.logs, 'hook_subscriber_timed_out').map((e) => e.bindings)).toEqual([
+      { hook: 'memory:pre-capture', plugin: 'test-hung', timeoutMs: 10_000 },
+    ]);
+  });
+
+  it('a refusal leaves the cursor where it was, so the next pass that is not refused reads those turns too', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const env = await setup();
+    let refusing = true;
+    env.h.bus.subscribe('memory:pre-capture', 'test-refuser', async () =>
+      refusing ? reject({ reason: 'not-now' }) : undefined,
+    );
+
+    await env.exchange('I moved to Boston.', 'Welcome to Boston!', 'req-1');
+    await idle(env);
+    expect(env.h.llmCalls).toHaveLength(0);
+
+    refusing = false;
+    await env.exchange('My sister lives in Paris.', 'Paris is lovely.', 'req-2');
+    await idle(env);
+
+    expect(env.dialogues()).toEqual([
+      [
+        'user: I moved to Boston.',
+        'assistant: Welcome to Boston!',
+        'user: My sister lives in Paris.',
+        'assistant: Paris is lovely.',
+      ].join('\n'),
+    ]);
+    expect(env.rows().map((r) => r.value)).toEqual([
+      'I moved to Boston.',
+      'Welcome to Boston!',
+      'My sister lives in Paris.',
+      'Paris is lovely.',
+    ]);
   });
 });
 

@@ -1495,6 +1495,17 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
     expect(routines.manifest.calls).toContain('http:register-route');
     expect(routines.manifest.subscribes).not.toContain('workspace:applied');
   });
+
+  // TASK-908: a task check-in's brief provider, the landed veto and the memory refusal.
+  it('routines gives a task check-in its brief, vetoes one whose brief did not land, and refuses its memory capture', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const routines = plugins.find(p => p.manifest.name === '@ax/routines')!;
+    expect(routines.manifest.registers).toContain('system-prompt:augment:optional:routines');
+    expect(routines.manifest.subscribes).toEqual(expect.arrayContaining(['chat:system-prompt-landed', 'memory:pre-capture']));
+    // The landed event's producer is in this preset; memory:pre-capture's (@ax/memory) comes with
+    // @ax/preset-memory, which pins that pairing itself.
+    expect(plugins.map(p => p.manifest.name)).toContain('@ax/chat-orchestrator');
+  });
 });
 
 // Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is

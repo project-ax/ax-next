@@ -47,6 +47,19 @@ export interface RoutinesStore {
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
   recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
+  /**
+   * TASK-908. A routine's latest reports, for its next check-in's message:
+   * finished runs with a report, newest first, however many runs without one
+   * came in between. `limit` is clamped to 1-10. The text is agent-written.
+   */
+  recentReports(input: RoutineKey & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
+  /**
+   * TASK-908. Whether `conversationId` is a task check-in's conversation on
+   * `agentId`: some run of that agent, open or finished, is bound to it, and
+   * its routine isn't a repeat routine, or is gone. Read from routines' own
+   * dispatch rows, so the answer survives a host restart mid-check-in.
+   */
+  isTaskConversation(input: { agentId: string; conversationId: string }): Promise<boolean>;
   findOperationReceipt(input: OperationKey): Promise<unknown | null>;
   withLockedWebhookSecret(input: RoutineSecretInput, effect: () => Promise<void>): Promise<{ saved: true }>;
   pendingCleanup(input: { limit: number }): Promise<CleanupJob[]>;
@@ -63,6 +76,18 @@ export interface RoutinesStore {
   isAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string }): Promise<boolean>;
   disabledDefaultIdsForAgent(agentId: string): Promise<string[]>;
   removeMaterializedDefault(input: { agentId: string; defaultRoutineId: string }): Promise<void>;
+}
+/**
+ * `isTaskConversation`'s one query, exported so a test can check the planner
+ * reads it through version 5's index.
+ */
+export function taskConversationQuery(db: Kysely<RoutinesDatabase>, input: { agentId: string; conversationId: string }) {
+  return db.selectFrom('routines_v1_dispatches as d')
+    .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
+    .select('d.dispatch_id')
+    .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
+    .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
+    .limit(1);
 }
 function definitionColumns(d: RoutineDefinition) {
   return {
@@ -85,8 +110,13 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
 /**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit
  * that changes a routine's kind sets these in the same statement. A task turned
- * into a repeat routine and back starts over: the report and notes it held
- * before the edit don't come back, and the next check-in gets none.
+ * into a repeat routine and back starts over: the latest report, its ask and the
+ * notes it held before the edit don't come back to the task, so it shows no
+ * state and its next check-in has no notes. Its runs' fire rows are history and
+ * stay, though, so that check-in's message still lists the reports those runs
+ * made (never their asks), as `recentReports` reads them. TASK-908 decisions row
+ * 21 (earlier reports after a kind round trip) accepts that: the text is the
+ * routine's own, and both kind changes needed the person's yes.
  *
  * "Starts over" is about what is stored, not about runs. A run still open from
  * before the round trip (stay-on-top, repeat, stay-on-top) is a live check-in of
@@ -391,6 +421,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       if (row.kind === null || row.owner_user_id === null) return { run: null, reason: 'routine-gone' };
       return { run: { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id } };
     },
+    async isTaskConversation(input) {
+      // A left join: a run whose routine was deleted still counts (`kind` is
+      // null), the safe direction for memory capture. Memory asks this for
+      // every capture pass, ordinary chats included, so it reads through
+      // version 5's `routines_v1_dispatches_conversation` index.
+      return (await taskConversationQuery(db, input).executeTakeFirst()) !== undefined;
+    },
     async recordReport(input) {
       return db.transaction().execute(async trx => {
         // finishDispatch's order (agent fence, dispatch row, definition row), so the two serialize.
@@ -549,6 +586,24 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .limit(limit)
         .execute();
       return rows.map(rowToFire);
+    },
+
+    async recentReports(input) {
+      const limit = Math.min(10, Math.max(1, input.limit));
+      const rows = await db
+        .selectFrom('routines_v1_fires')
+        .select(['fired_at', 'report_status', 'report_update', 'report_ask'])
+        .where('agent_id', '=', input.agentId)
+        .where('routine_id', '=', input.routineId)
+        .where('report_status', 'is not', null)
+        .where('report_update', 'is not', null)
+        .orderBy('fired_at', 'desc')
+        .orderBy('id', 'desc')
+        .limit(limit)
+        .execute();
+      // The query already skips a row with only part of a report (rowToFire's rule); this narrows the types.
+      return rows.flatMap(r => r.report_status === null || r.report_update === null ? []
+        : [{ firedAt: r.fired_at, report: { status: r.report_status, update: r.report_update, ask: r.report_ask } }]);
     },
 
     async list(input) {

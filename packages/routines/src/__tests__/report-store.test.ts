@@ -3,7 +3,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
-import type { RecordReportInput } from '../types.js';
+import type { DispatchReport, RecordReportInput } from '../types.js';
 
 // TASK-907: a check-in's conversation, its report and the task's state. Task
 // state isn't on StoredRoutine yet, so the rows are read with SQL.
@@ -368,4 +368,87 @@ it('a report the database refuses fails naming only its run, and writes nothing'
   expect((error as Error).cause).toBeUndefined();
   expect(inspect(error, { depth: 10, showHidden: true })).not.toMatch(/Queue|Secret/);
   expect(await snapshot()).toEqual(before);
+});
+
+// TASK-908: the reports a task's next check-in message shows, read from the
+// runs' own fire rows.
+describe('recentReports (TASK-908)', () => {
+  const offTrack = { status: 'off-track', update: 'Three tickets are past an hour.', ask: null } as const;
+  const minute = (n: number) => new Date(now.getTime() + n * 60_000);
+  /** A finished run of `row` accepted at `at`, with `report` on it, or with none when it's null. */
+  const finished = async (row: Key, requestId: string, at: Date, report: DispatchReport | null) => {
+    const run = await bound(row, requestId, `c-${requestId}`, at);
+    if (report !== null) expect(await record(run, { report })).toBe('recorded');
+    expect(await finish(run.dispatchId)).toBe(true);
+  };
+  const recent = (routineId: string, limit: number, agentId = 'a') => f.store.recentReports({ agentId, routineId, limit });
+
+  it('newest reported runs first, skipping runs without a report', async () => {
+    const row = await f.store.createAuthored(taskInput('recent'));
+    await finished(row, 'oldest', minute(1), onTrack);
+    await finished(row, 'older', minute(2), offTrack);
+    await finished(row, 'quiet', minute(3), null);
+    await finished(row, 'newest', minute(4), needsYou);
+    expect(await recent(row.routineId, 3)).toEqual([
+      { firedAt: minute(4), report: needsYou },
+      { firedAt: minute(2), report: offTrack },
+      { firedAt: minute(1), report: onTrack },
+    ]);
+    // Two runs that started at the same moment: the one that finished last comes first.
+    await finished(row, 'tie-first', minute(5), onTrack);
+    await finished(row, 'tie-second', minute(5), offTrack);
+    expect(await recent(row.routineId, 2)).toEqual([{ firedAt: minute(5), report: offTrack }, { firedAt: minute(5), report: onTrack }]);
+  });
+
+  it("only this routine's runs", async () => {
+    const row = await f.store.createAuthored(taskInput('mine'));
+    const other = await f.store.createAuthored(taskInput('other'));
+    await finished(row, 'mine-run', minute(1), onTrack);
+    await finished(other, 'other-run', minute(2), needsYou);
+    expect(await recent(row.routineId, 3)).toEqual([{ firedAt: minute(1), report: onTrack }]);
+    expect(await recent(row.routineId, 3, 'b')).toEqual([]);
+  });
+
+  it('limit is clamped', async () => {
+    const row = await f.store.createAuthored(taskInput('clamp'));
+    for (let i = 1; i <= 11; i++) await finished(row, `clamp-${i}`, minute(i), onTrack);
+    expect((await recent(row.routineId, 0)).map(r => r.firedAt)).toEqual([minute(11)]);
+    expect((await recent(row.routineId, 50)).map(r => r.firedAt)).toEqual(Array.from({ length: 10 }, (_, i) => minute(11 - i)));
+  });
+});
+
+describe('isTaskConversation (TASK-908)', () => {
+  const isTask = (agentId: string, conversationId: string) => f.store.isTaskConversation({ agentId, conversationId });
+
+  it("a stay-on-top run's conversation is a task conversation, open and after it finished", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'task-fire', 'c-task');
+    expect(await isTask('a', 'c-task')).toBe(true);
+    expect(await finish(run.dispatchId)).toBe(true);
+    expect(await isTask('a', 'c-task')).toBe(true);
+  });
+
+  it("a repeat routine's conversation is not", async () => {
+    const row = await f.store.createAuthored(createInput('repeat'));
+    const run = await bound(row, 'repeat-fire', 'c-repeat');
+    expect(await isTask('a', 'c-repeat')).toBe(false);
+    await finish(run.dispatchId);
+    expect(await isTask('a', 'c-repeat')).toBe(false);
+  });
+
+  it('an unknown conversation, and the same id on another agent, are not', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    await bound(row, 'task-fire', 'c-task');
+    expect(await isTask('a', 'c-unknown')).toBe(false);
+    expect(await isTask('b', 'c-task')).toBe(false);
+  });
+
+  it('a run whose routine was deleted still counts', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'task-fire', 'c-gone');
+    await finish(run.dispatchId);
+    await f.store.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'delete', now });
+    expect(await f.store.findOne(row)).toBeNull();
+    expect(await isTask('a', 'c-gone')).toBe(true);
+  });
 });

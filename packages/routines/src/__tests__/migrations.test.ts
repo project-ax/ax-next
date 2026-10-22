@@ -1,11 +1,11 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { CompiledQuery, Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 import { ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
-import { createRoutinesStore } from '../store.js';
+import { createRoutinesStore, taskConversationQuery } from '../store.js';
 import { runRoutinesMigration as legacyMigration } from './fixtures/legacy-migration.js';
 import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_SEED_HASH, SKILL_REFLECTION_STRATA_SEED_HASH } from '../reflection-prompt.js';
 let container: StartedPostgreSqlContainer; let db: Kysely<RoutinesDatabase>;
@@ -70,7 +70,7 @@ describe('versioned routines migration', () => {
     await runRoutinesMigration(db); await runRoutinesMigration(db);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions WHERE routine_id='r_old'`.execute(db)).rows).toEqual([{ kind: 'repeat', good_when: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_old' })).toMatchObject({ kind: 'repeat', goodWhen: null });
-    expect(await versions()).toEqual([2, 3, 4]);
+    expect(await versions()).toEqual([2, 3, 4, 5]);
   });
   it('refuses an unknown kind at the database', async () => {
     await runRoutinesMigration(db);
@@ -83,7 +83,7 @@ describe('versioned routines migration', () => {
     if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_kind_chk`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 3`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4]);
+    expect(await versions()).toEqual([2, 3, 4, 5]);
     expect(await kindChecks()).toBe(1);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions`.execute(db)).rows).toEqual([{ kind: 'stay-on-top', good_when: 'Nothing waits a day.' }]);
   });
@@ -95,7 +95,7 @@ describe('versioned routines migration', () => {
     await sql`INSERT INTO routines_v1_dispatches (dispatch_id,agent_id,routine_id,revision,req_id,accepted_at,completed_at,trigger_source) VALUES ('d_open','a','r_task','rev_task','req_open','2031-01-01T00:00:00Z',NULL,'tick')`.execute(db);
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status) VALUES ('a','r_task','d_done','2030-12-31T23:45:00Z','tick','c_done','ok')`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4]);
+    expect(await versions()).toEqual([2, 3, 4, 5]);
     expect(await reportColumns()).toEqual({
       dispatches: [{ dispatch_id: 'd_open', conversation_id: null, report: null }],
       definitions: [{ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null }],
@@ -111,6 +111,25 @@ describe('versioned routines migration', () => {
       { dispatch_id: 'd_done', report_status: null, report_update: null, report_ask: null },
       { dispatch_id: 'd_open', report_status: null, report_update: null, report_ask: null },
     ]);
+  });
+  it('version 5 indexes every run\'s conversation, and a finished run\'s lookup can use it (TASK-908)', async () => {
+    await runRoutinesMigration(db);
+    await sql`INSERT INTO routines_v1_dispatches (dispatch_id,agent_id,routine_id,revision,req_id,accepted_at,completed_at,trigger_source,conversation_id) VALUES ('d_done','a','r','rev','req_done','2031-01-01T00:00:00Z','2031-01-01T00:01:00Z','tick','c_done')`.execute(db);
+    await sql`DROP INDEX routines_v1_dispatches_conversation`.execute(db);
+    await sql`DELETE FROM routines_schema_versions WHERE version = 5`.execute(db);
+    await runRoutinesMigration(db); await runRoutinesMigration(db);
+    expect(await versions()).toEqual([2, 3, 4, 5]);
+    expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_conversation'`.execute(db)).rows).toHaveLength(1);
+    expect((await sql`SELECT dispatch_id FROM routines_v1_dispatches`.execute(db)).rows).toEqual([{ dispatch_id: 'd_done' }]);
+    // The planner may still pick a scan on a tiny table; with scans priced out, the store's own query reads the index.
+    const compiled = taskConversationQuery(db, { agentId: 'a', conversationId: 'c_done' }).compile();
+    await db.connection().execute(async conn => {
+      await sql`SET enable_seqscan = off`.execute(conn);
+      const plan = (await conn.executeQuery<{ 'QUERY PLAN': string }>(CompiledQuery.raw(`EXPLAIN ${compiled.sql}`, [...compiled.parameters]))).rows
+        .map(row => row['QUERY PLAN']).join('\n');
+      await sql`RESET enable_seqscan`.execute(conn);
+      expect(plan).toContain('routines_v1_dispatches_conversation');
+    });
   });
   it('refuses an unknown task or report status at the database', async () => {
     await runRoutinesMigration(db);
@@ -134,7 +153,7 @@ describe('versioned routines migration', () => {
     const before = await reportColumns();
     await sql`DELETE FROM routines_schema_versions WHERE version = 4`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4]);
+    expect(await versions()).toEqual([2, 3, 4, 5]);
     expect(await constraintCount('routines_v1_definitions_task_status_chk', 'routines_v1_definitions')).toBe(1);
     expect(await constraintCount('routines_v1_fires_report_status_chk', 'routines_v1_fires')).toBe(1);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_open_conversation'`.execute(db)).rows).toHaveLength(1);

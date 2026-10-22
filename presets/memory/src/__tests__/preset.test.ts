@@ -89,6 +89,15 @@ describe('createMemoryPlugins composition', () => {
     ).toHaveLength(1);
   });
 
+  // TASK-908: @ax/memory asks memory:pre-capture before it learns from a conversation, and
+  // @ax/routines refuses a task check-in's. Both must be in the assembly that runs memory.
+  it('loads memory:pre-capture\'s producer and the routines subscriber that refuses task check-ins', () => {
+    const plugins = createMemoryPlugins(baseConfig);
+    expect(plugins.map((p) => p.manifest.name)).toEqual(expect.arrayContaining(['@ax/memory', '@ax/routines']));
+    const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
+    expect(routines?.manifest.subscribes).toContain('memory:pre-capture');
+  });
+
   it('has no duplicate plugin manifest names', () => {
     const n = names(baseConfig);
     expect(new Set(n).size).toBe(n.length);

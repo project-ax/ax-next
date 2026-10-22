@@ -1,5 +1,7 @@
 import type { Plugin } from '@ax/core';
-import { makeAgentContext } from '@ax/core';
+import {
+  makeAgentContext, MEMORY_PRE_CAPTURE_HOOK, SYSTEM_PROMPT_LANDED_HOOK, SystemPromptAugmentOutputSchema,
+} from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
@@ -16,6 +18,10 @@ import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import { createWebhookRouter } from './webhook-handler.js';
 import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
+import {
+  BRIEF_UNCONFIRMED, briefLandedVeto, checkInBrief, isTaskRun, refuseCheckIn, ROUTINES_AUGMENT_PROVIDER,
+} from './brief.js';
+import { taskCaptureVeto } from './capture.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
@@ -36,7 +42,8 @@ export function createRoutinesPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [...ROUTINE_SERVICES, ...ROUTINE_TOOL_HOOKS],
+      // TASK-908: a task check-in's brief, in W1's `brief` section.
+      registers: [...ROUTINE_SERVICES, ...ROUTINE_TOOL_HOOKS, ROUTINES_AUGMENT_PROVIDER],
       calls: [
         'database:get-instance',
         'tool:register',
@@ -63,10 +70,33 @@ export function createRoutinesPlugin(
         'chat:turn-end',
         // Slice 6 — what a routine fire's turn went without (keyed by reqId).
         'chat:connectors-skipped',
+        // TASK-908 — whose system-prompt contributions landed; a task
+        // check-in whose brief wasn't sent or isn't listed is refused (keyed
+        // by reqId).
+        SYSTEM_PROMPT_LANDED_HOOK,
+        // TASK-908 — memory asks before it learns from a conversation; a task
+        // check-in's is refused.
+        MEMORY_PRE_CAPTURE_HOOK,
         'agents:deleted',
       ],
     },
     async init({ bus }) {
+      // TASK-908 — memory doesn't learn from a task check-in (decisions rows
+      // 14 and 22). Subscribed first, before the database is ready, so a
+      // capture pass that arrives while this plugin is still starting (a
+      // runner reporting into a freshly restarted host, say) is answered
+      // rather than missed. Until the store is ready the lookup waits, inside
+      // the veto's own deadline, so a slow start refuses instead of letting
+      // the pass through. Answered from routines' own dispatch rows, not the
+      // in-flight record, so a pass after the run finished, or after a
+      // restart, is refused too.
+      let storeReady!: (ready: RoutinesStore) => void;
+      const ready = new Promise<RoutinesStore>(resolve => { storeReady = resolve; });
+      bus.subscribe<unknown>(
+        MEMORY_PRE_CAPTURE_HOOK, PLUGIN_NAME,
+        (ctx, payload) => taskCaptureVeto({ isTaskConversation: async input => (await ready).isTaskConversation(input) }, ctx, payload),
+      );
+
       const initCtx = makeAgentContext({
         sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system',
       });
@@ -77,6 +107,9 @@ export function createRoutinesPlugin(
       await runRoutinesMigration(db);
       store = createRoutinesStore(db);
       const localStore = store;
+      // The capture check needs only the migrated schema: bound conversations
+      // survive the abandoned-run pass below, so it needn't wait for that.
+      storeReady(localStore);
       const localDb = db;
       await localStore.interruptAbandonedDispatches();
       lifetime = createRoutineLifetime();
@@ -131,6 +164,41 @@ export function createRoutinesPlugin(
         },
       );
 
+      // TASK-908 — a task check-in's brief. The orchestrator calls this with
+      // the routine invoke's own ctx, so the answer comes from the fire this
+      // plugin started under that reqId: no query on the spawn path, and the
+      // brief, the message, the veto and the belt read one record.
+      bus.registerService(
+        ROUTINES_AUGMENT_PROVIDER, PLUGIN_NAME,
+        async ctx => checkInBrief(pending, ctx),
+        { returns: SystemPromptAugmentOutputSchema },
+      );
+
+      // TASK-908 — no brief, no check-in. The orchestrator fires this (awaited,
+      // bounded) on every fresh spawn, after building the system prompt and
+      // before any session opens. A pending task check-in whose brief wasn't
+      // sent, or isn't listed, is refused, and the turn ends
+      // `system-prompt:<reason>`. A map
+      // read and write only. Fails closed: if working it out throws, a pending
+      // task run is refused anyway.
+      bus.subscribe<unknown>(
+        SYSTEM_PROMPT_LANDED_HOOK, PLUGIN_NAME,
+        async (ctx, payload) => {
+          try {
+            return briefLandedVeto(pending, ctx, payload);
+          } catch (err) {
+            const entry = pending.get(ctx.reqId);
+            const refusal = entry !== undefined && isTaskRun(entry.row) ? refuseCheckIn(entry, ctx) : undefined;
+            try {
+              ctx.logger.warn('routines_system_prompt_landed_failed', {
+                agentId: ctx.agentId, name: err instanceof Error ? err.name : 'unknown',
+              });
+            } catch { /* the answer stands */ }
+            return refusal;
+          }
+        },
+      );
+
       bus.subscribe<{
         reqId?: string;
         contentBlocks?: unknown[];
@@ -144,6 +212,30 @@ export function createRoutinesPlugin(
         // Slice 6 — recorded on the fire row and as the routine's
         // last_warning; null clears the previous run's.
         const warning = warningFor(pf);
+        // TASK-908 — the belt: a task check-in whose brief was never confirmed
+        // landed (the event timed out, threw, or a spawn path never fired it)
+        // is recorded as failed, whatever its turn said. Its report, if it
+        // sent one, stays on the row.
+        if (isTaskRun(pf.row) && pf.brief !== 'landed') {
+          try {
+            ctx.logger.warn('routines_check_in_brief_unconfirmed', {
+              agentId: pf.row.agentId, routineId: pf.row.routineId, dispatchId: pf.dispatchId,
+            });
+          } catch { /* the run is still recorded below */ }
+          try {
+            await localStore.finishDispatch({ dispatchId: pf.dispatchId, outcome: {
+              conversationId: pf.conversationId,
+              status: 'error', error: BRIEF_UNCONFIRMED,
+              renderedPrompt: pf.renderedPrompt,
+              warning,
+            } });
+          } catch (err) {
+            ctx.logger.warn('routines_turn_end_handler_failed', {
+              reqId, err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return undefined;
+        }
         try {
           const blocks = payload.contentBlocks ?? [];
           const decision = applySilenceLogic(blocks, {

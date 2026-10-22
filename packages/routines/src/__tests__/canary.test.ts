@@ -331,7 +331,16 @@ describe('task check-in report canary (TASK-907)', () => {
     const turn = new Promise<{ error: unknown } | null>(resolve => { ended = resolve; });
     script = async (ctx, bus) => {
       let failure: { error: unknown } | null = null;
-      try { await body(ctx, bus); }
+      try {
+        // TASK-908: what the orchestrator does before a fresh spawn's turn: ask routines' provider for the
+        // brief, then fire chat:system-prompt-landed listing it when it answered one (a repeat routine's run
+        // gets none). Skip either for a task and the veto refuses the run, or the belt fails it. Inside the
+        // try, so a failed expect still ends the turn.
+        const answer = await bus.call<unknown, { brief?: string }>('system-prompt:augment:optional:routines', ctx, {});
+        const providers = answer.brief === undefined ? [] : ['system-prompt:augment:optional:routines'];
+        expect(await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers })).toMatchObject({ rejected: false });
+        await body(ctx, bus);
+      }
       catch (error) { failure = { error }; }
       finally {
         try { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); }
@@ -368,7 +377,7 @@ describe('task check-in report canary (TASK-907)', () => {
     const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
-    expect((await history(task))[0]?.report).toEqual(NEEDS_YOU);
+    expect((await history(task))[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
     // The model's own read, from an ordinary chat, shows the same task.
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
     const read = await h.bus.call<unknown, RoutineView>('tool:execute:routine_get', chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } });
@@ -386,5 +395,83 @@ describe('task check-in report canary (TASK-907)', () => {
     await expect(h.bus.call('tool:execute:routine_report', chat, call)).rejects.toMatchObject({ toolCode: 'not-in-check-in' });
     expect((await get(task)).task).toBeNull();
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
+  });
+});
+
+// TASK-908: Agent Tasks PR 1, end to end through the real routines, agents, tool-policy and
+// decisions plugins and Postgres. The agent proposes a task, the person approves it once, the
+// clock ticks, the check-in runs with its brief landed and reports, and the task shows the report.
+// The invoke stub does what the orchestrator does with a routine's invoke, in its order.
+describe('PR 1 backend canary (TASK-908)', () => {
+  it('an agent proposes a task, the person approves once, the tick runs a check-in with its brief landed, and the report shows on the task', async () => {
+    let now = Date.parse('2026-10-09T12:00:00Z');
+    let wake: (() => void) | undefined;
+    const clock: Clock = {
+      now: () => new Date(now),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        const finish = () => { signal.removeEventListener('abort', finish); wake = undefined; resolve(); };
+        if (signal.aborted) return finish();
+        wake = finish; signal.addEventListener('abort', finish, { once: true });
+      }),
+    };
+    const PROVIDER = 'system-prompt:augment:optional:routines';
+    let checkInCtx: AgentContext | undefined;
+    let failure: { error: unknown } | null = null;
+    h = await createRoutineHarness({ clock, invoke: async (ctx, bus, input) => {
+      try {
+        checkInCtx = ctx;
+        // The orchestrator builds the system prompt with the invoke's own ctx…
+        const out = await bus.call<unknown, { brief?: string }>(PROVIDER, ctx, {});
+        expect(out.brief).toContain('## Your task: Support queue');
+        expect(out.brief).toContain('> Keep the support queue empty.');
+        expect(out.brief).toContain('> No ticket waits longer than an hour.');
+        // …says whose contribution landed, before any session opens…
+        expect(await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers: [PROVIDER] })).toMatchObject({ rejected: false });
+        // …and the turn starts with the check-in message, which carries neither of the person's fields.
+        const message = (input as { message: { content: string } }).message.content;
+        expect(message.startsWith('Scheduled check-in.')).toBe(true);
+        expect(message).not.toContain('Keep the support queue empty.');
+        expect(message).not.toContain('No ticket waits longer than an hour.');
+        // The runner's report reaches the host with the session's own conversation.
+        const runner = makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', conversationId: ctx.conversationId!, source: 'routine' });
+        expect(await bus.call('tool:execute:routine_report', runner, { id: 'report', name: 'routine_report', input: {
+          status: 'on-track', update: 'Queue is empty.', ask: null, notes: 'Nothing pending.',
+        } })).toStrictEqual({ recorded: true });
+      } catch (error) { failure = { error }; }
+      await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
+      return { kind: 'complete' };
+    } });
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    await expect.poll(() => Boolean(wake)).toBe(true);
+    // The agent proposes the task in its chat; tool policy holds it for the person.
+    const call = { id: 'propose-task', name: 'routine_create', input: {
+      requestId: 'propose-task', definition: RoutineDefinitionSchema.parse({
+        name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+        kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+      }),
+    } };
+    const held = await h.bus.fire('tool:pre-call', chat, call);
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    await h.bus.call('decisions:approve', chat, { decisionId: held.hold.decisionId, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const task = await h.bus.call<unknown, RoutineView>('tool:execute:routine_create', chat, call);
+    expect(task).toMatchObject({ kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.', task: null });
+    // The clock ticks past the task's interval, and its check-in runs.
+    now += 15 * 60_000; wake!();
+    const store = createRoutinesStore(h.db);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    if (failure !== null) throw (failure as { error: unknown }).error;
+    expect(checkInCtx).toMatchObject({ source: 'routine', agentId: h.agentId, userId: h.owner.userId });
+    // As the owner: the task shows the report, and its run shows it too, with no prompt kept.
+    const listed = (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId })).routines;
+    expect(listed.find(row => row.routineId === task.routineId)?.task).toEqual({
+      status: 'on-track', update: 'Queue is empty.', ask: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
+    });
+    const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
+    expect(fires[0]).toMatchObject({ status: 'ok', renderedPrompt: null, report: { status: 'on-track', update: 'Queue is empty.', ask: null } });
+    // Memory won't learn from the check-in's conversation.
+    const runner = makeAgentContext({ userId: h.owner.userId, agentId: h.agentId, sessionId: 'memory', conversationId: checkInCtx!.conversationId!, source: 'routine' });
+    expect(await h.bus.fire('memory:pre-capture', runner, { conversationId: checkInCtx!.conversationId })).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
   });
 });

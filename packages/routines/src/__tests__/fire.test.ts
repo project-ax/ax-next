@@ -7,7 +7,8 @@ import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
-import type { StoredRoutine } from '../types.js';
+import { renderCheckInMessage } from '../checkin-message.js';
+import type { DispatchReport, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
@@ -18,12 +19,13 @@ async function setup(options: {
   grace?: number;
   definition?: object;
   bind?: () => Promise<void>;
+  reports?: () => Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
   const bus = new HookBus();
   const pending: PendingFires = new Map();
-  const invoked = vi.fn(async (ctx: AgentContext) => options.invoke ? options.invoke(ctx, bus) : { kind: 'complete' });
+  const invoked = vi.fn(async (ctx: AgentContext, _input?: unknown) => options.invoke ? options.invoke(ctx, bus) : { kind: 'complete' });
   const conversation = vi.fn(async () => ({ conversationId: 'c' }));
   const shared = vi.fn(async () => ({ conversation: { conversationId: 'c' }, created: false }));
   bus.registerService('agents:resolve', 'test', async () => { if (options.resolveError)
@@ -32,7 +34,8 @@ async function setup(options: {
   bus.registerService('conversations:create', 'test', conversation);
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
-  const fire = createFireRoutine({ bus, pending, store: options.bind ? { ...f.store, bindDispatchConversation: options.bind } : f.store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
+  const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.reports ? { recentReports: options.reports } : {}) };
+  const fire = createFireRoutine({ bus, pending, store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
   cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
   return { bus, row, accepted, pending, invoked, conversation, shared, fire };
 }
@@ -42,7 +45,7 @@ describe('accepted DB fire dispatch', () => {
     const result = await h.fire(h.accepted);
     expect(result.recordedAtTurnEnd).toBe(true);
     expect(h.invoked.mock.calls[0]![0]).toMatchObject({ reqId: h.accepted.reqId, userId: 'owner', agentId: 'a', source: 'routine', triggerLabel: h.row.name });
-    expect(h.pending.get(h.accepted.reqId)).toMatchObject({ dispatchId: h.accepted.dispatchId, agentName: 'Bob', skips: [] });
+    expect(h.pending.get(h.accepted.reqId)).toMatchObject({ dispatchId: h.accepted.dispatchId, agentName: 'Bob', skips: [], brief: 'waiting' });
     expect(await f.store.recentFires(h.row)).toEqual([]);
   });
   it('preserves shared conversation externalKey as the opaque routine identity', async () => {
@@ -91,7 +94,7 @@ describe('accepted DB fire dispatch', () => {
   });
   it('purges only exact agents:resolve not-found, including pending correlations and HMAC cleanup', async () => {
     const h = await setup({ definition: { trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'sig' } } }, resolveError: new PluginError({ code: 'not-found', plugin: 'agents', hookName: 'agents:resolve', message: 'gone' }) });
-    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], onTurnEnd: async () => { } });
+    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], brief: 'waiting', onTurnEnd: async () => { } });
     expect((await h.fire(h.accepted)).agentGone).toBe(true);
     expect(h.pending.size).toBe(0);
     expect(await f.store.findOne(h.row)).toBeNull();
@@ -125,14 +128,16 @@ describe('accepted DB fire dispatch', () => {
     expect(await f.store.findOne(h.row)).toBeNull();
     expect(await f.store.recentFires(h.row)).toHaveLength(1);
   });
-  it.each(['chat:start:denied', 'agent-resolve:forbidden'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
+  // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat
+  // routine's run keeps the raw reason as its error; only a task's is worded (checkin.test.ts).
+  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
     const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: terminated: ${reason}`));
     await h.fire(next);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
-    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', warning: 'Previous warning' });
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `terminated: ${reason}`, warning: 'Previous warning' });
     expect(diagnostic.messages).toHaveLength(1);
   });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
@@ -143,11 +148,61 @@ describe('accepted DB fire dispatch', () => {
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: expect.stringContaining('interrupted') });
   });
 });
+// TASK-908: a task run starts with its check-in message instead of its
+// instructions, and no run of a task keeps that message as its prompt. A repeat
+// routine's run is exactly what it was.
+describe('the check-in message and the stored prompt (TASK-908)', () => {
+  const TASK = { kind: 'stay-on-top', goodWhen: 'All good.', trigger: { kind: 'interval', every: '15m' }, silenceToken: null, conversation: 'per-fire' };
+  it("a task run's pending entry keeps no renderedPrompt and its invoke gets the check-in message", async () => {
+    const h = await setup({ definition: TASK });
+    const result = await h.fire(h.accepted);
+    expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBeNull();
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [] }) } });
+    expect(result).toMatchObject({ status: 'ok', renderedPrompt: null, recordedAtTurnEnd: true });
+  });
+  it('a failed report read fails the task run before the agent starts', async () => {
+    const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
+    const result = await h.fire(h.accepted);
+    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect(h.pending.size).toBe(0);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
+  });
+  it.each(['throw', 'terminated', 'missing-turn'])('a task run that never finishes its turn keeps no renderedPrompt either (%s)', async (kind) => {
+    const h = await setup({ definition: TASK, grace: 0, invoke: async () => { if (kind === 'throw')
+        throw new Error('failed'); return { kind: kind === 'terminated' ? 'terminated' : 'complete', reason: 'stopped' }; } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(h.accepted);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', renderedPrompt: null });
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  it.each([
+    { from: 'fire-now or the tick', definition: {}, payload: undefined, prompt: '  first line\n\nsecond line\n' },
+    { from: 'a webhook', definition: { promptBody: 'Review {{payload.title}}' }, payload: { title: 'literal {{payload.title}}' }, prompt: 'Review literal {{payload.title}}' },
+  ])("a repeat routine's run from $from is unchanged: its instructions, byte for byte, are its message and its prompt, and it reads no reports", async ({ definition, payload, prompt }) => {
+    const reports = vi.fn(async (): Promise<Array<{ firedAt: Date; report: DispatchReport }>> => { throw new Error('a repeat run must not read reports'); });
+    const h = await setup({ definition, reports });
+    const result = await h.fire(h.accepted, payload);
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: prompt } });
+    expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBe(prompt);
+    expect(result).toMatchObject({ status: 'ok', renderedPrompt: prompt, recordedAtTurnEnd: true });
+    expect(reports).not.toHaveBeenCalled();
+  });
+  it("a repeat routine's run whose turn never ends still records its instructions as its prompt", async () => {
+    const h = await setup({ grace: 0, invoke: async () => ({ kind: 'terminated', reason: 'stopped' }) });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(h.accepted);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', renderedPrompt: '  first line\n\nsecond line\n' });
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+});
 describe('connector skips per fire (slice 6)', () => {
   function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {
     return {
       row: sampleRow(), dispatchId: 'dispatch', conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
-      agentName: 'Bob', skips: [], onTurnEnd: async () => { },
+      agentName: 'Bob', skips: [], brief: 'waiting', onTurnEnd: async () => { },
       ...over,
     };
   }

@@ -311,7 +311,9 @@ without a summary. That isn't worth fixing on a page that is going away.
    reply, Check now or an update from another app also starts one.
 2. **The host writes the brief**, in two parts (§4.2).
 3. **The agent works** with its usual tools and connectors. Sending, paying and
-   other outward actions still wait for a person's OK.
+   other outward actions wait for a person's OK unless the person has already
+   allowed that tool (Always Allow), so the brief tells the agent to treat
+   every outward action as final (TASK-908).
 4. **It reports** with one `routine_report` call: status, a one-line update,
    what it needs, steps, and notes for next time.
 5. **People see it.** The Tasks list and the task's Updates thread show the
@@ -328,24 +330,34 @@ that grows forever.
   reporting instructions) goes in W1's `brief` system-prompt section, through
   an optional provider that `@ax/routines` registers
   (`system-prompt:augment:optional:routines`). The provider recognises a
-  check-in from host-set context: `ctx.source === 'routine'` plus `ctx.reqId`,
-  which the routines store records next to `routine_id` when it accepts the run
-  (`packages/routines/src/store.ts:229-233`).
+  check-in from host-set context: `ctx.source === 'routine'` and the in-flight
+  fire `@ax/routines` started under `ctx.reqId` (the dispatch's `req_id`), for
+  a task on `ctx.agentId`, run as its owner in its own conversation. It reads
+  that record in memory, not the database, so the brief is the snapshot the
+  run was accepted with, the same one its check-in message came from
+  (TASK-908).
 - **The variable part** goes in the check-in message: the agent's notes, the
   person's replies (the last 20), the last three updates, and any updates from
   other apps. App updates are fenced and labelled as outside content.
-- **In ordinary chats** the same provider returns a short list of the agent's
-  active tasks as `context`, so the agent can answer "how's the support
+- **Left out of PR 1 (TASK-908).** `routine_list` already carries task state
+  (TASK-907), so the agent answers "how's the support queue?" with one call.
+  Land the list below only if transcripts show agents need it. **In ordinary
+  chats** the same provider would return a short list of the agent's active
+  tasks as `context`, so the agent can answer "how's the support
   queue?" without a tool call. It fires `system-prompt:augment-changed` only
   when that list visibly changes, because each fire retires the agent's live
   sessions at their next turn.
 - **Two additions W1 needs:**
   - **A signal that the brief landed.** W1 drops a provider's section when that
     provider fails, and drops every section when memory's required provider
-    fails (`packages/chat-orchestrator/src/orchestrator.ts:844-865`). Add an
-    observation event keyed by reqId, modelled on `chat:connectors-skipped`. A
-    check-in whose brief didn't land is recorded as failed instead of running
-    on outside content alone.
+    fails (`packages/chat-orchestrator/src/orchestrator.ts:844-865`). Built in
+    TASK-908 as `chat:system-prompt-landed { reqId, providers }`: the
+    orchestrator fires it right after building the augment, before any proxy
+    or sandbox session, listing the providers whose contribution landed. A
+    subscriber can veto, and the turn then ends `system-prompt:<reason>`;
+    routines vetoes a check-in whose brief isn't listed, and records it as
+    failed. A check-in whose confirmation never arrives is still recorded as
+    failed at turn end.
   - **Always Allow doesn't cover a task's brief.** Done in TASK-906: creating a
     task, and changing any routine's name, instructions, "going well when" or
     kind, always needs a yes, even with Always Allow (`touchesTaskBrief` in
@@ -386,7 +398,8 @@ that grows forever.
     it. These rules and the card together are what make the `brief` section
     person-written.
 - W1's `brief` section arrived with projects (#992), so the revert in §11
-  removes it. Tasks PR 1 adds it back as its first user.
+  removed it. TASK-908 (Tasks PR 1) added it back, with a task check-in as
+  its first user.
 
 ### 4.3 Binding a report to its run
 
@@ -855,9 +868,11 @@ ask" list.
 
 - **New hooks:** `routines:report`, `routines:reply`, `routines:set-steps`,
   `routines:complete`, `routines:reopen`; task state on `routines:list` and
-  `routines:get`; the `system-prompt:augment:optional:routines` provider; and
-  an orchestrator observation event saying whether a check-in's brief landed
-  (name to be settled, modelled on `chat:connectors-skipped`).
+  `routines:get`; the `system-prompt:augment:optional:routines` provider; the
+  veto-capable `chat:system-prompt-landed { reqId: string; providers: string[] }`
+  (TASK-908, modelled on `chat:connectors-skipped`); and the veto-capable
+  `memory:pre-capture { conversationId: string }`, which memory fires before it
+  learns from a conversation (TASK-908).
 - **Alternate implementation:** an external task tracker (Linear, Asana) behind
   the same hooks, or a SQLite-backed routines store.
 - **Payload names that might leak:** none planned. Status, update, ask, steps
@@ -908,3 +923,7 @@ ask" list.
 | 2026-10-20 | Decided | The shortest check-in is **15 minutes** (§14 Q3). |
 | 2026-10-20 | Decided | Team members can start tasks on a team agent, and those tasks run as the member who started them, within that member's usage limits. Lands in PR 4 (§14 Q7). |
 | 2026-10-20 | Proposed | The other pressure-test changes in §9 and the remaining open questions in §14. |
+| 2026-10-22 | Decided | The orchestrator says whose system-prompt contributions landed with `chat:system-prompt-landed { reqId, providers }`, fired on every fresh spawn before any session opens. A subscriber can veto (turn ends `system-prompt:<reason>`). Routines refuses a check-in whose brief isn't listed, and a belt at turn end fails one that got no confirmation (TASK-908). |
+| 2026-10-22 | Decided | A task run's check-in message is not stored on the run (`renderedPrompt: null`): it carries the owner's notes and reports, and every member of a team agent can read run history. It lives in the check-in's own hidden conversation (TASK-908). |
+| 2026-10-22 | Decided | Memory doesn't learn from task check-ins. Memory asks `memory:pre-capture` before each pass, and routines refuses a task check-in's conversation, whoever's pass it is, failing closed on a slow lookup (TASK-908). |
+| 2026-10-22 | Decided | A routine run of an agent with an explicit tool list always sees `routine_report`; its host gate still refuses it outside a task's own check-in (TASK-908). |

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
 import { sql } from 'kysely';
+import { HookBus, makeAgentContext, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS } from '@ax/core';
 import { createRoutinesPlugin } from '../plugin.js';
+import { CAPTURE_CHECK_DEADLINE_MS } from '../capture.js';
 import { createRoutinesStore } from '../store.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 let h: RoutineHarness;
@@ -14,7 +16,8 @@ describe('routines runtime registration', () => {
     const { manifest } = createRoutinesPlugin();
     expect(manifest.registers).toContain('routines:fire-now');
     expect(manifest.calls).toContain('agents:resolve-by-webhook-token');
-    expect(manifest.subscribes).toEqual(expect.arrayContaining(['agents:deleted', 'chat:turn-end', 'chat:connectors-skipped']));
+    expect(manifest.registers).toContain('system-prompt:augment:optional:routines');
+    expect(manifest.subscribes).toEqual(expect.arrayContaining(['agents:deleted', 'chat:turn-end', 'chat:connectors-skipped', 'chat:system-prompt-landed', 'memory:pre-capture']));
     expect(manifest.subscribes).not.toContain('workspace:applied');
     expect(manifest.subscribes).not.toContain('agents:webhook-token-rotated');
   });
@@ -76,5 +79,24 @@ describe('routines runtime registration', () => {
     expect(await Promise.all([h.bus.call('routines:fire-now', h.owner, input), h.bus.call('routines:fire-now', h.owner, input)])).toEqual([{ status: 'ok' }, { status: 'ok' }]);
     expect(h.invokeCalls).toHaveLength(1);
     await expect.poll(async () => (await createRoutinesStore(h.db).recentFires(row)).length).toBe(1);
+  });
+});
+
+// TASK-908: memory may ask about a conversation while routines is still starting (a runner
+// reporting into a freshly restarted host). The capture veto is subscribed before the database
+// is ready, and a lookup that can't run in time refuses rather than letting the pass through.
+describe('the capture veto while routines starts (TASK-908)', () => {
+  it('a capture pass during a start that never finishes is refused at the deadline, not skipped', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const bus = new HookBus();
+      bus.registerService('database:get-instance', 'test', () => new Promise(() => {}));
+      void createRoutinesPlugin().init({ bus } as Parameters<ReturnType<typeof createRoutinesPlugin>['init']>[0]);
+      await Promise.resolve();
+      const ctx = makeAgentContext({ sessionId: 's', agentId: 'agent', userId: 'owner', conversationId: 'c-task', source: 'routine' });
+      const asked = bus.fire('memory:pre-capture', ctx, { conversationId: 'c-task' }, { subscriberTimeoutMs: MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS });
+      await vi.advanceTimersByTimeAsync(CAPTURE_CHECK_DEADLINE_MS);
+      expect(await asked).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
+    } finally { vi.useRealTimers(); }
   });
 });

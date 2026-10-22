@@ -1617,6 +1617,85 @@ describe('chat-orchestrator', () => {
     ]);
   });
 
+  // -------------------------------------------------------------------------
+  // TASK-908 — a routine run (ctx.source === 'routine', which only @ax/routines'
+  // fire.ts sets, host-side) of a NON-wildcard agent also sees routine_report,
+  // because a task check-in's brief tells it to report. The other direction
+  // matters as much: a wildcard agent's routine run, and any chat that isn't a
+  // routine run, keep exactly the list TASK-51 gives them.
+  // -------------------------------------------------------------------------
+
+  // silentCtx plus a host-set source.
+  function sourcedCtx(sessionId: string, source: 'routine' | 'user') {
+    return makeAgentContext({
+      sessionId,
+      agentId: 'test-agent',
+      userId: 'test-user',
+      source,
+      logger: createLogger({ reqId: 'orch-test', writer: () => undefined }),
+    });
+  }
+
+  async function invokeAndReadAllowedTools(
+    agent: { allowedTools: string[]; mcpConfigIds: string[] },
+    ctx: ReturnType<typeof sourcedCtx>,
+  ): Promise<string[]> {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved', ...agent } }),
+    });
+    let busRef: HookBus | null = null;
+    const getConfig = withRecordingOpenSession(mocks, () => busRef);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/x' }, chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+    expect(outcome.kind).toBe('complete');
+    return getConfig().allowedTools;
+  }
+
+  it('TASK-908: a routine run of a non-wildcard agent sees routine_report', async () => {
+    const allowedTools = await invokeAndReadAllowedTools(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s1', 'routine'),
+    );
+    expect(allowedTools).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+      'skill_propose',
+      'connector_propose',
+      'routine_report',
+    ]);
+  });
+
+  it('TASK-908: a wildcard agent’s routine run keeps the empty-empty wildcard', async () => {
+    const allowedTools = await invokeAndReadAllowedTools(
+      { allowedTools: [], mcpConfigIds: [] },
+      sourcedCtx('s2', 'routine'),
+    );
+    // Injecting anything would shrink "the whole catalog" to a short list.
+    expect(allowedTools).toEqual([]);
+  });
+
+  it('TASK-908: a user turn of a non-wildcard agent does not see routine_report', async () => {
+    // The unset-source case is the TASK-51 test above; this is the explicit one.
+    const allowedTools = await invokeAndReadAllowedTools(
+      { allowedTools: ['file.read'], mcpConfigIds: [] },
+      sourcedCtx('s3', 'user'),
+    );
+    expect(allowedTools).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+      'skill_propose',
+      'connector_propose',
+    ]);
+  });
+
   it('agents:resolve throwing a non-PluginError → terminated outcome with the bus-wrapped code', async () => {
     // The bus wraps non-PluginError throws as PluginError(code='unknown').
     // We document and depend on that wrapping here so the orchestrator's
@@ -6916,6 +6995,47 @@ describe('withBrokerDefaults', () => {
     const input = ['file.read'];
     withBrokerDefaults(input, []);
     expect(input).toEqual(['file.read']);
+  });
+
+  // TASK-908 — a routine run of a non-wildcard agent also gets routine_report,
+  // after the broker tools, because a task check-in's brief tells it to report.
+  // Both directions are pinned: a wildcard agent's list and an ordinary
+  // session's list stay exactly what they were.
+  it('a routine run of a non-wildcard agent also gets routine_report, after the broker tools', () => {
+    expect(withBrokerDefaults(['file.read'], [], { routineRun: true })).toEqual([
+      'file.read',
+      ...BROKER,
+      'routine_report',
+    ]);
+  });
+
+  it('an mcpConfigIds-only routine run also gets routine_report', () => {
+    expect(withBrokerDefaults([], ['mcp-1'], { routineRun: true })).toEqual([
+      ...BROKER,
+      'routine_report',
+    ]);
+  });
+
+  it('a wildcard routine run is unchanged', () => {
+    expect(withBrokerDefaults([], [], { routineRun: true })).toEqual([]);
+  });
+
+  it('dedups routine_report the agent already lists', () => {
+    expect(withBrokerDefaults(['routine_report'], [], { routineRun: true })).toEqual([
+      'routine_report',
+      ...BROKER,
+    ]);
+  });
+
+  it('an ordinary session gets no routine_report', () => {
+    expect(withBrokerDefaults(['file.read'], [])).not.toContain('routine_report');
+  });
+
+  it('routineRun: false, which every non-routine turn passes, adds no routine_report', () => {
+    expect(withBrokerDefaults(['file.read'], [], { routineRun: false })).toEqual([
+      'file.read',
+      ...BROKER,
+    ]);
   });
 });
 

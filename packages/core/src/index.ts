@@ -65,12 +65,17 @@ export {
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
   SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SYSTEM_PROMPT_LANDED_HOOK,
   SystemPromptAugmentOutputSchema,
+  SystemPromptLandedPayloadSchema,
 } from './system-prompt-augment.js';
 export type {
   SystemPromptAugmentInput,
   SystemPromptAugmentOutput,
+  SystemPromptLandedPayload,
 } from './system-prompt-augment.js';
+export { MEMORY_PRE_CAPTURE_HOOK, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema } from './memory-capture.js';
+export type { MemoryPreCapturePayload } from './memory-capture.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
   Bytes,

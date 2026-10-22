@@ -108,7 +108,9 @@ export interface AgentContext {
    * fires) and was deleted in TASK-608. @ax/memory still stores routine
    * turns, but stores their rows with no conversation (TASK-616): a routine's
    * hidden conversation is not one the person had, and must not count
-   * toward the skill-reflection recurrence gate.
+   * toward the skill-reflection recurrence gate. It skips a pass a
+   * `memory:pre-capture` subscriber refuses (a task check-in's conversation,
+   * which @ax/routines refuses whatever the pass's source, TASK-908).
    *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.

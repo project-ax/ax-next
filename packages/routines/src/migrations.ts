@@ -155,7 +155,22 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addReportColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (4)`.execute(trx);
     }
+    if (!await done(5)) {
+      await addConversationIndex(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (5)`.execute(trx);
+    }
   });
+}
+
+/** Version 5 (TASK-908): every run's conversation, open or finished, is indexed. Memory asks
+ * routines about each capture pass's conversation (`isTaskConversation`), ordinary chats
+ * included, and TASK-907's index covers open runs only. Additive: no row changes.
+ */
+async function addConversationIndex(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`
+    CREATE INDEX IF NOT EXISTS routines_v1_dispatches_conversation
+      ON routines_v1_dispatches (agent_id, conversation_id) WHERE conversation_id IS NOT NULL
+  `.execute(db);
 }
 
 /** Version 4 (TASK-907): a run's conversation and report, a task's state, and each fire's report.
