@@ -62,9 +62,16 @@ async function checkIn(view: RoutineView, requestId: string, body: (ctx: AgentCo
   const turn = new Promise<{ error: unknown } | null>(resolve => { ended = resolve; });
   script = async (ctx, bus) => {
     let failure: { error: unknown } | null = null;
-    // TASK-908: what the orchestrator fires once a check-in's brief lands. Without it the belt fails the run.
-    await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers: ['system-prompt:augment:optional:routines'] });
-    try { await body(ctx, bus); }
+    try {
+      // TASK-908: what the orchestrator does before a fresh spawn's turn: ask routines' provider for the
+      // brief, then fire chat:system-prompt-landed listing it when it answered one (a repeat routine's run
+      // gets none). Skip either for a task and the veto refuses the run, or the belt fails it. Inside the
+      // try, so a failed expect still ends the turn.
+      const answer = await bus.call<unknown, { brief?: string }>('system-prompt:augment:optional:routines', ctx, {});
+      const providers = answer.brief === undefined ? [] : ['system-prompt:augment:optional:routines'];
+      expect(await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers })).toMatchObject({ rejected: false });
+      await body(ctx, bus);
+    }
     catch (error) { failure = { error }; }
     finally {
       try { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); }

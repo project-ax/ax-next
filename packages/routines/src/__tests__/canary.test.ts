@@ -331,9 +331,16 @@ describe('task check-in report canary (TASK-907)', () => {
     const turn = new Promise<{ error: unknown } | null>(resolve => { ended = resolve; });
     script = async (ctx, bus) => {
       let failure: { error: unknown } | null = null;
-      // TASK-908: what the orchestrator fires once a check-in's brief lands. Without it the belt fails the run.
-      await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers: ['system-prompt:augment:optional:routines'] });
-      try { await body(ctx, bus); }
+      try {
+        // TASK-908: what the orchestrator does before a fresh spawn's turn: ask routines' provider for the
+        // brief, then fire chat:system-prompt-landed listing it when it answered one (a repeat routine's run
+        // gets none). Skip either for a task and the veto refuses the run, or the belt fails it. Inside the
+        // try, so a failed expect still ends the turn.
+        const answer = await bus.call<unknown, { brief?: string }>('system-prompt:augment:optional:routines', ctx, {});
+        const providers = answer.brief === undefined ? [] : ['system-prompt:augment:optional:routines'];
+        expect(await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers })).toMatchObject({ rejected: false });
+        await body(ctx, bus);
+      }
       catch (error) { failure = { error }; }
       finally {
         try { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); }
@@ -370,7 +377,7 @@ describe('task check-in report canary (TASK-907)', () => {
     const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
-    expect((await history(task))[0]?.report).toEqual(NEEDS_YOU);
+    expect((await history(task))[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
     // The model's own read, from an ordinary chat, shows the same task.
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
     const read = await h.bus.call<unknown, RoutineView>('tool:execute:routine_get', chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } });
