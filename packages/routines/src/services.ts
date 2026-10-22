@@ -5,6 +5,7 @@ import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
+import { advanceToNextActiveWindow } from './active-hours.js';
 
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
@@ -29,9 +30,11 @@ export function routinePermissions(row: StoredRoutine, userId: string, allowed: 
   return { edit: own, stop: allowed && row.definitionId === null, fire: allowed && row.ownerUserId === userId, manageSecret: own };
 }
 export function routineView(row: StoredRoutine, userId: string, allowed: boolean): C.RoutineView {
+  // The tick skips a run outside the active hours and re-arms it at the next window's start (tick.ts), so that's when it will run (TASK-910).
+  const nextRunAt = row.nextRunAt === null || row.activeHours === null ? row.nextRunAt : advanceToNextActiveWindow(row.nextRunAt, row.activeHours);
   return { ...editableDefinition(row), agentId: row.agentId, routineId: row.routineId, revision: row.revision,
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
-    nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
+    nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId) };
 }
