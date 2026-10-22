@@ -47,6 +47,12 @@ export interface RoutinesStore {
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
   recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
+  /**
+   * TASK-908. A routine's latest reports, for its next check-in's message:
+   * finished runs with a report, newest first, however many runs without one
+   * came in between. `limit` is clamped to 1-10. The text is agent-written.
+   */
+  recentReports(input: RoutineKey & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
   findOperationReceipt(input: OperationKey): Promise<unknown | null>;
   withLockedWebhookSecret(input: RoutineSecretInput, effect: () => Promise<void>): Promise<{ saved: true }>;
   pendingCleanup(input: { limit: number }): Promise<CleanupJob[]>;
@@ -549,6 +555,24 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .limit(limit)
         .execute();
       return rows.map(rowToFire);
+    },
+
+    async recentReports(input) {
+      const limit = Math.min(10, Math.max(1, input.limit));
+      const rows = await db
+        .selectFrom('routines_v1_fires')
+        .select(['fired_at', 'report_status', 'report_update', 'report_ask'])
+        .where('agent_id', '=', input.agentId)
+        .where('routine_id', '=', input.routineId)
+        .where('report_status', 'is not', null)
+        .where('report_update', 'is not', null)
+        .orderBy('fired_at', 'desc')
+        .orderBy('id', 'desc')
+        .limit(limit)
+        .execute();
+      // The query already skips a row with only part of a report (rowToFire's rule); this narrows the types.
+      return rows.flatMap(r => r.report_status === null || r.report_update === null ? []
+        : [{ firedAt: r.fired_at, report: { status: r.report_status, update: r.report_update, ask: r.report_ask } }]);
     },
 
     async list(input) {
