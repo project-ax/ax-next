@@ -100,3 +100,24 @@ export function shortDay(iso: string, locale?: string): string {
 export function conversationDate(iso: string): string {
   return shortDay(iso) || 'Unknown';
 }
+
+/**
+ * "just now", "4 min ago", "3 hr ago" within a day, then `relativeDay`'s
+ * "yesterday" / "4 days ago". The Tasks page's "checked 4 min ago" (TASK-909).
+ *
+ * Minutes and hours are elapsed time, floored, so it never says more time has
+ * passed than has. A future instant reads "just now": the host stamped it, and
+ * a reader's clock a little behind the host's is ordinary. `null` on an
+ * instant it can't read, so the caller shows no time at all rather than
+ * "Invalid Date" or a guess.
+ */
+export function timeAgo(iso: string, now: Date = new Date()): string | null {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return null;
+  const mins = Math.floor((now.getTime() - then) / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return relativeDay(iso, now);
+}
