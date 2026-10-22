@@ -32,7 +32,8 @@ export async function materializePersonalDefaults(harness: RoutineHarness): Prom
 }
 
 export async function createRoutineHarness(options: { clock?: Clock; strictCredentials?: boolean; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
-  invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
+  /** Stands in for agent:invoke. `input` is what the caller sent: fire.ts sends the run's user message (TASK-908). */
+  invoke?: (ctx: AgentContext, bus: HookBus, input: unknown) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   let clock = options.reuse?.clock ?? Date.parse('2026-10-09T12:00:00Z');
@@ -111,9 +112,9 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
     plugins: [{
       manifest: { name: '@test/credential-effects', version: '0.0.0', registers: ['credentials:set', 'test:credential-write', 'agent:invoke'], calls: [], subscribes: [] },
       async init({ bus }) {
-        bus.registerService('agent:invoke', '@test/credential-effects', async ctx => {
+        bus.registerService('agent:invoke', '@test/credential-effects', async (ctx, input) => {
           invokeCalls.push(ctx.reqId);
-          if (options.invoke) return options.invoke(ctx, bus);
+          if (options.invoke) return options.invoke(ctx, bus, input);
           await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
           return { kind: 'complete' };
         }, { timeoutMs: options.invokeTimeoutMs ?? 120_000 });

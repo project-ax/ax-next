@@ -91,8 +91,13 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
 /**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit
  * that changes a routine's kind sets these in the same statement. A task turned
- * into a repeat routine and back starts over: the report and notes it held
- * before the edit don't come back, and the next check-in gets none.
+ * into a repeat routine and back starts over: the latest report, its ask and the
+ * notes it held before the edit don't come back to the task, so it shows no
+ * state and its next check-in has no notes. Its runs' fire rows are history and
+ * stay, though, so that check-in's message still lists the reports those runs
+ * made (never their asks), as `recentReports` reads them. TASK-908 decisions row
+ * 21 (earlier reports after a kind round trip) accepts that: the text is the
+ * routine's own, and both kind changes needed the person's yes.
  *
  * "Starts over" is about what is stored, not about runs. A run still open from
  * before the round trip (stay-on-top, repeat, stay-on-top) is a live check-in of

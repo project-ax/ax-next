@@ -4,6 +4,8 @@ import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
+import { isTaskRun } from './brief.js';
+import { CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
 } from './skip-warning.js';
@@ -24,7 +26,13 @@ export interface PendingFire {
   dispatchId: string;
   conversationId: string;
   source: FireSource;
-  renderedPrompt: string;
+  /**
+   * The prompt this fire's row records. Null for a task run (TASK-908): its
+   * check-in message stays in the run's own hidden conversation, which only the
+   * owner reads, and off its history row, which every member of a team agent
+   * can read.
+   */
+  renderedPrompt: string | null;
   /** The agent's display name from `agents:resolve`; null → "this agent". */
   agentName: string | null;
   /** What `chat:connectors-skipped` said this fire's turn went without. */
@@ -113,9 +121,10 @@ export interface FireDeps {
    * `pending` entry for a reqId writes that fire's row — the chat:turn-end
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
    * `Map#delete` returns true to exactly one of them. It also binds each
-   * fire's conversation onto its dispatch row before the invoke (TASK-907).
+   * fire's conversation onto its dispatch row before the invoke (TASK-907),
+   * and reads a task's latest reports for its check-in message (TASK-908).
    */
-  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation'>;
+  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports'>;
   purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
@@ -236,16 +245,31 @@ export function createFireRoutine(deps: FireDeps) {
       triggerLabel: row.name,
     });
 
-    // Phase D: render whenever payload is provided, regardless of source.
-    // fire-now can carry a payload with source='manual' (Task 2 plan).
-    const prompt =
-      payload !== undefined
-        ? renderTemplate(row.promptBody, { payload })
-        : row.promptBody;
+    let prompt: string;
+    if (isTaskRun(row)) {
+      // TASK-908: a task run starts with its check-in message (why it runs,
+      // the agent's notes and its latest reports), never its instructions,
+      // which reach it as its brief instead. A failed read is recorded like
+      // any other setup failure, and the agent never starts. A task's trigger
+      // is never a webhook (validateDefinition), so it has no payload.
+      let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
+      try {
+        reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPORTS });
+      } catch (err) { return fail(err); }
+      prompt = renderCheckInMessage({ source, agentNotes: row.task?.agentNotes ?? null, reports });
+    } else {
+      // Phase D: render whenever payload is provided, regardless of source.
+      // Only the webhook path passes a payload; fire-now and the tick pass none.
+      prompt = payload !== undefined ? renderTemplate(row.promptBody, { payload }) : row.promptBody;
+    }
+    // TASK-908 decisions row 13: no run of a task keeps its check-in message,
+    // whatever its outcome. Every member of a team agent can read a routine's
+    // run history, and the message carries the owner's notes and reports.
+    const renderedPrompt = isTaskRun(row) ? null : prompt;
 
     deps.pending.set(reqId, {
       row, dispatchId, conversationId, source,
-      renderedPrompt: prompt,
+      renderedPrompt,
       agentName, skips: [],
       onTurnEnd: async () => {},
     });
@@ -278,7 +302,7 @@ export function createFireRoutine(deps: FireDeps) {
       );
       try {
         await deps.store.finishDispatch({ dispatchId, outcome: {
-          conversationId, status: 'error', error, renderedPrompt: prompt,
+          conversationId, status: 'error', error, renderedPrompt: entry.renderedPrompt,
           warning: reachedAssembly || entry.skips.length > 0 ? warningFor(entry) : row.lastWarning,
         } });
       } catch (err) {
@@ -306,7 +330,7 @@ export function createFireRoutine(deps: FireDeps) {
     // TASK-679: the row for this fire is written when the turn settles, not
     // here — see FireResult.recordedAtTurnEnd.
     return {
-      status: 'ok', conversationId, error: null, renderedPrompt: prompt,
+      status: 'ok', conversationId, error: null, renderedPrompt,
       recordedAtTurnEnd: true,
     };
   };
