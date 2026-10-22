@@ -36,7 +36,7 @@ describe('canonical routine return schemas', () => {
       reportedAt: '2030-01-01T00:05:00.000Z', notes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
-    // A routine that is no longer a task keeps its state in the store, but shows none.
+    // A repeat routine shows none, even when its row holds some.
     const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
     expect(repeat.task).toBeNull();
     expect(C.RoutineViewSchema.parse(repeat)).toEqual(repeat);

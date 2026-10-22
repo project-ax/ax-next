@@ -72,6 +72,15 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
   if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
   return { status: row.task_status, update: row.task_update, ask: row.task_ask, notes: row.agent_notes, reportedAt: row.task_reported_at };
 }
+/**
+ * TASK-907. A task's state belongs to the kind it was reported under, so an edit
+ * that changes a routine's kind sets these in the same statement. A task turned
+ * into a repeat routine and back starts over: its old report and notes don't come
+ * back, and its next check-in gets none.
+ */
+const NO_TASK_STATE = {
+  task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+} as const;
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -227,7 +236,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
-          next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt
+          next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
+          ...(next.kind === current.kind ? {} : NO_TASK_STATE),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);

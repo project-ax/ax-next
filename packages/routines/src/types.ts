@@ -10,7 +10,7 @@ export type StoredRoutine = RoutineDefinition & {
   definitionId: string | null; definitionUpdatedAt: Date | null;
   nextRunAt: Date | null; lastRunAt: Date | null;
   lastStatus: FireStatus | null; lastError: string | null; lastWarning: string | null;
-  /** TASK-907. Null until the first report. Kept when a task becomes a repeat routine; the views hide it then. */
+  /** TASK-907. Null until the first report, and again after an edit that changes the routine's kind. */
   task: StoredTaskState | null;
 };
 export interface FireRow {

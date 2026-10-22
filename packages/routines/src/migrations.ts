@@ -38,9 +38,10 @@ export interface RoutinesDefinitionsRow {
   good_when: ColumnType<string | null, string | null | undefined, string | null>;
   /**
    * Version 4 (TASK-907). A task's latest report, written only by `recordReport`,
-   * and the notes it keeps between check-ins. NULL until the first report.
+   * and the notes it keeps between check-ins. NULL until the first report, and
+   * NULL again after an edit that changes the routine's kind (`updateAuthored`).
    * `task_report_accepted_at` is the reporting run's acceptance time: the run
-   * accepted last owns this state. None of it touches `revision` or `updated_at`.
+   * accepted last owns this state. A report never touches `revision` or `updated_at`.
    */
   task_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
   task_update: ColumnType<string | null, string | null | undefined, string | null>;

@@ -35,7 +35,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row) };
 }
-/** TASK-907. A repeat routine shows no task state, even state it kept from being a task. */
+/** TASK-907. A repeat routine shows no task state. Changing a kind clears it; this hides any a row holds anyway. */
 function taskView(row: StoredRoutine): C.RoutineTaskView | null {
   if (row.kind === 'repeat' || row.task === null) return null;
   const { status, update, ask, reportedAt, notes } = row.task;
