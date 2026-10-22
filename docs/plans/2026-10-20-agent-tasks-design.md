@@ -400,7 +400,8 @@ there. The zero-plumbing answer:
   agent. It refuses unless the call comes from a routine run (`ctx.source`),
   exactly one open check-in has that conversation, and that check-in belongs to
   a "stay on top" task run as the calling person. `routines:report` checks the
-  run again, under its row lock, before it writes (TASK-907).
+  whole binding again, the run's own conversation included, under its row lock,
+  before it writes (TASK-907).
 
 This holds because every task check-in has its own hidden conversation. The
 heavier alternative carries a host-set run id through the same path W3 used for

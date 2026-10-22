@@ -26,10 +26,11 @@ const accept = async (row: Key, requestId: string, at = now) => (await f.store.a
 const bound = async (row: Key, requestId: string, conversationId: string, at = now) => {
   const accepted = await accept(row, requestId, at);
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId });
-  return accepted;
+  return { ...accepted, conversationId };
 };
-const record = (dispatchId: string, over: Partial<RecordReportInput> = {}) =>
-  f.store.recordReport({ agentId: 'a', dispatchId, actorUserId: 'owner', report: onTrack, now: later, ...over } as RecordReportInput);
+/** A report from `run`'s own check-in: its conversation, or for a run that was never bound, one it would have had. */
+const record = (run: { dispatchId: string; conversationId?: string }, over: Partial<RecordReportInput> = {}) =>
+  f.store.recordReport({ agentId: 'a', dispatchId: run.dispatchId, conversationId: run.conversationId ?? 'c-unbound', actorUserId: 'owner', report: onTrack, now: later, ...over } as RecordReportInput);
 const find = (agentId: string, conversationId: string) => f.store.findOpenDispatchByConversation({ agentId, conversationId });
 const finish = (dispatchId: string) => f.store.finishDispatch({ dispatchId, outcome });
 
@@ -107,7 +108,7 @@ describe("a check-in's report and the task's state", () => {
     const run = await bound(row, 'record-fire', 'c1');
     const before = await taskRow(row.routineId);
     expect(before).toMatchObject({ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null });
-    expect(await record(run.dispatchId, { report: needsYou, notes: 'Order 1234 waits on a refund.' })).toBe(true);
+    expect(await record(run, { report: needsYou, notes: 'Order 1234 waits on a refund.' })).toBe(true);
     const dispatch = await dispatchRow(run.dispatchId);
     expect(dispatch?.report).toEqual(needsYou);
     expect(await taskRow(row.routineId)).toEqual({
@@ -122,7 +123,7 @@ describe("a check-in's report and the task's state", () => {
   it("copies the run's report onto its fire row at turn end; a run without one gets none", async () => {
     const row = await f.store.createAuthored(taskInput('copy'));
     const run = await bound(row, 'copy-fire', 'c1');
-    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await record(run, { report: needsYou })).toBe(true);
     expect(await finish(run.dispatchId)).toBe(true);
     expect(await fireRow(run.dispatchId)).toEqual({ status: 'ok', error: null, ...fireReport(needsYou) });
     expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
@@ -137,8 +138,8 @@ describe("a check-in's report and the task's state", () => {
     const row = await f.store.createAuthored(taskInput('replace'));
     const run = await bound(row, 'replace-fire', 'c1');
     const second = new Date(later.getTime() + 1000);
-    expect(await record(run.dispatchId, { report: onTrack })).toBe(true);
-    expect(await record(run.dispatchId, { report: needsYou, now: second })).toBe(true);
+    expect(await record(run, { report: onTrack })).toBe(true);
+    expect(await record(run, { report: needsYou, now: second })).toBe(true);
     expect((await dispatchRow(run.dispatchId))?.report).toEqual(needsYou);
     expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, task_reported_at: second });
     await finish(run.dispatchId);
@@ -149,16 +150,16 @@ describe("a check-in's report and the task's state", () => {
     const row = await f.store.createAuthored(taskInput('notes'));
     const run = await bound(row, 'notes-fire', 'c1');
     const notes = async () => (await taskRow(row.routineId))?.agent_notes;
-    await record(run.dispatchId, { notes: 'A' });
+    await record(run, { notes: 'A' });
     expect(await notes()).toBe('A');
-    await record(run.dispatchId);
+    await record(run);
     expect(await notes()).toBe('A');
     // A key that's there but undefined is still "left out".
-    await record(run.dispatchId, { notes: undefined });
+    await record(run, { notes: undefined });
     expect(await notes()).toBe('A');
-    await record(run.dispatchId, { notes: null });
+    await record(run, { notes: null });
     expect(await notes()).toBeNull();
-    await record(run.dispatchId, { notes: 'B' });
+    await record(run, { notes: 'B' });
     expect(await notes()).toBe('B');
   });
 
@@ -166,8 +167,8 @@ describe("a check-in's report and the task's state", () => {
     const row = await f.store.createAuthored(taskInput('two-runs'));
     const older = await bound(row, 'older', 'old', now);
     const newer = await bound(row, 'newer', 'new', new Date(now.getTime() + 1000));
-    expect(await record(newer.dispatchId, { report: needsYou, notes: 'Newer notes.' })).toBe(true);
-    expect(await record(older.dispatchId, { report: onTrack, notes: 'Older notes.', now: new Date(later.getTime() + 5000) })).toBe(true);
+    expect(await record(newer, { report: needsYou, notes: 'Newer notes.' })).toBe(true);
+    expect(await record(older, { report: onTrack, notes: 'Older notes.', now: new Date(later.getTime() + 5000) })).toBe(true);
     const newerState = { task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, agent_notes: 'Newer notes.', task_reported_at: later, task_report_accepted_at: newer.acceptedAt };
     expect(await taskRow(row.routineId)).toMatchObject(newerState);
     expect((await dispatchRow(older.dispatchId))?.report).toEqual(onTrack);
@@ -181,7 +182,7 @@ describe("a check-in's report and the task's state", () => {
     for (let i = 0; i < 3; i++) {
       const first = await bound(row, `race-old-${i}`, `race-old-${i}`, new Date(now.getTime() + 10_000 * (i + 1)));
       const second = await bound(row, `race-new-${i}`, `race-new-${i}`, new Date(now.getTime() + 10_000 * (i + 1) + 1000));
-      await Promise.all([record(first.dispatchId, { report: onTrack }), record(second.dispatchId, { report: needsYou })]);
+      await Promise.all([record(first, { report: onTrack }), record(second, { report: needsYou })]);
       expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_report_accepted_at: second.acceptedAt });
     }
   });
@@ -197,21 +198,25 @@ describe("a check-in's report and the task's state", () => {
     const orphan = await bound(deleted, 'orphan', 'c-orphan');
     await f.store.deleteAuthored({ agentId: 'a', routineId: deleted.routineId, expectedRevision: deleted.revision, actorUserId: 'owner', requestId: 'delete', now });
     const open = await bound(task, 'open', 'c-open');
+    const sibling = await bound(task, 'sibling', 'c-sibling');
     const before = await snapshot();
-    expect(await record(finished.dispatchId)).toBe(false);
-    expect(await record(unbound.dispatchId)).toBe(false);
-    expect(await record(repeatRun.dispatchId)).toBe(false);
-    expect(await record(orphan.dispatchId)).toBe(false);
-    expect(await record(open.dispatchId, { actorUserId: 'intruder' })).toBe(false);
-    expect(await record('dispatch_unknown')).toBe(false);
-    expect(await record(open.dispatchId, { agentId: 'b' })).toBe(false);
+    expect(await record(finished)).toBe(false);
+    expect(await record(unbound)).toBe(false);
+    expect(await record(repeatRun)).toBe(false);
+    expect(await record(orphan)).toBe(false);
+    expect(await record(open, { actorUserId: 'intruder' })).toBe(false);
+    expect(await record({ dispatchId: 'dispatch_unknown', conversationId: open.conversationId })).toBe(false);
+    expect(await record(open, { agentId: 'b' })).toBe(false);
+    // The run, named from a conversation it isn't bound to: another open check-in's, or none's.
+    expect(await record(open, { conversationId: sibling.conversationId })).toBe(false);
+    expect(await record(open, { conversationId: 'c-elsewhere' })).toBe(false);
     expect(await snapshot()).toEqual(before);
     // The same run, asked properly, records: the refusals above were about what they changed.
-    expect(await record(open.dispatchId)).toBe(true);
+    expect(await record(open)).toBe(true);
     // A retired agent's run refuses, even while its rows are still there.
     await sql`INSERT INTO routines_v1_retired_agents (agent_id) VALUES ('a')`.execute(f.db);
     const retired = await snapshot();
-    expect(await record(open.dispatchId, { report: needsYou })).toBe(false);
+    expect(await record(open, { report: needsYou })).toBe(false);
     expect(await snapshot()).toEqual(retired);
   });
 
@@ -219,7 +224,7 @@ describe("a check-in's report and the task's state", () => {
     const row = await f.store.createAuthored(taskInput('race'));
     for (let i = 0; i < 6; i++) {
       const run = await bound(row, `race-${i}`, `c-race-${i}`);
-      const [recorded, finished] = await Promise.all([record(run.dispatchId, { report: needsYou }), finish(run.dispatchId)]);
+      const [recorded, finished] = await Promise.all([record(run, { report: needsYou }), finish(run.dispatchId)]);
       expect(finished).toBe(true);
       expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(recorded ? needsYou : null));
       expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
@@ -232,7 +237,7 @@ describe("a check-in's report and the task's state", () => {
     const edited = await f.store.updateAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner',
       requestId: 'edit', patch: { description: 'Edited.' }, now: later, stopOnly: false });
     expect(edited.revision).not.toBe(row.revision);
-    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await record(run, { report: needsYou })).toBe(true);
     expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, revision: edited.revision });
     await finish(run.dispatchId);
     expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
@@ -248,7 +253,7 @@ describe("a check-in's report and the task's state", () => {
     const again = await edit(repeat, 'to-task', { kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.' });
     expect(await taskRow(row.routineId)).toMatchObject({ task_status: null, task_update: null, task_report_accepted_at: null, agent_notes: null, revision: again.revision });
     // R1 never closed, and the task is a task again, so its report is accepted: the restarted task shows R1's report.
-    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await record(run, { report: needsYou })).toBe(true);
     expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask });
     await finish(run.dispatchId);
     expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(needsYou));
@@ -257,7 +262,7 @@ describe("a check-in's report and the task's state", () => {
   it('a host restart after the report keeps it on the run', async () => {
     const row = await f.store.createAuthored(taskInput('restart'));
     const run = await bound(row, 'restart-fire', 'c1');
-    expect(await record(run.dispatchId, { report: needsYou })).toBe(true);
+    expect(await record(run, { report: needsYou })).toBe(true);
     expect(await f.store.interruptAbandonedDispatches()).toBe(1);
     expect(await fireRow(run.dispatchId)).toEqual({ status: 'error', error: 'The routine run was interrupted by a host restart.', ...fireReport(needsYou) });
     expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
@@ -267,14 +272,14 @@ describe("a check-in's report and the task's state", () => {
   it('an agent deleted mid-check-in takes the report with it', async () => {
     const row = await f.store.createAuthored(taskInput('purge'));
     const run = await bound(row, 'purge-fire', 'c1');
-    expect(await record(run.dispatchId, { notes: 'Remember the refund.' })).toBe(true);
+    expect(await record(run, { notes: 'Remember the refund.' })).toBe(true);
     expect(await finish(run.dispatchId)).toBe(true);
     await f.store.purgeAgent('a');
     expect(await agentRows('a')).toEqual({ dispatches: [], definitions: [], fires: [] });
     const other = await f.store.createAuthored({ ...taskInput('purge-b'), agentId: 'b' });
     const late = await bound(other, 'late', 'c-late');
     await f.store.purgeAgent('b');
-    expect(await f.store.recordReport({ agentId: 'b', dispatchId: late.dispatchId, actorUserId: 'owner', report: needsYou, notes: 'Too late.', now: later })).toBe(false);
+    expect(await f.store.recordReport({ agentId: 'b', dispatchId: late.dispatchId, conversationId: late.conversationId, actorUserId: 'owner', report: needsYou, notes: 'Too late.', now: later })).toBe(false);
     expect(await agentRows('b')).toEqual({ dispatches: [], definitions: [], fires: [] });
   });
 });
@@ -317,7 +322,7 @@ it('a report the database refuses fails naming only its run, and writes nothing'
   // A lone surrogate: JSON can carry one, and Postgres refuses it in a jsonb
   // column with an error that quotes the text. The contract refuses it first;
   // this is the store's own floor.
-  const error = await record(run.dispatchId, { report: { status: 'on-track', update: 'Queue \uD800 is empty.', ask: null }, notes: 'Secret notes.' })
+  const error = await record(run, { report: { status: 'on-track', update: 'Queue \uD800 is empty.', ask: null }, notes: 'Secret notes.' })
     .then(() => null, (e: unknown) => e);
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).toBe(`Could not save the report for dispatch ${run.dispatchId} (SQLSTATE 22P02).`);

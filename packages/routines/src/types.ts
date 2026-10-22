@@ -39,8 +39,12 @@ export type DispatchOutcome = {
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
 /** TASK-907. The one open run in a conversation, as `routine_report` finds it. */
 export type OpenCheckIn = { dispatchId: string; routineId: string; kind: RoutineKind; ownerUserId: string };
-/** TASK-907. `notes` left out keeps the task's notes; null clears them. */
+/**
+ * TASK-907. `conversationId` is the conversation the report came from (host-set
+ * context); the run must be bound to it. `notes` left out keeps the task's
+ * notes; null clears them.
+ */
 export type RecordReportInput = {
-  agentId: string; dispatchId: string; actorUserId: string;
+  agentId: string; dispatchId: string; conversationId: string; actorUserId: string;
   report: DispatchReport; notes?: string | null; now: Date;
 };

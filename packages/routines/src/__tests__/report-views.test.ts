@@ -39,7 +39,7 @@ async function checkIn(row: Key, requestId: string, { at = now, report, notes }:
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });
   if (report !== undefined) {
-    expect(await f.store.recordReport({ agentId: row.agentId, dispatchId: accepted.dispatchId, actorUserId: 'owner', report, ...(notes === undefined ? {} : { notes }), now: at })).toBe(true);
+    expect(await f.store.recordReport({ agentId: row.agentId, dispatchId: accepted.dispatchId, conversationId: `c-${requestId}`, actorUserId: 'owner', report, ...(notes === undefined ? {} : { notes }), now: at })).toBe(true);
   }
   return accepted;
 }
@@ -129,7 +129,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // notes out keeps none.
     const next = await checkIn(again, 'next', { at: later });
     expect(next.row.task).toBeNull();
-    expect(await f.store.recordReport({ agentId: 'a', dispatchId: next.dispatchId, actorUserId: 'owner', report: onTrack, now: later })).toBe(true);
+    expect(await f.store.recordReport({ agentId: 'a', dispatchId: next.dispatchId, conversationId: 'c-next', actorUserId: 'owner', report: onTrack, now: later })).toBe(true);
     expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: null });
   });
 

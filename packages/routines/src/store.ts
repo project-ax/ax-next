@@ -31,7 +31,7 @@ export interface RoutinesStore {
   bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
   /** TASK-907. The one open run of this agent in this conversation, or null for none or more than one. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckIn | null>;
-  /** TASK-907. The one writer of a task's state. False, with nothing written, unless the run is an open, bound check-in of a stay-on-top task its actor owns. */
+  /** TASK-907. The one writer of a task's state. False, with nothing written, unless the run is an open check-in, bound to the report's conversation, of a stay-on-top task its actor owns. */
   recordReport(input: RecordReportInput): Promise<boolean>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
@@ -365,7 +365,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (!await lockLiveAgent(trx, input.agentId)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'agent_id', 'routine_id', 'accepted_at', 'completed_at', 'conversation_id'])
           .where('dispatch_id', '=', input.dispatchId).where('agent_id', '=', input.agentId).forUpdate().executeTakeFirst();
-        if (!dispatch || dispatch.completed_at !== null || dispatch.conversation_id === null) return false;
+        // The whole binding, under the run's row lock: open, and bound to the conversation the report came from.
+        // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
+        if (!dispatch || dispatch.completed_at !== null) return false;
+        if (dispatch.conversation_id !== input.conversationId) return false;
         const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id'])
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         if (!definition || definition.kind !== 'stay-on-top' || definition.owner_user_id !== input.actorUserId) return false;
