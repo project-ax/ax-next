@@ -4,7 +4,7 @@ import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
-import { isTaskRun } from './brief.js';
+import { briefRunError, isTaskRun } from './brief.js';
 import { CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
@@ -37,6 +37,14 @@ export interface PendingFire {
   agentName: string | null;
   /** What `chat:connectors-skipped` said this fire's turn went without. */
   skips: SkippedConnector[];
+  /**
+   * Where a task check-in's brief stands (TASK-908): `waiting` until
+   * `chat:system-prompt-landed` lists the routines provider (`landed`), or
+   * `too-long` when the provider found it over the prompt cap and didn't send
+   * it. A task run that ends its turn short of `landed` is recorded as failed.
+   * Unused for a repeat routine's run.
+   */
+  brief: 'waiting' | 'landed' | 'too-long';
   onTurnEnd: (turn: { contentBlocks?: unknown[] }) => Promise<void>;
 }
 export type PendingFires = Map<string, PendingFire>;
@@ -142,13 +150,15 @@ const DEFAULT_TURN_END_GRACE_MS = 60_000;
 /**
  * Slice 6 — a `terminated` reason from one of agent:invoke's front gates,
  * which refuse a turn before anything else runs: a `chat:start` veto
- * (`chat:start:<reason>`) or an `agents:resolve` refusal
+ * (`chat:start:<reason>`), an `agents:resolve` refusal
  * (`agent-resolve:<code>`; the orchestrator documents the prefix for callers
- * to branch on). Such a fire never chose its connectors, so it leaves the
- * routine's last warning alone.
+ * to branch on), or a `chat:system-prompt-landed` veto
+ * (`system-prompt:<reason>`, TASK-908), which the orchestrator fires right
+ * after building the system prompt and before connector assembly. Such a fire
+ * never chose its connectors, so it leaves the routine's last warning alone.
  */
 function refusedBeforeAssembly(reason: string): boolean {
-  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:');
+  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:');
 }
 
 export function createFireRoutine(deps: FireDeps) {
@@ -270,7 +280,7 @@ export function createFireRoutine(deps: FireDeps) {
     deps.pending.set(reqId, {
       row, dispatchId, conversationId, source,
       renderedPrompt,
-      agentName, skips: [],
+      agentName, skips: [], brief: 'waiting',
       onTurnEnd: async () => {},
     });
 
@@ -294,9 +304,12 @@ export function createFireRoutine(deps: FireDeps) {
     // reasons are not classified: a pre-assembly config error clears a
     // stale warning, which is the cheaper mistake than a post-assembly
     // failure keeping one.
-    const settleWithoutTurn = async (error: string, reachedAssembly: boolean): Promise<void> => {
+    // `error` may be a function of the entry being settled: a task check-in
+    // the landed veto refused records why, in words, from its brief's state.
+    const settleWithoutTurn = async (errorFor: string | ((entry: PendingFire) => string), reachedAssembly: boolean): Promise<void> => {
       const entry = deps.pending.get(reqId);
       if (entry === undefined || !deps.pending.delete(reqId)) return;
+      const error = typeof errorFor === 'string' ? errorFor : errorFor(entry);
       process.stderr.write(
         `[ax/routines] agent:invoke failed for ${row.agentId}/${row.routineId}: ${error}\n`,
       );
@@ -318,7 +331,7 @@ export function createFireRoutine(deps: FireDeps) {
       async outcome => {
         if (outcome?.kind === 'terminated') {
           const reason = String(outcome.reason ?? 'unknown');
-          await settleWithoutTurn(`terminated: ${reason}`, !refusedBeforeAssembly(reason));
+          await settleWithoutTurn(entry => briefRunError(entry, reason) ?? `terminated: ${reason}`, !refusedBeforeAssembly(reason));
         } else if (deps.pending.has(reqId)) {
           await lifetime.defer(deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS,
             () => settleWithoutTurn('the run finished without reporting a result', true));

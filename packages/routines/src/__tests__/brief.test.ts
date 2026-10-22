@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { briefFits, isTaskRun, quoteLines, renderTaskBrief, ROUTINES_AUGMENT_PROVIDER } from '../brief.js';
+import { createLogger, makeAgentContext, type AgentContext } from '@ax/core';
+import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import {
+  BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, briefFits, briefLandedVeto, briefRunError, checkInBrief,
+  isTaskRun, quoteLines, renderTaskBrief, ROUTINES_AUGMENT_PROVIDER,
+} from '../brief.js';
+import type { PendingFire, PendingFires } from '../fire.js';
+import type { StoredRoutine } from '../types.js';
 
 // TASK-908: the brief a task check-in gets in W1's `brief` section, built only
 // from what the person wrote plus fixed text. The copy is exact.
@@ -77,5 +84,117 @@ describe("a task check-in's brief (TASK-908)", () => {
 
   it('names its W1 provider as an optional one', () => {
     expect(ROUTINES_AUGMENT_PROVIDER).toBe('system-prompt:augment:optional:routines');
+  });
+});
+
+// TASK-908: no brief, no check-in. The provider answers only a task run's own
+// context, the landed veto refuses a task run whose brief isn't listed, and a
+// refused run's error says why.
+const TASK = {
+  name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+  kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+};
+const REPEAT = { name: 'Daily', promptBody: 'Check outstanding work.', trigger: { kind: 'interval', every: '1h' } };
+
+function storedRow(definition: object): StoredRoutine {
+  return {
+    ...RoutineDefinitionSchema.parse(definition), agentId: 'agent', routineId: 'r_task', revision: 'v', ownerUserId: 'owner',
+    definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null,
+    lastWarning: null, task: null,
+  } as StoredRoutine;
+}
+function entry(row: StoredRoutine, conversationId = 'conv-1'): PendingFire {
+  return {
+    row, dispatchId: `d-${conversationId}`, conversationId, source: 'manual', renderedPrompt: null, agentName: null,
+    skips: [], brief: 'waiting', onTurnEnd: async () => {},
+  };
+}
+/** A context and the log lines it collected. */
+function logged(over: Partial<Parameters<typeof makeAgentContext>[0]> = {}): { ctx: AgentContext; lines: Array<Record<string, unknown>> } {
+  const lines: Array<Record<string, unknown>> = [];
+  const logger = createLogger({ reqId: 'r', writer: line => { lines.push(JSON.parse(line) as Record<string, unknown>); } });
+  const ctx = makeAgentContext({
+    reqId: 'rA', sessionId: 's', agentId: 'agent', userId: 'owner', conversationId: 'conv-1', source: 'routine', logger, ...over,
+  });
+  return { ctx, lines };
+}
+const runCtx = (over: Partial<Parameters<typeof makeAgentContext>[0]> = {}) => logged(over).ctx;
+
+describe('no brief, no check-in (TASK-908)', () => {
+  it("checkInBrief answers only a task run's own context", () => {
+    const row = storedRow(TASK);
+    const pending: PendingFires = new Map([['rA', entry(row)], ['rRepeat', entry(storedRow(REPEAT), 'conv-r')]]);
+    expect(checkInBrief(pending, runCtx())).toEqual({ brief: renderTaskBrief(row) });
+    const strangers: AgentContext[] = [
+      makeAgentContext({ reqId: 'rA', sessionId: 's', agentId: 'agent', userId: 'owner', conversationId: 'conv-1' }),
+      runCtx({ source: 'user' }),
+      runCtx({ agentId: 'other-agent' }),
+      runCtx({ userId: 'teammate' }),
+      runCtx({ conversationId: 'conv-other' }),
+      runCtx({ reqId: 'r-unknown' }),
+      runCtx({ reqId: 'rRepeat', conversationId: 'conv-r' }),
+    ];
+    for (const ctx of strangers) expect(checkInBrief(pending, ctx), JSON.stringify({ ...ctx, logger: undefined })).toEqual({});
+    expect([...pending.values()].map(e => e.brief)).toEqual(['waiting', 'waiting']);
+  });
+
+  it("two open runs of one task: each run's brief and veto follow its own reqId", () => {
+    const row = storedRow(TASK);
+    const pending: PendingFires = new Map([['rA', entry(row, 'conv-a')], ['rB', entry(row, 'conv-b')]]);
+    expect(briefLandedVeto(pending, runCtx({ reqId: 'rA', conversationId: 'conv-a' }), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER] })).toBeUndefined();
+    expect(pending.get('rA')!.brief).toBe('landed');
+    expect(briefLandedVeto(pending, runCtx({ reqId: 'rB', conversationId: 'conv-b' }), { reqId: 'rB', providers: [] }))
+      .toMatchObject({ rejected: true, reason: 'brief-missing' });
+    expect(pending.get('rA')!.brief).toBe('landed');
+    expect(pending.get('rB')!.brief).toBe('waiting');
+  });
+
+  it("briefLandedVeto refuses a task run whose brief isn't listed, and ignores everything else", () => {
+    const pending: PendingFires = new Map([['rA', entry(storedRow(TASK))], ['rRepeat', entry(storedRow(REPEAT), 'conv-r')]]);
+    for (const providers of [[], ['system-prompt:augment:required:memory']]) {
+      const { ctx, lines } = logged();
+      expect(briefLandedVeto(pending, ctx, { reqId: 'rA', providers })).toEqual({ rejected: true, reason: 'brief-missing' });
+      expect(lines.map(line => [line.msg, line.reason])).toEqual([['routines_check_in_vetoed', 'brief-missing']]);
+    }
+    // Unreadable: keyed by the context's reqId, and refused.
+    const { ctx, lines } = logged();
+    expect(briefLandedVeto(pending, ctx, { providers: 'x' })).toEqual({ rejected: true, reason: 'brief-missing' });
+    expect(lines.map(line => line.msg)).toEqual(['routines_system_prompt_landed_unreadable', 'routines_check_in_vetoed']);
+    expect(pending.get('rA')!.brief).toBe('waiting');
+    // A provider name that merely contains ours confirms nothing.
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [`${ROUTINES_AUGMENT_PROVIDER}-x`] })).toMatchObject({ rejected: true });
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'r-unknown', providers: [] })).toBeUndefined();
+    expect(briefLandedVeto(pending, runCtx({ reqId: 'r-unknown' }), null)).toBeUndefined();
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rRepeat', providers: [] })).toBeUndefined();
+    // An extra field is ignored, not refused.
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [ROUTINES_AUGMENT_PROVIDER], extra: 1 })).toBeUndefined();
+    expect(pending.get('rA')!.brief).toBe('landed');
+  });
+
+  it('a brief over the cap is not sent and its veto says too long', () => {
+    const row = storedRow({ ...TASK, promptBody: 'Check the queue. '.repeat(2000) });
+    const pending: PendingFires = new Map([['rA', entry(row)]]);
+    const { ctx, lines } = logged();
+    expect(checkInBrief(pending, ctx)).toEqual({});
+    expect(pending.get('rA')!.brief).toBe('too-long');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ msg: 'routines_brief_too_long', agentId: 'agent', routineId: 'r_task', dispatchId: 'd-conv-1', chars: renderTaskBrief(row).length });
+    // Ids and a length only: no brief text in the log.
+    expect(JSON.stringify(lines)).not.toContain('Check the queue.');
+    expect(briefLandedVeto(pending, runCtx(), { reqId: 'rA', providers: [] })).toEqual({ rejected: true, reason: 'brief-too-long' });
+  });
+
+  it("briefRunError words a vetoed task run's error, and leaves everything else alone", () => {
+    const task = entry(storedRow(TASK));
+    expect(briefRunError(task, 'system-prompt:brief-missing')).toBe(BRIEF_DIDNT_LOAD);
+    expect(briefRunError({ ...task, brief: 'too-long' }, 'system-prompt:brief-too-long')).toBe(BRIEF_TOO_LONG);
+    expect(briefRunError(task, 'chat:start:denied')).toBeNull();
+    expect(briefRunError(entry(storedRow(REPEAT)), 'system-prompt:brief-missing')).toBeNull();
+  });
+
+  it('its run errors are the exact copy', () => {
+    expect(BRIEF_DIDNT_LOAD).toBe('This task’s instructions didn’t load, so the check-in didn’t run.');
+    expect(BRIEF_TOO_LONG).toBe('This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.');
+    expect(BRIEF_UNCONFIRMED).toBe('We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.');
   });
 });

@@ -14,7 +14,8 @@ describe('routines runtime registration', () => {
     const { manifest } = createRoutinesPlugin();
     expect(manifest.registers).toContain('routines:fire-now');
     expect(manifest.calls).toContain('agents:resolve-by-webhook-token');
-    expect(manifest.subscribes).toEqual(expect.arrayContaining(['agents:deleted', 'chat:turn-end', 'chat:connectors-skipped']));
+    expect(manifest.registers).toContain('system-prompt:augment:optional:routines');
+    expect(manifest.subscribes).toEqual(expect.arrayContaining(['agents:deleted', 'chat:turn-end', 'chat:connectors-skipped', 'chat:system-prompt-landed']));
     expect(manifest.subscribes).not.toContain('workspace:applied');
     expect(manifest.subscribes).not.toContain('agents:webhook-token-rotated');
   });

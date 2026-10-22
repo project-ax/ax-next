@@ -331,6 +331,8 @@ describe('task check-in report canary (TASK-907)', () => {
     const turn = new Promise<{ error: unknown } | null>(resolve => { ended = resolve; });
     script = async (ctx, bus) => {
       let failure: { error: unknown } | null = null;
+      // TASK-908: what the orchestrator fires once a check-in's brief lands. Without it the belt fails the run.
+      await bus.fire('chat:system-prompt-landed', ctx, { reqId: ctx.reqId, providers: ['system-prompt:augment:optional:routines'] });
       try { await body(ctx, bus); }
       catch (error) { failure = { error }; }
       finally {

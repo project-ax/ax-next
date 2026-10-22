@@ -45,7 +45,7 @@ describe('accepted DB fire dispatch', () => {
     const result = await h.fire(h.accepted);
     expect(result.recordedAtTurnEnd).toBe(true);
     expect(h.invoked.mock.calls[0]![0]).toMatchObject({ reqId: h.accepted.reqId, userId: 'owner', agentId: 'a', source: 'routine', triggerLabel: h.row.name });
-    expect(h.pending.get(h.accepted.reqId)).toMatchObject({ dispatchId: h.accepted.dispatchId, agentName: 'Bob', skips: [] });
+    expect(h.pending.get(h.accepted.reqId)).toMatchObject({ dispatchId: h.accepted.dispatchId, agentName: 'Bob', skips: [], brief: 'waiting' });
     expect(await f.store.recentFires(h.row)).toEqual([]);
   });
   it('preserves shared conversation externalKey as the opaque routine identity', async () => {
@@ -94,7 +94,7 @@ describe('accepted DB fire dispatch', () => {
   });
   it('purges only exact agents:resolve not-found, including pending correlations and HMAC cleanup', async () => {
     const h = await setup({ definition: { trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'sig' } } }, resolveError: new PluginError({ code: 'not-found', plugin: 'agents', hookName: 'agents:resolve', message: 'gone' }) });
-    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], onTurnEnd: async () => { } });
+    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], brief: 'waiting', onTurnEnd: async () => { } });
     expect((await h.fire(h.accepted)).agentGone).toBe(true);
     expect(h.pending.size).toBe(0);
     expect(await f.store.findOne(h.row)).toBeNull();
@@ -128,14 +128,16 @@ describe('accepted DB fire dispatch', () => {
     expect(await f.store.findOne(h.row)).toBeNull();
     expect(await f.store.recentFires(h.row)).toHaveLength(1);
   });
-  it.each(['chat:start:denied', 'agent-resolve:forbidden'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
+  // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat
+  // routine's run keeps the raw reason as its error; only a task's is worded (checkin.test.ts).
+  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
     const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: terminated: ${reason}`));
     await h.fire(next);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
-    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', warning: 'Previous warning' });
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `terminated: ${reason}`, warning: 'Previous warning' });
     expect(diagnostic.messages).toHaveLength(1);
   });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
@@ -200,7 +202,7 @@ describe('connector skips per fire (slice 6)', () => {
   function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {
     return {
       row: sampleRow(), dispatchId: 'dispatch', conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
-      agentName: 'Bob', skips: [], onTurnEnd: async () => { },
+      agentName: 'Bob', skips: [], brief: 'waiting', onTurnEnd: async () => { },
       ...over,
     };
   }

@@ -1,5 +1,9 @@
-import { SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS, SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX } from '@ax/core';
+import {
+  reject, SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS, SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX, SystemPromptLandedPayloadSchema,
+  type AgentContext, type Rejection, type SystemPromptAugmentOutput,
+} from '@ax/core';
 import type { RoutineKind } from '@ax/routines-contract';
+import type { PendingFire, PendingFires } from './fire.js';
 
 // ---------------------------------------------------------------------------
 // A task check-in's brief (TASK-908): what the run is for, in W1's `brief`
@@ -76,4 +80,95 @@ export function renderTaskBrief(row: { name: string; promptBody: string; goodWhe
  */
 export function briefFits(brief: string): boolean {
   return brief.length <= SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS;
+}
+
+// ---------------------------------------------------------------------------
+// No brief, no check-in (TASK-908, design §7). The provider hands a task
+// check-in its brief, the orchestrator says whose contributions landed, and a
+// check-in whose brief isn't on that list is refused before its turn runs. A
+// check-in that never got the confirmation at all is failed at turn end (the
+// belt, in plugin.ts).
+// ---------------------------------------------------------------------------
+
+/** A task check-in refused because its brief didn't land. Exact copy. */
+export const BRIEF_DIDNT_LOAD = 'This task’s instructions didn’t load, so the check-in didn’t run.';
+/** A task check-in refused because its brief was over the prompt cap. Exact copy. */
+export const BRIEF_TOO_LONG = 'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.';
+/** A task check-in whose turn ended with no landed confirmation. It may have run, so it doesn't say it didn't. Exact copy. */
+export const BRIEF_UNCONFIRMED = 'We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.';
+
+/**
+ * The in-flight fire `ctx` is a task check-in of, or undefined. Only host-set
+ * context decides it: the source the orchestrator was invoked with, and the
+ * fire routines itself started under `ctx.reqId` (the dispatch's own
+ * `req_id`), run on this agent, as its owner, in its own conversation. An
+ * ordinary chat on the same agent has none of these, and a context that copies
+ * the reqId and conversation still isn't a routine run.
+ */
+function checkInOf(pending: PendingFires, ctx: AgentContext): PendingFire | undefined {
+  if (ctx.source !== 'routine') return undefined;
+  const entry = pending.get(ctx.reqId);
+  if (entry === undefined || !isTaskRun(entry.row)) return undefined;
+  if (entry.row.agentId !== ctx.agentId || entry.row.ownerUserId !== ctx.userId) return undefined;
+  if (entry.conversationId !== ctx.conversationId) return undefined;
+  return entry;
+}
+
+/**
+ * `system-prompt:augment:optional:routines`: a task check-in's brief, and `{}`
+ * for anything else. The brief is built from the row the run was accepted
+ * with, the same snapshot its check-in message came from, so an edit made
+ * while the run starts reaches the next check-in, not this one. A brief over
+ * the orchestrator's cap is not sent: the run is marked so its veto says why.
+ */
+export function checkInBrief(pending: PendingFires, ctx: AgentContext): SystemPromptAugmentOutput {
+  const entry = checkInOf(pending, ctx);
+  if (entry === undefined) return {};
+  const brief = renderTaskBrief(entry.row);
+  if (!briefFits(brief)) {
+    entry.brief = 'too-long';
+    ctx.logger.warn('routines_brief_too_long', {
+      agentId: entry.row.agentId, routineId: entry.row.routineId, dispatchId: entry.dispatchId, chars: brief.length,
+    });
+    return {};
+  }
+  return { brief };
+}
+
+/**
+ * The `chat:system-prompt-landed` veto: a task check-in whose brief isn't
+ * listed is refused, and one whose brief is listed is marked landed for the
+ * belt. Anything that isn't a pending task run passes. Fails closed: a payload
+ * that doesn't parse can't confirm anything, so a pending task run under
+ * `ctx.reqId` is refused.
+ */
+export function briefLandedVeto(pending: PendingFires, ctx: AgentContext, payload: unknown): Rejection | undefined {
+  const parsed = SystemPromptLandedPayloadSchema.safeParse(payload);
+  const entry = pending.get(parsed.success ? parsed.data.reqId : ctx.reqId);
+  if (entry === undefined || !isTaskRun(entry.row)) return undefined;
+  if (parsed.success && parsed.data.providers.includes(ROUTINES_AUGMENT_PROVIDER)) {
+    entry.brief = 'landed';
+    return undefined;
+  }
+  return refuseCheckIn(entry, ctx, !parsed.success);
+}
+
+/** Refuses a pending task check-in, saying whether its brief was too long or just missing. */
+export function refuseCheckIn(entry: PendingFire, ctx: AgentContext, unreadable = false): Rejection {
+  const reason = entry.brief === 'too-long' ? 'brief-too-long' : 'brief-missing';
+  if (unreadable) ctx.logger.warn('routines_system_prompt_landed_unreadable', { agentId: entry.row.agentId });
+  ctx.logger.info('routines_check_in_vetoed', {
+    agentId: entry.row.agentId, routineId: entry.row.routineId, dispatchId: entry.dispatchId, reason,
+  });
+  return reject({ reason });
+}
+
+/**
+ * The run error for a task check-in the landed veto refused (the invoke ended
+ * `terminated` with `system-prompt:<reason>`), or null when `reason` is
+ * anything else or the run isn't a task's.
+ */
+export function briefRunError(entry: PendingFire, terminatedReason: string): string | null {
+  if (!isTaskRun(entry.row) || !terminatedReason.startsWith('system-prompt:')) return null;
+  return entry.brief === 'too-long' ? BRIEF_TOO_LONG : BRIEF_DIDNT_LOAD;
 }

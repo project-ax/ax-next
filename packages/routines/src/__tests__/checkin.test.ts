@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineFireView, type RoutineListToolOutput, type RoutineView } from '@ax/routines-contract';
 import { renderCheckInMessage } from '../checkin-message.js';
+import { BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, renderTaskBrief, ROUTINES_AUGMENT_PROVIDER } from '../brief.js';
 import { createRoutinesStore } from '../store.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION, type CheckInHarness } from './support/check-in.js';
 
 // TASK-908: a task check-in, end to end through the real routines, agents,
@@ -102,5 +104,127 @@ describe('the check-in message (TASK-908)', () => {
     // The owner's history keeps no copy either: the message lives in the run's own conversation.
     const mine = await reads(h.owner);
     for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.renderedPrompt)).toEqual([null, null]);
+  });
+});
+
+describe('the brief, its veto and the belt (TASK-908)', () => {
+  const provider = (ctx: AgentContext) => h.bus.call<unknown, unknown>(ROUTINES_AUGMENT_PROVIDER, ctx, {});
+  const NEVER = async () => { throw new Error('a refused check-in must never reach its turn'); };
+  /** The run's one stored row, once it is written. */
+  async function onlyRun(view: RoutineView) {
+    await expect.poll(async () => (await storedRuns(view)).length).toBe(1);
+    return (await storedRuns(view))[0]!;
+  }
+  const invokeFailed = () => captureExpectedStderr(message => message.startsWith('[ax/routines] agent:invoke failed for '));
+
+  it('a task check-in gets its brief from the provider', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    let answer: unknown;
+    const seen = await h.checkIn(task, 'run', async ctx => { answer = await provider(ctx); });
+    const expected = { brief: renderTaskBrief({ ...TASK_DEFINITION }) };
+    expect(answer).toEqual(expected);
+    // What the orchestrator got for the same run, too.
+    expect(seen.brief).toEqual(expected);
+  });
+
+  it('nobody else gets a brief', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    const { ctx: runCtx } = await h.checkIn(task, 'run', async ctx => {
+      // The owner's ordinary chat on the same agent, while the check-in is open.
+      expect(await provider(makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' }))).toEqual({});
+      // A context that copies the run's reqId and conversation, but isn't a routine run.
+      expect(await provider(makeAgentContext({
+        reqId: ctx.reqId, sessionId: 'forged', agentId: ctx.agentId, userId: ctx.userId, conversationId: ctx.conversationId!,
+      }))).toEqual({});
+      // A teammate's routine context carrying the run's reqId and conversation.
+      expect(await provider({ ...ctx, userId: h.teamMember.userId })).toEqual({});
+    });
+    // After the run ends, its own context gets nothing.
+    expect(await provider(runCtx)).toEqual({});
+    // A repeat routine's run gets nothing either.
+    const repeat = await create(REPEAT, 'repeat');
+    let repeatAnswer: unknown;
+    await h.checkIn(repeat, 'repeat-run', async ctx => { repeatAnswer = await provider(ctx); });
+    expect(repeatAnswer).toEqual({});
+  });
+
+  it('a check-in whose brief didn’t land is refused before it runs, and its run says why', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    // An earlier run went without a connector, so the task has a warning the refused run must leave alone.
+    await h.checkIn(task, 'earlier', async (ctx, bus) => {
+      await bus.fire('chat:connectors-skipped', ctx, { reqId: ctx.reqId, connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }] });
+    });
+    const store = createRoutinesStore(h.db);
+    const warning = (await store.findOne(task))?.lastWarning;
+    expect(warning).toContain('Gmail');
+    const diagnostic = invokeFailed();
+    try {
+      await h.checkIn(task, 'run', NEVER, { landed: [] });
+      await expect.poll(async () => (await storedRuns(task)).length).toBe(2);
+    } finally { diagnostic.restore(); }
+    expect((await storedRuns(task))[0]).toMatchObject({ status: 'error', error: BRIEF_DIDNT_LOAD, renderedPrompt: null, report: null });
+    expect((await store.findOne(task))?.lastWarning).toBe(warning);
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+
+  it('the brief landing lets the check-in run, and the run ends ok', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    let ran = false;
+    await h.checkIn(task, 'run', async () => { ran = true; });
+    expect(ran).toBe(true);
+    expect(await onlyRun(task)).toMatchObject({ status: 'ok', error: null });
+  });
+
+  it('the belt: a check-in whose turn ends with no confirmation is marked failed', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    await h.checkIn(task, 'run', async ctx => {
+      expect(await report(ctx, { ...NEEDS_YOU, notes: NOTES })).toStrictEqual({ recorded: true });
+    }, { landed: null });
+    // The run did happen, so its report stays on the row; it is still failed.
+    expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, renderedPrompt: null, report: NEEDS_YOU });
+  });
+
+  it('a brief over the prompt cap is refused with the too-long sentence', async () => {
+    h = await createCheckInHarness();
+    const task = await create({ ...TASK_DEFINITION, promptBody: 'Check the queue. '.repeat(2000) }, 'long-task');
+    const diagnostic = invokeFailed();
+    let seen: Awaited<ReturnType<CheckInHarness['checkIn']>>;
+    try {
+      seen = await h.checkIn(task, 'run', NEVER);
+      await expect.poll(async () => (await storedRuns(task)).length).toBe(1);
+    } finally { diagnostic.restore(); }
+    expect(seen.brief).toEqual({});
+    expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_TOO_LONG, renderedPrompt: null });
+  });
+
+  it('repeat routines are untouched: no brief, no veto, no belt', async () => {
+    h = await createCheckInHarness();
+    const repeat = await create(REPEAT, 'repeat');
+    let ran = false;
+    await h.checkIn(repeat, 'run', async () => { ran = true; }, { landed: [] });
+    expect(ran).toBe(true);
+    expect(await onlyRun(repeat)).toMatchObject({ status: 'ok', error: null, renderedPrompt: REPEAT.promptBody });
+    // And with no landed event at all.
+    await h.checkIn(repeat, 'run-2', async () => {}, { landed: null });
+    await expect.poll(async () => (await storedRuns(repeat)).length).toBe(2);
+    expect((await storedRuns(repeat))[0]).toMatchObject({ status: 'ok', error: null });
+  });
+
+  it("an edit while a check-in starts doesn't change that check-in's brief", async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    await h.checkIn(task, 'run', async ctx => {
+      await h.bus.call('routines:update', h.owner, {
+        agentId: task.agentId, routineId: task.routineId, requestId: 'edit', expectedRevision: task.revision, patch: { promptBody: 'Edited.' },
+      });
+      const answer = await provider(ctx) as { brief: string };
+      expect(answer.brief).toContain('> Keep the support queue empty.');
+      expect(answer.brief).not.toContain('Edited.');
+    });
   });
 });
