@@ -773,7 +773,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'routines:list',
           degradation:
-            'Activity rows are labelled with the routine path instead of its authored name',
+            'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
         },
         {
           hook: 'connectors:list-effective',

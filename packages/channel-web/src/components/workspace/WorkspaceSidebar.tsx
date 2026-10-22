@@ -3,6 +3,7 @@ import {
   Bot,
   ChevronDown,
   Inbox,
+  ListChecks,
   PanelLeft,
   Plus,
 } from 'lucide-react';
@@ -24,12 +25,13 @@ import { IconTooltip } from './IconTooltip';
 
 interface Props {
   agents: WorkspaceAgent[];
-  route: 'today' | 'agent' | 'activity';
+  route: 'today' | 'tasks' | 'activity' | 'agent';
   activeAgentId: string | null;
   pendingCount: number;
   rosterOpen: boolean;
   onRoster: (open: boolean) => void;
   onToday: () => void;
+  onTasks: () => void;
   onActivity: () => void;
   onAgent: (id: string) => void;
   onOpenAdminSettings?: (() => void) | undefined;
@@ -50,6 +52,7 @@ export function WorkspaceSidebarNav({
   rosterOpen,
   onRoster,
   onToday,
+  onTasks,
   onActivity,
   onAgent,
   onOpenAdminSettings,
@@ -136,6 +139,7 @@ export function WorkspaceSidebarNav({
             route === 'today',
             pendingCount > 0,
           )}
+          {iconRow('Tasks', ListChecks, onTasks, route === 'tasks')}
           {iconRow('Activity', Activity, onActivity, route === 'activity')}
           {iconRow(
             'Agents',
@@ -181,6 +185,15 @@ export function WorkspaceSidebarNav({
                 {pendingCount}
               </Badge>
             )}
+          </Button>
+          <Button
+            variant="navigation"
+            onClick={go(onTasks)}
+            className={row()}
+            data-active={route === 'tasks'}
+          >
+            <ListChecks data-icon="inline-start" aria-hidden="true" />
+            Tasks
           </Button>
           <Button
             variant="navigation"

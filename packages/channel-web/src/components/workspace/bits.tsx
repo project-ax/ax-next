@@ -22,6 +22,7 @@ import {
   verdictFrame,
 } from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
+import type { TaskGroup } from '@/lib/task-groups';
 import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentRunState,
@@ -95,7 +96,8 @@ export function stateWord(state: AgentRunState | 'held'): string {
  * whole message, so someone who cannot tell the hues apart got no state at
  * all. Each state now has its own outline too, readable in greyscale:
  *
- *   working ● circle · waiting/held ◆ diamond · resting ▬ dash · stopped ■ square
+ *   working ● circle · waiting/held ◆ diamond · resting ○ hollow ring · stopped ■ square
+ *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, and paused ▬ dash.
  *
  * Deliberately a separate record, NOT more `state === … && '…'` arms inside
  * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
@@ -105,12 +107,32 @@ export function stateWord(state: AgentRunState | 'held'): string {
  * Every width here must fit inside `StateDotSlot` below (8px).
  * `StateDotSlot.test.tsx` fails if one doesn't.
  */
-export const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
-  working: 'h-[7px] w-[7px] rounded-full',
-  waiting: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
-  held: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
-  resting: 'box-border size-[7px] rounded-full border-[1.5px] border-state-quiet',
-  stopped: 'h-[7px] w-[7px] rounded-[1px]',
+const CIRCLE = 'h-[7px] w-[7px] rounded-full';
+const DIAMOND = 'h-[6px] w-[6px] rotate-45 rounded-[1px]';
+const RING = 'box-border size-[7px] rounded-full border-[1.5px] border-state-quiet';
+const SQUARE = 'h-[7px] w-[7px] rounded-[1px]';
+/** `resting`'s shape before Design 5 (#829) made it a ring; only a paused task draws it now. */
+const DASH = 'h-[3px] w-[8px] rounded-full';
+
+/**
+ * What a `StateDot` can draw: an agent's state, a decision held for you, or a
+ * task's group (TASK-909). A task mark shares its geometry and fill with the
+ * agent mark it means, so a task waiting on you looks exactly like an agent
+ * waiting on you.
+ */
+export type DotState = AgentRunState | 'held' | TaskGroup;
+
+export const STATE_SHAPE: Record<DotState, string> = {
+  working: CIRCLE,
+  waiting: DIAMOND,
+  held: DIAMOND,
+  resting: RING,
+  stopped: SQUARE,
+  'needs-you': DIAMOND,
+  'off-track': SQUARE,
+  'on-track': CIRCLE,
+  'no-update': RING,
+  paused: DASH,
 };
 
 /**
@@ -137,7 +159,7 @@ export function StateDot({
   state,
   className,
 }: {
-  state: AgentRunState | 'held';
+  state: DotState;
   className?: string;
 }) {
   return (
@@ -151,6 +173,11 @@ export function StateDot({
         state === 'held' && 'bg-warning',
         state === 'resting' && 'border-state-quiet',
         state === 'stopped' && 'bg-destructive',
+        state === 'needs-you' && 'bg-warning',
+        state === 'off-track' && 'bg-destructive',
+        state === 'on-track' && 'bg-primary',
+        state === 'no-update' && 'border-state-quiet',
+        state === 'paused' && 'bg-state-quiet',
         className,
       )}
     />

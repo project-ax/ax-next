@@ -7,9 +7,9 @@
  * user, `/api/workspace/*` supplies the board, and sending a message goes to
  * the shipped chat wire.
  *
- * Views are addressable: `/workspace`, `/workspace/activity`, and
- * `/workspace/agents/<id>[/<tab>]`. The grammar lives in
- * `@/lib/workspace-route`; this file owns the history calls. No server route
+ * Views are addressable: `/workspace`, `/workspace/tasks`,
+ * `/workspace/activity`, and `/workspace/agents/<id>[/<tab>]`. The grammar
+ * lives in `@/lib/workspace-route`; this file owns the history calls. No server route
  * backs those paths and none is needed — `@ax/static-files` serves the SPA on
  * any unclaimed path.
  *
@@ -62,6 +62,7 @@ import {
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
 import { ActivityFeed } from './ActivityFeed';
+import { TasksPage } from './TasksPage';
 import { AgentView } from './AgentView';
 import { HomeComposer } from './HomeComposer';
 import { TodayView } from './TodayView';
@@ -807,6 +808,7 @@ function Inner({
     rosterOpen,
     onRoster: setRosterOpen,
     onToday: () => navigate({ kind: 'today' }),
+    onTasks: () => navigate({ kind: 'tasks' }),
     onActivity: () => navigate({ kind: 'activity' }),
     onAgent: openAgent,
     onOpenAdminSettings,
@@ -924,6 +926,8 @@ function Inner({
               <HomeComposer agents={board.agents} onSend={startTurn} />
             </>
           )}
+
+          {route.kind === 'tasks' && <TasksPage leading={navTrigger} />}
 
           {route.kind === 'activity' && (
             <>

@@ -263,6 +263,8 @@ Three things are waiting on you
 | ▬ | Paused | Person | Not checking in. Only a person resumes it. |
 | ✓ | Done | Person | Finished. "Get something done" tasks only. Stops checking in. |
 
+PR 1 ships part of this table (TASK-909). The Tasks page draws ○ as **No update yet** for a task that has never reported. A check-in that fails, or ends without a report, leaves the task showing its last report until PR 2 adds No recent update and failure counting. Telling those apart needs each run's report: a task's last-run time moves when a check-in starts and when one is skipped outside its active hours, so it can't stand in for "the last check-in".
+
 ### 3.7 Activity goes away
 
 Today the Activity page in the sidebar and the Activity tab on an agent show

@@ -20,6 +20,7 @@ import {
   localDayLabel,
   localTime,
   relativeDay,
+  timeAgo,
 } from '../workspace-time';
 
 /** Local wall-clock, so the assertions mean the same thing in any zone. */
@@ -170,5 +171,39 @@ describe('shortDay', () => {
     const { shortDay } = await import('../workspace-time');
     expect(shortDay('')).toBe('');
     expect(shortDay('not-a-date')).toBe('');
+  });
+});
+
+// TASK-909 — the Tasks page's "checked 4 min ago". Minutes and hours are
+// ELAPSED time, floored; from 24 hours on it is `relativeDay`'s calendar days.
+describe('timeAgo', () => {
+  const now = local(2026, 9, 22, 12, 0);
+  const before = (ms: number): string => new Date(now.getTime() - ms).toISOString();
+  const MIN = 60_000;
+
+  it('says just now under a minute, and for a clock a little ahead', () => {
+    expect(timeAgo(before(30_000), now)).toBe('just now');
+    // The host stamped the report; the reader's clock may trail it a little.
+    expect(timeAgo(before(-10_000), now)).toBe('just now');
+  });
+
+  it('counts minutes, then hours', () => {
+    expect(timeAgo(before(MIN), now)).toBe('1 min ago');
+    expect(timeAgo(before(4 * MIN), now)).toBe('4 min ago');
+    expect(timeAgo(before(59 * MIN), now)).toBe('59 min ago');
+    expect(timeAgo(before(60 * MIN), now)).toBe('1 hr ago');
+    // Floored: 23 h 59 min is not yet "24 hr", and not yet a calendar day either.
+    expect(timeAgo(before((23 * 60 + 59) * MIN), now)).toBe('23 hr ago');
+  });
+
+  it('hands a day or more to relativeDay', () => {
+    expect(timeAgo(local(2026, 9, 21, 9, 0).toISOString(), now)).toBe('yesterday');
+    expect(timeAgo(local(2026, 9, 18, 12, 0).toISOString(), now)).toBe('4 days ago');
+  });
+
+  it('answers null for an instant it cannot read', () => {
+    // The row then shows no time at all, never "Invalid Date".
+    expect(timeAgo('', now)).toBeNull();
+    expect(timeAgo('not a date', now)).toBeNull();
   });
 });

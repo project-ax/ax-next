@@ -37,6 +37,7 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
+import { ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
@@ -92,6 +93,7 @@ CounterRow,
   ThreadAttachment,
   ThreadMessage,
   UserFileEntry,
+  TasksResponse,
   UserFilesAnswer,
   WorkspaceAgent,
   WorkspaceFileBody,
@@ -399,6 +401,47 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** Older receipts may omit the marker; present markers use the closed domain. */
 function isDecisionRecord(value: unknown): boolean {
   return isRecord(value) && (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation));
+}
+
+
+function isString(v: unknown): v is string {
+  return typeof v === 'string';
+}
+
+/** `task` is null until the first report; a report is drawn from all three fields. */
+function isTaskReport(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
+    (v.update === null || isString(v.update)) &&
+    isString(v.reportedAt)
+  );
+}
+
+function isTaskRow(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.agentId) &&
+    isString(v.agentName) &&
+    isString(v.routineId) &&
+    isString(v.name) &&
+    typeof v.enabled === 'boolean' &&
+    (v.task === null || isTaskReport(v.task))
+  );
+}
+
+function isUnavailableAgent(v: unknown): boolean {
+  return isRecord(v) && isString(v.agentId) && isString(v.agentName);
+}
+
+function isTasksResponse(b: unknown): boolean {
+  return (
+    isRecord(b) &&
+    Array.isArray(b.tasks) &&
+    b.tasks.every(isTaskRow) &&
+    Array.isArray(b.unavailableAgents) &&
+    b.unavailableAgents.every(isUnavailableAgent)
+  );
 }
 
 
@@ -805,6 +848,19 @@ export const workspaceApi = {
       body,
       (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isDecisionRecord),
     );
+  },
+
+  /**
+   * Every task this person owns, across the agents they can see (TASK-909).
+   *
+   * One producer, one read: the Tasks page groups and orders the rows itself.
+   * Every element is checked, not just the arrays, for the reason `decisions()`
+   * spells out: the page reads `row.task.status` during render, so one null
+   * row would crash it.
+   */
+  tasks: async () => {
+    const body = await req<unknown>('/tasks');
+    return checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
   },
 
   approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),

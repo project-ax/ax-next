@@ -67,7 +67,18 @@ const STATES = Object.keys(STATE_SHAPE) as Array<keyof typeof STATE_SHAPE>;
 
 describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
   it('covers every state the dot can draw', () => {
-    expect([...STATES].sort()).toEqual(['held', 'resting', 'stopped', 'waiting', 'working']);
+    expect([...STATES].sort()).toEqual([
+      'held',
+      'needs-you',
+      'no-update',
+      'off-track',
+      'on-track',
+      'paused',
+      'resting',
+      'stopped',
+      'waiting',
+      'working',
+    ]);
   });
 
   it.each(STATES)('%s: the dot is no wider than its slot', (state) => {
@@ -88,6 +99,30 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     expect(dot).toContain('border-state-quiet');
     expect(dot).not.toMatch(/\bbg-/);
     expect(widthPx(dot)).toBe(7);
+  });
+
+  it('draws a task mark like the agent mark it means (TASK-909)', () => {
+    expect(STATE_SHAPE['needs-you']).toBe(STATE_SHAPE.waiting);
+    expect(STATE_SHAPE['off-track']).toBe(STATE_SHAPE.stopped);
+    expect(STATE_SHAPE['on-track']).toBe(STATE_SHAPE.working);
+    expect(STATE_SHAPE['no-update']).toBe(STATE_SHAPE.resting);
+
+    expect(renderSlotted('needs-you').dot).toContain('bg-warning');
+    expect(renderSlotted('off-track').dot).toContain('bg-destructive');
+    expect(renderSlotted('on-track').dot).toContain('bg-primary');
+    const noUpdate = renderSlotted('no-update').dot;
+    expect(noUpdate).toContain('border-state-quiet');
+    expect(noUpdate).not.toMatch(/\bbg-/);
+  });
+
+  it('draws paused as a dash no agent mark uses (TASK-909)', () => {
+    const { dot } = renderSlotted('paused');
+    expect(widthPx(STATE_SHAPE.paused)).toBe(8);
+    expect(STATE_SHAPE.paused).toContain('h-[3px]');
+    for (const agent of ['working', 'waiting', 'held', 'resting', 'stopped'] as const) {
+      expect(STATE_SHAPE.paused).not.toBe(STATE_SHAPE[agent]);
+    }
+    expect(dot).toContain('bg-state-quiet');
   });
 
   it('reads the widths it is meant to read', () => {

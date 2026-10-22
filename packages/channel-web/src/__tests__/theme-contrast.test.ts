@@ -1380,6 +1380,11 @@ describe('state dots clear the 3:1 non-text floor', () => {
       'StateDot.held',
       'StateDot.resting',
       'StateDot.stopped',
+      'StateDot.needs-you',
+      'StateDot.off-track',
+      'StateDot.on-track',
+      'StateDot.no-update',
+      'StateDot.paused',
       'StatusDot.empty',
       'StatusDot.ok',
       'StatusDot.bad',
@@ -1395,7 +1400,13 @@ describe('state dots clear the 3:1 non-text floor', () => {
    */
   it('keeps the moved dots on --state-quiet, not the send-circle token', () => {
     const fills = new Map(DOT_FILLS);
-    for (const label of ['StateDot.resting', 'StatusDot.empty', 'StatusDot.pending']) {
+    for (const label of [
+      'StateDot.resting',
+      'StateDot.no-update',
+      'StateDot.paused',
+      'StatusDot.empty',
+      'StatusDot.pending',
+    ]) {
       const cls = fills.get(label);
       expect(cls, `${label} missing`).toBeDefined();
       expect(bgFill(cls!).token, `${label} paints \`${cls}\``).toBe('--state-quiet');

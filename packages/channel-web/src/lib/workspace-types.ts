@@ -44,6 +44,7 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
+import type { RoutineReportStatus } from '@ax/routines-contract';
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -1306,3 +1307,31 @@ export type AgentToolVerdictSaved =
       tool: { toolKey: string; verdict: AgentToolVerdict };
       unconfirmed: true;
     };
+
+/** A task's latest report, as the Tasks page shows it (TASK-909). The agent wrote `update`; the server fenced it to one line of at most 500 code points, or null when nothing legible survived. */
+export interface TaskRowReport {
+  status: RoutineReportStatus;
+  update: string | null;
+  reportedAt: string;
+}
+
+/** One row of `GET /api/workspace/tasks`: a task the caller owns, on an agent they can see. `task` is null until its first report. */
+export interface TaskRow {
+  agentId: string;
+  agentName: string;
+  routineId: string;
+  name: string;
+  enabled: boolean;
+  task: TaskRowReport | null;
+}
+
+/** An agent whose tasks couldn't be read, so the page can say so instead of looking complete. */
+export interface UnavailableAgent {
+  agentId: string;
+  agentName: string;
+}
+
+export interface TasksResponse {
+  tasks: TaskRow[];
+  unavailableAgents: UnavailableAgent[];
+}
