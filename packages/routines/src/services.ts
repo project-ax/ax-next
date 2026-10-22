@@ -72,9 +72,12 @@ export function reportRefused(ctx: AgentContext, stage: 'tool' | 'hook', reason:
 async function fireViews(store: RoutinesStore, agentId: string, userId: string, fires: FireRow[]): Promise<C.RoutineFireView[]> {
   const reported = [...new Set(fires.flatMap(fire => fire.report === null ? [] : [fire.routineId]))];
   const owners = reported.length === 0 ? new Map<string, string>() : await store.routineOwners({ agentId, routineIds: reported });
-  return fires.map(({ id: _id, firedAt, report, ...fire }) => ({
-    ...fire, firedAt: firedAt.toISOString(), report: owners.get(fire.routineId) === userId ? report : null,
-  }));
+  return fires.map(({ id: _id, firedAt, report, ...fire }) => {
+    // Fails closed: a report shows only when an owner is found and it is this person.
+    // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
+    const owner = owners.get(fire.routineId);
+    return { ...fire, firedAt: firedAt.toISOString(), report: owner !== undefined && owner === userId ? report : null };
+  });
 }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;

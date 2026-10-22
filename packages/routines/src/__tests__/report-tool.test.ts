@@ -249,6 +249,31 @@ describe('routine_report (TASK-907)', () => {
     for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([NEEDS_YOU]);
   });
 
+  it("a deleted team task's runs keep their reports hidden from everyone, its owner included", async () => {
+    await start();
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    const key = { agentId: h.teamAgentId, routineId: task.routineId };
+    const fires = async (person: AgentContext) => ({
+      byRoutine: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', person, key)).fires,
+      forAgent: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', person, { agentId: h.teamAgentId })).fires,
+    });
+    // While the task exists, its owner sees the run's report.
+    expect((await fires(h.owner)).byRoutine.map(fire => fire.report)).toEqual([NEEDS_YOU]);
+    // Deleting removes the definition row and nothing else: the run's rows stay. With no
+    // definition there is no owner to match, so nobody sees the report, the former owner included.
+    await createRoutinesStore(h.db).deleteAuthored({ ...key, expectedRevision: (await get(task)).revision, actorUserId: h.owner.userId, requestId: 'delete', now: new Date() });
+    for (const person of [h.teamMember, h.owner]) {
+      const seen = await fires(person);
+      for (const list of [seen.byRoutine, seen.forAgent]) {
+        expect(list.length, person.userId).toBe(1);
+        expect(list.map(fire => fire.report), person.userId).toEqual([null]);
+      }
+      expect(JSON.stringify(seen), person.userId).not.toContain(NEEDS_YOU.update);
+    }
+  });
+
   it('a new task’s routine_create answer has no task state to show', async () => {
     await start();
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
