@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS_SECTION: AgentSettingsSection = 'instructions';
 
 export type WorkspaceRoute =
   | { kind: 'today' }
+  | { kind: 'tasks' }
   | { kind: 'activity' }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
@@ -117,6 +118,7 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
 
   const [, section, third, fourth, fifth] = segments;
   if (section === undefined) return TODAY;
+  if (section === 'tasks') return { kind: 'tasks' };
   if (section === 'activity') return { kind: 'activity' };
   if (section !== 'agents' || third === undefined) return TODAY;
 
@@ -151,6 +153,8 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
   switch (route.kind) {
     case 'today':
       return WORKSPACE_ROOT_PATH;
+    case 'tasks':
+      return `${WORKSPACE_ROOT_PATH}/tasks`;
     case 'activity':
       return `${WORKSPACE_ROOT_PATH}/activity`;
     case 'agent': {

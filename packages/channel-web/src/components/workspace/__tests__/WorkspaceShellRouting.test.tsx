@@ -36,6 +36,7 @@ vi.mock('@/lib/workspace-api', async () => {
       route: vi.fn(),
       activity: vi.fn(),
       decisions: vi.fn(),
+      tasks: vi.fn(),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -65,6 +66,7 @@ const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
+const tasksMock = vi.mocked(workspaceApi.tasks);
 const saveRulesMock = vi.mocked(workspaceApi.saveRules);
 
 const user = {
@@ -115,6 +117,8 @@ beforeEach(() => {
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
+  tasksMock.mockReset();
+  tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
 });
 
 afterEach(clearViewport);
@@ -135,6 +139,26 @@ describe('landing on a URL', () => {
     renderAt('/workspace/activity');
 
     expect(await screen.findByRole('heading', { name: 'Activity' })).toBeTruthy();
+  });
+
+  it('opens Tasks from its own URL, with its sidebar row active', async () => {
+    renderAt('/workspace/tasks');
+
+    expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
+    expect(screen.getByRole('button', { name: /^Today/ })).toHaveAttribute('data-active', 'false');
+    expect(screen.getByRole('button', { name: 'Activity' })).toHaveAttribute('data-active', 'false');
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('the Tasks row leaves an address behind', async () => {
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/tasks'));
+    expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeTruthy();
   });
 
   it('rewrites bare / to the workspace root without adding history', async () => {

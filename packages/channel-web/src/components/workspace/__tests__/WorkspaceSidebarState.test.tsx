@@ -14,7 +14,7 @@
  * the markup, not a visual one.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { UserProvider } from '@/lib/user-context';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { WorkspaceSidebarNav } from '../WorkspaceSidebar';
@@ -31,7 +31,10 @@ const AGENTS = [
   agent('a4', 'Di', 'stopped'),
 ];
 
-function renderRoster(agents = AGENTS) {
+function renderRoster(
+  agents = AGENTS,
+  overrides: Partial<React.ComponentProps<typeof WorkspaceSidebarNav>> = {},
+) {
   return render(
     <UserProvider
       value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role: 'user' } as never}
@@ -44,8 +47,10 @@ function renderRoster(agents = AGENTS) {
         rosterOpen
         onRoster={vi.fn()}
         onToday={vi.fn()}
+        onTasks={vi.fn()}
         onActivity={vi.fn()}
         onAgent={vi.fn()}
+        {...overrides}
       />
     </UserProvider>,
   );
@@ -109,5 +114,38 @@ describe('WorkspaceSidebar roster — agent state is not colour-only (TASK-485)'
       const dot = row.querySelector('span[aria-hidden="true"]')!;
       expect(dot.parentElement!.className, who).toBe(slotClass);
     }
+  });
+});
+
+describe('the Tasks row (TASK-909)', () => {
+  const workspaceNav = () => screen.getByRole('navigation', { name: 'Workspace' });
+
+  it('lists Tasks right under Today, above Activity, and opens it', () => {
+    const onTasks = vi.fn();
+    renderRoster(AGENTS, { onTasks });
+    const names = within(workspaceNav())
+      .getAllByRole('button')
+      .slice(0, 3)
+      .map((b) => b.textContent?.trim());
+    expect(names).toEqual(['Today', 'Tasks', 'Activity']);
+
+    fireEvent.click(within(workspaceNav()).getByRole('button', { name: 'Tasks' }));
+    expect(onTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks Tasks active on the Tasks page', () => {
+    renderRoster(AGENTS, { route: 'tasks' });
+    const nav = within(workspaceNav());
+    expect(nav.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
+    expect(nav.getByRole('button', { name: 'Today' })).toHaveAttribute('data-active', 'false');
+    expect(nav.getByRole('button', { name: 'Activity' })).toHaveAttribute('data-active', 'false');
+  });
+
+  it('puts Tasks between Today and Activity in the icon rail', () => {
+    renderRoster(AGENTS, { collapsed: true });
+    const labels = within(workspaceNav())
+      .getAllByRole('button')
+      .map((b) => b.getAttribute('aria-label'));
+    expect(labels.slice(0, 4)).toEqual(['Today', 'Tasks', 'Activity', 'Agents']);
   });
 });
