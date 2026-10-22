@@ -17,6 +17,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
 import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
+import type { TaskDetail } from '@/lib/workspace-types';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
@@ -37,6 +38,7 @@ vi.mock('@/lib/workspace-api', async () => {
       activity: vi.fn(),
       decisions: vi.fn(),
       tasks: vi.fn(),
+      task: vi.fn(),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -67,6 +69,7 @@ const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const tasksMock = vi.mocked(workspaceApi.tasks);
+const taskMock = vi.mocked(workspaceApi.task);
 const saveRulesMock = vi.mocked(workspaceApi.saveRules);
 
 const user = {
@@ -74,6 +77,20 @@ const user = {
   email: 'u@example.com',
   name: 'Uma',
   role: 'user' as const,
+};
+
+/** Quill's one task, never reported, as the task page reads it. */
+const TASK_DETAIL: TaskDetail = {
+  agentName: 'Quill',
+  name: 'Zero open support tickets',
+  enabled: true,
+  revision: 'rev-1',
+  permissions: { fire: true, stop: true, edit: true },
+  schedule: 'every hour',
+  nextCheckAt: null,
+  brief: { promptBody: 'Keep the support queue empty.', goodWhen: null },
+  task: null,
+  updates: [],
 };
 
 const AGENTS = [
@@ -119,6 +136,8 @@ beforeEach(() => {
   decisionsMock.mockResolvedValue({ decisions: [] });
   tasksMock.mockReset();
   tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
+  taskMock.mockReset();
+  taskMock.mockResolvedValue(TASK_DETAIL);
 });
 
 afterEach(clearViewport);
@@ -149,6 +168,40 @@ describe('landing on a URL', () => {
     expect(screen.getByRole('button', { name: /^Today/ })).toHaveAttribute('data-active', 'false');
     expect(screen.getByRole('button', { name: 'Activity' })).toHaveAttribute('data-active', 'false');
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('opens a task from its own URL, with Tasks active in the sidebar', async () => {
+    renderAt('/workspace/tasks/a1/t1');
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
+    expect(taskMock).toHaveBeenCalledWith('a1', 't1');
+  });
+
+  it('a Tasks row leaves the task’s address behind', async () => {
+    tasksMock.mockResolvedValue({
+      tasks: [
+        {
+          agentId: 'a1',
+          agentName: 'Quill',
+          routineId: 't1',
+          name: 'Zero open support tickets',
+          enabled: true,
+          task: null,
+        },
+      ],
+      unavailableAgents: [],
+    });
+    renderAt('/workspace/tasks');
+
+    fireEvent.click(await screen.findByRole('link', { name: /Zero open support tickets/ }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/tasks/a1/t1'));
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' }),
+    ).toBeTruthy();
   });
 
   it('the Tasks row leaves an address behind', async () => {

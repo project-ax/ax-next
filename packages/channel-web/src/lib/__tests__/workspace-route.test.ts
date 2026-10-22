@@ -42,6 +42,23 @@ describe('parseWorkspaceRoute', () => {
     expect(parseWorkspaceRoute('/workspace/tasks/extra')).toEqual({ kind: 'tasks' });
   });
 
+  it('reads a task’s path', () => {
+    const task = { kind: 'task', agentId: 'a1', routineId: 't1' };
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1')).toEqual(task);
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/extra')).toEqual(task);
+    expect(parseWorkspaceRoute('/workspace/tasks/a%2F1/t%201')).toEqual({
+      kind: 'task',
+      agentId: 'a/1',
+      routineId: 't 1',
+    });
+  });
+
+  it('falls back to Tasks for a task path it can’t read', () => {
+    expect(parseWorkspaceRoute('/workspace/tasks/a1')).toEqual({ kind: 'tasks' });
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/..')).toEqual({ kind: 'tasks' });
+    expect(parseWorkspaceRoute('/workspace/tasks/%E0%A4%A/t1')).toEqual({ kind: 'tasks' });
+  });
+
   it('reads an agent with no tab as that agent on chat', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1')).toEqual({
       kind: 'agent',
@@ -155,6 +172,12 @@ describe('workspaceRoutePath', () => {
     expect(workspaceRoutePath({ kind: 'tasks' })).toBe('/workspace/tasks');
   });
 
+  it('writes a task’s path', () => {
+    expect(workspaceRoutePath({ kind: 'task', agentId: 'a/1', routineId: 't 1' })).toBe(
+      '/workspace/tasks/a%2F1/t%201',
+    );
+  });
+
   it('omits the chat tab, so an agent has one short shareable URL', () => {
     expect(workspaceRoutePath({ kind: 'agent', id: 'a1', tab: 'chat' })).toBe(
       '/workspace/agents/a1',
@@ -178,6 +201,7 @@ describe('the two halves agree', () => {
   const ROUTES: readonly WorkspaceRoute[] = [
     { kind: 'today' },
     { kind: 'tasks' },
+    { kind: 'task', agentId: 'a/1', routineId: 't 1' },
     { kind: 'activity' },
     { kind: 'agent', id: 'a1', tab: 'chat' },
     { kind: 'agent', id: 'a1', tab: 'activity' },
@@ -261,5 +285,6 @@ describe('agent settings (TASK-888)', () => {
     expect(routeAgentId({ kind: 'today' })).toBeNull();
     expect(routeAgentId({ kind: 'activity' })).toBeNull();
     expect(routeAgentId({ kind: 'tasks' })).toBeNull();
+    expect(routeAgentId({ kind: 'task', agentId: 'a1', routineId: 't1' })).toBeNull();
   });
 });
