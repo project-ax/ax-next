@@ -7,7 +7,21 @@
  * answer when the routine runs.
  */
 import { describe, expect, it } from 'vitest';
-import { describeCron } from '../cron-describe';
+import { describeCron, describeCronPhrase } from '../cron-describe';
+
+describe('describeCronPhrase', () => {
+  it('describes a cron as the words after "checks in"', () => {
+    expect(describeCronPhrase('0 9 * * 1-5', 'America/New_York')).toEqual({
+      kind: 'described',
+      text: 'at 9:00 AM, every weekday (America/New_York)',
+    });
+    expect(describeCronPhrase('*/15 * * * *')).toEqual({
+      kind: 'described',
+      text: 'every 15 minutes',
+    });
+    expect(describeCronPhrase('15,45 2-4 * * *')).toEqual({ kind: 'unknown' });
+  });
+});
 
 describe('describeCron — the common shapes', () => {
   it('describes a daily run at a time', () => {

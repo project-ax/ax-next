@@ -159,6 +159,8 @@ When should Caveman work on it?     Tick all that apply
 [Start task]   Cancel
 ```
 
+> “Only 9 to 6 on weekdays” needs days of the week in active hours, which routines don’t have yet (one window every day). PR 4 adds them or builds that checkbox on a cron.
+
 The agent picker only appears for people with more than one agent, the same
 rule the home composer follows. Time zone, a custom cron line and the rest of
 today's routine options sit behind More options. The shortest schedule we
@@ -196,6 +198,8 @@ Updates
 Caveman reads your replies every time it checks in. Sending one starts a
 check-in now.
 ```
+
+> PR 1 (TASK-910): today’s active hours are one window every day, with no days of the week, so the header reads like “checks in every hour, 9:00 AM to 6:00 PM (America/New_York)”. A weekdays-only window needs a schedule that names the days (a cron) until PR 4’s New task dialog settles how people pick days.
 
 - **See what it did** opens that check-in's transcript, read-only. That link is
   how people come to trust an update: they can read the actual tool calls.
