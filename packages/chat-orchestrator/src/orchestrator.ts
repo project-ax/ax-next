@@ -1426,6 +1426,32 @@ const ALWAYS_ON_BROKER_TOOLS = [
   'connector_propose',
 ] as const;
 
+// TASK-908: a ROUTINE run of a non-wildcard agent also sees `routine_report`.
+// "Routine run" means `ctx.source === 'routine'` on `agent:invoke`. Only
+// @ax/routines' fire.ts sets that there, host-side. A chat request has no way
+// to set it. (@ax/decisions' replay also says 'routine', but it calls
+// `tool:execute:<name>` directly and never reaches agent:invoke.)
+//
+// - A task check-in's brief tells the agent to finish with one routine_report
+//   call, so the tool has to be in the catalog the check-in sees.
+// - An agent made through the admin API can't be a wildcard
+//   (`rejectsWildcardScope` in packages/agents/src/admin-routes.ts refuses an
+//   empty-empty scope), so a team agent always carries an explicit list.
+// - `allowedTools` filters host tools at `tool:list` (@ax/mcp-client
+//   `filterByAgentScope`) and again in the runner (@ax/agent-runner-core's
+//   run-runner). Without this, a team agent's check-ins could never report.
+// - Visibility isn't a grant. routine_report's host gate (TASK-907: @ax/routines
+//   `prepareReport`, checked again under locks by `routines:report`) refuses
+//   anywhere but a stay-on-top task's own check-in. A repeat routine's run of
+//   such an agent sees the tool too, and is refused if it calls it.
+//
+// A wildcard agent already sees the whole catalog, routine_report included, so
+// it's left alone, as for the broker tools. An ordinary chat gets nothing new.
+// That's why this isn't in ALWAYS_ON_BROKER_TOOLS: there it would sit in every
+// chat's catalog and always refuse. Same I2 posture as above: a local mirror of
+// @ax/routines-contract's tool name, not an import.
+const ROUTINE_RUN_TOOLS = ['routine_report'] as const;
+
 /**
  * "default+locked" broker tools, computed at session-open (TASK-51).
  *
@@ -1446,10 +1472,16 @@ const ALWAYS_ON_BROKER_TOOLS = [
  * a tenant editing the agent row (e.g. PATCH /admin/agents removing a broker
  * tool) is overridden here at the next open. It does NOT imply a UI list entry
  * (TASK-46 — surfacing org-defaults as skill-list rows — was closed).
+ *
+ * `opts.routineRun` (TASK-908) is true only for a routine run: the call site
+ * passes `ctx.source === 'routine'`. It also unions in ROUTINE_RUN_TOOLS,
+ * after the broker tools, under the same wildcard rule. Anything but `true`
+ * adds nothing.
  */
 export function withBrokerDefaults(
   allowedTools: readonly string[],
   mcpConfigIds: readonly string[],
+  opts: { routineRun?: boolean } = {},
 ): string[] {
   // Wildcard sentinel — leave it alone (see above). Mirrors the empty-empty
   // check in `@ax/mcp-client` `filterByAgentScope`.
@@ -1458,7 +1490,11 @@ export function withBrokerDefaults(
   }
   const out = [...allowedTools];
   const present = new Set(allowedTools);
-  for (const tool of ALWAYS_ON_BROKER_TOOLS) {
+  const defaults: readonly string[] =
+    opts.routineRun === true
+      ? [...ALWAYS_ON_BROKER_TOOLS, ...ROUTINE_RUN_TOOLS]
+      : ALWAYS_ON_BROKER_TOOLS;
+  for (const tool of defaults) {
     if (!present.has(tool)) {
       out.push(tool);
       present.add(tool);
@@ -2486,7 +2522,12 @@ export function createOrchestrator(
       // multi-tenant agent's effective allowedTools (default+locked). For a
       // wildcard agent (empty allowedTools+mcpConfigIds) this is a no-op — it
       // already sees the whole catalog. See withBrokerDefaults.
-      allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds),
+      // TASK-908: a routine run also gets routine_report. ctx.source is
+      // host-set (only @ax/routines' fire.ts stamps 'routine'); see
+      // ROUTINE_RUN_TOOLS.
+      allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds, {
+        routineRun: ctx.source === 'routine',
+      }),
       mcpConfigIds: agent.mcpConfigIds,
       model: agent.model,
       // PR 2 — the runner ID rides the wire (the runner-visible contract stays
