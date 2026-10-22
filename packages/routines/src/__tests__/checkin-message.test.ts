@@ -35,7 +35,7 @@ describe('the check-in message (TASK-908)', () => {
 
   it('Check now, with no notes and no reports, exactly', () => {
     expect(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [] })).toBe([
-      'Check now: the person asked for a check-in now.',
+      'Check now: this check-in was started outside its schedule.',
       'You have no saved notes yet.',
       'No earlier reports yet.',
       'Work on the task now, then finish with one routine_report.',

@@ -22,7 +22,7 @@ export type CheckInMessageInput = {
 function opening(source: FireSource): string {
   switch (source) {
     case 'tick': return 'Scheduled check-in.';
-    case 'manual': return 'Check now: the person asked for a check-in now.';
+    case 'manual': return 'Check now: this check-in was started outside its schedule.';
     default: return 'Check-in.';
   }
 }
