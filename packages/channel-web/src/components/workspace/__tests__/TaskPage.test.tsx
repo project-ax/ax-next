@@ -303,6 +303,51 @@ describe('TaskPage (TASK-910)', () => {
     expect(fireNowMock).toHaveBeenCalledTimes(1);
   });
 
+  it('the next press waits for the re-read, so it carries the revision just read', async () => {
+    const reread = deferred<TaskDetail>();
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockReturnValueOnce(reread.promise)
+      .mockResolvedValue(detail({ enabled: false, revision: 'rev-3', nextCheckAt: null }));
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    updateMock.mockResolvedValue(ROUTINE);
+    await renderReady();
+    const check = screen.getByRole('button', { name: 'Check now' });
+    const pause = screen.getByRole('button', { name: 'Pause' });
+
+    fireEvent.click(check);
+    await screen.findByText(CHECKING_IN);
+    // The check-in has started, and the page is reading the task again.
+    expect(check).toBeDisabled();
+    expect(pause).toBeDisabled();
+    fireEvent.click(pause);
+    expect(updateMock).not.toHaveBeenCalled();
+
+    await act(async () => reread.resolve(detail({ revision: 'rev-2' })));
+    expect(pause).toBeEnabled();
+    fireEvent.click(pause);
+    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
+    expect(updateMock.mock.calls[0]![0].expectedRevision).toBe('rev-2');
+  });
+
+  it('each press clears what the last one said, so the same answer is heard again', async () => {
+    const second = deferred<{ status: 'ok' }>();
+    taskMock.mockResolvedValue(detail());
+    fireNowMock.mockResolvedValueOnce({ status: 'ok' }).mockReturnValueOnce(second.promise);
+    await renderReady();
+    const check = screen.getByRole('button', { name: 'Check now' });
+    const said = screen.getByRole('status');
+    fireEvent.click(check);
+    await waitFor(() => expect(said).toHaveTextContent(CHECKING_IN));
+    await settled(check, 2);
+
+    fireEvent.click(check);
+    // The same words left standing would change nothing, so say nothing.
+    expect(said).toBeEmptyDOMElement();
+    await act(async () => second.resolve({ status: 'ok' }));
+    expect(said).toHaveTextContent(CHECKING_IN);
+  });
+
   it('a Check now that couldn’t be confirmed is retried with the same request, so it can’t start twice', async () => {
     taskMock.mockResolvedValue(detail());
     fireNowMock.mockRejectedValueOnce(new RoutineApiError(0)).mockResolvedValueOnce({ status: 'ok' });
@@ -483,6 +528,21 @@ describe('TaskPage (TASK-910)', () => {
       }
     },
   );
+
+  it('Resume needs edit, whatever else the person may do', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        enabled: false,
+        nextCheckAt: null,
+        permissions: { fire: true, stop: true, edit: false },
+      }),
+    );
+    await renderReady();
+    const resume = screen.getByRole('button', { name: 'Resume' });
+    expect(resume).toBeDisabled();
+    expect(resume).toHaveAccessibleDescription(PAUSED_NO_EDIT_NOTE);
+    expect(screen.getByRole('button', { name: 'Check now' })).toBeDisabled();
+  });
 
   it('a task that can be started and paused needs no note', async () => {
     taskMock.mockResolvedValue(detail());
