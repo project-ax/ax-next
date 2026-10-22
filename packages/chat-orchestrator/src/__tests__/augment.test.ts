@@ -1,16 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HookBus,
   makeAgentContext,
   createLogger,
+  reject,
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
+  SYSTEM_PROMPT_LANDED_HOOK,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
-import { AUGMENT_DEADLINE_MS } from '../orchestrator.js';
+import { AUGMENT_DEADLINE_MS, CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS } from '../orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // W1 — system-prompt contributions from several plugins
@@ -176,6 +178,7 @@ async function setup(opts: {
   providers?: Provider[];
   augmentDeadlineMs?: number;
   routedSession?: { conversationId: string; activeSessionId: string };
+  connectorsSkippedSubscriberTimeoutMs?: number;
 } = {}): Promise<Setup> {
   const busRef: { current: HookBus | null } = { current: null };
   const mocks = buildMocks({
@@ -190,6 +193,9 @@ async function setup(opts: {
         chatTimeoutMs: 5_000,
         ...(opts.augmentDeadlineMs !== undefined
           ? { augmentDeadlineMs: opts.augmentDeadlineMs }
+          : {}),
+        ...(opts.connectorsSkippedSubscriberTimeoutMs !== undefined
+          ? { connectorsSkippedSubscriberTimeoutMs: opts.connectorsSkippedSubscriberTimeoutMs }
           : {}),
       }),
     ],
@@ -638,4 +644,232 @@ describe('Orchestrator: review 1, finding 3 (deadline)', () => {
       await expect(setup({ augmentDeadlineMs: bad })).rejects.toThrow(/augmentDeadlineMs/);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// TASK-908 — `chat:system-prompt-landed { reqId, providers }`, fired once per
+// fresh spawn right after the augment is built and before any proxy or sandbox
+// session opens. `providers` lists only the providers whose step succeeded AND
+// returned at least one non-empty body: a provider that answered `{}` put
+// nothing in the prompt, so it is not listed, and @ax/routines can refuse a
+// check-in whose brief didn't land. A subscriber may veto; the turn then ends
+// `terminated` with `system-prompt:<reason>`.
+describe('chat:system-prompt-landed (TASK-908)', () => {
+  const OVERSIZED = 'x'.repeat(SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS + 1);
+
+  interface Landed {
+    ctxReqId: string;
+    payload: unknown;
+  }
+
+  function recordLanded(s: Setup): Landed[] {
+    const seen: Landed[] = [];
+    s.h.bus.subscribe(SYSTEM_PROMPT_LANDED_HOOK, 'test-observer', async (ctx, payload) => {
+      seen.push({ ctxReqId: ctx.reqId, payload });
+      return undefined;
+    });
+    return seen;
+  }
+
+  function invokeAs(s: Setup, reqId: string): Promise<AgentOutcome> {
+    return s.h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      capturingCtx(s.logs, { reqId }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+  }
+
+  it('fires once per fresh spawn with the providers whose bodies landed', async () => {
+    const s = await setup({
+      // Registration order is not the payload's order: it is sorted by name.
+      providers: [
+        [`${REQ}memory`, value({ rules: 'R' })],
+        [`${OPT}routines`, value({ brief: 'B' })],
+        [`${OPT}empty`, value({})],
+        [`${OPT}blank`, value({ context: '' })],
+        [
+          `${OPT}thrower`,
+          async () => {
+            throw new Error('provider boom');
+          },
+        ],
+        [`${OPT}huge`, value({ context: OVERSIZED })],
+      ],
+    });
+    const seen = recordLanded(s);
+    const outcome = await invokeAs(s, 'req-landed-1');
+    expect(outcome.kind).toBe('complete');
+    expect(s.trace.sandboxOpen).toBe(1);
+    // The listed providers are exactly the ones whose text is in the prompt.
+    expect(s.trace.lastSystemPromptAugment).toBe('R\n\nB');
+    expect(seen).toEqual([
+      {
+        ctxReqId: 'req-landed-1',
+        payload: { reqId: 'req-landed-1', providers: [`${OPT}routines`, `${REQ}memory`] },
+      },
+    ]);
+  });
+
+  it('a failed required provider lands nothing: providers is []', async () => {
+    const s = await setup({
+      providers: [
+        [
+          `${REQ}memory`,
+          async () => {
+            throw new Error('rules read failed');
+          },
+        ],
+        [`${OPT}routines`, value({ brief: 'B' })],
+      ],
+    });
+    const seen = recordLanded(s);
+    expect((await invokeAs(s, 'req-landed-2')).kind).toBe('complete');
+    // The optional provider's step succeeded, but its brief never reached the prompt.
+    expect(s.trace.lastSystemPromptAugment).toBe('');
+    expect(seen).toEqual([
+      { ctxReqId: 'req-landed-2', payload: { reqId: 'req-landed-2', providers: [] } },
+    ]);
+  });
+
+  it('no providers registered: providers is []', async () => {
+    const s = await setup();
+    const seen = recordLanded(s);
+    expect((await invokeAs(s, 'req-landed-3')).kind).toBe('complete');
+    expect(seen).toEqual([
+      { ctxReqId: 'req-landed-3', payload: { reqId: 'req-landed-3', providers: [] } },
+    ]);
+  });
+
+  it('the routed path never fires it', async () => {
+    const s = await setup({
+      providers: [[`${OPT}routines`, value({ brief: 'B' })]],
+      routedSession: { conversationId: 'conv-routed', activeSessionId: 's-live' },
+    });
+    const seen = recordLanded(s);
+    const reqId = 'req-routed-landed';
+    setImmediate(() => {
+      void s.h.bus.fire(
+        'chat:end',
+        makeAgentContext({
+          sessionId: 's-live',
+          agentId: 'test-agent',
+          userId: 'test-user',
+          reqId,
+          logger: createLogger({ reqId, writer: () => undefined }),
+        }),
+        { outcome: { kind: 'complete', messages: [] } },
+      );
+    });
+    const outcome = await s.h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      capturingCtx(s.logs, { sessionId: 'unused-fresh', conversationId: 'conv-routed', reqId }),
+      { message: { role: 'user', content: 'follow-up' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(s.trace.sandboxOpen).toBe(0);
+    expect(s.calls[`${OPT}routines`]).toBe(0);
+    expect(seen).toEqual([]);
+  });
+
+  it('a rejection ends the turn before any proxy or sandbox session opens', async () => {
+    const s = await setup({ providers: [[`${OPT}routines`, value({})]] });
+    // Registered, so a read that ran before the veto would show up below.
+    s.h.bus.registerService('tool-policy:list-agent-overrides', 'test-policy', async () => ({
+      overrides: [],
+    }));
+    s.h.bus.subscribe(SYSTEM_PROMPT_LANDED_HOOK, 'test-veto', async () =>
+      reject({ reason: 'brief-missing' }),
+    );
+    const turnErrors: unknown[] = [];
+    const ends: unknown[] = [];
+    s.h.bus.subscribe('chat:turn-error', 'test-observer', async (_ctx, payload) => {
+      turnErrors.push(payload);
+      return undefined;
+    });
+    s.h.bus.subscribe('chat:end', 'test-observer', async (_ctx, payload) => {
+      ends.push(payload);
+      return undefined;
+    });
+    const callSpy = vi.spyOn(s.h.bus, 'call');
+
+    const outcome = await invokeAs(s, 'req-veto');
+
+    const expected = { kind: 'terminated', reason: 'system-prompt:brief-missing' };
+    expect(outcome).toEqual(expected);
+    // The browser hears about it (chat:turn-error), and audit sees one chat:end.
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors).toMatchObject([{ reqId: 'req-veto', reason: 'system-prompt:brief-missing' }]);
+    expect(ends).toEqual([{ outcome: expected }]);
+    // Nothing was opened, so there is nothing to close.
+    expect(s.trace.sandboxOpen).toBe(0);
+    const called = callSpy.mock.calls.map((c) => c[0]);
+    expect(called).toContain(`${OPT}routines`);
+    for (const hook of [
+      'tool-policy:list-agent-overrides',
+      'proxy:open-session',
+      'sandbox:open-session',
+      'session:queue-work',
+    ]) {
+      expect(called).not.toContain(hook);
+    }
+  });
+
+  it('a hung or throwing subscriber is skipped after the short bound, and the turn goes on', async () => {
+    const s = await setup({
+      providers: [[`${OPT}routines`, value({ brief: 'B' })]],
+      connectorsSkippedSubscriberTimeoutMs: 20,
+    });
+    s.h.bus.subscribe(SYSTEM_PROMPT_LANDED_HOOK, 'test-hanger', () => new Promise<never>(() => {}));
+    s.h.bus.subscribe(SYSTEM_PROMPT_LANDED_HOOK, 'test-thrower', async () => {
+      throw new Error('subscriber boom');
+    });
+    const started = Date.now();
+    const outcome = await invokeAs(s, 'req-hung');
+    expect(outcome.kind).toBe('complete');
+    expect(s.trace.sandboxOpen).toBe(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // Both subscribers really ran, and each was isolated by the bus.
+    const onLanded = (msg: string) =>
+      logsNamed(s.logs, msg)
+        .filter((l) => l.hook === SYSTEM_PROMPT_LANDED_HOOK)
+        .map((l) => ({ plugin: l.plugin, timeoutMs: l.timeoutMs }));
+    expect(onLanded('hook_subscriber_timed_out')).toEqual([
+      { plugin: 'test-hanger', timeoutMs: 20 },
+    ]);
+    expect(onLanded('hook_subscriber_failed')).toEqual([
+      { plugin: 'test-thrower', timeoutMs: undefined },
+    ]);
+  });
+
+  // Decisions row 4: a throw from the fire itself can't come from a subscriber
+  // (the bus isolates those), so it is an infrastructure fault, and ending
+  // every chat over it is the wrong trade. Logged by error name only.
+  it('a fire that throws is logged and the turn goes on', async () => {
+    const s = await setup({ providers: [[`${OPT}routines`, value({ brief: 'B' })]] });
+    const realFire = s.h.bus.fire.bind(s.h.bus);
+    vi.spyOn(s.h.bus, 'fire').mockImplementation(((...args: Parameters<HookBus['fire']>) => {
+      if (args[0] !== SYSTEM_PROMPT_LANDED_HOOK) return realFire(...args);
+      const err = new Error('SECRET-DETAIL');
+      err.name = 'BusFault';
+      return Promise.reject(err);
+    }) as HookBus['fire']);
+    const outcome = await invokeAs(s, 'req-fire-throws');
+    expect(outcome.kind).toBe('complete');
+    expect(s.trace.sandboxOpen).toBe(1);
+    const failed = logsNamed(s.logs, 'chat_system_prompt_landed_fire_failed');
+    expect(failed.map((l) => ({ level: l.level, name: l.name }))).toEqual([
+      { level: 'warn', name: 'BusFault' },
+    ]);
+    expect(JSON.stringify(failed)).not.toContain('SECRET-DETAIL');
+  });
+
+  it('is bounded by the short pre-turn bound by default', async () => {
+    const s = await setup();
+    const fireSpy = vi.spyOn(s.h.bus, 'fire');
+    expect((await invokeAs(s, 'req-default-bound')).kind).toBe('complete');
+    const opts = fireSpy.mock.calls
+      .filter((c) => c[0] === SYSTEM_PROMPT_LANDED_HOOK)
+      .map((c) => c[3]);
+    expect(opts).toEqual([{ subscriberTimeoutMs: CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS }]);
+  });
 });

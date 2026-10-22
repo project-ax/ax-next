@@ -102,13 +102,26 @@ export function createChatOrchestratorPlugin(
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //
-      // `chat:end`, `chat:turn-error`, `chat:permission-request`, and (slice 6)
-      // `chat:connectors-skipped` — an observation fired once per turn assembly
+      // `chat:end`, `chat:turn-error`, `chat:permission-request`, (slice 6)
+      // `chat:connectors-skipped` and (TASK-908) `chat:system-prompt-landed`.
+      // Every one is fired through `fireChatEvent`, which bounds each
+      // subscriber.
+      //
+      // `chat:connectors-skipped` is an observation fired once per turn assembly
       // that left at least one connector out: `{reqId, connectors:[{connectorId,
       // name, reason: 'not-signed-in' | 'needs-reconnect'}]}`. Ids, sanitized
-      // labels and a reason word only (never vault refs). Every one is fired
-      // through `fireChatEvent`, which bounds each subscriber; @ax/routines
+      // labels and a reason word only (never vault refs). @ax/routines
       // subscribes to record a per-run warning.
+      //
+      // `chat:system-prompt-landed` is fired once per FRESH spawn (never on a
+      // routed turn), right after the system-prompt contributions are built and
+      // before any proxy or sandbox session opens: `{reqId, providers}`, the
+      // full service names of the providers whose text reached the prompt
+      // (contract and schema in @ax/core). Bounded like connectors-skipped
+      // (`connectorsSkippedSubscriberTimeoutMs`, 2 s), and veto-capable: a
+      // rejection ends the turn `terminated` with `system-prompt:<reason>`.
+      // @ax/routines subscribes to refuse a task check-in whose brief didn't
+      // land.
       // ----- conditionally-called peers (NOT in `calls`) -----
       //
       // Week 10–12 Task 16 (J6) introduces `conversations:get`,
@@ -218,7 +231,7 @@ export function createChatOrchestratorPlugin(
           // exit that builds a `terminated` outcome MUST call fireTurnError
           // before it fires chat:end, or that turn is invisible to the
           // browser forever. `turn-error-discipline.test.ts` enforces that
-          // over all fifteen of them, rather than leaving it to be noticed.
+          // over all sixteen of them, rather than leaving it to be noticed.
           //
           // See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
           // bounds every phase of a turn itself and fires `chat:turn-error` on

@@ -6,6 +6,7 @@ import {
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
   SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SYSTEM_PROMPT_LANDED_HOOK,
   SystemPromptAugmentOutputSchema,
   type AgentContext,
   type AgentMessage,
@@ -14,6 +15,7 @@ import {
   type HookBus,
   type SystemPromptAugmentInput,
   type SystemPromptAugmentOutput,
+  type SystemPromptLandedPayload,
 } from '@ax/core';
 // Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
 // payload (it doesn't validate — trust comes from skills:resolve / agents:resolve
@@ -70,6 +72,9 @@ import {
 //        - `ctx.conversationId` set AND its `active_session_id` is alive
 //          → route into THAT session's inbox, skip sandbox:open-session.
 //        - otherwise → open a fresh sandbox.
+//   3.5 (fresh path) build the system-prompt contributions (W1), then fire
+//        `chat:system-prompt-landed` (veto-capable); a veto ends the turn
+//        here, before any proxy or sandbox session exists (TASK-908).
 //   4. (fresh path) sandbox:open-session — bind IPC listener, spawn runner.
 //        The sandbox plugin internally calls `session:create` to mint the
 //        session + bearer token (the token flows only into the runner's
@@ -88,8 +93,9 @@ import {
 // The IPC server (Task 4) fires `chat:end` when the runner POSTs
 // /event.chat-end. The orchestrator's own subscriber captures the outcome
 // and resolves the awaiting deferred. Error-ish paths (chat:start rejection,
-// sandbox-open failure, queue-work failure, chat timeout, sandbox early
-// exit) synthesize a terminated outcome and fire chat:end themselves —
+// a `chat:system-prompt-landed` veto, sandbox-open failure, queue-work
+// failure, chat timeout, sandbox early exit) synthesize a terminated outcome
+// and fire chat:end themselves —
 // audit-log style subscribers always see exactly one chat:end per agent:invoke.
 // Happy-path chat:end is fired by the IPC server, NOT the orchestrator;
 // double-firing would double-count in audit-log.
@@ -176,12 +182,13 @@ export interface ChatOrchestratorConfig {
    */
   chatEventSubscriberTimeoutMs?: number;
   /**
-   * Slice 6 — bound on each `chat:connectors-skipped` subscriber, in ms. The
-   * fire is awaited before the turn starts (so a subscriber has seen it before
-   * the turn can end), so it gets a short bound of its own rather than the
-   * 30 s chat-event one. Defaults to
-   * `CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS` (2 s). Exposed so tests need
-   * not wait.
+   * Slice 6 — bound on each subscriber of the two pre-turn events, in ms:
+   * `chat:connectors-skipped` and (TASK-908) `chat:system-prompt-landed`. Both
+   * fires are awaited before the turn starts (so a subscriber has seen them
+   * before the turn can end, and the landed one can veto the spawn), so they
+   * share a short bound of their own rather than the 30 s chat-event one.
+   * Defaults to `CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS` (2 s). Exposed so
+   * tests need not wait.
    */
   connectorsSkippedSubscriberTimeoutMs?: number;
   /**
@@ -809,14 +816,19 @@ async function runAugmentProvider(
 /**
  * Discover, call and assemble the system-prompt contribution family. Returns
  * `null` when a required provider failed (no augment at all); otherwise the
- * normal and bootstrap strings (either may be empty).
+ * normal and bootstrap strings (either may be empty) and `landed`: the full
+ * service names of the providers whose step succeeded AND returned at least
+ * one non-empty body, in the steps' plain code-unit order (TASK-908, the
+ * `chat:system-prompt-landed` payload). A provider that answered `{}` or only
+ * empty bodies put nothing in the prompt, so it is not listed — which is what
+ * lets a subscriber refuse a spawn whose contribution didn't land.
  */
 async function buildSystemPromptAugment(
   bus: HookBus,
   ctx: AgentContext,
   deadlineMs: number,
   unknownClassLogged: Set<string>,
-): Promise<{ normal: string; bootstrap: string } | null> {
+): Promise<{ normal: string; bootstrap: string; landed: string[] } | null> {
   const providers: Array<{ name: string; cls: AugmentClass }> = [];
   for (const name of bus.listServices()) {
     if (name.startsWith(SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX)) {
@@ -828,7 +840,7 @@ async function buildSystemPromptAugment(
       ctx.logger.warn('system_prompt_augment_unknown_class', { provider: name });
     }
   }
-  if (providers.length === 0) return { normal: '', bootstrap: '' };
+  if (providers.length === 0) return { normal: '', bootstrap: '', landed: [] };
 
   const steps = await Promise.all(
     providers.map((p) => runAugmentProvider(bus, ctx, p.name, p.cls, deadlineMs)),
@@ -859,15 +871,25 @@ async function buildSystemPromptAugment(
     return null;
   }
 
-  const landed = steps.flatMap((s) => (s.ok ? [s.out] : []));
+  const succeeded = steps.flatMap((s) => (s.ok ? [s] : []));
+  // A section's body, if non-empty: the one test for "this reaches the prompt",
+  // shared by the joins and `landed` so a listed provider's text is in `normal`
+  // and an unlisted one's is not.
+  const bodyOf = (
+    out: SystemPromptAugmentOutput,
+    section: (typeof AUGMENT_SECTIONS)[number],
+  ): string[] => {
+    const body = out[section];
+    return body !== undefined && body.length > 0 ? [body] : [];
+  };
   const bodies = (section: (typeof AUGMENT_SECTIONS)[number]): string[] =>
-    landed.flatMap((o) => {
-      const body = o[section];
-      return body !== undefined && body.length > 0 ? [body] : [];
-    });
+    succeeded.flatMap(({ out }) => bodyOf(out, section));
   return {
     normal: AUGMENT_SECTIONS.flatMap(bodies).join('\n\n'),
     bootstrap: BOOTSTRAP_SECTIONS.flatMap(bodies).join('\n\n'),
+    landed: succeeded
+      .filter(({ out }) => AUGMENT_SECTIONS.some((section) => bodyOf(out, section).length > 0))
+      .map((s) => s.provider),
   };
 }
 
@@ -1278,10 +1300,13 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
 
 /**
- * Slice 6 — bound on each `chat:connectors-skipped` subscriber. Awaited before
- * the sandbox spawns, so a hung subscriber delays the turn by at most this per
- * subscriber (subscribers run one after another). The one subscriber today
- * (@ax/routines) only stashes the payload in memory.
+ * Slice 6 — bound on each subscriber of the two pre-turn events,
+ * `chat:connectors-skipped` and (TASK-908) `chat:system-prompt-landed`. Both
+ * are awaited before the sandbox spawns, so a hung subscriber delays the turn
+ * by at most this per subscriber (subscribers run one after another). The one
+ * subscriber of each today is @ax/routines, which only reads in-memory state:
+ * it stashes the skipped connectors, and checks the landed list against its
+ * in-flight fire record (vetoing a task check-in whose brief didn't land).
  */
 export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
 
@@ -1826,20 +1851,26 @@ export function createOrchestrator(
   const augmentUnknownClassLogged = new Set<string>();
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
-  // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through
-  // here, so each subscriber is bounded by `chatEventSubscriberTimeoutMs` —
-  // except `chat:connectors-skipped`, which gets its own short bound
-  // (`connectorsSkippedSubscriberTimeoutMs`) because it is awaited before the
-  // turn starts. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for who waits on these.
-  // The runner-reported `chat:end` is fired by @ax/ipc-core, not here, and
-  // bounded there (TASK-555).
+  // (and, slice 6, `chat:connectors-skipped`; TASK-908,
+  // `chat:system-prompt-landed`) this plugin fires goes through here, so each
+  // subscriber is bounded by `chatEventSubscriberTimeoutMs` — except the two
+  // pre-turn events, `chat:connectors-skipped` and `chat:system-prompt-landed`,
+  // which share their own short bound (`connectorsSkippedSubscriberTimeoutMs`)
+  // because they are awaited before the turn starts. See
+  // CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for who waits on these. The runner-reported
+  // `chat:end` is fired by @ax/ipc-core, not here, and bounded there (TASK-555).
   function fireChatEvent<P>(
-    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request' | 'chat:connectors-skipped',
+    hook:
+      | 'chat:end'
+      | 'chat:turn-error'
+      | 'chat:permission-request'
+      | 'chat:connectors-skipped'
+      | typeof SYSTEM_PROMPT_LANDED_HOOK,
     ctx: AgentContext,
     payload: P,
   ): Promise<FireResult<P>> {
     const subscriberTimeoutMs =
-      hook === 'chat:connectors-skipped'
+      hook === 'chat:connectors-skipped' || hook === SYSTEM_PROMPT_LANDED_HOOK
         ? connectorsSkippedSubscriberTimeoutMs
         : chatEventSubscriberTimeoutMs;
     return bus.fire(hook, ctx, payload, { subscriberTimeoutMs });
@@ -2901,9 +2932,11 @@ export function createOrchestrator(
     // runner prepends in bootstrap mode. A failed required provider leaves
     // both at their seeded `''`.
     //
-    // Never aborts the chat: every failure is logged and degrades to less (or
-    // no) augment. Surfacing it as `terminated` would couple the chat's
-    // success to an auxiliary, which is the wrong shape.
+    // A provider's failure never aborts the chat: every failure is logged and
+    // degrades to less (or no) augment. Surfacing it as `terminated` would
+    // couple the chat's success to an auxiliary, which is the wrong shape. The
+    // one way this step ends a turn is a subscriber's veto of
+    // `chat:system-prompt-landed`, just below.
     const augment = await buildSystemPromptAugment(
       bus,
       ctx,
@@ -2920,6 +2953,51 @@ export function createOrchestrator(
       if (augment.bootstrap.length > 0) {
         agentConfig.systemPromptBootstrapAugment = augment.bootstrap;
       }
+    }
+
+    // TASK-908 — `chat:system-prompt-landed { reqId, providers }` says whose
+    // contribution reached the prompt (`augment.landed`: a provider is listed
+    // only if its step succeeded with a non-empty body; `[]` when a failed
+    // required provider suppressed the augment), and a subscriber may veto the
+    // spawn. @ax/routines refuses a task check-in whose brief isn't listed.
+    //
+    // Fired on every fresh spawn, HERE: before `proxy:open-session` and
+    // `sandbox:open-session`, so a vetoed run never opened either and the veto
+    // has nothing to close, and before connector assembly, so `system-prompt:`
+    // is a pre-assembly refusal like `chat:start:` and `agent-resolve:`. Never
+    // on the routed path above: a warm session's prompt was fixed at its spawn,
+    // and a check-in always gets a fresh (per-fire) conversation, so it is
+    // never routed.
+    //
+    // Bounded by `connectorsSkippedSubscriberTimeoutMs`: a subscriber past it,
+    // or one that throws, is skipped by the bus and the turn goes on (for a
+    // check-in, @ax/routines' turn-end belt records the missing confirmation).
+    // A throw from the fire itself can't come from a subscriber (the bus
+    // isolates those); it is logged and the turn goes on, as for
+    // connectors-skipped, because an infrastructure fault here must not end
+    // every chat.
+    let landed: FireResult<SystemPromptLandedPayload> | undefined;
+    try {
+      landed = await fireChatEvent<SystemPromptLandedPayload>(SYSTEM_PROMPT_LANDED_HOOK, ctx, {
+        reqId: ctx.reqId,
+        providers: augment?.landed ?? [],
+      });
+    } catch (err) {
+      ctx.logger.warn('chat_system_prompt_landed_fire_failed', {
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+    }
+    // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+    // doesn't hang (see the chat:start note above).
+    if (landed?.rejected) {
+      // @ax/routines keys off the `system-prompt:` prefix (a pre-assembly refusal).
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: `system-prompt:${landed.reason}`,
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireChatEvent('chat:end', ctx, { outcome });
+      return outcome;
     }
 
     // Per-tool DENY verdicts → `agentConfig.disallowedTools`. CATALOG HYGIENE
