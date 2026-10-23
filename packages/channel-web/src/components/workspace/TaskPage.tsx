@@ -113,7 +113,7 @@ const REFRESH_FAILED =
 const CHECKING_IN = 'Checking in now…';
 const DIDNT_FINISH = 'The check-in didn’t finish. The reason is under Updates.';
 const STILL_CHECKING = 'Still checking in. Its update will be under Updates when it’s done.';
-const CANT_SHOW = 'It left an update we can’t show.';
+export const CANT_SHOW = 'It left an update we can’t show.';
 
 type ActionKind = 'check' | 'pause' | 'resume';
 
