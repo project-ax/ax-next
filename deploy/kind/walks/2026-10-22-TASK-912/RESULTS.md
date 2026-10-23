@@ -48,4 +48,4 @@ None of these block PR 1. Each is a follow-up card.
 
 - **OrbStack stalled twice mid-walk.** The kind API and port-forward timed out for about 10 minutes, and a later check showed host load around 17. It recovered without a restart. The port-forward then needed restarting ("error creating error stream").
 - **The Playwright tool echoes a script loaded with `filename` back into its output.** So a secret typed that way reaches the transcript. Use a different route for secrets.
-- **First-time setup refuses once any admin exists.** So `scripts/kind-login.sh <email> admin` before `/setup` makes setup fail ("admin already exists; bootstrap refused"). Run setup first, then use kind-login for extra users.
+- **First-time setup refuses once any admin exists.** So making an admin with the local kind-login helper before `/setup` makes setup fail ("admin already exists; bootstrap refused"). Run setup first, then use kind-login for extra users.
