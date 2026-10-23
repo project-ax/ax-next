@@ -137,7 +137,11 @@ export function TodayTaskGroup({
   }, [canReply]);
 
   return (
-    <section
+    // A labelled group, not a `<section>`: a labelled section is a region
+    // landmark, and Today can hold many blocks (TodayView's consent wrapper
+    // does the same).
+    <div
+      role="group"
       aria-labelledby={headingId}
       className="min-w-0 border-b border-rule-soft last:border-b-0"
     >
@@ -244,6 +248,6 @@ export function TodayTaskGroup({
           {children}
         </div>
       )}
-    </section>
+    </div>
   );
 }

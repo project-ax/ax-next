@@ -759,7 +759,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(2);
 
     await act(async () => land({ tasks: [taskRow()], unavailableAgents: [] }));
-    expect(await screen.findByRole('region', { name: /Zero open support tickets/ })).toBeTruthy();
+    expect(await screen.findByRole('group', { name: /Zero open support tickets/ })).toBeTruthy();
     expect(screen.queryByText('We couldn’t check your tasks just now.')).toBeNull();
   });
 
@@ -782,7 +782,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     );
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
 
-    const block = screen.getByRole('region', { name: /Zero open support tickets/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
     fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
     fireEvent.change(
       within(block).getByRole('textbox', { name: 'Reply to Quill about this task' }),
@@ -807,7 +807,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     renderShell();
 
     // Within the task's block: the home composer on Today has its own Send.
-    const block = await screen.findByRole('region', { name: /Zero open support tickets/ });
+    const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
     fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
     fireEvent.change(

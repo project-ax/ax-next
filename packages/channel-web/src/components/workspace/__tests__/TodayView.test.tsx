@@ -518,7 +518,7 @@ describe("an expanded check-in row (TASK-932)", () => {
     const links = screen.getAllByRole('link', { name: /^Open task/ });
     expect(links).toHaveLength(1);
     const link = links[0]!;
-    const block = screen.getByRole('region', { name: /Zero open support tickets/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
     expect(block).toContainElement(link);
     const row = screen.getByTestId('decision-d1');
     expect(block).toContainElement(row);
@@ -574,7 +574,7 @@ const heldDuring = (routineId: string, taskName: string, over: Partial<Decision>
   decision({ attendance: 'unattended', checkIn: { routineId, taskName }, ...over });
 
 const taskBlock = (name: RegExp = /Zero open support tickets/) =>
-  screen.getByRole('region', { name });
+  screen.getByRole('group', { name });
 
 /** The `Alert` carrying `sentence`, by its sentence: decision rows carry their own `role="alert"` live regions. */
 function alertWith(sentence: string): HTMLElement {
@@ -760,7 +760,7 @@ describe('what tasks need from you (TASK-933)', () => {
         onReplied={vi.fn()}
       />,
     );
-    expect(screen.queryByRole('region', { name: /Zero open support tickets/ })).toBeNull();
+    expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();
   });
 
   it('the empty-queue sentence waits for tasks too', () => {

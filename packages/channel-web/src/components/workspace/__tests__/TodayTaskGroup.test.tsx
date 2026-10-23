@@ -102,7 +102,10 @@ afterEach(() => vi.restoreAllMocks());
 describe('TodayTaskGroup (TASK-933)', () => {
   it('a task whose agent asked shows the ask as written, with Reply and Open task', () => {
     const { onNavigate } = renderGroup(group([asking()]));
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, needs you/ });
+    // A labelled group, not a landmark: Today can hold many blocks, and each
+    // one in the landmark list would bury the page's own (TASK-933 review).
+    expect(screen.queryByRole('region')).toBeNull();
     // The mark is aria-hidden; the state word is for assistive tech only.
     expect(within(block).getByText(', needs you')).toHaveClass('sr-only');
     expect(within(block).getByText('Task · Caveman')).toBeInTheDocument();
@@ -157,7 +160,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
   it('Reply opens the box in place, focused, and a sent reply tells Today to look again', async () => {
     sendMock.mockResolvedValue({ checkIn: 'started' });
     const { onReplied } = renderGroup(group([asking()]));
-    const block = screen.getByRole('region', { name: /Zero open support tickets/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
 
     fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
     const box = within(block).getByRole('textbox', { name: BOX });
@@ -193,7 +196,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
         }),
       ]),
     );
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, needs you/ });
     expect(
       within(block).getByText(
         'Its last 3 check-ins didn’t leave an update. Its instructions are too long to load.',
@@ -217,7 +220,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
         }),
       ]),
     );
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, needs you/ });
     const miss = within(block).getByText(
       'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
     );
@@ -230,7 +233,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
     const first = renderGroup(
       group([row({ task: report('needs-you', { ask: null }), noRecentUpdate: misses(3) })]),
     );
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, needs you/ });
     const miss = within(block).getByText(
       'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
     );
@@ -277,7 +280,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
         }),
       ]),
     );
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, paused/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, paused/ });
     expect(
       within(block).getByText('Paused after 5 check-ins in a row didn’t leave an update.'),
     ).toBeInTheDocument();
@@ -305,7 +308,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
   it('a task there only for its approvals: its name, how many wait, and Open task', () => {
     const receipt = resolvedFixture('executed', { id: 'd3', agentId: 'a1', checkIn: LABEL });
     const first = renderGroup(group([], [approval('d1'), approval('d2'), receipt]));
-    const block = screen.getByRole('region', { name: /^Zero open support tickets/ });
+    const block = screen.getByRole('group', { name: /^Zero open support tickets/ });
     expect(within(block).getByText('Task · Caveman')).toBeInTheDocument();
     expect(within(block).getByText('2 approvals waiting')).toBeInTheDocument();
     expect(within(block).getByRole('link', { name: /^Open task/ })).toHaveAttribute(
@@ -313,7 +316,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
       '/workspace/tasks/a1/t1',
     );
     expect(within(block).queryByRole('button', { name: 'Reply' })).toBeNull();
-    expect(screen.queryByRole('region', { name: /needs you|paused/ })).toBeNull();
+    expect(screen.queryByRole('group', { name: /needs you|paused/ })).toBeNull();
     first.unmount();
 
     const second = renderGroup(group([], [approval('d1')]));
@@ -321,7 +324,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
     second.unmount();
 
     const third = renderGroup(group([], [receipt]));
-    expect(screen.getByRole('region', { name: /^Zero open support tickets/ })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /^Zero open support tickets/ })).toBeInTheDocument();
     expect(screen.queryByText(/approvals? waiting/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
     third.unmount();
@@ -336,7 +339,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
     expect(screen.getByText('1 approval waiting')).toBeInTheDocument();
     expect(screen.queryByText(/Which view should I count/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
-    expect(screen.queryByRole('region', { name: /needs you|paused/ })).toBeNull();
+    expect(screen.queryByRole('group', { name: /needs you|paused/ })).toBeNull();
   });
 
   it("draws the agent's words as text", () => {
@@ -354,7 +357,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
 
   it('draws its approvals inside the block', () => {
     renderGroup(group([asking()], [approval('d1')]), <p>an approval</p>);
-    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const block = screen.getByRole('group', { name: /Zero open support tickets\s*, needs you/ });
     expect(within(block).getByText('an approval')).toBeInTheDocument();
   });
 
@@ -362,20 +365,20 @@ describe('TodayTaskGroup (TASK-933)', () => {
     const dot = (heading: HTMLElement) => heading.querySelector('span[aria-hidden="true"]');
 
     const asked = renderGroup(group([asking()]));
-    const askMark = dot(within(screen.getByRole('region')).getByRole('heading'));
+    const askMark = dot(within(screen.getByRole('group', { name: /^Zero open support tickets/ })).getByRole('heading'));
     expect(askMark).toHaveClass('bg-warning');
     asked.unmount();
 
     const paused = renderGroup(
       group([row({ enabled: false, task: report('on-track'), noRecentUpdate: misses(5, { autoPaused: true }) })]),
     );
-    const pausedMark = dot(within(screen.getByRole('region')).getByRole('heading'));
+    const pausedMark = dot(within(screen.getByRole('group', { name: /^Zero open support tickets/ })).getByRole('heading'));
     expect(pausedMark).toHaveClass('bg-state-quiet');
     expect(pausedMark).not.toHaveClass('bg-warning');
     paused.unmount();
 
     renderGroup(group([], [approval('d1')]));
-    expect(dot(within(screen.getByRole('region')).getByRole('heading'))).toBeNull();
+    expect(dot(within(screen.getByRole('group', { name: /^Zero open support tickets/ })).getByRole('heading'))).toBeNull();
   });
 
   it('a Reply box left open does not come back open for a later ask', () => {
