@@ -20,7 +20,7 @@ async function setup(options: {
   definition?: object;
   bind?: () => Promise<void>;
   reports?: () => Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
-  replies?: (input: { agentId: string; routineId: string; limit: number }) => Promise<StoredReply[]>;
+  replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
@@ -169,7 +169,8 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     ]);
     const h = await setup({ definition: TASK, replies });
     await h.fire(h.accepted);
-    expect(replies.mock.calls).toEqual([[{ agentId: 'a', routineId: h.row.routineId, limit: 20 }]]);
+    // Read for the person the check-in runs as, the accepted row's owner: the store answers only while the task is still theirs.
+    expect(replies.mock.calls).toEqual([[{ agentId: 'a', routineId: h.row.routineId, actorUserId: 'owner', limit: 20 }]]);
     const message = (h.invoked.mock.calls[0]![1] as { message: { content: string } }).message.content;
     expect(message).toContain('- 2030-12-31 23:00 UTC (new since your last report):\n  > Refunds under $100 are fine.');
     expect(message).not.toContain('reply_1');

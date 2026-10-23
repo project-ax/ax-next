@@ -12,7 +12,8 @@ import type { AcceptedDispatch, StoredRoutine } from '../types.js';
 // store and Postgres. Only a task's owner may reply. The reply is stored first.
 // Then, when the task runs and the caller may start its check-ins, it starts one,
 // keyed on the reply: a retry can't start a second, and a retry after a partial
-// failure starts the one the first try never did. Only the owner reads them back.
+// failure starts the one the first try never did. Only the owner reads them back,
+// and only the ones they wrote: an earlier owner's stay unread.
 const f = fixture();
 
 const TASK = RoutineDefinitionSchema.parse({
@@ -314,19 +315,37 @@ describe('routines:reply (TASK-931)', () => {
 });
 
 describe('routines:recent-replies (TASK-931)', () => {
-  it('the owner reads their replies newest first, with who wrote each', async () => {
+  it('the owner reads their own replies newest first; an earlier owner’s are not among them', async () => {
     const task = await createTask();
     const first = await added(task, 'r1', 'First.');
     const second = await added(task, 'r2', 'Second.\n\nOn two lines.', at(60_000));
-    // Written before the routine moved to its owner now.
+    // Written before the routine moved to its owner now: kept, and read for nobody while it isn't theirs.
     await insertReply({ replyId: 'reply_earlier', routineId: task.routineId, author: 'earlier-owner', body: 'Before the move.', sentAt: at(-60_000) });
     const s = services();
     expect(await s.recent(keyOf(task))).toStrictEqual({ replies: [
       { replyId: second.replyId, authorUserId: 'owner', text: 'Second.\n\nOn two lines.', sentAt: '2031-01-01T00:01:00.000Z' },
       { replyId: first.replyId, authorUserId: 'owner', text: 'First.', sentAt: '2031-01-01T00:00:00.000Z' },
-      { replyId: 'reply_earlier', authorUserId: 'earlier-owner', text: 'Before the move.', sentAt: '2030-12-31T23:59:00.000Z' },
     ] });
     expect((await s.recent({ ...keyOf(task), limit: 1 })).replies.map(r => r.replyId)).toEqual([second.replyId]);
+    expect(await storedReplies()).toHaveLength(3);
+  });
+
+  it('after the task moves to a new owner, they read none of the earlier owner’s replies, only their own', async () => {
+    const task = await createTask();
+    await added(task, 'r1', 'Before the move.');
+    // What resolveRoutineAccess (and the tick) do once a personal agent has a new owner. These hooks'
+    // agent is a team agent, which they never move, so the store moves it here.
+    expect(await f.store.reconcileOwners({ agents: [{ agentId: 'a', ownerUserId: 'new-owner' }] })).toBe(1);
+    const s = services({ reach: ['owner', 'new-owner'] });
+    expect(await s.recent(keyOf(task), 'new-owner')).toStrictEqual({ replies: [] });
+    // Nor does the earlier owner, their own included: the task isn't theirs now.
+    expect(await s.recent(keyOf(task), 'owner')).toStrictEqual({ replies: [] });
+    // A reply the new owner sends is the only one they read.
+    const theirs = await s.reply(replyTo(task, 'n1', 'After the move.'), s.as('new-owner'));
+    expect(theirs.checkIn).toBe('started');
+    expect((await s.recent(keyOf(task), 'new-owner')).replies.map(r => [r.replyId, r.authorUserId, r.text]))
+      .toEqual([[theirs.replyId, 'new-owner', 'After the move.']]);
+    expect(await storedReplies()).toHaveLength(2);
   });
 
   it('without a limit, the latest 20', async () => {

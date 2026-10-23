@@ -101,10 +101,12 @@ export const RoutineReplyInputSchema = RoutineKeySchema.extend({ requestId: Rout
 export const RoutineReplyOutputSchema = z.object({ replyId: RoutineOpaqueStringSchema, checkIn: RoutineReplyCheckInSchema }).strict();
 /**
  * `routines:recent-replies` (TASK-931): a task's replies, newest first, for its
- * owner. Anyone else, and a routine that's gone, gets none. `limit` is 1 to 50
- * and defaults to 20. `authorUserId` is there for the caller's own "was this
- * me?" and never leaves the host. Stored text isn't re-capped (TASK-913).
- * Neither a tool nor an IPC action.
+ * owner, and only the ones they wrote: once a task moves to a new owner, the
+ * earlier owner's replies reach no one. Anyone else, and a routine that's gone,
+ * gets none. `limit` is 1 to 50 and defaults to 20. `authorUserId` (so far
+ * always the caller) is there for the caller's own "was this me?" and never
+ * leaves the host. Stored text isn't re-capped (TASK-913). Neither a tool nor
+ * an IPC action.
  */
 export const ROUTINE_REPLIES_MAX_LIMIT = 50;
 export const RoutineRecentRepliesInputSchema = RoutineKeySchema.extend({ limit: z.number().int().min(1).max(ROUTINE_REPLIES_MAX_LIMIT).optional() }).strict();

@@ -6,9 +6,11 @@ import type { RoutinesDatabase } from '../migrations.js';
 
 // TASK-931: a person's replies on a task. Only the task's owner may add one,
 // decided under the agent fence and the routine's row lock. The same requestId
-// again keeps the first reply. Replies outlive a kind change and go with their
-// routine or agent. addReply refuses anyone but the owner, so another person's
-// reply is written with SQL, and what's stored is read back with SQL too.
+// again keeps the first reply. A read returns only the replies the routine's
+// owner now wrote, and only to them. Replies outlive a kind change and an owner
+// change, and go with their routine or agent. addReply refuses anyone but the
+// owner, so another person's reply is written with SQL, and what's stored is
+// read back with SQL too.
 const f = fixture();
 
 const at = (ms: number) => new Date(now.getTime() + ms);
@@ -30,7 +32,11 @@ const replied = async (...args: Parameters<typeof reply>) => {
   if (typeof result === 'string') throw new Error(`addReply answered ${result}`);
   return result;
 };
-const recent = (key: Key, limit = 20) => f.store.recentReplies({ agentId: key.agentId, routineId: key.routineId, limit });
+/** What a read of the task's replies gets, for `as` (the owner unless named). */
+const recent = (key: Key, { limit = 20, as = 'owner' }: { limit?: number; as?: string } = {}) =>
+  f.store.recentReplies({ agentId: key.agentId, routineId: key.routineId, actorUserId: as, limit });
+/** Drift repair's move of every routine of agent 'a' to `ownerUserId`, as resolveRoutineAccess and the tick run it. */
+const moveTo = (ownerUserId: string) => f.store.reconcileOwners({ agents: [{ agentId: 'a', ownerUserId }] });
 const storedReplies = async () => (await sql<{ agent_id: string; routine_id: string; author_user_id: string; request_id: string; body: string }>`
   SELECT agent_id, routine_id, author_user_id, request_id, body FROM routines_v1_replies ORDER BY created_at, reply_id`.execute(f.db)).rows;
 /** A reply written straight to the table, as addReply never would: another person's, or at an id the test picks. */
@@ -111,11 +117,42 @@ describe('replies (store, TASK-931)', () => {
     expect(await reply(task, 'same', 'Mine.')).toMatchObject({ outcome: 'replayed', replyId: mine.replyId });
     const onOther = await replied(other, 'same', 'On the other task.');
     expect(onOther.outcome).toBe('added');
-    expect(await recent(task)).toEqual([
-      { replyId: 'reply_theirs', authorUserId: 'earlier-owner', text: 'Theirs.', sentAt: at(60_000) },
-      { replyId: mine.replyId, authorUserId: 'owner', text: 'Mine.', sentAt: now },
-    ]);
+    // Both stand under the one requestId, each its own reply. A read returns only the owner's own (the next test).
+    expect((await storedReplies()).filter(r => r.routine_id === task.routineId).map(r => [r.author_user_id, r.request_id, r.body]))
+      .toEqual([['owner', 'same', 'Mine.'], ['earlier-owner', 'same', 'Theirs.']]);
+    expect(await recent(task)).toEqual([{ replyId: mine.replyId, authorUserId: 'owner', text: 'Mine.', sentAt: now }]);
     expect(await recent(other)).toEqual([{ replyId: onOther.replyId, authorUserId: 'owner', text: 'On the other task.', sentAt: now }]);
+  });
+
+  it("a read returns only replies the routine's owner now wrote, and only to them; another person's stay stored, unread", async () => {
+    const task = await createTask('task');
+    const mine = await replied(task, 'r1', 'Mine.');
+    // Another person's, written while the task was theirs (it moved to them and back, say). The newest of
+    // all, so a read that dropped it only after taking its limit would come back short.
+    await insertReply({ replyId: 'reply_theirs', routineId: task.routineId, author: 'earlier-owner', body: 'Theirs.', at: at(60_000) });
+    expect(await recent(task)).toEqual([{ replyId: mine.replyId, authorUserId: 'owner', text: 'Mine.', sentAt: now }]);
+    expect(await recent(task, { limit: 1 })).toEqual([{ replyId: mine.replyId, authorUserId: 'owner', text: 'Mine.', sentAt: now }]);
+    // Read for anyone but the owner, there are none: not the owner's, and not their own.
+    for (const as of ['earlier-owner', 'someone-else']) expect(await recent(task, { as }), as).toEqual([]);
+    expect(await storedReplies()).toHaveLength(2);
+  });
+
+  it('a task moved to a new owner reads none of the earlier owner’s replies, theirs only once they write some, and the earlier ones again only if it moves back', async () => {
+    const task = await createTask('task');
+    const first = await replied(task, 'r1', 'From the first owner.');
+    expect(await moveTo('new-owner')).toBe(1);
+    // Neither person reads the first owner's reply now: one no longer owns the task, the other didn't write it.
+    expect(await recent(task, { as: 'new-owner' })).toEqual([]);
+    expect(await recent(task)).toEqual([]);
+    const theirs = await replied(task, 'r2', 'From the new owner.', { actorUserId: 'new-owner', now: at(60_000) });
+    const fromNewOwner = { replyId: theirs.replyId, authorUserId: 'new-owner', text: 'From the new owner.', sentAt: at(60_000) };
+    expect(await recent(task, { as: 'new-owner' })).toEqual([fromNewOwner]);
+    expect(await recent(task)).toEqual([]);
+    // Nothing was deleted, and the first owner's reply reads again only once the task is theirs again.
+    expect((await storedReplies()).map(r => [r.author_user_id, r.body])).toEqual([['owner', 'From the first owner.'], ['new-owner', 'From the new owner.']]);
+    expect(await moveTo('owner')).toBe(1);
+    expect(await recent(task)).toEqual([{ replyId: first.replyId, authorUserId: 'owner', text: 'From the first owner.', sentAt: now }]);
+    expect(await recent(task, { as: 'new-owner' })).toEqual([]);
   });
 
   it('anyone but the owner is forbidden, and nothing is stored', async () => {
@@ -147,7 +184,7 @@ describe('replies (store, TASK-931)', () => {
     // The newest reply of all is on the other task, so a read that ignored the routine would lead with it.
     await replied(other, 'r-other', 'Elsewhere.', { now: at(3_600_000) });
     const newestFirst = [...ids].reverse();
-    const read = async (limit: number) => (await recent(task, limit)).map(r => r.replyId);
+    const read = async (limit: number) => (await recent(task, { limit })).map(r => r.replyId);
     expect(await read(0)).toEqual(newestFirst.slice(0, 1));
     expect(await read(51)).toEqual(newestFirst.slice(0, 50));
     expect(await read(3)).toEqual(newestFirst.slice(0, 3));

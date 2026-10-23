@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'kysely';
 import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION } from './support/check-in.js';
@@ -606,7 +607,8 @@ describe('failure ladder canary (TASK-930)', () => {
 // TASK-931: replies, end to end through the real routines, agents, tool-policy and decisions
 // plugins and Postgres. The person replies on the task page: the reply is stored and starts a
 // check-in at once, whose message carries it; the next check-in marks only the newer reply new; a
-// retry of a reply starts nothing more; the task page reads both back.
+// retry of a reply starts nothing more; the task page reads both back. Once the agent moves to a new
+// owner, none of the earlier owner's replies reach the new owner's page or check-ins.
 describe('replies canary (TASK-931)', () => {
   it('a person replies, a check-in starts at once, and its message carries the reply; the next one marks only the newer reply new; a retry starts nothing', async () => {
     // The clock moves only when the test moves it, and the tick loop never wakes: every check-in
@@ -662,5 +664,41 @@ describe('replies canary (TASK-931)', () => {
       { replyId: second.answer.replyId, authorUserId: h.owner.userId, text: SECOND, sentAt: '2026-10-09T12:02:00.000Z' },
       { replyId: first.answer.replyId, authorUserId: h.owner.userId, text: FIRST, sentAt: '2026-10-09T12:01:00.000Z' },
     ] });
+  });
+
+  it('after the agent moves to a new owner, their task page and their check-ins carry none of the earlier owner’s replies', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const EARLIER = 'Refund code QX7731 is for my customers only.';
+    // The first owner replies, and the check-in it starts, run as them, carries the reply.
+    const first = await ch.replyCheckIn(task, 'reply-1', EARLIER, async () => {});
+    expect(first.ctx.userId).toBe(h.owner.userId);
+    expect(first.message).toContain(`> ${EARLIER}`);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+
+    // The agent gets a new owner. @ax/agents has no hook that does that, so its row changes here. The rest
+    // is production's own path: the new owner opens the task, agents:resolve lets them reach the agent, and
+    // resolveRoutineAccess moves its routines to them (store.reconcileOwners).
+    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
+    const moved = await h.bus.call<unknown, RoutineView>('routines:get', newOwner, { agentId: h.agentId, routineId: task.routineId });
+    expect(moved.permissions.fire).toBe(true);
+    expect((await store.findOne(task))?.ownerUserId).toBe('new-owner');
+
+    // Their task page has none of the earlier owner's words...
+    expect(await h.bus.call('routines:recent-replies', newOwner, { agentId: h.agentId, routineId: task.routineId })).toStrictEqual({ replies: [] });
+    // ...and neither does a check-in run as them: the earlier owner can't steer it.
+    const next = await ch.checkIn(moved, 'run-as-new-owner', async () => {}, { asOwner: newOwner });
+    expect(next.ctx.userId).toBe('new-owner');
+    expect(next.message).not.toContain('QX7731');
+    expect(next.message).not.toContain('What the person wrote to you about this task');
+    expect(next.message).toContain('The person hasn’t replied on this task yet.');
+    // The reply is still stored, under its author.
+    expect(await h.db.selectFrom('routines_v1_replies').select(['author_user_id', 'body']).where('routine_id', '=', task.routineId).execute())
+      .toEqual([{ author_user_id: h.owner.userId, body: EARLIER }]);
   });
 });

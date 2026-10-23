@@ -131,7 +131,7 @@ export interface FireDeps {
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
    * `Map#delete` returns true to exactly one of them. It also binds each
    * fire's conversation onto its dispatch row before the invoke (TASK-907),
-   * and reads a task's latest reports (TASK-908) and the person's latest
+   * and reads a task's latest reports (TASK-908) and its owner's own latest
    * replies on it (TASK-931) for its check-in message.
    */
   store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies'>;
@@ -263,14 +263,18 @@ export function createFireRoutine(deps: FireDeps) {
       // TASK-908: a task run starts with its check-in message (why it runs,
       // the agent's notes and its latest reports, and the person's latest
       // replies, TASK-931), never its instructions, which reach it as its
-      // brief instead. A failed read is recorded like any other setup
-      // failure, and the agent never starts. A task's trigger is never a
-      // webhook (validateDefinition), so it has no payload.
+      // brief instead. Replies are read for the person the run acts as, the
+      // accepted row's owner: the store answers only with the replies they
+      // wrote, and only while the task is still theirs, so an earlier owner's
+      // words never steer it, and one that moved since the accept gets none.
+      // A failed read is recorded like any other setup failure, and the agent
+      // never starts. A task's trigger is never a webhook (validateDefinition),
+      // so it has no payload.
       let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
       let replies: Awaited<ReturnType<RoutinesStore['recentReplies']>>;
       try {
         reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPORTS });
-        replies = await deps.store.recentReplies({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPLIES });
+        replies = await deps.store.recentReplies({ agentId: row.agentId, routineId: row.routineId, actorUserId: row.ownerUserId, limit: CHECK_IN_REPLIES });
       } catch (err) { return fail(err); }
       prompt = renderCheckInMessage({
         source, agentNotes: row.task?.agentNotes ?? null, reports, replies, missesInARow: row.noRecentUpdate?.inARow ?? 0,

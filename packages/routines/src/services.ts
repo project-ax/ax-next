@@ -334,15 +334,17 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   }));
   // TASK-931. A task's replies, newest first, for its owner only: taskView's rule, not `allowed`'s,
   // so an owner who no longer manages the agent's tasks still reads their own. agents:resolve runs
-  // first, as for every read. Then only the routine's owner column is read (as fireViews does), so a
-  // row another read couldn't parse can't fail this one. Anyone else, and a routine that's gone, gets
-  // none, all alike. Each reply goes out field by field. Neither a tool nor an IPC action.
+  // first, as for every read (and moves a user-owned agent's routines to its owner). Then the store
+  // reads, in one statement, only the replies the caller wrote on a routine they own now: anyone
+  // else, and a routine that's gone, gets none, all alike, and once a routine moves to a new owner
+  // (reconcileOwners) the earlier owner's replies reach no one. It compares the routine's owner
+  // column only, so a row another read couldn't parse can't fail this one. Each reply goes out field
+  // by field. Neither a tool nor an IPC action.
   register('recent-replies', C.RoutineRecentRepliesInputSchema, C.RoutineRecentRepliesOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
-    const owner = (await store.routineOwners({ agentId: input.agentId, routineIds: [input.routineId] })).get(input.routineId);
-    // Fails closed: replies go out only when an owner is found and it is this person.
-    if (owner === undefined || owner !== ctx.userId) return { replies: [] };
-    const replies = await store.recentReplies({ agentId: input.agentId, routineId: input.routineId, limit: input.limit ?? RECENT_REPLIES_DEFAULT_LIMIT });
+    const replies = await store.recentReplies({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, limit: input.limit ?? RECENT_REPLIES_DEFAULT_LIMIT,
+    });
     return { replies: replies.map(reply => ({ replyId: reply.replyId, authorUserId: reply.authorUserId, text: reply.text, sentAt: reply.sentAt.toISOString() })) };
   });
 }

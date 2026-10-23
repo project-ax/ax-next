@@ -19,7 +19,11 @@ export type CheckInMessageInput = {
   agentNotes: string | null;
   /** Newest first, as `RoutinesStore.recentReports` reads them. Agent-written. */
   reports: ReadonlyArray<{ firedAt: Date; report: DispatchReport }>;
-  /** Newest first, as `RoutinesStore.recentReplies` reads them. Person-written: the task owner's replies on its page. */
+  /**
+   * Newest first, as `RoutinesStore.recentReplies` reads them for the person
+   * the check-in runs as. Person-written: the replies the task's current owner
+   * wrote on its page. An earlier owner's are never among them.
+   */
   replies: ReadonlyArray<{ sentAt: Date; text: string }>;
   /**
    * How many of the task's latest check-ins in a row left no report (TASK-930),
@@ -78,11 +82,12 @@ function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport:
  * TASK-907's writer capped and screened them (no invisible characters, an
  * update on one line), and they're quoted line by line and labelled here as
  * the agent's own earlier text, information and not instructions from the
- * person. The replies in it are person-written (TASK-931): the task owner's
- * own words on its page, screened by `RoutineReplyTextSchema` before they were
- * stored, and quoted line by line and labelled here as the person's. Neither
- * goes into `brief`, which holds only the task's own fields, as the person
- * approved them (TASK-906 decisions row 18). Replies reach a model nowhere else.
+ * person. The replies in it are person-written (TASK-931): the task's current
+ * owner's own words on its page, screened by `RoutineReplyTextSchema` before
+ * they were stored, and quoted line by line and labelled here as the person's.
+ * Neither goes into `brief`, which holds only the task's own fields, as the
+ * person approved them (TASK-906 decisions row 18). Replies reach a model
+ * nowhere else.
  * The caps are applied again, since stored text isn't re-checked (TASK-913). A
  * report's `ask` is left out, and so is any person's name. A report's status
  * is one of three fixed words (a CHECK constraint on its column), so it isn't

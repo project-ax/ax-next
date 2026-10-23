@@ -207,15 +207,17 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
 
 /** Version 8 (TASK-931): a person's replies on a task, which every later check-in
  * carries (the last 20). Written only by `addReply`, owner-only under the
- * routine's row lock; deleted with their routine (`deleteAuthored`) or agent
- * (`purgeAgent`), and kept through a change of kind. The named unique key is a
- * retry's: the same person, request and routine is one reply. The index serves
- * `recentReplies`' newest-first read. No foreign key: the store deletes replies
- * itself, and a new foreign key on a shared table has broken other packages'
- * test teardown before. No CHECK on `body`: the length cap lives at the writer
- * (`RoutineReplyTextSchema`), so a later cap can't make stored rows unreadable
- * (TASK-913). Additive: code from before this version never reads the table,
- * and a re-run keeps its rows.
+ * routine's row lock; read only for the routine's current owner, and only the
+ * ones they wrote (`recentReplies` joins the routine's owner), so an earlier
+ * owner's rows outlive a change of owner unread; deleted with their routine
+ * (`deleteAuthored`) or agent (`purgeAgent`), and kept through a change of kind.
+ * The named unique key is a retry's: the same person, request and routine is
+ * one reply. The index serves `recentReplies`' newest-first read. No foreign
+ * key: the store deletes replies itself, and a new foreign key on a shared
+ * table has broken other packages' test teardown before. No CHECK on `body`:
+ * the length cap lives at the writer (`RoutineReplyTextSchema`), so a later cap
+ * can't make stored rows unreadable (TASK-913). Additive: code from before this
+ * version never reads the table, and a re-run keeps its rows.
  */
 async function addRepliesTable(db: Kysely<RoutinesDatabase>): Promise<void> {
   await sql`
