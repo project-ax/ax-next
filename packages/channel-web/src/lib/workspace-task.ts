@@ -9,11 +9,20 @@
  * 404 alike for a task that isn't there and one that isn't yours; everything
  * else is "couldn't load" with Try again (`failed`).
  *
- * A refresh (Try again, or the re-read after Check now, Pause, Resume or Clear
- * notes) keeps the task on screen while it runs. One that fails keeps it,
- * marked `refreshFailed`, the way the Tasks page keeps its rows. One that finds
- * the task gone or the session ended replaces it: there is nothing left to
- * show, and no retry fixes it.
+ * A refresh (Try again, or the re-read after Check now, Pause, Resume, Clear
+ * notes or a reply) keeps the task on screen while it runs. One that fails
+ * keeps it, marked `refreshFailed`, the way the Tasks page keeps its rows. One
+ * that finds the task gone or the session ended replaces it: there is nothing
+ * left to show, and no retry fixes it.
+ *
+ * A QUIET RE-READ (`refreshQuietly`, TASK-931) is the "Checking in now…"
+ * poll's, every 10 seconds (`use-task-poll.ts`). It doesn't mark the task
+ * refreshing, since the page disables its buttons while one runs and a
+ * keyboard user would lose their place every 10 seconds; and one that fails
+ * leaves the page as it was (logged), since a background blip is no reason to
+ * raise an alarm. One that finds the task gone or the session ended still
+ * replaces it. A quiet read that overtakes a refresh answers for both, so it
+ * ends that refresh, failure included.
  *
  * It holds one task. Mount it once per task (key the page by its ids): since a
  * refresh keeps what's on screen, state carried over from another task would
@@ -42,34 +51,47 @@ export type TaskState =
 export function useTask(
   agentId: string,
   routineId: string,
-): { state: TaskState; refresh: () => void } {
+): {
+  state: TaskState;
+  refresh: () => void;
+  /**
+   * A background re-read (the poll's): it doesn't mark the task refreshing,
+   * and a failed one leaves the page as it is (logged). One that finds the
+   * task gone or the session ended still replaces it, like any read.
+   */
+  refreshQuietly: () => void;
+} {
   const [state, setState] = useState<TaskState>({ kind: 'loading' });
   // Each fetch takes the next number; an answer for any number but the newest
   // is dropped, so a slow first answer cannot overwrite a faster refresh's.
   const latest = useRef(0);
 
-  const load = useCallback(() => {
-    const mine = ++latest.current;
-    workspaceApi.task(agentId, routineId).then(
-      (detail) => {
-        if (latest.current !== mine) return;
-        setState({ kind: 'ready', detail, refreshing: false, refreshFailed: false });
-      },
-      (e: unknown) => {
-        if (latest.current !== mine) return;
-        logRequestFailure(e, 'workspace-task');
-        const error: TaskReadError = toReadOutcome(e);
-        setState((s) =>
-          s.kind === 'ready' && error === 'failed'
-            ? { ...s, refreshing: false, refreshFailed: true }
-            : { kind: 'failed', error },
-        );
-      },
-    );
-  }, [agentId, routineId]);
+  const load = useCallback(
+    (quiet: boolean) => {
+      const mine = ++latest.current;
+      workspaceApi.task(agentId, routineId).then(
+        (detail) => {
+          if (latest.current !== mine) return;
+          setState({ kind: 'ready', detail, refreshing: false, refreshFailed: false });
+        },
+        (e: unknown) => {
+          if (latest.current !== mine) return;
+          logRequestFailure(e, 'workspace-task');
+          const error: TaskReadError = toReadOutcome(e);
+          setState((s) => {
+            if (s.kind !== 'ready' || error !== 'failed') return { kind: 'failed', error };
+            // Quiet, unless it overtook a refresh whose own answer is now dropped.
+            if (quiet && !s.refreshing) return s;
+            return { ...s, refreshing: false, refreshFailed: true };
+          });
+        },
+      );
+    },
+    [agentId, routineId],
+  );
 
   useEffect(() => {
-    load();
+    load(false);
     return () => {
       latest.current++;
     };
@@ -77,8 +99,10 @@ export function useTask(
 
   const refresh = useCallback(() => {
     setState((s) => (s.kind === 'ready' ? { ...s, refreshing: true } : { kind: 'loading' }));
-    load();
+    load(false);
   }, [load]);
 
-  return { state, refresh };
+  const refreshQuietly = useCallback(() => load(true), [load]);
+
+  return { state, refresh, refreshQuietly };
 }

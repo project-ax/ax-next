@@ -1,6 +1,7 @@
 /**
  * A "Stay on top of something" task's own page (TASK-910): its latest update,
- * its brief and notes, its Updates thread, Check now and Pause/Resume.
+ * its brief and notes, its Updates thread, Check now and Pause/Resume, and
+ * (TASK-931) the reply box and "Checking in now…".
  *
  * Driven through the REAL `useTask`, `TaskNotes` and `TaskUpdates`, with only
  * the network mocked, so each case is what the reader would actually see. The
@@ -23,7 +24,10 @@ import { TaskPage } from '../TaskPage';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
-  return { ...actual, workspaceApi: { task: vi.fn(), clearTaskNotes: vi.fn() } };
+  return {
+    ...actual,
+    workspaceApi: { task: vi.fn(), clearTaskNotes: vi.fn(), sendTaskReply: vi.fn() },
+  };
 });
 
 vi.mock('@/lib/routines', async () => {
@@ -33,6 +37,7 @@ vi.mock('@/lib/routines', async () => {
 
 const taskMock = vi.mocked(workspaceApi.task);
 const clearMock = vi.mocked(workspaceApi.clearTaskNotes);
+const replyMock = vi.mocked(workspaceApi.sendTaskReply);
 const fireNowMock = vi.mocked(routineApi.fireNow);
 const updateMock = vi.mocked(routineApi.update);
 
@@ -43,7 +48,7 @@ const TASK_PATH = '/tasks/a1/t1';
 /** What `routineApi.update` answers. The page reads the task again instead. */
 const ROUTINE = {} as Routine;
 
-const CHECKING_IN = 'Checking in now. Its update will show under Updates when it’s done.';
+const CHECKING_IN = 'Checking in now…';
 const PAUSED_NOTE = 'Paused. It won’t check in until you resume it.';
 const PAUSED_NO_EDIT_NOTE = 'Paused. Only someone who manages this agent’s tasks can resume it.';
 const NO_MANAGE_NOTE =
@@ -124,6 +129,11 @@ function latestUpdate(): HTMLElement {
   return screen.getByRole('region', { name: 'Latest update' });
 }
 
+/** The page's own live line. The reply box has one too, later in the document (TASK-931). */
+function pageStatus(): HTMLElement {
+  return screen.getAllByRole('status')[0]!;
+}
+
 /**
  * Where a real browser leaves focus once the button just pressed goes
  * disabled: `<body>`. jsdom keeps focus on a disabled button (and its `blur()`
@@ -149,6 +159,7 @@ let warn: MockInstance;
 beforeEach(() => {
   taskMock.mockReset();
   clearMock.mockReset();
+  replyMock.mockReset();
   fireNowMock.mockReset();
   updateMock.mockReset();
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -290,7 +301,7 @@ describe('TaskPage (TASK-910)', () => {
     expect(within(brief).getByText('Going well when')).toBeInTheDocument();
     expect(within(brief).getByText('No ticket is open longer than an hour.')).toBeInTheDocument();
     expect(within(brief).getByText('Quill’s notes')).toBeInTheDocument();
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(within(brief).queryByRole('textbox')).toBeNull();
 
     const settings = within(brief).getByRole('link', { name: 'Change these in Quill’s settings' });
     expect(settings).toHaveAttribute('href', '/workspace/agents/a1/settings/routines');
@@ -317,13 +328,13 @@ describe('TaskPage (TASK-910)', () => {
     await renderReady();
     // Mounted before there is anything to say: a region inserted already
     // holding its message is the announcement screen readers drop most often.
-    const said = screen.getByRole('status');
+    const said = pageStatus();
     expect(said).toBeEmptyDOMElement();
 
     const check = screen.getByRole('button', { name: 'Check now' });
     fireEvent.click(check);
     expect(await screen.findByText(CHECKING_IN)).toBeInTheDocument();
-    expect(screen.getByRole('status')).toBe(said);
+    expect(pageStatus()).toBe(said);
     expect(said).toHaveTextContent(CHECKING_IN);
     expect(fireNowMock).toHaveBeenCalledTimes(1);
     expect(fireNowMock).toHaveBeenCalledWith({
@@ -387,7 +398,7 @@ describe('TaskPage (TASK-910)', () => {
     fireNowMock.mockResolvedValueOnce({ status: 'ok' }).mockReturnValueOnce(second.promise);
     await renderReady();
     const check = screen.getByRole('button', { name: 'Check now' });
-    const said = screen.getByRole('status');
+    const said = pageStatus();
     fireEvent.click(check);
     await waitFor(() => expect(said).toHaveTextContent(CHECKING_IN));
     await settled(check, 2);
@@ -501,7 +512,7 @@ describe('TaskPage (TASK-910)', () => {
     const resume = await screen.findByRole('button', { name: 'Resume' });
     await waitFor(() => expect(document.activeElement).toBe(resume));
     // Said by the button it lands on, not by a line that is also announced.
-    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(pageStatus()).toBeEmptyDOMElement();
   });
 
   it('a press that leaves nothing to press lands on the line that says why', async () => {
@@ -1175,5 +1186,223 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
         `Last update at ${localTime(REPORTED)}: It left an update we can’t show.`,
       ),
     ).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage: replies and checking in now (TASK-931)', () => {
+  const BOX = 'Reply to Quill about this task';
+  const FINISHED = 'Quill finished checking in.';
+  const DIDNT_FINISH = 'The check-in didn’t finish. The reason is under Updates.';
+  const STILL = 'Still checking in. Its update will be under Updates when it’s done.';
+
+  /** A check-in that landed after the press: a new time and its own conversation. */
+  function landed(over: Partial<TaskDetail['updates'][number]> = {}): TaskDetail {
+    const base = detail();
+    return detail({
+      updates: [
+        {
+          firedAt: new Date(Date.now()).toISOString(),
+          status: 'ok',
+          error: null,
+          report: { status: 'on-track', update: 'All answered.' },
+          conversationId: 'c-new',
+          ...over,
+        },
+        ...base.updates,
+      ],
+    });
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Check now, answered ok, and the re-read after it done. */
+  async function checkNow() {
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    const check = screen.getByRole('button', { name: 'Check now' });
+    fireEvent.click(check);
+    await settled(check, 2);
+    return check;
+  }
+
+  async function sendReply(text: string) {
+    const box = screen.getByRole('textbox', { name: BOX });
+    fireEvent.change(box, { target: { value: text } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(replyMock).toHaveBeenCalledTimes(1));
+  }
+
+  it('the reply box sits under Updates', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    const updates = screen.getByRole('region', { name: 'Updates' });
+    const box = screen.getByRole('textbox', { name: BOX });
+    expect(updates.contains(box)).toBe(false);
+    expect(updates.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByText('Quill reads your replies every time it checks in. Sending one starts a check-in now.'),
+    ).toBeInTheDocument();
+  });
+
+  it('a paused task’s box says it’ll be read once resumed', async () => {
+    taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
+    await renderReady();
+    expect(
+      screen.getByText('It’s paused, so Quill will read this once you resume it.'),
+    ).toBeInTheDocument();
+  });
+
+  it('an owner who can’t manage the agent’s tasks isn’t promised a check-in', async () => {
+    taskMock.mockResolvedValue(detail({ permissions: { fire: false, stop: false, edit: false } }));
+    await renderReady();
+    expect(screen.getByText('Quill reads your replies every time it checks in.')).toBeInTheDocument();
+    expect(screen.queryByText(/Sending one starts a check-in now/)).toBeNull();
+  });
+
+  it('Reply on the latest card focuses the box', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    const reply = within(latestUpdate()).getByRole('button', { name: 'Reply' });
+    fireEvent.click(reply);
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: BOX }));
+  });
+
+  it('no Reply when the agent asks nothing', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null }) }));
+    await renderReady();
+    expect(within(latestUpdate()).queryByRole('button', { name: 'Reply' })).toBeNull();
+  });
+
+  it('the missed check-in card’s muted ask has Reply too', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        noRecentUpdate: {
+          inARow: 1,
+          reason: 'no-report',
+          at: new Date(2026, 9, 22, 11, 2).toISOString(),
+          autoPaused: false,
+        },
+      }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(
+      within(latest).getByText('Quill asks: Want me to draft a reply to #4410 for you to send?'),
+    ).toHaveClass('text-muted-foreground');
+    fireEvent.click(within(latest).getByRole('button', { name: 'Reply' }));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: BOX }));
+  });
+
+  it('a reply that started a check-in reads the task again at once and shows Checking in now…, hidden from the screen reader because the box said it', async () => {
+    taskMock.mockResolvedValue(detail());
+    replyMock.mockResolvedValue({ checkIn: 'started' });
+    await renderReady();
+    await sendReply('Refunds under $100 are fine.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    const line = await within(pageStatus()).findByText(CHECKING_IN);
+    expect(line).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+  });
+
+  it('after Check now the line is announced', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    await checkNow();
+    const line = within(pageStatus()).getByText(CHECKING_IN);
+    expect(line).not.toHaveAttribute('aria-hidden');
+    expect(line.closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('a reply to a paused task reads the task again and doesn’t say it’s checking in', async () => {
+    taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
+    replyMock.mockResolvedValue({ checkIn: 'paused' });
+    await renderReady();
+    await sendReply('Back on Monday.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(pageStatus()).toBeEmptyDOMElement();
+    await advance(30_000);
+    expect(taskMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('after Check now the page reads the task every 10 seconds until its update arrives, then says it finished', async () => {
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(detail())
+      .mockImplementation(async () => landed());
+    await renderReady();
+    await checkNow();
+    expect(within(pageStatus()).getByText(CHECKING_IN)).toBeInTheDocument();
+
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(3);
+    expect(within(pageStatus()).getByText(CHECKING_IN)).toBeInTheDocument();
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(4);
+    expect(pageStatus()).toHaveTextContent(FINISHED);
+    await advance(30_000);
+    expect(taskMock).toHaveBeenCalledTimes(4);
+    expect(pageStatus()).toHaveTextContent(FINISHED);
+  });
+
+  it('the 10-second re-reads leave Check now and Pause pressable and raise no refresh alert, even when one fails', async () => {
+    const pending = deferred<TaskDetail>();
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(detail())
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce(new WorkspaceApiError(TASK_PATH, 503))
+      .mockResolvedValue(detail());
+    await renderReady();
+    const check = await checkNow();
+    const pause = screen.getByRole('button', { name: 'Pause' });
+
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(3);
+    expect(check).toBeEnabled();
+    expect(pause).toBeEnabled();
+    await act(async () => pending.resolve(detail()));
+
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(4);
+    expect(check).toBeEnabled();
+    expect(pause).toBeEnabled();
+    expect(
+      screen.queryByText('We couldn’t refresh this task just now, so what you see may be out of date.'),
+    ).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(within(pageStatus()).getByText(CHECKING_IN)).toBeInTheDocument();
+  });
+
+  it('a check-in that didn’t finish says so when it arrives', async () => {
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(detail())
+      .mockImplementation(async () =>
+        landed({ status: 'error', error: 'It couldn’t start.', report: null }),
+      );
+    await renderReady();
+    await checkNow();
+    await advance(10_000);
+    expect(pageStatus()).toHaveTextContent(DIDNT_FINISH);
+    expect(pageStatus()).not.toHaveTextContent(FINISHED);
+  });
+
+  it('after five minutes it stops reading and says it’s still checking in', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    await checkNow();
+    // The real clock runs too (`shouldAdvanceTime`), so the edge itself is
+    // pinned in `use-task-poll.test.ts`; here, either side of it.
+    await advance(290_000);
+    expect(within(pageStatus()).getByText(CHECKING_IN)).toBeInTheDocument();
+    await advance(10_000);
+    expect(pageStatus()).toHaveTextContent(STILL);
+    const reads = taskMock.mock.calls.length;
+    await advance(60_000);
+    expect(taskMock).toHaveBeenCalledTimes(reads);
   });
 });

@@ -173,6 +173,77 @@ describe('useTask (TASK-910)', () => {
     expect(result.current.state).toEqual({ kind: 'failed', error: 'expired' });
   });
 
+  it('a quiet re-read keeps the task on screen without marking it refreshing, and a failed one leaves it as it was', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const d = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(d.promise);
+    act(() => result.current.refreshQuietly());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: first,
+      refreshing: false,
+      refreshFailed: false,
+    });
+    const second = detail('Sweep', { revision: 'rev-2' });
+    await act(async () => d.resolve(second));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: second,
+      refreshing: false,
+      refreshFailed: false,
+    });
+
+    const before = result.current.state;
+    taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+    await act(async () => result.current.refreshQuietly());
+    expect(result.current.state).toBe(before);
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { status: 404, error: 'gone' },
+    { status: 401, error: 'expired' },
+  ] as const)(
+    'a quiet re-read that finds the task gone or the session ended replaces it: $error',
+    async ({ status, error }) => {
+      taskMock.mockResolvedValueOnce(detail('Sweep'));
+      const { result } = renderHook(() => useTask('a1', 't1'));
+      await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, status));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toEqual({ kind: 'failed', error });
+    },
+  );
+
+  it('a quiet re-read that overtakes a refresh still ends it, and says when it failed', async () => {
+    // The refresh's own answer is dropped as the older one, so the quiet read
+    // answers for both: a page left "refreshing" would keep its buttons off.
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const loud = deferred<TaskDetail>();
+    const quiet = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(loud.promise).mockReturnValueOnce(quiet.promise);
+    act(() => result.current.refresh());
+    act(() => result.current.refreshQuietly());
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
+    await act(async () => quiet.reject(new WorkspaceApiError(PATH, 503)));
+    await act(async () => loud.resolve(detail('Sweep', { revision: 'rev-2' })));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: first,
+      refreshing: false,
+      refreshFailed: true,
+    });
+  });
+
   it('drops an older answer that lands after a newer one', async () => {
     const d1 = deferred<TaskDetail>();
     const d2 = deferred<TaskDetail>();
