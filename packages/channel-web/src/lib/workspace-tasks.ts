@@ -11,8 +11,9 @@
  * read already in flight instead of starting another: a read can take up to
  * 10 s when an agent's routines hang, and restarting it on every click or
  * route change would drop each answer before it lands. `reload` (after a
- * reply) always starts a fresh read, because the one in flight may predate
- * the reply; the newer answer wins.
+ * reply, and on coming back from a task or check-in page, where a reply,
+ * Pause or Resume may have happened) always starts a fresh read, because the
+ * one in flight may predate it; the newer answer wins.
  *
  * Two kinds of failure, because the page says two different things: a 401 is
  * "sign in again" (`expired`); everything else, a 404 from a host that predates

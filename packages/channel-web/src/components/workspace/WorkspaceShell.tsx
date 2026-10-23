@@ -354,14 +354,17 @@ function Inner({
     when the route CHANGES to Today or Tasks, so a returning person never meets
     a stale list, and after a reply sent from Today. It doesn't poll, and the
     task page's own buttons don't re-read it (Back or Today does). Entering a
-    route and Try again join a read already in flight (`retry`); a reply starts
-    a fresh one (`reload`), since the read in flight may predate it.
+    route and Try again join a read already in flight (`retry`), except coming
+    from a task or check-in page: a reply, Pause or Resume there may postdate
+    the read in flight, so that entry starts a fresh one (`reload`), as a reply
+    from Today does. The fresh answer wins whichever lands last.
   */
   const taskRead = useTasks();
   // What Today and the badge read from it (not `today`: that's the date helper above).
   const tasksOnToday = tasksForToday(taskRead.state);
   const retryTaskRead = taskRead.retry;
-  const previousRouteKind = useRef<string | null>(null);
+  const reloadTaskRead = taskRead.reload;
+  const previousRouteKind = useRef<WorkspaceRoute['kind'] | null>(null);
   const routeKind = route.kind;
   useEffect(() => {
     const before = previousRouteKind.current;
@@ -372,9 +375,10 @@ function Inner({
       before !== routeKind &&
       (routeKind === 'today' || routeKind === 'tasks')
     ) {
-      retryTaskRead();
+      if (before === 'task' || before === 'task-checkin') reloadTaskRead();
+      else retryTaskRead();
     }
-  }, [routeKind, retryTaskRead]);
+  }, [routeKind, retryTaskRead, reloadTaskRead]);
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in
     one place — `raise()` — so a grant is one row however it arrives:

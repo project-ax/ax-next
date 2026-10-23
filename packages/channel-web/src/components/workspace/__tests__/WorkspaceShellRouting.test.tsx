@@ -767,6 +767,47 @@ describe('one tasks read (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(1);
   });
 
+  // A read started before a reply, pause or resume on the task page may
+  // predate it, so coming back from the task page starts a fresh read rather
+  // than joining that one, and the fresh answer wins even if the old one lands
+  // after it.
+  it('coming back to Tasks from a task page reads afresh, and the older read can’t overwrite it (TASK-933 review)', async () => {
+    const taskRow = (name: string) => ({
+      agentId: 'a1',
+      agentName: 'Quill',
+      routineId: 't1',
+      name,
+      enabled: true,
+      task: null,
+      noRecentUpdate: null,
+    });
+    let landStale!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow('Zero open support tickets')], unavailableAgents: [] })
+      .mockReturnValueOnce(new Promise((res) => (landStale = res)))
+      .mockResolvedValueOnce({ tasks: [taskRow('Fresh after the reply')], unavailableAgents: [] });
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(await screen.findByRole('link', { name: /Zero open support tickets/ }));
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    expect(await screen.findByRole('link', { name: /Fresh after the reply/ })).toBeTruthy();
+
+    await act(async () => landStale({ tasks: [taskRow('Stale from before')], unavailableAgents: [] }));
+    expect(screen.getByRole('link', { name: /Fresh after the reply/ })).toBeTruthy();
+    expect(screen.queryByText('Stale from before')).toBeNull();
+    expect(tasksMock).toHaveBeenCalledTimes(3);
+  });
+
   it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
     tasksMock.mockResolvedValue({
       tasks: [
