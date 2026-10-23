@@ -6,6 +6,7 @@ import {
   turnErrorOpensConnectors,
   turnErrorText,
 } from '../turn-error-labels';
+import { BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG } from '../../../../routines/src/brief.js';
 
 /*
   The four reason codes the usage-limits gate vetoes a turn with (TASK-692).
@@ -190,5 +191,16 @@ describe('turnErrorText — the runner failed to boot (TASK-784)', () => {
 
   it('never prints the reason code', () => {
     expect(turnErrorText('runner-boot-failed')).not.toContain('runner-boot-failed');
+  });
+});
+
+describe('turnErrorText — a task check-in its instructions blocked (TASK-911)', () => {
+  it('a check-in its instructions blocked says so, in routines’ own words', () => {
+    expect(turnErrorText('system-prompt:brief-missing')).toBe(BRIEF_DIDNT_LOAD);
+    expect(turnErrorText('system-prompt:brief-too-long')).toBe(BRIEF_TOO_LONG);
+  });
+
+  it('another refusal of the same kind keeps the general sentence', () => {
+    expect(turnErrorText('system-prompt:other')).toBe(DEFAULT_TURN_ERROR);
   });
 });

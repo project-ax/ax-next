@@ -143,6 +143,14 @@ export const ERROR_LABELS: Record<string, string> = {
   // rows replayed on reload — see `connector-needs-sign-in` above.
   'provider-key-missing-connector-needs-sign-in':
     'This agent can’t run right now. The AI service it uses isn’t set up on this server, and one of its connectors isn’t signed in yet. An admin can fix the first one in Settings. Open Connectors to sign in to the second, then retry.',
+  // TASK-911: a task check-in that routines refused because its instructions
+  // didn't load (TASK-908's veto). Only that check-in's own transcript shows
+  // this row, where the default sentence would be false: nothing stopped, and
+  // there is nothing to retry. The words are routines' own run errors, pinned
+  // by the test, so the summary above the transcript and the row in it agree.
+  'system-prompt:brief-missing': 'This task’s instructions didn’t load, so the check-in didn’t run.',
+  'system-prompt:brief-too-long':
+    'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.',
 };
 
 /**
