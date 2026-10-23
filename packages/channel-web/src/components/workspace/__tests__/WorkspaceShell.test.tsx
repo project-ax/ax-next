@@ -741,6 +741,65 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
   });
 
+  it('Try again twice while the read runs sends one request, and its answer lands (TASK-933 review)', async () => {
+    let land!: (page: { tasks: TaskRow[]; unavailableAgents: [] }) => void;
+    tasksMock
+      .mockRejectedValueOnce(new Error('workspace /tasks → 503'))
+      .mockReturnValueOnce(new Promise((res) => (land = res)));
+
+    renderShell();
+
+    const sentence = await screen.findByText('We couldn’t check your tasks just now.');
+    const box = sentence.closest<HTMLElement>('[role="alert"]')!;
+    const tryAgain = within(box).getByRole('button', { name: 'Try again' });
+    fireEvent.click(tryAgain);
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(tryAgain).toBeDisabled();
+    fireEvent.click(tryAgain);
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => land({ tasks: [taskRow()], unavailableAgents: [] }));
+    expect(await screen.findByRole('region', { name: /Zero open support tickets/ })).toBeTruthy();
+    expect(screen.queryByText('We couldn’t check your tasks just now.')).toBeNull();
+  });
+
+  it('a reply sent while a read runs reads again, and the newer answer wins (TASK-933 review)', async () => {
+    const ADA = { agentId: 'a-ada', agentName: 'Ada' };
+    let landBefore!: (page: { tasks: TaskRow[]; unavailableAgents: (typeof ADA)[] }) => void;
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [ADA] })
+      .mockReturnValueOnce(new Promise((res) => (landBefore = res)))
+      .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [] });
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
+
+    renderShell();
+
+    const missing = await screen.findByText(/We couldn’t check tasks from Ada/);
+    fireEvent.click(
+      within(missing.closest<HTMLElement>('[role="alert"]')!).getByRole('button', {
+        name: 'Try again',
+      }),
+    );
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    const block = screen.getByRole('region', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(
+      within(block).getByRole('textbox', { name: 'Reply to Quill about this task' }),
+      { target: { value: 'Yes, draft it' } },
+    );
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+
+    // The read in flight may predate the reply, so the reply reads again.
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(screen.queryByText(/We couldn’t check tasks from Ada/)).toBeNull(),
+    );
+    // The older read lands last and changes nothing.
+    await act(async () => landBefore({ tasks: [taskRow()], unavailableAgents: [ADA] }));
+    expect(screen.queryByText(/We couldn’t check tasks from Ada/)).toBeNull();
+  });
+
   it('a reply sent from Today reads the tasks again', async () => {
     tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
     sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });

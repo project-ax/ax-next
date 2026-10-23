@@ -7,6 +7,13 @@
  * The shell reads it at mount, again on entering Today or Tasks, and after a
  * reply sent from Today. It doesn't poll.
  *
+ * Two ways to read again. `retry` (Try again, entering Today or Tasks) joins a
+ * read already in flight instead of starting another: a read can take up to
+ * 10 s when an agent's routines hang, and restarting it on every click or
+ * route change would drop each answer before it lands. `reload` (after a
+ * reply) always starts a fresh read, because the one in flight may predate
+ * the reply; the newer answer wins.
+ *
  * Two kinds of failure, because the page says two different things: a 401 is
  * "sign in again" (`expired`); everything else, a 404 from a host that predates
  * the route included, is "couldn't load" with Try again (`failed`). The list
@@ -47,7 +54,13 @@ export type TasksState =
     }
   | { kind: 'failed'; error: TasksReadError };
 
-export function useTasks(): { state: TasksState; retry: () => void } {
+export function useTasks(): {
+  state: TasksState;
+  /** Read again, unless a read is already in flight: then wait for that one. */
+  retry: () => void;
+  /** Read again now, even with a read in flight (its answer is dropped). */
+  reload: () => void;
+} {
   const [state, setState] = useState<TasksState>({
     kind: 'loading',
     retryingAfter: null,
@@ -55,12 +68,17 @@ export function useTasks(): { state: TasksState; retry: () => void } {
   // Each fetch takes the next number; an answer for any number but the newest
   // is dropped, so a slow first answer cannot overwrite a faster retry's.
   const latest = useRef(0);
+  // Whether the newest fetch is still out. A ref, not state: two clicks in one
+  // event loop turn must see the first one's read.
+  const inFlight = useRef(false);
 
   const load = useCallback(() => {
     const mine = ++latest.current;
+    inFlight.current = true;
     workspaceApi.tasks().then(
       (page) => {
         if (latest.current !== mine) return;
+        inFlight.current = false;
         setState({
           kind: 'ready',
           tasks: page.tasks,
@@ -71,6 +89,7 @@ export function useTasks(): { state: TasksState; retry: () => void } {
       },
       (e: unknown) => {
         if (latest.current !== mine) return;
+        inFlight.current = false;
         logRequestFailure(e, 'workspace-tasks');
         const error: TasksReadError = toReadOutcome(e) === 'expired' ? 'expired' : 'failed';
         setState((s) =>
@@ -86,10 +105,11 @@ export function useTasks(): { state: TasksState; retry: () => void } {
     load();
     return () => {
       latest.current++;
+      inFlight.current = false;
     };
   }, [load]);
 
-  const retry = useCallback(() => {
+  const reload = useCallback(() => {
     setState((s) => {
       if (s.kind === 'ready') return { ...s, refreshing: true };
       // A retry keeps the failure it is retrying after, so Today never drops
@@ -102,7 +122,12 @@ export function useTasks(): { state: TasksState; retry: () => void } {
     load();
   }, [load]);
 
-  return { state, retry };
+  const retry = useCallback(() => {
+    if (inFlight.current) return;
+    reload();
+  }, [reload]);
+
+  return { state, retry, reload };
 }
 
 /**
@@ -110,23 +135,26 @@ export function useTasks(): { state: TasksState; retry: () => void } {
  * last good answer), the agents it couldn't read, and whether the read failed.
  * The first load reads as no rows and no error; a retry after a failure keeps
  * that failure until a read lands. A failed refresh with rows on screen is
- * `failed` too, and keeps the rows: they may be out of date.
+ * `failed` too, and keeps the rows: they may be out of date. `refreshing` says a
+ * read is in flight, so Today holds its Try again until it lands.
  */
 export function tasksForToday(state: TasksState): {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
   error: TasksReadError | null;
+  refreshing: boolean;
 } {
   switch (state.kind) {
     case 'loading':
-      return { tasks: [], unavailableAgents: [], error: state.retryingAfter };
+      return { tasks: [], unavailableAgents: [], error: state.retryingAfter, refreshing: true };
     case 'ready':
       return {
         tasks: state.tasks,
         unavailableAgents: state.unavailableAgents,
         error: state.refreshFailed ? 'failed' : null,
+        refreshing: state.refreshing,
       };
     case 'failed':
-      return { tasks: [], unavailableAgents: [], error: state.error };
+      return { tasks: [], unavailableAgents: [], error: state.error, refreshing: false };
   }
 }

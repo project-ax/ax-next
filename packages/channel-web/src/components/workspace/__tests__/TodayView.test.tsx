@@ -95,6 +95,7 @@ function renderToday(
       onSeeActivity={vi.fn()}
       tasks={[]}
       tasksError={null}
+      tasksRefreshing={false}
       unavailableTaskAgents={[]}
       onRetryTasks={vi.fn()}
       onReplied={vi.fn()}
@@ -646,6 +647,42 @@ describe('what tasks need from you (TASK-933)', () => {
     expect(onRetryTasks).toHaveBeenCalledTimes(1);
   });
 
+  it('Try again waits while a tasks read is running (TASK-933 review)', () => {
+    const onRetryTasks = vi.fn();
+    const { rerender } = renderToday({ tasksError: 'failed', tasksRefreshing: true, onRetryTasks });
+    const button = () =>
+      within(alertWith(TASKS_FAILED)).getByRole('button', { name: 'Try again' });
+    expect(button()).toBeDisabled();
+    fireEvent.click(button());
+    expect(onRetryTasks).not.toHaveBeenCalled();
+
+    rerender(
+      <TodayView
+        decisions={[]}
+        grants={[]}
+        onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+        agents={[agent()]}
+        filter="needs"
+        expandedId={null}
+        onExpand={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onNavigate={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        onSeeActivity={vi.fn()}
+        tasks={[]}
+        tasksError="failed"
+        tasksRefreshing={false}
+        unavailableTaskAgents={[]}
+        onRetryTasks={onRetryTasks}
+        onReplied={vi.fn()}
+      />,
+    );
+    expect(button()).toBeEnabled();
+  });
+
   it('an ended session offers sign-in, not Try again', () => {
     renderToday({ tasksError: 'expired', onRetryTasks: vi.fn() });
     const box = alertWith(DECISION_SESSION_EXPIRED);
@@ -710,6 +747,7 @@ describe('what tasks need from you (TASK-933)', () => {
         onSeeActivity={vi.fn()}
         tasks={[needsYouTask()]}
         tasksError={null}
+        tasksRefreshing={false}
         unavailableTaskAgents={[]}
         onRetryTasks={vi.fn()}
         onReplied={vi.fn()}

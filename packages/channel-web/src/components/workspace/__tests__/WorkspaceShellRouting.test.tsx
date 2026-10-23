@@ -732,6 +732,41 @@ describe('one tasks read (TASK-933)', () => {
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
   });
 
+  it('entering Tasks while the tasks read is running joins it, and its answer lands (TASK-933 review)', async () => {
+    let land!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
+    tasksMock.mockReturnValueOnce(new Promise((res) => (land = res)));
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      land({
+        tasks: [
+          {
+            agentId: 'a-quill',
+            agentName: 'Quill',
+            routineId: 't1',
+            name: 'Zero open support tickets',
+            enabled: true,
+            task: null,
+            noRecentUpdate: null,
+          },
+        ],
+        unavailableAgents: [],
+      }),
+    );
+    expect(await screen.findByText('Zero open support tickets')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+  });
+
   it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
     tasksMock.mockResolvedValue({
       tasks: [

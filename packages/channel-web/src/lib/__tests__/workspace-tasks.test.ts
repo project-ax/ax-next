@@ -168,7 +168,7 @@ describe('useTasks (TASK-909)', () => {
     const d2 = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(d1.promise).mockReturnValueOnce(d2.promise);
     const { result } = renderHook(() => useTasks());
-    act(() => result.current.retry());
+    act(() => result.current.reload());
 
     const b = page('B');
     await act(async () => d2.resolve(b));
@@ -181,7 +181,7 @@ describe('useTasks (TASK-909)', () => {
     const d2 = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(d1.promise).mockReturnValueOnce(d2.promise);
     const { result } = renderHook(() => useTasks());
-    act(() => result.current.retry());
+    act(() => result.current.reload());
 
     await act(async () => d2.resolve(page('B')));
     await act(async () => d1.reject(new WorkspaceApiError('/tasks', 500)));
@@ -190,18 +190,102 @@ describe('useTasks (TASK-909)', () => {
   });
 });
 
+describe('a re-read while a read is in flight (TASK-933 review)', () => {
+  it('a Try again during the first read joins it: one request, and its answer lands', async () => {
+    const d = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(d.promise).mockResolvedValue(page('Later'));
+    const { result } = renderHook(() => useTasks());
+    act(() => result.current.retry());
+    act(() => result.current.retry());
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+    const first = page('Sweep');
+    await act(async () => d.resolve(first));
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: first.tasks });
+  });
+
+  it('two Try agains after a failure send one request, and its answer lands', async () => {
+    tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 500));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('failed'));
+
+    const d = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(d.promise).mockResolvedValue(page('Later'));
+    act(() => result.current.retry());
+    act(() => result.current.retry());
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    // Still saying it couldn't check while the one read runs.
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: 'failed' });
+    const answer = page('Sweep');
+    await act(async () => d.resolve(answer));
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: answer.tasks });
+  });
+
+  it('a Try again during a refresh joins it too', async () => {
+    tasksMock.mockResolvedValueOnce(page('Sweep'));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const d = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(d.promise).mockResolvedValue(page('Later'));
+    act(() => result.current.retry());
+    act(() => result.current.retry());
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    const answer = page('Sweep', 'Digest');
+    await act(async () => d.resolve(answer));
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: answer.tasks, refreshing: false });
+  });
+
+  it('a reload during a read starts a fresh one, and its answer wins', async () => {
+    tasksMock.mockResolvedValueOnce(page('Sweep'));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const before = deferred<TasksResponse>();
+    const after = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(before.promise).mockReturnValueOnce(after.promise);
+    act(() => result.current.retry());
+    // A reply was sent: the read in flight may predate it.
+    act(() => result.current.reload());
+    expect(tasksMock).toHaveBeenCalledTimes(3);
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
+
+    const fresh = page('Sweep', 'Replied');
+    await act(async () => after.resolve(fresh));
+    await act(async () => before.resolve(page('Stale')));
+    expect(result.current.state).toMatchObject({
+      kind: 'ready',
+      tasks: fresh.tasks,
+      refreshing: false,
+    });
+    // Nothing is in flight now, so the next Try again reads.
+    tasksMock.mockResolvedValueOnce(page('Next'));
+    await act(async () => result.current.retry());
+    expect(tasksMock).toHaveBeenCalledTimes(4);
+  });
+});
+
 describe('tasksForToday (TASK-933)', () => {
   const ADA = { agentId: 'a-ada', agentName: 'Ada' };
   const rows = [row('r-1', 'Sweep')];
 
-  it('reads the first load as no rows and no error', () => {
+  it('reads the first load as no rows and no error, with a read running', () => {
     const state: TasksState = { kind: 'loading', retryingAfter: null };
-    expect(tasksForToday(state)).toEqual({ tasks: [], unavailableAgents: [], error: null });
+    expect(tasksForToday(state)).toEqual({
+      tasks: [],
+      unavailableAgents: [],
+      error: null,
+      refreshing: true,
+    });
   });
 
   it('keeps reporting the failure a retry is retrying after, until a read lands', () => {
     const state: TasksState = { kind: 'loading', retryingAfter: 'failed' };
-    expect(tasksForToday(state)).toEqual({ tasks: [], unavailableAgents: [], error: 'failed' });
+    expect(tasksForToday(state)).toEqual({
+      tasks: [],
+      unavailableAgents: [],
+      error: 'failed',
+      refreshing: true,
+    });
     const expired: TasksState = { kind: 'loading', retryingAfter: 'expired' };
     expect(tasksForToday(expired).error).toBe('expired');
   });
@@ -214,7 +298,12 @@ describe('tasksForToday (TASK-933)', () => {
       refreshing: true,
       refreshFailed: false,
     };
-    expect(tasksForToday(state)).toEqual({ tasks: rows, unavailableAgents: [ADA], error: null });
+    expect(tasksForToday(state)).toEqual({
+      tasks: rows,
+      unavailableAgents: [ADA],
+      error: null,
+      refreshing: true,
+    });
   });
 
   it('keeps the rows of a failed refresh, and says it failed', () => {
@@ -225,7 +314,12 @@ describe('tasksForToday (TASK-933)', () => {
       refreshing: false,
       refreshFailed: true,
     };
-    expect(tasksForToday(state)).toEqual({ tasks: rows, unavailableAgents: [ADA], error: 'failed' });
+    expect(tasksForToday(state)).toEqual({
+      tasks: rows,
+      unavailableAgents: [ADA],
+      error: 'failed',
+      refreshing: false,
+    });
   });
 
   it('gives a failed read no rows and its error', () => {
@@ -234,6 +328,7 @@ describe('tasksForToday (TASK-933)', () => {
         tasks: [],
         unavailableAgents: [],
         error,
+        refreshing: false,
       });
     }
   });

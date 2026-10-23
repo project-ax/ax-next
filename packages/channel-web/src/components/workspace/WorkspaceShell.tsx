@@ -353,7 +353,9 @@ function Inner({
     page share. It reads at mount (the badge is on screen on every route), again
     when the route CHANGES to Today or Tasks, so a returning person never meets
     a stale list, and after a reply sent from Today. It doesn't poll, and the
-    task page's own buttons don't re-read it (Back or Today does).
+    task page's own buttons don't re-read it (Back or Today does). Entering a
+    route and Try again join a read already in flight (`retry`); a reply starts
+    a fresh one (`reload`), since the read in flight may predate it.
   */
   const taskRead = useTasks();
   // What Today and the badge read from it (not `today`: that's the date helper above).
@@ -964,9 +966,10 @@ function Inner({
                   {...(doneToday !== undefined ? { doneToday } : {})}
                   tasks={tasksOnToday.tasks}
                   tasksError={tasksOnToday.error}
+                  tasksRefreshing={tasksOnToday.refreshing}
                   unavailableTaskAgents={tasksOnToday.unavailableAgents}
                   onRetryTasks={taskRead.retry}
-                  onReplied={taskRead.retry}
+                  onReplied={taskRead.reload}
                 />
               </div>
               <HomeComposer agents={board.agents} onSend={startTurn} />

@@ -152,6 +152,8 @@ interface Props {
   tasks: readonly TaskRow[];
   /** How that read went: null = fine or still loading; 'failed' (a failed refresh too); 'expired'. */
   tasksError: TasksReadError | null;
+  /** A tasks read is in flight: Try again waits for it rather than restarting it. */
+  tasksRefreshing: boolean;
   /** Agents whose tasks couldn't be read. */
   unavailableTaskAgents: readonly UnavailableAgent[];
   /** Read the tasks again. */
@@ -185,6 +187,7 @@ export function TodayView({
   onRetryGrants,
   tasks,
   tasksError,
+  tasksRefreshing,
   unavailableTaskAgents,
   onRetryTasks,
   onReplied,
@@ -471,7 +474,12 @@ export function TodayView({
                     )}, so some may be missing.`}
                   </span>
                 )}
-                <Button variant="secondary" size="sm" onClick={onRetryTasks}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onRetryTasks}
+                  disabled={tasksRefreshing}
+                >
                   Try again
                 </Button>
               </>
