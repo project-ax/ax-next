@@ -832,7 +832,9 @@ describe('one tasks read (TASK-933)', () => {
       window.history.pushState(null, '', '/workspace/activity');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(window.location.pathname).toBe('/workspace/activity'));
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { level: 1, name: 'Zero open support tickets' })).toBeNull(),
+    );
     expect(tasksMock).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
     await screen.findByRole('heading', { name: 'Tasks' });
@@ -860,10 +862,9 @@ describe('one tasks read (TASK-933)', () => {
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
   });
 
-  // Every page that can write task rows arms the reload, even when it is the
-  // page the app opened on. Drop a kind from the shell's rule, or arm it only
-  // after a route change, and the matching case goes back to joining the held
-  // read (one call).
+  // Every page that can write task rows arms the reload. Drop a kind from the
+  // shell's rule and the matching case goes back to joining the held read
+  // (one call).
   it.each([
     ['an agent’s settings (the routine editor)', '/workspace/agents/a-quill/settings/routines'],
     ['an agent’s page (its chat approves routine changes)', '/workspace/agents/a-quill'],
@@ -877,7 +878,7 @@ describe('one tasks read (TASK-933)', () => {
       window.history.pushState(null, '', path);
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(window.location.pathname).toBe(path));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull());
     expect(tasksMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
@@ -885,6 +886,8 @@ describe('one tasks read (TASK-933)', () => {
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
   });
 
+  // Arming counts the page the app opened on: arm only after a route change
+  // and this goes back to joining the held mount read (one call).
   it('opening the app on a task page arms the reload for the first trip to Tasks (TASK-933 review)', async () => {
     tasksMock.mockReturnValueOnce(new Promise(() => {}));
     renderAt('/workspace/tasks/a1/t1');
@@ -893,6 +896,32 @@ describe('one tasks read (TASK-933)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Tasks' }));
     await screen.findByRole('heading', { name: 'Tasks' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  // A reload spends the arming: after it, hops between Today, Tasks and
+  // Activity join the read in flight again. Keep the arming after a reload and
+  // every later entry restarts the read (4 calls); let Activity arm and the
+  // trip to Today restarts it (3 calls).
+  it('a reload spends the arming, so later hops join the read again (TASK-933 review)', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/activity');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    expect(tasksMock).toHaveBeenCalledTimes(2);
   });
 
   it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
