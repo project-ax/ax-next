@@ -110,7 +110,11 @@ describe('TodayTaskGroup (TASK-933)', () => {
     expect(within(block).getByRole('button', { name: 'Reply' })).toBeInTheDocument();
     const link = within(block).getByRole('link', { name: /^Open task/ });
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1');
+    // jsdom has no navigation: stop the browser default so the log stays clean.
+    const stopNavigation = (e: Event) => e.preventDefault();
+    link.addEventListener('click', stopNavigation);
     fireEvent.click(link, { ctrlKey: true });
+    link.removeEventListener('click', stopNavigation);
     expect(onNavigate).not.toHaveBeenCalled();
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'a1', routineId: 't1' });
@@ -311,5 +315,47 @@ describe('TodayTaskGroup (TASK-933)', () => {
     renderGroup(group([asking()], [approval('d1')]), <p>an approval</p>);
     const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
     expect(within(block).getByText('an approval')).toBeInTheDocument();
+  });
+
+  it('draws the mark in the heading: needs you for an ask, paused when auto-paused, none for approvals only', () => {
+    const dot = (heading: HTMLElement) => heading.querySelector('span[aria-hidden="true"]');
+
+    const asked = renderGroup(group([asking()]));
+    const askMark = dot(within(screen.getByRole('region')).getByRole('heading'));
+    expect(askMark).toHaveClass('bg-warning');
+    asked.unmount();
+
+    const paused = renderGroup(
+      group([row({ enabled: false, task: report('on-track'), noRecentUpdate: misses(5, { autoPaused: true }) })]),
+    );
+    const pausedMark = dot(within(screen.getByRole('region')).getByRole('heading'));
+    expect(pausedMark).toHaveClass('bg-state-quiet');
+    expect(pausedMark).not.toHaveClass('bg-warning');
+    paused.unmount();
+
+    renderGroup(group([], [approval('d1')]));
+    expect(dot(within(screen.getByRole('region')).getByRole('heading'))).toBeNull();
+  });
+
+  it('a Reply box left open does not come back open for a later ask', () => {
+    const noAsk = group([row({ task: report('on-track'), noRecentUpdate: misses(3) })]);
+    const ask = group([asking()]);
+    const onNavigate = vi.fn();
+    const onReplied = vi.fn();
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} />
+    );
+    const view = render(ui(ask));
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: BOX }));
+
+    // A re-read drops the ask while the box is open, then a later read brings one back.
+    view.rerender(ui(noAsk));
+    expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+    view.rerender(ui(ask));
+
+    expect(screen.getByRole('button', { name: 'Reply' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('textbox', { name: BOX })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
   });
 });

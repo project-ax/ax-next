@@ -119,6 +119,12 @@ export function TodayTaskGroup({
   const askLine = stillAsks === null ? null : `${group.agentName} asks: ${stillAsks}`;
   // Reply goes wherever the block shows the agent's Needs you words.
   const replyTo = group.reason === 'asks' || askLine !== null ? group.row : null;
+  // The box unmounts with the ask. Close it then, so a later ask doesn't
+  // arrive already open and take focus.
+  const canReply = replyTo !== null;
+  useEffect(() => {
+    if (!canReply) setOpen(false);
+  }, [canReply]);
 
   return (
     <section
