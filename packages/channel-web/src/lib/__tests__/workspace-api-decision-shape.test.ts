@@ -136,7 +136,11 @@ describe('the single-decision re-read (the undo-window poll)', () => {
   it('accepts a real row', async () => {
     const decision = { id: 'd1', status: 'executed' };
     respondWith({ decision });
-    await expect(workspaceApi.decision('d1')).resolves.toEqual({ decision });
+    // TASK-933: every decision that leaves the API carries `checkIn`, null when
+    // the server sent none.
+    await expect(workspaceApi.decision('d1')).resolves.toEqual({
+      decision: { ...decision, checkIn: null },
+    });
   });
 });
 
@@ -322,20 +326,23 @@ describe('the grants read-back (TASK-373)', () => {
   });
 });
 
-describe('the checkIn label (TASK-932)', () => {
+describe('the checkIn label (TASK-932, TASK-933)', () => {
   const ROW = { id: 'd1', routineOperation: null };
+  const GOOD = { routineId: 't1', taskName: 'Zero open support tickets' };
 
   it.each([
-    ['a task', { routineId: 't1', taskName: 'Zero open support tickets' }],
-    ['null', null],
-  ])('accepts a row whose checkIn is %s', async (_name, checkIn) => {
+    ['a task', GOOD, GOOD],
+    ['null', null, null],
+  ])('accepts a row whose checkIn is %s', async (_name, checkIn, expected) => {
     respondWith({ decisions: [{ ...ROW, checkIn }] });
-    await expect(workspaceApi.decisions()).resolves.toBeDefined();
+    const page = await workspaceApi.decisions();
+    expect(page.decisions[0]?.checkIn).toEqual(expected);
   });
 
   it('accepts a row from an older server that leaves checkIn out', async () => {
     respondWith({ decisions: [ROW] });
-    await expect(workspaceApi.decisions()).resolves.toBeDefined();
+    const page = await workspaceApi.decisions();
+    expect(page.decisions[0]?.checkIn).toBeNull();
   });
 
   it.each([
@@ -346,11 +353,41 @@ describe('the checkIn label (TASK-932)', () => {
     ['an empty routineId', { routineId: '', taskName: 'x' }],
     ['an empty taskName', { routineId: 't1', taskName: '' }],
     ['a null taskName', { routineId: 't1', taskName: null }],
-  ])('refuses a row whose checkIn is %s, on the list and on the single read', async (_name, checkIn) => {
-    respondWith({ decisions: [{ ...ROW, checkIn }] });
-    await expect(workspaceApi.decisions()).rejects.toBeInstanceOf(WorkspaceShapeError);
-    vi.restoreAllMocks();
-    respondWith({ decision: { ...ROW, checkIn } });
-    await expect(workspaceApi.decision('d1')).rejects.toBeInstanceOf(WorkspaceShapeError);
+  ])(
+    'reads a row whose checkIn is %s as a row with no task, on the list and the single read (TASK-933)',
+    async (_name, checkIn) => {
+      respondWith({
+        decisions: [{ ...ROW, checkIn }, { id: 'd2', routineOperation: null, checkIn: GOOD }],
+      });
+      const page = await workspaceApi.decisions();
+      expect(page.decisions[0]?.checkIn).toBeNull();
+      expect(page.decisions[1]?.checkIn).toEqual(GOOD);
+      vi.restoreAllMocks();
+      respondWith({ decision: { ...ROW, checkIn } });
+      const one = await workspaceApi.decision('d1');
+      expect(one.decision.checkIn).toBeNull();
+    },
+  );
+
+  it('keeps only the two label fields, dropping anything extra the server sent (TASK-933)', async () => {
+    respondWith({ decisions: [{ ...ROW, checkIn: { ...GOOD, routineOperation: 'x', extra: 1 } }] });
+    const page = await workspaceApi.decisions();
+    expect(page.decisions[0]?.checkIn).toStrictEqual(GOOD);
+  });
+
+  it('the approve, dismiss and undo answers read a malformed checkIn as null and keep a good one (TASK-933)', async () => {
+    const calls = [
+      () => workspaceApi.approveDecision('d1'),
+      () => workspaceApi.dismissDecision('d1'),
+      () => workspaceApi.undoDecision('d1'),
+    ];
+    for (const call of calls) {
+      respondWith({ decision: { ...ROW, checkIn: 't1' } });
+      expect((await call()).decision?.checkIn).toBeNull();
+      vi.restoreAllMocks();
+      respondWith({ decision: { ...ROW, checkIn: GOOD } });
+      expect((await call()).decision?.checkIn).toEqual(GOOD);
+      vi.restoreAllMocks();
+    }
   });
 });

@@ -43,6 +43,8 @@ vi.mock('@/lib/workspace-api', async () => {
       undoDecision: vi.fn(),
       // TASK-373 — the shell's mount read-back; nothing here raises a grant.
       grants: vi.fn(async () => ({ grants: [] })),
+      // TASK-933: the shell reads tasks at mount (Today, the badge, Tasks); nothing here has one.
+      tasks: vi.fn(async () => ({ tasks: [], unavailableAgents: [] })),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),

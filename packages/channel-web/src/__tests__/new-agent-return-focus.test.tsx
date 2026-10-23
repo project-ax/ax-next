@@ -59,6 +59,8 @@ vi.mock('../lib/workspace-api', async (importOriginal) => {
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
       grants: vi.fn(async () => ({ grants: [] })),
+      // TASK-933: the shell reads tasks at mount (Today, the badge, Tasks); nothing here has one.
+      tasks: vi.fn(async () => ({ tasks: [], unavailableAgents: [] })),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(async () => ({ reqId: 'r1', conversationId: 'c1' })),

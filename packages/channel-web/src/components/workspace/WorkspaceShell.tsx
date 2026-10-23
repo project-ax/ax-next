@@ -38,6 +38,8 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
+import { waitingOnYou } from '@/lib/today-queue';
 import { continuationActions } from '@/lib/continuation-actions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
@@ -56,7 +58,7 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
-import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
+import type { ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
   routeAgentId,
@@ -346,6 +348,54 @@ function Inner({
     onDecisionApproved: continuationActions.continueApprovedTurn,
     onDecisionUndone: continuationActions.cancelApprovedTurn,
   });
+  /*
+    The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
+    page share. It reads at mount (the badge is on screen on every route), again
+    when the route CHANGES to Today or Tasks, so a returning person never meets
+    a stale list, and after a reply sent from Today. It doesn't poll, and the
+    task page's own buttons don't re-read it (Back or Today does). Entering a
+    route and Try again join a read already in flight (`retry`), except coming
+    after a visit to a page that writes task rows (a task or check-in page, an
+    agent's page, whose chat can approve or make routine changes, or an agent's
+    settings, where routines are edited), including the page the app opened
+    on: a reply, Pause, Resume or edit there may postdate the read in flight,
+    so the next entry into Today or Tasks starts a fresh one (`reload`),
+    however many other pages came between, as a reply from Today does. The
+    fresh answer wins whichever lands last. This is best-effort: an approved
+    routine change lands after its undo window, so a read can still predate it.
+  */
+  const taskRead = useTasks();
+  // What Today and the badge read from it (not `today`: that's the date helper above).
+  const tasksOnToday = tasksForToday(taskRead.state);
+  const retryTaskRead = taskRead.retry;
+  const reloadTaskRead = taskRead.reload;
+  const previousRouteKind = useRef<WorkspaceRoute['kind'] | null>(null);
+  // A page that can write task rows has been on screen since the last Today/Tasks entry.
+  const sawTaskWrites = useRef(false);
+  const routeKind = route.kind;
+  useEffect(() => {
+    const before = previousRouteKind.current;
+    previousRouteKind.current = routeKind;
+    if (
+      routeKind === 'task' ||
+      routeKind === 'task-checkin' ||
+      routeKind === 'agent' ||
+      routeKind === 'agent-settings'
+    ) {
+      sawTaskWrites.current = true;
+    }
+    // `before === null` is the mount, which `useTasks` has just read for.
+    if (
+      before !== null &&
+      before !== routeKind &&
+      (routeKind === 'today' || routeKind === 'tasks')
+    ) {
+      if (sawTaskWrites.current) {
+        sawTaskWrites.current = false;
+        reloadTaskRead();
+      } else retryTaskRead();
+    }
+  }, [routeKind, retryTaskRead, reloadTaskRead]);
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in
     one place — `raise()` — so a grant is one row however it arrives:
@@ -758,11 +808,12 @@ function Inner({
 
   /*
     The sidebar badge and the "Needs you" tab count the same queue Today's
-    headline counts: open decisions plus open grants. Grants used to be
+    headline counts, with the same function, `waitingOnYou`: open decisions,
+    open grants and tasks that need you (TASK-933), each once. Grants used to be
     missing here, which put two "waiting on you" numbers on one screen that
     could disagree the moment a grant was open — the headline counted it, the
-    badge did not. Same honesty rule as the headline: a failed read (queue or
-    grants) contributes what it actually read, and the surface itself says
+    badge did not. Same honesty rule as the headline: a failed read (queue,
+    grants or tasks) contributes what it actually read, and the surface itself says
     where it could not check. A badge cannot carry that sentence, so it does
     not try to.
 
@@ -772,8 +823,11 @@ function Inner({
     — and would put two disagreeing "waiting on you" numbers on one screen,
     which is the thing grants were added to this sum to stop.
   */
-  const pending =
-    queue.decisions.filter(isOpenDecision).length + grants.grants.length;
+  const pending = waitingOnYou({
+    decisions: queue.decisions,
+    grants: grants.grants,
+    tasks: tasksOnToday.tasks,
+  });
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
 
   const openAgent = (id: string) =>
@@ -931,13 +985,26 @@ function Inner({
                   onRetryGrants={fetchGrants}
                   onSeeActivity={() => navigate({ kind: 'activity' })}
                   {...(doneToday !== undefined ? { doneToday } : {})}
+                  tasks={tasksOnToday.tasks}
+                  tasksError={tasksOnToday.error}
+                  tasksRefreshing={tasksOnToday.refreshing}
+                  unavailableTaskAgents={tasksOnToday.unavailableAgents}
+                  onRetryTasks={taskRead.retry}
+                  onReplied={taskRead.reload}
                 />
               </div>
               <HomeComposer agents={board.agents} onSend={startTurn} />
             </>
           )}
 
-          {route.kind === 'tasks' && <TasksPage leading={navTrigger} onNavigate={navigate} />}
+          {route.kind === 'tasks' && (
+            <TasksPage
+              state={taskRead.state}
+              retry={taskRead.retry}
+              leading={navTrigger}
+              onNavigate={navigate}
+            />
+          )}
           {route.kind === 'task' && (
             <TaskPage
               key={JSON.stringify([route.agentId, route.routineId])}

@@ -37,6 +37,17 @@
  * is inside its own undo window we poll that one row and apply whatever it
  * says, so the affordance can go away the moment it is no longer true rather
  * than sitting there until the ten seconds run out on the clock alone.
+ *
+ * AND A ROW KEEPS ITS TASK LABEL THROUGH ITS ANSWERS AND ITS UNDO WINDOW
+ * (TASK-933). The host names the task an approval came from (`checkIn`) on an
+ * open row only, so the approve and dismiss answers, a refused undo and every
+ * poll of a receipt carry null, and so does any answer whose label lookup
+ * missed its deadline. Today groups approvals under their task by that label,
+ * so swapping such an answer in verbatim would move the receipt out of its
+ * task's block. Every single-row answer therefore keeps the label the row
+ * already had when it carries none (`keepCheckIn`); a new label replaces the
+ * old. A list read still decides an open row's label: it is the server's fresh
+ * word on it (a deleted task, an owner change).
  */
 import { isRoutineDecision } from '@/components/workspace/decision-copy';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -278,6 +289,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+/**
+ * TASK-933 — `next`, carrying `prev`'s task label when `next` has none. A label
+ * belongs to the row's conversation, so an answer without one (a resolved row,
+ * or a lookup that missed its deadline) must not move the row out of its task's
+ * block. A new label replaces the old.
+ */
+function keepCheckIn(prev: Decision, next: Decision): Decision {
+  const had = prev.checkIn ?? null;
+  return had !== null && (next.checkIn ?? null) === null ? { ...next, checkIn: had } : next;
+}
+
 export interface DecisionQueueHooks {
   /**
    * TASK-278 — fires after an approve POST resolves with a row applied.
@@ -379,7 +401,8 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * Keyed on id and positional — a resolved decision stays exactly where it was
    * in the list until the next read, so the row a person just acted on turns
    * into its own receipt under their cursor instead of vanishing and reflowing
-   * everything below it.
+   * everything below it. It keeps its task label too (`keepCheckIn`), so it
+   * stays under its task on Today.
    */
   const applyServerRow = useCallback((row: Decision) => {
     appliedAtRead.current.set(row.id, readId.current);
@@ -387,7 +410,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
       const at = prev.findIndex((d) => d.id === row.id);
       if (at === -1) return [...prev, row];
       const next = [...prev];
-      next[at] = row;
+      next[at] = keepCheckIn(prev[at]!, row);
       return next;
     });
   }, []);
@@ -409,7 +432,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
       if (at === -1) return prev;
       if (undoSecondsLeft(prev[at]!) <= 0 && !needsRoutineRead(prev[at]!)) return prev;
       const next = [...prev];
-      next[at] = row;
+      next[at] = keepCheckIn(prev[at]!, row);
       return next;
     });
   }, []);

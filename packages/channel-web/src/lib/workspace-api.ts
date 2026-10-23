@@ -88,6 +88,7 @@ import type {
   AgentRailData,
 CounterRow,
   Decision,
+  DecisionCheckIn,
   FactMemoryPage,
   FactMemoryStatement,
   GrantRef,
@@ -102,6 +103,8 @@ CounterRow,
   TaskCheckin,
   TaskDetail,
   TaskReplyResponse,
+  TaskRow,
+  TaskRowReport,
   TasksResponse,
   UserFilesAnswer,
   WorkspaceAgent,
@@ -407,24 +410,40 @@ function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
-/** TASK-932. Absent (an older server) reads as no task; present, it is null or two non-empty strings. */
-function isDecisionCheckIn(v: unknown): boolean {
-  return (
-    v === undefined ||
-    v === null ||
-    (isRecord(v) &&
-      isString(v.routineId) &&
-      v.routineId.length > 0 &&
-      isString(v.taskName) &&
-      v.taskName.length > 0)
-  );
+/**
+ * TASK-933 — a label is never worth failing the queue over: TASK-932's guard refused the whole read for one bad `checkIn`, which emptied Today. A malformed one reads as no task, which is also what the host sends when its lookup fails.
+ *
+ * Present and well-formed (two non-empty strings) → a fresh `{ routineId, taskName }`; absent, null or anything else → null.
+ */
+function readableCheckIn(v: unknown): DecisionCheckIn | null {
+  if (
+    isRecord(v) &&
+    isString(v.routineId) &&
+    v.routineId.length > 0 &&
+    isString(v.taskName) &&
+    v.taskName.length > 0
+  ) {
+    return { routineId: v.routineId, taskName: v.taskName };
+  }
+  return null;
 }
+
+/** A decision with its `checkIn` read (see `readableCheckIn`). Everything else about the row is untouched. */
+function withReadableCheckIn(d: Decision): Decision {
+  return { ...d, checkIn: readableCheckIn((d as { checkIn?: unknown }).checkIn) };
+}
+
+/** An approve, dismiss or undo answer with its row's label read. Untouched unless both the answer and its `decision` are records. */
+function withReadableAnswer<T extends { decision: Decision | null }>(out: T): T {
+  if (!isRecord(out) || !isRecord(out.decision)) return out;
+  return { ...out, decision: withReadableCheckIn(out.decision) };
+}
+
 /** Older receipts may omit the marker; present markers use the closed domain. */
 function isDecisionRecord(value: unknown): boolean {
   return (
     isRecord(value) &&
-    (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation)) &&
-    isDecisionCheckIn(value.checkIn)
+    (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation))
   );
 }
 
@@ -433,14 +452,26 @@ function isString(v: unknown): v is string {
   return typeof v === 'string';
 }
 
-/** `task` is null until the first report; a report is drawn from all three fields. */
+/**
+ * `task` is null until the first report; a report is drawn from all four
+ * fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
+ * host from before TASK-933 (an SPA synced onto an older host by `make
+ * dev-fast`), and reads as null (`withAsk`) rather than failing the Tasks page.
+ */
 function isTaskReport(v: unknown): boolean {
   return (
     isRecord(v) &&
     ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
     (v.update === null || isString(v.update)) &&
+    (!('ask' in v) || v.ask === null || isString(v.ask)) &&
     isString(v.reportedAt)
   );
+}
+
+/** A checked row with its report's absent ask read as null. */
+function withAsk(row: TaskRow): TaskRow {
+  if (row.task === null || 'ask' in row.task) return row;
+  return { ...row, task: { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null } };
 }
 
 /** A task's missed check-ins (TASK-930): a count of at least one, a closed reason, an instant, a flag. */
@@ -487,9 +518,20 @@ function isStringOrNull(v: unknown): v is string | null {
   return v === null || isString(v);
 }
 
-/** A task's latest report on its own page: the Tasks row's fields, plus the ask and the agent's notes. */
+/**
+ * A task's latest report on its own page: the Tasks row's fields, plus the
+ * agent's notes. The ask must be PRESENT here (text or null): the list route's
+ * absent-ask allowance is for an older host, and `task()` doesn't normalise,
+ * so an absent ask would reach the page as `undefined` and draw as an ask.
+ */
 function isTaskDetailReport(v: unknown): boolean {
-  return isRecord(v) && isTaskReport(v) && isStringOrNull(v.ask) && isStringOrNull(v.agentNotes);
+  return (
+    isRecord(v) &&
+    isTaskReport(v) &&
+    'ask' in v &&
+    isStringOrNull(v.ask) &&
+    isStringOrNull(v.agentNotes)
+  );
 }
 
 /** What the agent reported at one check-in in Updates. */
@@ -985,11 +1027,12 @@ export const workspaceApi = {
     // Every ELEMENT too, not just the array. `undoSecondsLeft(d)` and
     // `d.conversationId` are read during render, so one null row in an
     // otherwise valid page crashes the same way a missing array does.
-    return checkedRead<DecisionsPage>(
+    const page = checkedRead<DecisionsPage>(
       '/decisions',
       body,
       (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isDecisionRecord),
     );
+    return { ...page, decisions: page.decisions.map(withReadableCheckIn) };
   },
 
   /**
@@ -1002,7 +1045,8 @@ export const workspaceApi = {
    */
   tasks: async () => {
     const body = await req<unknown>('/tasks');
-    return checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
+    const page = checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
+    return { ...page, tasks: page.tasks.map(withAsk) };
   },
 
   /**
@@ -1065,9 +1109,14 @@ export const workspaceApi = {
     );
   },
 
-  approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
-  dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
-  undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
+  approveDecision: async (id: string, approvalScope?: 'once' | 'agent-routines') =>
+    withReadableAnswer(
+      await req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
+    ),
+  dismissDecision: async (id: string) =>
+    withReadableAnswer(await decisionPost<DismissResult>(id, 'dismiss')),
+  undoDecision: async (id: string) =>
+    withReadableAnswer(await decisionPost<UndoResult>(id, 'undo')),
 
   /**
    * Every pending capability grant waiting on this person (TASK-373) — the
@@ -1140,11 +1189,12 @@ export const workspaceApi = {
       TASK-273's per-surface boundaries that unmounted the whole chat surface:
       exactly the failure this guard exists to stop, just moved one route over.
     */
-    return checkedRead<DecisionRead>(
+    const read = checkedRead<DecisionRead>(
       path,
       body,
       (b) => isRecord(b) && isDecisionRecord(b.decision),
     );
+    return { ...read, decision: withReadableCheckIn(read.decision) };
   },
 
   /**

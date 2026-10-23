@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
+  ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineListOutputSchema,
   RoutineViewSchema,
@@ -24,7 +25,7 @@ import {
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import type { TasksResponse } from '../../lib/workspace-types.js';
-import { groupTasks } from '../../lib/task-groups.js';
+import { groupTasks, todayTaskReason, todayTasks } from '../../lib/task-groups.js';
 import { routineView } from '../../../../routines/src/services.js';
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
@@ -93,7 +94,10 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
   };
 }
 
-/** A stored report. The ask and the agent notes carry markers no response may contain. */
+/**
+ * A stored report. The agent notes carry a marker no response may contain; the
+ * ask's marker crosses since TASK-933 (Today draws the ask).
+ */
 function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): StoredTask {
   return {
     status,
@@ -240,7 +244,7 @@ const TEAM_ROWS: StoredRoutine[] = [
     agentId: 'team-a',
     routineId: 'tB',
     ownerUserId: 'bob',
-    task: report('off-track', { update: 'BOB-UPDATE' }),
+    task: report('off-track', { update: 'BOB-UPDATE', ask: 'BOB-ASK' }),
   }),
   stored({ agentId: 'team-a', routineId: 'tC', ownerUserId: 'alice' }),
   stored({ agentId: 'team-a', routineId: 'tD', ownerUserId: 'bob' }),
@@ -267,7 +271,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(body.unavailableAgents).toEqual([]);
   });
 
-  it('answers a task that has not reported with task: null, and a report with status, update and reportedAt only', async () => {
+  it("answers a task that has not reported with task: null, and a report with status, update, ask and reportedAt, never the agent's notes (TASK-933)", async () => {
     const { get } = setup({
       rows: [
         stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') }),
@@ -289,12 +293,12 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       task: {
         status: 'needs-you',
         update: 'Queue is empty.',
+        ask: 'ASK-TEXT want me to draft a reply?',
         reportedAt: '2026-10-22T09:58:00.000Z',
       },
       noRecentUpdate: null,
     });
     const wire = JSON.stringify(body);
-    expect(wire).not.toContain('ASK-TEXT');
     expect(wire).not.toContain('NOTES-TEXT');
   });
 
@@ -391,7 +395,10 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     const captured = await get();
     expect(captured.statusCode).toBe(200);
     expect(routineIds(captured)).toEqual(['tA', 'tC']);
-    expect(JSON.stringify(captured.body)).not.toContain('BOB-UPDATE');
+    const wire = JSON.stringify(captured.body);
+    expect(wire).not.toContain('BOB-UPDATE');
+    // TASK-933: the ask crosses now, and only to its task's owner.
+    expect(wire).not.toContain('BOB-ASK');
   });
 
   it('lists a reported task whose owner can no longer manage routines, but not a never-reported one (decisions row 2)', async () => {
@@ -436,6 +443,40 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(tasks.find((t) => t.routineId === 't2')?.task?.update).toBe('first line second line');
   });
 
+  it("fences the ask to one line, caps it at the writer's limit, and sends a blank one as null (TASK-933)", async () => {
+    // The same boundary as the update: stored rows aren't re-checked (TASK-913),
+    // the view schema has no cap, and the writer allows an ask several lines long.
+    const { get } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 't1',
+          task: report('needs-you', { ask: 'y'.repeat(600) }),
+        }),
+        stored({
+          agentId: 'a2',
+          routineId: 't2',
+          task: report('needs-you', { ask: 'first line\nsecond line' }),
+        }),
+        stored({
+          agentId: 'a1',
+          routineId: 't3',
+          task: report('needs-you', { ask: '   ' }),
+        }),
+      ],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const tasks = bodyOf(captured).tasks;
+    const long = tasks.find((t) => t.routineId === 't1')?.task?.ask ?? '';
+    expect([...long].length).toBe(ROUTINE_REPORT_ASK_MAX_CHARS);
+    expect(long.endsWith('…')).toBe(true);
+    expect(tasks.find((t) => t.routineId === 't2')?.task?.ask).toBe('first line second line');
+    const blank = tasks.find((t) => t.routineId === 't3');
+    expect(blank?.task).not.toBeNull();
+    expect(blank?.task?.ask).toBeNull();
+  });
+
   it('fences a task name to one line, and calls a blank one Untitled task', async () => {
     // A task's name can't hide characters or break lines past the view schema,
     // but it can still be padded, or all spaces.
@@ -470,6 +511,24 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       routineId: 't1',
       task: { update: 'Two invoices are three days old.' },
     });
+  });
+
+  it("see it on Today: a check-in's needs-you report puts its task on Today with its ask (PR 2 canary, TASK-933)", async () => {
+    const { get } = setup({
+      rows: [
+        stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') }),
+        stored({ agentId: 'a2', routineId: 't2', task: report('on-track') }),
+      ],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const onToday = todayTasks(bodyOf(captured).tasks);
+    expect(onToday).toHaveLength(1);
+    expect(onToday[0]).toMatchObject({
+      routineId: 't1',
+      task: { ask: 'ASK-TEXT want me to draft a reply?' },
+    });
+    expect(todayTaskReason(onToday[0]!)).toBe('asks');
   });
 
   it('see it on Tasks: missed check-ins group a task, and three escalate it (TASK-930)', async () => {

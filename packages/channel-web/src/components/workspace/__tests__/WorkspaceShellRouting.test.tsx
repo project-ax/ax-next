@@ -703,3 +703,257 @@ describe('Memory settings and the pinned learned card (TASK-890)', () => {
     expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
   });
 });
+
+describe('one tasks read (TASK-933)', () => {
+  it('reads tasks once at mount, whichever page it lands on', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('reads again on entering Tasks or Today, never on entering an agent', async () => {
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Quill\s*,/ }));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
+    );
+    await screen.findByRole('tab', { name: /files/i });
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+  });
+
+  it('entering Tasks while the tasks read is running joins it, and its answer lands (TASK-933 review)', async () => {
+    let land!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
+    tasksMock.mockReturnValueOnce(new Promise((res) => (land = res)));
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      land({
+        tasks: [
+          {
+            agentId: 'a-quill',
+            agentName: 'Quill',
+            routineId: 't1',
+            name: 'Zero open support tickets',
+            enabled: true,
+            task: null,
+            noRecentUpdate: null,
+          },
+        ],
+        unavailableAgents: [],
+      }),
+    );
+    expect(await screen.findByText('Zero open support tickets')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+  });
+
+  // A read started before a reply, pause or resume on the task page may
+  // predate it, so coming back from the task page starts a fresh read rather
+  // than joining that one, and the fresh answer wins even if the old one lands
+  // after it.
+  it('coming back to Tasks from a task page reads afresh, and the older read can’t overwrite it (TASK-933 review)', async () => {
+    const taskRow = (name: string) => ({
+      agentId: 'a1',
+      agentName: 'Quill',
+      routineId: 't1',
+      name,
+      enabled: true,
+      task: null,
+      noRecentUpdate: null,
+    });
+    let landStale!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow('Zero open support tickets')], unavailableAgents: [] })
+      .mockReturnValueOnce(new Promise((res) => (landStale = res)))
+      .mockResolvedValueOnce({ tasks: [taskRow('Fresh after the reply')], unavailableAgents: [] });
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(await screen.findByRole('link', { name: /Zero open support tickets/ }));
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    expect(await screen.findByRole('link', { name: /Fresh after the reply/ })).toBeTruthy();
+
+    await act(async () => landStale({ tasks: [taskRow('Stale from before')], unavailableAgents: [] }));
+    expect(screen.getByRole('link', { name: /Fresh after the reply/ })).toBeTruthy();
+    expect(screen.queryByText('Stale from before')).toBeNull();
+    expect(tasksMock).toHaveBeenCalledTimes(3);
+  });
+
+  // The reload rule must survive a hop: the task page's writes postdate a read
+  // started before them, however many pages sit between that page and the next
+  // Today or Tasks. Activity is the hop because it writes no task rows itself.
+  it('a hop through Activity still reads afresh on the way back to Tasks (TASK-933 review)', async () => {
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    // Entering Tasks starts a read that never answers.
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    // Task page → Activity → Tasks, that read still held.
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks/a1/t1');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    act(() => {
+      window.history.pushState(null, '', '/workspace/activity');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { level: 1, name: 'Zero open support tickets' })).toBeNull(),
+    );
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+  });
+
+  // The check-in arm: a check-in page's decisions also write task rows. Drop
+  // `task-checkin` from the shell's rule and this goes back to joining the
+  // held read (one call), which is what fails here.
+  it('coming back to Tasks from a check-in page reads afresh (TASK-933 review)', async () => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks');
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks/a1/t1/checkins/c1');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(taskCheckinMock).toHaveBeenCalledWith('a1', 't1', 'c1'));
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  // Every page that can write task rows arms the reload. Drop a kind from the
+  // shell's rule and the matching case goes back to joining the held read
+  // (one call).
+  it.each([
+    ['an agent’s settings (the routine editor)', '/workspace/agents/a-quill/settings/routines'],
+    ['an agent’s page (its chat approves routine changes)', '/workspace/agents/a-quill'],
+  ])('coming back to Tasks from %s reads afresh (TASK-933 review)', async (_name, path) => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks');
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', path);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull());
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  // Arming counts the page the app opened on: arm only after a route change
+  // and this goes back to joining the held mount read (one call).
+  it('opening the app on a task page arms the reload for the first trip to Tasks (TASK-933 review)', async () => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks/a1/t1');
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  // A reload spends the arming: after it, hops between Today, Tasks and
+  // Activity join the read in flight again. Keep the arming after a reload and
+  // every later entry restarts the read (4 calls); let Activity arm and the
+  // trip to Today restarts it (3 calls).
+  it('a reload spends the arming, so later hops join the read again (TASK-933 review)', async () => {
+    // Every read is held, so a join stays put and only a reload adds a call.
+    tasksMock.mockReturnValue(new Promise(() => {}));
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    // Opening on an agent's page armed the reload: the trip to Tasks reads afresh.
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/activity');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { name: 'Activity' });
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
+    tasksMock.mockResolvedValue({
+      tasks: [
+        {
+          agentId: 'a-quill',
+          agentName: 'Quill',
+          routineId: 't1',
+          name: 'Zero open support tickets',
+          enabled: true,
+          task: {
+            status: 'needs-you',
+            update: 'Two tickets are still open.',
+            ask: 'Want me to draft a reply to #4410?',
+            reportedAt: '2026-10-23T10:00:00.000Z',
+          },
+          noRecentUpdate: null,
+        },
+      ],
+      unavailableAgents: [],
+    });
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+
+    // Today isn't mounted here, so only the shell's own count can say 1.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('button', { name: /^Today/ })).queryByText(/^\d+$/)?.textContent,
+      ).toBe('1'),
+    );
+  });
+});

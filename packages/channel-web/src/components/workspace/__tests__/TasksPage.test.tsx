@@ -19,6 +19,7 @@ import type {
   UnavailableAgent,
 } from '@/lib/workspace-types';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
+import { useTasks, type TasksState } from '@/lib/workspace-tasks';
 import { TasksPage } from '../TasksPage';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -38,6 +39,7 @@ function report(
   return {
     status,
     update: 'Nothing new since this morning.',
+    ask: null,
     reportedAt: '2026-10-22T10:00:00.000Z',
     ...over,
   };
@@ -69,10 +71,22 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** The shell's side of the page: it owns the read and hands the state down (TASK-933). */
+function Harness({
+  leading,
+  onNavigate,
+}: {
+  leading?: ReactNode;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
+  const { state, retry } = useTasks();
+  return <TasksPage state={state} retry={retry} leading={leading} onNavigate={onNavigate} />;
+}
+
 /** The page, with the shell's `navigate` stood in for by a spy. */
 function renderPage(leading?: ReactNode) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
-  const view = render(<TasksPage leading={leading} onNavigate={onNavigate} />);
+  const view = render(<Harness leading={leading} onNavigate={onNavigate} />);
   return { ...view, onNavigate };
 }
 
@@ -95,6 +109,19 @@ afterEach(() => {
 });
 
 describe('TasksPage (TASK-909)', () => {
+  it('draws the state it is handed, without reading anything (TASK-933)', () => {
+    const state: TasksState = {
+      kind: 'ready',
+      tasks: [row('Sweep', { task: report('on-track') })],
+      unavailableAgents: [],
+      refreshing: false,
+      refreshFailed: false,
+    };
+    render(<TasksPage state={state} retry={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.getByText('Sweep')).toBeTruthy();
+    expect(tasksMock).not.toHaveBeenCalled();
+  });
+
   it('shows the title and subtitle while it loads', () => {
     tasksMock.mockReturnValue(new Promise<TasksResponse>(() => {}));
     renderPage(<button type="button">Open navigation</button>);

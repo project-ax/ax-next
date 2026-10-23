@@ -2,8 +2,8 @@
  * `/workspace/tasks` — every task the person owns, across the agents they can
  * see, grouped by what needs them (TASK-909).
  *
- * The page reads its own list (`useTasks`), so it only fetches while the Tasks
- * route is mounted (TASK-909 decisions row 10). `groupTasks` decides the groups
+ * The page draws the shell's tasks read (TASK-933), the same one Today and the
+ * sidebar badge count from. `groupTasks` decides the groups
  * and their order; each group's mark is `StateDot`'s task mark, so a task
  * waiting on you looks exactly like an agent waiting on you.
  *
@@ -43,7 +43,7 @@ import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
 import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { useTasks, type TasksReadError } from '@/lib/workspace-tasks';
+import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
 import { timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
@@ -60,13 +60,16 @@ const LOAD_COPY: Record<TasksReadError, string> = {
 };
 
 export function TasksPage({
+  state,
+  retry,
   leading,
   onNavigate,
 }: {
+  state: TasksState;
+  retry: () => void;
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const { state, retry } = useTasks();
   return (
     <>
       <WorkspaceHeader

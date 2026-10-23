@@ -566,3 +566,85 @@ describe('routine scope after the grace window', () => {
     window.removeEventListener('ax:routine-permissions-changed',changed);
   });
 });
+
+/*
+  TASK-933 — the host names the task an approval came from (`checkIn`) on an
+  OPEN row only. A resolved row's answers carry null (the approve and dismiss
+  answers, every poll of a receipt), and so does any answer whose label lookup
+  missed its deadline. Today groups approvals under their task by that label,
+  so taking such an answer verbatim would move the receipt out of its task's
+  block in the middle of its undo window.
+*/
+describe('useDecisionQueue — an answered row keeps its task (TASK-933)', () => {
+  const LABEL = { routineId: 't1', taskName: 'Zero open support tickets' };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T12:00:00.000Z'));
+    listDecisions.mockReset();
+    readDecision.mockReset();
+    approveDecision.mockReset();
+    dismissDecision.mockReset();
+    undoDecision.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a poll that answers without a task keeps the row's task", async () => {
+    const resolved = resolvedFixture('executed', { id: 'd1', checkIn: LABEL });
+    const { result } = await mountWith([resolved]);
+    readDecision.mockResolvedValue({ decision: { ...resolved, checkIn: null } });
+
+    await tick(POLL_MS);
+
+    expect(readDecision).toHaveBeenCalledWith('d1');
+    expect(result.current.decisions[0]!.checkIn).toStrictEqual(LABEL);
+  });
+
+  it("an approve answer without a task keeps the row's task", async () => {
+    const open = decisionFixture({ id: 'd1', checkIn: LABEL });
+    const { result } = await mountWith([open]);
+    approveDecision.mockResolvedValue({
+      decision: resolvedFixture('executed', { id: 'd1', checkIn: null }),
+      executed: true,
+      path: 'host-replays',
+      error: null,
+      pendingUntil: null,
+      streamReqId: null,
+    });
+
+    act(() => result.current.approve('d1'));
+    await settle();
+
+    expect(result.current.decisions[0]!.status).toBe('executed');
+    expect(result.current.decisions[0]!.checkIn).toStrictEqual(LABEL);
+  });
+
+  it('a newer task name replaces the old one', async () => {
+    const resolved = resolvedFixture('executed', { id: 'd1', checkIn: LABEL });
+    const { result } = await mountWith([resolved]);
+    const renamed = { routineId: 't1', taskName: 'Renamed' };
+    readDecision.mockResolvedValue({ decision: { ...resolved, checkIn: renamed } });
+
+    await tick(POLL_MS);
+
+    expect(readDecision).toHaveBeenCalledWith('d1');
+    expect(result.current.decisions[0]!.checkIn).toStrictEqual(renamed);
+  });
+
+  it("a fresh list read still decides an open row's task", async () => {
+    const open = decisionFixture({ id: 'd1', checkIn: LABEL });
+    const { result } = await mountWith([open]);
+    expect(result.current.decisions[0]!.checkIn).toStrictEqual(LABEL);
+
+    // The server's fresh word on an open row (its task deleted, say): the list read wins.
+    listDecisions.mockResolvedValue({ decisions: [{ ...open, checkIn: null }] });
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.decisions[0]!.checkIn).toBeNull();
+  });
+});
