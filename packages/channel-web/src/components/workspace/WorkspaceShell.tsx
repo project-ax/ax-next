@@ -804,7 +804,11 @@ function Inner({
   const navProps = {
     agents: board.agents,
     route:
-      route.kind === 'agent-settings' ? 'agent' : route.kind === 'task' ? 'tasks' : route.kind,
+      route.kind === 'agent-settings'
+        ? 'agent'
+        : route.kind === 'task' || route.kind === 'task-checkin'
+          ? 'tasks'
+          : route.kind,
     activeAgentId: routeAgentId(route),
     pendingCount: pending,
     rosterOpen,

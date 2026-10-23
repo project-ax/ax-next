@@ -56,6 +56,7 @@ export type WorkspaceRoute =
   | { kind: 'today' }
   | { kind: 'tasks' }
   | { kind: 'task'; agentId: string; routineId: string }
+  | { kind: 'task-checkin'; agentId: string; routineId: string; conversationId: string }
   | { kind: 'activity' }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
@@ -118,14 +119,24 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   if (segments.length === 0) return TODAY;
   if (segments[0] !== 'workspace') return TODAY;
 
-  const [, section, third, fourth, fifth] = segments;
+  const [, section, third, fourth, fifth, sixth] = segments;
   if (section === undefined) return TODAY;
   if (section === 'tasks') {
-    // `/workspace/tasks/<agentId>/<routineId>` is one task's page. Anything
-    // else under `tasks` is the list; a tail past the routine id is dropped.
+    // `/workspace/tasks/<agentId>/<routineId>` is one task's page, and
+    // `…/checkins/<conversationId>` is one of its check-ins (TASK-911).
+    // Anything else under `tasks` is the list; a tail past the last id is
+    // dropped, and a check-in path that can't be read is its task.
     const agentId = third === undefined ? null : parseIdSegment(third);
     const routineId = fourth === undefined ? null : parseIdSegment(fourth);
-    if (agentId !== null && routineId !== null) return { kind: 'task', agentId, routineId };
+    if (agentId !== null && routineId !== null) {
+      if (fifth === 'checkins' && sixth !== undefined) {
+        const conversationId = parseIdSegment(sixth);
+        if (conversationId !== null) {
+          return { kind: 'task-checkin', agentId, routineId, conversationId };
+        }
+      }
+      return { kind: 'task', agentId, routineId };
+    }
     return { kind: 'tasks' };
   }
   if (section === 'activity') return { kind: 'activity' };
@@ -166,6 +177,8 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       return `${WORKSPACE_ROOT_PATH}/tasks`;
     case 'task':
       return `${WORKSPACE_ROOT_PATH}/tasks/${encodeURIComponent(route.agentId)}/${encodeURIComponent(route.routineId)}`;
+    case 'task-checkin':
+      return `${WORKSPACE_ROOT_PATH}/tasks/${encodeURIComponent(route.agentId)}/${encodeURIComponent(route.routineId)}/checkins/${encodeURIComponent(route.conversationId)}`;
     case 'activity':
       return `${WORKSPACE_ROOT_PATH}/activity`;
     case 'agent': {
