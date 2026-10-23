@@ -157,6 +157,8 @@ interface World {
   clearFailure: Error | null;
   /** True: `routines:get` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
   unvalidated: boolean;
+  /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
+  viewMiss: { value: unknown } | null;
 }
 
 interface Call<I> {
@@ -180,6 +182,7 @@ function setup(over: Partial<World> = {}) {
     firesFailure: null,
     clearFailure: null,
     unvalidated: false,
+    viewMiss: null,
     ...over,
   };
   const bus = new HookBus();
@@ -220,7 +223,8 @@ function setup(over: Partial<World> = {}) {
         );
         if (row === undefined) throw new SafeToolError('not-found', 'routineId');
         const allowed = world.managers[input.agentId]?.includes(ctx.userId) ?? false;
-        return routineView(row, ctx.userId, allowed);
+        const view = routineView(row, ctx.userId, allowed);
+        return world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
       },
       world.unvalidated ? undefined : { returns: RoutineGetOutputSchema },
     );
@@ -747,6 +751,21 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, missed check-ins (TASK-9
       at: '2026-10-22T11:00:00.000Z',
       autoPaused: false,
     });
+  });
+
+  it.each([
+    ['no missed-check-in field at all', undefined],
+    ['a zero count', { inARow: 0, reason: 'failed', at: '2026-10-22T11:00:00.000Z', autoPaused: false }],
+    ['a time that is not a string', { inARow: 2, reason: 'failed', at: 42, autoPaused: false }],
+  ])('reads a view with %s as no miss, not a crash', async (_name, value) => {
+    const { detail } = setup({
+      unvalidated: true,
+      viewMiss: { value },
+      rows: [stored({ agentId: 'a1', routineId: 't1' })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(noRecentUpdateOf(captured)).toBeNull();
   });
 });
 

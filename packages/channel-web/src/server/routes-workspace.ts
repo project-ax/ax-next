@@ -3392,19 +3392,25 @@ function toTaskRows(
 }
 
 /**
- * A view's missed check-ins → the wire's (TASK-930). Built field by field. The
- * reason is a host-minted code; a reason this page doesn't know (a newer
- * routines plugin, a row the view schema didn't parse, TASK-913) reads
- * `'failed'`, which is true of any check-in that didn't finish.
+ * A view's missed check-ins → the wire's (TASK-930). Built field by field, and
+ * lenient about a view the schema didn't parse (TASK-913): a missed-check-in
+ * object that is missing, not an object, or without a whole count (1 or more)
+ * and a time reads as no miss at all, never a thrown request or a nonsense
+ * count. The reason is a host-minted code; a reason this page doesn't know (a
+ * newer routines plugin) reads `'failed'`, which is true of any check-in that
+ * didn't finish. Only a literal `true` means the host paused the task.
  */
 function toTaskNoRecentUpdate(view: Pick<RoutineView, 'noRecentUpdate'>): TaskNoRecentUpdate | null {
-  const miss = view.noRecentUpdate;
-  if (miss === null) return null;
+  const miss: unknown = view.noRecentUpdate;
+  if (miss === null || typeof miss !== 'object') return null;
+  const { inARow, reason, at, autoPaused } = miss as Record<string, unknown>;
+  if (typeof inARow !== 'number' || !Number.isInteger(inARow) || inARow < 1) return null;
+  if (typeof at !== 'string') return null;
   return {
-    inARow: miss.inARow,
-    reason: CHECK_IN_MISSES.find((code) => code === miss.reason) ?? 'failed',
-    at: miss.at,
-    autoPaused: miss.autoPaused,
+    inARow,
+    reason: CHECK_IN_MISSES.find((code) => code === reason) ?? 'failed',
+    at,
+    autoPaused: autoPaused === true,
   };
 }
 
