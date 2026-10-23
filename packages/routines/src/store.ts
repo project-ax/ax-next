@@ -224,14 +224,21 @@ function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): string {
  *
  * Runs that overlap (a Check now beside a scheduled check-in) answer in the
  * order they started, whatever order they finish in, as `recordReport` keeps
- * the report of the run accepted last. So null too when a run that started
- * after this one has already answered: a newer report (`task_report_accepted_at`)
- * for a run without one, a newer miss (`task_miss_at`) for a run that reported.
- * A run without a report behind a newer miss still counts, but keeps that miss's
- * reason and start, so `task_miss_at` never moves back. Once they've all
- * finished, the task shows a miss exactly when the run that started last missed,
- * with its reason and start. The count can run long, never short: a report held
- * back by a newer miss leaves the misses before it counted too.
+ * the report of the run accepted last. So null too for a run without a report
+ * once a run that started after it has reported (`task_report_accepted_at`).
+ * A run that reported behind a newer miss (`task_miss_at`) leaves that miss,
+ * with its reason and start, but ends the misses before it: the count drops to
+ * the runs that started after it and finished without a report, if that's
+ * fewer (`unansweredAfter`). The newer miss's own run is one of them, so that's
+ * at least one, unless a hand edit or a rollback left a miss time no such run
+ * backs, or a count below one; then the report clears them. A run without a
+ * report behind a newer miss still counts, but keeps that miss's reason and
+ * start, so `task_miss_at` never moves back. Once they've all finished, the
+ * task shows a miss exactly when the run that started last missed, with its
+ * reason and start, and counts the misses that started after the latest
+ * report. Never fewer: it can run long only when a Resume or a kind change
+ * starts the count over while runs overlap, since a fire row doesn't say which
+ * side of it its run finished on.
  *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
@@ -241,15 +248,21 @@ function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): string {
  * now or tick held against the old one is refused, the paused definition's hash,
  * no next run, and `updated_at`, at the instant `task_auto_paused_at` records.
  */
-function missesAfterRun(
+async function missesAfterRun(
+  trx: Transaction<RoutinesDatabase>,
   row: Selectable<RoutinesDefinitionsRow>,
   run: { reported: boolean; status: FireStatus; miss: DispatchMiss | undefined; acceptedAt: Date },
   now: Date,
-): { columns: Updateable<RoutinesDefinitionsRow>; paused: boolean } | null {
+): Promise<{ columns: Updateable<RoutinesDefinitionsRow>; paused: boolean } | null> {
   if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
   // recordReport's order: a run started after this one has already answered.
   const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
-  if (run.reported) return newerMiss ? null : { columns: NO_MISSES, paused: false };
+  if (run.reported) {
+    if (!newerMiss) return { columns: NO_MISSES, paused: false };
+    // The misses before this report end; the ones after it, the newer miss's own included, stay.
+    const kept = await unansweredAfter(trx, row, run.acceptedAt, Math.max(0, row.task_misses_in_a_row));
+    return { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
+  }
   if (row.task_report_accepted_at !== null && row.task_report_accepted_at > run.acceptedAt) return null;
   // A count below zero (a hand edit) starts again at one.
   const inARow = Math.max(0, row.task_misses_in_a_row) + 1;
@@ -264,6 +277,21 @@ function missesAfterRun(
     },
     paused: true,
   };
+}
+/**
+ * TASK-930. How many of the routine's runs that started after `after` have
+ * finished without a report, but no more than `atMost`: a run's fire row is
+ * written when it finishes, with its start as `fired_at`, so the run that
+ * started at `after` isn't one. A row with only part of a report has none, as
+ * `rowToFire` reads it. Through `routines_v1_fires_by_routine`, reading at most
+ * `atMost` rows, in `finishDispatch`'s transaction with the routine's row locked.
+ */
+async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, after: Date, atMost: number): Promise<number> {
+  const fires = await trx.selectFrom('routines_v1_fires').select('id')
+    .where('agent_id', '=', row.agent_id).where('routine_id', '=', row.routine_id).where('fired_at', '>', after)
+    .where(eb => eb.or([eb('report_status', 'is', null), eb('report_update', 'is', null)]))
+    .limit(atMost).execute();
+  return fires.length;
 }
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
@@ -545,7 +573,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // TASK-930: the missed check-ins, only now. The pause mints a new revision, so before the
         // update above it would make that update skip the fifth run's own status and error. No
         // revision clause here: an edit during a check-in can't drop its miss, as it can't its report.
-        const misses = definition === undefined ? null : missesAfterRun(definition, {
+        const misses = definition === undefined ? null : await missesAfterRun(trx, definition, {
           reported: stored.report !== null, status: outcome.status, miss: outcome.miss, acceptedAt: dispatch.accepted_at,
         }, finishedAt);
         if (misses !== null) {
