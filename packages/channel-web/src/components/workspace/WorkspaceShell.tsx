@@ -38,7 +38,8 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
-import { useTasks } from '@/lib/workspace-tasks';
+import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
+import { waitingOnYou } from '@/lib/today-queue';
 import { continuationActions } from '@/lib/continuation-actions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
@@ -57,7 +58,7 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
-import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
+import type { ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
   routeAgentId,
@@ -355,6 +356,8 @@ function Inner({
     task page's own buttons don't re-read it (Back or Today does).
   */
   const taskRead = useTasks();
+  // What Today and the badge read from it (not `today`: that's the date helper above).
+  const tasksOnToday = tasksForToday(taskRead.state);
   const retryTaskRead = taskRead.retry;
   const previousRouteKind = useRef<string | null>(null);
   const routeKind = route.kind;
@@ -782,11 +785,12 @@ function Inner({
 
   /*
     The sidebar badge and the "Needs you" tab count the same queue Today's
-    headline counts: open decisions plus open grants. Grants used to be
+    headline counts, with the same function, `waitingOnYou`: open decisions,
+    open grants and tasks that need you (TASK-933), each once. Grants used to be
     missing here, which put two "waiting on you" numbers on one screen that
     could disagree the moment a grant was open — the headline counted it, the
-    badge did not. Same honesty rule as the headline: a failed read (queue or
-    grants) contributes what it actually read, and the surface itself says
+    badge did not. Same honesty rule as the headline: a failed read (queue,
+    grants or tasks) contributes what it actually read, and the surface itself says
     where it could not check. A badge cannot carry that sentence, so it does
     not try to.
 
@@ -796,8 +800,11 @@ function Inner({
     — and would put two disagreeing "waiting on you" numbers on one screen,
     which is the thing grants were added to this sum to stop.
   */
-  const pending =
-    queue.decisions.filter(isOpenDecision).length + grants.grants.length;
+  const pending = waitingOnYou({
+    decisions: queue.decisions,
+    grants: grants.grants,
+    tasks: tasksOnToday.tasks,
+  });
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
 
   const openAgent = (id: string) =>
@@ -955,6 +962,11 @@ function Inner({
                   onRetryGrants={fetchGrants}
                   onSeeActivity={() => navigate({ kind: 'activity' })}
                   {...(doneToday !== undefined ? { doneToday } : {})}
+                  tasks={tasksOnToday.tasks}
+                  tasksError={tasksOnToday.error}
+                  unavailableTaskAgents={tasksOnToday.unavailableAgents}
+                  onRetryTasks={taskRead.retry}
+                  onReplied={taskRead.retry}
                 />
               </div>
               <HomeComposer agents={board.agents} onSend={startTurn} />

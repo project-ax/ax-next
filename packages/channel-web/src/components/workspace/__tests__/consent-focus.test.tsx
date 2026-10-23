@@ -831,6 +831,11 @@ describe('the host grant turned down (site 4)', () => {
             onUndo={vi.fn()}
             onSeeActivity={vi.fn()}
             error={{ kind: 'failed', detail: 'queue read blew up' }}
+            tasks={[]}
+            tasksError={null}
+            unavailableTaskAgents={[]}
+            onRetryTasks={vi.fn()}
+            onReplied={vi.fn()}
           />
         </div>
       );
@@ -1059,5 +1064,73 @@ describe('the host grant turned down (site 4)', () => {
     } finally {
       observer.disconnect();
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Today keeps an answered approval where it was (TASK-933)
+ * ------------------------------------------------------------------ */
+
+/*
+  Site 3 above pins `DecisionRow` alone. Through `TodayView` the row can also
+  MOVE: it is drawn inside its task's block when it carries a check-in label,
+  and an answer turns it from a question into a receipt. If that turn moves it
+  into another array, React mounts a new row, the old one's armed focus is
+  lost, and focus falls to `<body>`. These drive the whole of Today the way
+  `useDecisionQueue` does: the answered row comes back with the same id.
+*/
+describe('Today keeps an answered approval where it was (TASK-933)', () => {
+  const LABEL = { routineId: 't1', taskName: 'Zero open support tickets' };
+
+  function AnsweredOnToday({ checkIn }: { checkIn: Decision['checkIn'] }) {
+    const [d, setD] = useState<Decision>(decisionFixture({ id: 'd1', checkIn }));
+    return (
+      <div>
+        <Decoys />
+        <TodayView
+          decisions={[d]}
+          grants={[]}
+          onGrantResolved={vi.fn()}
+          onGranted={vi.fn(async () => true)}
+          agents={[quill]}
+          filter="needs"
+          expandedId="d1"
+          onExpand={vi.fn()}
+          onOpenAgent={vi.fn()}
+          onNavigate={vi.fn()}
+          onApprove={() => setD(resolvedFixture('executed', { id: 'd1', checkIn }))}
+          onDismiss={vi.fn()}
+          onUndo={vi.fn()}
+          onSeeActivity={vi.fn()}
+          tasks={[]}
+          tasksError={null}
+          unavailableTaskAgents={[]}
+          onRetryTasks={vi.fn()}
+          onReplied={vi.fn()}
+        />
+      </div>
+    );
+  }
+
+  it('an approval answered inside its task’s block keeps focus on its receipt, Undo one Tab away', () => {
+    render(<AnsweredOnToday checkIn={LABEL} />);
+
+    const yes = screen.getByRole('button', { name: 'Move it' });
+    yes.focus();
+    fireEvent.click(yes);
+
+    expect(document.activeElement).toBe(screen.getByTestId('decision-outcome-d1'));
+    expect(tabsToReach(undoButton())).toBe(1);
+  });
+
+  it('a plain approval answered on Today keeps focus on its receipt', () => {
+    render(<AnsweredOnToday checkIn={null} />);
+
+    const yes = screen.getByRole('button', { name: 'Move it' });
+    yes.focus();
+    fireEvent.click(yes);
+
+    expect(document.activeElement).toBe(screen.getByTestId('decision-outcome-d1'));
+    expect(tabsToReach(undoButton())).toBe(1);
   });
 });

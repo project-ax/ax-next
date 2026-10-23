@@ -7,9 +7,10 @@
  * reads `resting` regardless of what it is actually doing. A number we cannot
  * back does not get rendered.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { workspaceApi, type Decision, type WorkspaceAgent } from '@/lib/workspace-api';
+import type { TaskRow, TaskRowReport } from '@/lib/workspace-types';
 import { TodayView } from '../TodayView';
 import { decisionFixture } from './decision-fixture';
 import {
@@ -23,6 +24,17 @@ import { signInWithGoogle } from '../../../lib/auth';
 vi.mock('../../../lib/auth', () => ({
   signInWithGoogle: vi.fn(async () => undefined),
 }));
+
+// A task's block on Today sends its reply through the real API module; only
+// that one call is replaced (TASK-933).
+vi.mock('@/lib/workspace-api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/workspace-api')>(
+    '@/lib/workspace-api',
+  );
+  return { ...actual, workspaceApi: { ...actual.workspaceApi, sendTaskReply: vi.fn() } };
+});
+
+const sendTaskReplyMock = vi.mocked(workspaceApi.sendTaskReply);
 
 /** The reassuring green tick that must not sit over a row of zeros. */
 const CHECK_ICON = 'svg[class*="check"]';
@@ -81,6 +93,11 @@ function renderToday(
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
       onSeeActivity={vi.fn()}
+      tasks={[]}
+      tasksError={null}
+      unavailableTaskAgents={[]}
+      onRetryTasks={vi.fn()}
+      onReplied={vi.fn()}
       {...over}
     />,
   );
@@ -481,7 +498,7 @@ describe('a clamped activity line (TASK-436)', () => {
 });
 
 describe("an expanded check-in row (TASK-932)", () => {
-  it('hands an expanded check-in row the shell’s navigation', () => {
+  it('a check-in’s approval opens its task from its block’s heading, the one Open task there (TASK-933)', () => {
     const onNavigate = vi.fn();
     renderToday({
       decisions: [
@@ -494,7 +511,210 @@ describe("an expanded check-in row (TASK-932)", () => {
       expandedId: 'd1',
       onNavigate,
     });
-    fireEvent.click(screen.getByRole('link', { name: /^Open task/ }));
+    // The expanded row sits inside its task's block now, so TASK-932's own
+    // link on it would be a second, identical Open task in one block.
+    const links = screen.getAllByRole('link', { name: /^Open task/ });
+    expect(links).toHaveLength(1);
+    fireEvent.click(links[0]!);
     expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'a-quill', routineId: 't1' });
+  });
+});
+
+/*
+  TASK-933 — Today is the one inbox for tasks too. A task that needs the person
+  gets its own block, the approvals raised during its check-ins sit under it,
+  and the headline counts the task and each approval once.
+*/
+const TASK_NAME = 'Zero open support tickets';
+const ASK = 'Want me to draft a reply to #4410?';
+
+function taskRow(over: Partial<TaskRow> = {}): TaskRow {
+  return {
+    agentId: 'a-quill',
+    agentName: 'Quill',
+    routineId: 't1',
+    name: TASK_NAME,
+    enabled: true,
+    task: null,
+    noRecentUpdate: null,
+    ...over,
+  };
+}
+
+function report(
+  status: TaskRowReport['status'],
+  over: Partial<TaskRowReport> = {},
+): TaskRowReport {
+  return {
+    status,
+    update: 'Two tickets are still open.',
+    ask: null,
+    reportedAt: '2026-10-23T10:00:00.000Z',
+    ...over,
+  };
+}
+
+/** t1, whose agent's last report said Needs you and asked something. */
+const needsYouTask = (): TaskRow => taskRow({ task: report('needs-you', { ask: ASK }) });
+
+/** t2, on track: on Today only for the approvals raised in its check-ins. */
+const onTrackTask = (): TaskRow =>
+  taskRow({ routineId: 't2', name: 'Weekly invoice run', task: report('on-track') });
+
+/** An approval held during one of `routineId`'s check-ins. */
+const heldDuring = (routineId: string, taskName: string, over: Partial<Decision> = {}) =>
+  decision({ attendance: 'unattended', checkIn: { routineId, taskName }, ...over });
+
+const taskBlock = (name: RegExp = /Zero open support tickets/) =>
+  screen.getByRole('region', { name });
+
+/** The `Alert` carrying `sentence`, by its sentence: decision rows carry their own `role="alert"` live regions. */
+function alertWith(sentence: string): HTMLElement {
+  const box = screen.getByText(sentence).closest<HTMLElement>('[role="alert"]');
+  expect(box).not.toBeNull();
+  return box!;
+}
+
+const COULD_NOT_CHECK = 'We could not check what is waiting on you.';
+const TASKS_FAILED = 'We couldn’t check your tasks just now.';
+
+describe('what tasks need from you (TASK-933)', () => {
+  beforeEach(() => {
+    sendTaskReplyMock.mockReset();
+  });
+
+  it('lists grants, then tasks that need you, then the other approvals', () => {
+    const { container } = renderToday({
+      grants: [hostGrant],
+      tasks: [needsYouTask()],
+      decisions: [decision({ id: 'd2' })],
+    });
+    const text = container.textContent ?? '';
+    const grant = text.indexOf('Allow access to example.org?');
+    const task = text.indexOf(TASK_NAME);
+    const loose = text.indexOf('Send the reply to Dana?');
+    expect(grant).toBeGreaterThanOrEqual(0);
+    expect(grant).toBeLessThan(task);
+    expect(task).toBeLessThan(loose);
+  });
+
+  it('puts an approval held during a task’s check-in under that task, and keeps one without a task in the plain list', () => {
+    renderToday({
+      tasks: [needsYouTask()],
+      decisions: [
+        heldDuring('t1', TASK_NAME, { id: 'd1', summary: 'Close ticket #4410?' }),
+        decision({ id: 'd2' }),
+      ],
+    });
+    const block = taskBlock();
+    expect(within(block).getByText('Close ticket #4410?')).toBeInTheDocument();
+    expect(within(block).queryByText('Send the reply to Dana?')).toBeNull();
+    expect(screen.getByText('Send the reply to Dana?')).toBeInTheDocument();
+  });
+
+  it('counts each task that needs you and each approval once', () => {
+    const { container } = renderToday({
+      tasks: [needsYouTask()],
+      decisions: [
+        heldDuring('t1', TASK_NAME, { id: 'd1', summary: 'Close ticket #4410?' }),
+        decision({ id: 'd2' }),
+      ],
+    });
+    expect(screen.getByText('Three things are waiting on you.')).toBeInTheDocument();
+    expect(container.textContent).toMatch(/3 waiting on you/);
+  });
+
+  it('a task there only for its approvals adds nothing to the count', () => {
+    renderToday({
+      tasks: [onTrackTask()],
+      decisions: [heldDuring('t2', 'Weekly invoice run', { id: 'd1' })],
+    });
+    expect(screen.getByText('One thing is waiting on you.')).toBeInTheDocument();
+    expect(
+      within(taskBlock(/Weekly invoice run/)).getByText('1 approval waiting'),
+    ).toBeInTheDocument();
+  });
+
+  it('never says nothing is waiting when the tasks read failed, and offers Try again', () => {
+    const onRetryTasks = vi.fn();
+    renderToday({ tasksError: 'failed', onRetryTasks });
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+    expect(screen.getByText(COULD_NOT_CHECK)).toBeInTheDocument();
+    const box = alertWith(TASKS_FAILED);
+    expect(box.className).toContain('destructive');
+    fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
+    expect(onRetryTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('an ended session offers sign-in, not Try again', () => {
+    renderToday({ tasksError: 'expired', onRetryTasks: vi.fn() });
+    const box = alertWith(DECISION_SESSION_EXPIRED);
+    expect(box.className).not.toContain('destructive');
+    expect(within(box).getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    expect(within(box).queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('names the agents it couldn’t check, and doesn’t claim an empty day', () => {
+    const onRetryTasks = vi.fn();
+    renderToday({
+      unavailableTaskAgents: [
+        { agentId: 'a-juniper', agentName: 'Juniper' },
+        { agentId: 'a-quill', agentName: 'Quill' },
+      ],
+      onRetryTasks,
+    });
+    const box = alertWith('We couldn’t check tasks from Juniper and Quill, so some may be missing.');
+    expect(box.className).toContain('destructive');
+    expect(screen.queryByText(TASKS_FAILED)).toBeNull();
+    expect(screen.getByText(COULD_NOT_CHECK)).toBeInTheDocument();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+    fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
+    expect(onRetryTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed refresh keeps the tasks it has on screen', () => {
+    renderToday({ tasksError: 'failed', tasks: [needsYouTask()] });
+    expect(taskBlock()).toBeInTheDocument();
+    expect(alertWith(TASKS_FAILED)).toBeInTheDocument();
+    expect(screen.getByText('One thing is waiting on you.')).toBeInTheDocument();
+  });
+
+  it('a task still shows when the queue can’t be read', () => {
+    renderToday({
+      error: { kind: 'failed', detail: 'workspace /decisions → 503' },
+      tasks: [needsYouTask()],
+    });
+    expect(taskBlock()).toBeInTheDocument();
+    expect(screen.getByText(COULD_NOT_CHECK)).toBeInTheDocument();
+  });
+
+  it('tasks show under Needs you only', () => {
+    renderToday({ filter: 'working', tasks: [needsYouTask()] });
+    expect(screen.queryByRole('region', { name: /Zero open support tickets/ })).toBeNull();
+  });
+
+  it('the empty-queue sentence waits for tasks too', () => {
+    renderToday({ tasks: [needsYouTask()] });
+    expect(taskBlock()).toBeInTheDocument();
+    expect(screen.queryByText(/wait for you here/)).toBeNull();
+  });
+
+  it('a reply sent from a task’s block calls onReplied', async () => {
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
+    const onReplied = vi.fn();
+    renderToday({ tasks: [needsYouTask()], onReplied });
+    const block = taskBlock();
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(
+      within(block).getByRole('textbox', { name: 'Reply to Quill about this task' }),
+      { target: { value: 'Yes, draft it' } },
+    );
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+    expect(sendTaskReplyMock).toHaveBeenCalledWith('a-quill', 't1', {
+      text: 'Yes, draft it',
+      requestId: expect.any(String),
+    });
   });
 });

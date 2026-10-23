@@ -5,7 +5,7 @@
  * shows comes from the API, and what the API has nothing for says so.
  */
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -16,7 +16,7 @@ import {
   GRANT_READ_FAILED,
 } from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
-import type { ActivityEvent } from '@/lib/workspace-types';
+import type { ActivityEvent, TaskRow } from '@/lib/workspace-types';
 import type { PermissionRequest } from '../../../server/types';
 
 import { rail as railFixture } from './rail-fixture';
@@ -40,6 +40,8 @@ vi.mock('@/lib/workspace-api', async () => {
       // (TASK-373). Default empty below; the tests that care override it.
       grants: vi.fn(),
       tasks: vi.fn(),
+      // A reply sent from a task's block on Today (TASK-933).
+      sendTaskReply: vi.fn(),
       // The rail reads its own route (TASK-235 / AW-14). Without it in the
       // mock, opening an agent throws before this file's subject renders.
       rail: vi.fn(async () => railFixture()),
@@ -53,6 +55,7 @@ const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
 const tasksMock = vi.mocked(workspaceApi.tasks);
+const sendTaskReplyMock = vi.mocked(workspaceApi.sendTaskReply);
 const agentMock = vi.mocked(workspaceApi.agent);
 
 /** A skill grant, as the wire carries it — the subject the tests raise twice. */
@@ -608,5 +611,153 @@ describe('the "done today" count', () => {
     await landPage({ events: busyDay, nextBefore: iso(midnight) });
 
     expect(screen.queryByText(/done today/)).toBeNull();
+  });
+});
+
+/*
+  TASK-933 — the badge, the Needs you tab and Today's headline are one count,
+  and it counts tasks that need you. Each case has inputs that would make two
+  differently-built counts disagree (memory patterns.md 2026-09-16 TASK-351).
+*/
+describe('tasks on Today, and one count (TASK-933)', () => {
+  const QUILL = {
+    id: 'a-quill',
+    name: 'Quill',
+    state: 'resting' as const,
+    now: null,
+    counter: null,
+    startedAt: null,
+    stoppedReason: null,
+  };
+
+  function taskRow(over: Partial<TaskRow> = {}): TaskRow {
+    return {
+      agentId: 'a-quill',
+      agentName: 'Quill',
+      routineId: 't1',
+      name: 'Zero open support tickets',
+      enabled: true,
+      task: {
+        status: 'needs-you',
+        update: 'Two tickets are still open.',
+        ask: 'Want me to draft a reply to #4410?',
+        reportedAt: '2026-10-23T10:00:00.000Z',
+      },
+      noRecentUpdate: null,
+      ...over,
+    };
+  }
+
+  const onTrack = (): TaskRow =>
+    taskRow({
+      routineId: 't2',
+      name: 'Weekly invoice run',
+      task: { status: 'on-track', update: 'All sent.', ask: null, reportedAt: '2026-10-23T10:00:00.000Z' },
+    });
+
+  /** The sidebar's Today button's badge, or null when it shows none. */
+  const badge = () =>
+    within(screen.getByRole('button', { name: /^Today/ })).queryByText(/^\d+$/);
+
+  beforeEach(() => {
+    boardMock.mockResolvedValue({ agents: [QUILL] });
+    sendTaskReplyMock.mockReset();
+  });
+
+  it('counts a task that needs you in the badge, the Needs you tab and the headline alike (TASK-933)', async () => {
+    decisionsMock.mockResolvedValue({
+      decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill' })],
+    });
+    tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
+
+    renderShell();
+
+    expect(await screen.findByText('Two things are waiting on you.')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /Needs you/ }).textContent).toBe('Needs you2');
+    expect(badge()?.textContent).toBe('2');
+  });
+
+  it('an approval under its task counts once, and a task there only for its approvals adds nothing', async () => {
+    decisionsMock.mockResolvedValue({
+      decisions: [
+        decisionFixture({
+          id: 'd1',
+          agentId: 'a-quill',
+          checkIn: { routineId: 't1', taskName: 'Zero open support tickets' },
+        }),
+        decisionFixture({
+          id: 'd2',
+          agentId: 'a-quill',
+          checkIn: { routineId: 't2', taskName: 'Weekly invoice run' },
+        }),
+      ],
+    });
+    tasksMock.mockResolvedValue({ tasks: [taskRow(), onTrack()], unavailableAgents: [] });
+
+    renderShell();
+
+    expect(await screen.findByText('Three things are waiting on you.')).toBeTruthy();
+    expect(badge()?.textContent).toBe('3');
+  });
+
+  it('reads the tasks once for the badge and Today', async () => {
+    renderShell();
+
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed tasks read never lets Today say nothing is waiting, and Try again reads again', async () => {
+    tasksMock
+      .mockRejectedValueOnce(new Error('workspace /tasks → 503'))
+      .mockResolvedValueOnce({ tasks: [], unavailableAgents: [] });
+
+    renderShell();
+
+    const sentence = await screen.findByText('We couldn’t check your tasks just now.');
+    expect(screen.getByText('We could not check what is waiting on you.')).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+
+    const box = sentence.closest<HTMLElement>('[role="alert"]')!;
+    fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('while Try again is reading, Today still says it couldn’t check', async () => {
+    tasksMock
+      .mockRejectedValueOnce(new Error('workspace /tasks → 503'))
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    renderShell();
+
+    const sentence = await screen.findByText('We couldn’t check your tasks just now.');
+    const box = sentence.closest<HTMLElement>('[role="alert"]')!;
+    fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('We could not check what is waiting on you.')).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('a reply sent from Today reads the tasks again', async () => {
+    tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
+
+    renderShell();
+
+    // Within the task's block: the home composer on Today has its own Send.
+    const block = await screen.findByRole('region', { name: /Zero open support tickets/ });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(
+      within(block).getByRole('textbox', { name: 'Reply to Quill about this task' }),
+      { target: { value: 'Yes, draft it' } },
+    );
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(sendTaskReplyMock).toHaveBeenCalledTimes(1);
   });
 });

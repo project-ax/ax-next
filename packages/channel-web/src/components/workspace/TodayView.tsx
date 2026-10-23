@@ -14,6 +14,9 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *
  *   3. Nothing here is a fixture. The rows are real `@ax/decisions` rows served
  *      by `GET /api/workspace/decisions`, and acting on one posts to the host.
+ *      The tasks that need a person come from the shell's one tasks read
+ *      (`GET /api/workspace/tasks`, TASK-933), each in its own block with the
+ *      approvals raised during its check-ins under it.
  *
  *   4. AN EMPTY QUEUE IS A CLAIM — the most reassuring one this product makes.
  *      It may only be rendered when we actually READ the queue. A failed read
@@ -27,11 +30,19 @@ import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { readAlertVariant } from '@/lib/read-register';
-import { isJustResolved, isOpenDecision } from '@/lib/workspace-types';
+import {
+  isJustResolved,
+  isOpenDecision,
+  type TaskRow,
+  type UnavailableAgent,
+} from '@/lib/workspace-types';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
+import { todayQueue, waitingOnYou } from '@/lib/today-queue';
+import type { TasksReadError } from '@/lib/workspace-tasks';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
+import { TodayTaskGroup } from './TodayTaskGroup';
 import {
   DECISION_READ_FAILED,
   DECISION_SESSION_EXPIRED,
@@ -61,6 +72,9 @@ const WORDS = [
   'Four things',
   'Five things',
 ];
+
+/** "Juniper and Quill", as the Tasks page names the agents it couldn't read. */
+const AGENT_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conjunction' });
 
 interface Props {
   decisions: Decision[];
@@ -134,6 +148,16 @@ interface Props {
   grantsError?: 'expired' | 'failed' | null;
   /** Re-read the grants. Only offered on the retryable branch. */
   onRetryGrants?: () => void;
+  /** Every task the person owns, from the shell's one tasks read (TASK-933). Today shows the ones that need a person. */
+  tasks: readonly TaskRow[];
+  /** How that read went: null = fine or still loading; 'failed' (a failed refresh too); 'expired'. */
+  tasksError: TasksReadError | null;
+  /** Agents whose tasks couldn't be read. */
+  unavailableTaskAgents: readonly UnavailableAgent[];
+  /** Read the tasks again. */
+  onRetryTasks: () => void;
+  /** A reply was sent from a task's block. */
+  onReplied: () => void;
 }
 
 export function TodayView({
@@ -159,19 +183,34 @@ export function TodayView({
   doneToday,
   grantsError = null,
   onRetryGrants,
+  tasks,
+  tasksError,
+  unavailableTaskAgents,
+  onRetryTasks,
+  onReplied,
 }: Props) {
   const readable = error === null;
   const grantsUnknown = grantsError !== null;
+  // A tasks read that failed, ran out of session, or missed some agents: we
+  // don't know every task that might need you (TASK-933).
+  const tasksUnknown = tasksError !== null || unavailableTaskAgents.length > 0;
+  const now = Date.now();
+  const readDecisions = readable ? decisions : [];
 
-  const open = readable ? decisions.filter(isOpenDecision) : [];
+  const open = readDecisions.filter(isOpenDecision);
   /*
     A row resolved a moment ago stays put and turns into its own receipt. It is
     also the only place the ten-second Undo lives, so it must not disappear the
     instant the status changes.
   */
-  const justResolved = readable
-    ? decisions.filter((d) => isJustResolved(d, Date.now()))
-    : [];
+  const justResolved = readDecisions.filter((d) => isJustResolved(d, now));
+  /*
+    TASK-933: a block per task that needs you, then per task that is here only
+    for the approvals raised in its check-ins; everything else is `loose`, in
+    queue order. Tasks come from their own read, so a task survives an
+    unreadable queue the way a grant does.
+  */
+  const { groups, loose } = todayQueue({ tasks, decisions: readDecisions, agents, now });
   const working = agents.filter((a) => a.state === 'working');
   /*
     Grants are counted with the decisions, not beside them. They are in the same
@@ -185,18 +224,23 @@ export function TodayView({
     the alert the shell renders when the read failed. When something IS
     readable and waiting, the count stands as a floor: true even if the grants
     read knows nothing.
+
+    TASK-933: the sum lives in `waitingOnYou`, which the shell's badge and the
+    Needs you tab read too, and it counts tasks that need you as well. Each
+    approval counts once, under its task or not, and a task there only for its
+    approvals adds nothing.
   */
-  const waiting = open.length + grants.length;
+  const waiting = waitingOnYou({ decisions: readDecisions, grants, tasks });
 
   /*
     The headline speaks only for what we could read. While the queue is
     unreadable it says nothing about it — "Nothing is waiting on you" over a
     failed fetch is the single most damaging sentence this page could print.
-    The grants read-back is the second way to not know, and the empty sentence
-    is exactly as false over it.
+    The grants read-back is the second way to not know, the tasks read the
+    third (TASK-933), and the empty sentence is exactly as false over either.
   */
   const headline =
-    !readable || (waiting === 0 && grantsUnknown)
+    !readable || (waiting === 0 && (grantsUnknown || tasksUnknown))
       ? 'We could not check what is waiting on you.'
       : waiting === 0
         ? 'Nothing is waiting on you.'
@@ -248,7 +292,18 @@ export function TodayView({
 
   const agentFor = (id: string) => agents.find((a) => a.id === id);
 
-  const renderRow = (d: Decision, expandable: boolean) => {
+  /*
+    `inBlock`: the row is drawn inside a task's block (TASK-933). It gets no
+    `onNavigate`, so its expanded detail draws no Open task of its own: the
+    block's heading already has one, always visible, and two identical links in
+    one block are noise (decisions row 8). A loose row never carries a check-in
+    label, so it draws no link either way.
+  */
+  const renderRow = (
+    d: Decision,
+    expandable: boolean,
+    { inBlock = false }: { inBlock?: boolean } = {},
+  ) => {
     const agent = agentFor(d.agentId);
     /*
       A decision whose agent is not in the roster has nowhere to be shown — the
@@ -268,7 +323,7 @@ export function TodayView({
           if (expandable) onExpand(expandedId === d.id ? null : d.id);
         }}
         onOpenAgent={() => onOpenAgent(d.agentId)}
-        onNavigate={onNavigate}
+        {...(inBlock ? {} : { onNavigate })}
         onApprove={(scope) => onApprove(d.id, scope)}
         onDismiss={() => onDismiss(d.id)}
         onUndo={() => onUndo(d.id)}
@@ -386,6 +441,45 @@ export function TodayView({
         </Alert>
       )}
 
+      {tasksUnknown && (
+        /*
+          The tasks read failed, or missed some agents (TASK-933). A THIRD
+          alert, for the same reason the grants one is its own: a third fetch of
+          a third collection, with its own Try again. A failed read nothing will
+          retry is `destructive` (`lib/read-register.ts`), and the Tasks page
+          draws the same failure the same way. Tasks we did read still show
+          below; this says which part we couldn't check.
+        */
+        <Alert variant={readAlertVariant(tasksError ?? 'failed')} className="mb-4">
+          <AlertDescription className="flex flex-col items-start gap-2.5">
+            {tasksError === 'expired' ? (
+              <>
+                <span className="text-[13px] leading-relaxed">{DECISION_SESSION_EXPIRED}</span>
+                <SignInAgainButton variant="secondary" />
+              </>
+            ) : (
+              <>
+                {tasksError === 'failed' && (
+                  <span className="text-[13px] leading-relaxed">
+                    We couldn’t check your tasks just now.
+                  </span>
+                )}
+                {unavailableTaskAgents.length > 0 && (
+                  <span className="break-words text-[13px] leading-relaxed">
+                    {`We couldn’t check tasks from ${AGENT_LIST.format(
+                      unavailableTaskAgents.map((a) => a.agentName),
+                    )}, so some may be missing.`}
+                  </span>
+                )}
+                <Button variant="secondary" size="sm" onClick={onRetryTasks}>
+                  Try again
+                </Button>
+              </>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/*
         The card is the list. With no list to show — the read failed and the
         alert above has already said so — an empty bordered box adds a second
@@ -423,7 +517,9 @@ export function TodayView({
         aria-label="Your queue"
         className={RESOLUTION_FOCUS_RING}
       >
-      {(readable || filter === 'working' || (filter === 'needs' && grants.length > 0)) && (
+      {(readable ||
+        filter === 'working' ||
+        (filter === 'needs' && (grants.length > 0 || groups.length > 0))) && (
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           {filter === 'needs' ? (
             <>
@@ -443,12 +539,35 @@ export function TodayView({
                   onGranted={onGranted}
                 />
               ))}
-              {open.map((d) => renderRow(d, true))}
-              {justResolved.map((d) => renderRow(d, false))}
+              {/*
+                Tasks that need you, then tasks there for their approvals
+                (TASK-933). A task's approvals render as ONE array in queue
+                order, so an answer turns a question into its receipt in place,
+                under the same instance, and the receipt keeps focus.
+              */}
+              {groups.map((g) => (
+                <TodayTaskGroup
+                  key={g.key}
+                  group={g}
+                  onNavigate={onNavigate}
+                  onReplied={onReplied}
+                >
+                  {g.decisions.map((d) => renderRow(d, isOpenDecision(d), { inBlock: true }))}
+                </TodayTaskGroup>
+              ))}
+              {/*
+                The other approvals, also as ONE array in queue order. They used
+                to be open rows then receipts, two sibling arrays: an answer
+                moved the row from one to the other, React mounted a new one,
+                and focus fell to `<body>` with Undo out of reach (TASK-933,
+                pinned in `consent-focus.test.tsx`).
+              */}
+              {loose.map((d) => renderRow(d, isOpenDecision(d)))}
               {readable &&
                 open.length === 0 &&
                 justResolved.length === 0 &&
-                grants.length === 0 && (
+                grants.length === 0 &&
+                groups.length === 0 && (
                 /*
                   The headline already said the queue is empty. Saying it again
                   two inches lower tells a first-timer nothing; what they do not

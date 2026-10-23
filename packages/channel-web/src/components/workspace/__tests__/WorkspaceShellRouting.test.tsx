@@ -731,4 +731,35 @@ describe('one tasks read (TASK-933)', () => {
     await screen.findByRole('heading', { name: 'Today' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
   });
+
+  it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
+    tasksMock.mockResolvedValue({
+      tasks: [
+        {
+          agentId: 'a-quill',
+          agentName: 'Quill',
+          routineId: 't1',
+          name: 'Zero open support tickets',
+          enabled: true,
+          task: {
+            status: 'needs-you',
+            update: 'Two tickets are still open.',
+            ask: 'Want me to draft a reply to #4410?',
+            reportedAt: '2026-10-23T10:00:00.000Z',
+          },
+          noRecentUpdate: null,
+        },
+      ],
+      unavailableAgents: [],
+    });
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+
+    // Today isn't mounted here, so only the shell's own count can say 1.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('button', { name: /^Today/ })).queryByText(/^\d+$/)?.textContent,
+      ).toBe('1'),
+    );
+  });
 });
