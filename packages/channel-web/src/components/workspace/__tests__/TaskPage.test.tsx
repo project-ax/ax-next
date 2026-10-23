@@ -1012,6 +1012,36 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     expect(within(latest).getByText(`Last check-in at ${localTime(MISSED)} · Paused`)).toBeInTheDocument();
   });
 
+  it('a viewer who can’t press Check now is not told to', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        permissions: { fire: false, stop: false, edit: true },
+        noRecentUpdate: missed({ reason: 'failed' }),
+      }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(within(latest).getByText('It’ll try again at its next check-in.')).toBeInTheDocument();
+    expect(within(latest).queryByText(/Press Check now/)).toBeNull();
+  });
+
+  it('a viewer who can’t resume is not told to press Resume', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        enabled: false,
+        nextCheckAt: null,
+        permissions: { fire: true, stop: true, edit: false },
+        noRecentUpdate: missed({ reason: 'failed' }),
+      }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(
+      within(latest).getByText('Only someone who manages this agent’s tasks can resume it.'),
+    ).toBeInTheDocument();
+    expect(within(latest).queryByText(/Press Resume/)).toBeNull();
+  });
+
   it('an auto-paused task says why it’s paused and how to resume', async () => {
     taskMock.mockResolvedValue(
       detail({

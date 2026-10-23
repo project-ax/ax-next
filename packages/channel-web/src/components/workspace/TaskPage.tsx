@@ -618,7 +618,10 @@ function LatestUpdate({
   if (miss !== null) {
     // Grouped as the Tasks row groups it, minus the pause: this card says "Paused" in its own line.
     const group = taskGroup({ enabled: true, task, noRecentUpdate: miss });
-    const words = missWords(miss.reason, agentName, !enabled);
+    const words = missWords(miss.reason, agentName, !enabled, {
+      checkNow: detail.permissions.fire,
+      resume: detail.permissions.edit,
+    });
     const missedConversation = missCheckIn(miss, detail.updates);
     const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
     return (

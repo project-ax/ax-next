@@ -5,6 +5,9 @@ import { AUTO_PAUSED_LINE, missSummary, missWords } from '../task-miss.js';
 const TRY_AGAIN = 'Press Check now to try again.';
 const RESUME = 'Press Resume, and it’ll try again at its next check-in.';
 const ASK = 'If it keeps happening, tell whoever runs your workspace.';
+const NEXT_CHECK_IN = 'It’ll try again at its next check-in.';
+const NOT_YOURS_TO_RESUME = 'Only someone who manages this agent’s tasks can resume it.';
+const ALL = { checkNow: true, resume: true };
 
 /** [what, fix while running, fix while paused, settingsLink]; typographic marks written as escapes. */
 const TABLE: Record<CheckInMiss, [string, string, string, boolean]> = {
@@ -43,16 +46,39 @@ describe('missWords', () => {
 
   it.each(CHECK_IN_MISSES)('%s: exact words while running', (code) => {
     const [what, fix, , settingsLink] = TABLE[code];
-    expect(missWords(code, 'Quill', false)).toEqual({ what, fix, settingsLink });
+    expect(missWords(code, 'Quill', false, ALL)).toEqual({ what, fix, settingsLink });
   });
 
   it.each(CHECK_IN_MISSES)('%s: exact words while paused', (code) => {
     const [what, , fix, settingsLink] = TABLE[code];
-    expect(missWords(code, 'Quill', true)).toEqual({ what, fix, settingsLink });
+    expect(missWords(code, 'Quill', true, ALL)).toEqual({ what, fix, settingsLink });
+  });
+
+  /** The words with `Press Check now to try again.` swapped for what a viewer who can't press it reads. */
+  const withoutCheckNow = (fix: string) => fix.replace(TRY_AGAIN, NEXT_CHECK_IN);
+  const withoutResume = (fix: string) => fix.replace(RESUME, NOT_YOURS_TO_RESUME);
+
+  it.each(CHECK_IN_MISSES)('%s: without Check now, never tells the viewer to press it', (code) => {
+    const [what, fix, , settingsLink] = TABLE[code];
+    const words = missWords(code, 'Quill', false, { checkNow: false, resume: true });
+    expect(words).toEqual({ what, fix: withoutCheckNow(fix), settingsLink });
+    expect(words.fix).not.toMatch(/Check now/);
+  });
+
+  it.each(CHECK_IN_MISSES)('%s: without Resume, never tells the viewer to press it', (code) => {
+    const [what, , fix, settingsLink] = TABLE[code];
+    const words = missWords(code, 'Quill', true, { checkNow: true, resume: false });
+    expect(words).toEqual({ what, fix: withoutResume(fix), settingsLink });
+    if (code !== 'brief-too-long') expect(words.fix).not.toMatch(/Press Resume/);
+  });
+
+  it('a viewer who can only resume still reads Resume while paused, and one who can only check reads Check now while running', () => {
+    expect(missWords('failed', 'Quill', true, { checkNow: false, resume: true }).fix).toBe(RESUME);
+    expect(missWords('failed', 'Quill', false, { checkNow: true, resume: false }).fix).toBe(TRY_AGAIN);
   });
 
   it('points at settings only for a brief that is too long', () => {
-    expect(CHECK_IN_MISSES.filter((c) => missWords(c, 'Quill', false).settingsLink)).toEqual([
+    expect(CHECK_IN_MISSES.filter((c) => missWords(c, 'Quill', false, ALL).settingsLink)).toEqual([
       'brief-too-long',
     ]);
   });
@@ -60,7 +86,7 @@ describe('missWords', () => {
   it('never names a link in the fix; those are their own elements', () => {
     for (const c of CHECK_IN_MISSES) {
       for (const p of [false, true]) {
-        expect(missWords(c, 'Quill', p).fix).not.toMatch(/See what it did/);
+        expect(missWords(c, 'Quill', p, ALL).fix).not.toMatch(/See what it did/);
       }
     }
   });
@@ -68,15 +94,15 @@ describe('missWords', () => {
   it('uses typographic marks, never straight ones', () => {
     for (const c of CHECK_IN_MISSES) {
       for (const p of [false, true]) {
-        const { what, fix } = missWords(c, 'Quill', p);
+        const { what, fix } = missWords(c, 'Quill', p, ALL);
         expect(`${what}${fix}`).not.toMatch(/['"]/);
       }
     }
   });
 
   it('treats an unknown code as failed', () => {
-    expect(missWords('from-a-newer-host' as CheckInMiss, 'Quill', false)).toEqual(
-      missWords('failed', 'Quill', false),
+    expect(missWords('from-a-newer-host' as CheckInMiss, 'Quill', false, ALL)).toEqual(
+      missWords('failed', 'Quill', false, ALL),
     );
   });
 });
