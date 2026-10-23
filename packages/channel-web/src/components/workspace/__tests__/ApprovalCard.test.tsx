@@ -243,7 +243,7 @@ describe('ApprovalCard — attended vs unattended (TASK-911)', () => {
   });
   it('a stale unattended card drops the checked-against clause, as the queue row does', () => {
     render(
-      <ApprovalCard agentName="Scheduler" decision={decisionFixture({ status: 'stale', staleReason: 'Booked.', freshness: { kind: 'slot-etag', value: 'v', label: null } })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+      <ApprovalCard agentName="Scheduler" decision={decisionFixture({ status: 'stale', staleReason: 'Booked.', freshness: { kind: 'slot-etag', value: 'v', label: 'Thursday 9:30 still free for both of you' } })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
     );
     expect(
       screen.getByText('Held during an unattended run · Scheduler ended its turn rather than wait'),

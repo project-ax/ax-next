@@ -26,7 +26,10 @@
  * those the card says what the Today row says instead — where it was held,
  * what it was checked against, when it expires, and "Nothing happens until you
  * choose" — from the same `decision-copy.ts` functions. An attended card is
- * unchanged.
+ * unchanged. This is keyed on the row's attendance, not on `readOnly`: the
+ * live agent view can draw unattended rows too (a chat's hold reusing an open
+ * routine-raised row, or attendance that couldn't be told), and the same
+ * words are the true ones there.
  *
  * THE THIRD RENDERER OF ONE ROW (the queue, this, and one day Slack). Every
  * sentence about an OUTCOME comes from `decision-copy.ts`, shared with

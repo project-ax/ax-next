@@ -218,12 +218,14 @@ export function TaskCheckinPage({
                 `failureStripShown` only quiet the empty-thread welcome, which
                 `readOnly` never draws. The conversation id is the one the
                 server found (it trims what it is handed), not the address as
-                typed, since file downloads are scoped by it.
+                typed, since file downloads are scoped by it. It is never null
+                here (the server answers only for a check-in with that id);
+                null would still fail safe, naming files without a link.
               */
               <AgentConversation
                 agent={{ id: agentId, name: state.page.agentName }}
                 thread={state.page.thread}
-                conversationId={state.page.checkIn.conversationId ?? conversationId}
+                conversationId={state.page.checkIn.conversationId ?? null}
                 decisions={decisions}
                 readOnly
                 onSend={NO_SEND}

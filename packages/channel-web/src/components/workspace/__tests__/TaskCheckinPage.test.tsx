@@ -26,6 +26,7 @@ import { workspaceApi, WorkspaceApiError, type ThreadMessage } from '@/lib/works
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { localTime } from '@/lib/workspace-time';
 import type { TaskCheckin, TaskUpdate } from '@/lib/workspace-types';
+import { saveBlob } from '@/lib/file-download';
 import { DECISION_SESSION_EXPIRED, DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { TaskCheckinPage } from '../TaskCheckinPage';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
@@ -34,6 +35,9 @@ vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return { ...actual, workspaceApi: { taskCheckin: vi.fn() } };
 });
+
+// A download's last step clicks a link, which jsdom can't follow.
+vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn() }));
 
 const checkinMock = vi.mocked(workspaceApi.taskCheckin);
 
@@ -325,6 +329,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
         '/api/files?path=out%2Freport.csv&conversationId=c1',
         expect.anything(),
       );
+      await waitFor(() => expect(saveBlob).toHaveBeenCalledTimes(1));
     } finally {
       vi.unstubAllGlobals();
     }
