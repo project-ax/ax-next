@@ -1307,6 +1307,30 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
   });
 
+  it('a reply answering replayed starts the poll too: Checking in now…, and a re-read at 10 seconds', async () => {
+    taskMock.mockResolvedValue(detail());
+    replyMock.mockResolvedValue({ checkIn: 'replayed' });
+    await renderReady();
+    await sendReply('Refunds under $100 are fine.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(await within(pageStatus()).findByText(CHECKING_IN)).toBeInTheDocument();
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a reply answering not-allowed starts no poll: no Checking in now…, no re-read at 10 seconds', async () => {
+    taskMock.mockResolvedValue(detail({ permissions: { fire: false, stop: false, edit: false } }));
+    replyMock.mockResolvedValue({ checkIn: 'not-allowed' });
+    await renderReady();
+    await sendReply('Refunds under $100 are fine.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Sent. Quill will read it at its next check-in.')).toBeInTheDocument();
+    expect(screen.queryByText(CHECKING_IN)).toBeNull();
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(CHECKING_IN)).toBeNull();
+  });
+
   it('after Check now the line is announced', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
