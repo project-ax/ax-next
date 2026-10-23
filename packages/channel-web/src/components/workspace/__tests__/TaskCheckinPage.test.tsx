@@ -301,6 +301,35 @@ describe('TaskCheckinPage (TASK-911)', () => {
     ).toBeInTheDocument();
   });
 
+  it('a file it made downloads under the check-in the server found, not the address as typed', async () => {
+    // The server trims the id it is handed; the address may not be.
+    const fetchMock = vi.fn(async () => new Response('csv'));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      checkinMock.mockResolvedValue(
+        page({
+          thread: [
+            {
+              ...SAID,
+              attachments: [{ path: 'out/report.csv', displayName: 'report.csv', mediaType: 'text/csv' }],
+            },
+          ],
+        }),
+      );
+      renderPage({ conversationId: ' c1 ' });
+      await ready();
+      expect(checkinMock).toHaveBeenCalledWith('a1', 't1', ' c1 ');
+      fireEvent.click(within(transcript()).getByRole('button', { name: 'Download report.csv' }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/files?path=out%2Freport.csv&conversationId=c1',
+        expect.anything(),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('draws the agent’s words as the agent view does, and its report as plain text', async () => {
     const raw = '**bold** <b>x</b>';
     checkinMock.mockResolvedValue(

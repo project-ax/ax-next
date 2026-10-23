@@ -112,9 +112,10 @@ export function TaskCheckinPage({
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
   /*
-    The decision queue's own members, typed as the queue types them. Taking
-    `onApprove` as `(id) => void`, as AgentView does, would drop the scope that
-    Always Allow sends.
+    The decision queue's own members, typed as the queue types them. AgentView
+    types `onApprove` as `(id) => void` but hands `queue.approve` straight
+    through, so Always Allow's scope still reaches the server there; only the
+    type is narrower. Typed as the queue's own, the scope is visible here too.
   */
   decisions: DecisionQueue['decisions'];
   onApprove: DecisionQueue['approve'];
@@ -215,12 +216,14 @@ export function TaskCheckinPage({
                 `conversationKey`: the shell mounts this page once per check-in,
                 so the thread never swaps under it. `settling` and
                 `failureStripShown` only quiet the empty-thread welcome, which
-                `readOnly` never draws.
+                `readOnly` never draws. The conversation id is the one the
+                server found (it trims what it is handed), not the address as
+                typed, since file downloads are scoped by it.
               */
               <AgentConversation
                 agent={{ id: agentId, name: state.page.agentName }}
                 thread={state.page.thread}
-                conversationId={conversationId}
+                conversationId={state.page.checkIn.conversationId ?? conversationId}
                 decisions={decisions}
                 readOnly
                 onSend={NO_SEND}
