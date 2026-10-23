@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError } from '../workspace-api';
 import type { TaskRow, TasksResponse } from '../workspace-types';
+import { TASKS_AGENT_READ_DEADLINE_MS } from '../../server/routes-workspace';
 import { TASKS_READ_TIMEOUT_MS, tasksForToday, useTasks, type TasksState } from '../workspace-tasks';
 
 vi.mock('../workspace-api', async () => {
@@ -294,10 +295,10 @@ describe('a read that never settles (TASK-933 review)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  // The server gives up on a slow agent at 10 s (TASKS_AGENT_READ_DEADLINE_MS),
-  // so the client waits longer than that before calling the read failed.
-  it('waits longer than the server’s own 10 s deadline', () => {
-    expect(TASKS_READ_TIMEOUT_MS).toBeGreaterThan(10_000);
+  // The server gives up on a slow agent at TASKS_AGENT_READ_DEADLINE_MS, so
+  // the client waits longer than that before calling the read failed.
+  it('waits longer than the server’s own per-agent deadline', () => {
+    expect(TASKS_READ_TIMEOUT_MS).toBeGreaterThan(TASKS_AGENT_READ_DEADLINE_MS);
   });
 
   it('fails the read when it hasn’t answered in time, so Try again reads again', async () => {

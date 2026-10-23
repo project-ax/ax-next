@@ -38,9 +38,11 @@ import type { TaskRow, UnavailableAgent } from './workspace-types';
 export type TasksReadError = 'expired' | 'failed';
 
 /**
- * How long a tasks read may take before it counts as failed. Longer than the
- * server's own 10 s cap on a slow agent (`TASKS_AGENT_READ_DEADLINE_MS`), so a
- * read the server answers in time is never cut short here.
+ * How long a tasks read may take before it counts as failed. A backstop, not a
+ * guarantee: it is longer than the server's cap on each agent's own read
+ * (`TASKS_AGENT_READ_DEADLINE_MS`), but that cap covers only the per-agent reads
+ * (auth and the agent list run before it, uncapped), so a slow server can still
+ * outlast this timer and the person gets the failure with Try again.
  */
 export const TASKS_READ_TIMEOUT_MS = 15_000;
 
