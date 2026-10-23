@@ -70,6 +70,7 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     expect([...STATES].sort()).toEqual([
       'held',
       'needs-you',
+      'no-recent-update',
       'no-update',
       'off-track',
       'on-track',
@@ -113,6 +114,13 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     const noUpdate = renderSlotted('no-update').dot;
     expect(noUpdate).toContain('border-state-quiet');
     expect(noUpdate).not.toMatch(/\bbg-/);
+  });
+
+  it('draws no-recent-update as the hollow ring a resting mark is (TASK-930)', () => {
+    expect(STATE_SHAPE['no-recent-update']).toBe(STATE_SHAPE.resting);
+    const dot = renderSlotted('no-recent-update').dot;
+    expect(dot).toContain('border-state-quiet');
+    expect(dot).not.toMatch(/\bbg-/);
   });
 
   it('draws paused as a dash no agent mark uses (TASK-909)', () => {

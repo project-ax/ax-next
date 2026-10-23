@@ -466,6 +466,26 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     });
   });
 
+  it('see it on Tasks: missed check-ins group a task, and three escalate it (TASK-930)', async () => {
+    const miss = (inARow: number) => ({
+      inARow,
+      reason: 'no-report' as const,
+      at: new Date('2026-10-22T11:00:00.000Z'),
+      autoPausedAt: null,
+    });
+    const one = stored({ agentId: 'a1', routineId: 't1', noRecentUpdate: miss(1) });
+    const three = stored({ agentId: 'a2', routineId: 't2', noRecentUpdate: miss(3) });
+    expect(RoutineViewSchema.safeParse(routineView(one, 'alice', true)).success).toBe(true);
+    const { get } = setup({ rows: [one, three] });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const { groups } = groupTasks(bodyOf(captured).tasks);
+    const ids = (g: string) =>
+      groups.find((x) => x.group === g)?.rows.map((r) => r.routineId);
+    expect(ids('no-recent-update')).toEqual(['t1']);
+    expect(ids('needs-you')).toEqual(['t2']);
+  });
+
   it('401s without a session and reads nothing', async () => {
     const { get, rosterCalls, listCalls } = setup({
       viewer: null,

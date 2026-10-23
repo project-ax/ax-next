@@ -1,12 +1,19 @@
-import type { RoutineReportStatus } from '@ax/routines-contract';
+import { TASK_NEEDS_YOU_AFTER_MISSES, type RoutineReportStatus } from '@ax/routines-contract';
 import type { TaskRow } from './workspace-types.js';
 
-export type TaskGroup = 'needs-you' | 'off-track' | 'on-track' | 'no-update' | 'paused';
+export type TaskGroup =
+  | 'needs-you'
+  | 'off-track'
+  | 'no-recent-update'
+  | 'on-track'
+  | 'no-update'
+  | 'paused';
 export type ActiveTaskGroup = Exclude<TaskGroup, 'paused'>;
 
 export const ACTIVE_TASK_GROUPS: readonly ActiveTaskGroup[] = [
   'needs-you',
   'off-track',
+  'no-recent-update',
   'on-track',
   'no-update',
 ];
@@ -15,24 +22,42 @@ export const ACTIVE_TASK_GROUPS: readonly ActiveTaskGroup[] = [
 export const TASK_GROUP_LABELS: Record<TaskGroup, string> = {
   'needs-you': 'Needs you',
   'off-track': 'Off track',
+  'no-recent-update': 'No recent update',
   'on-track': 'On track',
   'no-update': 'No update yet',
   paused: 'Paused',
 };
 
-/** Which group a task sits in. Paused wins over whatever the last report said. */
+/**
+ * Where a task's missed check-ins put it: one or two in a row is "No recent
+ * update"; at `TASK_NEEDS_YOU_AFTER_MISSES` it needs a person (TASK-930).
+ */
+export function missGroup(noRecentUpdate: { inARow: number }): 'needs-you' | 'no-recent-update' {
+  return noRecentUpdate.inARow >= TASK_NEEDS_YOU_AFTER_MISSES ? 'needs-you' : 'no-recent-update';
+}
+
+/**
+ * Which group a task sits in. Paused wins over everything, including an
+ * escalated miss count. Missed check-ins come next, ahead of whatever the last
+ * report said (the report is older than the silence) and ahead of "never
+ * reported". Otherwise the last report's status, or no-update.
+ */
 export function taskGroup(row: {
   enabled: boolean;
   task: { status: RoutineReportStatus } | null;
+  noRecentUpdate: { inARow: number } | null;
 }): TaskGroup {
   if (!row.enabled) return 'paused';
+  if (row.noRecentUpdate !== null) return missGroup(row.noRecentUpdate);
   if (row.task === null) return 'no-update';
   return row.task.status;
 }
 
+/** When the row last said something: the missed check-in if it has one, else its report. */
 function reportedMs(row: TaskRow): number | null {
-  if (row.task === null) return null;
-  const ms = Date.parse(row.task.reportedAt);
+  const at = row.noRecentUpdate?.at ?? row.task?.reportedAt;
+  if (at === undefined) return null;
+  const ms = Date.parse(at);
   return Number.isNaN(ms) ? null : ms;
 }
 
