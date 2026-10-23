@@ -880,7 +880,9 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
   }
 
   it('a check-in that left no report leads with No recent update, the reason and the fix, then the last update, muted', async () => {
-    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed() }));
+    taskMock.mockResolvedValue(
+      detail({ task: report({ status: 'on-track', ask: null }), noRecentUpdate: missed() }),
+    );
     await renderReady();
     const latest = latestUpdate();
     const text = latest.textContent ?? '';
@@ -896,10 +898,32 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       return text.indexOf(line);
     });
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
-    // The stale status and ask are not drawn as if they were current.
-    expect(within(latest).queryByText('Needs you')).toBeNull();
-    expect(within(latest).queryByText(/asks:/)).toBeNull();
+    // The stale status is not drawn as if it were current.
+    expect(within(latest).queryByText('On track')).toBeNull();
     expect(within(latest).getByText(lastUpdate)).toHaveClass('text-muted-foreground');
+  });
+
+  it('a needs-you report followed by one miss stays Needs you and keeps its ask, muted', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed() }));
+    await renderReady();
+    const latest = latestUpdate();
+    expect(within(latest).getByText('Needs you')).toBeInTheDocument();
+    expect(within(latest).queryByText('No recent update')).toBeNull();
+    const ask = within(latest).getByText(
+      'Quill asks: Want me to draft a reply to #4410 for you to send?',
+    );
+    expect(ask).toHaveClass('text-muted-foreground');
+    const text = latest.textContent ?? '';
+    expect(text.indexOf(`Last update at ${localTime(REPORTED)}`)).toBeLessThan(text.indexOf('Quill asks:'));
+  });
+
+  it('an off-track report followed by one miss stays Off track', async () => {
+    taskMock.mockResolvedValue(
+      detail({ task: report({ status: 'off-track', ask: null }), noRecentUpdate: missed() }),
+    );
+    await renderReady();
+    expect(within(latestUpdate()).getByText('Off track')).toBeInTheDocument();
+    expect(within(latestUpdate()).queryByText('No recent update')).toBeNull();
   });
 
   it('three in a row read Needs you with the count', async () => {
@@ -1047,6 +1071,8 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       .mockResolvedValue(detail({ revision: 'rev-10' }));
     updateMock.mockResolvedValue(ROUTINE);
     await renderReady();
+    expect(screen.getByText(AUTO_PAUSED, { exact: false })).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText('Needs you')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await screen.findByRole('button', { name: 'Pause' });
     expect(updateMock).toHaveBeenCalledWith({
@@ -1058,7 +1084,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     });
     expect(taskMock).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(AUTO_PAUSED, { exact: false })).toBeNull();
-    expect(within(latestUpdate()).queryByText('No recent update')).toBeNull();
+    expect(within(latestUpdate()).queryByText(/didn’t leave an update/)).toBeNull();
   });
 
   it('a miss time it can’t read shows no time, never Invalid Date', async () => {

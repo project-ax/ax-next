@@ -73,7 +73,7 @@ import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
-import { missGroup, TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { taskGroup, TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
 import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
@@ -588,12 +588,13 @@ function BriefRow({
  * and when it will first check in. Paused, it shows the last report it had.
  *
  * A task whose last check-in left no report leads with that instead (TASK-930):
- * its mark (No recent update, or Needs you from the third in a row), why, the
- * one thing to do, and when it last checked in. The last report stays under it,
- * muted and dated, because it is older than the silence; its ask is left out,
- * since answering a stale ask is the wrong next step. The reason and the fix
- * are host-written words (`lib/task-miss.ts`); only the last update is
- * agent-written.
+ * its mark (`taskGroup`, the same as its Tasks row: No recent update, or Needs
+ * you from the third in a row or when the last report needed you), why, the one
+ * thing to do, and when it last checked in. The last report stays under it,
+ * muted and dated, because it is older than the silence, and so does its ask,
+ * muted: a person is still being waited on, and hiding the ask would hide that.
+ * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
+ * update and its ask are agent-written.
  */
 function LatestUpdate({
   detail,
@@ -615,7 +616,8 @@ function LatestUpdate({
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
   const miss = detail.noRecentUpdate;
   if (miss !== null) {
-    const group = missGroup(miss);
+    // Grouped as the Tasks row groups it, minus the pause: this card says "Paused" in its own line.
+    const group = taskGroup({ enabled: true, task, noRecentUpdate: miss });
     const words = missWords(miss.reason, agentName, !enabled);
     const missedConversation = missCheckIn(miss, detail.updates);
     const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
@@ -677,6 +679,11 @@ function LatestUpdate({
                 {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
                   task.update === null || task.update === '' ? CANT_SHOW : task.update
                 }`}
+              </p>
+            )}
+            {task?.ask != null && (
+              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                {`${agentName} asks: ${task.ask}`}
               </p>
             )}
           </CardContent>

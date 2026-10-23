@@ -100,6 +100,24 @@ describe('missed check-ins (TASK-930)', () => {
     expect(taskGroup(row({ task: report('on-track'), noRecentUpdate: miss(3) }))).toBe('needs-you');
   });
 
+  it('never demotes a needs-you report, however few misses follow it', () => {
+    expect(taskGroup(row({ task: report('needs-you'), noRecentUpdate: miss(1) }))).toBe('needs-you');
+  });
+
+  it('never demotes an off-track report, however few misses follow it', () => {
+    expect(taskGroup(row({ task: report('off-track'), noRecentUpdate: miss(1) }))).toBe('off-track');
+  });
+
+  it('puts one miss over an on-track report under no-recent-update', () => {
+    expect(taskGroup(row({ task: report('on-track'), noRecentUpdate: miss(1) }))).toBe(
+      'no-recent-update',
+    );
+  });
+
+  it('escalates an off-track report to needs-you at three misses', () => {
+    expect(taskGroup(row({ task: report('off-track'), noRecentUpdate: miss(3) }))).toBe('needs-you');
+  });
+
   it('puts misses ahead of never reported', () => {
     expect(taskGroup(row({ task: null, noRecentUpdate: miss(1) }))).toBe('no-recent-update');
   });

@@ -38,9 +38,12 @@ export function missGroup(noRecentUpdate: { inARow: number }): 'needs-you' | 'no
 
 /**
  * Which group a task sits in. Paused wins over everything, including an
- * escalated miss count. Missed check-ins come next, ahead of whatever the last
- * report said (the report is older than the silence) and ahead of "never
- * reported". Otherwise the last report's status, or no-update.
+ * escalated miss count. Then anything that needs a person: three misses in a
+ * row, or a last report that said needs-you. A report waiting on a person is
+ * never demoted by fewer misses, because its ask would be hidden with it
+ * (TASK-930 decisions); off-track holds the same way. Otherwise one or two
+ * misses outrank a quieter report (the report is older than the silence),
+ * then "never reported", then the last report's status.
  */
 export function taskGroup(row: {
   enabled: boolean;
@@ -48,7 +51,12 @@ export function taskGroup(row: {
   noRecentUpdate: { inARow: number } | null;
 }): TaskGroup {
   if (!row.enabled) return 'paused';
-  if (row.noRecentUpdate !== null) return missGroup(row.noRecentUpdate);
+  const miss = row.noRecentUpdate;
+  if ((miss !== null && missGroup(miss) === 'needs-you') || row.task?.status === 'needs-you') {
+    return 'needs-you';
+  }
+  if (row.task?.status === 'off-track') return 'off-track';
+  if (miss !== null) return 'no-recent-update';
   if (row.task === null) return 'no-update';
   return row.task.status;
 }
