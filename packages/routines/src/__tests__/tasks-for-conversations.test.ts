@@ -132,6 +132,10 @@ describe('tasksForConversations (store, TASK-932)', () => {
     });
     // The open-runs index, `routines_v1_dispatches_open_conversation`, doesn't contain this name.
     expect(plan).toContain('routines_v1_dispatches_conversation');
+    // A lookup on both of the index's columns, not a walk of the whole index for every id: without
+    // the inner `agent_id` match the plan still names the index, with only `conversation_id` as its
+    // condition (TASK-932 review).
+    expect(plan).toMatch(/Index Cond: \(\(agent_id = [^)]+\) AND \(conversation_id = c\.conversation_id\)\)/);
     // At most two of a conversation's runs, however many a shared conversation has gathered.
     expect(plan).toContain('Limit');
   });
