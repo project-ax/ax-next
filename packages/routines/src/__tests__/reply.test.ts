@@ -279,7 +279,7 @@ describe('routines:reply (TASK-931)', () => {
   it("logs one ids-only warn line when a stored reply's check-in step throws, and rethrows", async () => {
     const task = await createTask();
     const row = (await f.store.findOne(keyOf(task)))!;
-    const KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'routineId'];
+    const KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'routineId', 'replyId', 'toolCode'];
     const text = 'The refund code is 7731.';
     const cases: Array<[label: string, store: Partial<RoutinesStore>, toolCode: string | null]> = [
       ['the accept throws', { acceptDispatch: async () => { throw new Error('connection reset 7731'); } }, null],
@@ -295,7 +295,7 @@ describe('routines:reply (TASK-931)', () => {
       else await expect(sent, label).rejects.toMatchObject({ toolCode });
       const entries = log.lines.map(line => JSON.parse(line) as Record<string, unknown>);
       expect(entries.filter(entry => entry.msg === 'routines_reply_check_in_failed'), label).toEqual([
-        expect.objectContaining({ level: 'warn', agentId: 'a', routineId: task.routineId }),
+        expect.objectContaining({ level: 'warn', agentId: 'a', routineId: task.routineId, replyId: expect.stringMatching(/^reply_/), toolCode: toolCode ?? 'unknown' }),
       ]);
       for (const entry of entries) for (const key of Object.keys(entry)) expect(KEYS, `${label}: ${key}`).toContain(key);
       expect(log.lines.join('\n'), label).not.toContain('7731');

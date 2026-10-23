@@ -320,9 +320,13 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     try {
       checkIn = await replyCheckIn(ctx, a.allowed, outcome.row, outcome.replyId, send);
     } catch (err) {
-      // The reply is stored, but its check-in step failed: say so (ids only; the error may carry
-      // anything) so a stored reply with no check-in behind it can be found.
-      ctx.logger.warn('routines_reply_check_in_failed', { agentId: input.agentId, routineId: input.routineId });
+      // The reply was stored (and is still there unless the routine was deleted meanwhile), but its
+      // check-in step failed: say so so a stored reply with no check-in behind it can be found. Ids
+      // and the closed tool code only; the error's message may carry anything.
+      ctx.logger.warn('routines_reply_check_in_failed', {
+        agentId: input.agentId, routineId: input.routineId, replyId: outcome.replyId,
+        toolCode: err instanceof SafeToolError ? err.toolCode : 'unknown',
+      });
       throw err;
     }
     ctx.logger.info('routines_reply_added', { agentId: input.agentId, routineId: input.routineId, checkIn, replayed: outcome.outcome === 'replayed' });
