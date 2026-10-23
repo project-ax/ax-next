@@ -3,7 +3,7 @@ import { sql } from 'kysely';
 import { CHECK_IN_MISSES, RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, type RoutinePatch } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
-import { editableDefinition, inputHash, parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
+import { parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
 import { AcceptedDispatchSchema } from '../dispatch.js';
 import type { DispatchOutcome, DispatchReport } from '../types.js';
 
@@ -221,8 +221,10 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     const after = (await definitionRow(row.routineId))!;
     expect(after).toMatchObject({ enabled: false, next_run_at: null });
     expect(after.revision).not.toBe(before.revision);
-    // The hash a person's pause would store: the paused definition's.
-    expect(after.spec_hash).toBe(inputHash({ ...editableDefinition(before), enabled: false }));
+    // The hash a person's pause stores: a twin task with the same definition, paused by its person.
+    const twin = await f.store.createAuthored(taskInput('twin'));
+    await edit(twin, 'pause', { enabled: false });
+    expect(after.spec_hash).toBe((await definitionRow(twin.routineId))!.spec_hash);
     expect(after.spec_hash).not.toBe(beforeRow.spec_hash);
     // One instant for the pause and the row's last change, read off the host's clock.
     const pausedAt = after.task_auto_paused_at as Date;
