@@ -286,6 +286,47 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
       .rejects.toMatchObject({ toolCode: 'validation', field: 'promptBody' });
     expect(await store.findOne({ agentId: h.agentId, routineId: task.routineId })).toMatchObject({ promptBody: 'Keep the queue empty.', revision: task.revision });
   });
+  // TASK-930: only a person resumes a paused task, which may be one ax paused after five check-ins without a
+  // report. Always Allow still covers pausing and resuming a repeat routine (closes TASK-906 decisions row 25).
+  it('with Always Allow granted, the agent can’t resume a paused task, at pre-call or at execute; a paused repeat routine resumes (TASK-930)', async () => {
+    const { ctx, store, taskCreate, update, weekly } = await alwaysAllowed();
+    const held = await h.bus.fire('tool:pre-call', ctx, taskCreate('Zero open tickets'));
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    await h.bus.call('decisions:approve', ctx, { decisionId: held.hold.decisionId, userId: ctx.userId, approvalScope: 'once' });
+    const task = (await store.list({ agentId: h.agentId })).find(row => row.name === 'Zero open tickets');
+    expect(task).toMatchObject({ kind: 'stay-on-top', enabled: true });
+    // A person pauses it, through the service the task page and Settings call.
+    const paused = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
+      agentId: h.agentId, routineId: task!.routineId, requestId: 'person-pause', expectedRevision: task!.revision, patch: { enabled: false } });
+    expect(paused.enabled).toBe(false);
+    const refused = { rejected: true, source: '@ax/routines', reason: 'This operation is not allowed for this person and agent. Field: enabled' };
+    // 1. Refused, not held, at pre-call, where Always Allow would otherwise let it through.
+    const early = await h.bus.fire('tool:pre-call', ctx, update('resume', paused, { enabled: true }));
+    expect(early).toMatchObject(refused);
+    expect(isHold(early)).toBe(false);
+    // 2. Bundled with a brief edit, which alone asks on a card that doesn't draw `enabled`: refused before any hold.
+    const bundled = await h.bus.fire('tool:pre-call', ctx, update('bundle', paused, { promptBody: 'Answer simple tickets.', enabled: true }));
+    expect(bundled).toMatchObject(refused);
+    expect(isHold(bundled)).toBe(false);
+    // 3. A direct execute, skipping tool:pre-call, is refused and names the field.
+    await expect(h.bus.call('tool:execute:routine_update', ctx, update('direct-resume', paused, { enabled: true })))
+      .rejects.toMatchObject({ toolCode: 'forbidden', field: 'enabled' });
+    // 4. Swap: pre-call sees an allowed patch, execute carries the resume under the same requestId.
+    expect((await h.bus.fire('tool:pre-call', ctx, update('swap', paused, { activeHours: null }))).rejected).toBe(false);
+    await expect(h.bus.call('tool:execute:routine_update', ctx, update('swap', paused, { enabled: true })))
+      .rejects.toMatchObject({ toolCode: 'forbidden', field: 'enabled' });
+    expect(await store.findOne({ agentId: h.agentId, routineId: paused.routineId })).toMatchObject({ enabled: false, revision: paused.revision });
+    // A paused repeat routine is still the agent's to resume.
+    const stopped = await h.bus.call<unknown, RoutineView>('tool:execute:routine_update', ctx, update('weekly-pause', weekly, { enabled: false }));
+    expect(stopped).toMatchObject({ routineId: weekly.routineId, enabled: false });
+    expect(await h.bus.call('tool:execute:routine_update', ctx, update('weekly-resume', stopped, { enabled: true })))
+      .toMatchObject({ routineId: weekly.routineId, enabled: true });
+    // The refusal is the agent's tool only: the person's Resume still goes through.
+    expect(await h.bus.call('routines:update', h.owner, {
+      agentId: h.agentId, routineId: paused.routineId, requestId: 'person-resume', expectedRevision: paused.revision, patch: { enabled: true } }))
+      .toMatchObject({ routineId: paused.routineId, enabled: true });
+  });
 });
 
 // TASK-907: a task's check-in reports with routine_report, end to end through the real
