@@ -204,6 +204,51 @@ describe('useTask (TASK-910)', () => {
     expect(taskMock).toHaveBeenCalledTimes(3);
   });
 
+  it('three failed quiet re-reads in a row say so; one or two don’t', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const before = result.current.state;
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toBe(before);
+    }
+    taskMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await act(async () => result.current.refreshQuietly());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: first,
+      refreshing: false,
+      refreshFailed: true,
+    });
+  });
+
+  it('a good read starts the count of failed quiet re-reads again', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+    }
+    const second = detail('Sweep', { revision: 'rev-2' });
+    taskMock.mockResolvedValueOnce(second);
+    await act(async () => result.current.refreshQuietly());
+
+    const settled = result.current.state;
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toBe(settled);
+    }
+    expect(settled).toEqual({ kind: 'ready', detail: second, refreshing: false, refreshFailed: false });
+  });
+
   it.each([
     { status: 404, error: 'gone' },
     { status: 401, error: 'expired' },

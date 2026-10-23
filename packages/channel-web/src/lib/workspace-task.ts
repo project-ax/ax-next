@@ -20,7 +20,10 @@
  * refreshing, since the page disables its buttons while one runs and a
  * keyboard user would lose their place every 10 seconds; and one that fails
  * leaves the page as it was (logged), since a background blip is no reason to
- * raise an alarm. One that finds the task gone or the session ended still
+ * raise an alarm. Three in a row that fail are no blip: the third marks the
+ * task `refreshFailed`, as a failed refresh does, so a page whose reads keep
+ * failing says so instead of polling in silence (any good read starts the
+ * count again). One that finds the task gone or the session ended still
  * replaces it. A quiet read that overtakes a refresh answers for both, so it
  * ends that refresh, failure included.
  *
@@ -33,6 +36,9 @@ import { logRequestFailure } from './http';
 import { toReadOutcome } from './read-register';
 import { workspaceApi } from './workspace-api';
 import type { TaskDetail } from './workspace-types';
+
+/** Failed quiet re-reads in a row before the page says it couldn't refresh. */
+export const QUIET_FAILURES_TO_SAY_SO = 3;
 
 export type TaskReadError = 'expired' | 'gone' | 'failed';
 
@@ -56,7 +62,8 @@ export function useTask(
   refresh: () => void;
   /**
    * A background re-read (the poll's): it doesn't mark the task refreshing,
-   * and a failed one leaves the page as it is (logged). One that finds the
+   * and a failed one leaves the page as it is (logged), unless it is the third
+   * in a row, which marks it `refreshFailed`. One that finds the
    * task gone or the session ended still replaces it, like any read.
    */
   refreshQuietly: () => void;
@@ -65,6 +72,8 @@ export function useTask(
   // Each fetch takes the next number; an answer for any number but the newest
   // is dropped, so a slow first answer cannot overwrite a faster refresh's.
   const latest = useRef(0);
+  // Failed quiet reads since the last good read: the third says so.
+  const quietFailures = useRef(0);
 
   const load = useCallback(
     (quiet: boolean) => {
@@ -72,16 +81,19 @@ export function useTask(
       workspaceApi.task(agentId, routineId).then(
         (detail) => {
           if (latest.current !== mine) return;
+          quietFailures.current = 0;
           setState({ kind: 'ready', detail, refreshing: false, refreshFailed: false });
         },
         (e: unknown) => {
           if (latest.current !== mine) return;
           logRequestFailure(e, 'workspace-task');
           const error: TaskReadError = toReadOutcome(e);
+          const quietFailuresNow = quiet ? ++quietFailures.current : quietFailures.current;
           setState((s) => {
             if (s.kind !== 'ready' || error !== 'failed') return { kind: 'failed', error };
-            // Quiet, unless it overtook a refresh whose own answer is now dropped.
-            if (quiet && !s.refreshing) return s;
+            // Quiet, unless it overtook a refresh whose own answer is now dropped,
+            // or it is the third quiet failure in a row.
+            if (quiet && !s.refreshing && quietFailuresNow < QUIET_FAILURES_TO_SAY_SO) return s;
             return { ...s, refreshing: false, refreshFailed: true };
           });
         },
