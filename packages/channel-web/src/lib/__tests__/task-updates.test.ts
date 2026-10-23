@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { RoutineReportStatus } from '@ax/routines-contract';
-import { foldUpdates, latestUpdateCheckIn, updateText } from '../task-updates.js';
+import {
+  foldUpdates,
+  latestUpdateCheckIn,
+  sharedConversationIds,
+  updateText,
+} from '../task-updates.js';
 import type { TaskUpdate } from '../workspace-types.js';
 
 let n = 0;
@@ -122,8 +127,33 @@ describe('latestUpdateCheckIn (TASK-911)', () => {
     expect(latestUpdateCheckIn(task, [u('on-track', { report: SAID, conversationId: null })])).toBeNull();
   });
 
+  it('none when its conversation is shared with another check-in', () => {
+    // A routine that was once a repeat routine with one shared conversation:
+    // the link would open that conversation's newest run, not this one.
+    const updates = [
+      u('on-track', { report: SAID, conversationId: 'shared' }),
+      u('on-track', { report: { status: 'on-track', update: 'Older.' }, conversationId: 'shared' }),
+    ];
+    expect(latestUpdateCheckIn(task, updates)).toBeNull();
+  });
+
   it('none when no check-in in Updates left a report', () => {
     expect(latestUpdateCheckIn(task, [u(null, { conversationId: 'c1' })])).toBeNull();
     expect(latestUpdateCheckIn(task, [])).toBeNull();
+  });
+});
+
+describe('sharedConversationIds (TASK-911)', () => {
+  it('names each conversation more than one check-in recorded, and nothing else', () => {
+    const updates = [
+      u('on-track', { conversationId: 'a' }),
+      u('on-track', { conversationId: 'b' }),
+      u('on-track', { conversationId: 'a' }),
+      u('on-track', { conversationId: null }),
+      u('on-track', { conversationId: null }),
+      u('on-track', { conversationId: 'c' }),
+    ];
+    expect([...sharedConversationIds(updates)]).toEqual(['a']);
+    expect(sharedConversationIds([]).size).toBe(0);
   });
 });

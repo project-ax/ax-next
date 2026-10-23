@@ -8,8 +8,9 @@
  * with no report, one that said needs-you or off-track) always stands alone.
  *
  * It also says what an entry says (`updateText`, shared with a check-in's
- * page) and which check-in the latest update came from (`latestUpdateCheckIn`,
- * TASK-911).
+ * page), which check-in the latest update came from (`latestUpdateCheckIn`,
+ * TASK-911), and which check-ins can't be linked to because they share a
+ * conversation (`sharedConversationIds`).
  *
  * Pure, with relative imports only: the server-side wire types live next door.
  */
@@ -62,6 +63,27 @@ export function updateText(update: Pick<TaskUpdate, 'status' | 'report'>): strin
 }
 
 /**
+ * The conversations more than one check-in in `updates` recorded (TASK-911).
+ *
+ * A routine that was once a repeat routine with one shared conversation wrote
+ * every run into it, so those fires all carry the same `conversationId`. A
+ * check-in's page is addressed by that id, and the server answers with the
+ * newest fire that recorded it, so a link from any other of those entries
+ * would open a page about a different run than the one clicked. Those entries
+ * get no link instead.
+ */
+export function sharedConversationIds(updates: readonly TaskUpdate[]): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const shared = new Set<string>();
+  for (const { conversationId } of updates) {
+    if (conversationId === null) continue;
+    if (seen.has(conversationId)) shared.add(conversationId);
+    else seen.add(conversationId);
+  }
+  return shared;
+}
+
+/**
  * The check-in the task's latest update came from (TASK-911, decisions row
  * 12), or null.
  *
@@ -71,7 +93,8 @@ export function updateText(update: Pick<TaskUpdate, 'status' | 'report'>): strin
  * which said something else. One that repeated the earlier report word for
  * word still links to the earlier check-in, which ended with that same report.
  * The exact signal would be the run's start (`task_report_accepted_at`), which
- * the task view doesn't carry.
+ * the task view doesn't carry. A check-in whose conversation another one shares
+ * gets no link either (`sharedConversationIds` says why).
  */
 export function latestUpdateCheckIn(
   task: Pick<TaskDetailReport, 'status' | 'update'> | null,
@@ -80,6 +103,7 @@ export function latestUpdateCheckIn(
   if (task === null) return null;
   const newest = updates.find((u) => u.report !== null);
   if (newest === undefined || newest.report === null || newest.conversationId === null) return null;
+  if (sharedConversationIds(updates).has(newest.conversationId)) return null;
   return newest.report.status === task.status && newest.report.update === task.update
     ? newest.conversationId
     : null;

@@ -15,9 +15,14 @@
  * or `<img>` shows as those characters.
  *
  * Each entry links to that check-in's transcript, read-only (See what it did,
- * TASK-911), when the check-in recorded one. It is a real link, so it opens in
- * a new tab too, and its name carries the entry's time, so a list of them
- * still says which is which.
+ * TASK-911), when the check-in recorded one that no other entry shares. It is
+ * a real link, so it opens in a new tab too, and its name carries the entry's
+ * time, so a list of them still says which is which.
+ *
+ * NO LINK FOR A SHARED CONVERSATION. A routine that was once a repeat routine
+ * with one shared conversation recorded the same id on every run, and the
+ * check-in page shows the newest fire with that id, so a link from any other
+ * entry would open a page about a different run (`sharedConversationIds`).
  */
 import { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
@@ -29,7 +34,7 @@ import {
 } from '@/components/ui/collapsible';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { routeLinkProps } from '@/lib/route-link';
-import { foldUpdates, updateText } from '@/lib/task-updates';
+import { foldUpdates, sharedConversationIds, updateText } from '@/lib/task-updates';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
@@ -42,6 +47,8 @@ interface EntryLinks {
   agentId: string;
   routineId: string;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** Conversations more than one entry recorded: those entries get no link. */
+  shared: ReadonlySet<string>;
 }
 
 export function TaskUpdates({
@@ -58,7 +65,12 @@ export function TaskUpdates({
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const headingId = useId();
-  const links: EntryLinks = { agentId, routineId, onNavigate };
+  const links: EntryLinks = {
+    agentId,
+    routineId,
+    onNavigate,
+    shared: sharedConversationIds(updates),
+  };
   const items = foldUpdates(updates);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
@@ -144,7 +156,7 @@ function UpdateEntry({
           </p>
         )}
       </div>
-      {update.conversationId !== null && (
+      {update.conversationId !== null && !links.shared.has(update.conversationId) && (
         <a
           {...routeLinkProps(
             {

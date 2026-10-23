@@ -196,6 +196,19 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
+  it('check-ins that share one conversation have no link, since it would open another run', () => {
+    // A routine that was once a repeat routine with a shared conversation: its
+    // runs all recorded the same id, and that check-in's page shows the newest.
+    renderThread([
+      { ...onTrack(1), conversationId: 'c1' },
+      update({ firedAt: onTrack(2).firedAt, report: { status: 'needs-you', update: 'Shared 2' }, conversationId: 'shared' }),
+      update({ firedAt: onTrack(3).firedAt, report: { status: 'off-track', update: 'Shared 3' }, conversationId: 'shared' }),
+    ]);
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c1');
+  });
+
   it('a folded check-in links too', () => {
     renderThread(
       [1, 2, 3, 4, 5, 6].map((n) => ({ ...onTrack(n), conversationId: `c${n}` })),
