@@ -269,7 +269,10 @@ describe('a superseded answer (TASK-933 review round 2)', () => {
   // The reload's read is still out when the older read's answer lands, so a
   // Try again then must join the reload, not start a third read: the older
   // answer says nothing about whether the newest read is done.
-  it('landing late doesn’t end the newer read, so a Try again still joins it', async () => {
+  it.each([
+    ['landing', (read: ReturnType<typeof deferred<TasksResponse>>) => read.resolve(page('Stale'))],
+    ['failing', (read: ReturnType<typeof deferred<TasksResponse>>) => read.reject(new Error('stale read failed'))],
+  ])('%s late doesn’t end the newer read, so a Try again still joins it', async (_how, settle) => {
     const mount = deferred<TasksResponse>();
     const fresh = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(mount.promise).mockReturnValueOnce(fresh.promise).mockResolvedValue(page('Third'));
@@ -278,10 +281,10 @@ describe('a superseded answer (TASK-933 review round 2)', () => {
     act(() => result.current.reload()); // a fresh read: the mount read is superseded
     expect(tasksMock).toHaveBeenCalledTimes(2);
 
-    await act(async () => mount.resolve(page('Stale')));
+    await act(async () => settle(mount));
     act(() => result.current.retry());
-    // Mount read + reload. A third call would mean the stale answer marked the
-    // reload's read as done.
+    // Mount read + reload. A third call would mean the stale answer (or
+    // failure) marked the reload's read as done.
     expect(tasksMock).toHaveBeenCalledTimes(2);
     expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: null });
 
