@@ -81,14 +81,24 @@ describe('canonical routine return schemas', () => {
       expect(routineView({ ...task, enabled: false }, 'owner', true).noRecentUpdate).toMatchObject({ inARow: 3, autoPaused: false });
     });
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, and naming a check-in's task", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(18);
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, and a person's replies", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(20);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
     expect(ROUTINE_SERVICES).toContain('routines:tasks-for-conversations');
+    expect(ROUTINE_SERVICES).toContain('routines:reply');
+    expect(ROUTINE_SERVICES).toContain('routines:recent-replies');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
+  });
+  it("answers a reply with its id and what its check-in did, and reads a reply back without its task's owner (TASK-931)", () => {
+    expect(C.RoutineReplyOutputSchema.parse({ replyId: 'reply_1', checkIn: 'started' })).toStrictEqual({ replyId: 'reply_1', checkIn: 'started' });
+    // Never the text back.
+    expect(() => C.RoutineReplyOutputSchema.parse({ replyId: 'reply_1', checkIn: 'started', text: 'Refunds under $100 are fine.' })).toThrow();
+    const reply = { replyId: 'reply_1', authorUserId: 'owner', text: 'Refunds under $100 are fine.', sentAt: '2031-01-01T00:00:00.000Z' };
+    expect(C.RoutineRecentRepliesOutputSchema.parse({ replies: [reply] })).toStrictEqual({ replies: [reply] });
+    expect(() => C.RoutineRecentRepliesOutputSchema.parse({ replies: [{ ...reply, ownerUserId: 'owner' }] })).toThrow();
   });
   it("projects a check-in as its conversation, its task's id and its name, and nothing else", () => {
     const checkIn = { conversationId: 'c1', routineId: 'routine', name: 'Support queue' };

@@ -12,7 +12,10 @@ export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
+  'reply', 'recent-replies',
 ].map(name => `routines:${name}`);
+/** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
+const RECENT_REPLIES_DEFAULT_LIMIT = 20;
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -117,6 +120,43 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   async function admin(ctx: AgentContext) {
     const result = await bus.call<{ userId: string }, { isAdmin: boolean } | null>('auth:get-user', ctx, { userId: ctx.userId });
     requireAllowed(result?.isAdmin === true);
+  }
+  /**
+   * TASK-931. What a stored reply does next, decided on the routine as `addReply` read it under its
+   * row lock. The order is the point: `not-allowed` comes before `paused`, so "when you resume the
+   * task" is only said to someone who may resume it (for a task's owner, `fire` is
+   * agents:can-manage-routines' answer). The check-in is keyed on the reply, not on the caller's
+   * requestId, so one reply starts at most one check-in and never shares a receipt with a Check now
+   * press. A replayed reply runs this again: a retry after the reply was stored but before its
+   * check-in was accepted starts that check-in, and a retry after it was accepted replays the
+   * receipt. `started` means accepted, not finished: `send`'s answer isn't read, and a check-in that
+   * fails during setup is a recorded failed run.
+   */
+  async function replyCheckIn(ctx: AgentContext, allowed: boolean, row: StoredRoutine, replyId: string, send: (accepted: AcceptedDispatch) => Promise<unknown>): Promise<C.RoutineReplyCheckIn> {
+    if (!routinePermissions(row, ctx.userId, allowed).fire) return 'not-allowed';
+    if (!row.enabled) return 'paused';
+    const key = { agentId: row.agentId, routineId: row.routineId };
+    let result: Awaited<ReturnType<RoutinesStore['acceptDispatch']>>;
+    try {
+      result = await store.acceptDispatch({ ...key, expectedRevision: row.revision, actorUserId: ctx.userId, source: 'manual', requestId: `reply:${replyId}`, now: now() });
+    } catch (err) {
+      // The receipt's hash covers the revision: this reply's check-in was accepted before, at an earlier one.
+      if (err instanceof SafeToolError && err.toolCode === 'request-conflict') return 'replayed';
+      throw err;
+    }
+    if (result === null) {
+      // The routine changed between the reply's write and this accept. The reply is stored either
+      // way, so the answer follows the routine as it is now, in the same order as above.
+      const fresh = await store.findOne(key);
+      if (fresh === null) throw new SafeToolError('not-found', 'routineId');
+      if (!routinePermissions(fresh, ctx.userId, allowed).fire) return 'not-allowed';
+      if (!fresh.enabled) return 'paused';
+      // Still running, at a new revision: a resend replays the reply and starts its check-in then.
+      throw new SafeToolError('unavailable', 'input');
+    }
+    if (result.replayed) return 'replayed';
+    await send(result.accepted);
+    return 'started';
   }
   register('list', C.RoutineListInputSchema, C.RoutineListOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
@@ -254,5 +294,39 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   register('tasks-for-conversations', C.RoutineTasksForConversationsInputSchema, C.RoutineTasksForConversationsOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     return { checkIns: await store.tasksForConversations({ agentId: input.agentId, actorUserId: ctx.userId, conversationIds: input.conversationIds }) };
+  });
+  // TASK-931. A task's owner writes to their agent about the task, on its task page. Only the owner
+  // may, on a team agent too: the store decides that under the agent fence and the routine's row
+  // lock, after agents:resolve has refused anyone who can't reach the agent. The text was checked by
+  // the input schema before anything ran. The reply is stored first; a check-in starts only when
+  // the task runs and the caller may start its check-ins (replyCheckIn), keyed on the reply, so a
+  // retry can't start two. The whole hook runs inside admitDispatch, like fire-now, so a shutting-down
+  // host refuses it before anything is written. Neither a tool nor an IPC action: a reply reaches a
+  // model only in a check-in message. The log line carries ids and closed words, never the text.
+  register('reply', C.RoutineReplyInputSchema, C.RoutineReplyOutputSchema, (ctx, input) => admitDispatch(async () => {
+    const a = await access(ctx, input.agentId);
+    const send = dispatch;
+    if (!send) throw new SafeToolError('unavailable', 'input');
+    const outcome = await store.addReply({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId, text: input.text, now: now(),
+    });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    const checkIn = await replyCheckIn(ctx, a.allowed, outcome.row, outcome.replyId, send);
+    ctx.logger.info('routines_reply_added', { agentId: input.agentId, routineId: input.routineId, checkIn, replayed: outcome.outcome === 'replayed' });
+    return { replyId: outcome.replyId, checkIn };
+  }));
+  // TASK-931. A task's replies, newest first, for its owner only: taskView's rule, not `allowed`'s,
+  // so an owner who no longer manages the agent's tasks still reads their own. agents:resolve runs
+  // first, as for every read. Then only the routine's owner column is read (as fireViews does), so a
+  // row another read couldn't parse can't fail this one. Anyone else, and a routine that's gone, gets
+  // none, all alike. Each reply goes out field by field. Neither a tool nor an IPC action.
+  register('recent-replies', C.RoutineRecentRepliesInputSchema, C.RoutineRecentRepliesOutputSchema, async (ctx, input) => {
+    await access(ctx, input.agentId);
+    const owner = (await store.routineOwners({ agentId: input.agentId, routineIds: [input.routineId] })).get(input.routineId);
+    // Fails closed: replies go out only when an owner is found and it is this person.
+    if (owner === undefined || owner !== ctx.userId) return { replies: [] };
+    const replies = await store.recentReplies({ agentId: input.agentId, routineId: input.routineId, limit: input.limit ?? RECENT_REPLIES_DEFAULT_LIMIT });
+    return { replies: replies.map(reply => ({ replyId: reply.replyId, authorUserId: reply.authorUserId, text: reply.text, sentAt: reply.sentAt.toISOString() })) };
   });
 }
