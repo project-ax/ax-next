@@ -15,13 +15,13 @@
  * reply is told so in the person's words instead of bouncing as a bare 400.
  *
  * THE REQUEST ID. A send that nobody can confirm (the network dropped, the
- * host answered 5xx, the answer was unreadable) may or may not have been
+ * host answered 5xx, 408 or 429, the answer was unreadable) may or may not have been
  * stored. Sending the same words again carries the SAME id, so the host
  * recognises the retry and never stores or starts a check-in twice. The id is
  * kept only for the same text: a person who fixes a typo after "couldn't
  * confirm" is writing a new reply, and a replay would silently keep the first
  * text while the box cleared. It is dropped on success and on a confirmed
- * refusal (any 1xx-4xx answer), where a retry is a new attempt.
+ * refusal (any other 1xx-4xx answer), where a retry is a new attempt.
  *
  * WHERE FOCUS GOES. A clicked Send goes disabled while it sends (and stays
  * disabled once the box clears), which drops focus on `<body>`. When the send
@@ -50,9 +50,16 @@ const UNCONFIRMED =
 const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
 const AS_WRITTEN = 'We couldn’t send that reply as written. Change it and try again.';
 
-/** A refusal (1xx-4xx) is an answer; anything else leaves it unknown whether the reply was stored. */
+/**
+ * Statuses below 500 that still leave it unknown whether the reply was
+ * stored: a timeout or a rate limit can come from anything in front of the
+ * host, and neither is the person's text being wrong.
+ */
+const UNCONFIRMED_4XX: ReadonlySet<number> = new Set([408, 429]);
+
+/** A refusal (1xx-4xx, but 408 and 429) is an answer; anything else leaves it unknown whether the reply was stored. */
 function confirmed(e: unknown): e is HttpError {
-  return e instanceof HttpError && e.status >= 1 && e.status < 500;
+  return e instanceof HttpError && e.status >= 1 && e.status < 500 && !UNCONFIRMED_4XX.has(e.status);
 }
 
 function failureLine(e: unknown): string {
@@ -73,7 +80,7 @@ function helperLine(agentName: string, enabled: boolean, canStart: boolean): str
     : `${agentName} reads your replies every time it checks in.`;
 }
 
-function sentLine(agentName: string, checkIn: TaskReplyCheckIn): string {
+function sentLine(agentName: string, checkIn: TaskReplyCheckIn, enabled: boolean): string {
   switch (checkIn) {
     case 'started':
     case 'replayed':
@@ -81,7 +88,10 @@ function sentLine(agentName: string, checkIn: TaskReplyCheckIn): string {
     case 'paused':
       return `Sent. ${agentName} will read it when you resume the task.`;
     case 'not-allowed':
-      return `Sent. ${agentName} will read it at its next check-in.`;
+      // A paused task has no next check-in until someone resumes it.
+      return enabled
+        ? `Sent. ${agentName} will read it at its next check-in.`
+        : `Sent. ${agentName} will read it once the task is resumed.`;
   }
 }
 
@@ -211,7 +221,7 @@ export function TaskReplyBox({
             Send
           </Button>
           <p role="status" className="text-sm text-muted-foreground">
-            {sent === null ? '' : sentLine(agentName, sent)}
+            {sent === null ? '' : sentLine(agentName, sent, enabled)}
           </p>
         </div>
       </FieldGroup>

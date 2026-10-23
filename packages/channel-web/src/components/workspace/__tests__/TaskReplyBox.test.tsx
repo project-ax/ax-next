@@ -149,6 +149,15 @@ describe('TaskReplyBox — sending', () => {
     expect(screen.getByRole('status').textContent).toBe(line);
   });
 
+  it('not-allowed on a paused task says it will be read once the task is resumed', async () => {
+    sendMock.mockResolvedValue({ checkIn: 'not-allowed' });
+    renderBox({ enabled: false, canStart: false });
+    await send('Hi');
+    expect(screen.getByRole('status').textContent).toBe(
+      'Sent. Quill will read it once the task is resumed.',
+    );
+  });
+
   it('typing again clears the sent line', async () => {
     sendMock.mockResolvedValue({ checkIn: 'started' });
     renderBox();
@@ -206,6 +215,8 @@ describe('TaskReplyBox — sending', () => {
 describe('TaskReplyBox — the request id', () => {
   it.each<[string, () => unknown]>([
     ['a 503', () => new WorkspaceApiError('/x', 503)],
+    ['a 408', () => new WorkspaceApiError('/x', 408)],
+    ['a 429', () => new WorkspaceApiError('/x', 429)],
     ['a network failure', () => new TypeError('Failed to fetch')],
     ['an answer it couldn’t read', () => new WorkspaceShapeError('/x')],
   ])('an unconfirmed send (%s) keeps its id for the same text, so a retry can’t store it twice', async (_l, fail) => {
