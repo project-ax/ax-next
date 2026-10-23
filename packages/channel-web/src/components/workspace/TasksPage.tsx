@@ -328,8 +328,9 @@ function TaskItem({
   // has no recent update, else the last report's update (TASK-930). With
   // misses, the report isn't shown: it's usually from a check-in that started
   // before the silent one. One that started after them sits beside the misses
-  // only until the next check-in finishes, since only a finish moves the
-  // count. All of it host-written except the update.
+  // until a later finish moves the count: a report alone never does (a Resume
+  // or a kind change also moves it, and not every finish does). All of it
+  // host-written except the update.
   const third =
     !row.enabled && row.noRecentUpdate?.autoPaused
       ? AUTO_PAUSED_LINE

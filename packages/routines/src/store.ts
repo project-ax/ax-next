@@ -232,9 +232,10 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * without a report once a run that started after it has reported
  * (`task_report_accepted_at`), finished or not. A run without a report counts
  * on from the misses after a report whose run is still open, not from the
- * count, which that run hasn't trimmed yet (`reportStillOpen`), and doesn't
- * count itself when it started in the same instant as that report, whose run
- * finishes after it. A run that reported
+ * count, which that run hasn't trimmed yet (`reportStillOpen`), still capped at
+ * the count plus one, so a Resume's fresh start holds; it doesn't count itself
+ * when it started in the same instant as that report, whose run finishes after
+ * it, and with no misses after that report, it clears them. A run that reported
  * behind a newer miss (`task_miss_at`) leaves that miss, with its reason and
  * start, but ends the misses before it: the count drops to the runs that
  * started after it and finished without a report, if that's fewer
@@ -242,15 +243,15 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * least one, unless a hand edit or a rollback left a miss time no such run
  * backs, or a count below one; then the report clears them. A run without a
  * report behind a newer miss still counts, but keeps that miss's reason and
- * start, so `task_miss_at` never moves back. So whenever a run finishes, the
- * count is the misses that started after the latest saved report; once they've
- * all finished, the task shows a miss exactly when the run that started last
- * missed, with its reason and start. Between finishes, a report saved after a
- * newer miss finished leaves the misses before it counted until the next run
- * finishes; a person can see that, but nothing pauses on it. Never fewer: the
- * count can run long only when a Resume or a kind change starts it over while
- * runs overlap, since a fire row doesn't say which side of it its run finished
- * on.
+ * start, so `task_miss_at` never moves back. So whenever a miss is counted (the
+ * only place a pause is decided), the count is exactly the misses that started
+ * after the latest saved report. It is never short. It can lag: a report saved
+ * after a newer miss finished leaves the misses before it counted until the
+ * next run finishes, and an older run's late report trims from its own start,
+ * so it keeps the misses a newer report, its run still open, already answers,
+ * until that run finishes. A person can see that, but nothing pauses on it. It
+ * can also run long when a Resume or a kind change starts it over while runs
+ * overlap, since a fire row doesn't say which side of it its run finished on.
  *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
@@ -302,8 +303,10 @@ async function missesAfterRun(
  * TASK-930. Whether a run of the routine that started at `at` is still open with
  * a saved report: the task's report (`task_report_accepted_at`), whose run
  * hasn't finished, so hasn't cleared or trimmed the misses before it yet. Its
- * `report` is set by `recordReport` and cleared when the run finishes. The
- * agent's open runs, which `routines_v1_dispatches_open_conversation` covers.
+ * `report` is set by `recordReport` and cleared when the run finishes.
+ * `routines_v1_dispatches_open_conversation` narrows the scan to the agent's
+ * open runs. `completed_at IS NULL` is redundant with `report IS NOT NULL`
+ * logically, but it's what lets that partial index apply, so it stays.
  */
 async function reportStillOpen(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, at: Date): Promise<boolean> {
   return await trx.selectFrom('routines_v1_dispatches').select('dispatch_id')

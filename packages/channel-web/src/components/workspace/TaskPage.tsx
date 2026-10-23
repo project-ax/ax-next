@@ -593,8 +593,9 @@ function BriefRow({
  * thing to do, and when it last checked in. The last report stays under it,
  * muted and dated. It is usually from a check-in that started before the silent
  * one (it may have reported later). Just after an agent reports, it can be from
- * one that started after those misses, until a check-in finishes: only a
- * finished check-in moves the count. Its ask stays too, muted: a person is
+ * one that started after those misses, until a later finish moves the count
+ * (a report never does on its own; a Resume or a kind change also moves it,
+ * and not every finish does). Its ask stays too, muted: a person is
  * still being waited on, and hiding the ask would hide that.
  * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
  * update and its ask are agent-written.
