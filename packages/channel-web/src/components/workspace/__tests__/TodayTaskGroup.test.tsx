@@ -244,12 +244,17 @@ describe('TodayTaskGroup (TASK-933)', () => {
     first.unmount();
 
     // Neither an ask nor an update it can show: say so, and still offer Reply.
+    // Not "It left an update we can’t show.": right after "didn’t leave an
+    // update", that reads as a contradiction (TASK-933 review round 2).
     const second = renderGroup(
       group([
         row({ task: report('needs-you', { ask: '', update: null }), noRecentUpdate: misses(3) }),
       ]),
     );
-    expect(screen.getByText('It left an update we can’t show.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Caveman said it needs you before this, but we can’t show what it said.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('It left an update we can’t show.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Reply' })).toBeInTheDocument();
     second.unmount();
 

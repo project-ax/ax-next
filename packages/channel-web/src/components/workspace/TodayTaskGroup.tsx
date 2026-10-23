@@ -67,13 +67,19 @@ function legible(text: string | null | undefined): string | null {
  * Under a miss or an auto-pause, the agent's Needs you report the person still
  * owes an answer to, as one line: its ask, else what it said, else that it
  * can't be shown. Null when its last report didn't say Needs you.
+ *
+ * The can't-show line isn't `CANT_SHOW` ("It left an update we can't show."):
+ * it sits right under the line saying the last check-ins left no update, so it
+ * names the earlier report instead.
  */
 function stillNeedsYouLine(row: TaskRow, agentName: string): string | null {
   if (row.task?.status !== 'needs-you') return null;
   const ask = legible(row.task.ask);
   if (ask !== null) return `${agentName} asks: ${ask}`;
   const update = legible(row.task.update);
-  return update === null ? CANT_SHOW : `${agentName} said: ${update}`;
+  return update === null
+    ? `${agentName} said it needs you before this, but we can’t show what it said.`
+    : `${agentName} said: ${update}`;
 }
 
 /** The line under the heading: what the task needs, or how many of its approvals are waiting. */
