@@ -1,11 +1,11 @@
 /**
  * `useTasks` — the Tasks page's read, as a state machine (TASK-909).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError } from '../workspace-api';
 import type { TaskRow, TasksResponse } from '../workspace-types';
-import { tasksForToday, useTasks, type TasksState } from '../workspace-tasks';
+import { TASKS_READ_TIMEOUT_MS, tasksForToday, useTasks, type TasksState } from '../workspace-tasks';
 
 vi.mock('../workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../workspace-api');
@@ -261,6 +261,86 @@ describe('a re-read while a read is in flight (TASK-933 review)', () => {
     tasksMock.mockResolvedValueOnce(page('Next'));
     await act(async () => result.current.retry());
     expect(tasksMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('a read that never settles (TASK-933 review)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  // The server gives up on a slow agent at 10 s (TASKS_AGENT_READ_DEADLINE_MS),
+  // so the client waits longer than that before calling the read failed.
+  it('waits longer than the server’s own 10 s deadline', () => {
+    expect(TASKS_READ_TIMEOUT_MS).toBeGreaterThan(10_000);
+  });
+
+  it('fails the read when it hasn’t answered in time, so Try again reads again', async () => {
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    const { result } = renderHook(() => useTasks());
+    await act(async () => vi.advanceTimersByTimeAsync(TASKS_READ_TIMEOUT_MS - 1));
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: null });
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(result.current.state).toEqual({ kind: 'failed', error: 'failed' });
+
+    tasksMock.mockResolvedValueOnce(page('Sweep'));
+    await act(async () => result.current.retry());
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: page('Sweep').tasks });
+  });
+
+  it('keeps the rows on screen when a refresh times out, and says so', async () => {
+    const first = page('Sweep');
+    tasksMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTasks());
+    await act(async () => {});
+    expect(result.current.state.kind).toBe('ready');
+
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.retry());
+    await act(async () => vi.advanceTimersByTimeAsync(TASKS_READ_TIMEOUT_MS));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      tasks: first.tasks,
+      unavailableAgents: [],
+      refreshing: false,
+      refreshFailed: true,
+    });
+  });
+
+  it('drops a timed-out read’s late answer, and a superseded read’s', async () => {
+    const timedOut = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(timedOut.promise);
+    const { result } = renderHook(() => useTasks());
+    await act(async () => vi.advanceTimersByTimeAsync(TASKS_READ_TIMEOUT_MS));
+    expect(result.current.state).toEqual({ kind: 'failed', error: 'failed' });
+
+    const superseded = deferred<TasksResponse>();
+    const newest = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(superseded.promise).mockReturnValueOnce(newest.promise);
+    act(() => result.current.retry());
+    act(() => result.current.reload());
+    await act(async () => timedOut.resolve(page('Too late')));
+    await act(async () => superseded.resolve(page('Superseded')));
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: 'failed' });
+
+    const answer = page('Newest');
+    await act(async () => newest.resolve(answer));
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: answer.tasks });
+  });
+
+  it('stops the clock once the read answers, and on unmount', async () => {
+    tasksMock.mockResolvedValueOnce(page('Sweep'));
+    const { result, unmount } = renderHook(() => useTasks());
+    await act(async () => {});
+    expect(result.current.state.kind).toBe('ready');
+    expect(vi.getTimerCount()).toBe(0);
+
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.retry());
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

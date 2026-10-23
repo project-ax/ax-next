@@ -15,6 +15,10 @@
  * Pause or Resume may have happened) always starts a fresh read, because the
  * one in flight may predate it; the newer answer wins.
  *
+ * A read that never answers fails after `TASKS_READ_TIMEOUT_MS`, like any
+ * other failure: without it, `retry` would join that read forever, so Try
+ * again would stay disabled and entering Today or Tasks would read nothing.
+ *
  * Two kinds of failure, because the page says two different things: a 401 is
  * "sign in again" (`expired`); everything else, a 404 from a host that predates
  * the route included, is "couldn't load" with Try again (`failed`). The list
@@ -32,6 +36,21 @@ import { workspaceApi } from './workspace-api';
 import type { TaskRow, UnavailableAgent } from './workspace-types';
 
 export type TasksReadError = 'expired' | 'failed';
+
+/**
+ * How long a tasks read may take before it counts as failed. Longer than the
+ * server's own 10 s cap on a slow agent (`TASKS_AGENT_READ_DEADLINE_MS`), so a
+ * read the server answers in time is never cut short here.
+ */
+export const TASKS_READ_TIMEOUT_MS = 15_000;
+
+/** A tasks read that hasn't answered in `TASKS_READ_TIMEOUT_MS`. */
+class TasksReadTimeoutError extends Error {
+  constructor() {
+    super(`The tasks read didn't answer within ${TASKS_READ_TIMEOUT_MS} ms.`);
+    this.name = 'TasksReadTimeoutError';
+  }
+}
 
 export type TasksState =
   | {
@@ -72,13 +91,25 @@ export function useTasks(): {
   // Whether the newest fetch is still out. A ref, not state: two clicks in one
   // event loop turn must see the first one's read.
   const inFlight = useRef(false);
+  // The newest read's clock (see TASKS_READ_TIMEOUT_MS).
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopTimer = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
 
   const load = useCallback(() => {
     const mine = ++latest.current;
     inFlight.current = true;
-    workspaceApi.tasks().then(
+    // A superseded read's answer is dropped by the counter, so its clock can go.
+    stopTimer();
+    const timedOut = new Promise<never>((_, reject) => {
+      timer.current = setTimeout(() => reject(new TasksReadTimeoutError()), TASKS_READ_TIMEOUT_MS);
+    });
+    Promise.race([workspaceApi.tasks(), timedOut]).then(
       (page) => {
         if (latest.current !== mine) return;
+        stopTimer();
         inFlight.current = false;
         setState({
           kind: 'ready',
@@ -90,6 +121,7 @@ export function useTasks(): {
       },
       (e: unknown) => {
         if (latest.current !== mine) return;
+        stopTimer();
         inFlight.current = false;
         logRequestFailure(e, 'workspace-tasks');
         const error: TasksReadError = toReadOutcome(e) === 'expired' ? 'expired' : 'failed';
@@ -100,15 +132,16 @@ export function useTasks(): {
         );
       },
     );
-  }, []);
+  }, [stopTimer]);
 
   useEffect(() => {
     load();
     return () => {
       latest.current++;
       inFlight.current = false;
+      stopTimer();
     };
-  }, [load]);
+  }, [load, stopTimer]);
 
   const reload = useCallback(() => {
     setState((s) => {
