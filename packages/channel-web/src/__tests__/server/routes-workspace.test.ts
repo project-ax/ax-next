@@ -3195,6 +3195,7 @@ describe('channel-web agent-workspace BFF', () => {
       'preview',
       'request',
       'task',
+      'checkIn',
       'primaryLabel',
       'secondaryLabel',
       'ghostLabel',

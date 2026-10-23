@@ -92,7 +92,12 @@
  *     whose agent it cannot reach, so a resolve failure there is a filtered
  *     row rather than a 404 — note that is the list route only;
  *     `/decisions/:decisionId` and its approve/dismiss/undo siblings DO 404,
- *     through `loadOwnedDecision`.
+ *     through `loadOwnedDecision`. Both then ask
+ *     `routines:tasks-for-conversations` (TASK-932), as the caller and only
+ *     about rows already past those checks, which of their unattended rows
+ *     were held in one of the caller's own task check-ins. The answer is a
+ *     label (`checkIn`): nothing authorizes on it, and approve, dismiss and
+ *     undo go through `@ax/decisions` exactly as before.
  *
  *     Spelled out because the blanket claim this comment used to make —
  *     "every per-agent read is gated by `agents:resolve`" — was not true, and
@@ -128,16 +133,24 @@
  */
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS,
+  ROUTINE_CHECKIN_LOOKUP_MAX_IDS,
   ROUTINE_DEFINITION_MAX_BYTES,
   ROUTINE_HISTORY_MAX_LIMIT,
   ROUTINE_NAME_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineCreateToolInputSchema,
+  RoutineOpaqueStringSchema,
   RoutineUpdateToolInputSchema,
   routineBriefFields,
 } from '@ax/routines-contract';
-import type { RoutineFireView, RoutineView } from '@ax/routines-contract';
+import type {
+  RoutineCheckInView,
+  RoutineFireView,
+  RoutineTasksForConversationsInput,
+  RoutineTasksForConversationsOutput,
+  RoutineView,
+} from '@ax/routines-contract';
 import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
@@ -2445,6 +2458,29 @@ export const DECISION_TASK_TEXT_MAX_LINES = DECISION_TASK_TEXT_MAX_CHARS + 1;
 export const DECISION_TASK_CHECKS_IN_MAX_CHARS = 200;
 
 /**
+ * TASK-932 — how long the Today list waits for one agent's check-in labels
+ * before it answers without them. A label never holds the queue (design H7 is
+ * about the queue, not its labels), and the bus's own bound is two minutes.
+ * Half the Tasks page's `TASKS_AGENT_READ_DEADLINE_MS`: there the read IS the page.
+ */
+export const DECISION_CHECKINS_LIST_DEADLINE_MS = 5_000;
+/**
+ * TASK-932 — the same wait for one row: the single read and the approve,
+ * dismiss and undo answers. Those sit on the undo window's path. An answer's
+ * Undo counts down `UNDO_WINDOW_MS` (10 s) from the server's `resolvedAt`, and
+ * the once-a-second poll re-read is what takes Undo away once the call has gone
+ * out. So a slow label may cost them at most a second.
+ */
+export const DECISION_CHECKIN_ROW_DEADLINE_MS = 1_000;
+/** TASK-932 — a check-in as `routines:tasks-for-conversations` names it, before `toWireDecision` fences it. */
+type CheckInSource = Pick<RoutineCheckInView, 'routineId' | 'name'>;
+/** By agent id, then conversation id. */
+type CheckInLabels = Map<string, Map<string, CheckInSource>>;
+function checkInOf(labels: CheckInLabels, d: StoredDecision): CheckInSource | null {
+  return labels.get(d.agentId)?.get(d.conversationId) ?? null;
+}
+
+/**
  * What a control says when its authored label fences down to nothing.
  *
  * A prose field may legitimately come back null — a paragraph nobody wrote
@@ -2702,7 +2738,7 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
   return { action: proposal.action, name, instructions, goodWhen, checksIn };
 }
 
-export function toWireDecision(stored: StoredDecision, eligible = false): Decision {
+export function toWireDecision(stored: StoredDecision, eligible = false, checkIn: CheckInSource | null = null): Decision {
   const freshnessLabel = fenceLine(stored.freshness?.label, DECISION_LABEL_MAX_CHARS);
   const previewBody = fenceLine(stored.preview?.body, DECISION_PREVIEW_BODY_MAX_CHARS);
   return {
@@ -2761,6 +2797,13 @@ export function toWireDecision(stored: StoredDecision, eligible = false): Decisi
     request: wireRequest(stored),
     // The same rules, for a proposed brief's own fields — see `wireTask`.
     task: wireTask(stored),
+    // TASK-932. The task check-in it was held in, or null: a label, never an authorization. Only an
+    // unattended row can be one (a check-in's conversation has origin `routine`), so an answer for
+    // any other row is dropped here. `routineId` is an opaque host id; the name is the task's, fenced.
+    checkIn:
+      stored.attendance === 'unattended' && checkIn !== null
+        ? { routineId: checkIn.routineId, taskName: fenceLine(checkIn.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task' }
+        : null,
     primaryLabel:
       fenceLine(stored.primaryLabel, DECISION_LABEL_MAX_CHARS) ??
       DECISION_FALLBACK_PRIMARY,
@@ -5565,9 +5608,114 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     } catch { return false; }
   }
 
-  async function projectDecision(stored: StoredDecision, userId: string): Promise<Decision> {
+  /**
+   * TASK-932 — which of these conversations are the caller's own task check-ins
+   * on this agent, by conversation id. Today's label, never an authorization.
+   *
+   * Asked as the caller (`agentWorkspaceCtx`), so the hook runs `agents:resolve`
+   * itself and answers only for the caller's own tasks. Only ids the contract can
+   * take are asked about: a hold outside a conversation is stored with ''
+   * (`@ax/decisions`' pre-call), and one such id would refuse the whole batch. At
+   * most `ROUTINE_CHECKIN_LOOKUP_MAX_IDS` ids per call.
+   *
+   * It never holds or fails the queue. Without the hook it asks nothing. After a
+   * throw, or past `deadlineMs`, this agent's rows carry no task and a warn line
+   * says why: the shape of `tasksForAgent` on the Tasks page.
+   */
+  async function checkInsForAgent(
+    agentId: string,
+    userId: string,
+    conversationIds: Iterable<string>,
+    deadlineMs: number,
+  ): Promise<Map<string, CheckInSource>> {
+    const ids = [...new Set(conversationIds)].filter((id) => RoutineOpaqueStringSchema.safeParse(id).success);
+    if (ids.length === 0 || !bus.hasService('routines:tasks-for-conversations')) return new Map();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+      const batches: string[][] = [];
+      for (let i = 0; i < ids.length; i += ROUTINE_CHECKIN_LOOKUP_MAX_IDS) {
+        batches.push(ids.slice(i, i + ROUTINE_CHECKIN_LOOKUP_MAX_IDS));
+      }
+      const read = Promise.all(
+        batches.map((batch) =>
+          bus.call<RoutineTasksForConversationsInput, RoutineTasksForConversationsOutput>(
+            'routines:tasks-for-conversations',
+            agentWorkspaceCtx(agentId, userId),
+            { agentId, conversationIds: batch },
+          ),
+        ),
+      );
+      // After the deadline nobody waits on this read, so its eventual failure is logged here.
+      read.catch((err: unknown) => {
+        if (!timedOut) return;
+        initCtx.logger.warn('workspace_decision_tasks_late_failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`routines:tasks-for-conversations did not answer within ${deadlineMs}ms`));
+        }, deadlineMs);
+      });
+      const answers = await Promise.race([read, deadline]);
+      return new Map(
+        answers
+          .flatMap((out) => out.checkIns)
+          .map((c) => [c.conversationId, { routineId: c.routineId, name: c.name }] as const),
+      );
+    } catch (err) {
+      initCtx.logger.warn('workspace_decision_tasks_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return new Map();
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /** TASK-932 — the check-in behind each unattended row, for rows already past their ACL. One call per agent, in parallel. */
+  async function checkInsFor(
+    rows: readonly StoredDecision[],
+    userId: string,
+    deadlineMs: number,
+  ): Promise<CheckInLabels> {
+    const byAgent = new Map<string, Set<string>>();
+    for (const d of rows) {
+      // A check-in's conversation has origin `routine`, so its holds are unattended. Attended rows are never asked about.
+      if (d.attendance !== 'unattended') continue;
+      const ids = byAgent.get(d.agentId) ?? new Set<string>();
+      ids.add(d.conversationId);
+      byAgent.set(d.agentId, ids);
+    }
+    return new Map(
+      await Promise.all(
+        [...byAgent].map(
+          async ([agentId, ids]) => [agentId, await checkInsForAgent(agentId, userId, ids, deadlineMs)] as const,
+        ),
+      ),
+    );
+  }
+
+  /**
+   * One row, labelled by the list's own rule but with the one-row deadline: the
+   * single read and the three answers (`useDecisionQueue` swaps in whatever row
+   * comes back).
+   */
+  async function projectOwnedDecision(stored: StoredDecision, userId: string): Promise<Decision> {
+    return projectDecision(
+      stored,
+      userId,
+      checkInOf(await checkInsFor([stored], userId, DECISION_CHECKIN_ROW_DEADLINE_MS), stored),
+    );
+  }
+
+  async function projectDecision(stored: StoredDecision, userId: string, checkIn: CheckInSource | null): Promise<Decision> {
     const open = (stored.status === 'pending' || stored.status === 'stale') && Date.parse(stored.expiresAt) > Date.now();
-    return toWireDecision(stored, open && await canManageStoredRoutine(stored, userId));
+    return toWireDecision(stored, open && await canManageStoredRoutine(stored, userId), checkIn);
   }
 
   async function resolvedOrGone(
@@ -5579,7 +5727,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(404).json({ error: 'decision-not-found' });
       return null;
     }
-    return projectDecision(decision, userId);
+    return projectOwnedDecision(decision, userId);
   }
 
   /**
@@ -6441,7 +6589,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * Thin on purpose. The machine that decides what is still open, what has
      * expired, and what the freshness guard has to say about it lives in
      * @ax/decisions and there is exactly one copy of it (invariant 4). This
-     * route reads, checks the ACL, and projects.
+     * route reads, checks the ACL, and projects. It also names the task a
+     * check-in's approval came from (TASK-932, `checkInsFor`): a label it asks
+     * routines for, which never holds or fails the queue.
      */
     async decisions(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -6474,9 +6624,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         agentIds.map(async (id) => [id, await canReachAgent(id, userId)] as const),
       );
       const reachable = new Map(verdicts);
+      const visible = rows.filter((d) => reachable.get(d.agentId) === true);
+      // TASK-932: the task each check-in's approval came from. After the ACL, never before it.
+      const labels = await checkInsFor(visible, userId, DECISION_CHECKINS_LIST_DEADLINE_MS);
 
       res.status(200).json({
-        decisions: await Promise.all(rows.filter(d => reachable.get(d.agentId) === true).map(d => projectDecision(d, userId))),
+        decisions: await Promise.all(visible.map((d) => projectDecision(d, userId, checkInOf(labels, d)))),
       } satisfies DecisionsResponse);
     },
 
@@ -6620,7 +6773,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (userId === null) return;
       const stored = await loadOwnedDecision(req, res, userId);
       if (stored === null) return;
-      res.status(200).json({ decision: await projectDecision(stored, userId) } satisfies DecisionResponse);
+      res.status(200).json({ decision: await projectOwnedDecision(stored, userId) } satisfies DecisionResponse);
     },
 
     /**
@@ -6648,7 +6801,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // Display eligibility and transport retry differ: only the identical persisted
       // choice may be retried after resolution. The decisions service owns the effect.
       const standingRetry = approvalScope === 'agent-routines' && stored.approvalScope === 'agent-routines' && stored.status !== 'pending' && stored.status !== 'stale' && await canManageStoredRoutine(stored, userId);
-      if (approvalScope === 'agent-routines' && !standingRetry && !(await projectDecision(stored, userId)).approvalScopes.includes('agent-routines')) {
+      // Reads approvalScopes only, so it asks routines nothing.
+      if (approvalScope === 'agent-routines' && !standingRetry && !(await projectDecision(stored, userId, null)).approvalScopes.includes('agent-routines')) {
         res.status(403).json({ error: 'approval-scope-unavailable' }); return;
       }
 
