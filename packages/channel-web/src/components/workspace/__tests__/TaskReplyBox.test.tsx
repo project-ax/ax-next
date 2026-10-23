@@ -158,6 +158,19 @@ describe('TaskReplyBox — sending', () => {
     );
   });
 
+  it('a resume while the sent line shows does not rewrite it', async () => {
+    sendMock.mockResolvedValue({ checkIn: 'not-allowed' });
+    const boxWith = (enabled: boolean) => (
+      <TaskReplyBox agentId="a1" routineId="t1" agentName="Quill" enabled={enabled} canStart={false} onSent={vi.fn()} />
+    );
+    const { rerender } = render(boxWith(false));
+    await send('Hi');
+    rerender(boxWith(true));
+    expect(screen.getByRole('status').textContent).toBe(
+      'Sent. Quill will read it once the task is resumed.',
+    );
+  });
+
   it('typing again clears the sent line', async () => {
     sendMock.mockResolvedValue({ checkIn: 'started' });
     renderBox();

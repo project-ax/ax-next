@@ -119,7 +119,9 @@ export function TaskReplyBox({
   const errorId = `${ids}-error`;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState<TaskReplyCheckIn | null>(null);
+  // The answer, with whether the task ran at send time: a pause or resume while the line shows
+  // must not rewrite it (and make the status region announce it again).
+  const [sent, setSent] = useState<{ checkIn: TaskReplyCheckIn; enabled: boolean } | null>(null);
   const [failure, setFailure] = useState<{ line: string; rule: boolean } | null>(null);
   const pending = useRef<{ text: string; requestId: string } | null>(null);
   const inFlight = useRef(false);
@@ -160,7 +162,7 @@ export function TaskReplyBox({
       });
       pending.current = null;
       setText('');
-      setSent(answer.checkIn);
+      setSent({ checkIn: answer.checkIn, enabled });
       onSent(answer.checkIn);
     } catch (e) {
       logRequestFailure(e, 'task-reply');
@@ -221,7 +223,7 @@ export function TaskReplyBox({
             Send
           </Button>
           <p role="status" className="text-sm text-muted-foreground">
-            {sent === null ? '' : sentLine(agentName, sent, enabled)}
+            {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled)}
           </p>
         </div>
       </FieldGroup>
