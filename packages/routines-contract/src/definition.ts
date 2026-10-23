@@ -419,6 +419,25 @@ export function applyRoutinePatch(current: RoutineDefinition, patch: RoutinePatc
 
 export const RoutinePermissionsSchema = z.object({ edit: z.boolean(), stop: z.boolean(), fire: z.boolean(), manageSecret: z.boolean() }).strict();
 export const RoutineInstantSchema = z.string().datetime({ offset: true });
+
+/*
+ * Why a task's check-in ended without a report (TASK-930). The host writes
+ * these, never an agent: they are the closed set of reasons, classified where
+ * the miss happens rather than parsed from an error string. The wording a person
+ * reads lives in channel-web.
+ */
+export const CHECK_IN_MISSES = ['no-report', 'brief-missing', 'brief-unconfirmed', 'brief-too-long', 'interrupted', 'failed'] as const;
+export const CheckInMissSchema = z.enum(CHECK_IN_MISSES);
+export type CheckInMiss = z.output<typeof CheckInMissSchema>;
+/** Check-ins in a row with no report before a task asks a person for help. */
+export const TASK_NEEDS_YOU_AFTER_MISSES = 3;
+/** Check-ins in a row with no report before ax pauses the task. */
+export const TASK_AUTO_PAUSE_AFTER_MISSES = 5;
+export const RoutineNoRecentUpdateViewSchema = z.object({
+  inARow: z.number().int().min(1), reason: CheckInMissSchema, at: RoutineInstantSchema, autoPaused: z.boolean(),
+}).strict();
+export type RoutineNoRecentUpdateView = z.output<typeof RoutineNoRecentUpdateViewSchema>;
+
 export const RoutineStatusSchema = z.enum(['ok', 'silenced', 'error']);
 
 /*
