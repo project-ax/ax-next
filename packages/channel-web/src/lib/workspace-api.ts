@@ -470,7 +470,8 @@ function isTaskUpdate(v: unknown): boolean {
     isString(v.firedAt) &&
     RoutineStatusSchema.options.some((s) => s === v.status) &&
     isStringOrNull(v.error) &&
-    (v.report === null || isTaskUpdateReport(v.report))
+    (v.report === null || isTaskUpdateReport(v.report)) &&
+    isStringOrNull(v.conversationId)
   );
 }
 

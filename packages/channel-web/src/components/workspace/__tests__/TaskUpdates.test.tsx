@@ -19,6 +19,7 @@ function update(over: Partial<TaskUpdate> = {}): TaskUpdate {
     status: 'ok',
     error: null,
     report: { status: 'on-track', update: 'Nothing new.' },
+    conversationId: null,
     ...over,
   };
 }

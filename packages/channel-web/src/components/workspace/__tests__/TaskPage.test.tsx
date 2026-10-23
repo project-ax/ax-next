@@ -81,6 +81,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
         status: 'ok',
         error: null,
         report: { status: 'needs-you', update: '3 open. I’m answering #4411 and #4412 now.' },
+        conversationId: null,
       },
     ],
     ...over,

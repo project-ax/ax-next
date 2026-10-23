@@ -15,6 +15,7 @@ function u(
     status: 'ok',
     error: null,
     report: report === null ? null : { status: report, update: `update ${n}` },
+    conversationId: null,
     ...over,
   };
 }

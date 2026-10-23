@@ -733,7 +733,10 @@ type TaskDetailView = Pick<
   | 'goodWhen'
   | 'task'
 >;
-type TaskFireView = Pick<RoutineFireView, 'firedAt' | 'status' | 'error' | 'report'>;
+type TaskFireView = Pick<
+  RoutineFireView,
+  'firedAt' | 'status' | 'error' | 'report' | 'conversationId' | 'triggerSource'
+>;
 interface TaskKeyInput {
   agentId: string;
   routineId: string;
@@ -3389,8 +3392,9 @@ function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | nul
  *
  * Built field by field, never spread from the view, so nothing rides along
  * that the page doesn't draw (TASK-909 decisions row 5's rule): no
- * `manageSecret`, and of each check-in no `triggerSource`, `conversationId`,
- * `ask`, `renderedPrompt` or `warning` (decisions row 10).
+ * `manageSecret`, and of each check-in no `triggerSource`, `ask`,
+ * `renderedPrompt` or `warning` (TASK-910 decisions row 10); its
+ * `conversationId` crosses for See what it did (TASK-911).
  *
  * Everything the agent wrote is fenced HERE, at the boundary: the update and
  * the ask to one line at the report writer's own caps, because stored text
@@ -3461,6 +3465,8 @@ function toTaskUpdate(fire: TaskFireView): TaskUpdate {
             status: fire.report.status,
             update: fenceLine(fire.report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
           },
+    // An opaque id the host minted, never text an agent wrote (TASK-911).
+    conversationId: fire.conversationId,
   };
 }
 
