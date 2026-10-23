@@ -551,6 +551,19 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect(lines).toEqual([]);
   });
 
+  it('a miss that starts in the same instant as an open report, behind misses before it, clears them all: that report answers every one', async () => {
+    const lines = pauseLines();
+    const row = await f.store.createAuthored(taskInput('task'));
+    await missed(row, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
+    const open = await checkIn(row, 'open', { at: minute(5), report: onTrack });
+    await finish((await checkIn(row, 'beside', { at: minute(5) })).dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toBeNull();
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    await finish(open.dispatchId);
+    expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: null });
+    expect(lines).toEqual([]);
+  });
+
   it('a late report keeps only the misses that started after it: not one that started beside it and finished first, nor one a newer report answered', async () => {
     // A miss that starts in the same instant as a report and finishes first is answered by it (the test below).
     const row = await f.store.createAuthored(taskInput('task'));

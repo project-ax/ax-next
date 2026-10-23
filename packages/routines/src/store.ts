@@ -283,7 +283,8 @@ async function missesAfterRun(
   // its run hasn't trimmed them yet: count the ones after it. This run's fire row, just written, is
   // one, unless it started in the same instant as that report, whose run finishes after it.
   const inARow = reportAt !== null && await reportStillOpen(trx, row, reportAt) ? await unansweredAfter(trx, row, reportAt, upTo) : upTo;
-  if (inARow === 0) return null;
+  // None after it: that open report answers every miss counted, this one included.
+  if (inARow === 0) return { columns: NO_MISSES, paused: false };
   const reason: CheckInMiss = run.status === 'error' ? run.miss ?? 'failed' : 'no-report';
   const counted = newerMiss ? { task_misses_in_a_row: inARow }
     : { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
