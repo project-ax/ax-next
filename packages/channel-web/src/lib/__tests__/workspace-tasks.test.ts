@@ -341,12 +341,15 @@ describe('a read that never settles (TASK-933 review)', () => {
     await act(async () => vi.advanceTimersByTimeAsync(TASKS_READ_TIMEOUT_MS));
     expect(result.current.state).toEqual({ kind: 'failed', error: 'failed' });
 
+    // The race already settled as failed: the read's own late answer is dropped.
+    await act(async () => timedOut.resolve(page('Too late')));
+    expect(result.current.state).toEqual({ kind: 'failed', error: 'failed' });
+
     const superseded = deferred<TasksResponse>();
     const newest = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(superseded.promise).mockReturnValueOnce(newest.promise);
     act(() => result.current.retry());
     act(() => result.current.reload());
-    await act(async () => timedOut.resolve(page('Too late')));
     await act(async () => superseded.resolve(page('Superseded')));
     expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: 'failed' });
 
