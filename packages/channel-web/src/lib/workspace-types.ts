@@ -1413,7 +1413,11 @@ export interface TaskReply {
   /** When it was sent, ISO. */
   sentAt: string;
   text: string | null;
-  /** The caller wrote it. False only for an earlier owner's reply, after the task moved. */
+  /**
+   * The caller wrote it. The host reads a task's replies only for its current
+   * owner, and only the ones they wrote, so this is true in practice; it is
+   * still worked out per reply, so one from anyone else would never read as "You".
+   */
   byYou: boolean;
 }
 

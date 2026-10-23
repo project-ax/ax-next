@@ -3604,7 +3604,9 @@ function toTaskDetail(
 
 /**
  * One reply → one entry in a task's Updates thread (TASK-931). Field by
- * field: who wrote it becomes `byYou`, and its id stays here.
+ * field: who wrote it becomes `byYou`, and its id stays here. routines reads
+ * only the replies the task's current owner wrote, so `byYou` is true in
+ * practice; it is still compared, never assumed.
  */
 function toTaskReply(reply: TaskReplyView, userId: string): TaskReply {
   return {

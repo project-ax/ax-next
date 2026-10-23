@@ -753,7 +753,8 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
           sentAt: '2026-10-22T15:00:00.000Z',
         },
         {
-          // From an earlier owner of the task, after it moved.
+          // Someone else's. routines:recent-replies never answers one (it reads only the
+          // current owner's own replies), but the route still says so rather than "You".
           replyId: 'REPLY-ID-2',
           authorUserId: 'carol',
           text: `x${String.fromCodePoint(0x202e)}y`,
