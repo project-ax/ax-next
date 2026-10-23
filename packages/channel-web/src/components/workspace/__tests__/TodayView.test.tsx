@@ -513,10 +513,17 @@ describe("an expanded check-in row (TASK-932)", () => {
       onNavigate,
     });
     // The expanded row sits inside its task's block now, so TASK-932's own
-    // link on it would be a second, identical Open task in one block.
+    // link on it would be a second, identical Open task in one block. The one
+    // link is the block's, outside the expanded row.
     const links = screen.getAllByRole('link', { name: /^Open task/ });
     expect(links).toHaveLength(1);
-    fireEvent.click(links[0]!);
+    const link = links[0]!;
+    const block = screen.getByRole('region', { name: /Zero open support tickets/ });
+    expect(block).toContainElement(link);
+    const row = screen.getByTestId('decision-d1');
+    expect(block).toContainElement(row);
+    expect(row).not.toContainElement(link);
+    fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'a-quill', routineId: 't1' });
   });
 });
