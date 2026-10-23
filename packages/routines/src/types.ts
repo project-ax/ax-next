@@ -44,9 +44,21 @@ export interface RoutinesConfig {
 export type AcceptedDispatch = {
   dispatchId: string; reqId: string; row: StoredRoutine; source: FireSource; acceptedAt: Date;
 };
+/**
+ * TASK-930. Why an `error` run left no report, set by the code that recorded it,
+ * which knows (never parsed from the error's text). Absent: `failed`. A run
+ * that didn't end in an error left no report because it didn't send one
+ * (`no-report`), and only the store says so.
+ */
+export type DispatchMiss = Exclude<CheckInMiss, 'no-report'>;
 export type DispatchOutcome = {
   status: FireStatus; conversationId: string | null; error: string | null;
   renderedPrompt: string | null; warning: string | null;
+  /**
+   * TASK-930. Read only for a task's `error` run that left no report. `| undefined`
+   * because `DispatchOutcomeSchema`'s parse (as `getDispatchOutcome` returns it) says so.
+   */
+  miss?: DispatchMiss | undefined;
 };
 /** TASK-907. One run's report: kept on its dispatch, then on its fire row. The notes stay on the task. */
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };

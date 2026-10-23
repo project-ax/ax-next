@@ -1,13 +1,13 @@
-import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, RoutineDeleteOutputSchema,
-  type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, DispatchMiss, DispatchOutcome, DispatchReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -33,6 +33,12 @@ export interface RoutinesStore {
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
+  /**
+   * Records a run's end, once; false when it had already ended, is gone, or its
+   * agent is retired. Every run of every routine ends here, so TASK-930 counts a
+   * task's missed check-ins here too, and pauses the task at the fifth in a row
+   * (`missesAfterRun`). It and `updateAuthored` are the count's only writers.
+   */
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
   bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
@@ -185,10 +191,63 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * the same routine, and clearing `task_report_accepted_at` lets it report into
  * the restarted task. That is accepted: the report is still that routine's own,
  * and it lands on that run too.
+ *
+ * TASK-930: its missed check-ins start over with the rest (`NO_MISSES`), a pause
+ * for them included. `enabled` isn't touched, so a task ax paused stays paused
+ * through a kind change; only a Resume runs it again.
  */
+const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+  ...NO_MISSES,
 } as const;
+/**
+ * TASK-930. The hash `updateAuthored` stores for this row paused by a person: of
+ * its definition with `enabled` false. `finishDispatch` runs in plugin init
+ * (`interruptAbandonedDispatches`, with no catch), so a stored definition that
+ * today's checks refuse keeps its stored hash rather than stop the host booting.
+ */
+function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): string {
+  try { return inputHash({ ...editableDefinition(rowToRoutine(row)), enabled: false }); } catch { return row.spec_hash; }
+}
+/**
+ * TASK-930. What a finished run does to its task's missed check-ins, given the
+ * routine's row as `finishDispatch` locked it before writing anything. Null
+ * leaves them as they are: for a repeat routine, and while the task is paused for
+ * them (`task_auto_paused_at` set and not enabled), so a run that started before
+ * the pause (a Check now beside the fifth check-in) can't count past it, or clear
+ * it by reporting. Only a person's Resume or a kind change ends that
+ * (`updateAuthored`). Keyed on `enabled` too: a row resumed without a reset (code
+ * from before version 7, after a rollback) counts again, and can pause again.
+ *
+ * A run that reported clears them. Any other run missed, whatever its status:
+ * one more in a row, with its start (the fire row's time) and its reason, the one
+ * its caller classified for an `error` run (`failed` when it gave none), else
+ * `no-report`. The fifth in a row pauses a running task the way a person's pause
+ * does (design §7's cost bound): not enabled, a new revision, so an edit, Check
+ * now or tick held against the old one is refused, the paused definition's hash,
+ * no next run, and `updated_at`, at the instant `task_auto_paused_at` records.
+ */
+function missesAfterRun(
+  row: Selectable<RoutinesDefinitionsRow>,
+  run: { reported: boolean; status: FireStatus; miss: DispatchMiss | undefined; acceptedAt: Date },
+  now: Date,
+): { columns: Updateable<RoutinesDefinitionsRow>; paused: boolean } | null {
+  if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
+  if (run.reported) return { columns: NO_MISSES, paused: false };
+  // A count below zero (a hand edit) starts again at one.
+  const inARow = Math.max(0, row.task_misses_in_a_row) + 1;
+  const reason: CheckInMiss = run.status === 'error' ? run.miss ?? 'failed' : 'no-report';
+  const counted = { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
+  if (inARow < TASK_AUTO_PAUSE_AFTER_MISSES || !row.enabled) return { columns: counted, paused: false };
+  return {
+    columns: {
+      ...counted, enabled: false, revision: opaqueId('rev'), spec_hash: pausedSpecHash(row),
+      next_run_at: null, updated_at: now, task_auto_paused_at: now,
+    },
+    paused: true,
+  };
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -370,6 +429,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
           ...(next.kind === current.kind ? {} : NO_TASK_STATE),
+          // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
+          // shortening instructions that were too long leaves the task paused, and counted.
+          ...(!current.enabled && next.enabled ? NO_MISSES : {}),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -424,7 +486,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       let interrupted = 0;
       for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, outcome: {
         status: 'error', error: 'The routine run was interrupted by a host restart.',
-        conversationId: null, renderedPrompt: null, warning: null,
+        conversationId: null, renderedPrompt: null, warning: null, miss: 'interrupted',
       } })) interrupted++;
       return interrupted;
     },
@@ -437,13 +499,21 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
       let unreadable = false;
+      let paused = null as RoutineKey | null;
       const finished = await db.transaction().execute(async trx => {
         const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
         if (!dispatch || dispatch.completed_at) return false;
+        // TASK-930: the routine's row, locked before anything here writes to it, so two runs that
+        // finish at once count one after the other. recordReport's order (agent fence, dispatch row,
+        // definition row), and nothing locks a dispatch row after a definition row, so it adds no
+        // deadlock. A deleted routine has no row, and its run isn't counted.
+        const definition = await trx.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         const stored = storedReport(dispatch.report);
         unreadable = stored.unreadable;
+        const finishedAt = new Date();
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
@@ -451,14 +521,27 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
         }).execute();
         // The fire row has the report now; one copy of the text is enough (TASK-907).
-        await trx.updateTable('routines_v1_dispatches').set({ completed_at: new Date(), report: null }).where('dispatch_id', '=', input.dispatchId).execute();
+        await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null }).where('dispatch_id', '=', input.dispatchId).execute();
         await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
           .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
+        // TASK-930: the missed check-ins, only now. The pause mints a new revision, so before the
+        // update above it would make that update skip the fifth run's own status and error. No
+        // revision clause here: an edit during a check-in can't drop its miss, as it can't its report.
+        const misses = definition === undefined ? null : missesAfterRun(definition, {
+          reported: stored.report !== null, status: outcome.status, miss: outcome.miss, acceptedAt: dispatch.accepted_at,
+        }, finishedAt);
+        if (misses !== null) {
+          await trx.updateTable('routines_v1_definitions').set(misses.columns)
+            .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
+          if (misses.paused) paused = { agentId: dispatch.agent_id, routineId: dispatch.routine_id };
+        }
         return true;
       });
       // After commit, so a rolled-back finish doesn't claim a drop. Only the id: the text is the agent's.
       if (finished && unreadable) process.stderr.write(`[ax/routines] dropped an unreadable report for dispatch ${input.dispatchId}\n`);
+      // After commit too, so a rolled-back finish paused nothing. Ids only.
+      if (finished && paused !== null) process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`);
       return finished;
     },
     async bindDispatchConversation(input) {
