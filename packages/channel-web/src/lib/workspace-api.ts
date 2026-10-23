@@ -88,6 +88,7 @@ import type {
   AgentRailData,
 CounterRow,
   Decision,
+  DecisionCheckIn,
   FactMemoryPage,
   FactMemoryStatement,
   GrantRef,
@@ -407,24 +408,40 @@ function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
-/** TASK-932. Absent (an older server) reads as no task; present, it is null or two non-empty strings. */
-function isDecisionCheckIn(v: unknown): boolean {
-  return (
-    v === undefined ||
-    v === null ||
-    (isRecord(v) &&
-      isString(v.routineId) &&
-      v.routineId.length > 0 &&
-      isString(v.taskName) &&
-      v.taskName.length > 0)
-  );
+/**
+ * TASK-933 — a label is never worth failing the queue over: TASK-932's guard refused the whole read for one bad `checkIn`, which emptied Today. A malformed one reads as no task, which is also what the host sends when its lookup fails.
+ *
+ * Present and well-formed (two non-empty strings) → a fresh `{ routineId, taskName }`; absent, null or anything else → null.
+ */
+function readableCheckIn(v: unknown): DecisionCheckIn | null {
+  if (
+    isRecord(v) &&
+    isString(v.routineId) &&
+    v.routineId.length > 0 &&
+    isString(v.taskName) &&
+    v.taskName.length > 0
+  ) {
+    return { routineId: v.routineId, taskName: v.taskName };
+  }
+  return null;
 }
+
+/** A decision with its `checkIn` read (see `readableCheckIn`). Everything else about the row is untouched. */
+function withReadableCheckIn(d: Decision): Decision {
+  return { ...d, checkIn: readableCheckIn((d as { checkIn?: unknown }).checkIn) };
+}
+
+/** An approve, dismiss or undo answer with its row's label read. Untouched unless both the answer and its `decision` are records. */
+function withReadableAnswer<T extends { decision: Decision | null }>(out: T): T {
+  if (!isRecord(out) || !isRecord(out.decision)) return out;
+  return { ...out, decision: withReadableCheckIn(out.decision) };
+}
+
 /** Older receipts may omit the marker; present markers use the closed domain. */
 function isDecisionRecord(value: unknown): boolean {
   return (
     isRecord(value) &&
-    (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation)) &&
-    isDecisionCheckIn(value.checkIn)
+    (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation))
   );
 }
 
@@ -990,11 +1007,12 @@ export const workspaceApi = {
     // Every ELEMENT too, not just the array. `undoSecondsLeft(d)` and
     // `d.conversationId` are read during render, so one null row in an
     // otherwise valid page crashes the same way a missing array does.
-    return checkedRead<DecisionsPage>(
+    const page = checkedRead<DecisionsPage>(
       '/decisions',
       body,
       (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isDecisionRecord),
     );
+    return { ...page, decisions: page.decisions.map(withReadableCheckIn) };
   },
 
   /**
@@ -1070,9 +1088,14 @@ export const workspaceApi = {
     );
   },
 
-  approveDecision: (id: string, approvalScope?: 'once' | 'agent-routines') => req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
-  dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
-  undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
+  approveDecision: async (id: string, approvalScope?: 'once' | 'agent-routines') =>
+    withReadableAnswer(
+      await req<ApproveResult>(`/decisions/${encodeURIComponent(id)}/approve`, { method: 'POST', ...(approvalScope === undefined ? {} : { body: { approvalScope } }) }),
+    ),
+  dismissDecision: async (id: string) =>
+    withReadableAnswer(await decisionPost<DismissResult>(id, 'dismiss')),
+  undoDecision: async (id: string) =>
+    withReadableAnswer(await decisionPost<UndoResult>(id, 'undo')),
 
   /**
    * Every pending capability grant waiting on this person (TASK-373) — the
@@ -1145,11 +1168,12 @@ export const workspaceApi = {
       TASK-273's per-surface boundaries that unmounted the whole chat surface:
       exactly the failure this guard exists to stop, just moved one route over.
     */
-    return checkedRead<DecisionRead>(
+    const read = checkedRead<DecisionRead>(
       path,
       body,
       (b) => isRecord(b) && isDecisionRecord(b.decision),
     );
+    return { ...read, decision: withReadableCheckIn(read.decision) };
   },
 
   /**
