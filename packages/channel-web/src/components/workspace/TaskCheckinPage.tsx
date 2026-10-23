@@ -220,7 +220,8 @@ export function TaskCheckinPage({
                 server found (it trims what it is handed), not the address as
                 typed, since file downloads are scoped by it. It is never null
                 here (the server answers only for a check-in with that id);
-                null would still fail safe, naming files without a link.
+                null would still fail safe: the agent's files wouldn't be
+                drawn, rather than download under the address as typed.
               */
               <AgentConversation
                 agent={{ id: agentId, name: state.page.agentName }}

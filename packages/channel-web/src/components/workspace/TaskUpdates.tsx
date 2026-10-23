@@ -20,9 +20,11 @@
  * time, so a list of them still says which is which.
  *
  * NO LINK FOR A SHARED CONVERSATION. A routine that was once a repeat routine
- * with one shared conversation recorded the same id on every run, and the
- * check-in page shows the newest fire with that id, so a link from any other
- * entry would open a page about a different run (`sharedConversationIds`).
+ * with one shared conversation recorded the same id on every run. No single
+ * run's report describes that transcript, so the check-in route answers 404
+ * for a conversation more than one of the task's newest 200 check-ins
+ * recorded, and a link from any of them would open the gone state
+ * (`sharedConversationIds`).
  */
 import { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';

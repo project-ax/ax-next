@@ -196,9 +196,9 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('check-ins that share one conversation have no link, since it would open another run', () => {
+  it('check-ins that share one conversation have no link, since the route answers 404 for it', () => {
     // A routine that was once a repeat routine with a shared conversation: its
-    // runs all recorded the same id, and that check-in's page shows the newest.
+    // runs all recorded the same id, and no one check-in owns that transcript.
     renderThread([
       { ...onTrack(1), conversationId: 'c1' },
       update({ firedAt: onTrack(2).firedAt, report: { status: 'needs-you', update: 'Shared 2' }, conversationId: 'shared' }),

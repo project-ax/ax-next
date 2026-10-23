@@ -133,6 +133,7 @@ let warn: MockInstance;
 
 beforeEach(() => {
   checkinMock.mockReset();
+  vi.mocked(saveBlob).mockClear();
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(NOW);
   // Failed reads are logged, and several cases fail on purpose.

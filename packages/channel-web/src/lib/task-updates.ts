@@ -67,10 +67,10 @@ export function updateText(update: Pick<TaskUpdate, 'status' | 'report'>): strin
  *
  * A routine that was once a repeat routine with one shared conversation wrote
  * every run into it, so those fires all carry the same `conversationId`. A
- * check-in's page is addressed by that id, and the server answers with the
- * newest fire that recorded it, so a link from any other of those entries
- * would open a page about a different run than the one clicked. Those entries
- * get no link instead.
+ * check-in's page is addressed by that id, and the check-in route answers 404
+ * for a conversation more than one of the task's newest 200 check-ins
+ * recorded, since no one run's report describes it. A link from any of those
+ * entries would open the gone state, so they get no link.
  */
 export function sharedConversationIds(updates: readonly TaskUpdate[]): ReadonlySet<string> {
   const seen = new Set<string>();

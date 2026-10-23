@@ -7085,9 +7085,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         own.ctx,
         { ...key, limit: ROUTINE_HISTORY_MAX_LIMIT },
       );
-      // Exactly one check-in must own the conversation. Runs from before the
-      // routine became a task may share one (a `conversation: 'shared'`
-      // repeat), and no single run's report describes that transcript.
+      // Exactly one of these check-ins must own the conversation. Runs from
+      // before the routine became a task may share one (a `conversation:
+      // 'shared'` repeat), and no single run's report describes that
+      // transcript.
       const matches = fires.filter((f) => f.conversationId === conversationId);
       const fire = matches.length === 1 ? matches[0] : undefined;
       if (fire === undefined) {
