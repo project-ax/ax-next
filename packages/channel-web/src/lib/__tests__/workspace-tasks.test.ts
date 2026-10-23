@@ -264,6 +264,32 @@ describe('a re-read while a read is in flight (TASK-933 review)', () => {
   });
 });
 
+describe('a superseded answer (TASK-933 review round 2)', () => {
+  // The reload's read is still out when the older read's answer lands, so a
+  // Try again then must join the reload, not start a third read: the older
+  // answer says nothing about whether the newest read is done.
+  it('landing late doesn’t end the newer read, so a Try again still joins it', async () => {
+    const mount = deferred<TasksResponse>();
+    const fresh = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(mount.promise).mockReturnValueOnce(fresh.promise).mockResolvedValue(page('Third'));
+    const { result } = renderHook(() => useTasks());
+    act(() => result.current.retry()); // joins the mount read
+    act(() => result.current.reload()); // a fresh read: the mount read is superseded
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => mount.resolve(page('Stale')));
+    act(() => result.current.retry());
+    // Mount read + reload. A third call would mean the stale answer marked the
+    // reload's read as done.
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: null });
+
+    const answer = page('Fresh');
+    await act(async () => fresh.resolve(answer));
+    expect(result.current.state).toMatchObject({ kind: 'ready', tasks: answer.tasks, refreshing: false });
+  });
+});
+
 describe('a read that never settles (TASK-933 review)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
