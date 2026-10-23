@@ -903,11 +903,13 @@ describe('one tasks read (TASK-933)', () => {
   // every later entry restarts the read (4 calls); let Activity arm and the
   // trip to Today restarts it (3 calls).
   it('a reload spends the arming, so later hops join the read again (TASK-933 review)', async () => {
+    // Every read is held, so a join stays put and only a reload adds a call.
+    tasksMock.mockReturnValue(new Promise(() => {}));
     renderAt('/workspace/agents/a-quill');
     await screen.findByRole('tab', { name: /files/i });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
 
-    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    // Opening on an agent's page armed the reload: the trip to Tasks reads afresh.
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
     await screen.findByRole('heading', { name: 'Tasks' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
@@ -916,7 +918,7 @@ describe('one tasks read (TASK-933)', () => {
       window.history.pushState(null, '', '/workspace/activity');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull());
+    await screen.findByRole('heading', { name: 'Activity' });
     fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
     await screen.findByRole('heading', { name: 'Today' });
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
