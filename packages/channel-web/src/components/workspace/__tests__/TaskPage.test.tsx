@@ -993,6 +993,24 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     });
   });
 
+  it('a too-long brief, for a viewer who can’t edit, says who needs to shorten it and has no settings link', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        permissions: { fire: true, stop: true, edit: false },
+        noRecentUpdate: missed({ reason: 'brief-too-long' }),
+      }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(
+      within(latest).getByText(
+        'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(latest).queryByRole('link', { name: /settings/ })).toBeNull();
+    expect(within(latest).queryByText(/Shorten/)).toBeNull();
+  });
+
   it('only a too-long brief gets the settings link', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'failed' }) }));
     await renderReady();
@@ -1103,6 +1121,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     await renderReady();
     expect(screen.getByText(AUTO_PAUSED, { exact: false })).toBeInTheDocument();
     expect(within(latestUpdate()).getByText('Needs you')).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText(/didn’t leave an update/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await screen.findByRole('button', { name: 'Pause' });
     expect(updateMock).toHaveBeenCalledWith({

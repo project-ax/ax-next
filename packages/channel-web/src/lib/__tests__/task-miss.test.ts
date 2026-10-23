@@ -7,7 +7,7 @@ const RESUME = 'Press Resume, and it’ll try again at its next check-in.';
 const ASK = 'If it keeps happening, tell whoever runs your workspace.';
 const NEXT_CHECK_IN = 'It’ll try again at its next check-in.';
 const NOT_YOURS_TO_RESUME = 'Only someone who manages this agent’s tasks can resume it.';
-const ALL = { checkNow: true, resume: true };
+const ALL = { checkNow: true, edit: true };
 
 /** [what, fix while running, fix while paused, settingsLink]; typographic marks written as escapes. */
 const TABLE: Record<CheckInMiss, [string, string, string, boolean]> = {
@@ -60,21 +60,42 @@ describe('missWords', () => {
 
   it.each(CHECK_IN_MISSES)('%s: without Check now, never tells the viewer to press it', (code) => {
     const [what, fix, , settingsLink] = TABLE[code];
-    const words = missWords(code, 'Quill', false, { checkNow: false, resume: true });
+    const words = missWords(code, 'Quill', false, { checkNow: false, edit: true });
     expect(words).toEqual({ what, fix: withoutCheckNow(fix), settingsLink });
     expect(words.fix).not.toMatch(/Check now/);
   });
 
-  it.each(CHECK_IN_MISSES)('%s: without Resume, never tells the viewer to press it', (code) => {
-    const [what, , fix, settingsLink] = TABLE[code];
-    const words = missWords(code, 'Quill', true, { checkNow: true, resume: false });
-    expect(words).toEqual({ what, fix: withoutResume(fix), settingsLink });
-    if (code !== 'brief-too-long') expect(words.fix).not.toMatch(/Press Resume/);
+  it.each(CHECK_IN_MISSES.filter((c) => c !== 'brief-too-long'))(
+    '%s: without edit, never tells the viewer to press Resume',
+    (code) => {
+      const [what, , fix, settingsLink] = TABLE[code];
+      const words = missWords(code, 'Quill', true, { checkNow: true, edit: false });
+      expect(words).toEqual({ what, fix: withoutResume(fix), settingsLink });
+      expect(words.fix).not.toMatch(/Press Resume/);
+    },
+  );
+
+  it('a too-long brief, for a viewer who can’t edit, says who needs to shorten it and offers no link or button to press', () => {
+    const running = missWords('brief-too-long', 'Quill', false, { checkNow: true, edit: false });
+    expect(running).toEqual({
+      what: 'Its instructions are too long to load.',
+      fix: 'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings.',
+      settingsLink: false,
+    });
+    const paused = missWords('brief-too-long', 'Quill', true, { checkNow: true, edit: false });
+    expect(paused).toEqual({
+      what: 'Its instructions are too long to load.',
+      fix: 'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings. Then they can resume it.',
+      settingsLink: false,
+    });
+    for (const w of [running, paused]) {
+      expect(w.fix).not.toMatch(/Press|^Shorten|, then resume it/);
+    }
   });
 
   it('a viewer who can only resume still reads Resume while paused, and one who can only check reads Check now while running', () => {
-    expect(missWords('failed', 'Quill', true, { checkNow: false, resume: true }).fix).toBe(RESUME);
-    expect(missWords('failed', 'Quill', false, { checkNow: true, resume: false }).fix).toBe(TRY_AGAIN);
+    expect(missWords('failed', 'Quill', true, { checkNow: false, edit: true }).fix).toBe(RESUME);
+    expect(missWords('failed', 'Quill', false, { checkNow: true, edit: false }).fix).toBe(TRY_AGAIN);
   });
 
   it('points at settings only for a brief that is too long', () => {

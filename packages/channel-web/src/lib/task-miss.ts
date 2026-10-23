@@ -38,8 +38,8 @@ const ASK = 'If it keeps happening, tell whoever runs your workspace.';
 export interface MissViewer {
   /** Check now: `permissions.fire`. */
   checkNow: boolean;
-  /** Resume: `permissions.edit`. */
-  resume: boolean;
+  /** Resume, and changing the agent's settings: `permissions.edit`. */
+  edit: boolean;
 }
 
 export function missWords(
@@ -48,7 +48,7 @@ export function missWords(
   paused: boolean,
   can: MissViewer,
 ): MissWords {
-  const again = paused ? (can.resume ? RESUME : NOT_YOURS_TO_RESUME) : can.checkNow ? TRY_AGAIN : NEXT_CHECK_IN;
+  const again = paused ? (can.edit ? RESUME : NOT_YOURS_TO_RESUME) : can.checkNow ? TRY_AGAIN : NEXT_CHECK_IN;
   switch (reason) {
     case 'no-report':
       return { what: 'It checked in but didn’t say how it went.', fix: again, settingsLink: false };
@@ -67,8 +67,11 @@ export function missWords(
     case 'brief-too-long':
       return {
         what: 'Its instructions are too long to load.',
-        fix: `Shorten “What to do” in ${agentName}’s settings${paused ? ', then resume it.' : '.'}`,
-        settingsLink: true,
+        // Only someone who can edit gets the instruction to do it, and the link; anyone else is told who can.
+        fix: can.edit
+          ? `Shorten “What to do” in ${agentName}’s settings${paused ? ', then resume it.' : '.'}`
+          : `Someone who manages this agent’s tasks needs to shorten “What to do” in ${agentName}’s settings.${paused ? ' Then they can resume it.' : ''}`,
+        settingsLink: can.edit,
       };
     case 'interrupted':
       return {
@@ -83,7 +86,7 @@ export function missWords(
 
 /** The row's one-line reason: the count leads once it's three or more in a row. */
 export function missSummary(noRecentUpdate: { inARow: number; reason: CheckInMiss }): string {
-  const { what } = missWords(noRecentUpdate.reason, '', false, { checkNow: true, resume: true });
+  const { what } = missWords(noRecentUpdate.reason, '', false, { checkNow: true, edit: true });
   return noRecentUpdate.inARow >= TASK_NEEDS_YOU_AFTER_MISSES
     ? `Its last ${noRecentUpdate.inARow} check-ins didn’t leave an update. ${what}`
     : what;
