@@ -547,6 +547,7 @@ function TaskBody({
       </section>
       <TaskUpdates
         updates={detail.updates}
+        replies={detail.replies}
         now={now}
         agentId={agentId}
         routineId={routineId}

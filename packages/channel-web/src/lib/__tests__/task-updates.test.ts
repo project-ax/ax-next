@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RoutineReportStatus } from '@ax/routines-contract';
 import {
-  foldUpdates,
+  foldTimeline,
   latestUpdateCheckIn,
   missCheckIn,
   sharedConversationIds,
   updateText,
 } from '../task-updates.js';
-import type { TaskUpdate } from '../workspace-types.js';
+import type { TaskReply, TaskUpdate } from '../workspace-types.js';
 
 let n = 0;
 /** An update with a report of `report` (or none), newest-first numbering via `n`. */
@@ -26,10 +26,10 @@ function u(
   };
 }
 
-describe('foldUpdates', () => {
+describe('foldTimeline', () => {
   it('shows the newest of a run of on-track check-ins and folds the rest', () => {
     const ups = Array.from({ length: 6 }, () => u('on-track'));
-    expect(foldUpdates(ups)).toEqual([
+    expect(foldTimeline(ups, [])).toEqual([
       { kind: 'update', update: ups[0] },
       { kind: 'fold', updates: ups.slice(1) },
     ]);
@@ -37,7 +37,7 @@ describe('foldUpdates', () => {
 
   it("doesn't fold a run with only one to hide", () => {
     const ups = [u('on-track'), u('on-track')];
-    expect(foldUpdates(ups)).toEqual([
+    expect(foldTimeline(ups, [])).toEqual([
       { kind: 'update', update: ups[0] },
       { kind: 'update', update: ups[1] },
     ]);
@@ -53,7 +53,7 @@ describe('foldUpdates', () => {
       u('on-track'),
       u('on-track'),
     ] as [TaskUpdate, TaskUpdate, TaskUpdate, TaskUpdate, TaskUpdate, TaskUpdate, TaskUpdate];
-    expect(foldUpdates([a, b, c, d, e, f, g])).toEqual([
+    expect(foldTimeline([a, b, c, d, e, f, g], [])).toEqual([
       { kind: 'update', update: a },
       { kind: 'update', update: b },
       { kind: 'fold', updates: [c, d] },
@@ -67,21 +67,111 @@ describe('foldUpdates', () => {
     const failed = [1, 2, 3].map(() => u('on-track', { status: 'error', error: 'it fell over' }));
     const bare = [1, 2, 3].map(() => u(null));
     const ups = [...failed, ...bare];
-    expect(foldUpdates(ups)).toEqual(ups.map((update) => ({ kind: 'update', update })));
+    expect(foldTimeline(ups, [])).toEqual(ups.map((update) => ({ kind: 'update', update })));
   });
 
   it("doesn't fold a silenced check-in that reported something else", () => {
     const ups = [u('on-track'), u('off-track', { status: 'silenced' }), u('on-track')];
-    expect(foldUpdates(ups).every((i) => i.kind === 'update')).toBe(true);
+    expect(foldTimeline(ups, []).every((i) => i.kind === 'update')).toBe(true);
   });
 
   it("keeps the order and doesn't change its input", () => {
     const ups = [u('on-track'), u('on-track'), u('on-track'), u('needs-you'), u('on-track')];
     const copy = structuredClone(ups);
-    const items = foldUpdates(ups);
+    const items = foldTimeline(ups, []);
     expect(ups).toEqual(copy);
-    const flat = items.flatMap((i) => (i.kind === 'update' ? [i.update] : i.updates));
+    const flat = items.flatMap((i) =>
+      i.kind === 'update' ? [i.update] : i.kind === 'fold' ? i.updates : [],
+    );
     expect(flat).toEqual(ups);
+  });
+});
+
+/** A check-in fired at 10:`mm` on 2026-10-22. */
+function at(mm: number, report: RoutineReportStatus | null = 'on-track'): TaskUpdate {
+  return {
+    firedAt: `2026-10-22T10:${String(mm).padStart(2, '0')}:00.000Z`,
+    status: 'ok',
+    error: null,
+    report: report === null ? null : { status: report, update: `at ${mm}` },
+    conversationId: null,
+  };
+}
+
+function reply(mm: number, over: Partial<TaskReply> = {}): TaskReply {
+  return {
+    sentAt: `2026-10-22T10:${String(mm).padStart(2, '0')}:00.000Z`,
+    text: `reply ${mm}`,
+    byYou: true,
+    ...over,
+  };
+}
+
+describe('foldTimeline with replies (TASK-931)', () => {
+  it('interleaves replies and check-ins, newest first', () => {
+    const u50 = at(50, 'needs-you');
+    const u30 = at(30, 'needs-you');
+    const u10 = at(10, 'needs-you');
+    const r40 = reply(40);
+    const r20 = reply(20);
+    expect(foldTimeline([u50, u30, u10], [r40, r20])).toEqual([
+      { kind: 'update', update: u50 },
+      { kind: 'reply', reply: r40 },
+      { kind: 'update', update: u30 },
+      { kind: 'reply', reply: r20 },
+      { kind: 'update', update: u10 },
+    ]);
+  });
+
+  it('at the same instant, the check-in a reply started shows above the reply', () => {
+    const up = at(30, 'needs-you');
+    const r = reply(30);
+    expect(foldTimeline([up], [r])).toEqual([
+      { kind: 'update', update: up },
+      { kind: 'reply', reply: r },
+    ]);
+  });
+
+  it('a reply breaks a quiet run and never folds', () => {
+    const [u50, u40, u30, u20, u10] = [50, 40, 30, 20, 10].map((m) => at(m)) as [
+      TaskUpdate,
+      TaskUpdate,
+      TaskUpdate,
+      TaskUpdate,
+      TaskUpdate,
+    ];
+    const r35 = reply(35);
+    expect(foldTimeline([u50, u40, u30, u20, u10], [r35])).toEqual([
+      { kind: 'update', update: u50 },
+      { kind: 'update', update: u40 },
+      { kind: 'reply', reply: r35 },
+      { kind: 'update', update: u30 },
+      { kind: 'fold', updates: [u20, u10] },
+    ]);
+  });
+
+  it('replies alone come out as given', () => {
+    const rs = [reply(40), reply(30), reply(20)];
+    expect(foldTimeline([], rs)).toEqual(rs.map((r) => ({ kind: 'reply', reply: r })));
+  });
+
+  it('a reply with an unreadable time goes after every check-in', () => {
+    const up = at(10, 'needs-you');
+    const bad = reply(5, { sentAt: 'not a time' });
+    expect(foldTimeline([up], [bad])).toEqual([
+      { kind: 'update', update: up },
+      { kind: 'reply', reply: bad },
+    ]);
+  });
+
+  it("doesn't change its inputs", () => {
+    const ups = [at(50), at(40), at(30)];
+    const rs = [reply(45), reply(35)];
+    const upsCopy = structuredClone(ups);
+    const rsCopy = structuredClone(rs);
+    foldTimeline(ups, rs);
+    expect(ups).toEqual(upsCopy);
+    expect(rs).toEqual(rsCopy);
   });
 });
 
