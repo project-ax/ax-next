@@ -11,7 +11,7 @@ const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
-  'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes',
+  'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
 ].map(name => `routines:${name}`);
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
@@ -229,5 +229,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
     ctx.logger.info('routines_notes_cleared', { agentId: input.agentId, routineId: input.routineId });
     return { cleared: true as const };
+  });
+  // TASK-932. Which of these conversations are check-ins of the caller's own tasks, so Today can name the
+  // task an approval was held in. A label, never an authorization: approve and dismiss go through
+  // @ax/decisions as before. agents:resolve runs first, as for every read; the store then answers only
+  // for routines ctx.userId owns (taskView's rule, not `allowed`'s), so another person's task names
+  // never leave, and a conversation that isn't a check-in, isn't theirs or that several runs shared is
+  // simply absent, all alike. Neither a tool nor an IPC action, so no model can call it.
+  register('tasks-for-conversations', C.RoutineTasksForConversationsInputSchema, C.RoutineTasksForConversationsOutputSchema, async (ctx, input) => {
+    await access(ctx, input.agentId);
+    return { checkIns: await store.tasksForConversations({ agentId: input.agentId, actorUserId: ctx.userId, conversationIds: input.conversationIds }) };
   });
 }

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { CompiledQuery, sql } from 'kysely';
-import { RoutineDefinitionSchema, type RoutineDefinition } from '@ax/routines-contract';
+import { HookBus, makeAgentContext, PluginError } from '@ax/core';
+import { RoutineDefinitionSchema, type RoutineDefinition, type RoutineTasksForConversationsOutput } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { tasksForConversationsQuery } from '../store.js';
+import { registerRoutineServices } from '../services.js';
 
 // TASK-932: which conversations are check-ins of the caller's own tasks, so
 // Today can name the task an approval was held in. The store reads at most two
@@ -132,5 +134,79 @@ describe('tasksForConversations (store, TASK-932)', () => {
     expect(plan).toContain('routines_v1_dispatches_conversation');
     // At most two of a conversation's runs, however many a shared conversation has gathered.
     expect(plan).toContain('Limit');
+  });
+});
+
+describe('routines:tasks-for-conversations (TASK-932)', () => {
+  /**
+   * The hook, on a bus whose agents:resolve refuses anyone outside `reach`.
+   * `order` records agents:resolve and each read of the store, as they run.
+   */
+  function services({ reach, allowed = true }: { reach: readonly string[]; allowed?: boolean }) {
+    const order: string[] = [];
+    const bus = new HookBus();
+    bus.registerService<{ agentId: string; userId: string }, unknown>('agents:resolve', 'test', async (_ctx, input) => {
+      order.push('agents:resolve');
+      if (!reach.includes(input.userId)) throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'not yours' });
+      // A team agent: a personal one would make reconcileOwners rewrite every routine's owner.
+      return { agent: { id: 'a', ownerType: 'team', ownerId: 'team-1' } };
+    });
+    bus.registerService('agents:can-manage-routines', 'test', async () => ({ allowed }));
+    const store = f.store;
+    registerRoutineServices({ bus, now: () => now, store: {
+      ...store,
+      async tasksForConversations(input) { order.push('store'); return store.tasksForConversations(input); },
+    } });
+    const lookup = (userId: string, input: unknown) => bus.call<unknown, RoutineTasksForConversationsOutput>(
+      'routines:tasks-for-conversations', makeAgentContext({ userId, agentId: 'a', sessionId: 's' }), input);
+    return { order, lookup };
+  }
+  const ownersCheckIn = (routineId: string) => ({ checkIns: [{ conversationId: 'c1', routineId, name: 'Support queue' }] });
+
+  it('runs agents:resolve before it reads, and a caller it refuses reads nothing', async () => {
+    const task = await create('task', taskDefinition());
+    await run(task, 'run', 'c1');
+    const { order, lookup } = services({ reach: ['owner'] });
+    expect(await lookup('owner', { agentId: 'a', conversationIds: ['c1'] })).toStrictEqual(ownersCheckIn(task.routineId));
+    expect(order).toEqual(['agents:resolve', 'store']);
+    order.length = 0;
+    await expect(lookup('stranger', { agentId: 'a', conversationIds: ['c1'] })).rejects.toMatchObject({ code: 'forbidden' });
+    expect(order).toEqual(['agents:resolve']);
+  });
+
+  it("answers only for the caller's own tasks", async () => {
+    const task = await create('task', taskDefinition());
+    await run(task, 'run', 'c1');
+    const { lookup } = services({ reach: ['owner', 'teammate'] });
+    // The teammate reaches the agent, but the task is the owner's: they hear what a conversation
+    // that's no check-in at all would answer, and its name goes only to its owner.
+    expect(await lookup('teammate', { agentId: 'a', conversationIds: ['c1'] })).toStrictEqual({ checkIns: [] });
+    expect(await lookup('owner', { agentId: 'a', conversationIds: ['c1'] })).toStrictEqual(ownersCheckIn(task.routineId));
+  });
+
+  it("answers a task's owner who no longer manages the agent's tasks (decisions row 6)", async () => {
+    const task = await create('task', taskDefinition());
+    await run(task, 'run', 'c1');
+    // A label on their own approvals: agents:resolve gates it, agents:can-manage-routines' answer doesn't.
+    const { lookup } = services({ reach: ['owner'], allowed: false });
+    expect(await lookup('owner', { agentId: 'a', conversationIds: ['c1'] })).toStrictEqual(ownersCheckIn(task.routineId));
+  });
+
+  it("refuses an empty list, more than 200 ids, an id that can't be one and any other key, before anything is read", async () => {
+    const { order, lookup } = services({ reach: ['owner'] });
+    const ids = (count: number) => Array.from({ length: count }, (_, i) => `c${i}`);
+    const refused: Array<[label: string, input: unknown]> = [
+      ['an empty list', { agentId: 'a', conversationIds: [] }],
+      ['201 ids', { agentId: 'a', conversationIds: ids(201) }],
+      ['an empty id', { agentId: 'a', conversationIds: [''] }],
+      // The owner is always the caller: an input can't name one.
+      ['a userId of its own', { agentId: 'a', conversationIds: ['c1'], userId: 'owner' }],
+      ['no agentId', { conversationIds: ['c1'] }],
+    ];
+    for (const [label, input] of refused) await expect(lookup('owner', input), label).rejects.toMatchObject({ toolCode: 'validation' });
+    expect(order).toEqual([]);
+    // The cap itself is taken: 200 ids no run is bound to answer nothing.
+    expect(await lookup('owner', { agentId: 'a', conversationIds: ids(200) })).toStrictEqual({ checkIns: [] });
+    expect(order).toEqual(['agents:resolve', 'store']);
   });
 });

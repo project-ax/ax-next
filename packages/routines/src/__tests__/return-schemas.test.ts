@@ -45,12 +45,20 @@ describe('canonical routine return schemas', () => {
     expect(repeat.task).toBeNull();
     expect(C.RoutineViewSchema.parse(repeat)).toEqual(repeat);
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(17);
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, and naming a check-in's task", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(18);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
+    expect(ROUTINE_SERVICES).toContain('routines:tasks-for-conversations');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
+  });
+  it("projects a check-in as its conversation, its task's id and its name, and nothing else", () => {
+    const checkIn = { conversationId: 'c1', routineId: 'routine', name: 'Support queue' };
+    expect(C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [checkIn] })).toStrictEqual({ checkIns: [checkIn] });
+    // Never the routine's owner, and nothing beside the list.
+    expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [{ ...checkIn, ownerUserId: 'owner' }] })).toThrow();
+    expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [checkIn], kind: 'stay-on-top' })).toThrow();
   });
 });
