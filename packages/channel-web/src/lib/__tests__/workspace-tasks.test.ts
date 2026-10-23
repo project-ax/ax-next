@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError } from '../workspace-api';
 import type { TaskRow, TasksResponse } from '../workspace-types';
-import { useTasks } from '../workspace-tasks';
+import { tasksForToday, useTasks, type TasksState } from '../workspace-tasks';
 
 vi.mock('../workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../workspace-api');
@@ -45,7 +45,7 @@ describe('useTasks (TASK-909)', () => {
     const d = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(d.promise);
     const { result } = renderHook(() => useTasks());
-    expect(result.current.state).toEqual({ kind: 'loading' });
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: null });
     const body: TasksResponse = {
       tasks: [row('r-1', 'Sweep')],
       unavailableAgents: [{ agentId: 'a-ada', agentName: 'Ada' }],
@@ -88,7 +88,7 @@ describe('useTasks (TASK-909)', () => {
     const d = deferred<TasksResponse>();
     tasksMock.mockReturnValueOnce(d.promise);
     act(() => result.current.retry());
-    expect(result.current.state).toEqual({ kind: 'loading' });
+    expect(result.current.state).toEqual({ kind: 'loading', retryingAfter: 'failed' });
     await act(async () => d.resolve(page('Sweep')));
     expect(result.current.state.kind).toBe('ready');
   });
@@ -187,5 +187,68 @@ describe('useTasks (TASK-909)', () => {
     await act(async () => d1.reject(new WorkspaceApiError('/tasks', 500)));
     // A stale failure must not mark the newer, good answer as out of date.
     expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
+  });
+});
+
+describe('tasksForToday (TASK-933)', () => {
+  const ADA = { agentId: 'a-ada', agentName: 'Ada' };
+  const rows = [row('r-1', 'Sweep')];
+
+  it('reads the first load as no rows and no error', () => {
+    const state: TasksState = { kind: 'loading', retryingAfter: null };
+    expect(tasksForToday(state)).toEqual({ tasks: [], unavailableAgents: [], error: null });
+  });
+
+  it('keeps reporting the failure a retry is retrying after, until a read lands', () => {
+    const state: TasksState = { kind: 'loading', retryingAfter: 'failed' };
+    expect(tasksForToday(state)).toEqual({ tasks: [], unavailableAgents: [], error: 'failed' });
+    const expired: TasksState = { kind: 'loading', retryingAfter: 'expired' };
+    expect(tasksForToday(expired).error).toBe('expired');
+  });
+
+  it('gives a ready read its rows and agents, with no error', () => {
+    const state: TasksState = {
+      kind: 'ready',
+      tasks: rows,
+      unavailableAgents: [ADA],
+      refreshing: true,
+      refreshFailed: false,
+    };
+    expect(tasksForToday(state)).toEqual({ tasks: rows, unavailableAgents: [ADA], error: null });
+  });
+
+  it('keeps the rows of a failed refresh, and says it failed', () => {
+    const state: TasksState = {
+      kind: 'ready',
+      tasks: rows,
+      unavailableAgents: [ADA],
+      refreshing: false,
+      refreshFailed: true,
+    };
+    expect(tasksForToday(state)).toEqual({ tasks: rows, unavailableAgents: [ADA], error: 'failed' });
+  });
+
+  it('gives a failed read no rows and its error', () => {
+    for (const error of ['expired', 'failed'] as const) {
+      expect(tasksForToday({ kind: 'failed', error })).toEqual({
+        tasks: [],
+        unavailableAgents: [],
+        error,
+      });
+    }
+  });
+
+  it('keeps the failure through a Try again that has not landed (the hook, end to end)', async () => {
+    tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 500));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('failed'));
+
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.retry());
+    expect(tasksForToday(result.current.state).error).toBe('failed');
+    // A second retry while that read is still in flight keeps it too.
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.retry());
+    expect(tasksForToday(result.current.state).error).toBe('failed');
   });
 });

@@ -38,6 +38,7 @@ import {
 } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
+import { useTasks } from '@/lib/workspace-tasks';
 import { continuationActions } from '@/lib/continuation-actions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
@@ -346,6 +347,29 @@ function Inner({
     onDecisionApproved: continuationActions.continueApprovedTurn,
     onDecisionUndone: continuationActions.cancelApprovedTurn,
   });
+  /*
+    The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
+    page share. It reads at mount (the badge is on screen on every route), again
+    when the route CHANGES to Today or Tasks, so a returning person never meets
+    a stale list, and after a reply sent from Today. It doesn't poll, and the
+    task page's own buttons don't re-read it (Back or Today does).
+  */
+  const taskRead = useTasks();
+  const retryTaskRead = taskRead.retry;
+  const previousRouteKind = useRef<string | null>(null);
+  const routeKind = route.kind;
+  useEffect(() => {
+    const before = previousRouteKind.current;
+    previousRouteKind.current = routeKind;
+    // `before === null` is the mount, which `useTasks` has just read for.
+    if (
+      before !== null &&
+      before !== routeKind &&
+      (routeKind === 'today' || routeKind === 'tasks')
+    ) {
+      retryTaskRead();
+    }
+  }, [routeKind, retryTaskRead]);
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in
     one place — `raise()` — so a grant is one row however it arrives:
@@ -937,7 +961,14 @@ function Inner({
             </>
           )}
 
-          {route.kind === 'tasks' && <TasksPage leading={navTrigger} onNavigate={navigate} />}
+          {route.kind === 'tasks' && (
+            <TasksPage
+              state={taskRead.state}
+              retry={taskRead.retry}
+              leading={navTrigger}
+              onNavigate={navigate}
+            />
+          )}
           {route.kind === 'task' && (
             <TaskPage
               key={JSON.stringify([route.agentId, route.routineId])}

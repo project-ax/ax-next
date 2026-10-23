@@ -703,3 +703,32 @@ describe('Memory settings and the pinned learned card (TASK-890)', () => {
     expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
   });
 });
+
+describe('one tasks read (TASK-933)', () => {
+  it('reads tasks once at mount, whichever page it lands on', async () => {
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByRole('tab', { name: /files/i });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('reads again on entering Tasks or Today, never on entering an agent', async () => {
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Quill\s*,/ }));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
+    );
+    await screen.findByRole('tab', { name: /files/i });
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+  });
+});

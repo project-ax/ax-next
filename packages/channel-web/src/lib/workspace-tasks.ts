@@ -2,8 +2,10 @@
  * The Tasks page's read (TASK-909): `GET /api/workspace/tasks` as a small state
  * machine.
  *
- * It lives inside `TasksPage`, not the shell, so it only fetches while the
- * Tasks route is mounted (TASK-909 decisions row 10).
+ * The shell owns it (TASK-933; TASK-909 decisions row 10 had it inside
+ * `TasksPage`), so one read serves Today, the sidebar badge and the Tasks page.
+ * The shell reads it at mount, again on entering Today or Tasks, and after a
+ * reply sent from Today. It doesn't poll.
  *
  * Two kinds of failure, because the page says two different things: a 401 is
  * "sign in again" (`expired`); everything else, a 404 from a host that predates
@@ -24,7 +26,16 @@ import type { TaskRow, UnavailableAgent } from './workspace-types';
 export type TasksReadError = 'expired' | 'failed';
 
 export type TasksState =
-  | { kind: 'loading' }
+  | {
+      kind: 'loading';
+      /**
+       * The failure this read is retrying after (TASK-933), null for the first
+       * read. Today keeps saying it couldn't check until a read lands, as the
+       * grants and decisions reads do; the Tasks page ignores it and shows its
+       * spinner.
+       */
+      retryingAfter: TasksReadError | null;
+    }
   | {
       kind: 'ready';
       tasks: TaskRow[];
@@ -37,7 +48,10 @@ export type TasksState =
   | { kind: 'failed'; error: TasksReadError };
 
 export function useTasks(): { state: TasksState; retry: () => void } {
-  const [state, setState] = useState<TasksState>({ kind: 'loading' });
+  const [state, setState] = useState<TasksState>({
+    kind: 'loading',
+    retryingAfter: null,
+  });
   // Each fetch takes the next number; an answer for any number but the newest
   // is dropped, so a slow first answer cannot overwrite a faster retry's.
   const latest = useRef(0);
@@ -76,9 +90,43 @@ export function useTasks(): { state: TasksState; retry: () => void } {
   }, [load]);
 
   const retry = useCallback(() => {
-    setState((s) => (s.kind === 'ready' ? { ...s, refreshing: true } : { kind: 'loading' }));
+    setState((s) => {
+      if (s.kind === 'ready') return { ...s, refreshing: true };
+      // A retry keeps the failure it is retrying after, so Today never drops
+      // to "nothing is waiting" while the read is in flight (TASK-933).
+      return {
+        kind: 'loading',
+        retryingAfter: s.kind === 'failed' ? s.error : s.retryingAfter,
+      };
+    });
     load();
   }, [load]);
 
   return { state, retry };
+}
+
+/**
+ * What Today and the badge read from the tasks state (TASK-933): the rows (the
+ * last good answer), the agents it couldn't read, and whether the read failed.
+ * The first load reads as no rows and no error; a retry after a failure keeps
+ * that failure until a read lands. A failed refresh with rows on screen is
+ * `failed` too, and keeps the rows: they may be out of date.
+ */
+export function tasksForToday(state: TasksState): {
+  tasks: TaskRow[];
+  unavailableAgents: UnavailableAgent[];
+  error: TasksReadError | null;
+} {
+  switch (state.kind) {
+    case 'loading':
+      return { tasks: [], unavailableAgents: [], error: state.retryingAfter };
+    case 'ready':
+      return {
+        tasks: state.tasks,
+        unavailableAgents: state.unavailableAgents,
+        error: state.refreshFailed ? 'failed' : null,
+      };
+    case 'failed':
+      return { tasks: [], unavailableAgents: [], error: state.error };
+  }
 }
