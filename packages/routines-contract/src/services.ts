@@ -60,6 +60,24 @@ export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) })
  */
 export const RoutineClearNotesInputSchema = RoutineKeySchema;
 export const RoutineClearNotesOutputSchema = z.object({ cleared: z.literal(true) }).strict();
+/**
+ * `routines:tasks-for-conversations` (TASK-932): which of these conversations
+ * are check-ins of a task the caller owns, on this agent, so Today can name the
+ * task an approval was held in. A label, never an authorization. A conversation
+ * that isn't a check-in, is another person's, or that more than one run shared
+ * is simply absent, all alike. Neither a tool nor an IPC action.
+ */
+export const ROUTINE_CHECKIN_LOOKUP_MAX_IDS = 200;
+export const RoutineTasksForConversationsInputSchema = RoutineListInputSchema.extend({
+  conversationIds: z.array(RoutineOpaqueStringSchema).min(1).max(ROUTINE_CHECKIN_LOOKUP_MAX_IDS),
+}).strict();
+/** One check-in: its conversation, its task's id (an opaque host id) and its task's name. */
+export const RoutineCheckInViewSchema = z.object({
+  conversationId: RoutineOpaqueStringSchema,
+  routineId: RoutineOpaqueStringSchema,
+  name: RoutineEditableShape.name,
+}).strict();
+export const RoutineTasksForConversationsOutputSchema = z.object({ checkIns: z.array(RoutineCheckInViewSchema) }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -143,3 +161,6 @@ export type RoutineListAgentDefaultsInput = z.output<typeof RoutineListAgentDefa
 export type RoutineListAgentDefaultsOutput = z.output<typeof RoutineListAgentDefaultsOutputSchema>;
 export type RoutineClearNotesInput = z.output<typeof RoutineClearNotesInputSchema>;
 export type RoutineClearNotesOutput = z.output<typeof RoutineClearNotesOutputSchema>;
+export type RoutineTasksForConversationsInput = z.output<typeof RoutineTasksForConversationsInputSchema>;
+export type RoutineTasksForConversationsOutput = z.output<typeof RoutineTasksForConversationsOutputSchema>;
+export type RoutineCheckInView = z.output<typeof RoutineCheckInViewSchema>;
