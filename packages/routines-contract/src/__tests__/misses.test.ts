@@ -6,7 +6,8 @@ import {
 } from '../index.js';
 
 const good = { inARow: 1, reason: 'no-report', at: '2026-10-23T10:00:00.000Z', autoPaused: false };
-const sentence = 'A task’s noRecentUpdate counts its check-ins in a row that ended without a report, with the last one’s reason and start time, or is null when there are none and for a task another person owns. autoPaused means ax paused the task after five in a row, and only a person can resume it.';
+// The threshold comes from the constant, so the descriptions can't drift from the pause they describe.
+const sentence = `A task’s noRecentUpdate counts its check-ins in a row that ended without a report, with the last one’s reason and start time, or is null when there are none and for a task another person owns. autoPaused means ax paused the task after ${TASK_AUTO_PAUSE_AFTER_MISSES} in a row, and only a person can resume it.`;
 
 describe('check-in misses (TASK-930)', () => {
   it('has the six codes in order and the two thresholds', () => {
