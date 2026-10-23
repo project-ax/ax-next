@@ -1,13 +1,13 @@
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, durationToSeconds, RoutineDeleteOutputSchema,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, RoutineDeleteOutputSchema,
   type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -156,6 +156,20 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
   return { status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at };
 }
 /**
+ * TASK-930. A task's missed check-ins, read leniently (TASK-913): a count of at
+ * least one and a miss time make a miss, so a row with no count, a count below
+ * one or no time (a rollback, a hand edit) reads as none, as `taskState` reads a
+ * partly-set report. A reason no code knows (a later version's, after a
+ * rollback) or none at all reads `failed`. claimDue parses every due row, so one
+ * odd row can't stop the tick for everyone.
+ */
+function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecentUpdate | null {
+  const inARow = row.task_misses_in_a_row;
+  if (!Number.isInteger(inARow) || inARow < 1 || row.task_miss_at === null) return null;
+  const reason = CheckInMissSchema.safeParse(row.task_miss_reason);
+  return { inARow, reason: reason.success ? reason.data : 'failed', at: row.task_miss_at, autoPausedAt: row.task_auto_paused_at };
+}
+/**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit
  * that changes a routine's kind sets these in the same statement. A task turned
  * into a repeat routine and back starts over: the latest report, its ask and the
@@ -181,7 +195,8 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
-    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row)
+    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
+    noRecentUpdate: noRecentUpdate(row),
   });
 }
 function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
@@ -211,22 +226,25 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * TASK-907. What a receipt keeps of its result: all of it but a task's state. A
  * receipt lives as long as its request row, and the state is agent-written text
  * (a report, the agent's notes) that the task row already holds, once, where a
- * person can see and clear it. The `task` key is left out, not stored as null,
- * so code from before the field (whose strict schema has no such key) still
- * reads the receipt after a rollback; `.default(null)` fills it in on read. So
- * an exact replay answers with `task: null`: a replay answers from its receipt,
- * never from a fresh read. The live answer is the effect's own, state and all,
- * so `acceptDispatch`'s `accepted.row.task` is still what it read under the row lock.
+ * person can see and clear it. TASK-930: the task's missed check-ins stay out
+ * too. They're the task's, not the request's, and move on without it.
+ * Both keys are left out, not stored as null, so code from before each field
+ * (whose strict schema has no such key) still reads the receipt after a
+ * rollback; `.default(null)` fills them in on read. So an exact replay answers
+ * with `task: null` and `noRecentUpdate: null`: a replay answers from its
+ * receipt, never from a fresh read. The live answer is the effect's own, state
+ * and all, so `acceptDispatch`'s `accepted.row` still holds the task's state and
+ * misses as it read them under the row lock.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
-  if (operation === 'create' || operation === 'update') return withoutTask(result as StoredRoutine);
+  if (operation === 'create' || operation === 'update') return withoutTaskState(result as StoredRoutine);
   if (operation === 'dispatch') {
     const accepted = result as AcceptedDispatch;
-    return { ...accepted, row: withoutTask(accepted.row) };
+    return { ...accepted, row: withoutTaskState(accepted.row) };
   }
   return result;
 }
-function withoutTask({ task: _task, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task'> { return routine; }
+function withoutTaskState({ task: _task, noRecentUpdate: _misses, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);

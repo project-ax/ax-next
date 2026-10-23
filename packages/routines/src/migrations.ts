@@ -1,6 +1,6 @@
 import { retireAuthoredRoutines } from './retirement-migration.js';
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
-import type { RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
+import type { CheckInMiss, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
 import {
   SKILL_REFLECTION_PROMPT,
   SKILL_REFLECTION_ROUTINE_NAME,
@@ -58,6 +58,19 @@ export interface RoutinesDefinitionsRow {
    * `addNotesClearedColumn` for why it can be later than the clear itself.
    */
   agent_notes_cleared_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /**
+   * Version 7 (TASK-930). A task's check-ins in a row that ended without a
+   * report, the last one's reason and start (its run's `accepted_at`), and when
+   * the host paused the task for them. 0 and NULL when there are none. Written
+   * only by `finishDispatch` and `updateAuthored` (a person's Resume, a kind
+   * change); nothing an agent sends reaches them. The reason reads back as a
+   * plain string: `rowToRoutine` reads one no code knows as `failed`, so a later
+   * version's reason still reads after a rollback (TASK-913).
+   */
+  task_misses_in_a_row: ColumnType<number, number | undefined, number>;
+  task_miss_reason: ColumnType<string | null, CheckInMiss | null | undefined, CheckInMiss | null>;
+  task_miss_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  task_auto_paused_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -172,7 +185,43 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addNotesClearedColumn(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (6)`.execute(trx);
     }
+    if (!await done(7)) {
+      await addCheckInMissColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (7)`.execute(trx);
+    }
   });
+}
+
+/** Version 7 (TASK-930): a task's check-ins in a row that ended without a report,
+ * the last one's reason and start, and when the host paused the task for them.
+ * Written only by `finishDispatch` (a miss adds one, a report clears them, the
+ * fifth in a row pauses the task) and `updateAuthored` (a person's Resume or a
+ * kind change clears them). Additive, with no backfill: existing rows read 0 and
+ * NULL (no misses), and code from before this version ignores the columns. Every
+ * statement only adds what is missing, so a re-run keeps the columns' values.
+ * The reason's CHECK lists the codes as they are at this version (a migration
+ * doesn't follow the contract's list), and is named so a later code can swap it;
+ * NULL passes it.
+ */
+async function addCheckInMissColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_misses_in_a_row INTEGER NOT NULL DEFAULT 0`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_miss_reason TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_miss_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_auto_paused_at TIMESTAMPTZ`.execute(db);
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_definitions_task_miss_reason_chk'
+           AND conrelid = 'routines_v1_definitions'::regclass
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          ADD CONSTRAINT routines_v1_definitions_task_miss_reason_chk
+          CHECK (task_miss_reason IN ('no-report', 'brief-missing', 'brief-unconfirmed', 'brief-too-long', 'interrupted', 'failed'));
+      END IF;
+    END $$;
+  `.execute(db);
 }
 
 /** Version 6 (TASK-910): when the person last cleared a task's agent notes.
