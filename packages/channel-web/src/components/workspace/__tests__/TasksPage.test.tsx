@@ -163,6 +163,89 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
   });
 
+  it('groups No recent update between Off track and On track, and moves three misses to Needs you', async () => {
+    const miss = (inARow: number) => ({
+      inARow,
+      reason: 'no-report' as const,
+      at: '2026-10-22T11:00:00.000Z',
+      autoPaused: false,
+    });
+    tasksMock.mockResolvedValue(
+      page([
+        row('Support queue', { task: report('on-track') }),
+        row('Overdue invoices', { task: report('off-track') }),
+        row('Morning inbox', { task: report('on-track'), noRecentUpdate: miss(2) }),
+        row('Weekly digest', { task: report('on-track'), noRecentUpdate: miss(3) }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Morning inbox');
+    expect(groupHeadings()).toEqual([
+      'Needs you · 1',
+      'Off track · 1',
+      'No recent update · 1',
+      'On track · 1',
+    ]);
+    const needsYou = screen.getByRole('region', { name: 'Needs you · 1' });
+    expect(within(needsYou).getByText('Weekly digest')).toBeInTheDocument();
+    const quiet = screen.getByRole('region', { name: 'No recent update · 1' });
+    expect(within(quiet).getByText('Morning inbox')).toBeInTheDocument();
+  });
+
+  it('a row with no recent update shows why instead of its stale update', async () => {
+    const at = '2026-10-22T11:00:00.000Z';
+    tasksMock.mockResolvedValue(
+      page([
+        row('Morning inbox', {
+          task: report('on-track', { update: 'Stale: all quiet.' }),
+          noRecentUpdate: { inARow: 1, reason: 'brief-too-long', at, autoPaused: false },
+        }),
+        row('Weekly digest', {
+          task: report('on-track', { update: 'Also stale.' }),
+          noRecentUpdate: { inARow: 3, reason: 'no-report', at, autoPaused: false },
+        }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Morning inbox');
+    expect(screen.queryByText('Stale: all quiet.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Also stale.')).not.toBeInTheDocument();
+    expect(screen.getByText('Its instructions are too long to load.')).toBeInTheDocument();
+    const line =
+      'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.';
+    expect(screen.getByText(line)).toHaveAttribute('title', line);
+    // "checked" still dates the last real report.
+    expect(screen.getAllByText(/^Caveman · checked /)).toHaveLength(2);
+  });
+
+  it('an auto-paused task says why it’s paused, behind the paused toggle', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Support queue', { task: report('on-track') }),
+        row('Morning inbox', {
+          enabled: false,
+          task: report('on-track', { update: 'Stale: all quiet.' }),
+          noRecentUpdate: {
+            inARow: 5,
+            reason: 'no-report',
+            at: '2026-10-22T11:00:00.000Z',
+            autoPaused: true,
+          },
+        }),
+        row('Old digest', { enabled: false, task: report('on-track', { update: 'Paused by me.' }) }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Support queue');
+    const line = 'Paused after 5 check-ins in a row didn’t leave an update.';
+    expect(screen.queryByText(line)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 paused tasks' }));
+    expect(screen.getByText(line)).toBeInTheDocument();
+    expect(screen.queryByText('Stale: all quiet.')).not.toBeInTheDocument();
+    // A task a person paused, with no misses, keeps its update.
+    expect(screen.getByText('Paused by me.')).toBeInTheDocument();
+  });
+
   it('teaches the one way in when there are no tasks', async () => {
     tasksMock.mockResolvedValue(page([]));
     renderPage();
