@@ -308,6 +308,11 @@ interface World {
   firesFailure: Error | null;
   /** Set: `conversations:get` throws this. */
   convFailure: Error | null;
+  /**
+   * Set: a `memory:recall-receipts` service answering this for any conversation.
+   * `null`: the deployment has none, as in every other test here.
+   */
+  recallReceipts: unknown;
 }
 
 interface Call<I> {
@@ -330,6 +335,7 @@ function setup(over: Partial<World> = {}) {
     absent: new Set(),
     firesFailure: null,
     convFailure: null,
+    recallReceipts: null,
     ...over,
   };
   const bus = new HookBus();
@@ -432,6 +438,11 @@ function setup(over: Partial<World> = {}) {
     });
   }
 
+  if (world.recallReceipts !== null) {
+    const reply = world.recallReceipts;
+    bus.registerService('memory:recall-receipts', 'memory', async () => reply);
+  }
+
   const handlers = makeWorkspaceHandlers({ bus, initCtx });
   /** What the last request wrote, kept even when the handler throws. */
   let last: CapturedRes | null = null;
@@ -519,6 +530,49 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
     const captured = await checkin();
     expect(captured.statusCode).toBe(200);
     expect(JSON.stringify(captured.body)).not.toContain('SCRATCHPAD-TEXT');
+  });
+
+  /*
+    A negative-space guard. The client draws a memory chip under any row that
+    carries `memoryUsed`, and the chip offers to change what the agent
+    remembers. A read-only page has no business offering that, so no row of a
+    check-in's transcript may carry the field.
+
+    The world supplies what the agent view's `withMemoryUsed` needs to attach
+    one: a `memory:recall-receipts` service whose receipt falls after the
+    check-in message (a person-style turn, which opens an exchange) and names
+    a valid statement. Without a receipt there, a route that did call it would
+    still add nothing, and this test would pass for nothing.
+  */
+  it('keeps memory chips off a check-in’s transcript', async () => {
+    const { checkin } = setup({
+      recallReceipts: {
+        visibility: 'personal',
+        receipts: [
+          {
+            at: '2026-10-22T09:57:05.000Z',
+            statements: [
+              {
+                id: 's1',
+                about: 'Acme',
+                relation: 'is',
+                value: 'an enterprise customer',
+                when: '2026-10-01',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const captured = await checkin();
+    expect(captured.statusCode).toBe(200);
+    const { thread } = bodyOf(captured);
+    // Rows that could carry a chip: the agent's words and its tool steps.
+    expect(thread.filter((m) => m.kind === 'agent' || m.kind === 'steps').length).toBeGreaterThan(0);
+    for (const row of thread) {
+      expect('memoryUsed' in row).toBe(false);
+    }
+    expect(JSON.stringify(captured.body)).not.toContain('enterprise customer');
   });
 
   it('reads the task’s newest 200 check-ins and the conversation, both as the caller', async () => {
