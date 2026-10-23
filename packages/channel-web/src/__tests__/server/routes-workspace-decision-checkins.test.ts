@@ -207,6 +207,8 @@ interface World {
   hang: Map<string, Deferred>;
   /** False is a deployment without `routines:tasks-for-conversations`. */
   lookup: boolean;
+  /** What an approve leaves the row as: `stale` is the freshness guard turning it down. */
+  approveStatus: 'executed' | 'stale';
 }
 
 interface LookupCall {
@@ -226,6 +228,7 @@ function setup(over: Partial<World> = {}) {
     failures: new Map(),
     hang: new Map(),
     lookup: true,
+    approveStatus: 'executed',
     ...over,
   };
   const bus = new HookBus();
@@ -276,8 +279,11 @@ function setup(over: Partial<World> = {}) {
     async (_ctx: AgentContext, input: { decisionId: string; userId: string }) => {
       approveCalls.push(input);
       return {
-        decision: { ...byId(input.decisionId), status: 'executed', resolvedAt: RESOLVED_AT },
-        executed: true,
+        decision:
+          world.approveStatus === 'stale'
+            ? { ...byId(input.decisionId), status: 'stale' }
+            : { ...byId(input.decisionId), status: 'executed', resolvedAt: RESOLVED_AT },
+        executed: world.approveStatus === 'executed',
         path: 'host-replays',
         error: null,
         pendingUntil: null,
@@ -674,6 +680,22 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
     expect(decisionOf(captured).status).toBe('executed');
     expect(decisionOf(captured).checkIn).toBeNull();
     expect(lookups).toStrictEqual([]);
+  });
+
+  it('an approve the freshness guard turns stale still asks, once, and carries the label (TASK-933)', async () => {
+    const { run, lookups } = setup({
+      rows: [row({ id: 'd1', conversationId: 'c-checkin', attendance: 'unattended' })],
+      checkIns: { a1: { 'c-checkin': SUPPORT_TASK } },
+      approveStatus: 'stale',
+    });
+    const captured = await run('approveDecision', { decisionId: 'd1' });
+    expect(captured.statusCode).toBe(200);
+    // Stale is still a question: unlike a receipt, the answer names the task.
+    expect(decisionOf(captured).status).toBe('stale');
+    expect(decisionOf(captured).checkIn).toStrictEqual(SUPPORT);
+    expect(lookups).toStrictEqual([
+      { userId: 'alice', agentId: 'a1', input: { agentId: 'a1', conversationIds: ['c-checkin'] } },
+    ]);
   });
 
   it('an answer whose lookup fails still answers, with checkIn null', async () => {
