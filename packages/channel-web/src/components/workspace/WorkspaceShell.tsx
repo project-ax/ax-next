@@ -8,7 +8,9 @@
  * the shipped chat wire.
  *
  * Views are addressable: `/workspace`, `/workspace/tasks`,
- * `/workspace/tasks/<agentId>/<routineId>`, `/workspace/activity`, and
+ * `/workspace/tasks/<agentId>/<routineId>`,
+ * `/workspace/tasks/<agentId>/<routineId>/checkins/<conversationId>`,
+ * `/workspace/activity`, and
  * `/workspace/agents/<id>[/<tab>]`. The grammar lives in `@/lib/workspace-route`;
  * this file owns the history calls. No server route backs those paths and none
  * is needed — `@ax/static-files` serves the SPA on any unclaimed path.
@@ -62,6 +64,7 @@ import {
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
 import { ActivityFeed } from './ActivityFeed';
+import { TaskCheckinPage } from './TaskCheckinPage';
 import { TaskPage } from './TaskPage';
 import { TasksPage } from './TasksPage';
 import { AgentView } from './AgentView';
@@ -941,6 +944,24 @@ function Inner({
               routineId={route.routineId}
               leading={navTrigger}
               onNavigate={navigate}
+            />
+          )}
+          {route.kind === 'task-checkin' && (
+            <TaskCheckinPage
+              key={JSON.stringify([route.agentId, route.routineId, route.conversationId])}
+              agentId={route.agentId}
+              routineId={route.routineId}
+              conversationId={route.conversationId}
+              leading={navTrigger}
+              onNavigate={navigate}
+              decisions={queue.decisions}
+              onApprove={queue.approve}
+              onDismiss={queue.dismiss}
+              onUndo={queue.undo}
+              busyIds={queue.busyIds}
+              notices={queue.notices}
+              decisionsError={queue.error}
+              onRetryDecisions={() => void queue.refresh()}
             />
           )}
 
