@@ -17,9 +17,11 @@ knows what it's for and says how it's going.
 
 - **Now:** §11 is done. The revert merged as #1004 (TASK-903) and the keepers
   as #1006 (TASK-904). Production and kind were wiped and redeployed on
-  2026-10-20, and the board is tidied. Open questions 2, 3 and 7 are decided
-  (§15).
-- **Next:** §12 PR 1, "Stay on top of something", end to end.
+  2026-10-20, and the board is tidied. Open questions 2–7 and 9 are decided
+  (§15); 1 and 8 are still open.
+- **Next:** §12 PR 1, "Stay on top of something", end to end. TASK-906–910
+  merged 2026-10-21/22 (#1009, #1011, #1014–#1016); TASK-911 and the TASK-912
+  walk remain. Nothing from PR 1 is deployed yet.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -681,7 +683,7 @@ ordinary task.
 
 | Finding | Proposed change | Lands in |
 |---|---|---|
-| "Needs you" only shows on Today, and the CEO and the parents don't open ax every day | Email each new ask, with a daily cap; push later | PR 2 |
+| "Needs you" only shows on Today, and the CEO and the parents don't open ax every day | Email each new ask, with a daily cap; push later | Later, not PR 2 (decided, §15) |
 | "Get something done" has no due date | An optional "Finish by" date: on the row, in the brief ("9 days left"), and the agent reports Off track when the remaining steps won't fit. A person sets it, so it isn't an estimate. | PR 3 |
 | A task has one owner, and its asks reach one person | View-only sharing of a task, plus an "Also ask" list. This is the finding that pulls hardest toward the projects work. | After PR 5, in its own short design |
 | Only team admins can start tasks on a team agent | Members start tasks that run as themselves, within their own usage limits | PR 4 (decided, §15) |
@@ -846,8 +848,8 @@ Five small PRs, each useful on its own:
    tick, report, and see it on Tasks.
 2. **Replies and Today.** The reply box (stored, included in every check-in,
    starts one now). Task asks on Today. Failure handling: No recent update,
-   then Needs you, then auto-pause. Email each new ask, and group a task's
-   approvals on Today.
+   then Needs you, then auto-pause. Group a task's approvals on Today. (No
+   email for now: §14 Q4.)
 3. **Get something done.** The steps checklist that both sides edit. "I think
    it's done" leads to Mark done or Not yet, and finished tasks stop checking
    in. An optional "Finish by" date, an optional number in each report shown as
@@ -865,10 +867,10 @@ Five small PRs, each useful on its own:
    unseen update), one check-in at a time, the "Respond within" setting, and a
    full check that restarts after every check-in. Plus the setup card,
    signature checks for Stripe, Slack and Zendesk, a count of turned-away
-   deliveries, and an address per task.
+   deliveries, and an address per task (§14 Q6).
 
-Later, with its own short design: view-only sharing of a task and an "Also
-ask" list.
+Later: email each new ask (§14 Q4). Later, with its own short design:
+view-only sharing of a task and an "Also ask" list.
 
 ## 13. Boundary review notes (for the implementation PRs)
 
@@ -899,22 +901,22 @@ ask" list.
 3. ~~Shortest check-in: 15 minutes?~~ **Decided: 15 minutes** (§15). Routines
    allow 60 seconds today; whether "Repeat a job" keeps that is settled in PR 4,
    when routines move into Tasks.
-4. Is Today enough for "Needs you" in v1, or do we need email? Recommend email.
-   The pressure test changed this: the CEO and the parents don't open ax every
-   day.
-5. Should "Stay on top" tasks show a number trend? Lean yes after the pressure
-   test: an optional number in each report, labelled as the agent's reading,
+4. ~~Is Today enough for "Needs you" in v1, or do we need email?~~ **Decided:
+   Today is enough for now** (§15). Email each new ask comes later, not in PR 2.
+5. ~~Should "Stay on top" tasks show a number trend?~~ **Decided: yes** (§15),
+   in PR 3: an optional number in each report, labelled as the agent's reading,
    never a computed measure.
-6. Give each task its own webhook address token? Recommend yes, with PR 5.
+6. ~~Give each task its own webhook address token?~~ **Decided: yes** (§15),
+   in PR 5.
 7. ~~Can team members start tasks on a team agent, running as themselves?~~
    **Decided: yes** (§15), in PR 4. Today only team admins can.
 8. Who else can see a task or answer its asks? Recommend view-only sharing plus
    an "Also ask" list after PR 5, in its own short design rather than as a
    bolt-on.
-9. Remove Activity in PR 4 (§3.7)? Recommend yes. Once routines are tasks,
-   every row it shows has a better home, and it would be a third place to look
-   next to Today and Tasks. Check first that an approval that fails after a
-   yes is clear in its chat.
+9. ~~Remove Activity in PR 4 (§3.7)?~~ **Decided: yes** (§15). Once routines
+   are tasks, every row it shows has a better home, and it would be a third
+   place to look next to Today and Tasks. Check first that an approval that
+   fails after a yes is clear in its chat.
 
 ## 15. Decisions
 
@@ -936,3 +938,7 @@ ask" list.
 | 2026-10-22 | Decided | A routine run of an agent with an explicit tool list always sees `routine_report`; its host gate still refuses it outside a task's own check-in (TASK-908). |
 | 2026-10-22 | Decided | A person clears a task’s agent notes on its task page (`routines:clear-notes`). Only the task’s owner may, whether or not they still manage the agent’s tasks, since the owner is the only person shown them. A check-in that started before the clear can’t write notes again; it still reports (TASK-910). |
 | 2026-10-22 | Decided | A routine’s next run, as every view shows it, honours its active hours, so the task page’s “Next check” is when it will really run (TASK-910). |
+| 2026-10-22 | Decided | "Needs you" shows on Today only for now. Emailing each new ask is deferred to later, not PR 2 (§14 Q4). |
+| 2026-10-22 | Decided | "Stay on top" tasks show a number trend: an optional number in each report, labelled as the agent's reading, never a computed measure. Lands in PR 3 (§14 Q5). |
+| 2026-10-22 | Decided | Each task gets its own webhook address token, so replacing a leaked address changes only that task's URL. Lands in PR 5 (§14 Q6). |
+| 2026-10-22 | Decided | Activity is removed in PR 4 (§3.7): the page, the agent's tab, and Today's "Everything they did" link and done-today count, once a failed approval is confirmed to show in its chat (§14 Q9). |
