@@ -97,7 +97,7 @@ export function stateWord(state: AgentRunState | 'held'): string {
  * all. Each state now has its own outline too, readable in greyscale:
  *
  *   working ● circle · waiting/held ◆ diamond · resting ○ hollow ring · stopped ■ square
- *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, and paused ▬ dash.
+ *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, no-recent-update ○, and paused ▬ dash.
  *
  * Deliberately a separate record, NOT more `state === … && '…'` arms inside
  * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
@@ -132,6 +132,7 @@ export const STATE_SHAPE: Record<DotState, string> = {
   'off-track': SQUARE,
   'on-track': CIRCLE,
   'no-update': RING,
+  'no-recent-update': RING,
   paused: DASH,
 };
 
@@ -177,6 +178,7 @@ export function StateDot({
         state === 'off-track' && 'bg-destructive',
         state === 'on-track' && 'bg-primary',
         state === 'no-update' && 'border-state-quiet',
+        state === 'no-recent-update' && 'border-state-quiet',
         state === 'paused' && 'bg-state-quiet',
         className,
       )}

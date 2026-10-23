@@ -38,6 +38,7 @@
  * starting a turn (invariant 4).
  */
 import {
+  CHECK_IN_MISSES,
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
   RoutineStatusSchema,
@@ -440,6 +441,19 @@ function isTaskReport(v: unknown): boolean {
   );
 }
 
+/** A task's missed check-ins (TASK-930): a count of at least one, a closed reason, an instant, a flag. */
+function isTaskNoRecentUpdate(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    typeof v.inARow === 'number' &&
+    Number.isInteger(v.inARow) &&
+    v.inARow >= 1 &&
+    CHECK_IN_MISSES.some((code) => code === v.reason) &&
+    isString(v.at) &&
+    typeof v.autoPaused === 'boolean'
+  );
+}
+
 function isTaskRow(v: unknown): boolean {
   return (
     isRecord(v) &&
@@ -448,7 +462,8 @@ function isTaskRow(v: unknown): boolean {
     isString(v.routineId) &&
     isString(v.name) &&
     typeof v.enabled === 'boolean' &&
-    (v.task === null || isTaskReport(v.task))
+    (v.task === null || isTaskReport(v.task)) &&
+    (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate))
   );
 }
 
@@ -526,6 +541,7 @@ function isTaskDetail(b: unknown): boolean {
     isStringOrNull(b.nextCheckAt) &&
     isTaskBrief(b.brief) &&
     (b.task === null || isTaskDetailReport(b.task)) &&
+    (b.noRecentUpdate === null || isTaskNoRecentUpdate(b.noRecentUpdate)) &&
     Array.isArray(b.updates) &&
     b.updates.every(isTaskUpdate)
   );

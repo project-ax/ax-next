@@ -88,6 +88,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     nextRunAt: null,
     lastRunAt: null,
     task: null,
+    noRecentUpdate: null,
     ...over,
   };
 }
@@ -126,6 +127,10 @@ interface World {
   routines: boolean;
   /** Set: `agents:list-for-user` throws this. */
   rosterFailure: Error | null;
+  /** True: `routines:list` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
+  unvalidated: boolean;
+  /** Set, with `unvalidated`: every view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
+  viewMiss: { value: unknown } | null;
 }
 
 interface ListCall {
@@ -151,6 +156,8 @@ function setup(over: Partial<World> = {}) {
     lateFailure: new Map(),
     routines: true,
     rosterFailure: null,
+    unvalidated: false,
+    viewMiss: null,
     ...over,
   };
   const bus = new HookBus();
@@ -195,10 +202,13 @@ function setup(over: Partial<World> = {}) {
         return {
           routines: world.rows
             .filter((r) => r.agentId === input.agentId)
-            .map((r) => routineView(r, ctx.userId, allowed)),
+            .map((r) => {
+              const view = routineView(r, ctx.userId, allowed);
+              return world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
+            }),
         };
       },
-      { returns: RoutineListOutputSchema },
+      world.unvalidated ? undefined : { returns: RoutineListOutputSchema },
     );
   }
 
@@ -281,6 +291,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         update: 'Queue is empty.',
         reportedAt: '2026-10-22T09:58:00.000Z',
       },
+      noRecentUpdate: null,
     });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('ASK-TEXT');
@@ -461,6 +472,26 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     });
   });
 
+  it('see it on Tasks: missed check-ins group a task, and three escalate it (TASK-930)', async () => {
+    const miss = (inARow: number) => ({
+      inARow,
+      reason: 'no-report' as const,
+      at: new Date('2026-10-22T11:00:00.000Z'),
+      autoPausedAt: null,
+    });
+    const one = stored({ agentId: 'a1', routineId: 't1', noRecentUpdate: miss(1) });
+    const three = stored({ agentId: 'a2', routineId: 't2', noRecentUpdate: miss(3) });
+    expect(RoutineViewSchema.safeParse(routineView(one, 'alice', true)).success).toBe(true);
+    const { get } = setup({ rows: [one, three] });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const { groups } = groupTasks(bodyOf(captured).tasks);
+    const ids = (g: string) =>
+      groups.find((x) => x.group === g)?.rows.map((r) => r.routineId);
+    expect(ids('no-recent-update')).toEqual(['t1']);
+    expect(ids('needs-you')).toEqual(['t2']);
+  });
+
   it('401s without a session and reads nothing', async () => {
     const { get, rosterCalls, listCalls } = setup({
       viewer: null,
@@ -622,5 +653,110 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(bodyOf(captured).tasks).toEqual([
       expect.objectContaining({ routineId: 't1', enabled: false }),
     ]);
+  });
+
+  describe('noRecentUpdate (TASK-930)', () => {
+    const miss = (over: Partial<NonNullable<StoredRoutine['noRecentUpdate']>> = {}) => ({
+      inARow: 2,
+      reason: 'brief-too-long' as const,
+      at: new Date('2026-10-22T11:00:00.000Z'),
+      autoPausedAt: null,
+      ...over,
+    });
+
+    it('carries a task’s missed check-ins as the page draws them, with the time as an instant', async () => {
+      const { get } = setup({
+        rows: [stored({ agentId: 'a1', routineId: 't1', noRecentUpdate: miss() })],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(bodyOf(captured).tasks[0]?.noRecentUpdate).toStrictEqual({
+        inARow: 2,
+        reason: 'brief-too-long',
+        at: '2026-10-22T11:00:00.000Z',
+        autoPaused: false,
+      });
+    });
+
+    it('says autoPaused when ax paused the task, and not for a task that never missed', async () => {
+      const { get } = setup({
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            enabled: false,
+            noRecentUpdate: miss({ inARow: 5, autoPausedAt: new Date('2026-10-22T11:05:00.000Z') }),
+          }),
+          stored({ agentId: 'a2', routineId: 't2', task: report('on-track') }),
+        ],
+      });
+      const tasks = bodyOf(await get()).tasks;
+      expect(tasks.find((t) => t.routineId === 't1')?.noRecentUpdate).toMatchObject({
+        inARow: 5,
+        autoPaused: true,
+      });
+      expect(tasks.find((t) => t.routineId === 't2')?.noRecentUpdate).toBeNull();
+    });
+
+    it('reads a reason the page doesn’t know as failed, field by field', async () => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            noRecentUpdate: miss({ reason: 'SOMETHING-NEW' as never }),
+          }),
+        ],
+      });
+      const wire = bodyOf(await get()).tasks[0]?.noRecentUpdate;
+      expect(wire).toStrictEqual({
+        inARow: 2,
+        reason: 'failed',
+        at: '2026-10-22T11:00:00.000Z',
+        autoPaused: false,
+      });
+    });
+
+    const wireMiss = {
+      inARow: 2,
+      reason: 'no-report',
+      at: '2026-10-22T11:00:00.000Z',
+      autoPaused: false,
+    };
+
+    it.each([
+      ['no missed-check-in field at all', undefined],
+      ['a missed-check-in value that is not an object', 'oops'],
+      ['a zero count', { ...wireMiss, inARow: 0 }],
+      ['a fractional count', { ...wireMiss, inARow: 1.5 }],
+      ['a non-numeric count', { ...wireMiss, inARow: 'two' }],
+      ['a missing count', { ...wireMiss, inARow: undefined }],
+      ['a time that is not a string', { ...wireMiss, at: 42 }],
+      ['a missing time', { ...wireMiss, at: undefined }],
+    ])('reads a view with %s as no miss, not a crash', async (_name, value) => {
+      const { get } = setup({
+        unvalidated: true,
+        viewMiss: { value },
+        rows: [stored({ agentId: 'a1', routineId: 't1' })],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(bodyOf(captured).tasks[0]?.noRecentUpdate).toBeNull();
+    });
+
+    it('reads anything but a literal true as not auto-paused', async () => {
+      const { get } = setup({
+        unvalidated: true,
+        viewMiss: { value: { ...wireMiss, autoPaused: 'yes' } },
+        rows: [stored({ agentId: 'a1', routineId: 't1' })],
+      });
+      expect(bodyOf(await get()).tasks[0]?.noRecentUpdate).toStrictEqual({
+        inARow: 2,
+        reason: 'no-report',
+        at: '2026-10-22T11:00:00.000Z',
+        autoPaused: false,
+      });
+    });
   });
 });

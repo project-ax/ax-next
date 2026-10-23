@@ -18,7 +18,7 @@ vi.mock('../workspace-api', async () => {
 const tasksMock = vi.mocked(workspaceApi.tasks);
 
 function row(routineId: string, name: string): TaskRow {
-  return { agentId: 'a-quill', agentName: 'Quill', routineId, name, enabled: true, task: null };
+  return { agentId: 'a-quill', agentName: 'Quill', routineId, name, enabled: true, task: null, noRecentUpdate: null };
 }
 
 function page(...names: string[]): TasksResponse {

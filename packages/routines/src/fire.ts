@@ -1,10 +1,10 @@
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
-import type { StoredRoutine, AcceptedDispatch, FireSource } from './types.js';
+import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
-import { briefRunError, isTaskRun } from './brief.js';
+import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
 import { CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
@@ -268,7 +268,9 @@ export function createFireRoutine(deps: FireDeps) {
       try {
         reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPORTS });
       } catch (err) { return fail(err); }
-      prompt = renderCheckInMessage({ source, agentNotes: row.task?.agentNotes ?? null, reports });
+      prompt = renderCheckInMessage({
+        source, agentNotes: row.task?.agentNotes ?? null, reports, missesInARow: row.noRecentUpdate?.inARow ?? 0,
+      });
     } else {
       // Phase D: render whenever payload is provided, regardless of source.
       // Only the webhook path passes a payload; fire-now and the tick pass none.
@@ -308,10 +310,17 @@ export function createFireRoutine(deps: FireDeps) {
     // failure keeping one.
     // `error` may be a function of the entry being settled: a task check-in
     // the landed veto refused records why, in words, from its brief's state.
-    const settleWithoutTurn = async (errorFor: string | ((entry: PendingFire) => string), reachedAssembly: boolean): Promise<void> => {
+    // `missFor` (TASK-930) says why a task run left no report, from the code that
+    // knows; no answer is `failed`, the store's default.
+    const settleWithoutTurn = async (
+      errorFor: string | ((entry: PendingFire) => string),
+      reachedAssembly: boolean,
+      missFor?: (entry: PendingFire) => DispatchMiss | null,
+    ): Promise<void> => {
       const entry = deps.pending.get(reqId);
       if (entry === undefined || !deps.pending.delete(reqId)) return;
       const error = typeof errorFor === 'string' ? errorFor : errorFor(entry);
+      const miss = missFor?.(entry) ?? null;
       process.stderr.write(
         `[ax/routines] agent:invoke failed for ${row.agentId}/${row.routineId}: ${error}\n`,
       );
@@ -319,6 +328,7 @@ export function createFireRoutine(deps: FireDeps) {
         await deps.store.finishDispatch({ dispatchId, outcome: {
           conversationId, status: 'error', error, renderedPrompt: entry.renderedPrompt,
           warning: reachedAssembly || entry.skips.length > 0 ? warningFor(entry) : row.lastWarning,
+          ...(miss === null ? {} : { miss }),
         } });
       } catch (err) {
         process.stderr.write(
@@ -333,7 +343,7 @@ export function createFireRoutine(deps: FireDeps) {
       async outcome => {
         if (outcome?.kind === 'terminated') {
           const reason = String(outcome.reason ?? 'unknown');
-          await settleWithoutTurn(entry => briefRunError(entry, reason) ?? `terminated: ${reason}`, !refusedBeforeAssembly(reason));
+          await settleWithoutTurn(entry => briefRunError(entry, reason) ?? `terminated: ${reason}`, !refusedBeforeAssembly(reason), entry => briefRunMiss(entry, reason));
         } else if (deps.pending.has(reqId)) {
           await lifetime.defer(deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS,
             () => settleWithoutTurn('the run finished without reporting a result', true));

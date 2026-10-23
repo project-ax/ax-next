@@ -33,7 +33,7 @@ describe('the check-in message (TASK-908)', () => {
     h = await createCheckInHarness();
     const task = await create(TASK_DEFINITION, 'task');
     const { message } = await h.checkIn(task, 'run', async () => {});
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [] }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], missesInARow: 0 }));
     expect(message).not.toContain(TASK_DEFINITION.promptBody);
     expect(message).not.toContain(TASK_DEFINITION.goodWhen);
   });
@@ -51,7 +51,24 @@ describe('the check-in message (TASK-908)', () => {
     expect(message).not.toContain(NEEDS_YOU.ask);
     // Word for word: the task's notes and run 1's report, at the time run 1 started.
     const [, first] = await storedRuns(task);
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: NOTES, reports: [{ firedAt: first!.firedAt, report: NEEDS_YOU }] }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: NOTES, reports: [{ firedAt: first!.firedAt, report: NEEDS_YOU }], missesInARow: 0 }));
+  });
+
+  it('a check-in after one that left no report is told so; after a report it isn’t', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    const misses = async () => (await h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: h.agentId, routineId: task.routineId })).noRecentUpdate?.inARow ?? 0;
+    const first = await h.checkIn(task, 'run-1', async () => {});
+    expect(first.message).not.toContain('ended without a report');
+    // Run 1 left no report: run 2 hears it, as the opening's next paragraph.
+    await expect.poll(misses).toBe(1);
+    const second = await h.checkIn(task, 'run-2', async ctx => { await report(ctx, NEEDS_YOU); });
+    expect(second.message.split('\n\n')[1]).toBe(
+      'Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.');
+    // Run 2 reported, which starts the count over: run 3 hears nothing.
+    await expect.poll(misses).toBe(0);
+    const third = await h.checkIn(task, 'run-3', async () => {});
+    expect(third.message).not.toContain('ended without a report');
   });
 
   it("a task run keeps no renderedPrompt; a repeat routine's is unchanged", async () => {
@@ -167,6 +184,8 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     } finally { diagnostic.restore(); }
     expect((await storedRuns(task))[0]).toMatchObject({ status: 'error', error: BRIEF_DIDNT_LOAD, renderedPrompt: null, report: null });
     expect((await store.findOne(task))?.lastWarning).toBe(warning);
+    // Two check-ins in a row left no report; the code that refused this one knows why.
+    expect((await store.findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 2, reason: 'brief-missing' });
     expect(diagnostic.messages).toHaveLength(1);
   });
 
@@ -187,6 +206,16 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     }, { landed: null });
     // The run did happen, so its report stays on the row; it is still failed.
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, renderedPrompt: null, report: NEEDS_YOU });
+    // It reported, so it isn't a missed check-in.
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toBeNull();
+  });
+
+  it('the belt without a report counts as brief-unconfirmed', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    await h.checkIn(task, 'run', async () => {}, { landed: null });
+    expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, report: null });
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'brief-unconfirmed' });
   });
 
   it('a brief over the prompt cap is refused with the too-long sentence', async () => {
@@ -200,6 +229,7 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     } finally { diagnostic.restore(); }
     expect(seen.brief).toEqual({});
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_TOO_LONG, renderedPrompt: null });
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'brief-too-long' });
   });
 
   it('a veto that throws while working it out still refuses a pending task check-in', async () => {
@@ -260,7 +290,7 @@ describe('clearing a task’s notes (TASK-910)', () => {
     expect(await clearNotes(task)).toStrictEqual({ cleared: true });
     const { message } = await h.checkIn(task, 'run-2', async () => {});
     // Run 1's report is still there; its notes aren't.
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [{ firedAt: first!.firedAt, report: NEEDS_YOU }] }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [{ firedAt: first!.firedAt, report: NEEDS_YOU }], missesInARow: 0 }));
     expect(message).not.toContain(NOTES);
   });
 

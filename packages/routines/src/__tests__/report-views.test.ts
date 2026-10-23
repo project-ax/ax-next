@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
 import { HookBus, makeAgentContext } from '@ax/core';
-import { RoutineDefinitionSchema, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, type CheckInMiss, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { registerRoutineServices } from '../services.js';
 import { parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
@@ -244,5 +244,61 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const { fires } = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });
     expect(fires.map(fire => fire.report)).toEqual([long]);
     expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now } })]);
+  });
+});
+
+describe("a task's misses on the views (TASK-930)", () => {
+  // The miss columns are set by hand here, as finishDispatch leaves them: these
+  // tests are about what the views show of them, not about the counting.
+  const teammate = makeAgentContext({ userId: 'teammate', agentId: 'a', sessionId: 's' });
+  type Misses = { task_misses_in_a_row: number; task_miss_reason: CheckInMiss; task_miss_at: Date; task_auto_paused_at?: Date | null; enabled?: boolean };
+  const setMisses = (routineId: string, set: Misses) =>
+    f.db.updateTable('routines_v1_definitions').set(set).where('routine_id', '=', routineId).execute();
+  const createTask = (bus: HookBus) =>
+    bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
+
+  it("routines:list and routines:get show a task's misses to its owner, and to no one else", async () => {
+    const bus = services();
+    const created = await createTask(bus);
+    expect(created.noRecentUpdate).toBeNull();
+    await setMisses(created.routineId, { task_misses_in_a_row: 2, task_miss_reason: 'no-report', task_miss_at: now });
+    const misses = { inARow: 2, reason: 'no-report', at: now.toISOString(), autoPaused: false };
+    expect((await get(bus, created.routineId)).noRecentUpdate).toEqual(misses);
+    expect((await list(bus)).map(view => view.noRecentUpdate)).toEqual([misses]);
+    // Someone else who can see the routine sees the routine, without them.
+    const seen = await bus.call<unknown, RoutineView>('routines:get', teammate, { agentId: 'a', routineId: created.routineId });
+    expect(seen).toMatchObject({ routineId: created.routineId, noRecentUpdate: null });
+    const listed = (await bus.call<unknown, { routines: RoutineView[] }>('routines:list', teammate, { agentId: 'a' })).routines;
+    expect(listed.map(view => [view.routineId, view.noRecentUpdate])).toEqual([[created.routineId, null]]);
+    // A repeat routine shows none, even when its row holds some.
+    const repeat = await f.store.createAuthored(createInput('repeat'));
+    await setMisses(repeat.routineId, { task_misses_in_a_row: 2, task_miss_reason: 'failed', task_miss_at: now });
+    expect((await get(bus, repeat.routineId)).noRecentUpdate).toBeNull();
+  });
+
+  it('autoPaused says ax paused the task, and only while it stays paused', async () => {
+    const bus = services();
+    const created = await createTask(bus);
+    const pausedAt = new Date(now.getTime() + 60_000);
+    const fifth = { task_misses_in_a_row: 5, task_miss_reason: 'interrupted', task_miss_at: now, task_auto_paused_at: pausedAt } as const;
+    await setMisses(created.routineId, { ...fifth, enabled: false });
+    const paused = { inARow: 5, reason: 'interrupted', at: now.toISOString(), autoPaused: true };
+    expect(await get(bus, created.routineId)).toMatchObject({ enabled: false, noRecentUpdate: paused });
+    expect((await list(bus)).map(view => view.noRecentUpdate)).toEqual([paused]);
+    // Running again with the pause time still set (resumed by older code after a rollback, or by hand) isn't paused by ax.
+    await setMisses(created.routineId, { ...fifth, enabled: true });
+    expect((await get(bus, created.routineId)).noRecentUpdate).toEqual({ ...paused, autoPaused: false });
+  });
+
+  it('an exact routines:update replay answers with no misses: a receipt keeps none', async () => {
+    const bus = services();
+    const created = await createTask(bus);
+    await setMisses(created.routineId, { task_misses_in_a_row: 2, task_miss_reason: 'brief-too-long', task_miss_at: now });
+    const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
+    const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
+    expect(edited.noRecentUpdate).toEqual({ inARow: 2, reason: 'brief-too-long', at: now.toISOString(), autoPaused: false });
+    expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, noRecentUpdate: null });
+    // The task itself still has them.
+    expect((await get(bus, created.routineId)).noRecentUpdate).toEqual(edited.noRecentUpdate);
   });
 });

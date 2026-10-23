@@ -3,7 +3,7 @@ import { CompiledQuery, Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
-import { ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
+import { CHECK_IN_MISSES, ROUTINE_REPORT_STATUSES } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore, taskConversationQuery } from '../store.js';
 import { runRoutinesMigration as legacyMigration } from './fixtures/legacy-migration.js';
@@ -30,7 +30,9 @@ const rewindToVersion3 = async () => {
     DROP COLUMN IF EXISTS report_status, DROP COLUMN IF EXISTS report_update, DROP COLUMN IF EXISTS report_ask`.execute(db);
   await sql`DELETE FROM routines_schema_versions WHERE version = 4`.execute(db);
 };
-const insertTask = (extraColumns = sql``, extraValues = sql``) => sql`INSERT INTO routines_v1_definitions (agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,trigger_kind,trigger_spec,conversation,prompt_body,kind,good_when${extraColumns}) VALUES ('a','r_task','rev_task','owner','task','','hash','interval','{"kind":"interval","every":"15m"}','per-fire','body','stay-on-top','Nothing waits a day.'${extraValues})`.execute(db);
+const insertTask = (extraColumns = sql``, extraValues = sql``, routineId = 'r_task') => sql`INSERT INTO routines_v1_definitions (agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,trigger_kind,trigger_spec,conversation,prompt_body,kind,good_when${extraColumns}) VALUES ('a',${routineId},'rev_task','owner','task','','hash','interval','{"kind":"interval","every":"15m"}','per-fire','body','stay-on-top','Nothing waits a day.'${extraValues})`.execute(db);
+const MISS_REASON_CHECK = 'routines_v1_definitions_task_miss_reason_chk';
+const missColumns = async () => (await sql`SELECT task_misses_in_a_row, task_miss_reason, task_miss_at, task_auto_paused_at FROM routines_v1_definitions WHERE routine_id='r_task'`.execute(db)).rows;
 const reportColumns = async () => ({
   dispatches: (await sql`SELECT dispatch_id, conversation_id, report FROM routines_v1_dispatches ORDER BY dispatch_id`.execute(db)).rows,
   definitions: (await sql`SELECT task_status, task_update, task_ask, task_reported_at, task_report_accepted_at, agent_notes FROM routines_v1_definitions WHERE routine_id='r_task'`.execute(db)).rows,
@@ -70,7 +72,7 @@ describe('versioned routines migration', () => {
     await runRoutinesMigration(db); await runRoutinesMigration(db);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions WHERE routine_id='r_old'`.execute(db)).rows).toEqual([{ kind: 'repeat', good_when: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_old' })).toMatchObject({ kind: 'repeat', goodWhen: null });
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
   });
   it('refuses an unknown kind at the database', async () => {
     await runRoutinesMigration(db);
@@ -83,7 +85,7 @@ describe('versioned routines migration', () => {
     if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_kind_chk`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 3`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect(await kindChecks()).toBe(1);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions`.execute(db)).rows).toEqual([{ kind: 'stay-on-top', good_when: 'Nothing waits a day.' }]);
   });
@@ -95,7 +97,7 @@ describe('versioned routines migration', () => {
     await sql`INSERT INTO routines_v1_dispatches (dispatch_id,agent_id,routine_id,revision,req_id,accepted_at,completed_at,trigger_source) VALUES ('d_open','a','r_task','rev_task','req_open','2031-01-01T00:00:00Z',NULL,'tick')`.execute(db);
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status) VALUES ('a','r_task','d_done','2030-12-31T23:45:00Z','tick','c_done','ok')`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect(await reportColumns()).toEqual({
       dispatches: [{ dispatch_id: 'd_open', conversation_id: null, report: null }],
       definitions: [{ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null }],
@@ -118,7 +120,7 @@ describe('versioned routines migration', () => {
     await sql`DROP INDEX routines_v1_dispatches_conversation`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 5`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_conversation'`.execute(db)).rows).toHaveLength(1);
     expect((await sql`SELECT dispatch_id FROM routines_v1_dispatches`.execute(db)).rows).toEqual([{ dispatch_id: 'd_done' }]);
     // The planner may still pick a scan on a tiny table; with scans priced out, the store's own query reads the index.
@@ -153,7 +155,7 @@ describe('versioned routines migration', () => {
     const before = await reportColumns();
     await sql`DELETE FROM routines_schema_versions WHERE version = 4`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect(await constraintCount('routines_v1_definitions_task_status_chk', 'routines_v1_definitions')).toBe(1);
     expect(await constraintCount('routines_v1_fires_report_status_chk', 'routines_v1_fires')).toBe(1);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_open_conversation'`.execute(db)).rows).toHaveLength(1);
@@ -169,14 +171,61 @@ describe('versioned routines migration', () => {
     // A version-5 task whose check-in left notes.
     await insertTask(sql`,agent_notes`, sql`,'Order 1234 waits on a refund.'`);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect(await cleared()).toEqual([{ agent_notes: 'Order 1234 waits on a refund.', agent_notes_cleared_at: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' })).toMatchObject({ routineId: 'r_task', kind: 'stay-on-top' });
     // Finishing version 6 over the column it added keeps the column's values.
     await sql`UPDATE routines_v1_definitions SET agent_notes = NULL, agent_notes_cleared_at = '2031-01-01T00:00:00Z' WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 6`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
     expect(await cleared()).toEqual([{ agent_notes: null, agent_notes_cleared_at: new Date('2031-01-01T00:00:00Z') }]);
+  });
+  it('version 7 adds the miss columns; existing rows read back with none (TASK-930)', async () => {
+    await runRoutinesMigration(db);
+    await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT IF EXISTS routines_v1_definitions_task_miss_reason_chk,
+      DROP COLUMN IF EXISTS task_misses_in_a_row, DROP COLUMN IF EXISTS task_miss_reason,
+      DROP COLUMN IF EXISTS task_miss_at, DROP COLUMN IF EXISTS task_auto_paused_at`.execute(db);
+    await sql`DELETE FROM routines_schema_versions WHERE version = 7`.execute(db);
+    // A version-6 task.
+    await insertTask();
+    await runRoutinesMigration(db); await runRoutinesMigration(db);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(await missColumns()).toEqual([{ task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null }]);
+    expect(await constraintCount(MISS_REASON_CHECK, 'routines_v1_definitions')).toBe(1);
+    expect((await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' }))?.noRecentUpdate).toBeNull();
+    // Finishing version 7 over the columns it added keeps their values, with its CHECK in place or dropped.
+    const at = new Date('2031-01-01T00:00:00Z');
+    await sql`UPDATE routines_v1_definitions SET task_misses_in_a_row = 2, task_miss_reason = 'interrupted', task_miss_at = ${at} WHERE routine_id='r_task'`.execute(db);
+    for (const dropCheck of [false, true]) {
+      if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_task_miss_reason_chk`.execute(db);
+      await sql`DELETE FROM routines_schema_versions WHERE version = 7`.execute(db);
+      await runRoutinesMigration(db);
+      expect(await versions(), `check dropped=${dropCheck}`).toEqual([2, 3, 4, 5, 6, 7]);
+      expect(await constraintCount(MISS_REASON_CHECK, 'routines_v1_definitions'), `check dropped=${dropCheck}`).toBe(1);
+      expect(await missColumns(), `check dropped=${dropCheck}`).toEqual([{ task_misses_in_a_row: 2, task_miss_reason: 'interrupted', task_miss_at: at, task_auto_paused_at: null }]);
+    }
+    expect((await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' }))?.noRecentUpdate).toEqual({ inARow: 2, reason: 'interrupted', at, autoPausedAt: null });
+  });
+  it('refuses an unknown miss reason at the database (TASK-930)', async () => {
+    await runRoutinesMigration(db);
+    // INSERT, not UPDATE: the schema is dropped before each test, so an UPDATE would touch no row.
+    await expect(insertTask(sql`,task_miss_reason`, sql`,'gremlins'`)).rejects.toMatchObject({ code: '23514', constraint: MISS_REASON_CHECK });
+    for (const reason of CHECK_IN_MISSES) await insertTask(sql`,task_miss_reason`, sql`,${reason}`, `r_${reason}`);
+    expect((await sql<{ task_miss_reason: string }>`SELECT task_miss_reason FROM routines_v1_definitions ORDER BY routine_id`.execute(db)).rows.map(r => r.task_miss_reason).sort())
+      .toEqual([...CHECK_IN_MISSES].sort());
+  });
+  it('a stored reason no code knows reads as failed and doesn\'t stop the tick (TASK-930)', async () => {
+    await runRoutinesMigration(db);
+    // A later version's reason, read after a rollback (TASK-913): its CHECK would allow it.
+    await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_task_miss_reason_chk`.execute(db);
+    const at = new Date('2031-01-01T00:00:00Z');
+    const due = new Date('2031-01-01T00:15:00Z');
+    await insertTask(sql`,task_misses_in_a_row,task_miss_reason,task_miss_at,next_run_at`, sql`,2,'gremlins',${at},${due}`);
+    const store = createRoutinesStore(db);
+    const misses = { inARow: 2, reason: 'failed', at, autoPausedAt: null };
+    expect((await store.findOne({ agentId: 'a', routineId: 'r_task' }))?.noRecentUpdate).toEqual(misses);
+    const claimed = await store.claimDue({ now: new Date(due.getTime() + 60_000), limit: 10, claimWindowMinutes: 5 });
+    expect(claimed).toEqual([expect.objectContaining({ routineId: 'r_task', noRecentUpdate: misses })]);
   });
 });

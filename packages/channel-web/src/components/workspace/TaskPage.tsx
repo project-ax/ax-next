@@ -73,8 +73,9 @@ import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
-import { TASK_GROUP_LABELS } from '@/lib/task-groups';
-import { latestUpdateCheckIn } from '@/lib/task-updates';
+import { taskGroup, TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
+import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
@@ -120,9 +121,16 @@ const NOT_THEIRS = 'You can’t change this task any more.';
 /**
  * Why a button is disabled, one line under the header, or null when nothing
  * is. For a task's owner `fire` and `stop` are both true or both false (both
- * need to manage the agent's tasks), so three lines cover every state.
+ * need to manage the agent's tasks), so a few lines cover every state. A task
+ * the host paused after missed check-ins says so first (TASK-930); resuming it
+ * needs `edit`, like any other resume.
  */
 function actionNote(detail: TaskDetail): string | null {
+  if (!detail.enabled && detail.noRecentUpdate?.autoPaused) {
+    return detail.permissions.edit
+      ? `${AUTO_PAUSED_LINE} Fix what’s below, then Resume.`
+      : `${AUTO_PAUSED_LINE} Only someone who manages this agent’s tasks can resume it.`;
+  }
   if (!detail.enabled) {
     return detail.permissions.edit
       ? 'Paused. It won’t check in until you resume it.'
@@ -578,6 +586,19 @@ function BriefRow({
  * The latest report: its mark and word, what the agent said, when it checked
  * and checks next, and what it asks. A task that has never reported says so,
  * and when it will first check in. Paused, it shows the last report it had.
+ *
+ * A task whose last check-in left no report leads with that instead (TASK-930):
+ * its mark (`taskGroup`, the same as its Tasks row: No recent update, or Needs
+ * you from the third in a row or when the last report needed you), why, the one
+ * thing to do, and when it last checked in. The last report stays under it,
+ * muted and dated. It is usually from a check-in that started before the silent
+ * one (it may have reported later). Just after an agent reports, it can be from
+ * one that started after those misses, until a later finish moves the count
+ * (a report never does on its own; a Resume or a kind change also moves it,
+ * and not every finish does). Its ask stays too, muted: a person is
+ * still being waited on, and hiding the ask would hide that.
+ * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
+ * update and its ask are agent-written.
  */
 function LatestUpdate({
   detail,
@@ -597,6 +618,86 @@ function LatestUpdate({
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const next =
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+  const miss = detail.noRecentUpdate;
+  if (miss !== null) {
+    // Grouped as the Tasks row groups it, minus the pause: this card says "Paused" in its own line.
+    const group = taskGroup({ enabled: true, task, noRecentUpdate: miss });
+    const words = missWords(miss.reason, agentName, !enabled, {
+      checkNow: detail.permissions.fire,
+      edit: detail.permissions.edit,
+    });
+    const missedConversation = missCheckIn(miss, detail.updates);
+    const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
+    return (
+      <section aria-labelledby={headingId}>
+        <h2 id={headingId} className="sr-only">
+          Latest update
+        </h2>
+        <Card>
+          <CardContent className="flex flex-col gap-2 px-5 py-4">
+            <p className="flex items-center gap-2 text-[12.5px] font-medium">
+              <StateDotSlot>
+                <StateDot state={group} />
+              </StateDotSlot>
+              <span>{TASK_GROUP_LABELS[group]}</span>
+            </p>
+            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
+              {missSummary(miss)}
+            </p>
+            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
+              {words.fix}
+            </p>
+            {words.settingsLink && (
+              <a
+                {...routeLinkProps(
+                  { kind: 'agent-settings', id: agentId, section: 'routines' },
+                  onNavigate,
+                )}
+                className={cn(
+                  'self-start rounded-sm text-[13px] underline underline-offset-2 hover:text-foreground',
+                  RESOLUTION_FOCUS_RING,
+                )}
+              >
+                {`Open ${agentName}’s settings`}
+              </a>
+            )}
+            <CheckedLine
+              label="Last check-in"
+              at={miss.at}
+              enabled={enabled}
+              next={next}
+              now={now}
+              seeWhatItDid={
+                missedConversation === null
+                  ? null
+                  : {
+                      route: {
+                        kind: 'task-checkin',
+                        agentId,
+                        routineId,
+                        conversationId: missedConversation,
+                      },
+                      onNavigate,
+                    }
+              }
+            />
+            {task !== null && (
+              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
+                  task.update === null || task.update === '' ? CANT_SHOW : task.update
+                }`}
+              </p>
+            )}
+            {task?.ask != null && (
+              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                {`${agentName} asks: ${task.ask}`}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+    );
+  }
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId} className="sr-only">
@@ -623,7 +724,8 @@ function LatestUpdate({
                 {task.update === null || task.update === '' ? CANT_SHOW : task.update}
               </p>
               <CheckedLine
-                reportedAt={task.reportedAt}
+                label="Checked"
+                at={task.reportedAt}
                 enabled={enabled}
                 next={next}
                 now={now}
@@ -655,22 +757,26 @@ function LatestUpdate({
 }
 
 function CheckedLine({
-  reportedAt,
+  label,
+  at,
   enabled,
   next,
   now,
   seeWhatItDid,
 }: {
-  reportedAt: string;
+  /** "Checked" after a report; "Last check-in" when the last one left none (TASK-930). */
+  label: 'Checked' | 'Last check-in';
+  /** When that check-in started, ISO. */
+  at: string;
   enabled: boolean;
   next: string | null;
   now: Date;
   /** The "See what it did" link's destination, or null when the card has none (TASK-911). */
   seeWhatItDid: { route: WorkspaceRoute; onNavigate: (route: WorkspaceRoute) => void } | null;
 }) {
-  const checked = checkInWhen(reportedAt, now);
+  const checked = checkInWhen(at, now);
   const parts = [
-    checked === null ? null : `Checked ${checked}`,
+    checked === null ? null : `${label} ${checked}`,
     !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
     seeWhatItDid === null ? null : (
       <a

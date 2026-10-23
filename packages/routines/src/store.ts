@@ -1,13 +1,13 @@
-import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, durationToSeconds, RoutineDeleteOutputSchema,
-  type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, DispatchMiss, DispatchOutcome, DispatchReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -33,6 +33,14 @@ export interface RoutinesStore {
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
+  /**
+   * Records a run's end, once; false when it had already ended, is gone, or its
+   * agent is retired. Every run of every routine ends here, so TASK-930 counts a
+   * task's missed check-ins here too, and pauses the task at the fifth in a row
+   * (`missesAfterRun`). Runs that overlap count in the order they started, as
+   * `recordReport` keeps reports, whatever order they finish in. It and
+   * `updateAuthored` are the count's only writers.
+   */
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
   bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
@@ -156,6 +164,20 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
   return { status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at };
 }
 /**
+ * TASK-930. A task's missed check-ins, read leniently (TASK-913): a count of at
+ * least one and a miss time make a miss, so a row with no count, a count below
+ * one or no time (a rollback, a hand edit) reads as none, as `taskState` reads a
+ * partly-set report. A reason no code knows (a later version's, after a
+ * rollback) or none at all reads `failed`. claimDue parses every due row, so one
+ * odd row can't stop the tick for everyone.
+ */
+function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecentUpdate | null {
+  const inARow = row.task_misses_in_a_row;
+  if (!Number.isInteger(inARow) || inARow < 1 || row.task_miss_at === null) return null;
+  const reason = CheckInMissSchema.safeParse(row.task_miss_reason);
+  return { inARow, reason: reason.success ? reason.data : 'failed', at: row.task_miss_at, autoPausedAt: row.task_auto_paused_at };
+}
+/**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit
  * that changes a routine's kind sets these in the same statement. A task turned
  * into a repeat routine and back starts over: the latest report, its ask and the
@@ -171,17 +193,152 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
  * the same routine, and clearing `task_report_accepted_at` lets it report into
  * the restarted task. That is accepted: the report is still that routine's own,
  * and it lands on that run too.
+ *
+ * TASK-930: its missed check-ins start over with the rest (`NO_MISSES`), a pause
+ * for them included. `enabled` isn't touched, so a task ax paused stays paused
+ * through a kind change; only a Resume runs it again.
  */
+const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+  ...NO_MISSES,
 } as const;
+/**
+ * TASK-930. The hash `updateAuthored` stores for this row paused by a person: of
+ * its definition with `enabled` false. `finishDispatch` runs in plugin init
+ * (`interruptAbandonedDispatches`, with no catch), so a stored definition that
+ * today's checks refuse keeps its stored hash rather than stop the host booting.
+ * `kept` says it did, so `finishDispatch` can say so after commit, in ids only.
+ */
+function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): { hash: string; kept: boolean } {
+  try { return { hash: inputHash({ ...editableDefinition(rowToRoutine(row)), enabled: false }), kept: false }; }
+  catch { return { hash: row.spec_hash, kept: true }; }
+}
+type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: false } | { paused: true; keptHash: boolean });
+/**
+ * TASK-930. What a finished run does to its task's missed check-ins, given the
+ * routine's row as `finishDispatch` locked it before writing anything. Null
+ * leaves them as they are: for a repeat routine, and while the task is paused for
+ * them (`task_auto_paused_at` set and not enabled), so a run that started before
+ * the pause (a Check now beside the fifth check-in) can't count past it, or clear
+ * it by reporting. Only a person's Resume or a kind change ends that
+ * (`updateAuthored`). Keyed on `enabled` too: a row resumed without a reset (code
+ * from before version 7, after a rollback) counts again, and can pause again.
+ *
+ * Runs that overlap (a Check now beside a scheduled check-in) answer in the
+ * order they started, whatever order they finish in, as `recordReport` keeps
+ * the report of the run accepted last. A report is saved when the agent sends
+ * it, before its run finishes, and answers from then on. So null too for a run
+ * without a report once a run that started after it has reported
+ * (`task_report_accepted_at`), finished or not. A run without a report counts
+ * on from the misses after a report whose run is still open, not from the
+ * count, which that run hasn't trimmed yet (`reportStillOpen`), still capped at
+ * the count plus one, so a Resume's fresh start holds; it doesn't count itself
+ * when it started in the same instant as that report, whose run finishes after
+ * it, and with no misses after that report, it clears them. A run that reported
+ * behind a newer miss (`task_miss_at`) leaves that miss, with its reason and
+ * start, but ends the misses before it: the count drops to the runs that
+ * started after it and finished without a report, if that's fewer
+ * (`unansweredAfter`). The newer miss's own run is one of them, so that's at
+ * least one, unless a hand edit or a rollback left a miss time no such run
+ * backs, or a count below one; then the report clears them. A run without a
+ * report behind a newer miss still counts, but keeps that miss's reason and
+ * start, so `task_miss_at` never moves back. So whenever a miss is counted (the
+ * only place a pause is decided), the count is exactly the misses that started
+ * after the latest saved report. It is never short. It can lag: a report saved
+ * after a newer miss finished leaves the misses before it counted until the
+ * next run finishes, and an older run's late report trims from its own start,
+ * so it keeps the misses a newer report, its run still open, already answers,
+ * until that run finishes. A person can see that, but nothing pauses on it. It
+ * can also run long when a Resume or a kind change starts it over while runs
+ * overlap, since a fire row doesn't say which side of it its run finished on.
+ *
+ * A run that reported clears them. Any other run missed, whatever its status:
+ * one more in a row, with its start (the fire row's time) and its reason, the one
+ * its caller classified for an `error` run (`failed` when it gave none), else
+ * `no-report`. The fifth in a row pauses a running task the way a person's pause
+ * does (design §7's cost bound): not enabled, a new revision, so an edit, Check
+ * now or tick held against the old one is refused, the paused definition's hash,
+ * no next run, and `updated_at`, at the instant `task_auto_paused_at` records.
+ */
+async function missesAfterRun(
+  trx: Transaction<RoutinesDatabase>,
+  row: Selectable<RoutinesDefinitionsRow>,
+  run: { reported: boolean; status: FireStatus; miss: DispatchMiss | undefined; acceptedAt: Date },
+  now: Date,
+): Promise<MissesWrite | null> {
+  if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
+  // recordReport's order: a run started after this one has already answered.
+  const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
+  if (run.reported) {
+    if (!newerMiss) return { columns: NO_MISSES, paused: false };
+    // The misses before this report end; the ones after it, the newer miss's own included, stay.
+    const kept = await unansweredAfter(trx, row, run.acceptedAt, Math.max(0, row.task_misses_in_a_row));
+    return { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
+  }
+  const reportAt = row.task_report_accepted_at;
+  if (reportAt !== null && reportAt > run.acceptedAt) return null;
+  // A count below zero (a hand edit) starts again at one.
+  const upTo = Math.max(0, row.task_misses_in_a_row) + 1;
+  // A saved report whose run is still open has answered the misses that started before it, though
+  // its run hasn't trimmed them yet: count the ones after it. This run's fire row, just written, is
+  // one, unless it started in the same instant as that report, whose run finishes after it.
+  const inARow = reportAt !== null && await reportStillOpen(trx, row, reportAt) ? await unansweredAfter(trx, row, reportAt, upTo) : upTo;
+  // None after it: that open report answers every miss counted, this one included.
+  if (inARow === 0) return { columns: NO_MISSES, paused: false };
+  const reason: CheckInMiss = run.status === 'error' ? run.miss ?? 'failed' : 'no-report';
+  const counted = newerMiss ? { task_misses_in_a_row: inARow }
+    : { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
+  if (inARow < TASK_AUTO_PAUSE_AFTER_MISSES || !row.enabled) return { columns: counted, paused: false };
+  const specHash = pausedSpecHash(row);
+  return {
+    columns: {
+      ...counted, enabled: false, revision: opaqueId('rev'), spec_hash: specHash.hash,
+      next_run_at: null, updated_at: now, task_auto_paused_at: now,
+    },
+    paused: true, keptHash: specHash.kept,
+  };
+}
+/**
+ * TASK-930. Whether a run of the routine that started at `at` is still open with
+ * a saved report: the task's report (`task_report_accepted_at`), whose run
+ * hasn't finished, so hasn't cleared or trimmed the misses before it yet. Its
+ * `report` is set by `recordReport` and cleared when the run finishes.
+ * `routines_v1_dispatches_open_conversation` narrows the scan to the agent's
+ * open runs. `completed_at IS NULL` is redundant with `report IS NOT NULL`
+ * logically, but it's what lets that partial index apply, so it stays.
+ */
+async function reportStillOpen(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, at: Date): Promise<boolean> {
+  return await trx.selectFrom('routines_v1_dispatches').select('dispatch_id')
+    .where('agent_id', '=', row.agent_id).where('completed_at', 'is', null).where('routine_id', '=', row.routine_id)
+    .where('accepted_at', '=', at).where('report', 'is not', null).limit(1).executeTakeFirst() !== undefined;
+}
+/**
+ * TASK-930. How many of the routine's runs that started after `after` have
+ * finished without a report, but no more than `atMost`: a run's fire row is
+ * written when it finishes, with its start as `fired_at`, so the run that
+ * started at `after` isn't one. A row with only part of a report has none, as
+ * `rowToFire` reads it. Through `routines_v1_fires_by_routine`, returning at most
+ * `atMost` rows, in `finishDispatch`'s transaction with the routine's row locked.
+ * Leaving out runs that reported is defensive: a count our code writes never
+ * holds more misses than the runs after the latest report that finished without
+ * one, so only a hand-edited or rolled-back count reaches past them.
+ */
+async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, after: Date, atMost: number): Promise<number> {
+  const fires = await trx.selectFrom('routines_v1_fires').select('id')
+    .where('agent_id', '=', row.agent_id).where('routine_id', '=', row.routine_id).where('fired_at', '>', after)
+    .where(eb => eb.or([eb('report_status', 'is', null), eb('report_update', 'is', null)]))
+    .limit(atMost).execute();
+  return fires.length;
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
-    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row)
+    lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
+    noRecentUpdate: noRecentUpdate(row),
   });
 }
 function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
@@ -211,22 +368,25 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * TASK-907. What a receipt keeps of its result: all of it but a task's state. A
  * receipt lives as long as its request row, and the state is agent-written text
  * (a report, the agent's notes) that the task row already holds, once, where a
- * person can see and clear it. The `task` key is left out, not stored as null,
- * so code from before the field (whose strict schema has no such key) still
- * reads the receipt after a rollback; `.default(null)` fills it in on read. So
- * an exact replay answers with `task: null`: a replay answers from its receipt,
- * never from a fresh read. The live answer is the effect's own, state and all,
- * so `acceptDispatch`'s `accepted.row.task` is still what it read under the row lock.
+ * person can see and clear it. TASK-930: the task's missed check-ins stay out
+ * too. They're the task's, not the request's, and move on without it.
+ * Both keys are left out, not stored as null, so code from before each field
+ * (whose strict schema has no such key) still reads the receipt after a
+ * rollback; `.default(null)` fills them in on read. So an exact replay answers
+ * with `task: null` and `noRecentUpdate: null`: a replay answers from its
+ * receipt, never from a fresh read. The live answer is the effect's own, state
+ * and all, so `acceptDispatch`'s `accepted.row` still holds the task's state and
+ * misses as it read them under the row lock.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
-  if (operation === 'create' || operation === 'update') return withoutTask(result as StoredRoutine);
+  if (operation === 'create' || operation === 'update') return withoutTaskState(result as StoredRoutine);
   if (operation === 'dispatch') {
     const accepted = result as AcceptedDispatch;
-    return { ...accepted, row: withoutTask(accepted.row) };
+    return { ...accepted, row: withoutTaskState(accepted.row) };
   }
   return result;
 }
-function withoutTask({ task: _task, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task'> { return routine; }
+function withoutTaskState({ task: _task, noRecentUpdate: _misses, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
@@ -352,6 +512,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
           ...(next.kind === current.kind ? {} : NO_TASK_STATE),
+          // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
+          // shortening instructions that were too long leaves the task paused, and counted.
+          ...(!current.enabled && next.enabled ? NO_MISSES : {}),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -406,7 +569,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       let interrupted = 0;
       for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, outcome: {
         status: 'error', error: 'The routine run was interrupted by a host restart.',
-        conversationId: null, renderedPrompt: null, warning: null,
+        conversationId: null, renderedPrompt: null, warning: null, miss: 'interrupted',
       } })) interrupted++;
       return interrupted;
     },
@@ -419,13 +582,21 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
       let unreadable = false;
+      let paused = null as (RoutineKey & { keptHash: boolean }) | null;
       const finished = await db.transaction().execute(async trx => {
         const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
         if (!dispatch || dispatch.completed_at) return false;
+        // TASK-930: the routine's row, locked before anything here writes to it, so two runs that
+        // finish at once count one after the other. recordReport's order (agent fence, dispatch row,
+        // definition row), and nothing locks a dispatch row after a definition row, so it adds no
+        // deadlock. A deleted routine has no row, and its run isn't counted.
+        const definition = await trx.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         const stored = storedReport(dispatch.report);
         unreadable = stored.unreadable;
+        const finishedAt = new Date();
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
@@ -433,14 +604,31 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
         }).execute();
         // The fire row has the report now; one copy of the text is enough (TASK-907).
-        await trx.updateTable('routines_v1_dispatches').set({ completed_at: new Date(), report: null }).where('dispatch_id', '=', input.dispatchId).execute();
+        await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null }).where('dispatch_id', '=', input.dispatchId).execute();
         await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
           .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
+        // TASK-930: the missed check-ins, only now. The pause mints a new revision, so before the
+        // update above it would make that update skip the fifth run's own status and error. No
+        // revision clause here: an edit during a check-in can't drop its miss, as it can't its report.
+        const misses = definition === undefined ? null : await missesAfterRun(trx, definition, {
+          reported: stored.report !== null, status: outcome.status, miss: outcome.miss, acceptedAt: dispatch.accepted_at,
+        }, finishedAt);
+        if (misses !== null) {
+          await trx.updateTable('routines_v1_definitions').set(misses.columns)
+            .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
+          if (misses.paused) paused = { agentId: dispatch.agent_id, routineId: dispatch.routine_id, keptHash: misses.keptHash };
+        }
         return true;
       });
       // After commit, so a rolled-back finish doesn't claim a drop. Only the id: the text is the agent's.
       if (finished && unreadable) process.stderr.write(`[ax/routines] dropped an unreadable report for dispatch ${input.dispatchId}\n`);
+      // After commit too, so a rolled-back finish paused nothing. Ids only: why a definition no longer
+      // reads is in its stored text, which can be the agent's.
+      if (finished && paused !== null) {
+        process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`);
+        if (paused.keptHash) process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} kept its stored definition hash: its definition no longer reads\n`);
+      }
       return finished;
     },
     async bindDispatchConversation(input) {

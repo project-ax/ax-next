@@ -132,6 +132,7 @@
  * Each handler is authenticated and owner-scoped on its own.
  */
 import {
+  CHECK_IN_MISSES,
   ROUTINE_AGENT_NOTES_MAX_CHARS,
   ROUTINE_CHECKIN_LOOKUP_MAX_IDS,
   ROUTINE_DEFINITION_MAX_BYTES,
@@ -197,6 +198,7 @@ import type {
   RailActivity,
   TaskCheckin,
   TaskDetail,
+  TaskNoRecentUpdate,
   TaskRow,
   TasksResponse,
   TaskUpdate,
@@ -726,7 +728,7 @@ interface RoutinesListOutput {
  */
 type TaskListView = Pick<
   RoutineView,
-  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task'
+  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task' | 'noRecentUpdate'
 >;
 interface TaskListOutput {
   routines: TaskListView[];
@@ -752,6 +754,7 @@ type TaskDetailView = Pick<
   | 'promptBody'
   | 'goodWhen'
   | 'task'
+  | 'noRecentUpdate'
 >;
 type TaskFireView = Pick<
   RoutineFireView,
@@ -3360,7 +3363,9 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * to one line. The update is capped at the report writer's own limit, because
  * stored text isn't re-checked against the writer's rules (TASK-913) and the
  * view schema has no cap. `agentName` is the roster's string as-is, the same
- * one `/state` sends.
+ * one `/state` sends. `noRecentUpdate` is host-written (a count, a closed
+ * reason, an instant, a flag; `toTaskNoRecentUpdate`) and holds no
+ * agent-written text.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3382,7 +3387,31 @@ function toTaskRows(
               update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
               reportedAt: view.task.reportedAt,
             },
+      noRecentUpdate: toTaskNoRecentUpdate(view),
     }));
+}
+
+/**
+ * A view's missed check-ins → the wire's (TASK-930). Built field by field, and
+ * lenient about a view the schema didn't parse (TASK-913): a missed-check-in
+ * object that is missing, not an object, or without a whole count (1 or more)
+ * and a time reads as no miss at all, never a thrown request or a nonsense
+ * count. The reason is a host-minted code; a reason this page doesn't know (a
+ * newer routines plugin) reads `'failed'`, which is true of any check-in that
+ * didn't finish. Only a literal `true` means the host paused the task.
+ */
+function toTaskNoRecentUpdate(view: Pick<RoutineView, 'noRecentUpdate'>): TaskNoRecentUpdate | null {
+  const miss: unknown = view.noRecentUpdate;
+  if (miss === null || typeof miss !== 'object') return null;
+  const { inARow, reason, at, autoPaused } = miss as Record<string, unknown>;
+  if (typeof inARow !== 'number' || !Number.isInteger(inARow) || inARow < 1) return null;
+  if (typeof at !== 'string') return null;
+  return {
+    inARow,
+    reason: CHECK_IN_MISSES.find((code) => code === reason) ?? 'failed',
+    at,
+    autoPaused: autoPaused === true,
+  };
 }
 
 /** How many check-ins a task page's Updates thread shows, newest first (TASK-910). */
@@ -3456,7 +3485,8 @@ function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | nul
  * card's caps (TASK-906): the view schema refuses an invalid brief, and a
  * valid one never reaches them, so it shows whole. The schedule phrase
  * carries the trigger's own time zone, so it is fenced too. `agentName` is
- * the roster's string as-is, the same one `/state` sends.
+ * the roster's string as-is, the same one `/state` sends. `noRecentUpdate` is
+ * host-written (`toTaskNoRecentUpdate`) and holds no agent-written text.
  */
 function toTaskDetail(
   agent: { displayName: string },
@@ -3498,6 +3528,7 @@ function toTaskDetail(
                 ?.text ?? null,
             reportedAt: view.task.reportedAt,
           },
+    noRecentUpdate: toTaskNoRecentUpdate(view),
     updates: fires.map(toTaskUpdate),
   };
 }

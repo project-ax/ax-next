@@ -149,7 +149,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
     const view = {
       ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
       nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-      permissions: { edit: true, stop: true, fire: true, manageSecret: false },
+      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null,
     } as const;
     const task = {
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
@@ -181,7 +181,7 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
   const view = {
     ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false },
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null,
   } as const;
   const shown = { status: 'needs-you', update: 'Two tickets wait.', ask: null, reportedAt: '2026-10-21T10:02:00.000Z' } as const;
 
@@ -222,7 +222,7 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     expect(RoutineUpdateToolOutputSchema.safeParse(view).success).toBe(false);
     expect(RoutineToolDescriptions.routine_update).toContain('The answer shows a task’s latest report as routine_list does, without its agentNotes.');
     // A retry of an edit that went through answers from its receipt, which keeps no task state.
-    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task null, so read the task with routine_get.');
+    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task and noRecentUpdate null, so read the task with routine_get.');
   });
 });
 

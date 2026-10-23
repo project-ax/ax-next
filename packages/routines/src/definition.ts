@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
+import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
 import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
@@ -56,6 +56,13 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   task: z.object({
     status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
     agentNotes: z.string().nullable(), reportedAt: z.coerce.date(),
+  }).strict().nullable().default(null),
+  // TASK-930. Types and the reason enum only, as for `task`: rowToRoutine has already read the
+  // columns leniently (store.ts, noRecentUpdate), so no stored row is refused here. Receipts
+  // leave the key out (store.ts, receiptCopy), as did any written before this field, and the
+  // default fills it in.
+  noRecentUpdate: z.object({
+    inARow: z.number().int(), reason: CheckInMissSchema, at: z.coerce.date(), autoPausedAt: z.coerce.date().nullable(),
   }).strict().nullable().default(null),
 }).strict().superRefine((row, ctx) => {
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));

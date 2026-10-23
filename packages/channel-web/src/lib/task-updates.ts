@@ -108,3 +108,21 @@ export function latestUpdateCheckIn(
     ? newest.conversationId
     : null;
 }
+
+/**
+ * The check-in that missed (TASK-930, decisions row 11), or null.
+ *
+ * `noRecentUpdate.at` is the run's `accepted_at`, which is the fire row's
+ * `firedAt`, so the link goes to exactly that entry rather than "the newest",
+ * which Updates can't pick reliably (it has no tiebreak). No link when that
+ * entry reported, has no conversation, or shares one (`sharedConversationIds`).
+ */
+export function missCheckIn(
+  noRecentUpdate: { at: string } | null,
+  updates: readonly TaskUpdate[],
+): string | null {
+  if (noRecentUpdate === null) return null;
+  const entry = updates.find((u) => u.firedAt === noRecentUpdate.at);
+  if (entry === undefined || entry.report !== null || entry.conversationId === null) return null;
+  return sharedConversationIds(updates).has(entry.conversationId) ? null : entry.conversationId;
+}

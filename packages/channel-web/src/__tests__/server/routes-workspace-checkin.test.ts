@@ -98,6 +98,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     nextRunAt: null,
     lastRunAt: null,
     task: null,
+    noRecentUpdate: null,
     ...over,
   };
 }

@@ -9,7 +9,7 @@ const REPORTS: CheckInMessageInput['reports'] = [
   { firedAt: new Date('2026-10-22T13:45:00Z'), report: { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out?' } },
   { firedAt: new Date('2026-10-22T13:30:00Z'), report: { status: 'on-track', update: 'Queue is empty.', ask: null } },
 ];
-const SCHEDULED: CheckInMessageInput = { source: 'tick', agentNotes: NOTES, reports: REPORTS };
+const SCHEDULED: CheckInMessageInput = { source: 'tick', agentNotes: NOTES, reports: REPORTS, missesInARow: 0 };
 const lines = (text: string): string[] => text.split('\n');
 const report = (update: string, minute: number) =>
   ({ firedAt: new Date(Date.UTC(2026, 9, 22, 13, minute)), report: { status: 'off-track' as const, update, ask: null } });
@@ -34,7 +34,7 @@ describe('the check-in message (TASK-908)', () => {
   });
 
   it('Check now, with no notes and no reports, exactly', () => {
-    expect(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [] })).toBe([
+    expect(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], missesInARow: 0 })).toBe([
       'Check now: this check-in was started outside its schedule.',
       'You have no saved notes yet.',
       'No earlier reports yet.',
@@ -81,5 +81,30 @@ describe('the check-in message (TASK-908)', () => {
     const message = renderCheckInMessage({ ...SCHEDULED, reports: [report('Fourth.', 40), report('Third.', 30), report('Second.', 20), report('First.', 10)] });
     expect(message).toContain('  > Fourth.\n- 2026-10-22 13:30 UTC, off-track:\n  > Third.\n- 2026-10-22 13:20 UTC, off-track:\n  > Second.\n\n');
     expect(message).not.toContain('First.');
+  });
+});
+
+describe('the check-in message tells a check-in that its last ones left no report (TASK-930)', () => {
+  const TAIL = 'Finish this one with routine_report, even if nothing changed.';
+  const paragraphs = (text: string): string[] => text.split('\n\n');
+
+  it('one miss puts the line second', () => {
+    const message = renderCheckInMessage({ ...SCHEDULED, missesInARow: 1 });
+    expect(paragraphs(message)[0]).toBe('Scheduled check-in.');
+    expect(paragraphs(message)[1]).toBe(`Your last check-in ended without a report. ${TAIL}`);
+    expect(paragraphs(message)[2]).toMatch(/^Your notes from earlier check-ins/);
+  });
+
+  it('several say how many', () => {
+    const message = renderCheckInMessage({ ...SCHEDULED, source: 'manual', missesInARow: 4 });
+    expect(paragraphs(message)[1]).toBe(`Your last 4 check-ins ended without a report. ${TAIL}`);
+    expect(renderCheckInMessage({ ...SCHEDULED, missesInARow: 2 })).toContain('Your last 2 check-ins ended without a report.');
+  });
+
+  it('no misses, no line', () => {
+    for (const missesInARow of [0, -1, Number.NaN]) {
+      expect(renderCheckInMessage({ ...SCHEDULED, missesInARow })).toBe(renderCheckInMessage({ ...SCHEDULED, missesInARow: 0 }));
+    }
+    expect(renderCheckInMessage(SCHEDULED)).not.toContain('ended without a report');
   });
 });

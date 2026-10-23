@@ -135,6 +135,14 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
     routineId = input.routineId;
     const row = await store.findOne(input);
     if (!row) throw new SafeToolError('not-found', 'routineId');
+    // TASK-930: only a person resumes a paused task (design §3.6, §7), ax's pause after five check-ins without a
+    // report included; Always Allow no longer covers it (closes TASK-906 decisions row 25). This runs at pre-call,
+    // before any hold, so a resume can't ride a brief edit onto a card that doesn't draw `enabled`, and again at
+    // execute, so a call pre-call saw differently is refused too. Every pause mints a new revision, so a resume read
+    // against the row before one fails revision-conflict in updateAuthored. A receipt replay returned above and can
+    // only replay an edit that already happened. `!== 'repeat'`: a kind this code doesn't know is refused.
+    if (name === 'routine_update' && row.kind !== 'repeat' && !row.enabled && (prepared.input as C.RoutineUpdateInput).patch.enabled === true)
+      throw new SafeToolError('forbidden', 'enabled');
     // Personal ownership changes mint a new revision on routine_get. Do not
     // mutate here or approve a proposal against the old owner/revision.
     if (row.revision !== input.expectedRevision || (agent.ownerType === 'user' && row.ownerUserId !== agent.ownerId))

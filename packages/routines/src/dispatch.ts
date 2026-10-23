@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RoutineReportStatusSchema } from '@ax/routines-contract';
+import { CheckInMissSchema, RoutineReportStatusSchema } from '@ax/routines-contract';
 import { StoredRoutineSchema } from './definition.js';
 export const AcceptedDispatchSchema = z.object({
   dispatchId: z.string(), reqId: z.string(), row: StoredRoutineSchema,
@@ -8,6 +8,8 @@ export const AcceptedDispatchSchema = z.object({
 export const DispatchOutcomeSchema = z.object({
   status: z.enum(['ok', 'silenced', 'error']), conversationId: z.string().nullable(),
   error: z.string().nullable(), renderedPrompt: z.string().nullable(), warning: z.string().nullable(),
+  // TASK-930. A caller never names `no-report`: the store decides that a run left no report.
+  miss: CheckInMissSchema.exclude(['no-report']).optional(),
 }).strict();
 /** TASK-907. A run's stored report, read back with `safeParse` only. Stored text isn't re-capped (TASK-913). */
 export const DispatchReportSchema = z.object({

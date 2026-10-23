@@ -1384,6 +1384,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
       'StateDot.off-track',
       'StateDot.on-track',
       'StateDot.no-update',
+      'StateDot.no-recent-update',
       'StateDot.paused',
       'StatusDot.empty',
       'StatusDot.ok',
@@ -1403,6 +1404,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
     for (const label of [
       'StateDot.resting',
       'StateDot.no-update',
+      'StateDot.no-recent-update',
       'StateDot.paused',
       'StatusDot.empty',
       'StatusDot.pending',

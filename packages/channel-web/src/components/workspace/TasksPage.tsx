@@ -39,6 +39,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
+import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
 import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
@@ -308,7 +309,8 @@ function TaskList({
 
 /**
  * One task: its name, whose it is and when it last checked in, then the
- * agent's latest update. A never-reported task shows its agent's name alone:
+ * agent's latest update, or, when its last check-ins left none, why (TASK-930).
+ * "checked" still dates the last real report. A never-reported task shows its agent's name alone:
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
  */
@@ -322,7 +324,19 @@ function TaskItem({
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const ago = row.task === null ? null : timeAgo(row.task.reportedAt, now);
-  const update = row.task?.update ?? null;
+  // The third line, in order: why a paused-by-misses task is paused, why a task
+  // has no recent update, else the last report's update (TASK-930). With
+  // misses, the report isn't shown: it's usually from a check-in that started
+  // before the silent one. One that started after them sits beside the misses
+  // until a later finish moves the count: a report alone never does (a Resume
+  // or a kind change also moves it, and not every finish does). All of it
+  // host-written except the update.
+  const third =
+    !row.enabled && row.noRecentUpdate?.autoPaused
+      ? AUTO_PAUSED_LINE
+      : row.noRecentUpdate !== null
+        ? missSummary(row.noRecentUpdate)
+        : (row.task?.update ?? null);
   return (
     <a
       {...routeLinkProps(
@@ -337,9 +351,9 @@ function TaskItem({
       <span className="break-words text-[12px] text-muted-foreground">
         {ago === null ? row.agentName : `${row.agentName} · checked ${ago}`}
       </span>
-      {update !== null && (
-        <p className="line-clamp-2 break-words text-[13px]" title={update}>
-          {update}
+      {third !== null && (
+        <p className="line-clamp-2 break-words text-[13px]" title={third}>
+          {third}
         </p>
       )}
     </a>

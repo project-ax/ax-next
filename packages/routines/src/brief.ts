@@ -4,6 +4,7 @@ import {
 } from '@ax/core';
 import type { RoutineKind } from '@ax/routines-contract';
 import type { PendingFire, PendingFires } from './fire.js';
+import type { DispatchMiss } from './types.js';
 
 // ---------------------------------------------------------------------------
 // A task check-in's brief (TASK-908): what the run is for, in W1's `brief`
@@ -193,5 +194,17 @@ export function briefRunError(entry: PendingFire, terminatedReason: string): str
   if (!isTaskRun(entry.row)) return null;
   if (terminatedReason === 'system-prompt:brief-too-long') return BRIEF_TOO_LONG;
   if (terminatedReason === 'system-prompt:brief-missing') return BRIEF_DIDNT_LOAD;
+  return null;
+}
+
+/**
+ * TASK-930. Why that run left no report, recorded by the code that refused it:
+ * the same two reasons, for the same runs, as `briefRunError`, so the words and
+ * the code can't drift apart. Never parsed from the error text.
+ */
+export function briefRunMiss(entry: PendingFire, terminatedReason: string): Extract<DispatchMiss, 'brief-missing' | 'brief-too-long'> | null {
+  if (!isTaskRun(entry.row)) return null;
+  if (terminatedReason === 'system-prompt:brief-too-long') return 'brief-too-long';
+  if (terminatedReason === 'system-prompt:brief-missing') return 'brief-missing';
   return null;
 }

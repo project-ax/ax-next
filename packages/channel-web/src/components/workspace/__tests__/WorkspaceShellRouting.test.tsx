@@ -92,6 +92,7 @@ const TASK_DETAIL: TaskDetail = {
   nextCheckAt: null,
   brief: { promptBody: 'Keep the support queue empty.', goodWhen: null },
   task: null,
+  noRecentUpdate: null,
   updates: [],
 };
 
@@ -250,6 +251,7 @@ describe('landing on a URL', () => {
           name: 'Zero open support tickets',
           enabled: true,
           task: null,
+          noRecentUpdate: null,
         },
       ],
       unavailableAgents: [],

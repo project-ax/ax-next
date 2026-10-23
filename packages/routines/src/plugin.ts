@@ -225,7 +225,7 @@ export function createRoutinesPlugin(
           try {
             await localStore.finishDispatch({ dispatchId: pf.dispatchId, outcome: {
               conversationId: pf.conversationId,
-              status: 'error', error: BRIEF_UNCONFIRMED,
+              status: 'error', error: BRIEF_UNCONFIRMED, miss: 'brief-unconfirmed',
               renderedPrompt: pf.renderedPrompt,
               warning,
             } });

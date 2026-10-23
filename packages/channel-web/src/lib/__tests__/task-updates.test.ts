@@ -3,6 +3,7 @@ import type { RoutineReportStatus } from '@ax/routines-contract';
 import {
   foldUpdates,
   latestUpdateCheckIn,
+  missCheckIn,
   sharedConversationIds,
   updateText,
 } from '../task-updates.js';
@@ -155,5 +156,40 @@ describe('sharedConversationIds (TASK-911)', () => {
     ];
     expect([...sharedConversationIds(updates)]).toEqual(['a']);
     expect(sharedConversationIds([]).size).toBe(0);
+  });
+});
+
+describe('missCheckIn', () => {
+  const AT = '2026-10-22T09:00:00.000Z';
+  const missed = (over: Partial<TaskUpdate> = {}): TaskUpdate =>
+    u(null, { firedAt: AT, conversationId: 'conv-miss', ...over });
+  const newer = (): TaskUpdate => u('on-track', { conversationId: 'conv-new' });
+
+  it('is the entry whose firedAt equals the miss time, even with a newer entry', () => {
+    expect(missCheckIn({ at: AT }, [newer(), missed()])).toBe('conv-miss');
+  });
+
+  it('is null when the miss time is null', () => {
+    expect(missCheckIn(null, [missed()])).toBeNull();
+  });
+
+  it('is null when no entry fired at that time', () => {
+    expect(missCheckIn({ at: '2026-01-01T00:00:00.000Z' }, [newer(), missed()])).toBeNull();
+  });
+
+  it('is null when that entry reported', () => {
+    expect(
+      missCheckIn({ at: AT }, [missed({ report: { status: 'on-track', update: 'fine' } })]),
+    ).toBeNull();
+  });
+
+  it('is null when that entry has no conversation', () => {
+    expect(missCheckIn({ at: AT }, [missed({ conversationId: null })])).toBeNull();
+  });
+
+  it('is null when another check-in shares that conversation', () => {
+    expect(
+      missCheckIn({ at: AT }, [u('on-track', { conversationId: 'conv-miss' }), missed()]),
+    ).toBeNull();
   });
 });

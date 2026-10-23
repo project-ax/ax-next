@@ -1,7 +1,8 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoutineDefinitionSchema, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createCheckInHarness, TASK_DEFINITION } from './support/check-in.js';
 import { createRoutinesStore } from '../store.js';
 import { isHold, makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
@@ -286,6 +287,47 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
       .rejects.toMatchObject({ toolCode: 'validation', field: 'promptBody' });
     expect(await store.findOne({ agentId: h.agentId, routineId: task.routineId })).toMatchObject({ promptBody: 'Keep the queue empty.', revision: task.revision });
   });
+  // TASK-930: only a person resumes a paused task, which may be one ax paused after five check-ins without a
+  // report. Always Allow still covers pausing and resuming a repeat routine (closes TASK-906 decisions row 25).
+  it('with Always Allow granted, the agent can’t resume a paused task, at pre-call or at execute; a paused repeat routine resumes (TASK-930)', async () => {
+    const { ctx, store, taskCreate, update, weekly } = await alwaysAllowed();
+    const held = await h.bus.fire('tool:pre-call', ctx, taskCreate('Zero open tickets'));
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    await h.bus.call('decisions:approve', ctx, { decisionId: held.hold.decisionId, userId: ctx.userId, approvalScope: 'once' });
+    const task = (await store.list({ agentId: h.agentId })).find(row => row.name === 'Zero open tickets');
+    expect(task).toMatchObject({ kind: 'stay-on-top', enabled: true });
+    // A person pauses it, through the service the task page and Settings call.
+    const paused = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
+      agentId: h.agentId, routineId: task!.routineId, requestId: 'person-pause', expectedRevision: task!.revision, patch: { enabled: false } });
+    expect(paused.enabled).toBe(false);
+    const refused = { rejected: true, source: '@ax/routines', reason: 'This operation is not allowed for this person and agent. Field: enabled' };
+    // 1. Refused, not held, at pre-call, where Always Allow would otherwise let it through.
+    const early = await h.bus.fire('tool:pre-call', ctx, update('resume', paused, { enabled: true }));
+    expect(early).toMatchObject(refused);
+    expect(isHold(early)).toBe(false);
+    // 2. Bundled with a brief edit, which alone asks on a card that doesn't draw `enabled`: refused before any hold.
+    const bundled = await h.bus.fire('tool:pre-call', ctx, update('bundle', paused, { promptBody: 'Answer simple tickets.', enabled: true }));
+    expect(bundled).toMatchObject(refused);
+    expect(isHold(bundled)).toBe(false);
+    // 3. A direct execute, skipping tool:pre-call, is refused and names the field.
+    await expect(h.bus.call('tool:execute:routine_update', ctx, update('direct-resume', paused, { enabled: true })))
+      .rejects.toMatchObject({ toolCode: 'forbidden', field: 'enabled' });
+    // 4. Swap: pre-call sees an allowed patch, execute carries the resume under the same requestId.
+    expect((await h.bus.fire('tool:pre-call', ctx, update('swap', paused, { activeHours: null }))).rejected).toBe(false);
+    await expect(h.bus.call('tool:execute:routine_update', ctx, update('swap', paused, { enabled: true })))
+      .rejects.toMatchObject({ toolCode: 'forbidden', field: 'enabled' });
+    expect(await store.findOne({ agentId: h.agentId, routineId: paused.routineId })).toMatchObject({ enabled: false, revision: paused.revision });
+    // A paused repeat routine is still the agent's to resume.
+    const stopped = await h.bus.call<unknown, RoutineView>('tool:execute:routine_update', ctx, update('weekly-pause', weekly, { enabled: false }));
+    expect(stopped).toMatchObject({ routineId: weekly.routineId, enabled: false });
+    expect(await h.bus.call('tool:execute:routine_update', ctx, update('weekly-resume', stopped, { enabled: true })))
+      .toMatchObject({ routineId: weekly.routineId, enabled: true });
+    // The refusal is the agent's tool only: the person's Resume still goes through.
+    expect(await h.bus.call('routines:update', h.owner, {
+      agentId: h.agentId, routineId: paused.routineId, requestId: 'person-resume', expectedRevision: paused.revision, patch: { enabled: true } }))
+      .toMatchObject({ routineId: paused.routineId, enabled: true });
+  });
 });
 
 // TASK-907: a task's check-in reports with routine_report, end to end through the real
@@ -503,5 +545,60 @@ describe('PR 1 backend canary (TASK-908)', () => {
     // Memory won't learn from the check-in's conversation.
     const runner = makeAgentContext({ userId: h.owner.userId, agentId: h.agentId, sessionId: 'memory', conversationId: checkInCtx!.conversationId!, source: 'routine' });
     expect(await h.bus.fire('memory:pre-capture', runner, { conversationId: checkInCtx!.conversationId })).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
+  });
+});
+
+// TASK-930: the failure ladder, end to end through the real routines, agents, tool-policy and
+// decisions plugins and Postgres. A task whose check-ins leave no report goes No recent update,
+// then Needs you, then pauses itself; nothing runs after; only a person's Resume starts it over.
+describe('failure ladder canary (TASK-930)', () => {
+  it('check-ins that leave no report go No recent update, then Needs you at three, then paused at five; nothing runs after; a person’s Resume starts over', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const get = (id: { routineId: string }) => h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: h.agentId, routineId: id.routineId });
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const missLine = (n: number) => `Your last ${n} check-ins ended without a report.`;
+    const paused = captureExpectedStderr(message => message.startsWith('[ax/routines] auto-paused task '));
+    let seen: RoutineView = task;
+    try {
+      for (let i = 1; i <= TASK_AUTO_PAUSE_AFTER_MISSES; i++) {
+        const checkIn = await ch.checkIn(seen, `run-${i}`, async () => {});
+        if (i === 1) expect(checkIn.message).not.toContain('ended without a report');
+        if (i === 2) expect(checkIn.message).toContain('Your last check-in ended without a report.');
+        if (i === TASK_AUTO_PAUSE_AFTER_MISSES) expect(checkIn.message).toContain(missLine(TASK_AUTO_PAUSE_AFTER_MISSES - 1));
+        await expect.poll(async () => (await get(task)).noRecentUpdate?.inARow).toBe(i);
+        seen = await get(task);
+        if (i === TASK_NEEDS_YOU_AFTER_MISSES) {
+          expect(seen.noRecentUpdate?.inARow).toBeGreaterThanOrEqual(TASK_NEEDS_YOU_AFTER_MISSES);
+          expect(seen.enabled).toBe(true);
+        }
+        if (i < TASK_AUTO_PAUSE_AFTER_MISSES) expect(seen.enabled).toBe(true);
+      }
+    } finally { paused.restore(); }
+    // The fifth miss paused it: what a person's pause moves, a new revision, the line printed.
+    expect(seen).toMatchObject({ enabled: false, nextRunAt: null, noRecentUpdate: { inARow: 5, reason: 'no-report', autoPaused: true } });
+    expect(seen.revision).not.toBe(task.revision);
+    expect(paused.messages).toHaveLength(1);
+    // Nothing runs after.
+    await expect(h.bus.call('routines:fire-now', h.owner, {
+      agentId: h.agentId, routineId: task.routineId, expectedRevision: seen.revision, requestId: 'after-pause' }))
+      .rejects.toMatchObject({ toolCode: 'disabled' });
+    expect(await store.recentFires(task)).toHaveLength(TASK_AUTO_PAUSE_AFTER_MISSES);
+    // The model in the owner's chat sees the same, and can't resume it.
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    const listed = await h.bus.call<unknown, { routines: RoutineView[] }>('tool:execute:routine_list', chat, { id: 'list', name: 'routine_list', input: {} });
+    expect(listed.routines.find(row => row.routineId === task.routineId)?.noRecentUpdate).toMatchObject({ inARow: 5, reason: 'no-report', autoPaused: true });
+    await expect(h.bus.call('tool:execute:routine_update', chat, { id: 'resume', name: 'routine_update', input: {
+      requestId: 'resume', routineId: task.routineId, expectedRevision: seen.revision, patch: { enabled: true } } }))
+      .rejects.toMatchObject({ toolCode: 'forbidden', field: 'enabled' });
+    // The person resumes, and the count starts over.
+    const resumed = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
+      agentId: h.agentId, routineId: task.routineId, requestId: 'person-resume', expectedRevision: seen.revision, patch: { enabled: true } });
+    expect(resumed).toMatchObject({ enabled: true, noRecentUpdate: null });
+    const next = await ch.checkIn(resumed, 'run-6', async () => {});
+    expect(next.message).not.toContain('ended without a report');
   });
 });

@@ -1,5 +1,5 @@
-import type { RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
-export type { ActiveHours, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
+import type { CheckInMiss, RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
+export type { ActiveHours, CheckInMiss, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
 /**
@@ -8,6 +8,13 @@ export type FireStatus = 'ok' | 'silenced' | 'error';
  * `notes`). Agent-written text.
  */
 export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date };
+/**
+ * TASK-930. A task's check-ins in a row that ended without a report: how many,
+ * the last one's reason and start, and when the host paused the task for them
+ * (null if it hasn't). Host-written: counts, closed codes and instants, never
+ * agent text.
+ */
+export type StoredNoRecentUpdate = { inARow: number; reason: CheckInMiss; at: Date; autoPausedAt: Date | null };
 /** Below the hook bus. Owner identity is pinned independently from the editing actor. */
 export type StoredRoutine = RoutineDefinition & {
   agentId: string; routineId: string; revision: string; ownerUserId: string;
@@ -16,6 +23,12 @@ export type StoredRoutine = RoutineDefinition & {
   lastStatus: FireStatus | null; lastError: string | null; lastWarning: string | null;
   /** TASK-907. Null until the first report, and again after an edit that changes the routine's kind. */
   task: StoredTaskState | null;
+  /**
+   * TASK-930. Null when there are none: the latest check-in reported, or none
+   * has finished, and again after a person's Resume or a kind change. Written
+   * only by `finishDispatch` and `updateAuthored`.
+   */
+  noRecentUpdate: StoredNoRecentUpdate | null;
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
@@ -31,9 +44,21 @@ export interface RoutinesConfig {
 export type AcceptedDispatch = {
   dispatchId: string; reqId: string; row: StoredRoutine; source: FireSource; acceptedAt: Date;
 };
+/**
+ * TASK-930. Why an `error` run left no report, set by the code that recorded it,
+ * which knows (never parsed from the error's text). Absent: `failed`. A run
+ * that didn't end in an error left no report because it didn't send one
+ * (`no-report`), and only the store says so.
+ */
+export type DispatchMiss = Exclude<CheckInMiss, 'no-report'>;
 export type DispatchOutcome = {
   status: FireStatus; conversationId: string | null; error: string | null;
   renderedPrompt: string | null; warning: string | null;
+  /**
+   * TASK-930. Read only for a task's `error` run that left no report. `| undefined`
+   * because `DispatchOutcomeSchema`'s parse (as `getDispatchOutcome` returns it) says so.
+   */
+  miss?: DispatchMiss | undefined;
 };
 /** TASK-907. One run's report: kept on its dispatch, then on its fire row. The notes stay on the task. */
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
