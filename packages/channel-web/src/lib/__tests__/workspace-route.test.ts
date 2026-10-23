@@ -53,6 +53,26 @@ describe('parseWorkspaceRoute', () => {
     });
   });
 
+  it('reads a check-in’s path', () => {
+    const checkin = { kind: 'task-checkin', agentId: 'a1', routineId: 't1', conversationId: 'c1' };
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/checkins/c1')).toEqual(checkin);
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/checkins/c1/extra')).toEqual(checkin);
+    expect(parseWorkspaceRoute('/workspace/tasks/a%2F1/t%201/checkins/c%201')).toEqual({
+      kind: 'task-checkin',
+      agentId: 'a/1',
+      routineId: 't 1',
+      conversationId: 'c 1',
+    });
+  });
+
+  it('falls back to its task for a check-in path it can’t read', () => {
+    const task = { kind: 'task', agentId: 'a1', routineId: 't1' };
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/checkins')).toEqual(task);
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/checkins/..')).toEqual(task);
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/checkins/%E0%A4%A')).toEqual(task);
+    expect(parseWorkspaceRoute('/workspace/tasks/a1/t1/other/c1')).toEqual(task);
+  });
+
   it('falls back to Tasks for a task path it can’t read', () => {
     expect(parseWorkspaceRoute('/workspace/tasks/a1')).toEqual({ kind: 'tasks' });
     expect(parseWorkspaceRoute('/workspace/tasks/a1/..')).toEqual({ kind: 'tasks' });
@@ -178,6 +198,17 @@ describe('workspaceRoutePath', () => {
     );
   });
 
+  it('writes a check-in’s path', () => {
+    expect(
+      workspaceRoutePath({
+        kind: 'task-checkin',
+        agentId: 'a/1',
+        routineId: 't 1',
+        conversationId: 'c 1',
+      }),
+    ).toBe('/workspace/tasks/a%2F1/t%201/checkins/c%201');
+  });
+
   it('omits the chat tab, so an agent has one short shareable URL', () => {
     expect(workspaceRoutePath({ kind: 'agent', id: 'a1', tab: 'chat' })).toBe(
       '/workspace/agents/a1',
@@ -202,6 +233,7 @@ describe('the two halves agree', () => {
     { kind: 'today' },
     { kind: 'tasks' },
     { kind: 'task', agentId: 'a/1', routineId: 't 1' },
+    { kind: 'task-checkin', agentId: 'a/1', routineId: 't 1', conversationId: 'c/1' },
     { kind: 'activity' },
     { kind: 'agent', id: 'a1', tab: 'chat' },
     { kind: 'agent', id: 'a1', tab: 'activity' },
@@ -286,5 +318,8 @@ describe('agent settings (TASK-888)', () => {
     expect(routeAgentId({ kind: 'activity' })).toBeNull();
     expect(routeAgentId({ kind: 'tasks' })).toBeNull();
     expect(routeAgentId({ kind: 'task', agentId: 'a1', routineId: 't1' })).toBeNull();
+    expect(
+      routeAgentId({ kind: 'task-checkin', agentId: 'a1', routineId: 't1', conversationId: 'c1' }),
+    ).toBeNull();
   });
 });

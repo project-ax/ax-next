@@ -205,13 +205,15 @@ check-in now.
 
 - **See what it did** opens that check-in's transcript, read-only. That link is
   how people come to trust an update: they can read the actual tool calls.
-  Today's agent URL carries no conversation id, and a check-in that is the
-  agent's latest chat would open live with a composer, so this needs a
-  task-scoped, read-only transcript view.
+  A check-in's conversation is hidden, so the agent view never lists it, and
+  the agent URL carries no conversation id, so this needs a task-scoped,
+  read-only transcript view.
 - **Replies are how you steer.** There is no separate "redirect" concept.
   Every later check-in sees what you wrote. To change the task itself (the
   brief, the schedule), use ⋯ › Edit.
 - Quiet check-ins fold into one line, so the thread only shows change.
+
+> PR 1 (TASK-911): See what it did opens `/workspace/tasks/<agentId>/<routineId>/checkins/<conversationId>`, for the task's owner, for any of its newest 200 check-ins. It says when and why the check-in ran and the report it ended with. Then come what the agent said, each tool it ran as one line (the tool, what it ran on, and whether it worked, failed or is waiting), its approval cards and any failure. Not shown: the check-in message the host sent the agent, which would read as the person's own words, and each tool's full input and output, which the workspace has never shown.
 
 ### 3.4 The task page: "Get something done"
 
@@ -942,3 +944,5 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-22 | Decided | "Stay on top" tasks show a number trend: an optional number in each report, labelled as the agent's reading, never a computed measure. Lands in PR 3 (§14 Q5). |
 | 2026-10-22 | Decided | Each task gets its own webhook address token, so replacing a leaked address changes only that task's URL. Lands in PR 5 (§14 Q6). |
 | 2026-10-22 | Decided | Activity is removed in PR 4 (§3.7): the page, the agent's tab, and Today's "Everything they did" link and done-today count, once a failed approval is confirmed to show in its chat (§14 Q9). |
+| 2026-10-22 | Decided | A check-in’s transcript opens read-only from its task’s page, only for the task’s owner and only for one of its newest 200 check-ins; anything else is a 404. Nothing on the page can send into, stop or continue the check-in, and an approval in it is answered as on Today (TASK-911). |
+| 2026-10-22 | Decided | The transcript shows what the agent said and did as the agent view draws it: each tool as one line, never its full input or output, and not the host-written check-in message (TASK-911). |

@@ -8,6 +8,7 @@
  * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
  * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
  * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the agent's notes on that task (TASK-910)
+ * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
  * GET  /api/workspace/agents/:agentId/files/*
@@ -57,12 +58,16 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's two routes, `/tasks/:agentId/:routineId` and its
- *     `/notes` (TASK-910), which reach the agent's tasks rather than its
- *     files. The order on each is: `authOr401` → empty-id 400 →
- *     `resolveAgentOr404` → (path validation) → read. Nothing reads before
- *     the resolve. The task page then shows only the caller's own task
- *     (`isOwnTask`), and reads no run history before deciding that.
+ *     the task page's three routes, `/tasks/:agentId/:routineId`, its
+ *     `/notes` (TASK-910) and its `/checkins/:conversationId` (TASK-911),
+ *     which reach the agent's tasks rather than its files. The order on each
+ *     is: `authOr401` → empty-id 400 → `resolveAgentOr404` → (path
+ *     validation) → read. Nothing reads before the resolve. The task page
+ *     then shows only the caller's own task (`isOwnTask`), and reads no run
+ *     history before deciding that. A check-in's transcript (TASK-911) must
+ *     also be one of that task's newest 200 check-ins before its
+ *     conversation is read, and `conversations:get` checks again that it is
+ *     the caller's own.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -124,6 +129,7 @@
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS,
   ROUTINE_DEFINITION_MAX_BYTES,
+  ROUTINE_HISTORY_MAX_LIMIT,
   ROUTINE_NAME_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
@@ -176,6 +182,7 @@ import type {
   PastConversation,
   PermissionRow,
   RailActivity,
+  TaskCheckin,
   TaskDetail,
   TaskRow,
   TasksResponse,
@@ -733,7 +740,10 @@ type TaskDetailView = Pick<
   | 'goodWhen'
   | 'task'
 >;
-type TaskFireView = Pick<RoutineFireView, 'firedAt' | 'status' | 'error' | 'report'>;
+type TaskFireView = Pick<
+  RoutineFireView,
+  'firedAt' | 'status' | 'error' | 'report' | 'conversationId' | 'triggerSource'
+>;
 interface TaskKeyInput {
   agentId: string;
   routineId: string;
@@ -3389,8 +3399,9 @@ function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | nul
  *
  * Built field by field, never spread from the view, so nothing rides along
  * that the page doesn't draw (TASK-909 decisions row 5's rule): no
- * `manageSecret`, and of each check-in no `triggerSource`, `conversationId`,
- * `ask`, `renderedPrompt` or `warning` (decisions row 10).
+ * `manageSecret`, and of each check-in no `triggerSource`, `ask`,
+ * `renderedPrompt` or `warning` (TASK-910 decisions row 10); its
+ * `conversationId` crosses for See what it did (TASK-911).
  *
  * Everything the agent wrote is fenced HERE, at the boundary: the update and
  * the ask to one line at the report writer's own caps, because stored text
@@ -3461,6 +3472,36 @@ function toTaskUpdate(fire: TaskFireView): TaskUpdate {
             status: fire.report.status,
             update: fenceLine(fire.report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
           },
+    // An opaque id the host minted, never text an agent wrote (TASK-911).
+    conversationId: fire.conversationId,
+  };
+}
+
+/**
+ * One check-in → its own read-only page (TASK-911): the task's name, the
+ * check-in, what started it, and its transcript.
+ *
+ * Built field by field, never spread. `checkIn` is `toTaskUpdate`'s, so its
+ * fencing can't differ from the Updates entry that linked here.
+ * `triggerSource` crosses here and nowhere else, because no Updates entry
+ * draws it (TASK-911 decisions row 11). The name is fenced as the task page
+ * fences it, and `agentName` is the roster's string as-is. `thread` arrives
+ * already projected by `buildThread`, the agent view's builder.
+ */
+function toTaskCheckin(
+  agent: { displayName: string },
+  view: TaskDetailView,
+  fire: TaskFireView,
+  thread: ThreadMessage[],
+  status: WorkspaceReadStatus,
+): TaskCheckin {
+  return {
+    taskName: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
+    agentName: agent.displayName,
+    checkIn: toTaskUpdate(fire),
+    triggerSource: fire.triggerSource,
+    thread,
+    decisions: { status },
   };
 }
 
@@ -4330,6 +4371,48 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  /**
+   * The order one task's routes share (TASK-910 decisions row 11; TASK-911
+   * row 2): without @ax/routines' reads, 404; `resolveAgentOr404`;
+   * `routines:get` as the caller, where a refusal (`isTaskRefusal`) is a 404
+   * and any other throw propagates; a repeat routine or someone else's task
+   * (`!isOwnTask`) is a 404. Writes the 404 and answers null. Reads no run
+   * history.
+   *
+   * Every 404 written here is `task-not-found`, the missing-service one
+   * included, except `resolveAgentOr404`'s own `agent-not-found`. It is the
+   * answer an id nobody has gets, so a stranger can't learn that a task
+   * exists. The task page and a check-in's page both go through it, so the
+   * two can't drift about whose task is whose.
+   */
+  async function ownTaskOr404(
+    userId: string,
+    key: TaskKeyInput,
+    res: RouteResponse,
+  ): Promise<{ agent: AgentsResolveOutput['agent']; view: TaskDetailView; ctx: AgentContext } | null> {
+    if (!bus.hasService('routines:get') || !bus.hasService('routines:recent-fires')) {
+      res.status(404).json({ error: 'task-not-found' });
+      return null;
+    }
+    const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
+    if (agent === null) return null;
+
+    const ctx = agentWorkspaceCtx(key.agentId, userId);
+    let view: TaskDetailView;
+    try {
+      view = await bus.call<TaskKeyInput, TaskDetailView>('routines:get', ctx, key);
+    } catch (err) {
+      if (!isTaskRefusal(err)) throw err;
+      res.status(404).json({ error: 'task-not-found' });
+      return null;
+    }
+    if (view.kind === 'repeat' || !isOwnTask(view)) {
+      res.status(404).json({ error: 'task-not-found' });
+      return null;
+    }
+    return { agent, view, ctx };
   }
 
   /**
@@ -6900,11 +6983,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * The house order for a per-agent read, then the page's own rule
      * (decisions row 11): `authOr401` → ids (400) → `resolveAgentOr404` →
      * `routines:get` as the caller → the caller's own task (`isOwnTask`, the
-     * Tasks page's rule, reused) → only then `routines:recent-fires`. No run
-     * history is read before the ownership decision. A repeat routine,
-     * someone else's task, a routine that isn't there and an agent the caller
-     * can't reach all answer 404, never 403, so a stranger can't learn that an
-     * id exists. Without @ax/routines nobody has a task, so that is a 404 too.
+     * Tasks page's rule, reused) → only then `routines:recent-fires`. The
+     * steps up to the ownership decision are `ownTaskOr404`, which a
+     * check-in's page shares (TASK-911). No run history is read before the
+     * ownership decision. A repeat routine, someone else's task, a routine
+     * that isn't there and an agent the caller can't reach all answer 404,
+     * never 403, so a stranger can't learn that an id exists. Without
+     * @ax/routines nobody has a task, so that is a 404 too.
      *
      * Any other failure fails the request, a failed history read included:
      * "we don't know" must not render as "no updates yet" (design H7), so the
@@ -6915,32 +7000,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (userId === null) return;
       const key = taskKeyOr400(req, res);
       if (key === null) return;
-      if (!bus.hasService('routines:get') || !bus.hasService('routines:recent-fires')) {
-        res.status(404).json({ error: 'task-not-found' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
-      if (agent === null) return;
-
-      const ctx = agentWorkspaceCtx(key.agentId, userId);
-      let view: TaskDetailView;
-      try {
-        view = await bus.call<TaskKeyInput, TaskDetailView>('routines:get', ctx, key);
-      } catch (err) {
-        if (!isTaskRefusal(err)) throw err;
-        res.status(404).json({ error: 'task-not-found' });
-        return;
-      }
-      if (view.kind === 'repeat' || !isOwnTask(view)) {
-        res.status(404).json({ error: 'task-not-found' });
-        return;
-      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
       const { fires } = await bus.call<TaskFiresInput, TaskFiresOutput>(
         'routines:recent-fires',
-        ctx,
+        own.ctx,
         { ...key, limit: TASK_UPDATES_LIMIT },
       );
-      res.status(200).json(toTaskDetail(agent, view, fires));
+      res.status(200).json(toTaskDetail(own.agent, own.view, fires));
     },
 
     /**
@@ -6978,6 +7045,100 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       res.status(200).json({ cleared: true } satisfies TaskClearNotesOutput);
+    },
+
+    /**
+     * GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId —
+     * one check-in's transcript, read-only, for its task's owner only
+     * (TASK-911, decisions rows 2, 3, 5, 6 and 9).
+     *
+     * `authOr401` → ids (400) → `ownTaskOr404`, the task page's own order →
+     * the task's newest 200 check-ins (`routines:recent-fires` as the caller)
+     * → the conversation must be one of them, or 404 and it is never read →
+     * `conversations:get` as the caller, the agent panel's read, where a
+     * refusal is a 404 → its agent and owner checked again → 200. So an
+     * address naming the caller's own chat with this agent, or another task's
+     * check-in, reads nothing. Every check-in-level miss answers the same
+     * `checkin-not-found`, whether or not the conversation exists.
+     *
+     * The transcript is built the way the agent panel builds a past
+     * conversation (`buildThread`, then the in-thread approval pointers), not
+     * through the chat route, which answers raw turns without the failure
+     * rows (decisions row 3). Any other failure fails the request: "we don't
+     * know" must not render as "there's nothing here" (design H7).
+     */
+    async taskCheckin(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      const conversationId = (req.params.conversationId ?? '').trim();
+      if (conversationId.length === 0) {
+        res.status(400).json({ error: 'missing-checkin-id' });
+        return;
+      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
+
+      const { fires } = await bus.call<TaskFiresInput, TaskFiresOutput>(
+        'routines:recent-fires',
+        own.ctx,
+        { ...key, limit: ROUTINE_HISTORY_MAX_LIMIT },
+      );
+      // Exactly one of these check-ins must own the conversation. Runs from
+      // before the routine became a task may share one (a `conversation:
+      // 'shared'` repeat), and no single run's report describes that
+      // transcript.
+      const matches = fires.filter((f) => f.conversationId === conversationId);
+      const fire = matches.length === 1 ? matches[0] : undefined;
+      if (fire === undefined) {
+        res.status(404).json({ error: 'checkin-not-found' });
+        return;
+      }
+
+      let got: ConversationsGetOutput;
+      try {
+        got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+          'conversations:get',
+          initCtx,
+          { conversationId, userId },
+        );
+      } catch (err) {
+        // Only the two ACL verdicts are a 404 (`isBenignConversationRead`), as
+        // on the agent panel's read. An outage fails the request.
+        if (!isBenignConversationRead(err)) throw err;
+        res.status(404).json({ error: 'checkin-not-found' });
+        return;
+      }
+      // conversations:get is the authority on ownership. If its answer
+      // disagrees with the task's, refuse rather than show one agent's or one
+      // person's transcript under another's.
+      if (got.conversation.agentId !== key.agentId || got.conversation.userId !== userId) {
+        res.status(404).json({ error: 'checkin-not-found' });
+        return;
+      }
+
+      const connectors = await connectorNames(userId);
+      // Read before the thread is shaped, as the agent panel does (TASK-517):
+      // the same open decisions say which held steps are still waiting.
+      const approvals = await approvalMessages(userId, key.agentId, conversationId);
+      /*
+        No user-role rows (decisions row 5). Every user turn in a check-in's
+        conversation is host-written: the check-in message (TASK-908), or the
+        prompt of a run from before the routine became a task. The agent view
+        draws a user turn as the person's own bubble, and the check-in message
+        quotes the agent's own notes and reports, so an instruction injected
+        there would read as if the person had said it.
+
+        And no `withMemoryUsed` (decisions row 6): routine runs record no
+        recall receipts, so it would add nothing, and the memory chip it adds
+        edits memory, which a read-only page has no business offering.
+      */
+      const thread = [
+        ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
+        ...approvals.messages,
+      ].filter((m) => m.kind !== 'user');
+      res.status(200).json(toTaskCheckin(own.agent, own.view, fire, thread, approvals.status));
     },
 
     /** GET /api/workspace/agents/:agentId */
@@ -9249,6 +9410,14 @@ export async function registerWorkspaceRoutes(
       method: 'DELETE',
       path: '/api/workspace/tasks/:agentId/:routineId/notes',
       handler: handlers.clearTaskNotes as unknown as RouteHandler,
+    },
+    {
+      // TASK-911 — one check-in's transcript, for the task's owner. The only
+      // route under /checkins, and it only reads: nothing here can send into,
+      // stop or continue a check-in.
+      method: 'GET',
+      path: '/api/workspace/tasks/:agentId/:routineId/checkins/:conversationId',
+      handler: handlers.taskCheckin as unknown as RouteHandler,
     },
     {
       method: 'GET',

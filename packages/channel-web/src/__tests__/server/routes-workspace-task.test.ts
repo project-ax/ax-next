@@ -118,7 +118,8 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
 
 /**
  * One check-in, as `routines:recent-fires` shows it. The fields the page never
- * draws carry markers no response may contain.
+ * draws carry markers no response may contain. Its conversation is drawn, as
+ * See what it did (TASK-911).
  */
 function fire(over: Partial<RoutineFireView> = {}): RoutineFireView {
   return {
@@ -341,12 +342,14 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
           status: 'ok',
           error: null,
           report: { status: 'needs-you', update: 'Two tickets have waited over an hour.' },
+          conversationId: 'CONVERSATION-ID',
         },
         {
           firedAt: '2026-10-22T13:57:00.000Z',
           status: 'error',
           error: 'The check-in ran out of time.',
           report: null,
+          conversationId: 'CONVERSATION-ID',
         },
       ],
     } satisfies TaskDetail);
@@ -356,13 +359,26 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     for (const marker of [
       'PROMPT-TEXT',
       'WARNING-TEXT',
-      'CONVERSATION-ID',
       'HISTORY-ASK',
       'manual',
       'manageSecret',
     ]) {
       expect(wire).not.toContain(marker);
     }
+  });
+
+  it('each update names its check-in’s conversation, and one that recorded none says so', async () => {
+    const { detail } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1' })],
+      fires: [
+        fire({ conversationId: 'c-2' }),
+        fire({ conversationId: null, status: 'error', error: 'boom' }),
+      ],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as TaskDetail;
+    expect(body.updates.map((u) => u.conversationId)).toEqual(['c-2', null]);
   });
 
   it('answers a task that hasn’t reported yet with no report and no updates', async () => {

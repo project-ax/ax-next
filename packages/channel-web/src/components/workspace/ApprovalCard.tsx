@@ -19,6 +19,18 @@
  * `decision-copy.ts` below still exists to keep this card and `DecisionRow`
  * saying the same thing about the same outcome.
  *
+ * IT ALSO DRAWS UNATTENDED ROWS (TASK-911). A task check-in's read-only
+ * transcript puts the queue's rows for that run here, and every one of them is
+ * `attendance: 'unattended'`: the run ended its turn rather than wait, so
+ * nothing is parked on this card and "I am holding here" would be false. For
+ * those the card says what the Today row says instead — where it was held,
+ * what it was checked against, when it expires, and "Nothing happens until you
+ * choose" — from the same `decision-copy.ts` functions. An attended card is
+ * unchanged. This is keyed on the row's attendance, not on `readOnly`: the
+ * live agent view can draw unattended rows too (a chat's hold reusing an open
+ * routine-raised row, or attendance that couldn't be told), and the same
+ * words are the true ones there.
+ *
  * THE THIRD RENDERER OF ONE ROW (the queue, this, and one day Slack). Every
  * sentence about an OUTCOME comes from `decision-copy.ts`, shared with
  * `DecisionRow`, and a test renders both from one fixture and compares what
@@ -47,10 +59,13 @@ import {
 } from '@/lib/consent-focus';
 import type { Decision } from '@/lib/workspace-api';
 import {
+  DECISION_NOTHING_YET,
   DECISION_STALE_ADVICE,
   DECISION_STALE_LEAD,
   alwaysAllowRoutinesLine,
   decisionOutcome,
+  decisionProvenance,
+  expiresSoonNote,
   undoSecondsLeft,
 } from './decision-copy';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
@@ -109,6 +124,9 @@ export function ApprovalCard({
   const now = useDecisionClock(d);
   const outcome = decisionOutcome(d, now);
   const stale = d.status === 'stale';
+  // Nobody is parked on an unattended card (TASK-911): see the header.
+  const unattended = d.attendance === 'unattended';
+  const expiry = unattended ? expiresSoonNote(d, now) : null;
   /*
     Focus follows whatever the card says back. THREE things can be that answer,
     and the third is the one that is easy to miss: approving a row whose
@@ -315,6 +333,18 @@ export function ApprovalCard({
           {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
           {d.request && <DecisionRequestBlock request={d.request} className="mt-3" />}
           {/*
+            An unattended row says what the Today row says about where it came
+            from, and when doing nothing runs out (TASK-911).
+          */}
+          {unattended && (
+            <p className="mt-3 text-[11.5px] text-muted-foreground">
+              {decisionProvenance(d, agentName)}
+            </p>
+          )}
+          {expiry !== null && (
+            <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
+          )}
+          {/*
             The row stayed open because the resolve did not land. Focus comes
             here for the same reason it goes to the receipt: the person pressed
             something, and this is the answer. Without it they are on `<body>`
@@ -363,7 +393,9 @@ export function ApprovalCard({
           <p className="sr-only">
             {busy
               ? 'Working on it…'
-              : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
+              : unattended
+                ? `${DECISION_NOTHING_YET}.`
+                : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
           </p>
         </CardContent>
       </Card>

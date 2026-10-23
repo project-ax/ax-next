@@ -37,7 +37,11 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
-import { ROUTINE_REPORT_STATUSES, RoutineStatusSchema } from '@ax/routines-contract';
+import {
+  ROUTINE_REPORT_STATUSES,
+  RoutineFireViewSchema,
+  RoutineStatusSchema,
+} from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
@@ -93,6 +97,7 @@ CounterRow,
   ThreadAttachment,
   ThreadMessage,
   UserFileEntry,
+  TaskCheckin,
   TaskDetail,
   TasksResponse,
   UserFilesAnswer,
@@ -470,7 +475,8 @@ function isTaskUpdate(v: unknown): boolean {
     isString(v.firedAt) &&
     RoutineStatusSchema.options.some((s) => s === v.status) &&
     isStringOrNull(v.error) &&
-    (v.report === null || isTaskUpdateReport(v.report))
+    (v.report === null || isTaskUpdateReport(v.report)) &&
+    isStringOrNull(v.conversationId)
   );
 }
 
@@ -509,9 +515,34 @@ function isTaskDetail(b: unknown): boolean {
   );
 }
 
+/**
+ * A check-in page's body (TASK-911). The page reads each of these during
+ * render, so a missing one would crash it instead of saying "couldn't load".
+ * The transcript gets no deeper check than a row's kind and id: the agent
+ * panel's own read trusts its rows the same way.
+ */
+function isTaskCheckin(b: unknown): boolean {
+  return (
+    isRecord(b) &&
+    isString(b.taskName) &&
+    isString(b.agentName) &&
+    isTaskUpdate(b.checkIn) &&
+    RoutineFireViewSchema.shape.triggerSource.options.some((s) => s === b.triggerSource) &&
+    Array.isArray(b.thread) &&
+    b.thread.every((row) => isRecord(row) && isString(row.kind) && isString(row.id)) &&
+    isRecord(b.decisions) &&
+    (['ok', 'unavailable', 'failed'] as unknown[]).includes(b.decisions.status)
+  );
+}
+
 /** A task's address under `/api/workspace`, each id encoded on its own. */
 function taskPath(agentId: string, routineId: string): string {
   return `/tasks/${encodeURIComponent(agentId)}/${encodeURIComponent(routineId)}`;
+}
+
+/** A check-in's address: its task's, then `/checkins/` and its conversation's id, each encoded. */
+function taskCheckinPath(agentId: string, routineId: string, conversationId: string): string {
+  return `${taskPath(agentId, routineId)}/checkins/${encodeURIComponent(conversationId)}`;
 }
 
 
@@ -942,6 +973,16 @@ export const workspaceApi = {
     const path = taskPath(agentId, routineId);
     const body = await req<unknown>(path);
     return checkedRead<TaskDetail>(path, body, isTaskDetail);
+  },
+
+  /**
+   * One check-in's read-only transcript (TASK-911). A 404 answers for a
+   * check-in that isn't there and for one that isn't the caller's, alike.
+   */
+  taskCheckin: async (agentId: string, routineId: string, conversationId: string) => {
+    const path = taskCheckinPath(agentId, routineId, conversationId);
+    const body = await req<unknown>(path);
+    return checkedRead<TaskCheckin>(path, body, isTaskCheckin);
   },
 
   /**

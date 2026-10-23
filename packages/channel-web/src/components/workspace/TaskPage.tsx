@@ -47,7 +47,16 @@
  * else the line that says why neither can. Only from `<body>` or those
  * buttons: someone who moved on meanwhile stays where they went.
  */
-import { useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  Fragment,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Breadcrumb,
@@ -65,6 +74,7 @@ import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { latestUpdateCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
@@ -490,7 +500,13 @@ function TaskBody({
           <AlertDescription>{notice.failed}</AlertDescription>
         </Alert>
       )}
-      <LatestUpdate detail={detail} now={now} />
+      <LatestUpdate
+        detail={detail}
+        now={now}
+        agentId={agentId}
+        routineId={routineId}
+        onNavigate={onNavigate}
+      />
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
         <h2 id={briefId} className="sr-only">
           About this task
@@ -521,7 +537,13 @@ function TaskBody({
           {`Change these in ${agentName}’s settings`}
         </a>
       </section>
-      <TaskUpdates updates={detail.updates} now={now} />
+      <TaskUpdates
+        updates={detail.updates}
+        now={now}
+        agentId={agentId}
+        routineId={routineId}
+        onNavigate={onNavigate}
+      />
     </>
   );
 }
@@ -557,9 +579,22 @@ function BriefRow({
  * and checks next, and what it asks. A task that has never reported says so,
  * and when it will first check in. Paused, it shows the last report it had.
  */
-function LatestUpdate({ detail, now }: { detail: TaskDetail; now: Date }) {
+function LatestUpdate({
+  detail,
+  now,
+  agentId,
+  routineId,
+  onNavigate,
+}: {
+  detail: TaskDetail;
+  now: Date;
+  agentId: string;
+  routineId: string;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
   const headingId = useId();
   const { task, enabled, agentName } = detail;
+  const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const next =
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
   return (
@@ -587,7 +622,25 @@ function LatestUpdate({ detail, now }: { detail: TaskDetail; now: Date }) {
               <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
                 {task.update === null || task.update === '' ? CANT_SHOW : task.update}
               </p>
-              <CheckedLine reportedAt={task.reportedAt} enabled={enabled} next={next} now={now} />
+              <CheckedLine
+                reportedAt={task.reportedAt}
+                enabled={enabled}
+                next={next}
+                now={now}
+                seeWhatItDid={
+                  fromCheckIn === null
+                    ? null
+                    : {
+                        route: {
+                          kind: 'task-checkin',
+                          agentId,
+                          routineId,
+                          conversationId: fromCheckIn,
+                        },
+                        onNavigate,
+                      }
+                }
+              />
               {task.ask !== null && (
                 <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
                   {`${agentName} asks: ${task.ask}`}
@@ -606,17 +659,41 @@ function CheckedLine({
   enabled,
   next,
   now,
+  seeWhatItDid,
 }: {
   reportedAt: string;
   enabled: boolean;
   next: string | null;
   now: Date;
+  /** The "See what it did" link's destination, or null when the card has none (TASK-911). */
+  seeWhatItDid: { route: WorkspaceRoute; onNavigate: (route: WorkspaceRoute) => void } | null;
 }) {
   const checked = checkInWhen(reportedAt, now);
   const parts = [
     checked === null ? null : `Checked ${checked}`,
     !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
-  ].filter((p): p is string => p !== null);
+    seeWhatItDid === null ? null : (
+      <a
+        key="see-what-it-did"
+        {...routeLinkProps(seeWhatItDid.route, seeWhatItDid.onNavigate)}
+        className={cn(
+          'rounded-sm text-[12px] text-muted-foreground underline underline-offset-2 hover:text-foreground',
+          RESOLUTION_FOCUS_RING,
+        )}
+      >
+        See what it did
+      </a>
+    ),
+  ].filter((p): p is string | ReactElement => p !== null);
   if (parts.length === 0) return null;
-  return <p className="text-[12px] text-muted-foreground">{parts.join(' · ')}</p>;
+  return (
+    <p className="text-[12px] text-muted-foreground">
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          {part}
+        </Fragment>
+      ))}
+    </p>
+  );
 }

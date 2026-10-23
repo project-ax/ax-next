@@ -44,7 +44,7 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
-import type { RoutineReportStatus } from '@ax/routines-contract';
+import type { RoutineFireView, RoutineReportStatus } from '@ax/routines-contract';
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -1358,6 +1358,8 @@ export interface TaskUpdate {
   error: string | null;
   /** What the agent reported at that check-in; `update` is agent-written and fenced. */
   report: { status: RoutineReportStatus; update: string | null } | null;
+  /** The check-in's own conversation, for See what it did (TASK-911). Null when the run recorded none. */
+  conversationId: string | null;
 }
 
 /** Everything a task's own page shows (TASK-910). */
@@ -1378,4 +1380,20 @@ export interface TaskDetail {
   task: TaskDetailReport | null;
   /** Newest first, at most 50. */
   updates: TaskUpdate[];
+}
+
+/** One check-in's read-only page (TASK-911): GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId. */
+export interface TaskCheckin {
+  /** The task's name, fenced to one line: the breadcrumb's middle crumb. */
+  taskName: string;
+  /** The agent's name, as the roster has it. */
+  agentName: string;
+  /** The check-in, built exactly as its Updates entry is. Its conversationId is the one asked for. */
+  checkIn: TaskUpdate;
+  /** What started it. 'manual' is Check now or the agent's own start, which can't be told apart (TASK-908). */
+  triggerSource: RoutineFireView['triggerSource'];
+  /** What the agent said and did, as the agent view draws it: no user-role rows, no thinking, no memory chips. */
+  thread: ThreadMessage[];
+  /** How the approval cards in `thread` were read, the agent view's field. */
+  decisions: { status: WorkspaceReadStatus };
 }

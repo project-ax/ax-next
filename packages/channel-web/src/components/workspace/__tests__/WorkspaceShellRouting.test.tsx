@@ -17,7 +17,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
 import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
-import type { TaskDetail } from '@/lib/workspace-types';
+import type { TaskCheckin, TaskDetail } from '@/lib/workspace-types';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
@@ -39,6 +39,7 @@ vi.mock('@/lib/workspace-api', async () => {
       decisions: vi.fn(),
       tasks: vi.fn(),
       task: vi.fn(),
+      taskCheckin: vi.fn(),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -70,6 +71,7 @@ const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const tasksMock = vi.mocked(workspaceApi.tasks);
 const taskMock = vi.mocked(workspaceApi.task);
+const taskCheckinMock = vi.mocked(workspaceApi.taskCheckin);
 const saveRulesMock = vi.mocked(workspaceApi.saveRules);
 
 const user = {
@@ -91,6 +93,22 @@ const TASK_DETAIL: TaskDetail = {
   brief: { promptBody: 'Keep the support queue empty.', goodWhen: null },
   task: null,
   updates: [],
+};
+
+/** Quill's one check-in, as its own page reads it. */
+const CHECKIN: TaskCheckin = {
+  taskName: 'Zero open support tickets',
+  agentName: 'Quill',
+  checkIn: {
+    firedAt: new Date(2026, 9, 22, 10, 2).toISOString(),
+    status: 'ok',
+    error: null,
+    report: { status: 'needs-you', update: '3 open.' },
+    conversationId: 'c1',
+  },
+  triggerSource: 'tick',
+  thread: [],
+  decisions: { status: 'ok' },
 };
 
 const AGENTS = [
@@ -138,6 +156,8 @@ beforeEach(() => {
   tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
   taskMock.mockReset();
   taskMock.mockResolvedValue(TASK_DETAIL);
+  taskCheckinMock.mockReset();
+  taskCheckinMock.mockResolvedValue(CHECKIN);
 });
 
 afterEach(clearViewport);
@@ -178,6 +198,46 @@ describe('landing on a URL', () => {
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
     expect(taskMock).toHaveBeenCalledWith('a1', 't1');
+  });
+
+  it('opens a check-in from its own URL, with Tasks active in the sidebar', async () => {
+    renderAt('/workspace/tasks/a1/t1/checkins/c1');
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /^Check-in/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
+    expect(taskCheckinMock).toHaveBeenCalledWith('a1', 't1', 'c1');
+  });
+
+  it('See what it did on a task opens that check-in at its own address', async () => {
+    taskMock.mockResolvedValue({
+      ...TASK_DETAIL,
+      updates: [
+        {
+          firedAt: new Date(2026, 9, 22, 10, 2).toISOString(),
+          status: 'ok',
+          error: null,
+          report: { status: 'needs-you', update: '3 open.' },
+          conversationId: 'c1',
+        },
+      ],
+    });
+    renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+
+    // The latest-update card can link too; the entry's link is the one with a
+    // time. jsdom reads the time's sr-only span as its own word, so the name
+    // comes out as "See what it did , 10:02 AM".
+    fireEvent.click(await screen.findByRole('link', { name: /^See what it did\s*,/ }));
+
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/workspace/tasks/a1/t1/checkins/c1'),
+    );
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /^Check-in/ }),
+    ).toBeTruthy();
+    expect(taskCheckinMock).toHaveBeenCalledWith('a1', 't1', 'c1');
   });
 
   it('a Tasks row leaves the task’s address behind', async () => {

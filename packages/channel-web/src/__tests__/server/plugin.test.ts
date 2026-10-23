@@ -778,12 +778,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'routines:get',
           degradation:
-            'the task page (GET /api/workspace/tasks/:agentId/:routineId) answers 404, because without @ax/routines there are no tasks',
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId) answer 404, because without @ax/routines there are no tasks',
         },
         {
           hook: 'routines:recent-fires',
           degradation:
-            'the task page answers 404, as it does without routines:get (both come from @ax/routines)',
+            'the task page and its check-ins answer 404, as they do without routines:get (both come from @ax/routines)',
         },
         {
           hook: 'routines:clear-notes',

@@ -41,6 +41,7 @@ const UPDATE: TaskUpdate = {
   status: 'ok',
   error: null,
   report: { status: 'needs-you', update: 'Two tickets need a refund decision' },
+  conversationId: 'c1',
 };
 
 const DETAIL: TaskDetail = {
@@ -55,8 +56,8 @@ const DETAIL: TaskDetail = {
   task: REPORT,
   updates: [
     UPDATE,
-    { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null },
-    { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null } },
+    { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
+    { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null }, conversationId: 'c3' },
   ],
 };
 
@@ -121,6 +122,8 @@ describe('workspaceApi.task (TASK-910)', () => {
     ['an update without when it started', { ...DETAIL, updates: [{ ...UPDATE, firedAt: undefined }] }],
     ['an update whose reason is left out', { ...DETAIL, updates: [{ ...UPDATE, error: undefined }] }],
     ['an update left without a report', { ...DETAIL, updates: [{ ...UPDATE, report: undefined }] }],
+    ['an update whose conversation isn’t an id', { ...DETAIL, updates: [{ ...UPDATE, conversationId: 42 }] }],
+    ['an update whose conversation is left out', { ...DETAIL, updates: [{ ...UPDATE, conversationId: undefined }] }],
     [
       'an update whose report has a status it doesn’t know',
       { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'stuck', update: null } }] },
