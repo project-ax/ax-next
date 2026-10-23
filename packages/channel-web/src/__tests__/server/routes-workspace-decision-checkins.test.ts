@@ -2,20 +2,20 @@
 /**
  * Today names the task an approval was held in (TASK-932).
  *
- * An unattended row held during one of the caller's own task check-ins carries
- * `checkIn: { routineId, taskName }`, and it does so on every path that answers
- * a row: the list, the single read, and the approve, dismiss and undo answers.
- * `useDecisionQueue` swaps in whatever row comes back, so a path without the
- * label would drop it. The routes ask `routines:tasks-for-conversations` once
- * per agent, as the caller, after the ACL, about unattended rows only, and in
+ * An OPEN, unattended row held during one of the caller's own task check-ins
+ * carries `checkIn: { routineId, taskName }`: on the list, and on the single
+ * read or an answer that leaves the row open (the undo answer). A resolved
+ * row's answers (approve, dismiss, the undo poll's re-reads) carry null and ask
+ * routines nothing (TASK-933): `useDecisionQueue` keeps the label the row
+ * already had. The routes ask `routines:tasks-for-conversations` once per
+ * agent, as the caller, after the ACL, about open, unattended rows only, and in
  * batches of at most `ROUTINE_CHECKIN_LOOKUP_MAX_IDS`. The task name is fenced
  * to one line.
  *
  * It is a label, never an authorization. When the lookup fails, is absent or
  * is slow, the row carries `checkIn: null` and the queue answers anyway. The
- * list waits at most `DECISION_CHECKINS_LIST_DEADLINE_MS`, and one row (the
- * single read and the three answers) at most `DECISION_CHECKIN_ROW_DEADLINE_MS`.
- * Approving is unchanged.
+ * list waits at most `DECISION_CHECKINS_LIST_DEADLINE_MS`, and one row at most
+ * `DECISION_CHECKIN_ROW_DEADLINE_MS`. Approving is unchanged.
  *
  * `routines:tasks-for-conversations` here is a stub. It answers only for its
  * caller's own check-ins (the service's rule), checks its input with the
@@ -565,7 +565,8 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
         hang: new Map([['a1', deferred()]]),
       });
       let done = false;
-      const pending = run('approveDecision', { decisionId: 'd1' }).then((c) => {
+      // The undo answer reopens the row, so it asks (TASK-933: a resolved row's answers never wait).
+      const pending = run('undoDecision', { decisionId: 'd1' }).then((c) => {
         done = true;
         return c;
       });
@@ -575,7 +576,7 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
       expect(done).toBe(true);
       const captured = await pending;
       expect(captured.statusCode).toBe(200);
-      expect(decisionOf(captured).status).toBe('executed');
+      expect(decisionOf(captured).status).toBe('pending');
       expect(decisionOf(captured).checkIn).toBeNull();
       expect(warn).toHaveBeenCalledWith('workspace_decision_tasks_failed', {
         agentId: 'a1',
@@ -614,7 +615,7 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
     }
   });
 
-  it('the single read and the approve, dismiss and undo answers carry the same checkIn', async () => {
+  it("an open row's single read and the undo answer carry its checkIn; a resolved row's answers carry none and ask routines nothing (TASK-933)", async () => {
     const { run, lookups } = setup({
       rows: [
         row({ id: 'd1', conversationId: 'c-checkin', attendance: 'unattended' }),
@@ -624,15 +625,27 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
     });
     expect(checkInsById(await run('decisions'))).toStrictEqual({ d1: SUPPORT, 'd-chat': null });
 
-    for (const route of ['decision', 'approveDecision', 'dismissDecision', 'undoDecision'] as const) {
+    // d1 is pending, and the undo answer reopens it: both answer an open row.
+    for (const route of ['decision', 'undoDecision'] as const) {
       lookups.length = 0;
       const captured = await run(route, { decisionId: 'd1' });
       expect(captured.statusCode, route).toBe(200);
+      expect(decisionOf(captured).status, route).toBe('pending');
       expect(decisionOf(captured).checkIn, route).toStrictEqual(SUPPORT);
       // Labelled by the list's own rule: asked once, as the caller, about this row's conversation.
       expect(lookups, route).toStrictEqual([
         { userId: 'alice', agentId: 'a1', input: { agentId: 'a1', conversationIds: ['c-checkin'] } },
       ]);
+    }
+
+    // The approve and dismiss answers resolve it. A receipt needs no label (the queue keeps the one it had).
+    for (const [route, status] of [['approveDecision', 'executed'], ['dismissDecision', 'dismissed']] as const) {
+      lookups.length = 0;
+      const captured = await run(route, { decisionId: 'd1' });
+      expect(captured.statusCode, route).toBe(200);
+      expect(decisionOf(captured).status, route).toBe(status);
+      expect(decisionOf(captured).checkIn, route).toBeNull();
+      expect(lookups, route).toStrictEqual([]);
     }
 
     lookups.length = 0;
@@ -642,14 +655,44 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
     expect(lookups).toStrictEqual([]);
   });
 
+  it("the undo poll's read of a resolved row asks routines nothing (TASK-933)", async () => {
+    // Its own setup: the `decisions:list` stub answers every stored row, resolved or not.
+    const { run, lookups } = setup({
+      rows: [
+        row({
+          id: 'd-done',
+          conversationId: 'c-checkin',
+          attendance: 'unattended',
+          status: 'executed',
+          resolvedAt: RESOLVED_AT,
+        }),
+      ],
+      checkIns: { a1: { 'c-checkin': SUPPORT_TASK } },
+    });
+    const captured = await run('decision', { decisionId: 'd-done' });
+    expect(captured.statusCode).toBe(200);
+    expect(decisionOf(captured).status).toBe('executed');
+    expect(decisionOf(captured).checkIn).toBeNull();
+    expect(lookups).toStrictEqual([]);
+  });
+
   it('an answer whose lookup fails still answers, with checkIn null', async () => {
     const warn = vi.spyOn(initCtx.logger, 'warn');
     try {
-      const { run, approveCalls } = setup({
+      const { run, approveCalls, lookups } = setup({
         rows: [row({ id: 'd1', conversationId: 'c-checkin', attendance: 'unattended' })],
         checkIns: { a1: { 'c-checkin': SUPPORT_TASK } },
         failures: new Map([['a1', new Error('connection terminated unexpectedly')]]),
       });
+      // The undo answer reopens the row, so it asks; the failure costs only the label.
+      const undone = await run('undoDecision', { decisionId: 'd1' });
+      expect(undone.statusCode).toBe(200);
+      expect(decisionOf(undone).status).toBe('pending');
+      expect(decisionOf(undone).checkIn).toBeNull();
+      expect(lookups).toHaveLength(1);
+
+      // The stub records a lookup before it honours the failure, so start the count again.
+      lookups.length = 0;
       const captured = await run('approveDecision', { decisionId: 'd1' });
       expect(captured.statusCode).toBe(200);
       expect(decisionOf(captured).status).toBe('executed');
@@ -658,17 +701,27 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
       expect(approveCalls).toStrictEqual([
         { decisionId: 'd1', userId: 'alice', continuationReqId: expect.any(String) },
       ]);
+      // A resolved row's answer asks nothing (TASK-933), so a failing routines read can't slow it.
+      expect(lookups).toStrictEqual([]);
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('toWireDecision names the task only on an unattended row', () => {
+  it('toWireDecision names the task only on an open, unattended row', () => {
     const unattended = stored(row({ id: 'd1', conversationId: 'c-checkin', attendance: 'unattended' }));
     const attended = stored(row({ id: 'd2', conversationId: 'c-checkin', attendance: 'attended' }));
+    const resolved = stored(
+      row({ id: 'd3', conversationId: 'c-checkin', attendance: 'unattended', status: 'executed', resolvedAt: RESOLVED_AT }),
+    );
+    // Stale is still a question (the freshness guard reopened it), so it keeps its label.
+    const stale = stored(row({ id: 'd4', conversationId: 'c-checkin', attendance: 'unattended', status: 'stale' }));
     const source = { routineId: 't1', name: 'Zero open support tickets' };
     expect(toWireDecision(unattended, false, source).checkIn).toStrictEqual(SUPPORT);
     expect(toWireDecision(attended, false, source).checkIn).toBeNull();
     expect(toWireDecision(unattended).checkIn).toBeNull();
+    // A receipt carries no label, even when handed one (TASK-933).
+    expect(toWireDecision(resolved, false, source).checkIn).toBeNull();
+    expect(toWireDecision(stale, false, source).checkIn).toStrictEqual(SUPPORT);
   });
 });

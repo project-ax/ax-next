@@ -102,10 +102,11 @@
  *     `/decisions/:decisionId` and its approve/dismiss/undo siblings DO 404,
  *     through `loadOwnedDecision`. Both then ask
  *     `routines:tasks-for-conversations` (TASK-932), as the caller and only
- *     about rows already past those checks, which of their unattended rows
- *     were held in one of the caller's own task check-ins. The answer is a
- *     label (`checkIn`): nothing authorizes on it, and approve, dismiss and
- *     undo go through `@ax/decisions` exactly as before.
+ *     about rows already past those checks, which of their open, unattended
+ *     rows were held in one of the caller's own task check-ins. The answer is
+ *     a label (`checkIn`): nothing authorizes on it, and approve, dismiss and
+ *     undo go through `@ax/decisions` exactly as before. A resolved row
+ *     carries no label (TASK-933): the queue keeps the one it had.
  *
  *     Spelled out because the blanket claim this comment used to make —
  *     "every per-agent read is gated by `agents:resolve`" — was not true, and
@@ -2502,11 +2503,13 @@ export const DECISION_TASK_CHECKS_IN_MAX_CHARS = 200;
  */
 export const DECISION_CHECKINS_LIST_DEADLINE_MS = 5_000;
 /**
- * TASK-932 — the same wait for one row: the single read and the approve,
- * dismiss and undo answers. Those sit on the undo window's path. An answer's
- * Undo counts down `UNDO_WINDOW_MS` (10 s) from the server's `resolvedAt`, and
- * the once-a-second poll re-read is what takes Undo away once the call has gone
- * out. So a slow label may cost them at most a second.
+ * TASK-932 — the same wait for one row. Since TASK-933 only an open row asks
+ * (`carriesCheckIn`): a single read of one, and an answer that leaves its row
+ * open (the undo answer, or an approve the freshness guard turned stale).
+ * Someone just clicked for those answers, so a slow label may cost them at most
+ * a second. A resolved row asks nothing, so the approve and dismiss answers that
+ * resolve a row, and the undo poll's once-a-second re-reads of a receipt, never
+ * wait on routines.
  */
 export const DECISION_CHECKIN_ROW_DEADLINE_MS = 1_000;
 /** TASK-932 — a check-in as `routines:tasks-for-conversations` names it, before `toWireDecision` fences it. */
@@ -2515,6 +2518,16 @@ type CheckInSource = Pick<RoutineCheckInView, 'routineId' | 'name'>;
 type CheckInLabels = Map<string, Map<string, CheckInSource>>;
 function checkInOf(labels: CheckInLabels, d: StoredDecision): CheckInSource | null {
   return labels.get(d.agentId)?.get(d.conversationId) ?? null;
+}
+/**
+ * TASK-933 — only an OPEN, unattended row can carry its check-in label. One rule
+ * for `checkInsFor` (don't ask) and `toWireDecision` (don't carry). A check-in's
+ * conversation has origin `routine`, so its holds are unattended; and a receipt
+ * needs no label, the same way `request` and `task` are null on receipts (the
+ * queue keeps the label the row had).
+ */
+function carriesCheckIn(stored: Pick<StoredDecision, 'attendance' | 'status'>): boolean {
+  return stored.attendance === 'unattended' && isOpenDecision(stored);
 }
 
 /**
@@ -2835,10 +2848,10 @@ export function toWireDecision(stored: StoredDecision, eligible = false, checkIn
     // The same rules, for a proposed brief's own fields — see `wireTask`.
     task: wireTask(stored),
     // TASK-932. The task check-in it was held in, or null: a label, never an authorization. Only an
-    // unattended row can be one (a check-in's conversation has origin `routine`), so an answer for
-    // any other row is dropped here. `routineId` is an opaque host id; the name is the task's, fenced.
+    // open, unattended row carries one (`carriesCheckIn`, TASK-933), so an answer for any other row
+    // is dropped here. `routineId` is an opaque host id; the name is the task's, fenced.
     checkIn:
-      stored.attendance === 'unattended' && checkIn !== null
+      carriesCheckIn(stored) && checkIn !== null
         ? { routineId: checkIn.routineId, taskName: fenceLine(checkIn.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task' }
         : null,
     primaryLabel:
@@ -5792,7 +5805,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
   }
 
-  /** TASK-932 — the check-in behind each unattended row, for rows already past their ACL. One call per agent, in parallel. */
+  /**
+   * TASK-932 — the check-in behind each open, unattended row, for rows already past their ACL. One call per
+   * agent, in parallel. Every row `carriesCheckIn` refuses is skipped (TASK-933): an attended row is never a
+   * check-in, and a resolved row's label would be dropped anyway, so it is never asked about.
+   */
   async function checkInsFor(
     rows: readonly StoredDecision[],
     userId: string,
@@ -5800,8 +5817,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   ): Promise<CheckInLabels> {
     const byAgent = new Map<string, Set<string>>();
     for (const d of rows) {
-      // A check-in's conversation has origin `routine`, so its holds are unattended. Attended rows are never asked about.
-      if (d.attendance !== 'unattended') continue;
+      if (!carriesCheckIn(d)) continue;
       const ids = byAgent.get(d.agentId) ?? new Set<string>();
       ids.add(d.conversationId);
       byAgent.set(d.agentId, ids);
@@ -5817,8 +5833,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
   /**
    * One row, labelled by the list's own rule but with the one-row deadline: the
-   * single read and the three answers (`useDecisionQueue` swaps in whatever row
-   * comes back).
+   * single read and the three answers. A resolved row's answer asks nothing
+   * (`carriesCheckIn`, TASK-933), so an approve or dismiss answer that resolves
+   * its row, a refused undo and the undo poll's reads of a receipt never wait on
+   * routines; `useDecisionQueue` keeps the label the row already had. An answer
+   * that leaves its row open is labelled: the undo answer reopens it, and an
+   * approve that tripped the freshness guard comes back `stale`.
    */
   async function projectOwnedDecision(stored: StoredDecision, userId: string): Promise<Decision> {
     return projectDecision(

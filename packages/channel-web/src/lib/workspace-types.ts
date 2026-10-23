@@ -252,8 +252,11 @@ export interface Decision {
    * WHICH TASK IT CAME FROM (TASK-932), or null. Non-null only on an unattended
    * row held during a check-in of a task the caller owns. Null for everything
    * else, and whenever the routines read is absent, fails or is slow: it is a
-   * label, so the queue never waits on it. Every path that answers a row carries
-   * it: the list, the single read and the approve, dismiss and undo answers. An
+   * label, so the queue never waits on it. Only an open row carries it: the list,
+   * and the single read of an open row or an answer that leaves it open (the undo
+   * answer, or an approve the freshness guard turned stale). A resolved row's
+   * answers carry null, and `useDecisionQueue` keeps the label the row already
+   * had (TASK-933). The client reads a malformed label as null (TASK-933). An
    * older server leaves it out, so read it as `d.checkIn ?? null`.
    */
   checkIn: DecisionCheckIn | null;
