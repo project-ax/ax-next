@@ -5,7 +5,7 @@ import { renderTemplate } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
 import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
-import { CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
+import { CHECK_IN_REPLIES, CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
 } from './skip-warning.js';
@@ -131,9 +131,10 @@ export interface FireDeps {
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
    * `Map#delete` returns true to exactly one of them. It also binds each
    * fire's conversation onto its dispatch row before the invoke (TASK-907),
-   * and reads a task's latest reports for its check-in message (TASK-908).
+   * and reads a task's latest reports (TASK-908) and the person's latest
+   * replies on it (TASK-931) for its check-in message.
    */
-  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports'>;
+  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies'>;
   purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
@@ -260,16 +261,19 @@ export function createFireRoutine(deps: FireDeps) {
     let prompt: string;
     if (isTaskRun(row)) {
       // TASK-908: a task run starts with its check-in message (why it runs,
-      // the agent's notes and its latest reports), never its instructions,
-      // which reach it as its brief instead. A failed read is recorded like
-      // any other setup failure, and the agent never starts. A task's trigger
-      // is never a webhook (validateDefinition), so it has no payload.
+      // the agent's notes and its latest reports, and the person's latest
+      // replies, TASK-931), never its instructions, which reach it as its
+      // brief instead. A failed read is recorded like any other setup
+      // failure, and the agent never starts. A task's trigger is never a
+      // webhook (validateDefinition), so it has no payload.
       let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
+      let replies: Awaited<ReturnType<RoutinesStore['recentReplies']>>;
       try {
         reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPORTS });
+        replies = await deps.store.recentReplies({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPLIES });
       } catch (err) { return fail(err); }
       prompt = renderCheckInMessage({
-        source, agentNotes: row.task?.agentNotes ?? null, reports, missesInARow: row.noRecentUpdate?.inARow ?? 0,
+        source, agentNotes: row.task?.agentNotes ?? null, reports, replies, missesInARow: row.noRecentUpdate?.inARow ?? 0,
       });
     } else {
       // Phase D: render whenever payload is provided, regardless of source.
@@ -278,7 +282,8 @@ export function createFireRoutine(deps: FireDeps) {
     }
     // TASK-908 decisions row 13: no run of a task keeps its check-in message,
     // whatever its outcome. Every member of a team agent can read a routine's
-    // run history, and the message carries the owner's notes and reports.
+    // run history, and the message carries the owner's notes, reports and
+    // replies (TASK-931).
     const renderedPrompt = isTaskRun(row) ? null : prompt;
 
     deps.pending.set(reqId, {
