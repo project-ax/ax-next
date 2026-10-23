@@ -18,7 +18,7 @@ import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { localTime } from '@/lib/workspace-time';
-import type { TaskDetail, TaskDetailReport } from '@/lib/workspace-types';
+import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate } from '@/lib/workspace-types';
 import { TaskPage } from '../TaskPage';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -860,6 +860,244 @@ describe('TaskPage (TASK-910)', () => {
     const updates = screen.getByRole('region', { name: 'Updates' });
     expect(
       within(updates).getByText('3 open. I’m answering #4411 and #4412 now.'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage: a missed check-in (TASK-930)', () => {
+  const MISSED = new Date(2026, 9, 22, 11, 2).toISOString();
+  const LAST_UPDATE = '3 open. I’m answering #4411 and #4412 now.';
+  const AUTO_PAUSED = 'Paused after 5 check-ins in a row didn’t leave an update.';
+
+  function missed(over: Partial<TaskNoRecentUpdate> = {}): TaskNoRecentUpdate {
+    return { inARow: 1, reason: 'no-report', at: MISSED, autoPaused: false, ...over };
+  }
+
+  function missedEntry(
+    over: Partial<TaskDetail['updates'][number]> = {},
+  ): TaskDetail['updates'][number] {
+    return { firedAt: MISSED, status: 'ok', error: null, report: null, conversationId: null, ...over };
+  }
+
+  it('a check-in that left no report leads with No recent update, the reason and the fix, then the last update, muted', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed() }));
+    await renderReady();
+    const latest = latestUpdate();
+    const text = latest.textContent ?? '';
+    const lastUpdate = `Last update at ${localTime(REPORTED)}: ${LAST_UPDATE}`;
+    const positions = [
+      'No recent update',
+      'It checked in but didn’t say how it went.',
+      'Press Check now to try again.',
+      `Last check-in at ${localTime(MISSED)} · Next check at ${localTime(NEXT)}`,
+      lastUpdate,
+    ].map((line) => {
+      expect(within(latest).getByText(line)).toBeInTheDocument();
+      return text.indexOf(line);
+    });
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    // The stale status and ask are not drawn as if they were current.
+    expect(within(latest).queryByText('Needs you')).toBeNull();
+    expect(within(latest).queryByText(/asks:/)).toBeNull();
+    expect(within(latest).getByText(lastUpdate)).toHaveClass('text-muted-foreground');
+  });
+
+  it('three in a row read Needs you with the count', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ inARow: 3 }) }));
+    await renderReady();
+    const latest = latestUpdate();
+    expect(within(latest).getByText('Needs you')).toBeInTheDocument();
+    expect(within(latest).queryByText('No recent update')).toBeNull();
+    expect(
+      within(latest).getByText(
+        'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('a task that never reported shows the miss without a last update', async () => {
+    taskMock.mockResolvedValue(detail({ task: null, updates: [], noRecentUpdate: missed() }));
+    await renderReady();
+    const latest = latestUpdate();
+    expect(within(latest).getByText('No recent update')).toBeInTheDocument();
+    expect(within(latest).queryByText(/Last update/)).toBeNull();
+  });
+
+  it('See what it did opens the check-in that missed, not a newer one', async () => {
+    const newer = new Date(2026, 9, 22, 11, 30).toISOString();
+    taskMock.mockResolvedValue(
+      detail({
+        noRecentUpdate: missed(),
+        updates: [
+          missedEntry({ firedAt: newer, conversationId: 'c-newer' }),
+          missedEntry({ conversationId: 'c-missed' }),
+        ],
+      }),
+    );
+    const { onNavigate } = await renderReady();
+    const link = within(latestUpdate()).getByRole('link', { name: 'See what it did' });
+    expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c-missed');
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: 'task-checkin',
+      agentId: 'a1',
+      routineId: 't1',
+      conversationId: 'c-missed',
+    });
+  });
+
+  it('no See what it did when the check-in that missed has no conversation', async () => {
+    taskMock.mockResolvedValue(
+      detail({ noRecentUpdate: missed(), updates: [missedEntry({ conversationId: null })] }),
+    );
+    await renderReady();
+    expect(within(latestUpdate()).queryByRole('link')).toBeNull();
+  });
+
+  it('a too-long brief points at the agent’s settings', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'brief-too-long' }) }));
+    const { onNavigate } = await renderReady();
+    const latest = latestUpdate();
+    expect(within(latest).getByText('Its instructions are too long to load.')).toBeInTheDocument();
+    expect(within(latest).getByText('Shorten “What to do” in Quill’s settings.')).toBeInTheDocument();
+    const link = within(latest).getByRole('link', { name: 'Open Quill’s settings' });
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: 'agent-settings',
+      id: 'a1',
+      section: 'routines',
+    });
+  });
+
+  it('only a too-long brief gets the settings link', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'failed' }) }));
+    await renderReady();
+    expect(within(latestUpdate()).queryByRole('link', { name: /settings/ })).toBeNull();
+  });
+
+  it('a paused task’s fix says to resume, never Check now', async () => {
+    taskMock.mockResolvedValue(
+      detail({ enabled: false, nextCheckAt: null, noRecentUpdate: missed() }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(
+      within(latest).getByText('Press Resume, and it’ll try again at its next check-in.'),
+    ).toBeInTheDocument();
+    expect(within(latest).queryByText(/Press Check now/)).toBeNull();
+    expect(within(latest).getByText(`Last check-in at ${localTime(MISSED)} · Paused`)).toBeInTheDocument();
+  });
+
+  it('an auto-paused task says why it’s paused and how to resume', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        enabled: false,
+        nextCheckAt: null,
+        noRecentUpdate: missed({ inARow: 5, autoPaused: true }),
+      }),
+    );
+    await renderReady();
+    const note = `${AUTO_PAUSED} Fix what’s below, then Resume.`;
+    expect(screen.getByText(note)).toBeInTheDocument();
+    expect(screen.queryByText(PAUSED_NOTE)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Check now' })).toHaveAccessibleDescription(note);
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled();
+    expect(
+      within(latestUpdate()).getByText(
+        'Its last 5 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('without edit, an auto-paused task says only someone who manages the tasks can resume it', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        enabled: false,
+        nextCheckAt: null,
+        permissions: { fire: true, stop: true, edit: false },
+        noRecentUpdate: missed({ inARow: 5, autoPaused: true }),
+      }),
+    );
+    await renderReady();
+    const note = `${AUTO_PAUSED} Only someone who manages this agent’s tasks can resume it.`;
+    expect(screen.getByText(note)).toBeInTheDocument();
+    const resume = screen.getByRole('button', { name: 'Resume' });
+    expect(resume).toBeDisabled();
+    expect(resume).toHaveAccessibleDescription(note);
+  });
+
+  it('a task a person paused after a miss keeps the ordinary paused note', async () => {
+    taskMock.mockResolvedValue(
+      detail({ enabled: false, nextCheckAt: null, noRecentUpdate: missed({ inARow: 2 }) }),
+    );
+    await renderReady();
+    expect(screen.getByText(PAUSED_NOTE)).toBeInTheDocument();
+  });
+
+  it('Resume on an auto-paused task sends enabled true and reads the task again', async () => {
+    taskMock
+      .mockResolvedValueOnce(
+        detail({
+          enabled: false,
+          revision: 'rev-9',
+          nextCheckAt: null,
+          noRecentUpdate: missed({ inARow: 5, autoPaused: true }),
+        }),
+      )
+      .mockResolvedValue(detail({ revision: 'rev-10' }));
+    updateMock.mockResolvedValue(ROUTINE);
+    await renderReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await screen.findByRole('button', { name: 'Pause' });
+    expect(updateMock).toHaveBeenCalledWith({
+      agentId: 'a1',
+      routineId: 't1',
+      expectedRevision: 'rev-9',
+      requestId: expect.any(String),
+      patch: { enabled: true },
+    });
+    expect(taskMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(AUTO_PAUSED, { exact: false })).toBeNull();
+    expect(within(latestUpdate()).queryByText('No recent update')).toBeNull();
+  });
+
+  it('a miss time it can’t read shows no time, never Invalid Date', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        noRecentUpdate: missed({ at: 'not a time' }),
+        task: report({ reportedAt: 'also not a time' }),
+      }),
+    );
+    await renderReady();
+    const latest = latestUpdate();
+    expect(latest.textContent).not.toContain('Invalid Date');
+    expect(within(latest).getByText(`Next check at ${localTime(NEXT)}`)).toBeInTheDocument();
+    expect(within(latest).getByText(`Last update: ${LAST_UPDATE}`)).toBeInTheDocument();
+  });
+
+  it('draws an agent-written last update as text', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        noRecentUpdate: missed(),
+        task: report({ update: '**bold** <img src=x onerror=alert(1)>' }),
+      }),
+    );
+    const { container } = await renderReady();
+    expect(container.querySelector('img')).toBeNull();
+    expect(
+      within(latestUpdate()).getByText(
+        `Last update at ${localTime(REPORTED)}: **bold** <img src=x onerror=alert(1)>`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('an unreadable last update says so', async () => {
+    taskMock.mockResolvedValue(detail({ noRecentUpdate: missed(), task: report({ update: null }) }));
+    await renderReady();
+    expect(
+      within(latestUpdate()).getByText(
+        `Last update at ${localTime(REPORTED)}: It left an update we can’t show.`,
+      ),
     ).toBeInTheDocument();
   });
 });
