@@ -72,7 +72,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     TASK-932 adds no hard call either: Today's queue, its single-row read
 //     and the approve, dismiss and undo answers name the task an approval was
 //     held in through the optional routines:tasks-for-conversations, and say
-//     "Held during an unattended run" without it.
+//     "Held during an unattended run" without it. Since TASK-933 only an open
+//     row is labelled, so a resolved row's answers and the undo poll's reads
+//     never call it.
 //     TASK-931 adds no hard call either: a task's owner replies through the
 //     optional routines:reply, answering 503 without it, and the task page
 //     reads their replies through the optional routines:recent-replies,

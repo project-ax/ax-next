@@ -369,6 +369,12 @@ describe('the checkIn label (TASK-932, TASK-933)', () => {
     },
   );
 
+  it('keeps only the two label fields, dropping anything extra the server sent (TASK-933)', async () => {
+    respondWith({ decisions: [{ ...ROW, checkIn: { ...GOOD, routineOperation: 'x', extra: 1 } }] });
+    const page = await workspaceApi.decisions();
+    expect(page.decisions[0]?.checkIn).toStrictEqual(GOOD);
+  });
+
   it('the approve, dismiss and undo answers read a malformed checkIn as null and keep a good one (TASK-933)', async () => {
     const calls = [
       () => workspaceApi.approveDecision('d1'),

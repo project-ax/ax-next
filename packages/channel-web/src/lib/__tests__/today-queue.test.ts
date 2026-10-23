@@ -142,6 +142,10 @@ describe('todayQueue', () => {
     const d3 = resolvedAgo('d3', 600_000, { checkIn: under('t1') });
     const out = todayQueue({ tasks, decisions: [d1, d2, d3], agents: AGENTS, now: NOW });
     expect(out.groups[0]?.decisions.map((d) => d.id)).toEqual(['d1', 'd2']);
+    // Queue order, not opens-then-receipts: a receipt ahead of an open row stays
+    // ahead, so a row that resolves keeps its place (and its focus) in the block.
+    const receiptFirst = todayQueue({ tasks, decisions: [d2, d1], agents: AGENTS, now: NOW });
+    expect(receiptFirst.groups[0]?.decisions.map((d) => d.id)).toEqual(['d2', 'd1']);
 
     const onlyOld = todayQueue({
       tasks: [],
