@@ -495,6 +495,17 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     }
   });
 
+  it("a late report keeps a newer miss whose fire row holds only part of a report (a hand edit): that's no report, as history reads it", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const older = await checkIn(row, 'older', { at: minute(1), report: onTrack });
+    const newer = await checkIn(row, 'newer', { at: minute(2) });
+    await finish(newer.dispatchId);
+    await sql`UPDATE routines_v1_fires SET report_status = 'on-track' WHERE dispatch_id = ${newer.dispatchId}`.execute(f.db);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([null]);
+    await finish(older.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: newer.acceptedAt, autoPausedAt: null });
+  });
+
   it("an older check-in's miss counts behind a newer one's, which keeps its reason and start", async () => {
     const row = await f.store.createAuthored(taskInput('task'));
     const first = await checkIn(row, 'first', { at: minute(1) });
