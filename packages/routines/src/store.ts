@@ -208,10 +208,13 @@ const NO_TASK_STATE = {
  * its definition with `enabled` false. `finishDispatch` runs in plugin init
  * (`interruptAbandonedDispatches`, with no catch), so a stored definition that
  * today's checks refuse keeps its stored hash rather than stop the host booting.
+ * `kept` says it did, so `finishDispatch` can say so after commit, in ids only.
  */
-function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): string {
-  try { return inputHash({ ...editableDefinition(rowToRoutine(row)), enabled: false }); } catch { return row.spec_hash; }
+function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): { hash: string; kept: boolean } {
+  try { return { hash: inputHash({ ...editableDefinition(rowToRoutine(row)), enabled: false }), kept: false }; }
+  catch { return { hash: row.spec_hash, kept: true }; }
 }
+type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: false } | { paused: true; keptHash: boolean });
 /**
  * TASK-930. What a finished run does to its task's missed check-ins, given the
  * routine's row as `finishDispatch` locked it before writing anything. Null
@@ -253,7 +256,7 @@ async function missesAfterRun(
   row: Selectable<RoutinesDefinitionsRow>,
   run: { reported: boolean; status: FireStatus; miss: DispatchMiss | undefined; acceptedAt: Date },
   now: Date,
-): Promise<{ columns: Updateable<RoutinesDefinitionsRow>; paused: boolean } | null> {
+): Promise<MissesWrite | null> {
   if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
   // recordReport's order: a run started after this one has already answered.
   const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
@@ -270,12 +273,13 @@ async function missesAfterRun(
   const counted = newerMiss ? { task_misses_in_a_row: inARow }
     : { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
   if (inARow < TASK_AUTO_PAUSE_AFTER_MISSES || !row.enabled) return { columns: counted, paused: false };
+  const specHash = pausedSpecHash(row);
   return {
     columns: {
-      ...counted, enabled: false, revision: opaqueId('rev'), spec_hash: pausedSpecHash(row),
+      ...counted, enabled: false, revision: opaqueId('rev'), spec_hash: specHash.hash,
       next_run_at: null, updated_at: now, task_auto_paused_at: now,
     },
-    paused: true,
+    paused: true, keptHash: specHash.kept,
   };
 }
 /**
@@ -544,7 +548,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
       let unreadable = false;
-      let paused = null as RoutineKey | null;
+      let paused = null as (RoutineKey & { keptHash: boolean }) | null;
       const finished = await db.transaction().execute(async trx => {
         const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
@@ -579,14 +583,18 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (misses !== null) {
           await trx.updateTable('routines_v1_definitions').set(misses.columns)
             .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
-          if (misses.paused) paused = { agentId: dispatch.agent_id, routineId: dispatch.routine_id };
+          if (misses.paused) paused = { agentId: dispatch.agent_id, routineId: dispatch.routine_id, keptHash: misses.keptHash };
         }
         return true;
       });
       // After commit, so a rolled-back finish doesn't claim a drop. Only the id: the text is the agent's.
       if (finished && unreadable) process.stderr.write(`[ax/routines] dropped an unreadable report for dispatch ${input.dispatchId}\n`);
-      // After commit too, so a rolled-back finish paused nothing. Ids only.
-      if (finished && paused !== null) process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`);
+      // After commit too, so a rolled-back finish paused nothing. Ids only: why a definition no longer
+      // reads is in its stored text, which can be the agent's.
+      if (finished && paused !== null) {
+        process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`);
+        if (paused.keptHash) process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} kept its stored definition hash: its definition no longer reads\n`);
+      }
       return finished;
     },
     async bindDispatchConversation(input) {

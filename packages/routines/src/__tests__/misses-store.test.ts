@@ -146,6 +146,9 @@ const definitionRow = async (routineId: string) => (await sql<Record<string, unk
   SELECT * FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
 const pausedLine = (routineId: string) =>
   `[ax/routines] auto-paused task a/${routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`;
+/** Beside `pausedLine` when the paused definition's hash couldn't be worked out. Every other test's lines say it wasn't written. */
+const keptHashLine = (routineId: string) =>
+  `[ax/routines] auto-paused task a/${routineId} kept its stored definition hash: its definition no longer reads\n`;
 /** The auto-pause's stderr lines, captured until the test ends. Anything else still prints. */
 const pauseLines = () => captureExpectedStderr(message => message.startsWith('[ax/routines] auto-paused task ')).messages;
 
@@ -377,7 +380,7 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     });
   });
 
-  it("a stored definition today's checks refuse still pauses at boot, keeping its stored hash", async () => {
+  it("a stored definition today's checks refuse still pauses at boot, keeping its stored hash, and says so in ids only", async () => {
     const row = await f.store.createAuthored(taskInput('task'));
     await missed(row, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
     await checkIn(row, 'fifth', { at: minute(5) });
@@ -387,7 +390,8 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     const before = (await definitionRow(row.routineId))!;
     const lines = pauseLines();
     await expect(f.store.interruptAbandonedDispatches()).resolves.toBe(1);
-    expect(lines).toEqual([pausedLine(row.routineId)]);
+    // Nothing of why it no longer reads: that's in its stored text.
+    expect(lines).toEqual([pausedLine(row.routineId), keptHashLine(row.routineId)]);
     const after = (await definitionRow(row.routineId))!;
     expect(after).toMatchObject({
       enabled: false, spec_hash: before.spec_hash, next_run_at: null,
