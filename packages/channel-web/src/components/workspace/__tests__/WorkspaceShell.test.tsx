@@ -39,6 +39,7 @@ vi.mock('@/lib/workspace-api', async () => {
       // The mount read-back for grants raised while the workspace was closed
       // (TASK-373). Default empty below; the tests that care override it.
       grants: vi.fn(),
+      tasks: vi.fn(),
       // The rail reads its own route (TASK-235 / AW-14). Without it in the
       // mock, opening an agent throws before this file's subject renders.
       rail: vi.fn(async () => railFixture()),
@@ -51,6 +52,7 @@ const boardMock = vi.mocked(workspaceApi.board);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
+const tasksMock = vi.mocked(workspaceApi.tasks);
 const agentMock = vi.mocked(workspaceApi.agent);
 
 /** A skill grant, as the wire carries it — the subject the tests raise twice. */
@@ -93,6 +95,8 @@ beforeEach(() => {
   decisionsMock.mockResolvedValue({ decisions: [] });
   grantsMock.mockReset();
   grantsMock.mockResolvedValue({ grants: [] });
+  tasksMock.mockReset();
+  tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
   // The grant store is module-level and this file raises rows into it; a
   // leaked row would follow the next test into its Today render.
   workspaceGrantActions.resetForTest();

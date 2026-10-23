@@ -68,6 +68,7 @@ vi.mock('@/lib/workspace-api', async () => {
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
       grants: vi.fn(),
+      tasks: vi.fn(),
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
@@ -81,6 +82,7 @@ const agentMock = vi.mocked(workspaceApi.agent);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
+const tasksMock = vi.mocked(workspaceApi.tasks);
 
 const quill: WorkspaceAgent = {
   id: 'a-quill',
@@ -164,6 +166,8 @@ beforeEach(() => {
   decisionsMock.mockResolvedValue({ decisions: [] });
   grantsMock.mockReset();
   grantsMock.mockResolvedValue({ grants: [] });
+  tasksMock.mockReset();
+  tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
   workspaceGrantActions.resetForTest();
 });
 
