@@ -461,6 +461,21 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(newest);
   });
 
+  it('check-ins that start in the same instant answer in the order they finish, as their reports do', async () => {
+    // recordReport lets a report replace one from a run accepted in the same instant, so the last to finish answers.
+    const row = await f.store.createAuthored(taskInput('task'));
+    const reported = await checkIn(row, 'reported', { at: minute(1), report: onTrack });
+    const quiet = await checkIn(row, 'quiet', { at: minute(1) });
+    await finish(reported.dispatchId);
+    await finish(quiet.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: minute(1), autoPausedAt: null });
+    const missing = await checkIn(row, 'missing', { at: minute(2) });
+    const reporting = await checkIn(row, 'reporting', { at: minute(2), report: onTrack });
+    await finish(missing.dispatchId);
+    await finish(reporting.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toBeNull();
+  });
+
   it("a report racing its own run's finish lands one consistent answer, and never deadlocks", async () => {
     for (let round = 0; round < 10; round++) {
       const row = await f.store.createAuthored(taskInput(`task-${round}`));
