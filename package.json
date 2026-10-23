@@ -64,13 +64,14 @@
       "undici@>=6.0.0 <6.28.1": ">=6.28.1 <7.0.0",
       "ip-address@>=10.0.0 <10.7.4": ">=10.7.4 <11.0.0",
       "@modelcontextprotocol/sdk@<1.31.0": ">=1.31.0 <2.0.0",
-      "body-parser@>=2.0.0 <2.3.0": ">=2.3.0 <3.0.0",
+      "body-parser@>=2.0.0 <2.4.0": ">=2.4.0 <3.0.0",
       "@babel/core@<7.29.6": ">=7.29.6 <8.0.0",
       "esbuild@>=0.27.3 <0.28.1": ">=0.28.1 <0.29.0",
       "proxy-addr@<2.0.8": ">=2.0.8 <3.0.0",
       "source-map-js@<1.2.2": ">=1.2.2 <2.0.0",
       "postcss-selector-parser@<7.1.6": ">=7.1.6 <8.0.0",
-      "vitest@>=5.0.0 <5.0.3": "5.0.3"
+      "vitest@>=5.0.0 <5.0.3": "5.0.3",
+      "zod@>=4.0.0 <4.6.6": ">=4.6.6 <5.0.0"
     },
     "patchedDependencies": {
       "testcontainers@11.14.0": "patches/testcontainers@11.14.0.patch",
@@ -79,7 +80,8 @@
     "auditConfig": {
       "ignoreGhsas": [
         "GHSA-86w9-cpqp-85rv",
-        "GHSA-vfj7-8cjw-p6xm"
+        "GHSA-vfj7-8cjw-p6xm",
+        "GHSA-mrhx-c7xc-m3w5"
       ]
     }
   }
