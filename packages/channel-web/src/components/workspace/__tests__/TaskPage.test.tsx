@@ -75,6 +75,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
       goodWhen: 'No ticket is open longer than an hour.',
     },
     task: report(),
+    noRecentUpdate: null,
     updates: [
       {
         firedAt: REPORTED,

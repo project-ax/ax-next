@@ -28,6 +28,7 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     name: 'Zero open tickets',
     enabled: true,
     task: null,
+    noRecentUpdate: null,
     ...over,
   };
 }

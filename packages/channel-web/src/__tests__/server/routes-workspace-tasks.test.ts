@@ -127,6 +127,8 @@ interface World {
   routines: boolean;
   /** Set: `agents:list-for-user` throws this. */
   rosterFailure: Error | null;
+  /** True: `routines:list` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
+  unvalidated: boolean;
 }
 
 interface ListCall {
@@ -152,6 +154,7 @@ function setup(over: Partial<World> = {}) {
     lateFailure: new Map(),
     routines: true,
     rosterFailure: null,
+    unvalidated: false,
     ...over,
   };
   const bus = new HookBus();
@@ -199,7 +202,7 @@ function setup(over: Partial<World> = {}) {
             .map((r) => routineView(r, ctx.userId, allowed)),
         };
       },
-      { returns: RoutineListOutputSchema },
+      world.unvalidated ? undefined : { returns: RoutineListOutputSchema },
     );
   }
 
@@ -282,6 +285,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         update: 'Queue is empty.',
         reportedAt: '2026-10-22T09:58:00.000Z',
       },
+      noRecentUpdate: null,
     });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('ASK-TEXT');
@@ -623,5 +627,69 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(bodyOf(captured).tasks).toEqual([
       expect.objectContaining({ routineId: 't1', enabled: false }),
     ]);
+  });
+
+  describe('noRecentUpdate (TASK-930)', () => {
+    const miss = (over: Partial<NonNullable<StoredRoutine['noRecentUpdate']>> = {}) => ({
+      inARow: 2,
+      reason: 'brief-too-long' as const,
+      at: new Date('2026-10-22T11:00:00.000Z'),
+      autoPausedAt: null,
+      ...over,
+    });
+
+    it('carries a task’s missed check-ins as the page draws them, with the time as an instant', async () => {
+      const { get } = setup({
+        rows: [stored({ agentId: 'a1', routineId: 't1', noRecentUpdate: miss() })],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(bodyOf(captured).tasks[0]?.noRecentUpdate).toStrictEqual({
+        inARow: 2,
+        reason: 'brief-too-long',
+        at: '2026-10-22T11:00:00.000Z',
+        autoPaused: false,
+      });
+    });
+
+    it('says autoPaused when ax paused the task, and not for a task that never missed', async () => {
+      const { get } = setup({
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            enabled: false,
+            noRecentUpdate: miss({ inARow: 5, autoPausedAt: new Date('2026-10-22T11:05:00.000Z') }),
+          }),
+          stored({ agentId: 'a2', routineId: 't2', task: report('on-track') }),
+        ],
+      });
+      const tasks = bodyOf(await get()).tasks;
+      expect(tasks.find((t) => t.routineId === 't1')?.noRecentUpdate).toMatchObject({
+        inARow: 5,
+        autoPaused: true,
+      });
+      expect(tasks.find((t) => t.routineId === 't2')?.noRecentUpdate).toBeNull();
+    });
+
+    it('reads a reason the page doesn’t know as failed, field by field', async () => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            noRecentUpdate: miss({ reason: 'SOMETHING-NEW' as never }),
+          }),
+        ],
+      });
+      const wire = bodyOf(await get()).tasks[0]?.noRecentUpdate;
+      expect(wire).toStrictEqual({
+        inARow: 2,
+        reason: 'failed',
+        at: '2026-10-22T11:00:00.000Z',
+        autoPaused: false,
+      });
+    });
   });
 });

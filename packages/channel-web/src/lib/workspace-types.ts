@@ -44,7 +44,7 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
-import type { RoutineFireView, RoutineReportStatus } from '@ax/routines-contract';
+import type { CheckInMiss, RoutineFireView, RoutineReportStatus } from '@ax/routines-contract';
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -1335,6 +1335,18 @@ export interface TaskRowReport {
   reportedAt: string;
 }
 
+/**
+ * A task whose latest check-ins left no report (TASK-930). Host-written: a
+ * count, a closed reason code, an instant and a flag, no agent-written text.
+ * `at` is when the latest missed check-in started, ISO.
+ */
+export interface TaskNoRecentUpdate {
+  inARow: number;
+  reason: CheckInMiss;
+  at: string;
+  autoPaused: boolean;
+}
+
 /** One row of `GET /api/workspace/tasks`: a task the caller owns, on an agent they can see. `task` is null until its first report. */
 export interface TaskRow {
   agentId: string;
@@ -1343,6 +1355,8 @@ export interface TaskRow {
   name: string;
   enabled: boolean;
   task: TaskRowReport | null;
+  /** Null for a task that has not missed a check-in (TASK-930). */
+  noRecentUpdate: TaskNoRecentUpdate | null;
 }
 
 /** An agent whose tasks couldn't be read, so the page can say so instead of looking complete. */
@@ -1398,6 +1412,8 @@ export interface TaskDetail {
   /** The person-written brief, fenced. */
   brief: { promptBody: string | null; goodWhen: string | null };
   task: TaskDetailReport | null;
+  /** Null for a task that has not missed a check-in (TASK-930). */
+  noRecentUpdate: TaskNoRecentUpdate | null;
   /** Newest first, at most 50. */
   updates: TaskUpdate[];
 }

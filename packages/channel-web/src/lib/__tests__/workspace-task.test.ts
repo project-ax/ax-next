@@ -28,6 +28,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     nextCheckAt: null,
     brief: { promptBody: null, goodWhen: null },
     task: null,
+    noRecentUpdate: null,
     updates: [],
     ...over,
   };

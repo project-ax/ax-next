@@ -7,8 +7,9 @@
  * "couldn't load" state shows instead of a render crash on a missing field.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CHECK_IN_MISSES } from '@ax/routines-contract';
 import { workspaceApi, WorkspaceApiError, WorkspaceShapeError } from '../workspace-api';
-import type { TaskDetail, TaskDetailReport, TaskUpdate } from '../workspace-types';
+import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate, TaskUpdate } from '../workspace-types';
 
 function respondWith(body: unknown) {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -44,6 +45,13 @@ const UPDATE: TaskUpdate = {
   conversationId: 'c1',
 };
 
+const MISS: TaskNoRecentUpdate = {
+  inARow: 2,
+  reason: 'brief-too-long',
+  at: '2026-10-22T11:00:00.000Z',
+  autoPaused: false,
+};
+
 const DETAIL: TaskDetail = {
   agentName: 'Quill',
   name: 'Watch the support queue',
@@ -54,6 +62,7 @@ const DETAIL: TaskDetail = {
   nextCheckAt: '2026-10-22T13:00:00.000Z',
   brief: { promptBody: 'Read new tickets.', goodWhen: 'No ticket waits a day.' },
   task: REPORT,
+  noRecentUpdate: null,
   updates: [
     UPDATE,
     { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
@@ -84,6 +93,14 @@ describe('workspaceApi.task (TASK-910)', () => {
     };
     respondWith(body);
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
+  });
+
+  it('reads missed check-ins, for every reason the contract names', async () => {
+    for (const reason of CHECK_IN_MISSES) {
+      const body: TaskDetail = { ...DETAIL, noRecentUpdate: { ...MISS, reason, autoPaused: true } };
+      respondWith(body);
+      await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
+    }
   });
 
   it('refuses an update with a status it doesn’t know', async () => {
@@ -117,6 +134,13 @@ describe('workspaceApi.task (TASK-910)', () => {
     ['a report without an ask', { ...DETAIL, task: { ...REPORT, ask: undefined } }],
     ['a report without the agent’s notes', { ...DETAIL, task: { ...REPORT, agentNotes: undefined } }],
     ['a report without when it reported', { ...DETAIL, task: { ...REPORT, reportedAt: undefined } }],
+    ['no missed-check-ins key', { ...DETAIL, noRecentUpdate: undefined }],
+    ['missed check-ins with a zero count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 0 } }],
+    ['missed check-ins with a fractional count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 1.5 } }],
+    ['missed check-ins with a count as text', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: '2' } }],
+    ['missed check-ins with a reason it doesn’t know', { ...DETAIL, noRecentUpdate: { ...MISS, reason: 'stuck' } }],
+    ['missed check-ins with a time that isn’t text', { ...DETAIL, noRecentUpdate: { ...MISS, at: 1761138000000 } }],
+    ['missed check-ins with autoPaused as text', { ...DETAIL, noRecentUpdate: { ...MISS, autoPaused: 'no' } }],
     ['updates that aren’t a list', { ...DETAIL, updates: {} }],
     ['a null update', { ...DETAIL, updates: [null] }],
     ['an update without when it started', { ...DETAIL, updates: [{ ...UPDATE, firedAt: undefined }] }],

@@ -155,6 +155,8 @@ interface World {
   firesFailure: Error | null;
   /** Set: `routines:clear-notes` throws this. */
   clearFailure: Error | null;
+  /** True: `routines:get` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
+  unvalidated: boolean;
 }
 
 interface Call<I> {
@@ -177,6 +179,7 @@ function setup(over: Partial<World> = {}) {
     getFailure: null,
     firesFailure: null,
     clearFailure: null,
+    unvalidated: false,
     ...over,
   };
   const bus = new HookBus();
@@ -219,7 +222,7 @@ function setup(over: Partial<World> = {}) {
         const allowed = world.managers[input.agentId]?.includes(ctx.userId) ?? false;
         return routineView(row, ctx.userId, allowed);
       },
-      { returns: RoutineGetOutputSchema },
+      world.unvalidated ? undefined : { returns: RoutineGetOutputSchema },
     );
   }
   if (!world.absent.has('routines:recent-fires')) {
@@ -337,6 +340,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         agentNotes: 'Acme is an enterprise customer.\nReply within the hour.',
         reportedAt: '2026-10-22T14:58:00.000Z',
       },
+      noRecentUpdate: null,
       updates: [
         {
           firedAt: '2026-10-22T14:57:00.000Z',
@@ -685,6 +689,64 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(getCalls).toEqual([]);
     expect(firesCalls).toEqual([]);
+  });
+});
+
+describe('GET /api/workspace/tasks/:agentId/:routineId, missed check-ins (TASK-930)', () => {
+  const miss = (over: Partial<NonNullable<StoredRoutine['noRecentUpdate']>> = {}) => ({
+    inARow: 3,
+    reason: 'no-report' as const,
+    at: new Date('2026-10-22T11:00:00.000Z'),
+    autoPausedAt: null,
+    ...over,
+  });
+  const noRecentUpdateOf = (c: CapturedRes) => (c.body as TaskDetail).noRecentUpdate;
+
+  it('carries the missed check-ins to the owner, the time as an instant', async () => {
+    const { detail } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', noRecentUpdate: miss() })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(noRecentUpdateOf(captured)).toStrictEqual({
+      inARow: 3,
+      reason: 'no-report',
+      at: '2026-10-22T11:00:00.000Z',
+      autoPaused: false,
+    });
+  });
+
+  it('says autoPaused for a task ax paused', async () => {
+    const { detail } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 't1',
+          enabled: false,
+          noRecentUpdate: miss({ inARow: 5, autoPausedAt: new Date('2026-10-22T11:05:00.000Z') }),
+        }),
+      ],
+    });
+    expect(noRecentUpdateOf(await detail())).toMatchObject({ inARow: 5, autoPaused: true });
+  });
+
+  it('reads a reason the page doesn’t know as failed, field by field', async () => {
+    const { detail } = setup({
+      unvalidated: true,
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 't1',
+          noRecentUpdate: miss({ reason: 'SOMETHING-NEW' as never }),
+        }),
+      ],
+    });
+    expect(noRecentUpdateOf(await detail())).toStrictEqual({
+      inARow: 3,
+      reason: 'failed',
+      at: '2026-10-22T11:00:00.000Z',
+      autoPaused: false,
+    });
   });
 });
 
