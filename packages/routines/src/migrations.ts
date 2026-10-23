@@ -142,6 +142,14 @@ export interface DispatchesRow {
   /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
   report: ColumnType<unknown | null, string | null | undefined, string | null>;
 }
+/**
+ * Version 8 (TASK-931). A person's reply on a task, in their own words. Written
+ * only by `addReply`; `request_id` is the client's, for its retries.
+ */
+export interface RepliesRow {
+  reply_id: string; agent_id: string; routine_id: string; author_user_id: string;
+  request_id: string; body: string; created_at: Date;
+}
 export interface RoutinesDatabase {
   routines_v1_retired_agents: { agent_id: string; retired_at: Generated<Date> };
   routines_v1_requests: RoutinesRequestsRow;
@@ -149,6 +157,7 @@ export interface RoutinesDatabase {
   routines_v1_dispatches: DispatchesRow;
   routines_v1_definitions: RoutinesDefinitionsRow;
   routines_v1_fires: RoutinesFiresRow;
+  routines_v1_replies: RepliesRow;
   default_routines_v1: DefaultRoutinesRow;
   agent_default_routine_overrides_v1: AgentDefaultRoutineOverridesRow;
 }
@@ -189,7 +198,42 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addCheckInMissColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (7)`.execute(trx);
     }
+    if (!await done(8)) {
+      await addRepliesTable(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (8)`.execute(trx);
+    }
   });
+}
+
+/** Version 8 (TASK-931): a person's replies on a task, which every later check-in
+ * carries (the last 20). Written only by `addReply`, owner-only under the
+ * routine's row lock; deleted with their routine (`deleteAuthored`) or agent
+ * (`purgeAgent`), and kept through a change of kind. The named unique key is a
+ * retry's: the same person, request and routine is one reply. The index serves
+ * `recentReplies`' newest-first read. No foreign key: the store deletes replies
+ * itself, and a new foreign key on a shared table has broken other packages'
+ * test teardown before. No CHECK on `body`: the length cap lives at the writer
+ * (`RoutineReplyTextSchema`), so a later cap can't make stored rows unreadable
+ * (TASK-913). Additive: code from before this version never reads the table,
+ * and a re-run keeps its rows.
+ */
+async function addRepliesTable(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`
+    CREATE TABLE IF NOT EXISTS routines_v1_replies (
+      reply_id        TEXT        PRIMARY KEY,
+      agent_id        TEXT        NOT NULL,
+      routine_id      TEXT        NOT NULL,
+      author_user_id  TEXT        NOT NULL,
+      request_id      TEXT        NOT NULL,
+      body            TEXT        NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL,
+      CONSTRAINT routines_v1_replies_request_unique UNIQUE (agent_id, routine_id, author_user_id, request_id)
+    )
+  `.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS routines_v1_replies_by_routine
+      ON routines_v1_replies (agent_id, routine_id, created_at DESC)
+  `.execute(db);
 }
 
 /** Version 7 (TASK-930): a task's check-ins in a row that ended without a report,

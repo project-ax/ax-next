@@ -60,6 +60,14 @@ export type DispatchOutcome = {
    */
   miss?: DispatchMiss | undefined;
 };
+/** TASK-931. A person's reply on a task, as stored. Person-written. */
+export type StoredReply = { replyId: string; authorUserId: string; text: string; sentAt: Date };
+/**
+ * TASK-931. What `addReply` did. `replayed`: this person's same request on this
+ * routine stored a reply before, and `replyId` is that one. Either way `row` is
+ * the routine as read under its row lock.
+ */
+export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine } | 'not-found' | 'forbidden';
 /** TASK-907. One run's report: kept on its dispatch, then on its fire row. The notes stay on the task. */
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
 /** TASK-907. The one open run in a conversation, as `routine_report` finds it. */

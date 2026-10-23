@@ -1,13 +1,13 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, DispatchMiss, DispatchOutcome, DispatchReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -58,6 +58,24 @@ export interface RoutinesStore {
    * notes again (`recordReport`). Touches nothing else in the row.
    */
   clearAgentNotes(input: RoutineKey & { actorUserId: string; now: Date }): Promise<'cleared' | 'not-found' | 'forbidden'>;
+  /**
+   * TASK-931. A person's reply on a task. Owner only, decided under the agent
+   * fence and the routine's row lock, so a reply can't land on a routine being
+   * deleted: it waits, then finds no row. A repeat routine, a missing one and a
+   * retired agent are `not-found`. The same `requestId` again, from the same
+   * person on the same routine, stores nothing and answers `replayed` with the
+   * first reply's id; the first text is kept. Either way `row` is the routine as
+   * read under the lock. Replies outlive a change of kind and go with their
+   * routine (`deleteAuthored`) or agent (`purgeAgent`). The text is the
+   * person's, checked by the caller (`RoutineReplyTextSchema`).
+   */
+  addReply(input: RoutineKey & Actor & { requestId: string; text: string; now: Date }): Promise<AddReplyResult>;
+  /**
+   * TASK-931. A routine's replies, newest first (ties by reply id), whoever
+   * wrote them: deciding who may read them is the caller's. `limit` is clamped
+   * to 1-50. The text is person-written.
+   */
+  recentReplies(input: RoutineKey & { limit: number }): Promise<StoredReply[]>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
@@ -526,6 +544,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         await queueCleanup(trx, current);
         const pending = await trx.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).executeTakeFirst();
+        // TASK-931: after the row lock, so a reply that took it first is in by now, and one still
+        // waiting on it finds no routine (addReply).
+        await trx.deleteFrom('routines_v1_replies').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         return { deleted: true as const, cleanupPending: pending !== undefined };
       });
@@ -738,6 +759,30 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         return 'cleared';
       });
     },
+    async addReply(input) {
+      return db.transaction().execute(async (trx): Promise<AddReplyResult> => {
+        // clearAgentNotes' order: the agent fence, then the routine's row. acceptDispatch and
+        // recordReport take the two in that order too, so this adds no deadlock.
+        if (!await lockLiveAgent(trx, input.agentId)) return 'not-found';
+        const raw = await trx.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        // `repeat`, not "anything but stay-on-top", so a later task kind takes replies with no change here.
+        if (!raw || raw.kind === 'repeat') return 'not-found';
+        if (raw.owner_user_id !== input.actorUserId) return 'forbidden';
+        const row = rowToRoutine(raw);
+        const added = await trx.insertInto('routines_v1_replies').values({
+          reply_id: opaqueId('reply'), agent_id: input.agentId, routine_id: input.routineId, author_user_id: input.actorUserId,
+          request_id: input.requestId, body: input.text, created_at: input.now,
+        }).onConflict(oc => oc.columns(['agent_id', 'routine_id', 'author_user_id', 'request_id']).doNothing())
+          .returning('reply_id').executeTakeFirst();
+        if (added !== undefined) return { outcome: 'added', replyId: added.reply_id, row };
+        // A retry: the first try's reply stands, text and all.
+        const first = await trx.selectFrom('routines_v1_replies').select('reply_id')
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId)
+          .where('author_user_id', '=', input.actorUserId).where('request_id', '=', input.requestId).executeTakeFirstOrThrow();
+        return { outcome: 'replayed', replyId: first.reply_id, row };
+      });
+    },
     async advance(input) {
       await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt })
         .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision).execute();
@@ -775,6 +820,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         await trx.deleteFrom('routines_v1_dispatches').where('agent_id', '=', agentId).execute();
         const rows = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', agentId).forUpdate().execute();
         for (const row of rows) await queueCleanup(trx, rowToRoutine(row));
+        // TASK-931. The exclusive fence above keeps addReply out until this commits.
+        await trx.deleteFrom('routines_v1_replies').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('agent_default_routine_overrides_v1').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('routines_v1_fires').where('agent_id', '=', agentId).execute();
@@ -879,6 +926,20 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       // The query already skips a row with only part of a report (rowToFire's rule); this narrows the types.
       return rows.flatMap(r => r.report_status === null || r.report_update === null ? []
         : [{ firedAt: r.fired_at, report: { status: r.report_status, update: r.report_update, ask: r.report_ask } }]);
+    },
+
+    async recentReplies(input) {
+      const limit = Math.min(ROUTINE_REPLIES_MAX_LIMIT, Math.max(1, input.limit));
+      const rows = await db
+        .selectFrom('routines_v1_replies')
+        .select(['reply_id', 'author_user_id', 'body', 'created_at'])
+        .where('agent_id', '=', input.agentId)
+        .where('routine_id', '=', input.routineId)
+        .orderBy('created_at', 'desc')
+        .orderBy('reply_id', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map(r => ({ replyId: r.reply_id, authorUserId: r.author_user_id, text: r.body, sentAt: r.created_at }));
     },
 
     async list(input) {
