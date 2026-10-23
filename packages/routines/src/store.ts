@@ -314,8 +314,11 @@ async function reportStillOpen(trx: Transaction<RoutinesDatabase>, row: Selectab
  * finished without a report, but no more than `atMost`: a run's fire row is
  * written when it finishes, with its start as `fired_at`, so the run that
  * started at `after` isn't one. A row with only part of a report has none, as
- * `rowToFire` reads it. Through `routines_v1_fires_by_routine`, reading at most
+ * `rowToFire` reads it. Through `routines_v1_fires_by_routine`, returning at most
  * `atMost` rows, in `finishDispatch`'s transaction with the routine's row locked.
+ * Leaving out runs that reported is defensive: a count our code writes never
+ * holds more misses than the runs after the latest report that finished without
+ * one, so only a hand-edited or rolled-back count reaches past them.
  */
 async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, after: Date, atMost: number): Promise<number> {
   const fires = await trx.selectFrom('routines_v1_fires').select('id')

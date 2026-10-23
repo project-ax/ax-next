@@ -325,9 +325,11 @@ function TaskItem({
 }) {
   const ago = row.task === null ? null : timeAgo(row.task.reportedAt, now);
   // The third line, in order: why a paused-by-misses task is paused, why a task
-  // has no recent update (the report is from an earlier check-in than the
-  // silent one, so it isn't shown), else the last report's update (TASK-930). All of it host-written
-  // except the update.
+  // has no recent update, else the last report's update (TASK-930). With
+  // misses, the report isn't shown: it's usually from a check-in that started
+  // before the silent one. One that started after them sits beside the misses
+  // only until the next check-in finishes, since only a finish moves the
+  // count. All of it host-written except the update.
   const third =
     !row.enabled && row.noRecentUpdate?.autoPaused
       ? AUTO_PAUSED_LINE

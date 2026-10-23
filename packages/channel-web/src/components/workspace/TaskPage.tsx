@@ -591,8 +591,11 @@ function BriefRow({
  * its mark (`taskGroup`, the same as its Tasks row: No recent update, or Needs
  * you from the third in a row or when the last report needed you), why, the one
  * thing to do, and when it last checked in. The last report stays under it,
- * muted and dated, because it is from an earlier check-in than the silent one (it started earlier; it may have reported later), and so does its ask,
- * muted: a person is still being waited on, and hiding the ask would hide that.
+ * muted and dated. It is usually from a check-in that started before the silent
+ * one (it may have reported later). Just after an agent reports, it can be from
+ * one that started after those misses, until a check-in finishes: only a
+ * finished check-in moves the count. Its ask stays too, muted: a person is
+ * still being waited on, and hiding the ask would hide that.
  * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
  * update and its ask are agent-written.
  */

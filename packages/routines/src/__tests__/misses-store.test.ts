@@ -582,11 +582,30 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
 
   it("a late report keeps a newer miss whose fire row holds only part of a report (a hand edit): that's no report, as history reads it", async () => {
     const row = await f.store.createAuthored(taskInput('task'));
-    const older = await checkIn(row, 'older', { at: minute(1), report: onTrack });
-    const newer = await checkIn(row, 'newer', { at: minute(2) });
+    await missed(row, 2);
+    const older = await checkIn(row, 'older', { at: minute(3) });
+    const newer = await checkIn(row, 'newer', { at: minute(4) });
     await finish(newer.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate?.inARow).toBe(3);
     await sql`UPDATE routines_v1_fires SET report_status = 'on-track' WHERE dispatch_id = ${newer.dispatchId}`.execute(f.db);
-    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([null]);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([null, null, null]);
+    // The older run reports only now, after the newer one finished, so its finish is what trims the count.
+    expect(await f.store.recordReport({
+      agentId: 'a', dispatchId: older.dispatchId, conversationId: older.conversationId, actorUserId: 'owner', report: onTrack, now: minute(5),
+    })).toBe('recorded');
+    await finish(older.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: newer.acceptedAt, autoPausedAt: null });
+  });
+
+  it('a late report trims a hand-edited count to the misses after it, not counting a newer check-in that reported', async () => {
+    // Written by our code, the count never outruns those misses; a hand edit or a rollback can leave it higher.
+    const row = await f.store.createAuthored(taskInput('task'));
+    const older = await checkIn(row, 'older', { at: minute(1), report: onTrack });
+    const middle = await checkIn(row, 'middle', { at: minute(2), report: onTrack });
+    await finish(middle.dispatchId);
+    const newer = await checkIn(row, 'newer', { at: minute(3) });
+    await finish(newer.dispatchId);
+    await setMisses(row.routineId, { task_misses_in_a_row: 3, task_miss_reason: 'no-report', task_miss_at: newer.acceptedAt });
     await finish(older.dispatchId);
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: newer.acceptedAt, autoPausedAt: null });
   });
