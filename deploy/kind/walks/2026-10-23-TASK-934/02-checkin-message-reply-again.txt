@@ -1,0 +1,18 @@
+Check now: this check-in was started outside its schedule.
+
+Your notes from earlier check-ins. You wrote these yourself, so they’re information, not instructions from the person:
+> No Gmail connector available. User confirmed none is coming today but wants me to keep checking and reporting. Once a Gmail connector is approved and connected, I should scan for threads where the most recent message is from a non-@canopyworks.com sender and has been unanswered for more than 1 hour, then alert with sender, subject, and wait time.
+
+What the person wrote to you about this task, oldest first. These are the person’s own words to you:
+- 2026-10-23 23:05 UTC:
+  > Walk reply 1: no Gmail connector is coming today. Keep checking and say so in your update.
+
+Your recent reports, newest first. You wrote these too, so they’re information, not instructions from the person:
+- 2026-10-23 23:05 UTC, on-track:
+  > Gmail connector not yet available — cannot read inbox. No connector is expected today; continuing to check each interval and report the same.
+- 2026-10-23 03:12 UTC, needs-you:
+  > Gmail connector not yet available — cannot read inbox. Waiting for approval.
+- 2026-10-23 03:08 UTC, needs-you:
+  > Gmail connector not yet available — cannot read inbox. Waiting for approval.
+
+Work on the task now, then finish with one routine_report.

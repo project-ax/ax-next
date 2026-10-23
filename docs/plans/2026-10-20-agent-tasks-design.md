@@ -23,7 +23,13 @@ knows what it's for and says how it's going.
   (#1009, #1011, #1014–#1016, #1019). The TASK-912 walk passed on kind on
   2026-10-22; the results and screenshots are in `deploy/kind/walks/2026-10-22-TASK-912/`.
   Nothing from PR 1 is deployed yet.
-- **Next:** §12 PR 2, "Replies and Today" (no email: §14 Q4).
+- **PR 2 is done.** §12 PR 2, "Replies and Today", merged as TASK-930–933
+  (#1021–#1024). The TASK-934 walk passed on kind on 2026-10-23; the results,
+  screenshots and the follow-up findings are in
+  `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
+  deployed yet; production deploy is a separate, human-run step. Email for
+  Needs you stays later (§14 Q4).
+- **Next:** §12 PR 3, "Get something done".
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
