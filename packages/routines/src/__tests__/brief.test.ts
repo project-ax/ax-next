@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createLogger, makeAgentContext, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import {
-  BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, briefFits, briefLandedVeto, briefRunError, checkInBrief,
+  BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, briefFits, briefLandedVeto, briefRunError, briefRunMiss, checkInBrief,
   isTaskRun, quoteLines, renderTaskBrief, ROUTINES_AUGMENT_PROVIDER,
 } from '../brief.js';
 import type { PendingFire, PendingFires } from '../fire.js';
@@ -241,6 +241,16 @@ describe('no brief, no check-in (TASK-908)', () => {
     // Another subscriber's system-prompt veto isn't routines' to explain: the raw reason is kept.
     expect(briefRunError(task, 'system-prompt:dlp-blocked')).toBeNull();
     expect(briefRunError(entry(storedRow(REPEAT)), 'system-prompt:brief-missing')).toBeNull();
+  });
+
+  it('briefRunMiss names the same two vetoes, for a task run only', () => {
+    const task = entry(storedRow(TASK));
+    expect(briefRunMiss(task, 'system-prompt:brief-missing')).toBe('brief-missing');
+    expect(briefRunMiss({ ...task, brief: 'too-long' }, 'system-prompt:brief-too-long')).toBe('brief-too-long');
+    expect(briefRunMiss(task, 'system-prompt:other')).toBeNull();
+    expect(briefRunMiss(task, 'chat:start:quota')).toBeNull();
+    expect(briefRunMiss(entry(storedRow(REPEAT)), 'system-prompt:brief-missing')).toBeNull();
+    expect(briefRunMiss(entry(storedRow(REPEAT)), 'system-prompt:brief-too-long')).toBeNull();
   });
 
   it('its run errors are the exact copy', () => {

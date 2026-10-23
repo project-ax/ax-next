@@ -167,6 +167,8 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     } finally { diagnostic.restore(); }
     expect((await storedRuns(task))[0]).toMatchObject({ status: 'error', error: BRIEF_DIDNT_LOAD, renderedPrompt: null, report: null });
     expect((await store.findOne(task))?.lastWarning).toBe(warning);
+    // Two check-ins in a row left no report; the code that refused this one knows why.
+    expect((await store.findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 2, reason: 'brief-missing' });
     expect(diagnostic.messages).toHaveLength(1);
   });
 
@@ -187,6 +189,16 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     }, { landed: null });
     // The run did happen, so its report stays on the row; it is still failed.
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, renderedPrompt: null, report: NEEDS_YOU });
+    // It reported, so it isn't a missed check-in.
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toBeNull();
+  });
+
+  it('the belt without a report counts as brief-unconfirmed', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    await h.checkIn(task, 'run', async () => {}, { landed: null });
+    expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, report: null });
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'brief-unconfirmed' });
   });
 
   it('a brief over the prompt cap is refused with the too-long sentence', async () => {
@@ -200,6 +212,7 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     } finally { diagnostic.restore(); }
     expect(seen.brief).toEqual({});
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_TOO_LONG, renderedPrompt: null });
+    expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'brief-too-long' });
   });
 
   it('a veto that throws while working it out still refuses a pending task check-in', async () => {

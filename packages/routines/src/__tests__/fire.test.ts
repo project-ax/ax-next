@@ -168,6 +168,24 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     expect(h.pending.size).toBe(0);
     expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
   });
+  it('a failed report read counts as a missed check-in, as failed', async () => {
+    const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
+    await h.fire(h.accepted);
+    expect((await f.store.findOne(h.row))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'failed' });
+  });
+  it.each([
+    ['system-prompt:brief-too-long', 'brief-too-long'],
+    ['system-prompt:brief-missing', 'brief-missing'],
+    ['system-prompt:other', 'failed'],
+    ['chat:start:quota', 'failed'],
+  ])('a task run the orchestrator ended as %s is recorded as %s', async (reason, miss) => {
+    const h = await setup({ definition: TASK, invoke: async () => ({ kind: 'terminated', reason }) });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(h.accepted);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    expect(diagnostic.messages).toHaveLength(1);
+    expect((await f.store.findOne(h.row))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: miss });
+  });
   it.each(['throw', 'terminated', 'missing-turn'])('a task run that never finishes its turn keeps no renderedPrompt either (%s)', async (kind) => {
     const h = await setup({ definition: TASK, grace: 0, invoke: async () => { if (kind === 'throw')
         throw new Error('failed'); return { kind: kind === 'terminated' ? 'terminated' : 'complete', reason: 'stopped' }; } });
