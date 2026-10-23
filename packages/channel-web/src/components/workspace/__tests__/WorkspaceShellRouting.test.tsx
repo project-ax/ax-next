@@ -808,10 +808,10 @@ describe('one tasks read (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(3);
   });
 
-  // The reload rule must survive a hop: the task page's writes (and the agent
-  // settings' routine editor's) postdate a read started before them, however
-  // many pages sit between that page and the next Today or Tasks.
-  it('a hop through an agent page still reads afresh on the way back to Tasks (TASK-933 review)', async () => {
+  // The reload rule must survive a hop: the task page's writes postdate a read
+  // started before them, however many pages sit between that page and the next
+  // Today or Tasks. Activity is the hop because it writes no task rows itself.
+  it('a hop through Activity still reads afresh on the way back to Tasks (TASK-933 review)', async () => {
     renderAt('/workspace');
     await screen.findByRole('heading', { name: 'Today' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
@@ -822,14 +822,17 @@ describe('one tasks read (TASK-933)', () => {
     await screen.findByRole('heading', { name: 'Tasks' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
 
-    // Task page → an agent page → Tasks, that read still held.
+    // Task page → Activity → Tasks, that read still held.
     act(() => {
       window.history.pushState(null, '', '/workspace/tasks/a1/t1');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
     await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
-    fireEvent.click(await screen.findByRole('button', { name: /^Quill\s*,/ }));
-    await screen.findByRole('tab', { name: /files/i });
+    act(() => {
+      window.history.pushState(null, '', '/workspace/activity');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/activity'));
     expect(tasksMock).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
     await screen.findByRole('heading', { name: 'Tasks' });
@@ -853,6 +856,41 @@ describe('one tasks read (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  // Every page that can write task rows arms the reload, even when it is the
+  // page the app opened on. Drop a kind from the shell's rule, or arm it only
+  // after a route change, and the matching case goes back to joining the held
+  // read (one call).
+  it.each([
+    ['an agent’s settings (the routine editor)', '/workspace/agents/a-quill/settings/routines'],
+    ['an agent’s page (its chat approves routine changes)', '/workspace/agents/a-quill'],
+  ])('coming back to Tasks from %s reads afresh (TASK-933 review)', async (_name, path) => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks');
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', path);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(window.location.pathname).toBe(path));
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('opening the app on a task page arms the reload for the first trip to Tasks (TASK-933 review)', async () => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks/a1/t1');
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tasks' }));
     await screen.findByRole('heading', { name: 'Tasks' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
   });
