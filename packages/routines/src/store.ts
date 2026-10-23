@@ -227,21 +227,30 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  *
  * Runs that overlap (a Check now beside a scheduled check-in) answer in the
  * order they started, whatever order they finish in, as `recordReport` keeps
- * the report of the run accepted last. So null too for a run without a report
- * once a run that started after it has reported (`task_report_accepted_at`).
- * A run that reported behind a newer miss (`task_miss_at`) leaves that miss,
- * with its reason and start, but ends the misses before it: the count drops to
- * the runs that started after it and finished without a report, if that's
- * fewer (`unansweredAfter`). The newer miss's own run is one of them, so that's
- * at least one, unless a hand edit or a rollback left a miss time no such run
+ * the report of the run accepted last. A report is saved when the agent sends
+ * it, before its run finishes, and answers from then on. So null too for a run
+ * without a report once a run that started after it has reported
+ * (`task_report_accepted_at`), finished or not. A run without a report counts
+ * on from the misses after a report whose run is still open, not from the
+ * count, which that run hasn't trimmed yet (`reportStillOpen`), and doesn't
+ * count itself when it started in the same instant as that report, whose run
+ * finishes after it. A run that reported
+ * behind a newer miss (`task_miss_at`) leaves that miss, with its reason and
+ * start, but ends the misses before it: the count drops to the runs that
+ * started after it and finished without a report, if that's fewer
+ * (`unansweredAfter`). The newer miss's own run is one of them, so that's at
+ * least one, unless a hand edit or a rollback left a miss time no such run
  * backs, or a count below one; then the report clears them. A run without a
  * report behind a newer miss still counts, but keeps that miss's reason and
- * start, so `task_miss_at` never moves back. Once they've all finished, the
- * task shows a miss exactly when the run that started last missed, with its
- * reason and start, and counts the misses that started after the latest
- * report. Never fewer: it can run long only when a Resume or a kind change
- * starts the count over while runs overlap, since a fire row doesn't say which
- * side of it its run finished on.
+ * start, so `task_miss_at` never moves back. So whenever a run finishes, the
+ * count is the misses that started after the latest saved report; once they've
+ * all finished, the task shows a miss exactly when the run that started last
+ * missed, with its reason and start. Between finishes, a report saved after a
+ * newer miss finished leaves the misses before it counted until the next run
+ * finishes; a person can see that, but nothing pauses on it. Never fewer: the
+ * count can run long only when a Resume or a kind change starts it over while
+ * runs overlap, since a fire row doesn't say which side of it its run finished
+ * on.
  *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
@@ -266,9 +275,15 @@ async function missesAfterRun(
     const kept = await unansweredAfter(trx, row, run.acceptedAt, Math.max(0, row.task_misses_in_a_row));
     return { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
   }
-  if (row.task_report_accepted_at !== null && row.task_report_accepted_at > run.acceptedAt) return null;
+  const reportAt = row.task_report_accepted_at;
+  if (reportAt !== null && reportAt > run.acceptedAt) return null;
   // A count below zero (a hand edit) starts again at one.
-  const inARow = Math.max(0, row.task_misses_in_a_row) + 1;
+  const upTo = Math.max(0, row.task_misses_in_a_row) + 1;
+  // A saved report whose run is still open has answered the misses that started before it, though
+  // its run hasn't trimmed them yet: count the ones after it. This run's fire row, just written, is
+  // one, unless it started in the same instant as that report, whose run finishes after it.
+  const inARow = reportAt !== null && await reportStillOpen(trx, row, reportAt) ? await unansweredAfter(trx, row, reportAt, upTo) : upTo;
+  if (inARow === 0) return null;
   const reason: CheckInMiss = run.status === 'error' ? run.miss ?? 'failed' : 'no-report';
   const counted = newerMiss ? { task_misses_in_a_row: inARow }
     : { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
@@ -281,6 +296,18 @@ async function missesAfterRun(
     },
     paused: true, keptHash: specHash.kept,
   };
+}
+/**
+ * TASK-930. Whether a run of the routine that started at `at` is still open with
+ * a saved report: the task's report (`task_report_accepted_at`), whose run
+ * hasn't finished, so hasn't cleared or trimmed the misses before it yet. Its
+ * `report` is set by `recordReport` and cleared when the run finishes. The
+ * agent's open runs, which `routines_v1_dispatches_open_conversation` covers.
+ */
+async function reportStillOpen(trx: Transaction<RoutinesDatabase>, row: Selectable<RoutinesDefinitionsRow>, at: Date): Promise<boolean> {
+  return await trx.selectFrom('routines_v1_dispatches').select('dispatch_id')
+    .where('agent_id', '=', row.agent_id).where('completed_at', 'is', null).where('routine_id', '=', row.routine_id)
+    .where('accepted_at', '=', at).where('report', 'is not', null).limit(1).executeTakeFirst() !== undefined;
 }
 /**
  * TASK-930. How many of the routine's runs that started after `after` have

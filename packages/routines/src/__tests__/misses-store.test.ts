@@ -449,7 +449,7 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(missedOnce);
   });
 
-  it('an older check-in that reports after a newer one missed still ends the misses before it', async () => {
+  it('an older check-in that finishes with a report after a newer one missed still ends the misses before it', async () => {
     const lines = pauseLines();
     const row = await f.store.createAuthored(taskInput('task'));
     const other = await f.store.createAuthored(taskInput('other'));
@@ -460,13 +460,94 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     // Another task's misses are its own.
     await missed(other, 2, 5);
     await finish(newer.dispatchId, { status: 'error', error: 'boom', miss: 'brief-too-long' });
-    expect((await f.store.findOne(row))?.noRecentUpdate?.inARow).toBe(4);
+    // The older run's report is saved, though its run is still open: it answers the three before it already.
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'brief-too-long', at: newer.acceptedAt, autoPausedAt: null });
     await finish(older.dispatchId);
     // In the order they started: three misses, a report, a miss. So one in a row, with the newer miss's reason and start.
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'brief-too-long', at: newer.acceptedAt, autoPausedAt: null });
     // So the next miss is the second, and doesn't pause the task.
     await missed(row, 1, 6);
     expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: { inARow: 2, reason: 'no-report', at: minute(6) } });
+    expect(lines).toEqual([]);
+  });
+
+  it("a report saved by a check-in that's still running answers the misses before it, so a newer miss beside it doesn't pause the task", async () => {
+    const lines = pauseLines();
+    const row = await f.store.createAuthored(taskInput('task'));
+    await missed(row, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
+    // A scheduled check-in reports on track and is still running when a Check now misses and finishes.
+    const older = await checkIn(row, 'older', { at: minute(5), report: onTrack });
+    const newer = await checkIn(row, 'newer', { at: minute(6) });
+    await finish(newer.dispatchId);
+    // In the order they started: four misses, a report, a miss. One in a row, not the fifth.
+    const once = { inARow: 1, reason: 'no-report', at: newer.acceptedAt, autoPausedAt: null };
+    expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: once });
+    await finish(older.dispatchId);
+    expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: once });
+    expect(lines).toEqual([]);
+  });
+
+  it("a report saved after a newer miss finished, its run still open, answers the misses before it when the next miss finishes", async () => {
+    const lines = pauseLines();
+    const row = await f.store.createAuthored(taskInput('task'));
+    await missed(row, TASK_AUTO_PAUSE_AFTER_MISSES - 2);
+    const older = await checkIn(row, 'older', { at: minute(4) });
+    const newer = await checkIn(row, 'newer', { at: minute(5) });
+    await finish(newer.dispatchId);
+    // Nothing has answered the first three yet.
+    expect((await f.store.findOne(row))?.noRecentUpdate?.inARow).toBe(TASK_AUTO_PAUSE_AFTER_MISSES - 1);
+    expect(await f.store.recordReport({
+      agentId: 'a', dispatchId: older.dispatchId, conversationId: older.conversationId, actorUserId: 'owner', report: onTrack, now: minute(6),
+    })).toBe('recorded');
+    // In the order they started: three misses, a report, two misses. Two in a row, not the fifth.
+    await missed(row, 1, 7);
+    const twice = { inARow: 2, reason: 'no-report', at: minute(7), autoPausedAt: null };
+    expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: twice });
+    await finish(older.dispatchId);
+    expect(await f.store.findOne(row)).toMatchObject({ enabled: true, noRecentUpdate: twice });
+    expect(lines).toEqual([]);
+  });
+
+  it('a report and a miss that start in the same instant: the report answers it while its run is open, not once it has finished first', async () => {
+    const lines = pauseLines();
+    // Finished first, the report doesn't answer a miss that started beside it and finished after (the test below).
+    const row = await f.store.createAuthored(taskInput('task'));
+    const reported = await checkIn(row, 'reported', { at: minute(1), report: onTrack });
+    const beside = await checkIn(row, 'beside', { at: minute(1) });
+    // Open in that instant too, but without a report, or another task's.
+    const silent = await checkIn(row, 'silent', { at: minute(1) });
+    await checkIn(await f.store.createAuthored(taskInput('elsewhere')), 'elsewhere', { at: minute(1), report: onTrack });
+    await finish(reported.dispatchId);
+    await finish(beside.dispatchId);
+    await missed(row, 1, 2);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 2, reason: 'no-report', at: minute(2), autoPausedAt: null });
+    await finish(silent.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 3, reason: 'no-report', at: minute(2), autoPausedAt: null });
+    // Still open, it finishes after the miss beside it, so it answers that and the misses before it.
+    const other = await f.store.createAuthored(taskInput('other'));
+    await missed(other, TASK_AUTO_PAUSE_AFTER_MISSES - 2);
+    const quiet = await checkIn(other, 'quiet', { at: minute(4) });
+    await finish(quiet.dispatchId);
+    const open = await checkIn(other, 'open', { at: minute(4), report: onTrack });
+    const newer = await checkIn(other, 'newer', { at: minute(5) });
+    await finish(newer.dispatchId);
+    const once = { inARow: 1, reason: 'no-report', at: newer.acceptedAt, autoPausedAt: null };
+    expect(await f.store.findOne(other)).toMatchObject({ enabled: true, noRecentUpdate: once });
+    await finish(open.dispatchId);
+    expect(await f.store.findOne(other)).toMatchObject({ enabled: true, noRecentUpdate: once });
+    // A miss that starts beside an open report, then, isn't one, even finishing behind four that started after it.
+    const third = await f.store.createAuthored(taskInput('third'));
+    await checkIn(third, 'reporting', { at: minute(1), report: onTrack });
+    const alongside = await checkIn(third, 'alongside', { at: minute(1) });
+    await missed(third, TASK_AUTO_PAUSE_AFTER_MISSES - 1, 2);
+    await finish(alongside.dispatchId);
+    expect(await f.store.findOne(third)).toMatchObject({ enabled: true, noRecentUpdate: { inARow: TASK_AUTO_PAUSE_AFTER_MISSES - 1, at: minute(5) } });
+    const fourth = await f.store.createAuthored(taskInput('fourth'));
+    const answering = await checkIn(fourth, 'answering', { at: minute(1), report: onTrack });
+    await finish((await checkIn(fourth, 'answered', { at: minute(1) })).dispatchId);
+    expect(await missColumns(fourth.routineId)).toEqual(NO_MISSES);
+    await finish(answering.dispatchId);
+    expect(await missColumns(fourth.routineId)).toEqual(NO_MISSES);
     expect(lines).toEqual([]);
   });
 
