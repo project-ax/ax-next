@@ -1,11 +1,13 @@
 /**
- * task-updates — which check-ins the Updates thread shows, and which it folds
- * into "N earlier check-ins, all on track" (TASK-910).
+ * task-updates — what the Updates thread shows, and which check-ins it folds
+ * into "N earlier check-ins, all on track" (TASK-910, TASK-931).
  *
+ * The thread holds a task's check-ins and the person's replies, newest first.
  * A task that checks in every hour writes a dozen "all on track" lines a day.
  * Showing each one buries the lines that matter, so a run of quiet check-ins
  * keeps its newest and folds the rest. Anything else (a failed check-in, one
- * with no report, one that said needs-you or off-track) always stands alone.
+ * with no report, one that said needs-you or off-track) always stands alone,
+ * and so does a reply: it ends a quiet run and is never folded.
  *
  * It also says what an entry says (`updateText`, shared with a check-in's
  * page), which check-in the latest update came from (`latestUpdateCheckIn`,
@@ -14,37 +16,68 @@
  *
  * Pure, with relative imports only: the server-side wire types live next door.
  */
-import type { TaskDetailReport, TaskUpdate } from './workspace-types.js';
+import type { TaskDetailReport, TaskReply, TaskUpdate } from './workspace-types.js';
 
 /** A fold hides at least this many; a shorter tail stays as single updates. */
 export const FOLD_MIN_HIDDEN = 2;
 
-export type UpdateItem =
+export type TimelineItem =
   | { kind: 'update'; update: TaskUpdate }
+  | { kind: 'reply'; reply: TaskReply }
   | { kind: 'fold'; updates: TaskUpdate[] };
 
 function isQuiet(update: TaskUpdate): boolean {
   return update.status !== 'error' && update.report?.status === 'on-track';
 }
 
-/** Newest-first in, newest-first out. Never mutates its input. */
-export function foldUpdates(updates: readonly TaskUpdate[]): UpdateItem[] {
-  const items: UpdateItem[] = [];
-  let i = 0;
-  while (i < updates.length) {
-    const head = updates[i] as TaskUpdate;
-    items.push({ kind: 'update', update: head });
-    i += 1;
-    if (!isQuiet(head)) continue;
-    let end = i;
-    while (end < updates.length && isQuiet(updates[end] as TaskUpdate)) end += 1;
-    const tail = updates.slice(i, end);
-    if (tail.length >= FOLD_MIN_HIDDEN) {
-      items.push({ kind: 'fold', updates: tail });
-    } else {
-      for (const update of tail) items.push({ kind: 'update', update });
+/** An instant as a number; one `Date.parse` can't read sorts after everything. */
+function instant(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+/**
+ * Both lists newest first in; one newest-first timeline out. Never mutates its
+ * inputs.
+ *
+ * The lists merge by time. At the same instant the check-in goes above the
+ * reply: a reply starts a check-in now, which fires at (or just after) it.
+ */
+export function foldTimeline(
+  updates: readonly TaskUpdate[],
+  replies: readonly TaskReply[],
+): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  /** The check-in goes first while it is at or after the next reply (or none is left). */
+  const updateFirst = (update: TaskUpdate, reply: TaskReply | undefined): boolean =>
+    reply === undefined || instant(update.firedAt) >= instant(reply.sentAt);
+  let u = 0;
+  let r = 0;
+  while (u < updates.length || r < replies.length) {
+    const update = updates[u];
+    const reply = replies[r];
+    if (update !== undefined && updateFirst(update, reply)) {
+      items.push({ kind: 'update', update });
+      u += 1;
+      if (!isQuiet(update)) continue;
+      // Following consecutive quiet check-ins fold; a reply ends the run.
+      let end = u;
+      while (end < updates.length) {
+        const next = updates[end] as TaskUpdate;
+        if (!isQuiet(next) || !updateFirst(next, reply)) break;
+        end += 1;
+      }
+      const tail = updates.slice(u, end);
+      if (tail.length >= FOLD_MIN_HIDDEN) {
+        items.push({ kind: 'fold', updates: tail });
+      } else {
+        for (const t of tail) items.push({ kind: 'update', update: t });
+      }
+      u = end;
+    } else if (reply !== undefined) {
+      items.push({ kind: 'reply', reply });
+      r += 1;
     }
-    i = end;
   }
   return items;
 }

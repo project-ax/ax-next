@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
-  RoutinePatchSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
+  RoutinePatchSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
   RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
 } from './definition.js';
 
@@ -78,6 +78,42 @@ export const RoutineCheckInViewSchema = z.object({
   name: RoutineEditableShape.name,
 }).strict();
 export const RoutineTasksForConversationsOutputSchema = z.object({ checkIns: z.array(RoutineCheckInViewSchema) }).strict();
+/**
+ * `routines:reply` (TASK-931): a task's owner writes to their agent about the
+ * task. Only the routine's owner may. The reply is stored first, and `checkIn`
+ * says what happened next:
+ *   - `started`: a check-in was accepted. Not finished: its update arrives like
+ *     any other check-in's;
+ *   - `replayed`: an earlier try with this `requestId` already started it
+ *     (accepted it: if the host restarted before that check-in ran, it is
+ *     recorded as interrupted, and the reply waits for the next check-in);
+ *   - `not-allowed`: the caller may no longer start the task's check-ins, so
+ *     none starts;
+ *   - `paused`: none starts until a person resumes the task. Only said to a
+ *     caller who may start one, so never to someone who can't resume it.
+ * The same `requestId` again stores nothing new and never starts a second
+ * check-in. Neither a tool nor an IPC action: a reply reaches a model only in a
+ * check-in message.
+ */
+export const ROUTINE_REPLY_CHECK_INS = ['started', 'paused', 'not-allowed', 'replayed'] as const;
+export const RoutineReplyCheckInSchema = z.enum(ROUTINE_REPLY_CHECK_INS);
+export const RoutineReplyInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, text: RoutineReplyTextSchema }).strict();
+export const RoutineReplyOutputSchema = z.object({ replyId: RoutineOpaqueStringSchema, checkIn: RoutineReplyCheckInSchema }).strict();
+/**
+ * `routines:recent-replies` (TASK-931): a task's replies, newest first, for its
+ * owner, and only the ones they wrote: once a task moves to a new owner, the
+ * earlier owner's replies reach no one. Anyone else, and a routine that's gone,
+ * gets none. `limit` is 1 to 50 and defaults to 20. `authorUserId` (so far
+ * always the caller) is there for the caller's own "was this me?" and never
+ * leaves the host. Stored text isn't re-capped (TASK-913). Neither a tool nor
+ * an IPC action.
+ */
+export const ROUTINE_REPLIES_MAX_LIMIT = 50;
+export const RoutineRecentRepliesInputSchema = RoutineKeySchema.extend({ limit: z.number().int().min(1).max(ROUTINE_REPLIES_MAX_LIMIT).optional() }).strict();
+export const RoutineReplyViewSchema = z.object({
+  replyId: RoutineOpaqueStringSchema, authorUserId: z.string().min(1), text: z.string(), sentAt: RoutineInstantSchema,
+}).strict();
+export const RoutineRecentRepliesOutputSchema = z.object({ replies: z.array(RoutineReplyViewSchema) }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -164,3 +200,9 @@ export type RoutineClearNotesOutput = z.output<typeof RoutineClearNotesOutputSch
 export type RoutineTasksForConversationsInput = z.output<typeof RoutineTasksForConversationsInputSchema>;
 export type RoutineTasksForConversationsOutput = z.output<typeof RoutineTasksForConversationsOutputSchema>;
 export type RoutineCheckInView = z.output<typeof RoutineCheckInViewSchema>;
+export type RoutineReplyCheckIn = z.output<typeof RoutineReplyCheckInSchema>;
+export type RoutineReplyInput = z.output<typeof RoutineReplyInputSchema>;
+export type RoutineReplyOutput = z.output<typeof RoutineReplyOutputSchema>;
+export type RoutineRecentRepliesInput = z.output<typeof RoutineRecentRepliesInputSchema>;
+export type RoutineRecentRepliesOutput = z.output<typeof RoutineRecentRepliesOutputSchema>;
+export type RoutineReplyView = z.output<typeof RoutineReplyViewSchema>;

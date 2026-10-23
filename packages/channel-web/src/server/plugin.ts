@@ -73,6 +73,10 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     and the approve, dismiss and undo answers name the task an approval was
 //     held in through the optional routines:tasks-for-conversations, and say
 //     "Held during an unattended run" without it.
+//     TASK-931 adds no hard call either: a task's owner replies through the
+//     optional routines:reply, answering 503 without it, and the task page
+//     reads their replies through the optional routines:recent-replies,
+//     showing none without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -336,6 +340,20 @@ export function createChannelWebServerPlugin(
           hook: 'routines:tasks-for-conversations',
           degradation:
             'an approval held during a task check-in reads "Held during an unattended run" instead of naming its task, and Today offers no Open task link',
+        },
+        {
+          // TASK-931 — a task's owner replies to their agent about it. The
+          // service decides who may (the task's owner), under the routine's
+          // row lock, and whether a check-in starts.
+          hook: 'routines:reply',
+          degradation:
+            'the reply box on the task page (POST /api/workspace/tasks/:agentId/:routineId/replies) answers 503 and nothing is sent',
+        },
+        {
+          // TASK-931 — the task page's Updates show the owner's replies, read
+          // after the caller's own task is decided (`ownTaskOr404`).
+          hook: 'routines:recent-replies',
+          degradation: 'the task page shows no replies in its Updates thread',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

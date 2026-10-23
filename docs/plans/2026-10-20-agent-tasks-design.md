@@ -217,6 +217,8 @@ check-in now.
 
 > PR 1 (TASK-911): See what it did opens `/workspace/tasks/<agentId>/<routineId>/checkins/<conversationId>`, for the task's owner, for any of its newest 200 check-ins. It says when and why the check-in ran and the report it ended with. Then come what the agent said, each tool it ran as one line (the tool, what it ran on, and whether it worked, failed or is waiting), its approval cards and any failure. Not shown: the check-in message the host sent the agent, which would read as the person's own words, and each tool's full input and output, which the workspace has never shown.
 
+> PR 2 (TASK-931): Only the task's owner replies, on team agents too, and only the replies its current owner wrote are ever read: if the task moves to a new owner, the earlier owner's stay stored but unread. A reply is stored and shows in Updates beside the check-ins (the page shows the last 50, never folded). Every later check-in's message carries the last 20, oldest first, quoted as the person's own words, and marks the ones newer than the last report. Sending one starts a check-in now (as Check now does, even while one runs) when the task is running and the person manages the agent's tasks; otherwise it is read at the next check-in. The reply box says "Sent. {agent} started checking in." when one started. After a reply or Check now the page says "Checking in now…" and re-reads every 10 seconds for up to 5 minutes, stopping early on a check-in that wasn't on the page at the press (60 seconds of clock slack). The latest update's ask has a Reply button. Up to 2,000 characters, no invisible or broken characters.
+
 ### 3.4 The task page: "Get something done"
 
 This kind adds a checklist. The agent drafts the steps when the task starts,
@@ -455,10 +457,10 @@ the model that people call routines "tasks".
 | Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. |
 | Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. |
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. |
-| Replies | One small new table: author, text, time. The last 20 go into every check-in. |
+| Replies | One small new table: author, text, time. The last 20 go into every check-in. (TASK-931: `routines_v1_replies`, schema version 8, with each reply's request id so a retry is stored once; the task page shows the last 50.) |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
-| Hooks | `routines:report`, `routines:clear-notes`, `routines:tasks-for-conversations` (a read for labels: which conversations are the caller's own task check-ins, TASK-932), `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
+| Hooks | `routines:report`, `routines:clear-notes`, `routines:tasks-for-conversations` (a read for labels: which conversations are the caller's own task check-ins, TASK-932), `routines:reply`, `routines:recent-replies` (the owner's replies, for the task page), `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
 | channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |
 
@@ -640,6 +642,7 @@ suggest a short body for known apps.
   check-in already running: one that started before the clear still reports,
   but can’t put notes back (TASK-910). Updates from other apps are fenced as
   outside content in the message and never reach the system prompt.
+- **A reply is the owner's own words.** Owner-only, read only while its author owns the task, screened before it's stored, and it reaches a model only in a check-in's message, quoted and labelled, never in the brief, never in run history anyone else reads, never in memory. Each reply starts at most one check-in, under the usual limits (TASK-931).
 - **Cost stays bounded.** Check-ins are fresh, small sessions. The shortest
   schedule is 15 minutes, "respond within" caps update check-ins, usage limits
   apply as they do now, and five check-ins in a row that end without a report pause the task. Only a person's Resume starts the count over (TASK-930).
@@ -885,8 +888,8 @@ view-only sharing of a task and an "Also ask" list.
 - **New hooks:** `routines:report`, `routines:clear-notes` (TASK-910),
   `routines:tasks-for-conversations` (TASK-932, owner-only, absent for
   anything that isn't the caller's own check-in),
-  `routines:reply`, `routines:set-steps`, `routines:complete`,
-  `routines:reopen`; task state on `routines:list` and `routines:get`, and `noRecentUpdate` (TASK-930); the
+  `routines:reply`, `routines:recent-replies`, `routines:set-steps`,
+  `routines:complete`, `routines:reopen`; task state on `routines:list` and `routines:get`, and `noRecentUpdate` (TASK-930); the
   `system-prompt:augment:optional:routines` provider; the
   veto-capable `chat:system-prompt-landed { reqId: string; providers: string[] }`
   (TASK-908, modelled on `chat:connectors-skipped`); and the veto-capable
@@ -960,3 +963,10 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-23 | Decided | While a task is paused by misses its count freezes, so a late run can't push it past 5 or clear the paused state by reporting. Only a person's Resume or a kind change ends the freeze (TASK-930). |
 | 2026-10-23 | Decided | The agent's `routine_update` can't resume a paused task. `enabled: true` is refused with `forbidden` on field `enabled`, before any approval and again at run time. This closes the Always Allow gap from TASK-906 (TASK-930). |
 | 2026-10-23 | Decided | The words for each reason, and the count sentence once it reaches three, live in one table in channel-web. A paused task's fix says to resume, never Check now. "See what it did" links the check-in that missed, found by its start time (TASK-930). |
+| 2026-10-23 | Decided | Replies are owner-only, on team agents too (TASK-931). |
+| 2026-10-23 | Decided | Replies are read only for the task's current owner, and only the ones they wrote. If the task moves to a new owner, the earlier owner's replies stay stored but reach neither the new owner's page nor their check-ins, and read again only if the task moves back (TASK-931). |
+| 2026-10-23 | Decided | A reply starts a check-in now, even while one runs. A paused task, or an owner who can't manage the agent's tasks, stores it without one (TASK-931). |
+| 2026-10-23 | Decided | The check-in is keyed on the reply, so a retry starts at most one (TASK-931). |
+| 2026-10-23 | Decided | Replies survive a kind change and go with their task or agent (TASK-931). |
+| 2026-10-23 | Decided | A check-in's message carries the last 20 replies; the task page shows the last 50 (TASK-931). |
+| 2026-10-23 | Decided | After Check now or a reply the page re-reads every 10 seconds for up to 5 minutes, and stops early on a check-in that wasn't on the page at the press (60 seconds of clock slack) (TASK-931). |

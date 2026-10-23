@@ -2,6 +2,8 @@
  * A task's Updates thread (TASK-910): its check-ins, newest first, with a run
  * of quiet "all on track" ones folded behind one line.
  *
+ * TASK-931 adds the person's replies to the same thread.
+ *
  * The copy is asserted verbatim because it is decided (TASK-910 decisions rows
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
@@ -9,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
-import type { TaskUpdate } from '@/lib/workspace-types';
+import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { TaskUpdates } from '../TaskUpdates';
 
 const NOW = new Date('2026-10-22T15:00:00.000Z');
@@ -31,10 +33,17 @@ function onTrack(n: number): TaskUpdate {
   return update({ firedAt: at, report: { status: 'on-track', update: `Update ${n}` } });
 }
 
-function renderThread(updates: TaskUpdate[]) {
+function renderThread(updates: TaskUpdate[], replies: TaskReply[] = []) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
   const view = render(
-    <TaskUpdates updates={updates} now={NOW} agentId="a1" routineId="t1" onNavigate={onNavigate} />,
+    <TaskUpdates
+      updates={updates}
+      replies={replies}
+      now={NOW}
+      agentId="a1"
+      routineId="t1"
+      onNavigate={onNavigate}
+    />,
   );
   return { ...view, onNavigate };
 }
@@ -224,6 +233,62 @@ describe('TaskUpdates (TASK-910)', () => {
       const entry = link.closest('li') as HTMLElement;
       expect(within(entry).getByText(`Update ${i + 1}`)).toBeInTheDocument();
       expect(link.getAttribute('href')).toMatch(new RegExp(`/checkins/c${i + 1}$`));
+    });
+  });
+
+  describe('the person’s replies (TASK-931)', () => {
+    function reply(over: Partial<TaskReply> = {}): TaskReply {
+      return {
+        sentAt: '2026-10-22T14:30:00.000Z',
+        text: 'Refunds under $100 are fine.',
+        byYou: true,
+        ...over,
+      };
+    }
+
+    it('a reply shows its time, You and the text, with no mark and no link', () => {
+      renderThread([update({ firedAt: '2026-10-22T14:00:00.000Z', conversationId: 'c1' })], [reply()]);
+      const items = screen.getAllByRole('listitem');
+      expect(items).toHaveLength(2);
+      const item = items[0]!;
+      expect(item.textContent).toBe(
+        `${updateStamp('2026-10-22T14:30:00.000Z', NOW)}You Refunds under $100 are fine.`,
+      );
+      expect(within(item).queryByRole('link')).toBeNull();
+      expect(item.querySelector('.sr-only')).toBeNull();
+    });
+
+    it('someone else’s reply says so', () => {
+      renderThread([], [reply({ byYou: false })]);
+      expect(screen.getByText('Someone else')).toHaveClass('font-medium');
+      expect(screen.queryByText('You')).toBeNull();
+    });
+
+    it('a reply that can’t be shown says so', () => {
+      renderThread([], [reply({ text: null })]);
+      expect(screen.getByRole('listitem').textContent).toBe(
+        `${updateStamp('2026-10-22T14:30:00.000Z', NOW)}You We can’t show this reply.`,
+      );
+    });
+
+    it('a reply keeps its line breaks and draws as plain text', () => {
+      const text = '**bold** <img src=x onerror=alert(1)>\nsecond line';
+      const { container } = renderThread([], [reply({ text })]);
+      const p = container.querySelector('li p') as HTMLElement;
+      expect(p).toHaveClass('whitespace-pre-wrap');
+      expect(p.textContent).toBe(`You ${text}`);
+      expect(container.querySelector('img, strong')).toBeNull();
+    });
+
+    it('a reply between quiet check-ins breaks the fold', () => {
+      renderThread(
+        [onTrack(1), onTrack(2), onTrack(4), onTrack(5), onTrack(6)],
+        [reply({ sentAt: onTrack(3).firedAt })],
+      );
+      expect(
+        screen.getByRole('button', { name: '2 earlier check-ins, all on track' }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Refunds under $100 are fine.', { exact: false })).toBeInTheDocument();
     });
   });
 });

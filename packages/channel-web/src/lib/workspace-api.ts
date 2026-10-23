@@ -39,6 +39,7 @@
  */
 import {
   CHECK_IN_MISSES,
+  ROUTINE_REPLY_CHECK_INS,
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
   RoutineStatusSchema,
@@ -100,6 +101,7 @@ CounterRow,
   UserFileEntry,
   TaskCheckin,
   TaskDetail,
+  TaskReplyResponse,
   TasksResponse,
   UserFilesAnswer,
   WorkspaceAgent,
@@ -511,6 +513,11 @@ function isTaskUpdate(v: unknown): boolean {
   );
 }
 
+/** One reply: when it was sent, the person's fenced text (or null), and whether the caller wrote it. */
+function isTaskReply(v: unknown): boolean {
+  return isRecord(v) && isString(v.sentAt) && isStringOrNull(v.text) && typeof v.byYou === 'boolean';
+}
+
 function isTaskPermissions(v: unknown): boolean {
   return (
     isRecord(v) &&
@@ -543,7 +550,9 @@ function isTaskDetail(b: unknown): boolean {
     (b.task === null || isTaskDetailReport(b.task)) &&
     (b.noRecentUpdate === null || isTaskNoRecentUpdate(b.noRecentUpdate)) &&
     Array.isArray(b.updates) &&
-    b.updates.every(isTaskUpdate)
+    b.updates.every(isTaskUpdate) &&
+    Array.isArray(b.replies) &&
+    b.replies.every(isTaskReply)
   );
 }
 
@@ -1030,6 +1039,29 @@ export const workspaceApi = {
       path,
       body,
       (v) => isRecord(v) && !Array.isArray(v) && v.cleared === true,
+    );
+  },
+
+  /**
+   * Reply to the agent about a task (TASK-931). The answer says what the
+   * reply did about a check-in, and the box words its "Sent." line from it, so
+   * an answer that doesn't say is a `WorkspaceShapeError`, not a guess. A
+   * refusal or failure is a `WorkspaceApiError` carrying only the status.
+   */
+  sendTaskReply: async (
+    agentId: string,
+    routineId: string,
+    input: { text: string; requestId: string },
+  ) => {
+    const path = `${taskPath(agentId, routineId)}/replies`;
+    const body = await req<unknown>(path, {
+      method: 'POST',
+      body: { text: input.text, requestId: input.requestId },
+    });
+    return checkedRead<TaskReplyResponse>(
+      path,
+      body,
+      (v) => isRecord(v) && !Array.isArray(v) && ROUTINE_REPLY_CHECK_INS.some((c) => c === v.checkIn),
     );
   },
 

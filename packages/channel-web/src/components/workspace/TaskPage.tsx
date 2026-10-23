@@ -3,7 +3,9 @@
  * task's own page (TASK-910).
  *
  * It reads like a thread (design §3.3): the latest update at the top, the brief
- * under it, then every check-in. The header holds the page's two actions,
+ * under it, then every check-in and the person's replies, then the reply box
+ * (TASK-931; the latest update's ask has a Reply button that focuses it). The
+ * header holds the page's two actions,
  * Check now and Pause, or Resume while it's paused. The page reads its own task
  * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
  * task's ids, since a refresh keeps what's on screen.
@@ -33,11 +35,21 @@
  * (a revision conflict), and the press after that starts afresh. Any other
  * answer, a refusal included, ends the request.
  *
- * WHAT IS SAID OUT LOUD, AND BY WHOM: each outcome once (TASK-651). "Checking
- * in now." is said by a polite live region that is mounted with the task, not
- * inserted with its sentence (a region created and filled together is the
- * announcement screen readers drop most often). A failure is an `Alert`.
- * Neither ever takes focus, so neither is heard twice.
+ * WHAT IS SAID OUT LOUD, AND BY WHOM: each outcome once (TASK-651). The
+ * page's lines are said by one polite live region that is mounted with the
+ * task, not inserted with its sentence (a region created and filled together
+ * is the announcement screen readers drop most often). After Check now or a
+ * reply starts a check-in it says "Checking in now…" while the page reads the
+ * task again every 10 seconds (`useTaskPoll`, TASK-931), then "{agent}
+ * finished checking in." when that check-in's update arrives, or "The
+ * check-in didn’t finish. The reason is under Updates." when it arrived as an
+ * error, or "Still checking in. …" after five minutes. A Check now press
+ * clears the line first, so each press is heard again. The reply box speaks
+ * its own sent line ("Sent. {agent} started checking in."), so when a reply
+ * started it, the page's "Checking in now…" is shown but hidden from screen
+ * readers. A failure is an `Alert`. None of them ever takes focus, so none is
+ * heard twice. The 10-second re-reads are quiet (`refreshQuietly`): they
+ * leave the buttons pressable and raise no alert when one fails.
  *
  * WHERE FOCUS GOES after a press. A browser drops focus on `<body>` from a
  * button the moment it goes disabled, and every button here is disabled while
@@ -78,11 +90,13 @@ import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
 import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
+import { useTaskPoll } from '@/lib/use-task-poll';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import { checkInWhen } from '@/lib/workspace-time';
-import type { TaskDetail } from '@/lib/workspace-types';
+import type { TaskDetail, TaskReplyCheckIn } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { TaskNotes } from './TaskNotes';
+import { TaskReplyBox } from './TaskReplyBox';
 import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
 
@@ -96,7 +110,9 @@ const LOAD_COPY: Record<TaskReadError, string> = {
 };
 const REFRESH_FAILED =
   'We couldn’t refresh this task just now, so what you see may be out of date.';
-const CHECKING_IN = 'Checking in now. Its update will show under Updates when it’s done.';
+const CHECKING_IN = 'Checking in now…';
+const DIDNT_FINISH = 'The check-in didn’t finish. The reason is under Updates.';
+const STILL_CHECKING = 'Still checking in. Its update will be under Updates when it’s done.';
 const CANT_SHOW = 'It left an update we can’t show.';
 
 type ActionKind = 'check' | 'pause' | 'resume';
@@ -166,8 +182,10 @@ function pressFailure(kind: ActionKind, e: unknown): { text: string; register: A
   }
 }
 
-/** What the last press left on the page: a sentence for the live region, or an alert. */
-type Notice = { said: string } | { failed: string; register: AlertRegister } | null;
+/** What the last press left on the page when it failed: an alert. Success speaks through the poll. */
+type Notice = { failed: string; register: AlertRegister } | null;
+
+type TaskPoll = ReturnType<typeof useTaskPoll>;
 
 interface PendingPress {
   kind: ActionKind;
@@ -180,6 +198,7 @@ function useTaskActions(
   routineId: string,
   detail: TaskDetail | null,
   refresh: () => void,
+  poll: Pick<TaskPoll, 'start' | 'stop'>,
 ) {
   const [acting, setActing] = useState<ActionKind | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -191,6 +210,8 @@ function useTaskActions(
     inFlight.current = true;
     setActing(kind);
     setNotice(null);
+    // Clearing the line at the press is what lets the same words be heard again.
+    if (kind === 'check') poll.stop();
     const op: PendingPress =
       pending.current?.kind === kind
         ? pending.current
@@ -205,11 +226,8 @@ function useTaskActions(
     try {
       if (kind === 'check') {
         const result = await routineApi.fireNow(request);
-        setNotice(
-          result.status === 'ok'
-            ? { said: CHECKING_IN }
-            : { failed: REFUSED.check, register: 'destructive' },
-        );
+        if (result.status === 'ok') poll.start('check-now');
+        else setNotice({ failed: REFUSED.check, register: 'destructive' });
       } else {
         await routineApi.update({ ...request, patch: { enabled: kind === 'resume' } });
       }
@@ -268,9 +286,10 @@ export function TaskPage({
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const { state, refresh } = useTask(agentId, routineId);
+  const { state, refresh, refreshQuietly } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
-  const { acting, notice, press } = useTaskActions(agentId, routineId, detail, refresh);
+  const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
+  const { acting, notice, press } = useTaskActions(agentId, routineId, detail, refresh, poll);
   const busy = acting !== null || (state.kind === 'ready' && state.refreshing);
 
   const noteId = useId();
@@ -283,6 +302,13 @@ export function TaskPage({
   const onPress = (kind: ActionKind) => {
     pressed.current = kind === 'check' ? 'check' : 'toggle';
     void press(kind);
+  };
+
+  // A reply that started a check-in watches for it like Check now does; every
+  // reply reads the task again, so Updates shows it.
+  const onReplySent = (checkIn: TaskReplyCheckIn) => {
+    if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply');
+    refresh();
   };
 
   return (
@@ -333,9 +359,11 @@ export function TaskPage({
               refreshing={state.refreshing}
               refreshFailed={state.refreshFailed}
               notice={notice}
+              poll={poll}
               noteId={noteId}
               noteRef={noteRef}
               onRefresh={refresh}
+              onReplySent={onReplySent}
               onNavigate={onNavigate}
             />
           )}
@@ -432,9 +460,11 @@ function TaskBody({
   refreshing,
   refreshFailed,
   notice,
+  poll,
   noteId,
   noteRef,
   onRefresh,
+  onReplySent,
   onNavigate,
 }: {
   agentId: string;
@@ -443,11 +473,14 @@ function TaskBody({
   refreshing: boolean;
   refreshFailed: boolean;
   notice: Notice;
+  poll: TaskPoll;
   noteId: string;
   noteRef: RefObject<HTMLParagraphElement | null>;
   onRefresh: () => void;
+  onReplySent: (checkIn: TaskReplyCheckIn) => void;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
+  const replyRef = useRef<HTMLTextAreaElement>(null);
   // Times on the page are read against the clock when the task last arrived,
   // not when the page first opened. A layout effect, so a stale time never
   // reaches the screen.
@@ -498,12 +531,12 @@ function TaskBody({
             {note}
           </p>
         )}
-        {/* Empty, and taking no room, until a press has something to say. */}
+        {/* Empty, and taking no room, until a check-in has something to say. */}
         <p role="status" className="mt-1 text-[13px] empty:mt-0">
-          {notice !== null && 'said' in notice && notice.said}
+          <PollLine poll={poll} agentName={agentName} />
         </p>
       </div>
-      {notice !== null && 'failed' in notice && (
+      {notice !== null && (
         <Alert variant={notice.register}>
           <AlertDescription>{notice.failed}</AlertDescription>
         </Alert>
@@ -514,6 +547,7 @@ function TaskBody({
         agentId={agentId}
         routineId={routineId}
         onNavigate={onNavigate}
+        onReply={() => replyRef.current?.focus()}
       />
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
         <h2 id={briefId} className="sr-only">
@@ -547,13 +581,49 @@ function TaskBody({
       </section>
       <TaskUpdates
         updates={detail.updates}
+        replies={detail.replies}
         now={now}
         agentId={agentId}
         routineId={routineId}
         onNavigate={onNavigate}
       />
+      <TaskReplyBox
+        agentId={agentId}
+        routineId={routineId}
+        agentName={agentName}
+        enabled={detail.enabled}
+        canStart={detail.permissions.fire}
+        inputRef={replyRef}
+        onSent={onReplySent}
+      />
     </>
   );
+}
+
+/**
+ * The page's live line about a check-in a press or a reply started (see WHAT
+ * IS SAID OUT LOUD, above). Nothing while no check-in is being watched.
+ */
+function PollLine({ poll, agentName }: { poll: TaskPoll; agentName: string }) {
+  switch (poll.phase) {
+    case 'idle':
+      return null;
+    case 'checking':
+      return (
+        // The reply box already said a reply started it: shown, not said again.
+        <span
+          aria-hidden={poll.startedBy === 'reply' || undefined}
+          className="inline-flex items-center gap-1.5"
+        >
+          <Spinner aria-hidden="true" />
+          {CHECKING_IN}
+        </span>
+      );
+    case 'arrived':
+      return poll.arrived?.status === 'error' ? DIDNT_FINISH : `${agentName} finished checking in.`;
+    case 'timed-out':
+      return STILL_CHECKING;
+  }
 }
 
 /** One row of the brief, the `DecisionTaskBlock` row shape. The text keeps its own line breaks. */
@@ -599,6 +669,9 @@ function BriefRow({
  * still being waited on, and hiding the ask would hide that.
  * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
  * update and its ask are agent-written.
+ *
+ * Wherever the ask shows, a Reply button follows it (TASK-931): the ask is the
+ * person being waited on, and the reply box under Updates is how to answer.
  */
 function LatestUpdate({
   detail,
@@ -606,12 +679,15 @@ function LatestUpdate({
   agentId,
   routineId,
   onNavigate,
+  onReply,
 }: {
   detail: TaskDetail;
   now: Date;
   agentId: string;
   routineId: string;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** Takes the person to the reply box. */
+  onReply: () => void;
 }) {
   const headingId = useId();
   const { task, enabled, agentName } = detail;
@@ -689,9 +765,12 @@ function LatestUpdate({
               </p>
             )}
             {task?.ask != null && (
-              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
-                {`${agentName} asks: ${task.ask}`}
-              </p>
+              <>
+                <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                  {`${agentName} asks: ${task.ask}`}
+                </p>
+                <ReplyButton onReply={onReply} />
+              </>
             )}
           </CardContent>
         </Card>
@@ -744,15 +823,27 @@ function LatestUpdate({
                 }
               />
               {task.ask !== null && (
-                <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-                  {`${agentName} asks: ${task.ask}`}
-                </p>
+                <>
+                  <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
+                    {`${agentName} asks: ${task.ask}`}
+                  </p>
+                  <ReplyButton onReply={onReply} />
+                </>
               )}
             </>
           )}
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+/** Outline, so the page keeps one primary action (Check now, or Resume). */
+function ReplyButton({ onReply }: { onReply: () => void }) {
+  return (
+    <Button type="button" variant="outline" size="sm" className="self-start" onClick={onReply}>
+      Reply
+    </Button>
   );
 }
 

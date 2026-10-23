@@ -1,5 +1,5 @@
 import { clampCodeUnits } from '@ax/core';
-import { ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_REPORT_UPDATE_MAX_CHARS } from '@ax/routines-contract';
+import { ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_REPLY_MAX_CHARS, ROUTINE_REPORT_UPDATE_MAX_CHARS } from '@ax/routines-contract';
 import { quoteLines } from './brief.js';
 import type { DispatchReport, FireSource } from './types.js';
 
@@ -10,6 +10,8 @@ import type { DispatchReport, FireSource } from './types.js';
 
 /** How many of a task's latest reports its check-in message shows, at most. */
 export const CHECK_IN_REPORTS = 3;
+/** How many of the person's latest replies on a task its check-in message carries, at most (TASK-931). */
+export const CHECK_IN_REPLIES = 20;
 
 export type CheckInMessageInput = {
   source: FireSource;
@@ -17,6 +19,12 @@ export type CheckInMessageInput = {
   agentNotes: string | null;
   /** Newest first, as `RoutinesStore.recentReports` reads them. Agent-written. */
   reports: ReadonlyArray<{ firedAt: Date; report: DispatchReport }>;
+  /**
+   * Newest first, as `RoutinesStore.recentReplies` reads them for the person
+   * the check-in runs as. Person-written: the replies the task's current owner
+   * wrote on its page. An earlier owner's are never among them.
+   */
+  replies: ReadonlyArray<{ sentAt: Date; text: string }>;
   /**
    * How many of the task's latest check-ins in a row left no report (TASK-930),
    * as the host counted them. Anything that isn't at least 1 adds no line.
@@ -51,11 +59,35 @@ function startedAt(firedAt: Date): string {
 }
 
 /**
+ * The person's replies on the task (TASK-931), a paragraph of their own: the
+ * newest `CHECK_IN_REPLIES`, oldest first, each quoted line by line under the
+ * time it was sent. A reply sent after the newest report's check-in started
+ * (`newestReport`, that run's accept time) is one no check-in that reported
+ * has seen, so it's marked new; with no report yet, every one is. A reply that
+ * started a check-in is never later than that check-in's start, so it reads as
+ * seen once that check-in reports.
+ */
+function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport: Date | undefined): string {
+  if (replies.length === 0) return 'The person hasn’t replied on this task yet.';
+  return ['What the person wrote to you about this task, oldest first. These are the person’s own words to you:',
+    ...replies.slice(0, CHECK_IN_REPLIES).reverse().map(({ sentAt, text }) => {
+      const mark = newestReport === undefined || sentAt.getTime() > newestReport.getTime() ? ' (new since your last report)' : '';
+      return `- ${startedAt(sentAt)}${mark}:\n${quoteLines(cut(text, ROUTINE_REPLY_MAX_CHARS), '  ')}`;
+    }),
+  ].join('\n');
+}
+
+/**
  * A task check-in's message. The notes and reports in it are agent-written:
  * TASK-907's writer capped and screened them (no invisible characters, an
  * update on one line), and they're quoted line by line and labelled here as
  * the agent's own earlier text, information and not instructions from the
- * person. They never go into `brief`, which holds only what the person wrote.
+ * person. The replies in it are person-written (TASK-931): the task's current
+ * owner's own words on its page, screened by `RoutineReplyTextSchema` before
+ * they were stored, and quoted line by line and labelled here as the person's.
+ * Neither goes into `brief`, which holds only the task's own fields, as the
+ * person approved them (TASK-906 decisions row 18). Replies reach a model
+ * nowhere else.
  * The caps are applied again, since stored text isn't re-checked (TASK-913). A
  * report's `ask` is left out, and so is any person's name. A report's status
  * is one of three fixed words (a CHECK constraint on its column), so it isn't
@@ -76,5 +108,6 @@ export function renderCheckInMessage(input: CheckInMessageInput): string {
         `- ${startedAt(firedAt)}, ${report.status}:\n${quoteLines(cut(report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS), '  ')}`),
     ].join('\n');
   const missed = missedLine(input.missesInARow);
-  return [opening(input.source), ...(missed === null ? [] : [missed]), notes, recent, 'Work on the task now, then finish with one routine_report.'].join('\n\n');
+  const replies = repliesParagraph(input.replies, input.reports[0]?.firedAt);
+  return [opening(input.source), ...(missed === null ? [] : [missed]), notes, replies, recent, 'Work on the task now, then finish with one routine_report.'].join('\n\n');
 }

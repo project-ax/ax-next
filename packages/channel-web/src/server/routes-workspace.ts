@@ -8,6 +8,7 @@
  * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
  * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
  * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the agent's notes on that task (TASK-910)
+ * POST /api/workspace/tasks/:agentId/:routineId/replies — reply to the agent about that task (TASK-931)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
@@ -58,16 +59,23 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's three routes, `/tasks/:agentId/:routineId`, its
- *     `/notes` (TASK-910) and its `/checkins/:conversationId` (TASK-911),
- *     which reach the agent's tasks rather than its files. The order on each
- *     is: `authOr401` → empty-id 400 → `resolveAgentOr404` → (path
- *     validation) → read. Nothing reads before the resolve. The task page
- *     then shows only the caller's own task (`isOwnTask`), and reads no run
- *     history before deciding that. A check-in's transcript (TASK-911) must
- *     also be one of that task's newest 200 check-ins before its
- *     conversation is read, and `conversations:get` checks again that it is
- *     the caller's own.
+ *     the task page's four routes, `/tasks/:agentId/:routineId`, its
+ *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911) and
+ *     its `/replies` (TASK-931), which reach the agent's tasks rather than
+ *     its files. The order on each is: `authOr401` → empty-id 400 →
+ *     `resolveAgentOr404` → (path validation) → read. Nothing reads before
+ *     the resolve. The task page then shows only the caller's own task
+ *     (`isOwnTask`), and reads no run history and no reply before deciding
+ *     that. A check-in's transcript (TASK-911) must also be one of that
+ *     task's newest 200 check-ins before its conversation is read, and
+ *     `conversations:get` checks again that it is the caller's own.
+ *     `/notes` and `/replies` are writes that read nothing at all: before the
+ *     resolve they check only the request (`/replies` its body's shape too)
+ *     and that their hook is there, and their services decide ownership
+ *     under the routine's row lock. A reply's text is the person's own, and
+ *     the contract's reply rule screens it (blank, too long, invisible or
+ *     broken characters) before anything is written; it reaches a model only
+ *     quoted in a check-in's message.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -138,6 +146,7 @@ import {
   ROUTINE_DEFINITION_MAX_BYTES,
   ROUTINE_HISTORY_MAX_LIMIT,
   ROUTINE_NAME_MAX_CHARS,
+  ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineCreateToolInputSchema,
@@ -148,6 +157,8 @@ import {
 import type {
   RoutineCheckInView,
   RoutineFireView,
+  RoutineReplyOutput,
+  RoutineReplyView,
   RoutineTasksForConversationsInput,
   RoutineTasksForConversationsOutput,
   RoutineView,
@@ -199,6 +210,8 @@ import type {
   TaskCheckin,
   TaskDetail,
   TaskNoRecentUpdate,
+  TaskReply,
+  TaskReplyResponse,
   TaskRow,
   TasksResponse,
   TaskUpdate,
@@ -773,6 +786,27 @@ interface TaskFiresOutput {
 interface TaskClearNotesOutput {
   cleared: true;
 }
+
+/**
+ * `routines:recent-replies` and `routines:reply` (TASK-931), as the task page
+ * uses them. The bus has already parsed both answers through the services'
+ * `returns` (`RoutineRecentRepliesOutputSchema`, `RoutineReplyOutputSchema`).
+ * Only the fields named here are read: a reply's id and who wrote it stay on
+ * the host (`toTaskReply` turns the author into `byYou`), and of a sent reply
+ * only what it did about a check-in is answered.
+ */
+interface TaskRepliesInput extends TaskKeyInput {
+  limit: number;
+}
+type TaskReplyView = Pick<RoutineReplyView, 'authorUserId' | 'text' | 'sentAt'>;
+interface TaskRepliesOutput {
+  replies: TaskReplyView[];
+}
+interface TaskReplyInput extends TaskKeyInput {
+  requestId: string;
+  text: string;
+}
+type TaskReplyOutput = Pick<RoutineReplyOutput, 'checkIn'>;
 
 /**
  * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
@@ -3432,6 +3466,19 @@ const TASK_UPDATES_LIMIT = 50;
 const TASK_NOTES_MAX_CHARS = 6 * ROUTINE_AGENT_NOTES_MAX_CHARS;
 const TASK_NOTES_MAX_LINES = ROUTINE_AGENT_NOTES_MAX_CHARS + 1;
 
+/** How many of a task's replies its page shows, newest first (TASK-931). */
+const TASK_REPLIES_LIMIT = 50;
+
+/**
+ * How much of one reply a task's page carries (TASK-931 decisions row 13):
+ * the notes' rule, above, for the same reason. A check-in's message reads a
+ * reply's first `ROUTINE_REPLY_MAX_CHARS` UTF-16 units, and with these caps
+ * the page never shows less of it: a hidden character spelled out costs six
+ * code points, and every line after the first costs one of them.
+ */
+const TASK_REPLY_MAX_CHARS = 6 * ROUTINE_REPLY_MAX_CHARS;
+const TASK_REPLY_MAX_LINES = ROUTINE_REPLY_MAX_CHARS + 1;
+
 /**
  * Is this a routines service saying "not yours" or "not there", or a real
  * failure? (TASK-910 decisions row 11)
@@ -3467,6 +3514,20 @@ function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | nul
 }
 
 /**
+ * A reply's body (TASK-931): `text` a string and `requestId` a non-empty one,
+ * or null. Only its shape is checked here. What the text may hold is the
+ * contract's reply rule, which `routines:reply` applies before it writes
+ * anything; anything else in the body is left behind.
+ */
+function readTaskReplyBody(parsed: unknown): { text: string; requestId: string } | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { text, requestId } = parsed as Record<string, unknown>;
+  if (typeof text !== 'string') return null;
+  if (typeof requestId !== 'string' || requestId.length === 0) return null;
+  return { text, requestId };
+}
+
+/**
  * One task's `routines:get` view and its check-ins → its own page (TASK-910).
  *
  * Built field by field, never spread from the view, so nothing rides along
@@ -3487,11 +3548,18 @@ function taskKeyOr400(req: RouteRequest, res: RouteResponse): TaskKeyInput | nul
  * carries the trigger's own time zone, so it is fenced too. `agentName` is
  * the roster's string as-is, the same one `/state` sends. `noRecentUpdate` is
  * host-written (`toTaskNoRecentUpdate`) and holds no agent-written text.
+ *
+ * The person's replies (TASK-931) are their own text, but stored text isn't
+ * re-checked against the rule it was written under (TASK-913), so each is
+ * fenced as a block like the notes (`TASK_REPLY_MAX_CHARS`). A reply carries
+ * no author: only `byYou`, said against the caller, and never its id.
  */
 function toTaskDetail(
   agent: { displayName: string },
   view: TaskDetailView,
   fires: readonly TaskFireView[],
+  replies: readonly TaskReplyView[],
+  userId: string,
 ): TaskDetail {
   return {
     agentName: agent.displayName,
@@ -3530,6 +3598,21 @@ function toTaskDetail(
           },
     noRecentUpdate: toTaskNoRecentUpdate(view),
     updates: fires.map(toTaskUpdate),
+    replies: replies.map((reply) => toTaskReply(reply, userId)),
+  };
+}
+
+/**
+ * One reply → one entry in a task's Updates thread (TASK-931). Field by
+ * field: who wrote it becomes `byYou`, and its id stays here. routines reads
+ * only the replies the task's current owner wrote, so `byYou` is true in
+ * practice; it is still compared, never assumed.
+ */
+function toTaskReply(reply: TaskReplyView, userId: string): TaskReply {
+  return {
+    sentAt: reply.sentAt,
+    text: fenceBlock(reply.text, TASK_REPLY_MAX_CHARS, TASK_REPLY_MAX_LINES)?.text ?? null,
+    byYou: reply.authorUserId === userId,
   };
 }
 
@@ -7168,17 +7251,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * The house order for a per-agent read, then the page's own rule
      * (decisions row 11): `authOr401` → ids (400) → `resolveAgentOr404` →
      * `routines:get` as the caller → the caller's own task (`isOwnTask`, the
-     * Tasks page's rule, reused) → only then `routines:recent-fires`. The
+     * Tasks page's rule, reused) → only then `routines:recent-fires`, and
+     * after it the person's replies, `routines:recent-replies` (TASK-931). The
      * steps up to the ownership decision are `ownTaskOr404`, which a
-     * check-in's page shares (TASK-911). No run history is read before the
-     * ownership decision. A repeat routine, someone else's task, a routine
-     * that isn't there and an agent the caller can't reach all answer 404,
-     * never 403, so a stranger can't learn that an id exists. Without
-     * @ax/routines nobody has a task, so that is a 404 too.
+     * check-in's page shares (TASK-911). No run history and no reply is read
+     * before the ownership decision: the replies service answers a routine's
+     * owner whatever its kind (replies outlive a kind change), so this gate
+     * is what keeps a repeat routine's replies off any page. A repeat
+     * routine, someone else's task, a routine that isn't there and an agent
+     * the caller can't reach all answer 404, never 403, so a stranger can't
+     * learn that an id exists. Without @ax/routines nobody has a task, so
+     * that is a 404 too. A deployment without the replies hook shows no
+     * replies.
      *
-     * Any other failure fails the request, a failed history read included:
-     * "we don't know" must not render as "no updates yet" (design H7), so the
-     * page says it couldn't load and offers Try again.
+     * Any other failure fails the request, a failed history or replies read
+     * included: "we don't know" must not render as "no updates yet" or "no
+     * replies" (design H7), so the page says it couldn't load and offers Try
+     * again.
      */
     async taskDetail(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -7192,7 +7281,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         own.ctx,
         { ...key, limit: TASK_UPDATES_LIMIT },
       );
-      res.status(200).json(toTaskDetail(own.agent, own.view, fires));
+      const replies = bus.hasService('routines:recent-replies')
+        ? (
+            await bus.call<TaskRepliesInput, TaskRepliesOutput>(
+              'routines:recent-replies',
+              own.ctx,
+              { ...key, limit: TASK_REPLIES_LIMIT },
+            )
+          ).replies
+        : [];
+      res.status(200).json(toTaskDetail(own.agent, own.view, fires, replies, userId));
     },
 
     /**
@@ -7230,6 +7328,77 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       res.status(200).json({ cleared: true } satisfies TaskClearNotesOutput);
+    },
+
+    /**
+     * POST /api/workspace/tasks/:agentId/:routineId/replies — a task's owner
+     * writes to their agent about it (TASK-931, decisions row 12). The reply is
+     * stored, and may start a check-in now; `checkIn` says which.
+     *
+     * `authOr401` → ids (400) → the body: JSON (400 `invalid-json`) holding a
+     * string `text` and a non-empty string `requestId` (400 `invalid-body`) →
+     * without `routines:reply`, 503 → `resolveAgentOr404` → `routines:reply`
+     * as the caller, its input built field by field, so nothing else in the
+     * body rides along and the address, not the body, names the task. Like
+     * Clear notes it reads nothing first: the service decides ownership
+     * under the routine's row lock, and the contract's reply rule screens the
+     * text before anything is written.
+     *
+     * A `validation` refusal is the input as sent, nearly always a text the
+     * reply rule refuses (an id no routine can have is the other case), and
+     * answers 400 `reply-invalid`. It is checked before `isTaskRefusal`,
+     * which counts `validation` as a read's 404. `not-found` and `forbidden`
+     * are the page's own 404. Anything else fails the request, `unavailable`
+     * included, so the box says it couldn't confirm the reply was sent rather
+     * than "Sent". The answer is `checkIn` only: the reply's id has no reader
+     * in the browser. CSRF is @ax/http-server's global guard, as for Clear
+     * notes.
+     */
+    async taskReply(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readTaskReplyBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+      if (!bus.hasService('routines:reply')) {
+        res.status(503).json({ error: 'task-replies-unavailable' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
+      if (agent === null) return;
+      let out: TaskReplyOutput;
+      try {
+        out = await bus.call<TaskReplyInput, TaskReplyOutput>(
+          'routines:reply',
+          agentWorkspaceCtx(key.agentId, userId),
+          {
+            agentId: key.agentId,
+            routineId: key.routineId,
+            requestId: body.requestId,
+            text: body.text,
+          },
+        );
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'reply-invalid' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({ checkIn: out.checkIn } satisfies TaskReplyResponse);
     },
 
     /**
@@ -9595,6 +9764,13 @@ export async function registerWorkspaceRoutes(
       method: 'DELETE',
       path: '/api/workspace/tasks/:agentId/:routineId/notes',
       handler: handlers.clearTaskNotes as unknown as RouteHandler,
+    },
+    {
+      // TASK-931 — the task's owner replies to their agent about it. The
+      // service decides who may, under the routine's row lock.
+      method: 'POST',
+      path: '/api/workspace/tasks/:agentId/:routineId/replies',
+      handler: handlers.taskReply as unknown as RouteHandler,
     },
     {
       // TASK-911 — one check-in's transcript, for the task's owner. The only

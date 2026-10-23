@@ -68,6 +68,7 @@ const DETAIL: TaskDetail = {
     { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
     { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null }, conversationId: 'c3' },
   ],
+  replies: [],
 };
 
 describe('workspaceApi.task (TASK-910)', () => {
@@ -90,6 +91,19 @@ describe('workspaceApi.task (TASK-910)', () => {
       brief: { promptBody: null, goodWhen: null },
       task: null,
       updates: [],
+      replies: [],
+    };
+    respondWith(body);
+    await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
+  });
+
+  it('reads a task’s replies', async () => {
+    const body: TaskDetail = {
+      ...DETAIL,
+      replies: [
+        { sentAt: '2026-10-22T12:30:00.000Z', text: 'Hi', byYou: true },
+        { sentAt: '2026-10-22T12:00:00.000Z', text: null, byYou: false },
+      ],
     };
     respondWith(body);
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
@@ -141,6 +155,13 @@ describe('workspaceApi.task (TASK-910)', () => {
     ['missed check-ins with a reason it doesn’t know', { ...DETAIL, noRecentUpdate: { ...MISS, reason: 'stuck' } }],
     ['missed check-ins with a time that isn’t text', { ...DETAIL, noRecentUpdate: { ...MISS, at: 1761138000000 } }],
     ['missed check-ins with autoPaused as text', { ...DETAIL, noRecentUpdate: { ...MISS, autoPaused: 'no' } }],
+    ['no replies', { ...DETAIL, replies: undefined }],
+    ['replies that aren’t a list', { ...DETAIL, replies: {} }],
+    ['a null reply', { ...DETAIL, replies: [null] }],
+    ['a reply without when it was sent', { ...DETAIL, replies: [{ text: 'Hi', byYou: true }] }],
+    ['a reply whose text is left out', { ...DETAIL, replies: [{ sentAt: 'x', byYou: true }] }],
+    ['a reply whose text isn’t text', { ...DETAIL, replies: [{ sentAt: 'x', text: 4, byYou: true }] }],
+    ['a reply without byYou', { ...DETAIL, replies: [{ sentAt: 'x', text: 'Hi' }] }],
     ['updates that aren’t a list', { ...DETAIL, updates: {} }],
     ['a null update', { ...DETAIL, updates: [null] }],
     ['an update without when it started', { ...DETAIL, updates: [{ ...UPDATE, firedAt: undefined }] }],
@@ -194,5 +215,54 @@ describe('workspaceApi.clearTaskNotes (TASK-910)', () => {
     const err = await workspaceApi.clearTaskNotes('a1', 't1').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(404);
+  });
+});
+
+describe('workspaceApi.sendTaskReply (TASK-931)', () => {
+  it('sends a reply with POST, the CSRF header and only the text and request id', async () => {
+    const fetchSpy = respondWith({ checkIn: 'started' });
+    await expect(
+      workspaceApi.sendTaskReply('a1', 't1', { text: 'Refunds under $100 are fine.', requestId: 'req-1' }),
+    ).resolves.toEqual({ checkIn: 'started' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a1/t1/replies');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({
+      text: 'Refunds under $100 are fine.',
+      requestId: 'req-1',
+    });
+  });
+
+  it('reads every answer the contract names', async () => {
+    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed']) {
+      respondWith({ checkIn });
+      await expect(workspaceApi.sendTaskReply('a1', 't1', { text: 'Hi', requestId: 'r' })).resolves.toEqual({
+        checkIn,
+      });
+    }
+  });
+
+  // "Sent." is a claim, so it rests on the server saying what it did.
+  it.each<[string, unknown]>([
+    ['a check-in outcome it doesn’t know', { checkIn: 'finished' }],
+    ['no check-in outcome', {}],
+    ['no object at all', null],
+  ])('refuses an answer with %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(
+      workspaceApi.sendTaskReply('a1', 't1', { text: 'Hi', requestId: 'r' }),
+    ).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+
+  it('carries the status of a failed send', async () => {
+    failWith(503);
+    const err = await workspaceApi
+      .sendTaskReply('a1', 't1', { text: 'Hi', requestId: 'r' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(503);
   });
 });

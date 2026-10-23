@@ -281,6 +281,11 @@ export function firstHiddenCharacter(value: string): { codePoint: number; positi
   return { codePoint: value.codePointAt(index)!, position: [...value.slice(0, index)].length + 1 };
 }
 
+/** Where `firstHiddenCharacter` found one, as a person reads it: "U+200B at character 3". */
+function hiddenCharacterAt(hidden: { codePoint: number; position: number }): string {
+  return `U+${hidden.codePoint.toString(16).toUpperCase().padStart(4, '0')} at character ${hidden.position}`;
+}
+
 /** More than 16 whitespace characters in a row, LF aside: spaces, tabs, CR, and the no-break and wide spaces. */
 const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
 
@@ -309,10 +314,7 @@ function hasBlankLineRun(value: string): boolean {
 /** The one thing wrong with a field of a task's brief, in plain words, or null. */
 function briefFieldIssue(field: (typeof BRIEF_TEXT_FIELDS)[number][0], label: string, value: string): string | null {
   const hidden = firstHiddenCharacter(value);
-  if (hidden !== null) {
-    const codePoint = hidden.codePoint.toString(16).toUpperCase().padStart(4, '0');
-    return `A task’s ${label} can’t contain invisible characters (U+${codePoint} at character ${hidden.position}).`;
-  }
+  if (hidden !== null) return `A task’s ${label} can’t contain invisible characters (${hiddenCharacterAt(hidden)}).`;
   if (field === 'name') return /[\t\n\r]/.test(value) ? 'A task’s name can’t contain tabs or line breaks.' : null;
   // Blank text has nothing to push out of view, and a blank going-well-when is the kind's own rule.
   if (value.trim() === '') return null;
@@ -500,6 +502,47 @@ export const RoutineReportFieldShape = {
   ask: reportText({ max: ROUTINE_REPORT_ASK_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
   notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
 };
+
+/*
+ * A reply (TASK-931): what a task's owner writes to their agent about the task,
+ * on its task page. Only the task's owner sends one, and it reaches a model
+ * only in a later check-in message, quoted and labelled as the person's own
+ * words: never in the brief, a tool's answer or a routine view. Unlike a
+ * report's, this rule's messages reach the person: the reply box runs this same
+ * schema before it sends and shows the first message, so each one says what to
+ * fix. The text:
+ *   - fits `ROUTINE_REPLY_MAX_CHARS`, counted in UTF-16 units like the rest of
+ *     the contract;
+ *   - has something on it to read;
+ *   - refuses what `firstHiddenCharacter` finds, the brief's own rule, and
+ *     names the first one and where it is: nobody can find an invisible
+ *     character in a text box by looking;
+ *   - refuses a lone surrogate (half of a character), which a JSON body can
+ *     carry: stored, it wouldn't be what the person sent.
+ * Line breaks and the person's own spacing are allowed: a reply is their own
+ * words to their agent, not a brief they approve. The rule holds at the
+ * writer's input only, so stored replies aren't re-checked (TASK-913).
+ */
+export const ROUTINE_REPLY_MAX_CHARS = 2000;
+const REPLY_BLANK = 'Write a reply first.';
+
+/** The one thing wrong with a reply's text that fits the cap, in the person's words, or null. */
+function replyTextIssue(value: string): string | null {
+  if (value.trim() === '') return REPLY_BLANK;
+  const hidden = firstHiddenCharacter(value);
+  if (hidden !== null) return `A reply can’t contain invisible characters (${hiddenCharacterAt(hidden)}).`;
+  return LONE_SURROGATE.test(value) ? 'A reply can’t contain broken characters.' : null;
+}
+
+/** zod's cap with the person's own words for it, then the first rule the text breaks, so it gets one reason. */
+export const RoutineReplyTextSchema = z.string()
+  .min(1, REPLY_BLANK)
+  .max(ROUTINE_REPLY_MAX_CHARS, 'A reply can be up to 2,000 characters.')
+  .superRefine((value, ctx) => {
+    if (value.length < 1 || value.length > ROUTINE_REPLY_MAX_CHARS) return;
+    const problem = replyTextIssue(value);
+    if (problem !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  });
 
 /**
  * A task's latest report and the notes it keeps between check-ins, as a read

@@ -1,18 +1,21 @@
 /**
- * A task's Updates thread (TASK-910): one entry per check-in, newest first, so
- * a person can see what the agent has been telling them over time.
+ * A task's Updates thread (TASK-910, TASK-931): one entry per check-in and one
+ * per reply the person sent, newest first, so a person can see what the agent
+ * has been telling them, and what they told it, over time.
  *
  * A task that checks in every hour writes a dozen "all on track" lines a day,
- * so `foldUpdates` keeps the newest of each quiet run and folds the rest
+ * so `foldTimeline` keeps the newest of each quiet run and folds the rest
  * behind one closed line. Anything else (a failed check-in, one that left
- * nothing, one that said needs-you or off-track) always stands alone.
+ * nothing, one that said needs-you or off-track) always stands alone, and a
+ * reply ends a quiet run and is never folded.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. An update was written by a model and
  * can quote a ticket or an email, and a failed check-in's reason can carry
  * text from outside. The server fences both to one line before they leave
  * (`server/routes-workspace.ts`). Here they are only ever React text children:
  * never `dangerouslySetInnerHTML`, never the markdown renderer, so `**bold**`
- * or `<img>` shows as those characters.
+ * or `<img>` shows as those characters. So is a reply, which keeps its line
+ * breaks (`whitespace-pre-wrap`) and has no link.
  *
  * Each entry links to that check-in's transcript, read-only (See what it did,
  * TASK-911), when the check-in recorded one that no other entry shares. It is
@@ -36,12 +39,12 @@ import {
 } from '@/components/ui/collapsible';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { routeLinkProps } from '@/lib/route-link';
-import { foldUpdates, sharedConversationIds, updateText } from '@/lib/task-updates';
+import { foldTimeline, sharedConversationIds, updateText } from '@/lib/task-updates';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
-import type { TaskUpdate } from '@/lib/workspace-types';
+import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 
 /** Where an entry's "See what it did" goes: the task it is listed under. */
@@ -55,12 +58,14 @@ interface EntryLinks {
 
 export function TaskUpdates({
   updates,
+  replies,
   now,
   agentId,
   routineId,
   onNavigate,
 }: {
   updates: TaskUpdate[];
+  replies: TaskReply[];
   now: Date;
   agentId: string;
   routineId: string;
@@ -73,7 +78,7 @@ export function TaskUpdates({
     onNavigate,
     shared: sharedConversationIds(updates),
   };
-  const items = foldUpdates(updates);
+  const items = foldTimeline(updates, replies);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
       <h2 id={headingId} className="text-[12.5px] font-medium">
@@ -83,20 +88,26 @@ export function TaskUpdates({
         <p className="text-[13px] text-muted-foreground">No check-ins yet.</p>
       ) : (
         <ul className="flex flex-col">
-          {items.map((item, i) =>
-            item.kind === 'update' ? (
-              <UpdateEntry
-                key={`${item.update.firedAt}:${i}`}
-                update={item.update}
-                now={now}
-                links={links}
-              />
-            ) : (
+          {items.map((item, i) => {
+            if (item.kind === 'update') {
+              return (
+                <UpdateEntry
+                  key={`${item.update.firedAt}:${i}`}
+                  update={item.update}
+                  now={now}
+                  links={links}
+                />
+              );
+            }
+            if (item.kind === 'reply') {
+              return <ReplyEntry key={`reply:${item.reply.sentAt}:${i}`} reply={item.reply} now={now} />;
+            }
+            return (
               <li key={`fold:${item.updates[0]?.firedAt}:${i}`}>
                 <Fold updates={item.updates} now={now} links={links} />
               </li>
-            ),
-          )}
+            );
+          })}
         </ul>
       )}
     </section>
@@ -125,6 +136,24 @@ function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links
         </ul>
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** What the person sent: their time, who said it, and the words as plain text. No mark, no link. */
+function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
+  return (
+    <li className="flex items-start gap-3 py-2">
+      <span className="w-28 shrink-0 text-[12px] leading-5 tabular-nums text-muted-foreground">
+        {updateStamp(reply.sentAt, now)}
+      </span>
+      <span className="flex h-5 items-center">
+        <StateDotSlot>{null}</StateDotSlot>
+      </span>
+      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] leading-5">
+        <span className="font-medium">{reply.byYou ? 'You' : 'Someone else'}</span>{' '}
+        {reply.text ?? 'We can’t show this reply.'}
+      </p>
+    </li>
   );
 }
 

@@ -30,6 +30,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     task: null,
     noRecentUpdate: null,
     updates: [],
+    replies: [],
     ...over,
   };
 }
@@ -170,6 +171,141 @@ describe('useTask (TASK-910)', () => {
     taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 401));
     await act(async () => result.current.refresh());
     expect(result.current.state).toEqual({ kind: 'failed', error: 'expired' });
+  });
+
+  it('a quiet re-read keeps the task on screen without marking it refreshing, and a failed one leaves it as it was', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const d = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(d.promise);
+    act(() => result.current.refreshQuietly());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: first,
+      refreshing: false,
+      refreshFailed: false,
+    });
+    const second = detail('Sweep', { revision: 'rev-2' });
+    await act(async () => d.resolve(second));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: second,
+      refreshing: false,
+      refreshFailed: false,
+    });
+
+    const before = result.current.state;
+    taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+    await act(async () => result.current.refreshQuietly());
+    expect(result.current.state).toBe(before);
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('three failed quiet re-reads in a row say so; one or two don’t', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const before = result.current.state;
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toBe(before);
+    }
+    taskMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await act(async () => result.current.refreshQuietly());
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: first,
+      refreshing: false,
+      refreshFailed: true,
+    });
+  });
+
+  it('a good read starts the count of failed quiet re-reads again', async () => {
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+    }
+    const second = detail('Sweep', { revision: 'rev-2' });
+    taskMock.mockResolvedValueOnce(second);
+    await act(async () => result.current.refreshQuietly());
+
+    const settled = result.current.state;
+    for (let i = 0; i < 2; i++) {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toBe(settled);
+    }
+    expect(settled).toEqual({ kind: 'ready', detail: second, refreshing: false, refreshFailed: false });
+  });
+
+  it.each([
+    { status: 404, error: 'gone' },
+    { status: 401, error: 'expired' },
+  ] as const)(
+    'a quiet re-read that finds the task gone or the session ended replaces it: $error',
+    async ({ status, error }) => {
+      taskMock.mockResolvedValueOnce(detail('Sweep'));
+      const { result } = renderHook(() => useTask('a1', 't1'));
+      await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, status));
+      await act(async () => result.current.refreshQuietly());
+      expect(result.current.state).toEqual({ kind: 'failed', error });
+    },
+  );
+
+  it('a quiet re-read while a refresh is in flight reads nothing, and the refresh answers', async () => {
+    // A quiet read that overtook the refresh (after Pause or Resume) would
+    // drop the refresh's answer as the older one; if it then failed, the page
+    // would keep the state from before the press.
+    const first = detail('Sweep');
+    taskMock.mockResolvedValueOnce(first);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    const loud = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(loud.promise);
+    act(() => result.current.refresh());
+    act(() => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(2);
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
+    const second = detail('Sweep', { enabled: false, revision: 'rev-2' });
+    await act(async () => loud.resolve(second));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: second,
+      refreshing: false,
+      refreshFailed: false,
+    });
+
+    // Once the refresh has answered, quiet reads read again.
+    taskMock.mockResolvedValueOnce(second);
+    await act(async () => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a quiet re-read after a failed refresh reads again', async () => {
+    taskMock.mockResolvedValueOnce(detail('Sweep'));
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+    await act(async () => result.current.refresh());
+    taskMock.mockResolvedValueOnce(detail('Sweep', { revision: 'rev-2' }));
+    await act(async () => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(3);
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
   });
 
   it('drops an older answer that lands after a newer one', async () => {

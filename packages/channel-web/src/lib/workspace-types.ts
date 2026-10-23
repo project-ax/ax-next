@@ -44,7 +44,12 @@
 */
 import type { WorkspaceStep } from './workspace-steps.js';
 import type { SaveRefusedCode } from './save-refused.js';
-import type { CheckInMiss, RoutineFireView, RoutineReportStatus } from '@ax/routines-contract';
+import type {
+  CheckInMiss,
+  RoutineFireView,
+  RoutineReplyOutput,
+  RoutineReportStatus,
+} from '@ax/routines-contract';
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -1396,6 +1401,31 @@ export interface TaskUpdate {
   conversationId: string | null;
 }
 
+/**
+ * What a reply did about a check-in (TASK-931), as `routines:reply` says it:
+ * `started` and `replayed` mean one was accepted, not that it finished;
+ * `paused` and `not-allowed` mean none starts.
+ */
+export type TaskReplyCheckIn = RoutineReplyOutput['checkIn'];
+
+/** One reply in a task's Updates. `text` is the person's, fenced; null when nothing legible survived. */
+export interface TaskReply {
+  /** When it was sent, ISO. */
+  sentAt: string;
+  text: string | null;
+  /**
+   * The caller wrote it. The host reads a task's replies only for its current
+   * owner, and only the ones they wrote, so this is true in practice; it is
+   * still worked out per reply, so one from anyone else would never read as "You".
+   */
+  byYou: boolean;
+}
+
+/** `POST /api/workspace/tasks/:agentId/:routineId/replies`'s answer (TASK-931). */
+export interface TaskReplyResponse {
+  checkIn: TaskReplyCheckIn;
+}
+
 /** Everything a task's own page shows (TASK-910). */
 export interface TaskDetail {
   agentName: string;
@@ -1416,6 +1446,8 @@ export interface TaskDetail {
   noRecentUpdate: TaskNoRecentUpdate | null;
   /** Newest first, at most 50. */
   updates: TaskUpdate[];
+  /** The person's replies, newest first, at most 50 (TASK-931). */
+  replies: TaskReply[];
 }
 
 /** One check-in's read-only page (TASK-911): GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId. */

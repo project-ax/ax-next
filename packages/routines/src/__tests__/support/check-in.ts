@@ -1,5 +1,5 @@
 import { makeAgentContext, SYSTEM_PROMPT_LANDED_HOOK, type AgentContext, type HookBus } from '@ax/core';
-import type { RoutineView } from '@ax/routines-contract';
+import type { RoutineReplyOutput, RoutineView } from '@ax/routines-contract';
 import { ROUTINES_AUGMENT_PROVIDER } from '../../brief.js';
 import { createRoutineHarness, type RoutineHarness } from './routine-harness.js';
 
@@ -39,7 +39,7 @@ export type CheckInOptions = {
    * `null` skips the event, as a spawn path that forgot it would.
    */
   landed?: readonly string[] | null;
-  /** Who presses Check now. Default: the harness's owner. */
+  /** Who presses Check now, or sends the reply. Default: the harness's owner. */
   asOwner?: AgentContext;
 };
 /**
@@ -56,6 +56,16 @@ export type CheckInHarness = RoutineHarness & {
    * check-in may be open at a time.
    */
   checkIn(view: RoutineView, requestId: string, body: CheckInBody, opts?: CheckInOptions): Promise<CheckIn>;
+  /**
+   * TASK-931. One check-in of `view`, started by the person's reply:
+   * `routines:reply` with `requestId` and `text`. Otherwise as `checkIn`, and
+   * it resolves with the reply's answer too. A reply that starts no check-in
+   * (`paused`, `not-allowed`, `replayed`) throws, since no turn will run. The
+   * answer can't say whether the check-in then failed during setup (`started`
+   * means accepted, not finished), so a test that breaks setup can't use this:
+   * it would wait for a turn that never comes.
+   */
+  replyCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts?: CheckInOptions): Promise<CheckIn & { answer: RoutineReplyOutput }>;
 };
 
 type HarnessOptions = NonNullable<Parameters<typeof createRoutineHarness>[0]>;
@@ -120,22 +130,46 @@ export async function createCheckInHarness(options: Omit<HarnessOptions, 'invoke
       return orchestrate(ctx, bus, input, turn);
     },
   });
-  async function checkIn(view: RoutineView, requestId: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn> {
+  /**
+   * What `checkIn` and `replyCheckIn` share: the next invoke gets `body`,
+   * `start` starts the check-in, and it resolves with what the turn saw and
+   * `start`'s answer. `start` throws when it started none, since nothing would
+   * ever take `waiting` then.
+   */
+  async function run<T>(body: CheckInBody, opts: CheckInOptions, start: () => Promise<T>): Promise<{ seen: CheckIn; answer: T }> {
     if (waiting !== undefined) throw new Error('One check-in at a time: the harness gives every run the same conversation.');
     const seen = new Promise<Seen>(resolve => { waiting = { body, opts, seen: resolve }; });
+    let answer: T;
     try {
-      const started = await h.bus.call<unknown, { status: string }>('routines:fire-now', opts.asOwner ?? h.owner, {
-        agentId: view.agentId, routineId: view.routineId, expectedRevision: view.revision, requestId,
-      });
-      // 'error' means the run failed before its invoke, so nothing will ever take `waiting`.
-      if (started.status !== 'ok') throw new Error(`The check-in failed before its turn started (fire-now answered ${started.status}).`);
+      answer = await start();
     } catch (error) {
       waiting = undefined;
       throw error;
     }
     const outcome = await seen;
     if (outcome.failure !== null) throw outcome.failure.error;
-    return { message: outcome.message, ctx: outcome.ctx, brief: outcome.brief };
+    return { seen: { message: outcome.message, ctx: outcome.ctx, brief: outcome.brief }, answer };
   }
-  return { ...h, checkIn };
+  async function checkIn(view: RoutineView, requestId: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn> {
+    const { seen } = await run(body, opts, async () => {
+      const started = await h.bus.call<unknown, { status: string }>('routines:fire-now', opts.asOwner ?? h.owner, {
+        agentId: view.agentId, routineId: view.routineId, expectedRevision: view.revision, requestId,
+      });
+      // 'error' means the run failed before its invoke, so nothing will ever take `waiting`.
+      if (started.status !== 'ok') throw new Error(`The check-in failed before its turn started (fire-now answered ${started.status}).`);
+    });
+    return seen;
+  }
+  async function replyCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn & { answer: RoutineReplyOutput }> {
+    const { seen, answer } = await run(body, opts, async () => {
+      const replied = await h.bus.call<unknown, RoutineReplyOutput>('routines:reply', opts.asOwner ?? h.owner, {
+        agentId: view.agentId, routineId: view.routineId, requestId, text,
+      });
+      // Any other answer started nothing, so nothing will ever take `waiting`.
+      if (replied.checkIn !== 'started') throw new Error(`The reply started no check-in (it answered ${replied.checkIn}).`);
+      return replied;
+    });
+    return { ...seen, answer };
+  }
+  return { ...h, checkIn, replyCheckIn };
 }
