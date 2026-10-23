@@ -226,6 +226,47 @@ describe('TodayTaskGroup (TASK-933)', () => {
     expect(within(block).getByRole('button', { name: 'Reply' })).toBeInTheDocument();
   });
 
+  it('three misses after a Needs you report with no ask keep its words and Reply (TASK-933 review)', () => {
+    const first = renderGroup(
+      group([row({ task: report('needs-you', { ask: null }), noRecentUpdate: misses(3) })]),
+    );
+    const block = screen.getByRole('region', { name: /Zero open support tickets\s*, needs you/ });
+    const miss = within(block).getByText(
+      'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
+    );
+    const said = within(block).getByText('Caveman said: Two tickets are still open.');
+    expect(said).toHaveClass('text-muted-foreground');
+    expect(miss.compareDocumentPosition(said) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(block).getByRole('button', { name: 'Reply' })).toBeInTheDocument();
+    first.unmount();
+
+    // Neither an ask nor an update it can show: say so, and still offer Reply.
+    const second = renderGroup(
+      group([
+        row({ task: report('needs-you', { ask: '', update: null }), noRecentUpdate: misses(3) }),
+      ]),
+    );
+    expect(screen.getByText('It left an update we can’t show.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reply' })).toBeInTheDocument();
+    second.unmount();
+
+    // Auto-paused: the same, and the box says when it'll be read.
+    renderGroup(
+      group([
+        row({
+          enabled: false,
+          task: report('needs-you', { ask: null }),
+          noRecentUpdate: misses(5, { autoPaused: true }),
+        }),
+      ]),
+    );
+    expect(screen.getByText('Caveman said: Two tickets are still open.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    expect(screen.getByRole('textbox', { name: BOX })).toHaveAccessibleDescription(
+      'It’s paused, so Caveman will read this once it’s resumed.',
+    );
+  });
+
   it('auto-paused: says why it stopped, with the paused mark', () => {
     const first = renderGroup(
       group([

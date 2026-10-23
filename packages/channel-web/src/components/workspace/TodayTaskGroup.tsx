@@ -18,7 +18,8 @@
  * built from the task's ids, never from its text.
  *
  * REPLY shows wherever the block shows the agent's Needs you report: its ask
- * (else its update), or "{agent} asks: …" under a miss or an auto-pause
+ * (else its update), or, under a miss or an auto-pause, a second line: "{agent}
+ * asks: …", else "{agent} said: {update}", else that it can't be shown
  * (TASK-930: a miss never hides a pending ask). It opens TASK-931's reply box
  * in place, focused. The box stays mounted while it is closed, so a half-typed
  * reply and its retry id survive a collapse; `hidden` is what closes it,
@@ -62,9 +63,17 @@ function legible(text: string | null | undefined): string | null {
   return text === null || text === undefined || text === '' ? null : text;
 }
 
-/** What the agent is waiting on the person for: its last report's ask, when that report said Needs you. */
-function pendingAsk(row: TaskRow): string | null {
-  return row.task?.status === 'needs-you' ? legible(row.task.ask) : null;
+/**
+ * Under a miss or an auto-pause, the agent's Needs you report the person still
+ * owes an answer to, as one line: its ask, else what it said, else that it
+ * can't be shown. Null when its last report didn't say Needs you.
+ */
+function stillNeedsYouLine(row: TaskRow, agentName: string): string | null {
+  if (row.task?.status !== 'needs-you') return null;
+  const ask = legible(row.task.ask);
+  if (ask !== null) return `${agentName} asks: ${ask}`;
+  const update = legible(row.task.update);
+  return update === null ? CANT_SHOW : `${agentName} said: ${update}`;
 }
 
 /** The line under the heading: what the task needs, or how many of its approvals are waiting. */
@@ -113,10 +122,11 @@ export function TodayTaskGroup({
   const mark = group.reason === null ? null : MARK[group.reason];
   const meta = `Task · ${group.agentName}`;
   const body = bodyLine(group);
-  // Under a miss or an auto-pause, the ask the agent is still waiting on.
-  const stillAsks =
-    group.reason === 'escalated' || group.reason === 'auto-paused' ? pendingAsk(group.row) : null;
-  const askLine = stillAsks === null ? null : `${group.agentName} asks: ${stillAsks}`;
+  // Under a miss or an auto-pause, the Needs you report still waiting on the person.
+  const askLine =
+    group.reason === 'escalated' || group.reason === 'auto-paused'
+      ? stillNeedsYouLine(group.row, group.agentName)
+      : null;
   // Reply goes wherever the block shows the agent's Needs you words.
   const replyTo = group.reason === 'asks' || askLine !== null ? group.row : null;
   // The box unmounts with the ask. Close it then, so a later ask doesn't
