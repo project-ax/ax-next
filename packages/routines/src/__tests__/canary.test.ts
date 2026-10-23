@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
-import { createCheckInHarness, TASK_DEFINITION } from './support/check-in.js';
+import { createCheckInHarness, routineRunner, TASK_DEFINITION } from './support/check-in.js';
 import { createRoutinesStore } from '../store.js';
 import { isHold, makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
@@ -600,5 +600,67 @@ describe('failure ladder canary (TASK-930)', () => {
     expect(resumed).toMatchObject({ enabled: true, noRecentUpdate: null });
     const next = await ch.checkIn(resumed, 'run-6', async () => {});
     expect(next.message).not.toContain('ended without a report');
+  });
+});
+
+// TASK-931: replies, end to end through the real routines, agents, tool-policy and decisions
+// plugins and Postgres. The person replies on the task page: the reply is stored and starts a
+// check-in at once, whose message carries it; the next check-in marks only the newer reply new; a
+// retry of a reply starts nothing more; the task page reads both back.
+describe('replies canary (TASK-931)', () => {
+  it('a person replies, a check-in starts at once, and its message carries the reply; the next one marks only the newer reply new; a retry starts nothing', async () => {
+    // The clock moves only when the test moves it, and the tick loop never wakes: every check-in
+    // here is one a reply started.
+    let now = Date.parse('2026-10-09T12:00:00Z');
+    const clock: Clock = {
+      now: () => new Date(now),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      }),
+    };
+    const ch = await createCheckInHarness({ clock });
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const FIRST = 'Refunds under $100 are fine to approve without asking me.';
+    const SECOND = 'Also close duplicate tickets.';
+
+    // 12:01: the person replies, and a check-in starts at once. There's no report yet, so the reply is new.
+    now += 60_000;
+    const first = await ch.replyCheckIn(task, 'reply-1', FIRST, async ctx => {
+      expect(await h.bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Approved two small refunds.', ask: null,
+      } })).toStrictEqual({ recorded: true });
+    });
+    expect(first.answer).toStrictEqual({ replyId: expect.stringMatching(/^reply_/), checkIn: 'started' });
+    expect(first.message).toContain(`- 2026-10-09 12:01 UTC (new since your last report):\n  > ${FIRST}`);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+
+    // 12:02: a second reply. The first was sent the instant the check-in that reported started, so it reads as seen.
+    now += 60_000;
+    const second = await ch.replyCheckIn(task, 'reply-2', SECOND, async () => {});
+    expect(second.answer).toStrictEqual({ replyId: expect.stringMatching(/^reply_/), checkIn: 'started' });
+    expect(second.answer.replyId).not.toBe(first.answer.replyId);
+    expect(second.message).toContain(
+      `- 2026-10-09 12:01 UTC:\n  > ${FIRST}\n- 2026-10-09 12:02 UTC (new since your last report):\n  > ${SECOND}`);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(2);
+
+    // The page sends the second reply again: the same reply, and no third check-in. A check-in the
+    // service started would have been accepted before it answered, so the counts are final here.
+    expect(await h.bus.call('routines:reply', h.owner, { agentId: h.agentId, routineId: task.routineId, requestId: 'reply-2', text: SECOND }))
+      .toStrictEqual({ replyId: second.answer.replyId, checkIn: 'replayed' });
+    expect(await h.db.selectFrom('routines_v1_dispatches').select('dispatch_id')
+      .where('agent_id', '=', h.agentId).where('routine_id', '=', task.routineId).execute()).toHaveLength(2);
+    expect(h.invokeCalls).toHaveLength(2);
+    expect(await store.recentFires(task)).toHaveLength(2);
+
+    // The task page reads both back, newest first, with who wrote each.
+    expect(await h.bus.call('routines:recent-replies', h.owner, { agentId: h.agentId, routineId: task.routineId })).toStrictEqual({ replies: [
+      { replyId: second.answer.replyId, authorUserId: h.owner.userId, text: SECOND, sentAt: '2026-10-09T12:02:00.000Z' },
+      { replyId: first.answer.replyId, authorUserId: h.owner.userId, text: FIRST, sentAt: '2026-10-09T12:01:00.000Z' },
+    ] });
   });
 });
