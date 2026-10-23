@@ -449,7 +449,7 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(missedOnce);
   });
 
-  it("an older check-in's late report trims from its own start, not from a newer report still open: that one answers when its run finishes", async () => {
+  it("known lag (a closing fix should turn this red on purpose): an older check-in's late report trims from its own start, not from a newer report still open: that one answers when its run finishes", async () => {
     const row = await f.store.createAuthored(taskInput('task'));
     const scheduled = await checkIn(row, 'scheduled', { at: minute(1) });
     const checkNow = await checkIn(row, 'check-now', { at: minute(2) });
