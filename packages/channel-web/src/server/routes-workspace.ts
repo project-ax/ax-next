@@ -3403,8 +3403,10 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * Keeps the caller's own tasks (`isOwnTask`), where a task is any kind but
  * `repeat`, so design PR 3's `get-done` appears without a change here. Each
  * row is built field by field, never spread from the view, so nothing rides
- * along that no surface draws: the agent's notes never leave the server, and
- * the ask leaves only because Today draws it (TASK-933).
+ * along that no surface draws: the agent's notes never leave the server. The
+ * ask crosses for every one of the owner's own tasks, whatever its status,
+ * because Today draws a Needs you report's ask (TASK-933). `routines:list`
+ * shows a report (and so its ask) only to the task's owner.
  *
  * The name, the update and the ask are agent-written and fenced HERE, at the
  * boundary, to one line. The update and the ask are capped at the report
