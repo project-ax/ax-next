@@ -129,8 +129,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
    * requestId, so one reply starts at most one check-in and never shares a receipt with a Check now
    * press. A replayed reply runs this again: a retry after the reply was stored but before its
    * check-in was accepted starts that check-in, and a retry after it was accepted replays the
-   * receipt. `started` means accepted, not finished: `send`'s answer isn't read, and a check-in that
-   * fails during setup is a recorded failed run.
+   * receipt. That convergence covers failures before the accept commits, not after: a host restart
+   * between the accept and the run's setup records that run as interrupted, a retry answers
+   * `replayed`, and nothing reads the reply until the next check-in (as for Check now). The reply
+   * stays stored. `started` means accepted, not finished: `send`'s answer isn't read, and a
+   * check-in that fails during setup is a recorded failed run.
    */
   async function replyCheckIn(ctx: AgentContext, allowed: boolean, row: StoredRoutine, replyId: string, send: (accepted: AcceptedDispatch) => Promise<unknown>): Promise<C.RoutineReplyCheckIn> {
     if (!routinePermissions(row, ctx.userId, allowed).fire) return 'not-allowed';

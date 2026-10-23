@@ -84,7 +84,9 @@ export const RoutineTasksForConversationsOutputSchema = z.object({ checkIns: z.a
  * says what happened next:
  *   - `started`: a check-in was accepted. Not finished: its update arrives like
  *     any other check-in's;
- *   - `replayed`: an earlier try with this `requestId` already started it;
+ *   - `replayed`: an earlier try with this `requestId` already started it
+ *     (accepted it: if the host restarted before that check-in ran, it is
+ *     recorded as interrupted, and the reply waits for the next check-in);
  *   - `not-allowed`: the caller may no longer start the task's check-ins, so
  *     none starts;
  *   - `paused`: none starts until a person resumes the task. Only said to a

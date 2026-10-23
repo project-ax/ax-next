@@ -28,7 +28,7 @@
 ## Review Focus
 
 1. **The 10-second re-reads while "Checking in now…".** For up to five minutes a re-read runs every 10 s. Done through the ordinary `refresh()`, each one marks the task refreshing, which disables Check now and Pause (dropping a keyboard user's focus to `<body>`) and turns any failed read into a red "couldn't refresh" alert. The person should be able to press anything at any moment and see no alarm for a background blip. → Task 9, "the 10-second re-reads leave Check now and Pause pressable and raise no refresh alert, even when one fails", and the `refreshQuietly` tests.
-2. **A retry after a partial failure.** The reply was stored, then the host died or the database blipped before the check-in was accepted. Sending again must start exactly one check-in — never zero (the old "replayed starts nothing" rule) and never two. → Task 3, "a retry after the first try stored the reply but never started its check-in starts it, once".
+2. **A retry after a partial failure.** The reply was stored, then the host died or the database blipped before the check-in was accepted. Sending again must start exactly one check-in — never zero (the old "replayed starts nothing" rule) and never two. (Corrected in review: "never zero" holds for failures before `acceptDispatch` commits. If the host restarts between the accept and the run's setup, that run is recorded as interrupted and a retry answers `replayed`, so nothing reads the reply until the next check-in. Inherited from Check now; the reply stays stored.) → Task 3, "a retry after the first try stored the reply but never started its check-in starts it, once".
 3. **An edit after an unconfirmed send.** "We couldn't confirm your reply was sent", the person fixes a typo and sends again: that must be a new reply, not a replay that silently keeps the first text while the box clears. → Task 7, "an edited text after an unconfirmed send is a new reply".
 4. **Browser and host clocks a little apart.** The poll must still stop when the check-in it started lands, and a check-in already running at the press must not stop it. → Task 9, the `arrivedCheckIn` slack tests.
 5. **Paused, or an owner who no longer manages the agent's tasks.** Stored, no check-in, and no copy anywhere that promises one. → Task 3 (answer order) and Task 7 (four helper lines).
@@ -38,7 +38,7 @@
 ## Where the code refined the card
 
 - **Version 8**, not 7 [1].
-- **The check-in a reply starts is keyed on the reply** (`acceptDispatch` `requestId: 'reply:' + replyId`), and a replayed reply runs the check-in decision again, so Review Focus 1 converges to one check-in [4].
+- **The check-in a reply starts is keyed on the reply** (`acceptDispatch` `requestId: 'reply:' + replyId`), and a replayed reply runs the check-in decision again, so Review Focus 2 converges to one check-in for failures before the accept commits (not for a host restart after it: see Review Focus 2's correction) [4].
 - **Answer order:** `not-allowed`, then `paused`, then `started`, so `paused` ("when you resume the task") is only said to someone who can resume [5].
 - **The text rule's messages speak to the person** and name the first invisible character's position; the box checks the same schema before it sends [7].
 - **The brief's fixed text** told every check-in that its message holds only the agent's own text; it gains one line about replies (rule 5) [9].
