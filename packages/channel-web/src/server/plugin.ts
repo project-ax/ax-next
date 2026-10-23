@@ -69,6 +69,10 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     TASK-911 adds no call either: a check-in's page reads the same optional
 //     routines:get and routines:recent-fires, then its conversation through
 //     the hard conversations:get, and answers 404 without routines.
+//     TASK-932 adds no hard call either: Today's queue, its single-row read
+//     and the approve, dismiss and undo answers name the task an approval was
+//     held in through the optional routines:tasks-for-conversations, and say
+//     "Held during an unattended run" without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -324,6 +328,14 @@ export function createChannelWebServerPlugin(
           hook: 'routines:clear-notes',
           degradation:
             'Clear notes on the task page (DELETE /api/workspace/tasks/:agentId/:routineId/notes) answers 503 and the notes stay',
+        },
+        {
+          // TASK-932 — Today names the task a check-in's approval came from. A label
+          // only: the service answers for the caller's own tasks, and nothing
+          // authorizes on it.
+          hook: 'routines:tasks-for-conversations',
+          degradation:
+            'an approval held during a task check-in reads "Held during an unattended run" instead of naming its task, and Today offers no Open task link',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

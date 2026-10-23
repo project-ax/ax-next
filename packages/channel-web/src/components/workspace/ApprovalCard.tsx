@@ -337,7 +337,7 @@ export function ApprovalCard({
             from, and when doing nothing runs out (TASK-911).
           */}
           {unattended && (
-            <p className="mt-3 text-[11.5px] text-muted-foreground">
+            <p className="mt-3 break-words text-[11.5px] text-muted-foreground">
               {decisionProvenance(d, agentName)}
             </p>
           )}

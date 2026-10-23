@@ -709,3 +709,42 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
     expect(cardText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
   });
 });
+
+describe('TASK-932 — both renderers name the task a check-in raised it in', () => {
+  const CHECK_IN = { routineId: 't1', taskName: 'Zero open support tickets' };
+  const CHECKED = ' · checked against: Thursday 9:30 still free for both of you';
+
+  it('the queue row and the in-thread card say the same line', () => {
+    const d = decisionFixture({ checkIn: CHECK_IN });
+    for (const text of [queueText(d), cardText(d)]) {
+      expect(text).toContain(`Held during a check-in on “Zero open support tickets”${CHECKED}`);
+      expect(text).not.toContain('unattended run');
+    }
+  });
+
+  it('draws the task name as text', () => {
+    const name = '<img src=x onerror=alert(1)> **Zero** _open_';
+    const d = decisionFixture({ freshness: null, checkIn: { routineId: 't1', taskName: name } });
+    const line = `Held during a check-in on “${name}”`;
+    const ui = [
+      <DecisionRow
+        key="row"
+        decision={d}
+        agent={agent}
+        expanded
+        onToggle={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+      />,
+      <ApprovalCard key="card" decision={d} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    ];
+    for (const el of ui) {
+      const { container, unmount } = render(el);
+      expect(screen.getByText(line)).toBeInTheDocument();
+      expect(container.querySelector('img, strong, em')).toBeNull();
+      unmount();
+    }
+  });
+});

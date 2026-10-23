@@ -162,6 +162,17 @@ export interface DecisionTask {
   checksIn: string | null;
 }
 
+/**
+ * TASK-932 — the task check-in an approval was held in, on an unattended row a
+ * task the caller owns raised. A label for the person, never an authorization.
+ * `routineId` is an opaque host id (the task page's address); `taskName` is the
+ * task's own name, server-fenced to one line.
+ */
+export interface DecisionCheckIn {
+  routineId: string;
+  taskName: string;
+}
+
 export const ROUTINE_DECISION_OPERATIONS = ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const;
 export type RoutineDecisionOperation = (typeof ROUTINE_DECISION_OPERATIONS)[number];
 
@@ -232,6 +243,15 @@ export interface Decision {
    * are approved too, and the request block still shows them.
    */
   task: DecisionTask | null;
+  /**
+   * WHICH TASK IT CAME FROM (TASK-932), or null. Non-null only on an unattended
+   * row held during a check-in of a task the caller owns. Null for everything
+   * else, and whenever the routines read is absent, fails or is slow: it is a
+   * label, so the queue never waits on it. Every path that answers a row carries
+   * it: the list, the single read and the approve, dismiss and undo answers. An
+   * older server leaves it out, so read it as `d.checkIn ?? null`.
+   */
+  checkIn: DecisionCheckIn | null;
   primaryLabel: string;
   secondaryLabel: string;
   ghostLabel: string;

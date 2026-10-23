@@ -825,6 +825,7 @@ describe('the host grant turned down (site 4)', () => {
             expandedId={null}
             onExpand={vi.fn()}
             onOpenAgent={vi.fn()}
+            onNavigate={vi.fn()}
             onApprove={vi.fn()}
             onDismiss={vi.fn()}
             onUndo={vi.fn()}

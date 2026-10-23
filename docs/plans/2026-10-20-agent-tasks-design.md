@@ -291,7 +291,9 @@ Once routines live in Tasks, each kind of row has a better home:
 - A run shows in its task's Updates thread, with the agent's own report and
   See what it did. A failed run shows as No recent update on the task.
 - An approval raised during a check-in shows in that task's thread and
-  transcript. An approval raised in an ordinary chat already shows in that
+  transcript. (As built: the transcript draws it (TASK-911), and Today names
+  its task with an Open task link (TASK-932). An entry in the Updates thread is
+  left for later.) An approval raised in an ordinary chat already shows in that
   chat, because the agent view puts approval cards into the thread.
 
 Keeping Activity would mean a second copy of every task's thread. It would
@@ -454,7 +456,7 @@ the model that people call routines "tasks".
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
-| Hooks | `routines:report`, `routines:clear-notes`, `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
+| Hooks | `routines:report`, `routines:clear-notes`, `routines:tasks-for-conversations` (a read for labels: which conversations are the caller's own task check-ins, TASK-932), `routines:reply`, `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
 | channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |
 
@@ -879,6 +881,8 @@ view-only sharing of a task and an "Also ask" list.
 ## 13. Boundary review notes (for the implementation PRs)
 
 - **New hooks:** `routines:report`, `routines:clear-notes` (TASK-910),
+  `routines:tasks-for-conversations` (TASK-932, owner-only, absent for
+  anything that isn't the caller's own check-in),
   `routines:reply`, `routines:set-steps`, `routines:complete`,
   `routines:reopen`; task state on `routines:list` and `routines:get`; the
   `system-prompt:augment:optional:routines` provider; the
@@ -948,3 +952,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-22 | Decided | Activity is removed in PR 4 (§3.7): the page, the agent's tab, and Today's "Everything they did" link and done-today count, once a failed approval is confirmed to show in its chat (§14 Q9). |
 | 2026-10-22 | Decided | A check-in’s transcript opens read-only from its task’s page, only for the task’s owner and only for one of its newest 200 check-ins; anything else is a 404. Nothing on the page can send into, stop or continue the check-in, and an approval in it is answered as on Today (TASK-911). |
 | 2026-10-22 | Decided | The transcript shows what the agent said and did as the agent view draws it: each tool as one line, never its full input or output, and not the host-written check-in message (TASK-911). |
+| 2026-10-23 | Decided | An approval held during a task check-in names its task on Today, "Held during a check-in on “{task}”", with an Open task link on the expanded row. Routines answers which conversations are the caller's own check-ins (`routines:tasks-for-conversations`) from the run's dispatch binding, so a check-in still running is named too. It is owner-only and a label only: approving is unchanged, and a conversation several runs shared is never named (TASK-932). |

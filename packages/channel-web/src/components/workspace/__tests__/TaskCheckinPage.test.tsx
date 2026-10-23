@@ -284,12 +284,16 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(view.onUndo).toHaveBeenCalledWith('d1');
   });
 
-  it('an approval it raised says it was held during an unattended run, not that it is holding', async () => {
+  it('an approval it raised names its task, not that it is holding', async () => {
     // Every check-in decision is unattended: the run ended its turn rather
     // than wait, so the attended card's "I am holding here" would be false.
     expect(OPEN.attendance).toBe('unattended');
     // An hour left on the page's own clock, so the expiry note is drawn.
-    const expiring = { ...OPEN, expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString() };
+    const expiring = {
+      ...OPEN,
+      checkIn: { routineId: 't1', taskName: TASK_NAME },
+      expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    };
     checkinMock.mockResolvedValue(page({ thread: [SAID, OPEN_ROW] }));
     renderPage({ decisions: [expiring] });
     await ready();
@@ -298,7 +302,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(card).not.toHaveTextContent(/carry straight on/);
     expect(
       within(card).getByText(
-        'Held during an unattended run · Caveman ended its turn rather than wait · checked against: Thursday 9:30 still free for both of you',
+        'Held during a check-in on “Zero open support tickets” · checked against: Thursday 9:30 still free for both of you',
       ),
     ).toBeInTheDocument();
     expect(

@@ -918,6 +918,7 @@ function Inner({
                   expandedId={expandedId}
                   onExpand={setExpandedId}
                   onOpenAgent={openAgent}
+                  onNavigate={navigate}
                   onApprove={queue.approve}
                   onDismiss={queue.dismiss}
                   onUndo={queue.undo}

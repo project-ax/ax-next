@@ -321,3 +321,36 @@ describe('the grants read-back (TASK-373)', () => {
     await expect(workspaceApi.grants()).resolves.toEqual({ grants: [realRow] });
   });
 });
+
+describe('the checkIn label (TASK-932)', () => {
+  const ROW = { id: 'd1', routineOperation: null };
+
+  it.each([
+    ['a task', { routineId: 't1', taskName: 'Zero open support tickets' }],
+    ['null', null],
+  ])('accepts a row whose checkIn is %s', async (_name, checkIn) => {
+    respondWith({ decisions: [{ ...ROW, checkIn }] });
+    await expect(workspaceApi.decisions()).resolves.toBeDefined();
+  });
+
+  it('accepts a row from an older server that leaves checkIn out', async () => {
+    respondWith({ decisions: [ROW] });
+    await expect(workspaceApi.decisions()).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['t1', 't1'],
+    ['[]', []],
+    ['missing taskName', { routineId: 't1' }],
+    ['a numeric routineId', { routineId: 1, taskName: 'x' }],
+    ['an empty routineId', { routineId: '', taskName: 'x' }],
+    ['an empty taskName', { routineId: 't1', taskName: '' }],
+    ['a null taskName', { routineId: 't1', taskName: null }],
+  ])('refuses a row whose checkIn is %s, on the list and on the single read', async (_name, checkIn) => {
+    respondWith({ decisions: [{ ...ROW, checkIn }] });
+    await expect(workspaceApi.decisions()).rejects.toBeInstanceOf(WorkspaceShapeError);
+    vi.restoreAllMocks();
+    respondWith({ decision: { ...ROW, checkIn } });
+    await expect(workspaceApi.decision('d1')).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+});

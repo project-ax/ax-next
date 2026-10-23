@@ -396,6 +396,31 @@ describe('task check-in report canary (TASK-907)', () => {
     expect((await get(task)).task).toBeNull();
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
   });
+
+  // TASK-932: the approval a check-in raises is found again by its conversation, and the task is named from it.
+  // Exactly one run in this test: the harness answers every conversations:create with one id, so a second run
+  // would make the conversation ambiguous (and rightly unnamed).
+  it('an approval held during a check-in names its task through routines:tasks-for-conversations (TASK-932)', async () => {
+    await start(); // unattended: a check-in's conversation has origin `routine`
+    const task = await createTask();
+    // What the agent asks for mid-check-in: a new routine, which tool policy holds for the person.
+    const propose: ToolCall = { id: 'propose', name: 'routine_create', input: {
+      requestId: 'propose', definition: RoutineDefinitionSchema.parse({
+        name: 'Weekly digest', promptBody: 'Summarize the week.', trigger: { kind: 'interval', every: '1h' },
+      }),
+    } };
+    let conversationId = '';
+    await checkIn(task, 'run', async ctx => {
+      conversationId = ctx.conversationId!;
+      expect(isHold(await h.bus.fire('tool:pre-call', runner(ctx), propose))).toBe(true);
+    });
+    const { decisions } = await h.bus.call<unknown, { decisions: Array<{ conversationId: string; attendance: string; call: { name: string } }> }>(
+      'decisions:list', h.owner, { userId: 'owner' });
+    const held = decisions.find(decision => decision.call.name === 'routine_create');
+    expect(held).toMatchObject({ conversationId, attendance: 'unattended' });
+    expect(await h.bus.call('routines:tasks-for-conversations', h.owner, { agentId: h.agentId, conversationIds: [held!.conversationId] }))
+      .toStrictEqual({ checkIns: [{ conversationId, routineId: task.routineId, name: 'Support queue' }] });
+  });
 });
 
 // TASK-908: Agent Tasks PR 1, end to end through the real routines, agents, tool-policy and

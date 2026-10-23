@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { DecisionRow } from '../DecisionRow';
 import { StateDotSlot } from '../bits';
 import {
@@ -338,5 +338,40 @@ describe('DecisionRow — the held question says its state', () => {
       false,
     );
     expect(screen.queryByText(/waiting on you/i)).toBeNull();
+  });
+});
+
+describe("DecisionRow — a check-in's approval links to its task (TASK-932)", () => {
+  const CHECK_IN = { routineId: 't1', taskName: 'Zero open support tickets' };
+
+  it('an expanded row links to the task page, and a plain click stays in the app', () => {
+    const onNavigate = vi.fn();
+    renderRow(decisionFixture({ checkIn: CHECK_IN }), true, { onNavigate });
+    const link = screen.getByRole('link', { name: /^Open task/ });
+    expect(link.getAttribute('href')).toBe('/workspace/tasks/scheduler/t1');
+    fireEvent.click(link, { ctrlKey: true });
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'scheduler', routineId: 't1' });
+  });
+
+  it('draws no link without a check-in, while collapsed, or without a way to navigate', () => {
+    const onNavigate = vi.fn();
+    const first = renderRow(decisionFixture(), true, { onNavigate });
+    expect(screen.queryByRole('link', { name: /Open task/ })).toBeNull();
+    first.unmount();
+    const second = renderRow(decisionFixture({ checkIn: CHECK_IN }), false, { onNavigate });
+    expect(screen.queryByRole('link', { name: /Open task/ })).toBeNull();
+    second.unmount();
+    renderRow(decisionFixture({ checkIn: CHECK_IN }), true);
+    expect(screen.queryByRole('link', { name: /Open task/ })).toBeNull();
+  });
+
+  it('keeps Open {agent} beside it', () => {
+    const onOpenAgent = vi.fn();
+    renderRow(decisionFixture({ checkIn: CHECK_IN }), true, { onNavigate: vi.fn(), onOpenAgent });
+    expect(screen.getByRole('link', { name: /^Open task/ })).toBeTruthy();
+    screen.getByRole('button', { name: /^Open Scheduler/ }).click();
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
   });
 });
