@@ -64,6 +64,7 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     expect(routes).toContain('GET /api/workspace/tasks');
     expect(routes).toContain('GET /api/workspace/tasks/:agentId/:routineId');
     expect(routes).toContain('DELETE /api/workspace/tasks/:agentId/:routineId/notes');
+    expect(routes).toContain('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId');
     expect(routes).toContain('GET /api/workspace/agents/:agentId');
     expect(routes).toContain('POST /api/workspace/route');
     expect(routes).toContain('GET /api/workspace/grants');
@@ -84,6 +85,15 @@ describe('registerWorkspaceRoutes (no flag)', () => {
       'POST /api/workspace/agents/:agentId/connectors',
       'PUT /api/workspace/agents/:agentId/connectors/:connectorId/key',
       'PUT /api/workspace/agents/:agentId/connectors/:connectorId/tool-verdicts',
+    ]);
+  });
+
+  // TASK-911 — a check-in's transcript is read-only: nothing under /checkins
+  // can send into, stop or continue it.
+  it('only one route reaches a check-in, and it only reads', async () => {
+    const checkins = (await registeredRoutes()).filter((r) => r.path.includes('/checkins'));
+    expect(checkins).toEqual([
+      { method: 'GET', path: '/api/workspace/tasks/:agentId/:routineId/checkins/:conversationId' },
     ]);
   });
 

@@ -66,6 +66,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     routines:get and routines:recent-fires and answers 404 without them,
 //     and clears notes through the optional routines:clear-notes, answering
 //     503 without it.
+//     TASK-911 adds no call either: a check-in's page reads the same optional
+//     routines:get and routines:recent-fires, then its conversation through
+//     the hard conversations:get, and answers 404 without routines.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -304,15 +307,16 @@ export function createChannelWebServerPlugin(
         {
           // TASK-910 — the task page reads the task itself, and only for the
           // caller's own task, then its check-ins. Both come from
-          // @ax/routines, so the page answers 404 without either.
+          // @ax/routines, so the page answers 404 without either. TASK-911's
+          // check-in page reads both too.
           hook: 'routines:get',
           degradation:
-            'the task page (GET /api/workspace/tasks/:agentId/:routineId) answers 404, because without @ax/routines there are no tasks',
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId) answer 404, because without @ax/routines there are no tasks',
         },
         {
           hook: 'routines:recent-fires',
           degradation:
-            'the task page answers 404, as it does without routines:get (both come from @ax/routines)',
+            'the task page and its check-ins answer 404, as they do without routines:get (both come from @ax/routines)',
         },
         {
           // TASK-910 — Clear notes. The service decides who may (the task's
