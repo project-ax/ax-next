@@ -268,7 +268,9 @@ export function createFireRoutine(deps: FireDeps) {
       try {
         reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, limit: CHECK_IN_REPORTS });
       } catch (err) { return fail(err); }
-      prompt = renderCheckInMessage({ source, agentNotes: row.task?.agentNotes ?? null, reports });
+      prompt = renderCheckInMessage({
+        source, agentNotes: row.task?.agentNotes ?? null, reports, missesInARow: row.noRecentUpdate?.inARow ?? 0,
+      });
     } else {
       // Phase D: render whenever payload is provided, regardless of source.
       // Only the webhook path passes a payload; fire-now and the tick pass none.

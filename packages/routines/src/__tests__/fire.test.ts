@@ -157,7 +157,7 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     const h = await setup({ definition: TASK });
     const result = await h.fire(h.accepted);
     expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBeNull();
-    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [] }) } });
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], missesInARow: 0 }) } });
     expect(result).toMatchObject({ status: 'ok', renderedPrompt: null, recordedAtTurnEnd: true });
   });
   it('a failed report read fails the task run before the agent starts', async () => {
