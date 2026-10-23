@@ -19,9 +19,11 @@ knows what it's for and says how it's going.
   as #1006 (TASK-904). Production and kind were wiped and redeployed on
   2026-10-20, and the board is tidied. Open questions 2–7 and 9 are decided
   (§15); 1 and 8 are still open.
-- **Next:** §12 PR 1, "Stay on top of something", end to end. TASK-906–910
-  merged 2026-10-21/22 (#1009, #1011, #1014–#1016); TASK-911 and the TASK-912
-  walk remain. Nothing from PR 1 is deployed yet.
+- **PR 1 is done.** §12 PR 1, "Stay on top of something", merged as TASK-906–911
+  (#1009, #1011, #1014–#1016, #1019). The TASK-912 walk passed on kind on
+  2026-10-22; the results and screenshots are in `deploy/kind/walks/2026-10-22-TASK-912/`.
+  Nothing from PR 1 is deployed yet.
+- **Next:** §12 PR 2, "Replies and Today" (no email: §14 Q4).
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
