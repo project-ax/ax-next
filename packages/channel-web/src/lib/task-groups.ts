@@ -102,3 +102,25 @@ export function groupTasks(rows: readonly TaskRow[]): {
   })).filter((g) => g.rows.length > 0);
   return { groups, paused };
 }
+
+/** Why a task is on Today (TASK-933). */
+export type TodayTaskReason = 'asks' | 'escalated' | 'auto-paused';
+
+/**
+ * Why this task needs a person on Today, or null. In order: not enabled →
+ * 'auto-paused' only when `noRecentUpdate?.autoPaused === true`, else null (a
+ * task a person paused never shows, whatever its last report said); not in the
+ * needs-you group (`taskGroup`) → null; three or more misses in a row
+ * (`missGroup`) → 'escalated'; else 'asks' (its last report said needs-you).
+ */
+export function todayTaskReason(row: TaskRow): TodayTaskReason | null {
+  if (!row.enabled) return row.noRecentUpdate?.autoPaused === true ? 'auto-paused' : null;
+  if (taskGroup(row) !== 'needs-you') return null;
+  const miss = row.noRecentUpdate;
+  return miss !== null && missGroup(miss) === 'needs-you' ? 'escalated' : 'asks';
+}
+
+/** The rows `todayTaskReason` keeps, ordered by `compareRows` (newest `noRecentUpdate.at ?? task.reportedAt` first, then name, agent name, ids). Never mutates its input. */
+export function todayTasks(rows: readonly TaskRow[]): TaskRow[] {
+  return rows.filter((r) => todayTaskReason(r) !== null).sort(compareRows);
+}

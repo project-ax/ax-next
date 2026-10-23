@@ -25,7 +25,7 @@ import {
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import type { TasksResponse } from '../../lib/workspace-types.js';
-import { groupTasks } from '../../lib/task-groups.js';
+import { groupTasks, todayTaskReason, todayTasks } from '../../lib/task-groups.js';
 import { routineView } from '../../../../routines/src/services.js';
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
@@ -511,6 +511,24 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       routineId: 't1',
       task: { update: 'Two invoices are three days old.' },
     });
+  });
+
+  it("see it on Today: a check-in's needs-you report puts its task on Today with its ask (PR 2 canary, TASK-933)", async () => {
+    const { get } = setup({
+      rows: [
+        stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') }),
+        stored({ agentId: 'a2', routineId: 't2', task: report('on-track') }),
+      ],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const onToday = todayTasks(bodyOf(captured).tasks);
+    expect(onToday).toHaveLength(1);
+    expect(onToday[0]).toMatchObject({
+      routineId: 't1',
+      task: { ask: 'ASK-TEXT want me to draft a reply?' },
+    });
+    expect(todayTaskReason(onToday[0]!)).toBe('asks');
   });
 
   it('see it on Tasks: missed check-ins group a task, and three escalate it (TASK-930)', async () => {
