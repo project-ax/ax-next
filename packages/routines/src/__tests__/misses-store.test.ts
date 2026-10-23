@@ -255,12 +255,19 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     for (const report of [undefined, onTrack]) {
       const row = await f.store.createAuthored(taskInput(report === undefined ? 'quiet' : 'reported'));
       await missed(row, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
-      // A Check now starts alongside the fifth check-in and finishes after it.
+      // A Check now starts alongside the fifth check-in and finishes after it. It's the newer of the two, so
+      // without the freeze its report would clear the pause; one it made before the fifth finished would
+      // have stopped the fifth counting at all (the test below).
       const fifth = await checkIn(row, 'fifth', { at: minute(5) });
-      const sixth = await checkIn(row, 'sixth', { at: minute(6), ...(report === undefined ? {} : { report }) });
+      const sixth = await checkIn(row, 'sixth', { at: minute(6) });
       await finish(fifth.dispatchId);
       const paused = await missColumns(row.routineId);
       expect(paused).toEqual({ task_misses_in_a_row: 5, task_miss_reason: 'no-report', task_miss_at: fifth.acceptedAt, task_auto_paused_at: expect.any(Date) });
+      if (report !== undefined) {
+        expect(await f.store.recordReport({
+          agentId: 'a', dispatchId: sixth.dispatchId, conversationId: sixth.conversationId, actorUserId: 'owner', report, now: minute(7),
+        })).toBe('recorded');
+      }
       await finish(sixth.dispatchId, { status: 'error', error: 'late' });
       expect(await missColumns(row.routineId), JSON.stringify(report)).toEqual(paused);
       expect((await f.store.findOne(row))?.enabled).toBe(false);
@@ -398,6 +405,60 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
       expect(lines.at(-1), `round ${round}`).toBe(pausedLine(row.routineId));
       expect(lines, `round ${round}`).toHaveLength(round + 1);
     }
+  });
+
+  it("an older check-in that finishes after a newer one reported doesn't count: the newer report stands", async () => {
+    const lines = pauseLines();
+    const row = await f.store.createAuthored(taskInput('task'));
+    // A scheduled check-in is still running when the person presses Check now, which reports and finishes first.
+    const scheduled = await checkIn(row, 'scheduled', { at: minute(1) });
+    const checkNow = await checkIn(row, 'check-now', { at: minute(2), report: onTrack });
+    await finish(checkNow.dispatchId);
+    await finish(scheduled.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toBeNull();
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    // Nor is it the fifth miss once the newer one has reported, finished or not.
+    const other = await f.store.createAuthored(taskInput('other'));
+    await missed(other, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
+    const fifth = await checkIn(other, 'fifth', { at: minute(5) });
+    const reporting = await checkIn(other, 'reporting', { at: minute(6), report: onTrack });
+    await finish(fifth.dispatchId);
+    expect(await f.store.findOne(other)).toMatchObject({ enabled: true, noRecentUpdate: { inARow: TASK_AUTO_PAUSE_AFTER_MISSES - 1 } });
+    await finish(reporting.dispatchId);
+    expect((await f.store.findOne(other))?.noRecentUpdate).toBeNull();
+    expect(lines).toEqual([]);
+  });
+
+  it("an older check-in that reports after a newer one missed doesn't clear the miss", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const scheduled = await checkIn(row, 'scheduled', { at: minute(1) });
+    const checkNow = await checkIn(row, 'check-now', { at: minute(2) });
+    await finish(checkNow.dispatchId);
+    const missedOnce = { inARow: 1, reason: 'no-report', at: checkNow.acceptedAt, autoPausedAt: null };
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(missedOnce);
+    expect(await f.store.recordReport({
+      agentId: 'a', dispatchId: scheduled.dispatchId, conversationId: scheduled.conversationId, actorUserId: 'owner', report: onTrack, now: minute(3),
+    })).toBe('recorded');
+    await finish(scheduled.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(missedOnce);
+  });
+
+  it("an older check-in's miss counts behind a newer one's, which keeps its reason and start", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const first = await checkIn(row, 'first', { at: minute(1) });
+    const second = await checkIn(row, 'second', { at: minute(2) });
+    const third = await checkIn(row, 'third', { at: minute(3) });
+    await finish(third.dispatchId, { status: 'error', error: 'boom', miss: 'brief-too-long' });
+    await finish(first.dispatchId);
+    const newest = { inARow: 2, reason: 'brief-too-long', at: third.acceptedAt, autoPausedAt: null };
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(newest);
+    // So the miss time never moves back, and a report from a check-in that started between the two can't
+    // clear the newer miss. The first still counts: it finished before the second reported.
+    expect(await f.store.recordReport({
+      agentId: 'a', dispatchId: second.dispatchId, conversationId: second.conversationId, actorUserId: 'owner', report: onTrack, now: minute(4),
+    })).toBe('recorded');
+    await finish(second.dispatchId);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(newest);
   });
 
   it("a report racing its own run's finish lands one consistent answer, and never deadlocks", async () => {

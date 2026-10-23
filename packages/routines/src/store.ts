@@ -37,7 +37,9 @@ export interface RoutinesStore {
    * Records a run's end, once; false when it had already ended, is gone, or its
    * agent is retired. Every run of every routine ends here, so TASK-930 counts a
    * task's missed check-ins here too, and pauses the task at the fifth in a row
-   * (`missesAfterRun`). It and `updateAuthored` are the count's only writers.
+   * (`missesAfterRun`). Runs that overlap count in the order they started, as
+   * `recordReport` keeps reports, whatever order they finish in. It and
+   * `updateAuthored` are the count's only writers.
    */
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
@@ -220,6 +222,17 @@ function pausedSpecHash(row: Selectable<RoutinesDefinitionsRow>): string {
  * (`updateAuthored`). Keyed on `enabled` too: a row resumed without a reset (code
  * from before version 7, after a rollback) counts again, and can pause again.
  *
+ * Runs that overlap (a Check now beside a scheduled check-in) answer in the
+ * order they started, whatever order they finish in, as `recordReport` keeps
+ * the report of the run accepted last. So null too when a run that started
+ * after this one has already answered: a newer report (`task_report_accepted_at`)
+ * for a run without one, a newer miss (`task_miss_at`) for a run that reported.
+ * A run without a report behind a newer miss still counts, but keeps that miss's
+ * reason and start, so `task_miss_at` never moves back. Once they've all
+ * finished, the task shows a miss exactly when the run that started last missed,
+ * with its reason and start. The count can run long, never short: a report held
+ * back by a newer miss leaves the misses before it counted too.
+ *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
  * its caller classified for an `error` run (`failed` when it gave none), else
@@ -234,11 +247,15 @@ function missesAfterRun(
   now: Date,
 ): { columns: Updateable<RoutinesDefinitionsRow>; paused: boolean } | null {
   if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
-  if (run.reported) return { columns: NO_MISSES, paused: false };
+  // recordReport's order: a run started after this one has already answered.
+  const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
+  if (run.reported) return newerMiss ? null : { columns: NO_MISSES, paused: false };
+  if (row.task_report_accepted_at !== null && row.task_report_accepted_at > run.acceptedAt) return null;
   // A count below zero (a hand edit) starts again at one.
   const inARow = Math.max(0, row.task_misses_in_a_row) + 1;
   const reason: CheckInMiss = run.status === 'error' ? run.miss ?? 'failed' : 'no-report';
-  const counted = { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
+  const counted = newerMiss ? { task_misses_in_a_row: inARow }
+    : { task_misses_in_a_row: inARow, task_miss_reason: reason, task_miss_at: run.acceptedAt };
   if (inARow < TASK_AUTO_PAUSE_AFTER_MISSES || !row.enabled) return { columns: counted, paused: false };
   return {
     columns: {
