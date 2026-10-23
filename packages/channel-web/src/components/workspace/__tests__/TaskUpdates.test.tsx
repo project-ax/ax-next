@@ -213,8 +213,17 @@ describe('TaskUpdates (TASK-910)', () => {
     renderThread(
       [1, 2, 3, 4, 5, 6].map((n) => ({ ...onTrack(n), conversationId: `c${n}` })),
     );
-    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([
+      '/workspace/tasks/a1/t1/checkins/c1',
+    ]);
     fireEvent.click(screen.getByRole('button', { name: '5 earlier check-ins, all on track' }));
-    expect(screen.getAllByRole('link')).toHaveLength(6);
+    // Each entry links to its own check-in, in the thread's order.
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(6);
+    links.forEach((link, i) => {
+      const entry = link.closest('li') as HTMLElement;
+      expect(within(entry).getByText(`Update ${i + 1}`)).toBeInTheDocument();
+      expect(link.getAttribute('href')).toMatch(new RegExp(`/checkins/c${i + 1}$`));
+    });
   });
 });
