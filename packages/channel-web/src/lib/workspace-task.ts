@@ -24,8 +24,9 @@
  * task `refreshFailed`, as a failed refresh does, so a page whose reads keep
  * failing says so instead of polling in silence (any good read starts the
  * count again). One that finds the task gone or the session ended still
- * replaces it. A quiet read that overtakes a refresh answers for both, so it
- * ends that refresh, failure included.
+ * replaces it. While an ordinary refresh is in flight a quiet re-read reads
+ * nothing: it would overtake the refresh (whose answer would then be dropped
+ * as the older one) and, failing, leave the page as it was before the press.
  *
  * It holds one task. Mount it once per task (key the page by its ids): since a
  * refresh keeps what's on screen, state carried over from another task would
@@ -63,7 +64,8 @@ export function useTask(
   /**
    * A background re-read (the poll's): it doesn't mark the task refreshing,
    * and a failed one leaves the page as it is (logged), unless it is the third
-   * in a row, which marks it `refreshFailed`. One that finds the
+   * in a row, which marks it `refreshFailed`. It reads nothing while an
+   * ordinary refresh is in flight. One that finds the
    * task gone or the session ended still replaces it, like any read.
    */
   refreshQuietly: () => void;
@@ -74,26 +76,34 @@ export function useTask(
   const latest = useRef(0);
   // Failed quiet reads since the last good read: the third says so.
   const quietFailures = useRef(0);
+  // The ordinary read in flight, if any (its number): a quiet read waits it out.
+  const loudInFlight = useRef<number | null>(null);
 
   const load = useCallback(
     (quiet: boolean) => {
       const mine = ++latest.current;
+      if (!quiet) loudInFlight.current = mine;
+      const settled = () => {
+        if (loudInFlight.current === mine) loudInFlight.current = null;
+      };
       workspaceApi.task(agentId, routineId).then(
         (detail) => {
+          settled();
           if (latest.current !== mine) return;
           quietFailures.current = 0;
           setState({ kind: 'ready', detail, refreshing: false, refreshFailed: false });
         },
         (e: unknown) => {
+          settled();
           if (latest.current !== mine) return;
           logRequestFailure(e, 'workspace-task');
           const error: TaskReadError = toReadOutcome(e);
           const quietFailuresNow = quiet ? ++quietFailures.current : quietFailures.current;
           setState((s) => {
             if (s.kind !== 'ready' || error !== 'failed') return { kind: 'failed', error };
-            // Quiet, unless it overtook a refresh whose own answer is now dropped,
-            // or it is the third quiet failure in a row.
-            if (quiet && !s.refreshing && quietFailuresNow < QUIET_FAILURES_TO_SAY_SO) return s;
+            // Quiet, unless it is the third quiet failure in a row. (No quiet
+            // read starts while a refresh is in flight, so none answers for one.)
+            if (quiet && quietFailuresNow < QUIET_FAILURES_TO_SAY_SO) return s;
             return { ...s, refreshing: false, refreshFailed: true };
           });
         },
@@ -114,7 +124,10 @@ export function useTask(
     load(false);
   }, [load]);
 
-  const refreshQuietly = useCallback(() => load(true), [load]);
+  const refreshQuietly = useCallback(() => {
+    if (loudInFlight.current !== null) return;
+    load(true);
+  }, [load]);
 
   return { state, refresh, refreshQuietly };
 }

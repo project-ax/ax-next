@@ -265,28 +265,47 @@ describe('useTask (TASK-910)', () => {
     },
   );
 
-  it('a quiet re-read that overtakes a refresh still ends it, and says when it failed', async () => {
-    // The refresh's own answer is dropped as the older one, so the quiet read
-    // answers for both: a page left "refreshing" would keep its buttons off.
+  it('a quiet re-read while a refresh is in flight reads nothing, and the refresh answers', async () => {
+    // A quiet read that overtook the refresh (after Pause or Resume) would
+    // drop the refresh's answer as the older one; if it then failed, the page
+    // would keep the state from before the press.
     const first = detail('Sweep');
     taskMock.mockResolvedValueOnce(first);
     const { result } = renderHook(() => useTask('a1', 't1'));
     await waitFor(() => expect(result.current.state.kind).toBe('ready'));
 
     const loud = deferred<TaskDetail>();
-    const quiet = deferred<TaskDetail>();
-    taskMock.mockReturnValueOnce(loud.promise).mockReturnValueOnce(quiet.promise);
+    taskMock.mockReturnValueOnce(loud.promise);
     act(() => result.current.refresh());
     act(() => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(2);
     expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
-    await act(async () => quiet.reject(new WorkspaceApiError(PATH, 503)));
-    await act(async () => loud.resolve(detail('Sweep', { revision: 'rev-2' })));
+    const second = detail('Sweep', { enabled: false, revision: 'rev-2' });
+    await act(async () => loud.resolve(second));
     expect(result.current.state).toEqual({
       kind: 'ready',
-      detail: first,
+      detail: second,
       refreshing: false,
-      refreshFailed: true,
+      refreshFailed: false,
     });
+
+    // Once the refresh has answered, quiet reads read again.
+    taskMock.mockResolvedValueOnce(second);
+    await act(async () => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a quiet re-read after a failed refresh reads again', async () => {
+    taskMock.mockResolvedValueOnce(detail('Sweep'));
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+
+    taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 503));
+    await act(async () => result.current.refresh());
+    taskMock.mockResolvedValueOnce(detail('Sweep', { revision: 'rev-2' }));
+    await act(async () => result.current.refreshQuietly());
+    expect(taskMock).toHaveBeenCalledTimes(3);
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
   });
 
   it('drops an older answer that lands after a newer one', async () => {
