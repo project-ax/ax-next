@@ -213,6 +213,10 @@ describe('routine_report (TASK-907)', () => {
     const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
     await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    // TASK-930. Its missed check-ins are its state too: two since that report, set by hand as finishDispatch leaves them.
+    const missedAt = new Date('2026-10-23T10:00:00.000Z');
+    await h.db.updateTable('routines_v1_definitions').set({ task_misses_in_a_row: 2, task_miss_reason: 'no-report', task_miss_at: missedAt })
+      .where('agent_id', '=', h.teamAgentId).where('routine_id', '=', task.routineId).execute();
     const key = { agentId: h.teamAgentId, routineId: task.routineId };
     const chatOf = (person: AgentContext) => makeAgentContext({ ...person, agentId: h.teamAgentId, conversationId: `chat-${person.userId}` });
     const execute = <T,>(ctx: AgentContext, call: ToolCall) => h.bus.call<ToolCall, T>(`tool:execute:${call.name}`, ctx, call);
@@ -238,6 +242,7 @@ describe('routine_report (TASK-907)', () => {
       // The routine itself stays visible to them; only its task state, and each run's report, is the owner's.
       expect(seen.get, person.userId).toMatchObject({ routineId: task.routineId, name: TASK.name, kind: 'stay-on-top', task: null });
       for (const view of [seen.list, seen.listTool, seen.getTool]) expect(view?.task, person.userId).toBeNull();
+      for (const view of [seen.list, seen.get, seen.listTool, seen.getTool]) expect(view?.noRecentUpdate, person.userId).toBeNull();
       for (const fires of [seen.fires, seen.agentFires]) expect(fires.map(fire => fire.report), person.userId).toEqual([null]);
       for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask]) expect(JSON.stringify(seen), person.userId).not.toContain(text);
     }
@@ -249,12 +254,15 @@ describe('routine_report (TASK-907)', () => {
     await h.bus.call('decisions:approve', admin, { decisionId: decisions.find(decision => decision.call.input.requestId === 'stop')!.id, userId: admin.userId, approvalScope: 'once' });
     h.advance(11_000);
     const stopped = await execute<RoutineListToolOutput['routines'][number]>(admin, stop);
-    expect(stopped).toMatchObject({ enabled: false, task: null });
+    expect(stopped).toMatchObject({ enabled: false, task: null, noRecentUpdate: null });
     expect(JSON.stringify(stopped)).not.toContain(NEEDS_YOU.update);
     // The owner sees all of it: the services carry the agent notes, routine_list leaves them out.
     const mine = await reads(h.owner);
     for (const view of [mine.list, mine.get, mine.getTool]) expect(view?.task).toEqual({ ...shown, agentNotes: NOTES });
     expect(mine.listTool?.task).toEqual(shown);
+    // A person's stop isn't ax's pause, so the misses don't say autoPaused.
+    const misses = { inARow: 2, reason: 'no-report', at: missedAt.toISOString(), autoPaused: false };
+    for (const view of [mine.list, mine.get, mine.listTool, mine.getTool]) expect(view?.noRecentUpdate).toEqual(misses);
     for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([NEEDS_YOU]);
   });
 

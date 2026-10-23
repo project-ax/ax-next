@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CHECK_IN_MISSES, CheckInMissSchema, RoutineNoRecentUpdateViewSchema, RoutineToolDescriptions,
+  CHECK_IN_MISSES, CheckInMissSchema, RoutineDefinitionSchema, RoutineListToolOutputSchema, RoutineListToolViewSchema,
+  RoutineNoRecentUpdateViewSchema, RoutineToolDescriptions, RoutineUpdateToolOutputSchema, RoutineViewSchema,
   TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES,
 } from '../index.js';
 
@@ -36,5 +37,36 @@ describe('check-in misses (TASK-930)', () => {
     expect(RoutineToolDescriptions.routine_update).toContain('Only a person can resume a paused task.');
     expect(RoutineToolDescriptions.routine_list).toContain(sentence);
     expect(RoutineToolDescriptions.routine_get).toContain(sentence);
+  });
+});
+
+describe('a view’s noRecentUpdate (TASK-930)', () => {
+  const brief = RoutineDefinitionSchema.parse({
+    name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+    kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+  });
+  const view = {
+    ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+    nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null,
+  } as const;
+  const paused = { inARow: 5, reason: 'interrupted', at: '2026-10-23T11:00:00.000Z', autoPaused: true } as const;
+
+  it.each([['RoutineViewSchema', RoutineViewSchema], ['RoutineListToolViewSchema', RoutineListToolViewSchema]] as const)('%s requires it, takes null or a miss, and checks what a miss holds', (_name, schema) => {
+    // Left out is refused, so no reader mistakes an older producer's view for "no misses".
+    expect(schema.safeParse(view).success).toBe(false);
+    for (const noRecentUpdate of [null, good, paused]) expect(schema.parse({ ...view, noRecentUpdate })).toEqual({ ...view, noRecentUpdate });
+    // The stored shape's pause time never crosses, nor does anything else the view doesn't name.
+    for (const extra of [{ autoPausedAt: paused.at }, { dispatchId: 'd' }]) {
+      expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, ...extra } }).success, JSON.stringify(extra)).toBe(false);
+    }
+    expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, inARow: 0 } }).success).toBe(false);
+    expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, reason: 'gremlins' } }).success).toBe(false);
+  });
+
+  it('the tools’ answers carry it', () => {
+    expect(RoutineListToolOutputSchema.parse({ routines: [{ ...view, noRecentUpdate: paused }] })).toEqual({ routines: [{ ...view, noRecentUpdate: paused }] });
+    expect(RoutineUpdateToolOutputSchema.parse({ ...view, noRecentUpdate: good })).toEqual({ ...view, noRecentUpdate: good });
+    expect(RoutineListToolOutputSchema.safeParse({ routines: [view] }).success).toBe(false);
   });
 });

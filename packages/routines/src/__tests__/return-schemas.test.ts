@@ -45,6 +45,42 @@ describe('canonical routine return schemas', () => {
     expect(repeat.task).toBeNull();
     expect(C.RoutineViewSchema.parse(repeat)).toEqual(repeat);
   });
+  describe("a task's misses (TASK-930)", () => {
+    const task: StoredRoutine = {
+      ...row,
+      ...C.RoutineDefinitionSchema.parse({
+        name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+        kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+      }),
+      noRecentUpdate: { inARow: 3, reason: 'brief-too-long', at: new Date('2030-01-01T00:10:00Z'), autoPausedAt: null },
+    };
+    it('projects them for its owner only, never for a repeat routine', () => {
+      const projected = routineView(task, 'owner', true);
+      expect(projected.noRecentUpdate).toEqual({ inARow: 3, reason: 'brief-too-long', at: '2030-01-01T00:10:00.000Z', autoPaused: false });
+      // Anyone but its owner sees the routine without them.
+      const teammate = routineView(task, 'teammate', true);
+      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), noRecentUpdate: null });
+      // A repeat routine shows none, even when its row holds some.
+      const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
+      expect(repeat.noRecentUpdate).toBeNull();
+      // Every answer takes each view: the services' and, with no report to project, the tools'.
+      for (const view of [projected, teammate, repeat]) {
+        for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema, C.RoutineUpdateToolOutputSchema]) {
+          expect(schema.parse(view)).toEqual(view);
+        }
+        expect(C.RoutineListToolOutputSchema.parse({ routines: [view] })).toEqual({ routines: [view] });
+      }
+    });
+    it('says ax paused the task only while it is still paused', () => {
+      const pausedAt = new Date('2030-01-01T01:00:00Z');
+      const fifth: StoredRoutine = { ...task, noRecentUpdate: { inARow: 5, reason: 'no-report', at: new Date('2030-01-01T00:55:00Z'), autoPausedAt: pausedAt } };
+      expect(routineView({ ...fifth, enabled: false }, 'owner', true).noRecentUpdate).toEqual({ inARow: 5, reason: 'no-report', at: '2030-01-01T00:55:00.000Z', autoPaused: true });
+      // Running again with the pause time still set (resumed by older code after a rollback, a hand edit): not paused by ax.
+      expect(routineView({ ...fifth, enabled: true }, 'owner', true).noRecentUpdate).toMatchObject({ inARow: 5, autoPaused: false });
+      // A person's pause, with misses ax hadn't acted on yet.
+      expect(routineView({ ...task, enabled: false }, 'owner', true).noRecentUpdate).toMatchObject({ inARow: 3, autoPaused: false });
+    });
+  });
   it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, and naming a check-in's task", () => {
     expect(ROUTINE_SERVICES).toHaveLength(18);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');

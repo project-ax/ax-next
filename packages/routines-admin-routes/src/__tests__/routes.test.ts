@@ -34,6 +34,7 @@ const routine = {
   lastWarning: null,
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
   task: null,
+  noRecentUpdate: null,
 };
 function req(
   body?: unknown,

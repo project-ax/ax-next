@@ -524,6 +524,17 @@ const RoutineViewShape = {
   nextRunAt: RoutineInstantSchema.nullable(), lastRunAt: RoutineInstantSchema.nullable(),
   lastStatus: RoutineStatusSchema.nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),
   permissions: RoutinePermissionsSchema,
+  /**
+   * TASK-930. A task's check-ins in a row that ended without a report. Host-written
+   * (a count, a closed reason code, the last one's start, whether ax paused the
+   * task), never agent text. Null for a repeat routine, for a task with none, for
+   * anyone but the task's owner (`task`'s rule), and in an exact replay's answer:
+   * a receipt keeps none. Required, so a view from a producer that doesn't know
+   * it is refused rather than read as "no misses". The same in every view, the
+   * tools' included: the owner's chat shows it to the model, whose tool
+   * descriptions say what it means and that only a person resumes a paused task.
+   */
+  noRecentUpdate: RoutineNoRecentUpdateViewSchema.nullable(),
 };
 function validateView(view: Record<string, unknown>, ctx: z.RefinementCtx): void {
   const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key]]));

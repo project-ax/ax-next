@@ -36,7 +36,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
-    permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId) };
+    permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
+    noRecentUpdate: noRecentUpdateView(row, userId) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -44,8 +45,9 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * sharing a task is a later feature (design §14, question 8). Whoever can see the
  * routine still sees the routine. Decided here, where every view is made (list,
  * get, create, update, their replays, the tools' recovery), so no caller (a tool,
- * the Settings routes, the Tasks page) needs a rule of its own for these two. It covers
- * `task` and `report` only: a fire's `renderedPrompt` is not gated here (a task run's
+ * the Settings routes, the Tasks page) needs a rule of its own for these. It covers
+ * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`) and
+ * `report` only: a fire's `renderedPrompt` is not gated here (a task run's
  * check-in message never lands there: fire.ts stores `renderedPrompt: null` for task
  * runs, TASK-908). A repeat routine shows none either: changing a kind clears it, and
  * this hides any a row holds anyway.
@@ -54,6 +56,19 @@ function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null 
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
   const { status, update, ask, reportedAt, agentNotes } = row.task;
   return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
+}
+/**
+ * TASK-930. A task's check-ins in a row that ended without a report, under
+ * `taskView`'s rule: only its owner sees them, and a repeat routine shows none.
+ * Host-written (a count, a closed code, an instant), never agent text. Projected
+ * field by field, so the stored pause time stays here: `autoPaused` says ax's
+ * pause still holds, so a task running again (resumed by code from before the
+ * reset, or by hand) isn't shown as paused, whatever its row's pause time says.
+ */
+function noRecentUpdateView(row: StoredRoutine, userId: string): C.RoutineNoRecentUpdateView | null {
+  if (row.ownerUserId !== userId || row.kind === 'repeat' || row.noRecentUpdate === null) return null;
+  const { inARow, reason, at, autoPausedAt } = row.noRecentUpdate;
+  return { inARow, reason, at: at.toISOString(), autoPaused: autoPausedAt !== null && !row.enabled };
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
 /** TASK-907. Every reason a report is refused: the tool's lookup, the hook's own context check, and the store's under its locks. */
