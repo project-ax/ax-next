@@ -796,6 +796,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'an approval held during a task check-in reads "Held during an unattended run" instead of naming its task, and Today offers no Open task link',
         },
         {
+          hook: 'routines:reply',
+          degradation:
+            'the reply box on the task page (POST /api/workspace/tasks/:agentId/:routineId/replies) answers 503 and nothing is sent',
+        },
+        {
+          hook: 'routines:recent-replies',
+          degradation: 'the task page shows no replies in its Updates thread',
+        },
+        {
           hook: 'connectors:list-effective',
           degradation:
             'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and adding a key-based connector all answer 503 (there is no list of what this agent may use to check against)',

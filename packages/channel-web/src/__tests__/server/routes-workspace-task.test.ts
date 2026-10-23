@@ -1,8 +1,9 @@
 // @vitest-environment node
 /**
- * The task page's two routes (TASK-910): `GET
- * /api/workspace/tasks/:agentId/:routineId`, one task's own page, and `DELETE
- * …/notes`, which clears the agent's notes on it.
+ * The task page's routes: `GET /api/workspace/tasks/:agentId/:routineId`, one
+ * task's own page, and `DELETE …/notes`, which clears the agent's notes on it
+ * (TASK-910); and `POST …/replies`, the task's owner writing to their agent
+ * about it (TASK-931).
  *
  * `routines:get` here is the real view producer, not a literal. Each view is
  * made by @ax/routines' own `routineView` and parsed on the bus through
@@ -10,7 +11,12 @@
  * rule (TASK-909's `isOwnTask`, reused) against the services' `taskView` and
  * `routinePermissions`: if either changes, these tests fail instead of the
  * page quietly showing someone else's task. `routines:recent-fires` answers
- * literal fire views, parsed through `RoutineRecentFiresOutputSchema`.
+ * literal fire views, parsed through `RoutineRecentFiresOutputSchema`, and
+ * `routines:recent-replies` literal reply views, parsed through
+ * `RoutineRecentRepliesOutputSchema`. `routines:reply` checks its input with
+ * the contract's own `RoutineReplyInputSchema` first, as the service does, so
+ * a text the reply rule refuses is a real `validation` refusal and a key the
+ * route forwards that the service doesn't take fails the request.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -22,13 +28,20 @@ import {
 } from '@ax/core';
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS,
+  ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineClearNotesOutputSchema,
   RoutineGetInputSchema,
   RoutineGetOutputSchema,
   RoutineRecentFiresOutputSchema,
+  RoutineRecentRepliesInputSchema,
+  RoutineRecentRepliesOutputSchema,
+  RoutineReplyInputSchema,
+  RoutineReplyOutputSchema,
   type RoutineFireView,
+  type RoutineReplyOutput,
+  type RoutineReplyView,
   type RoutineReportStatus,
 } from '@ax/routines-contract';
 import {
@@ -41,6 +54,7 @@ import { parseRoutineInput, routineView } from '../../../../routines/src/service
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
 
+/** A request; a `Buffer` body is sent as those bytes, anything else as JSON. */
 function mkReq(
   params: Record<string, string> = {},
   body?: unknown,
@@ -48,7 +62,11 @@ function mkReq(
   return {
     headers: {},
     body:
-      body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body), 'utf-8'),
+      body === undefined
+        ? Buffer.alloc(0)
+        : Buffer.isBuffer(body)
+          ? body
+          : Buffer.from(JSON.stringify(body), 'utf-8'),
     cookies: {},
     query: {},
     params,
@@ -155,6 +173,14 @@ interface World {
   firesFailure: Error | null;
   /** Set: `routines:clear-notes` throws this. */
   clearFailure: Error | null;
+  /** What `routines:recent-replies` answers, newest first (TASK-931). */
+  replies: RoutineReplyView[];
+  /** Set: `routines:recent-replies` throws this. */
+  repliesFailure: Error | null;
+  /** What `routines:reply` answers when it takes a reply. */
+  replyAnswer: RoutineReplyOutput;
+  /** Set: `routines:reply` throws this, after its input check. */
+  replyFailure: Error | null;
   /** True: `routines:get` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
   unvalidated: boolean;
   /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
@@ -181,6 +207,10 @@ function setup(over: Partial<World> = {}) {
     getFailure: null,
     firesFailure: null,
     clearFailure: null,
+    replies: [],
+    repliesFailure: null,
+    replyAnswer: { replyId: 'REPLY-ID-0', checkIn: 'started' },
+    replyFailure: null,
     unvalidated: false,
     viewMiss: null,
     ...over,
@@ -190,6 +220,10 @@ function setup(over: Partial<World> = {}) {
   const getCalls: Array<Call<unknown>> = [];
   const firesCalls: Array<Call<unknown>> = [];
   const clearCalls: Array<Call<unknown>> = [];
+  const repliesCalls: Array<Call<unknown>> = [];
+  const replyCalls: Array<Call<unknown>> = [];
+  /** Every routines hook asked, in the order it was asked. */
+  const order: string[] = [];
 
   bus.registerService('auth:require-user', 'auth', async () => {
     if (world.viewer === null) {
@@ -215,6 +249,7 @@ function setup(over: Partial<World> = {}) {
       'routines',
       async (ctx: AgentContext, raw: unknown) => {
         getCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:get');
         if (world.getFailure !== null) throw world.getFailure;
         // The service's own input check: an id that can't exist is `validation`.
         const input = parseRoutineInput(RoutineGetInputSchema, raw);
@@ -235,10 +270,42 @@ function setup(over: Partial<World> = {}) {
       'routines',
       async (ctx: AgentContext, input: unknown) => {
         firesCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input });
+        order.push('routines:recent-fires');
         if (world.firesFailure !== null) throw world.firesFailure;
         return { fires: world.fires };
       },
       { returns: RoutineRecentFiresOutputSchema },
+    );
+  }
+  if (!world.absent.has('routines:recent-replies')) {
+    bus.registerService(
+      'routines:recent-replies',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        repliesCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:recent-replies');
+        parseRoutineInput(RoutineRecentRepliesInputSchema, raw);
+        if (world.repliesFailure !== null) throw world.repliesFailure;
+        return { replies: world.replies };
+      },
+      { returns: RoutineRecentRepliesOutputSchema },
+    );
+  }
+  if (!world.absent.has('routines:reply')) {
+    bus.registerService(
+      'routines:reply',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        replyCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:reply');
+        // The service's own input check, before anything else: the contract's
+        // reply rule refuses the text as `validation`, and so does a key the
+        // service doesn't take.
+        parseRoutineInput(RoutineReplyInputSchema, raw);
+        if (world.replyFailure !== null) throw world.replyFailure;
+        return world.replyAnswer;
+      },
+      { returns: RoutineReplyOutputSchema },
     );
   }
   if (!world.absent.has('routines:clear-notes')) {
@@ -269,16 +336,32 @@ function setup(over: Partial<World> = {}) {
     await handlers.clearTaskNotes(mkReq(params), res);
     return captured;
   }
+  async function reply(
+    params: Record<string, string> = KEY,
+    body: unknown = SENT,
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.taskReply(mkReq(params, body), res);
+    return captured;
+  }
   return {
     detail,
     clear,
+    reply,
     resolveCalls,
     getCalls,
     firesCalls,
     clearCalls,
+    repliesCalls,
+    replyCalls,
+    order,
     lastWritten: () => last,
   };
 }
+
+/** A reply as the box sends it (TASK-931). */
+const SENT = { text: 'Refunds under $100 are fine.', requestId: 'req-1' };
 
 function bodyOf(captured: CapturedRes): TaskDetail {
   return captured.body as TaskDetail;
@@ -361,6 +444,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
           conversationId: 'CONVERSATION-ID',
         },
       ],
+      replies: [],
     } satisfies TaskDetail);
     // Spelled out, though the strict match above already says it: nothing the
     // page doesn't draw crosses the wire.
@@ -410,14 +494,15 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     ]);
   });
 
-  it('404s a repeat routine, and reads none of its history', async () => {
-    const { detail, firesCalls } = setup({
+  it('404s a repeat routine, and reads none of its history or replies', async () => {
+    const { detail, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null })],
     });
     const captured = await detail();
     expect(captured.statusCode).toBe(404);
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it.each([
@@ -426,7 +511,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
   ])(
     '404s someone else’s task on a team agent, to a viewer %s, and nothing of it is in the body',
     async (_who, managers) => {
-      const { detail, firesCalls } = setup({
+      const { detail, firesCalls, repliesCalls } = setup({
         agents: TEAM_AGENTS,
         managers: { team: managers },
         rows: [
@@ -454,6 +539,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
       expect(captured.statusCode).toBe(404);
       expect(captured.body).toEqual({ error: 'task-not-found' });
       expect(firesCalls).toEqual([]);
+      expect(repliesCalls).toEqual([]);
       const wire = JSON.stringify(captured.body);
       for (const marker of ['BOB-TASK', 'BOB-UPDATE', 'BOB-ASK', 'BOB-NOTES']) {
         expect(wire).not.toContain(marker);
@@ -477,7 +563,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
   });
 
   it('404s that owner’s task until it first reports, as the Tasks page leaves it out (TASK-909’s rule)', async () => {
-    const { detail, firesCalls } = setup({
+    const { detail, firesCalls, repliesCalls } = setup({
       viewer: 'bob',
       agents: TEAM_AGENTS,
       managers: { team: ['alice'] },
@@ -487,10 +573,11 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.statusCode).toBe(404);
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it('404s an agent the caller can’t reach, and reads nothing of it', async () => {
-    const { detail, resolveCalls, getCalls, firesCalls } = setup({
+    const { detail, resolveCalls, getCalls, firesCalls, repliesCalls } = setup({
       viewer: 'bob',
       managers: { a1: ['alice', 'bob'] },
       rows: [
@@ -503,21 +590,23 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'bob' }]);
     expect(getCalls).toEqual([]);
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it('404s a routine that isn’t there', async () => {
-    const { detail, firesCalls } = setup({
+    const { detail, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't2', task: report('on-track') })],
     });
     const captured = await detail();
     expect(captured.statusCode).toBe(404);
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it('404s an id that can’t name a task', async () => {
     // Longer than any opaque id: the service refuses it as `validation`.
-    const { detail, getCalls, firesCalls } = setup({
+    const { detail, getCalls, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
     });
     const captured = await detail({ agentId: 'a1', routineId: 'r'.repeat(300) });
@@ -525,6 +614,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(getCalls).toHaveLength(1);
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it.each([
@@ -532,8 +622,8 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     ['a SafeToolError not-found', new SafeToolError('not-found', 'routineId')],
     ['a PluginError forbidden', new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' })],
     ['a PluginError not-found', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
-  ])('404s when routines:get refuses with %s, and reads no history', async (_kind, failure) => {
-    const { detail, firesCalls } = setup({
+  ])('404s when routines:get refuses with %s, and reads no history or replies', async (_kind, failure) => {
+    const { detail, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
       getFailure: failure,
     });
@@ -541,6 +631,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.statusCode).toBe(404);
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 
   it.each([
@@ -651,6 +742,103 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(lastWritten()?.body).toBeUndefined();
   });
 
+  it('carries the owner’s replies, fenced, newest first, with byYou and nothing else (TASK-931)', async () => {
+    const { detail } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
+      replies: [
+        {
+          replyId: 'REPLY-ID-1',
+          authorUserId: 'alice',
+          text: 'Line one.\nLine two.',
+          sentAt: '2026-10-22T15:00:00.000Z',
+        },
+        {
+          // From an earlier owner of the task, after it moved.
+          replyId: 'REPLY-ID-2',
+          authorUserId: 'carol',
+          text: `x${String.fromCodePoint(0x202e)}y`,
+          sentAt: '2026-10-22T14:00:00.000Z',
+        },
+        {
+          // Stored text isn't re-checked (TASK-913): nothing legible survives the fence.
+          replyId: 'REPLY-ID-3',
+          authorUserId: 'alice',
+          text: '   ',
+          sentAt: '2026-10-22T13:00:00.000Z',
+        },
+      ],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).replies).toStrictEqual([
+      { sentAt: '2026-10-22T15:00:00.000Z', text: 'Line one.\nLine two.', byYou: true },
+      // The hidden character spelled out where it was, visibly.
+      {
+        sentAt: '2026-10-22T14:00:00.000Z',
+        text: `x${String.fromCharCode(0x5c)}u202ey`,
+        byYou: false,
+      },
+      { sentAt: '2026-10-22T13:00:00.000Z', text: null, byYou: true },
+    ]);
+    // Who wrote a reply and its id never leave the host (TASK-931 decisions row 13).
+    const wire = JSON.stringify(captured.body);
+    for (const marker of ['authorUserId', 'carol', 'REPLY-ID', 'replyId']) {
+      expect(wire).not.toContain(marker);
+    }
+  });
+
+  it('shows the whole of every reply a check-in can read, hidden characters and line breaks included', async () => {
+    // A check-in reads a reply's first 2,000 UTF-16 units. A hidden character
+    // costs six code points once spelled out, and every line break one line.
+    const hidden = String.fromCodePoint(0x202e).repeat(ROUTINE_REPLY_MAX_CHARS);
+    const lines = `${'\n'.repeat(ROUTINE_REPLY_MAX_CHARS - 1)}z`;
+    const { detail } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
+      replies: [
+        { replyId: 'r1', authorUserId: 'alice', text: hidden, sentAt: '2026-10-22T15:00:00.000Z' },
+        { replyId: 'r2', authorUserId: 'alice', text: lines, sentAt: '2026-10-22T14:00:00.000Z' },
+      ],
+    });
+    const [first, second] = bodyOf(await detail()).replies;
+    expect(first?.text?.length).toBe(12_000);
+    expect(first?.text).toBe(`${String.fromCharCode(0x5c)}u202e`.repeat(ROUTINE_REPLY_MAX_CHARS));
+    expect(second?.text).toBe(lines);
+  });
+
+  it('asks for the newest 50 replies, as the caller, after the check-ins', async () => {
+    const { detail, repliesCalls, order } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(repliesCalls).toEqual([
+      { userId: 'alice', agentId: 'a1', input: { agentId: 'a1', routineId: 't1', limit: 50 } },
+    ]);
+    expect(order).toEqual(['routines:get', 'routines:recent-fires', 'routines:recent-replies']);
+  });
+
+  it('without routines:recent-replies the page has no replies', async () => {
+    const { detail } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
+      absent: new Set(['routines:recent-replies']),
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).replies).toEqual([]);
+  });
+
+  it('a failed replies read fails the page', async () => {
+    // "We don't know" must not render as "no replies" (TASK-910 decisions row 11).
+    const { detail, repliesCalls, lastWritten } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
+      repliesFailure: new Error('replica lag'),
+    });
+    await expect(detail()).rejects.toThrow('replica lag');
+    expect(repliesCalls).toHaveLength(1);
+    expect(lastWritten()?.statusCode).not.toBe(200);
+    expect(lastWritten()?.body).toBeUndefined();
+  });
+
   it('401s without a session, and reads nothing', async () => {
     const { detail, resolveCalls, getCalls, firesCalls } = setup({
       viewer: null,
@@ -680,11 +868,20 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
   });
 
   it.each([
-    ['without routines at all', ['routines:get', 'routines:recent-fires', 'routines:clear-notes']],
+    [
+      'without routines at all',
+      [
+        'routines:get',
+        'routines:recent-fires',
+        'routines:clear-notes',
+        'routines:recent-replies',
+        'routines:reply',
+      ],
+    ],
     ['without routines:get', ['routines:get']],
     ['without routines:recent-fires', ['routines:recent-fires']],
   ])('404s in a deployment %s, and reads nothing', async (_what, absent) => {
-    const { detail, getCalls, firesCalls } = setup({
+    const { detail, getCalls, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track') })],
       absent: new Set(absent),
     });
@@ -693,6 +890,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.body).toEqual({ error: 'task-not-found' });
     expect(getCalls).toEqual([]);
     expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
   });
 });
 
@@ -827,4 +1025,138 @@ describe('DELETE /api/workspace/tasks/:agentId/:routineId/notes (TASK-910)', () 
     expect(captured.body).toEqual({ error: 'missing-task-id' });
     expect(clearCalls).toEqual([]);
   });
+});
+
+describe('POST /api/workspace/tasks/:agentId/:routineId/replies (TASK-931)', () => {
+  it('sends the reply as the caller and answers what it did about a check-in', async () => {
+    const { reply, replyCalls } = setup();
+    // The address names the task. Nothing else in the body rides along.
+    const captured = await reply(KEY, { ...SENT, agentId: 'zzz', admin: true });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ checkIn: 'started' });
+    expect(replyCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: {
+          agentId: 'a1',
+          routineId: 't1',
+          requestId: 'req-1',
+          text: 'Refunds under $100 are fine.',
+        },
+      },
+    ]);
+  });
+
+  it.each(['paused', 'not-allowed', 'replayed'] as const)(
+    'answers %s when that is what the service did',
+    async (checkIn) => {
+      const { reply } = setup({ replyAnswer: { replyId: 'REPLY-ID-0', checkIn } });
+      const captured = await reply();
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toStrictEqual({ checkIn });
+    },
+  );
+
+  it.each<[string, Buffer]>([
+    ['an unparseable body', Buffer.from('{"text": "Refunds', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+  ])('400s %s as invalid-json, and asks no one', async (_what, raw) => {
+    const { reply, resolveCalls, replyCalls } = setup();
+    const captured = await reply(KEY, raw);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-json' });
+    expect(resolveCalls).toEqual([]);
+    expect(replyCalls).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['a list', []],
+    ['null', null],
+    ['an empty object', {}],
+    ['text that isn’t text', { text: 3, requestId: 'r' }],
+    ['no request id', { text: 'hi' }],
+    ['an empty request id', { text: 'hi', requestId: '' }],
+    ['a request id that isn’t text', { text: 'hi', requestId: 7 }],
+  ])('400s a body that is %s as invalid-body, and asks no one', async (_what, body) => {
+    const { reply, resolveCalls, replyCalls } = setup();
+    const captured = await reply(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(resolveCalls).toEqual([]);
+    expect(replyCalls).toEqual([]);
+  });
+
+  it.each<[string, string]>([
+    ['a blank reply', '   '],
+    ['a reply over 2,000 characters', 'x'.repeat(ROUTINE_REPLY_MAX_CHARS + 1)],
+    ['a reply with an invisible character', `a${String.fromCodePoint(0x200b)}b`],
+  ])('400s text the service refuses (%s) as reply-invalid', async (_what, text) => {
+    const { reply, replyCalls } = setup();
+    const captured = await reply(KEY, { text, requestId: 'req-1' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'reply-invalid' });
+    expect(replyCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['a SafeToolError forbidden', new SafeToolError('forbidden', 'input')],
+    ['a SafeToolError not-found', new SafeToolError('not-found', 'routineId')],
+    ['a PluginError not-found', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
+  ])('404s when the service refuses with %s', async (_kind, failure) => {
+    const { reply, replyCalls } = setup({ replyFailure: failure });
+    const captured = await reply();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(replyCalls).toHaveLength(1);
+  });
+
+  it('404s an agent the caller can’t reach, without asking to reply', async () => {
+    const { reply, resolveCalls, replyCalls } = setup({ viewer: 'mallory' });
+    const captured = await reply();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(replyCalls).toEqual([]);
+  });
+
+  it('503s without routines:reply, before reading the agent', async () => {
+    const { reply, resolveCalls } = setup({ absent: new Set(['routines:reply']) });
+    const captured = await reply();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-replies-unavailable' });
+    expect(resolveCalls).toEqual([]);
+  });
+
+  it('401s without a session, and asks no one', async () => {
+    const { reply, resolveCalls, replyCalls } = setup({ viewer: null });
+    const captured = await reply();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(replyCalls).toEqual([]);
+  });
+
+  it('400s a blank id, and asks no one', async () => {
+    const { reply, resolveCalls, replyCalls } = setup();
+    const captured = await reply({ agentId: 'a1', routineId: ' ' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(replyCalls).toEqual([]);
+  });
+
+  it.each([
+    ['an unavailable service', new SafeToolError('unavailable', 'input'), 'temporarily unavailable'],
+    ['any other failure', new Error('database down'), 'database down'],
+  ])(
+    'fails the request when the service fails with %s, rather than saying it was sent',
+    async (_kind, failure, message) => {
+      const { reply, replyCalls, lastWritten } = setup({ replyFailure: failure });
+      await expect(reply()).rejects.toThrow(message);
+      expect(replyCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
 });

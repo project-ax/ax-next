@@ -94,6 +94,7 @@ const TASK_DETAIL: TaskDetail = {
   task: null,
   noRecentUpdate: null,
   updates: [],
+  replies: [],
 };
 
 /** Quill's one check-in, as its own page reads it. */

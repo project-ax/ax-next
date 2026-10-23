@@ -30,6 +30,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     task: null,
     noRecentUpdate: null,
     updates: [],
+    replies: [],
     ...over,
   };
 }

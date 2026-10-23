@@ -85,6 +85,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
         conversationId: null,
       },
     ],
+    replies: [],
     ...over,
   };
 }

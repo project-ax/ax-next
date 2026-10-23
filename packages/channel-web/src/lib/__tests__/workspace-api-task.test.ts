@@ -68,6 +68,7 @@ const DETAIL: TaskDetail = {
     { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
     { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null }, conversationId: 'c3' },
   ],
+  replies: [],
 };
 
 describe('workspaceApi.task (TASK-910)', () => {
@@ -90,6 +91,7 @@ describe('workspaceApi.task (TASK-910)', () => {
       brief: { promptBody: null, goodWhen: null },
       task: null,
       updates: [],
+      replies: [],
     };
     respondWith(body);
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
