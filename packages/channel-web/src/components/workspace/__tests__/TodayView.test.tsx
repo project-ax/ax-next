@@ -690,7 +690,31 @@ describe('what tasks need from you (TASK-933)', () => {
   });
 
   it('tasks show under Needs you only', () => {
-    renderToday({ filter: 'working', tasks: [needsYouTask()] });
+    const { rerender } = renderToday({ filter: 'needs', tasks: [needsYouTask()] });
+    expect(taskBlock()).toBeInTheDocument();
+    rerender(
+      <TodayView
+        decisions={[]}
+        grants={[]}
+        onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+        agents={[agent()]}
+        filter="working"
+        expandedId={null}
+        onExpand={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onNavigate={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        onSeeActivity={vi.fn()}
+        tasks={[needsYouTask()]}
+        tasksError={null}
+        unavailableTaskAgents={[]}
+        onRetryTasks={vi.fn()}
+        onReplied={vi.fn()}
+      />,
+    );
     expect(screen.queryByRole('region', { name: /Zero open support tickets/ })).toBeNull();
   });
 

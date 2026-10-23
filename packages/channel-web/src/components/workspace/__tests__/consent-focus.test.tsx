@@ -73,6 +73,7 @@ import {
   HOST_ALLOW_ONCE_LABEL,
 } from '@/lib/grant-copy';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
+import type { TaskRow } from '@/lib/workspace-types';
 import type { PermissionRequest } from '@/server/types';
 
 /* ------------------------------------------------------------------ *
@@ -1082,8 +1083,33 @@ describe('the host grant turned down (site 4)', () => {
 describe('Today keeps an answered approval where it was (TASK-933)', () => {
   const LABEL = { routineId: 't1', taskName: 'Zero open support tickets' };
 
-  function AnsweredOnToday({ checkIn }: { checkIn: Decision['checkIn'] }) {
+  /** The task `LABEL` names, whose last report asked the person something. */
+  const needsYouRow: TaskRow = {
+    agentId: quill.id,
+    agentName: quill.name,
+    routineId: LABEL.routineId,
+    name: LABEL.taskName,
+    enabled: true,
+    task: {
+      status: 'needs-you',
+      update: 'Two tickets are still open.',
+      ask: 'Want me to draft a reply to #4410?',
+      reportedAt: '2026-10-23T10:00:00.000Z',
+    },
+    noRecentUpdate: null,
+  };
+
+  function AnsweredOnToday({
+    checkIn,
+    tasksBefore = [],
+    tasksAfter = [],
+  }: {
+    checkIn: Decision['checkIn'];
+    tasksBefore?: TaskRow[];
+    tasksAfter?: TaskRow[];
+  }) {
     const [d, setD] = useState<Decision>(decisionFixture({ id: 'd1', checkIn }));
+    const [tasks, setTasks] = useState<TaskRow[]>(tasksBefore);
     return (
       <div>
         <Decoys />
@@ -1098,11 +1124,14 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
           onExpand={vi.fn()}
           onOpenAgent={vi.fn()}
           onNavigate={vi.fn()}
-          onApprove={() => setD(resolvedFixture('executed', { id: 'd1', checkIn }))}
+          onApprove={() => {
+            setD(resolvedFixture('executed', { id: 'd1', checkIn }));
+            setTasks(tasksAfter);
+          }}
           onDismiss={vi.fn()}
           onUndo={vi.fn()}
           onSeeActivity={vi.fn()}
-          tasks={[]}
+          tasks={tasks}
           tasksError={null}
           unavailableTaskAgents={[]}
           onRetryTasks={vi.fn()}
@@ -1119,6 +1148,25 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
     yes.focus();
     fireEvent.click(yes);
 
+    expect(document.activeElement).toBe(screen.getByTestId('decision-outcome-d1'));
+    expect(tabsToReach(undoButton())).toBe(1);
+  });
+
+  it('an approval under a task that needs you keeps focus when answering ends the task’s need and the block’s heading changes', () => {
+    render(<AnsweredOnToday checkIn={LABEL} tasksBefore={[needsYouRow]} tasksAfter={[]} />);
+
+    const heading = () =>
+      screen.getByRole('heading', { name: /Zero open support tickets/ }).textContent;
+    expect(heading()).toMatch(/needs you/i);
+    expect(screen.getByText('Want me to draft a reply to #4410?')).toBeInTheDocument();
+
+    const yes = screen.getByRole('button', { name: 'Move it' });
+    yes.focus();
+    fireEvent.click(yes);
+
+    // The task stopped needing the person: its ask is gone and the heading lost its mark.
+    expect(screen.queryByText('Want me to draft a reply to #4410?')).toBeNull();
+    expect(heading()).not.toMatch(/needs you/i);
     expect(document.activeElement).toBe(screen.getByTestId('decision-outcome-d1'));
     expect(tabsToReach(undoButton())).toBe(1);
   });
