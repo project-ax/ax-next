@@ -3390,16 +3390,16 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * Keeps the caller's own tasks (`isOwnTask`), where a task is any kind but
  * `repeat`, so design PR 3's `get-done` appears without a change here. Each
  * row is built field by field, never spread from the view, so nothing rides
- * along that the page doesn't draw (decisions row 5): the ask and the agent's
- * notes never leave the server.
+ * along that no surface draws: the agent's notes never leave the server, and
+ * the ask leaves only because Today draws it (TASK-933).
  *
- * The name and the update are agent-written and fenced HERE, at the boundary,
- * to one line. The update is capped at the report writer's own limit, because
- * stored text isn't re-checked against the writer's rules (TASK-913) and the
- * view schema has no cap. `agentName` is the roster's string as-is, the same
- * one `/state` sends. `noRecentUpdate` is host-written (a count, a closed
- * reason, an instant, a flag; `toTaskNoRecentUpdate`) and holds no
- * agent-written text.
+ * The name, the update and the ask are agent-written and fenced HERE, at the
+ * boundary, to one line. The update and the ask are capped at the report
+ * writer's own limits, because stored text isn't re-checked against the
+ * writer's rules (TASK-913) and the view schema has no cap. `agentName` is the
+ * roster's string as-is, the same one `/state` sends. `noRecentUpdate` is
+ * host-written (a count, a closed reason, an instant, a flag;
+ * `toTaskNoRecentUpdate`) and holds no agent-written text.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3419,6 +3419,7 @@ function toTaskRows(
           : {
               status: view.task.status,
               update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
+              ask: fenceLine(view.task.ask, ROUTINE_REPORT_ASK_MAX_CHARS),
               reportedAt: view.task.reportedAt,
             },
       noRecentUpdate: toTaskNoRecentUpdate(view),

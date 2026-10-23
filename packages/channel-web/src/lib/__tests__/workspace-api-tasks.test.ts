@@ -25,7 +25,12 @@ const ROW = {
   routineId: 'r-1',
   name: 'Morning inbox sweep',
   enabled: true,
-  task: { status: 'on-track', update: 'Filed 12 receipts', reportedAt: '2026-10-22T08:00:00.000Z' },
+  task: {
+    status: 'on-track',
+    update: 'Filed 12 receipts',
+    ask: null,
+    reportedAt: '2026-10-22T08:00:00.000Z',
+  },
   noRecentUpdate: null,
 };
 
@@ -58,6 +63,29 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     respondWith(body);
     await expect(workspaceApi.tasks()).resolves.toEqual(body);
   });
+
+  it('accepts a report whose ask is text or null', async () => {
+    for (const ask of ['Want me to draft a reply to #4410?', null]) {
+      const body = {
+        tasks: [{ ...ROW, task: { ...ROW.task, status: 'needs-you', ask } }],
+        unavailableAgents: [],
+      };
+      respondWith(body);
+      await expect(workspaceApi.tasks()).resolves.toEqual(body);
+    }
+  });
+
+  it.each<[unknown]>([[42], [{}], [undefined]])(
+    'refuses a report whose ask is %s',
+    async (ask) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // `undefined` means the key is absent: the ask is checked like the update.
+      const { ask: _gone, ...withoutAsk } = ROW.task;
+      const task = ask === undefined ? withoutAsk : { ...withoutAsk, ask };
+      respondWith({ tasks: [{ ...ROW, task }], unavailableAgents: [] });
+      await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
+    },
+  );
 
   it('reads a row with missed check-ins, for every reason the contract names', async () => {
     for (const reason of CHECK_IN_MISSES) {

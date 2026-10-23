@@ -44,7 +44,7 @@ function report(
   status: TaskRowReport['status'],
   reportedAt = '2026-10-22T10:00:00.000Z',
 ): TaskRowReport {
-  return { status, update: 'Queue is empty.', reportedAt };
+  return { status, update: 'Queue is empty.', ask: null, reportedAt };
 }
 
 describe('taskGroup', () => {

@@ -38,6 +38,7 @@ function report(
   return {
     status,
     update: 'Nothing new since this morning.',
+    ask: null,
     reportedAt: '2026-10-22T10:00:00.000Z',
     ...over,
   };

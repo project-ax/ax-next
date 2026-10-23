@@ -1333,10 +1333,16 @@ export type AgentToolVerdictSaved =
       unconfirmed: true;
     };
 
-/** A task's latest report, as the Tasks page shows it (TASK-909). The agent wrote `update`; the server fenced it to one line of at most 500 code points, or null when nothing legible survived. */
+/** A task's latest report, as the Tasks page and Today show it (TASK-909, TASK-933). The agent wrote `update` and `ask`; the server fenced each to one line of at most 500 code points, or null when nothing legible survived. */
 export interface TaskRowReport {
   status: RoutineReportStatus;
   update: string | null;
+  /**
+   * What the agent asked the person, or null (TASK-933: Today draws it).
+   * Agent-written; the server fenced it to one line of at most
+   * ROUTINE_REPORT_ASK_MAX_CHARS (500) code points, null when nothing legible survived.
+   */
+  ask: string | null;
   reportedAt: string;
 }
 

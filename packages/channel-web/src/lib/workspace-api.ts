@@ -433,12 +433,17 @@ function isString(v: unknown): v is string {
   return typeof v === 'string';
 }
 
-/** `task` is null until the first report; a report is drawn from all three fields. */
+/**
+ * `task` is null until the first report; a report is drawn from all four
+ * fields. The ask (TASK-933) is checked like the update: text or null, and a
+ * missing one fails the read.
+ */
 function isTaskReport(v: unknown): boolean {
   return (
     isRecord(v) &&
     ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
     (v.update === null || isString(v.update)) &&
+    (v.ask === null || isString(v.ask)) &&
     isString(v.reportedAt)
   );
 }
@@ -487,9 +492,9 @@ function isStringOrNull(v: unknown): v is string | null {
   return v === null || isString(v);
 }
 
-/** A task's latest report on its own page: the Tasks row's fields, plus the ask and the agent's notes. */
+/** A task's latest report on its own page: the Tasks row's fields (the ask among them since TASK-933), plus the agent's notes. */
 function isTaskDetailReport(v: unknown): boolean {
-  return isRecord(v) && isTaskReport(v) && isStringOrNull(v.ask) && isStringOrNull(v.agentNotes);
+  return isRecord(v) && isTaskReport(v) && isStringOrNull(v.agentNotes);
 }
 
 /** What the agent reported at one check-in in Updates. */
