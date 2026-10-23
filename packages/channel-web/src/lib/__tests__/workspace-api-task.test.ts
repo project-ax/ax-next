@@ -11,11 +11,17 @@ import { CHECK_IN_MISSES } from '@ax/routines-contract';
 import { workspaceApi, WorkspaceApiError, WorkspaceShapeError } from '../workspace-api';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate, TaskUpdate } from '../workspace-types';
 
+/**
+ * Answers with `body` as it arrives off the wire: through JSON, so a fixture's
+ * `x: undefined` means the key is absent, as a server leaving it out would
+ * send it, not present-with-no-value (a shape JSON can't carry).
+ */
 function respondWith(body: unknown) {
+  const wire: unknown = body === undefined ? undefined : JSON.parse(JSON.stringify(body));
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => body,
+    json: async () => wire,
   } as unknown as Response);
 }
 

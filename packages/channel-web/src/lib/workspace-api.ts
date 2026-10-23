@@ -518,9 +518,20 @@ function isStringOrNull(v: unknown): v is string | null {
   return v === null || isString(v);
 }
 
-/** A task's latest report on its own page: the Tasks row's fields (the ask among them since TASK-933), plus the agent's notes. */
+/**
+ * A task's latest report on its own page: the Tasks row's fields, plus the
+ * agent's notes. The ask must be PRESENT here (text or null): the list route's
+ * absent-ask allowance is for an older host, and `task()` doesn't normalise,
+ * so an absent ask would reach the page as `undefined` and draw as an ask.
+ */
 function isTaskDetailReport(v: unknown): boolean {
-  return isRecord(v) && isTaskReport(v) && isStringOrNull(v.agentNotes);
+  return (
+    isRecord(v) &&
+    isTaskReport(v) &&
+    'ask' in v &&
+    isStringOrNull(v.ask) &&
+    isStringOrNull(v.agentNotes)
+  );
 }
 
 /** What the agent reported at one check-in in Updates. */
