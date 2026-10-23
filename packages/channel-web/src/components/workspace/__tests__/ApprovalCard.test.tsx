@@ -209,3 +209,45 @@ describe('routine Always Allow', () => {
     expect(screen.getByText('The original request expired and was not run.')).toBeVisible();
   });
 });
+
+/*
+  TASK-911. The card was built for attended chat, where the agent is parked
+  waiting on the answer. A check-in's transcript draws UNATTENDED rows on it
+  too, and for those the run has already ended its turn: the card says so in
+  the queue row's own words (`decision-copy.ts`), never "I am holding here".
+*/
+describe('ApprovalCard — attended vs unattended (TASK-911)', () => {
+  it('an attended card says it is holding here, and nothing about a run', () => {
+    const { container } = render(
+      <ApprovalCard agentName="Scheduler" decision={decisionFixture({ attendance: 'attended' })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    );
+    expect(container).toHaveTextContent(
+      'Nothing is sent until you choose. I am holding here, so we can carry straight on.',
+    );
+    expect(container).not.toHaveTextContent(/unattended run|checked against|expires in/);
+  });
+  it('an unattended card says where it was held, what it was checked against and when it expires', () => {
+    const { container } = render(
+      <ApprovalCard agentName="Scheduler" decision={decisionFixture({ attendance: 'unattended' })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    );
+    expect(container).not.toHaveTextContent(/holding here|carry straight on/);
+    expect(
+      screen.getByText(
+        'Held during an unattended run · Scheduler ended its turn rather than wait · checked against: Thursday 9:30 still free for both of you',
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText('If nobody answers, it expires in about an hour and has to be asked again.'),
+    ).toBeVisible();
+    expect(container).toHaveTextContent('Nothing happens until you choose.');
+  });
+  it('a stale unattended card drops the checked-against clause, as the queue row does', () => {
+    render(
+      <ApprovalCard agentName="Scheduler" decision={decisionFixture({ status: 'stale', staleReason: 'Booked.', freshness: { kind: 'slot-etag', value: 'v', label: null } })} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    );
+    expect(
+      screen.getByText('Held during an unattended run · Scheduler ended its turn rather than wait'),
+    ).toBeVisible();
+    expect(screen.queryByText(/checked against/)).toBeNull();
+  });
+});

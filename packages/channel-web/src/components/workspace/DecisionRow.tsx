@@ -50,6 +50,7 @@ import {
   DECISION_STALE_SUMMARY,
   alwaysAllowRoutinesLine,
   decisionOutcome,
+  decisionProvenance,
   expiresSoonNote,
   undoSecondsLeft,
   type DecisionOutcome,
@@ -62,18 +63,6 @@ function ago(iso: string): string {
   if (mins < 60) return `${mins}m ago`;
   const h = Math.round(mins / 60);
   return `${h}h ago`;
-}
-
-/**
- * Where this decision came from, in the user's terms. Worth surfacing: it is
- * the difference between "your agent paused mid-conversation" and "something
- * ran at 3am and stopped to ask", and it explains why one continues in place
- * and the other lands in a queue.
- */
-function provenance(d: Decision, agentName: string): string {
-  return d.attendance === 'attended'
-    ? `Held in your conversation with ${agentName} — it is still waiting there`
-    : `Held during an unattended run · ${agentName} ended its turn rather than wait`;
 }
 
 /** The dot's colour follows the outcome's tone, so the list scans at a glance. */
@@ -360,23 +349,12 @@ export function DecisionRow({
             )}
 
             {/*
-              The freshness label describes what was true at hold-time. Once the
-              guard has tripped that sentence is false, and repeating it under an
-              alert that says the opposite is worse than saying nothing — so the
-              clause is dropped on a stale row rather than shown stale.
-
-              TWO conditions, not one, and the second is not belt-and-braces:
-              `label` is NULLABLE (AW-7) and the host writes null onto exactly the
-              rows this branch is about. `!stale` is what we MEAN; `label !== null`
-              is what is TRUE on the wire, and a row that arrived stale from the
-              server on a page load has both. Rendering on `!stale` alone would
-              print "checked against: null" the moment the two disagreed.
+              Where it was held, and what it was checked against while that is
+              still true — `decisionProvenance` says why a stale row drops the
+              second half. Shared with `ApprovalCard`'s unattended card.
             */}
             <p className="mt-3 text-[11.5px] text-muted-foreground">
-              {provenance(d, agent.name)}
-              {!stale &&
-                d.freshness?.label != null &&
-                ` · checked against: ${d.freshness.label}`}
+              {decisionProvenance(d, agent.name)}
             </p>
 
             {/*
