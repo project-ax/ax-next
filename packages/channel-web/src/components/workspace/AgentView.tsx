@@ -79,7 +79,7 @@ import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { saveRefusedRowId, type SaveRefusedCode } from '@/lib/save-refused';
 import { ActivityFeed } from './ActivityFeed';
-import { AgentConversation, type ApprovalRead } from './AgentConversation';
+import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
@@ -1591,13 +1591,7 @@ export function AgentView({
 
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
-  const approvalRead: ApprovalRead = excerptOpening
-    ? 'ok'
-    : decisionsError?.kind === 'expired'
-      ? 'expired'
-      : shownRead === 'failed' || decisionsError !== null
-        ? 'failed'
-        : shownRead;
+  const approvalRead: ApprovalRead = excerptOpening ? 'ok' : approvalReadFrom(shownRead, decisionsError);
 
   function openSettings(section?: AgentSettingsSection) {
     // Generic Settings opens the phone index; named links drill in directly.

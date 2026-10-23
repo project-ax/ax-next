@@ -4,8 +4,11 @@
  * One continuous thread per agent, compacted rather than forked — the `fold`
  * message is the compaction summarize rung surfaced as a fact the user can see
  * rather than an invisible cost optimisation. Past conversations live in the
- * rail; routine fires never appear here at all, or 612 unattended runs would
- * bury the two conversations the human actually had.
+ * rail, and routine fires never appear in this thread, or 612 unattended runs
+ * would bury the two conversations the human actually had. A task's check-in
+ * is read on its own page instead (`TaskCheckinPage`, TASK-911), which draws
+ * it with this component, read-only. That is why `agent` is only an id and a
+ * name.
  */
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR } from '@/lib/thread-jump';
 import {
@@ -67,6 +70,7 @@ import {
   type SendableAttachment,
 } from '@/lib/workspace-attachments';
 import { isOpenDecision } from '@/lib/workspace-types';
+import type { DecisionReadError } from '@/lib/workspace-decisions';
 import type {
   Decision,
   ThreadMessage,
@@ -112,6 +116,20 @@ import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
  * would leave one surface pointing at a button that cannot work.
  */
 export type ApprovalRead = WorkspaceReadStatus | 'expired';
+
+/**
+ * How a thread's approval cards were read: the server's per-thread read folded
+ * with the queue's (AgentView's rule, shared with a check-in's page, TASK-911).
+ * An expired session outranks a failed read, because Try again can't fix it.
+ */
+export function approvalReadFrom(
+  thread: WorkspaceReadStatus,
+  queueError: DecisionReadError | null,
+): ApprovalRead {
+  if (queueError?.kind === 'expired') return 'expired';
+  if (thread === 'failed' || queueError !== null) return 'failed';
+  return thread;
+}
 
 /**
  * What the transcript amounts to right now, as one string — TASK-418's growth
@@ -197,7 +215,7 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
 }
 
 interface Props {
-  agent: WorkspaceAgent;
+  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
   thread: ThreadMessage[];
   /**
    * The conversation `thread` was read from, or `null` when the agent has
@@ -1033,7 +1051,7 @@ function Message({
   fieldKey,
 }: {
   m: ThreadMessage;
-  agent: WorkspaceAgent;
+  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
   /** See `Props.conversationId` — what turns an attachment path into a URL. */
   conversationId: string | null;
   decisions: Decision[];
