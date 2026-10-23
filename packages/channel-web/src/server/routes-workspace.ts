@@ -7085,7 +7085,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         own.ctx,
         { ...key, limit: ROUTINE_HISTORY_MAX_LIMIT },
       );
-      const fire = fires.find((f) => f.conversationId === conversationId);
+      // Exactly one check-in must own the conversation. Runs from before the
+      // routine became a task may share one (a `conversation: 'shared'`
+      // repeat), and no single run's report describes that transcript.
+      const matches = fires.filter((f) => f.conversationId === conversationId);
+      const fire = matches.length === 1 ? matches[0] : undefined;
       if (fire === undefined) {
         res.status(404).json({ error: 'checkin-not-found' });
         return;

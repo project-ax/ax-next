@@ -607,6 +607,29 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
     expect(convCalls).toEqual([]);
   });
 
+  it('404s a conversation several runs shared, without reading it', async () => {
+    // A routine that ran as a shared-conversation repeat before it became a
+    // task keeps those runs in one conversation. No one check-in owns it, so
+    // the page would label every run's transcript with one run's report.
+    const { checkin, convCalls } = setup({
+      fires: [
+        fire({ firedAt: '2026-10-22T09:57:00.000Z', conversationId: 'c-own' }),
+        fire({ firedAt: '2026-10-21T09:57:00.000Z', conversationId: 'c-shared' }),
+        fire({ firedAt: '2026-10-20T09:57:00.000Z', conversationId: 'c-shared' }),
+      ],
+      conversations: {
+        'c-own': { userId: 'alice', agentId: 'a1', turns: checkInTurns() },
+        'c-shared': { userId: 'alice', agentId: 'a1', turns: saying('SHARED-TEXT') },
+      },
+    });
+    const captured = await checkin({ agentId: 'a1', routineId: 't1', conversationId: 'c-shared' });
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'checkin-not-found' });
+    expect(convCalls).toEqual([]);
+    const own = await checkin({ agentId: 'a1', routineId: 't1', conversationId: 'c-own' });
+    expect(own.statusCode).toBe(200);
+  });
+
   it('404s another task’s check-in on the same agent, without reading it', async () => {
     const { checkin, firesCalls, convCalls } = setup({
       rows: [
