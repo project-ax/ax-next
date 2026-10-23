@@ -404,9 +404,25 @@ function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
+/** TASK-932. Absent (an older server) reads as no task; present, it is null or two non-empty strings. */
+function isDecisionCheckIn(v: unknown): boolean {
+  return (
+    v === undefined ||
+    v === null ||
+    (isRecord(v) &&
+      isString(v.routineId) &&
+      v.routineId.length > 0 &&
+      isString(v.taskName) &&
+      v.taskName.length > 0)
+  );
+}
 /** Older receipts may omit the marker; present markers use the closed domain. */
 function isDecisionRecord(value: unknown): boolean {
-  return isRecord(value) && (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation));
+  return (
+    isRecord(value) &&
+    (value.routineOperation == null || ROUTINE_DECISION_OPERATIONS.some(name => name === value.routineOperation)) &&
+    isDecisionCheckIn(value.checkIn)
+  );
 }
 
 

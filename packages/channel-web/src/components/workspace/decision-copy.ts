@@ -91,12 +91,21 @@ export function alwaysAllowRoutinesLine(agentName: string): string {
  * wire, and a row that arrived stale from the server on a page load has both.
  * Checking only the status would print "checked against: null" the moment the
  * two disagreed.
+ *
+ * An unattended row held during one of the person's task check-ins names the
+ * task instead (TASK-932): "Held during a check-in on “{task}”". The server
+ * sets `checkIn` only on such rows, so a repeat routine's or a webhook's run,
+ * and a row from an older server, keep the unattended-run words.
  */
 export function decisionProvenance(d: Decision, agentName: string): string {
+  // An older server leaves `checkIn` out, which reads as no task (TASK-932).
+  const checkIn = d.checkIn ?? null;
   const where =
     d.attendance === 'attended'
       ? `Held in your conversation with ${agentName} — it is still waiting there`
-      : `Held during an unattended run · ${agentName} ended its turn rather than wait`;
+      : checkIn !== null
+        ? `Held during a check-in on “${checkIn.taskName}”`
+        : `Held during an unattended run · ${agentName} ended its turn rather than wait`;
   return d.status !== 'stale' && d.freshness?.label != null
     ? `${where} · checked against: ${d.freshness.label}`
     : where;
