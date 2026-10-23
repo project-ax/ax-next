@@ -3,7 +3,8 @@ import { SafeToolError } from '@ax/core';
 import {
   applyRoutinePatch, durationToSeconds, RoutineDeleteOutputSchema,
   type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
-  type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition
+  type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
+  RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
 import type { StoredRoutine, StoredTaskState, AcceptedDispatch, DispatchOutcome, DispatchReport, FireRow, FireSource, OpenCheckInLookup, RecordReportInput, ReportRefusal } from './types.js';
@@ -66,6 +67,17 @@ export interface RoutinesStore {
    * dispatch rows, so the answer survives a host restart mid-check-in.
    */
   isTaskConversation(input: { agentId: string; conversationId: string }): Promise<boolean>;
+  /**
+   * TASK-932. Which of these conversations are check-ins of a task `actorUserId`
+   * owns, on `agentId`, for Today's labels: exactly one run of that agent, open or
+   * finished, is bound to it, and that run's routine still exists, isn't a repeat
+   * routine and is theirs. A conversation several runs shared is left out,
+   * whatever their routines. The kind and owner are read now, not at run time.
+   * Reads the routine's id and name only, so a row another read couldn't parse
+   * still answers, and a name the contract refuses leaves out only its own entry.
+   * One read, no lock, through version 5's index.
+   */
+  tasksForConversations(input: { agentId: string; actorUserId: string; conversationIds: readonly string[] }): Promise<RoutineCheckInView[]>;
   findOperationReceipt(input: OperationKey): Promise<unknown | null>;
   withLockedWebhookSecret(input: RoutineSecretInput, effect: () => Promise<void>): Promise<{ saved: true }>;
   pendingCleanup(input: { limit: number }): Promise<CleanupJob[]>;
@@ -94,6 +106,36 @@ export function taskConversationQuery(db: Kysely<RoutinesDatabase>, input: { age
     .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
     .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
     .limit(1);
+}
+/**
+ * `tasksForConversations`' one query, exported so a test can check the planner
+ * reads it through version 5's index. Each conversation reads at most two of
+ * its dispatch rows: one is a single run, two means several shared it. A
+ * shared conversation gains a row every run, forever, so a plain join would
+ * read them all on every Today load. Runs are counted before the routine's kind
+ * and owner are checked, so a second run makes a conversation ambiguous whatever
+ * its routine. The inner query states the partial index's own predicate
+ * (`conversation_id IS NOT NULL`), so the planner can always use it.
+ */
+export function tasksForConversationsQuery(input: { agentId: string; actorUserId: string; conversationIds: readonly string[] }) {
+  return sql<{ conversation_id: string; routine_id: string; name: string }>`
+    SELECT c.conversation_id, r.routine_id, r.name
+      FROM unnest(${[...input.conversationIds]}::text[]) AS c(conversation_id)
+     CROSS JOIN LATERAL (
+           SELECT count(*) AS runs, min(d.routine_id) AS routine_id
+             FROM (SELECT routine_id
+                     FROM routines_v1_dispatches
+                    WHERE agent_id = ${input.agentId}
+                      AND conversation_id = c.conversation_id
+                      AND conversation_id IS NOT NULL
+                    LIMIT 2) d
+           ) bound
+      JOIN routines_v1_definitions r
+        ON r.agent_id = ${input.agentId} AND r.routine_id = bound.routine_id
+     WHERE bound.runs = 1
+       AND r.kind <> 'repeat'
+       AND r.owner_user_id = ${input.actorUserId}
+  `;
 }
 function definitionColumns(d: RoutineDefinition) {
   return {
@@ -433,6 +475,18 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       // every capture pass, ordinary chats included, so it reads through
       // version 5's `routines_v1_dispatches_conversation` index.
       return (await taskConversationQuery(db, input).executeTakeFirst()) !== undefined;
+    },
+    async tasksForConversations(input) {
+      const conversationIds = [...new Set(input.conversationIds)];
+      if (conversationIds.length === 0) return [];
+      const { rows } = await tasksForConversationsQuery({ ...input, conversationIds }).execute(db);
+      // Columns, not rowToRoutine: a definition another read can't parse still names its check-in. An
+      // entry the contract refuses (a name a later rule turned away, a hand edit) costs only its own
+      // label, where the hook's return check would fail the whole answer (TASK-913).
+      return rows.flatMap(row => {
+        const view = { conversationId: row.conversation_id, routineId: row.routine_id, name: row.name };
+        return RoutineCheckInViewSchema.safeParse(view).success ? [view] : [];
+      });
     },
     async recordReport(input) {
       return db.transaction().execute(async trx => {
