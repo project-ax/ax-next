@@ -264,6 +264,8 @@ Three things are waiting on you
                                                         [Allow] [Not now]
 ```
 
+> PR 2 (TASK-933): Today reads the same list as the Tasks page, through one read the whole workspace shares (it also feeds the sidebar badge), and reads it again on opening Today or Tasks and after a reply. A task shows on Today when its last report says Needs you, after three check-ins in a row leave no update, or once the host has paused it after five, until a person resumes it. A task a person paused never shows. Each one shows its ask (else its update) or why it's there, with Open task, and Reply when the agent asked something; the reply box opens in place. Approvals raised during a task's check-ins sit under that task, each answered on its own. A task that's fine but has approvals waiting shows only its name and how many. The badge, the Needs you tab and the headline are one count: open approvals, grants and tasks that need you, each once. A tasks read that failed, or that missed an agent, says so and never lets the headline say nothing is waiting.
+
 ### 3.6 Status
 
 | Mark | Status | Set by | Means |
@@ -970,3 +972,8 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-23 | Decided | Replies survive a kind change and go with their task or agent (TASK-931). |
 | 2026-10-23 | Decided | A check-in's message carries the last 20 replies; the task page shows the last 50 (TASK-931). |
 | 2026-10-23 | Decided | After Check now or a reply the page re-reads every 10 seconds for up to 5 minutes, and stops early on a check-in that wasn't on the page at the press (60 seconds of clock slack) (TASK-931). |
+| 2026-10-23 | Decided | Today reads `GET /api/workspace/tasks` through one shell-level read that also feeds the sidebar badge and the Tasks page, and reads it again on entering Today or Tasks and after a reply sent from Today (TASK-933). |
+| 2026-10-23 | Decided | A task shows on Today when its last report says Needs you, after three check-ins in a row without an update, or once the host paused it; an auto-paused task stays until a person resumes it, with no dismiss. A task a person paused never shows (TASK-933). |
+| 2026-10-23 | Decided | A task's approvals sit under it on Today, each answered on its own; there is no approve-all. Reply opens the task's reply box in place (TASK-933). |
+| 2026-10-23 | Decided | The sidebar badge, the Needs you tab and Today's headline are one count: open approvals, grants and tasks that need you. A task there only for its approvals adds nothing (TASK-933). |
+| 2026-10-23 | Decided | An approval's task label is looked up only while the approval is open. Once it's answered, Today keeps the label it had, so the receipt stays under its task (TASK-933). |
