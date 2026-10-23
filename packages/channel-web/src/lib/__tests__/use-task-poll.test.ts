@@ -195,4 +195,13 @@ describe('useTaskPoll (TASK-931)', () => {
     await advance(TASK_POLL_LIMIT_MS);
     expect(reread).not.toHaveBeenCalled();
   });
+
+  it('a start after unmount reads nothing (Check now or a reply answering after the page left)', async () => {
+    const { result, reread, unmount } = setup();
+    const start = result.current.start;
+    unmount();
+    start('check-now');
+    await advance(TASK_POLL_LIMIT_MS + 60_000);
+    expect(reread).not.toHaveBeenCalled();
+  });
 });

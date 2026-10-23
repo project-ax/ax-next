@@ -11,7 +11,8 @@
  * minute's slack only keeps a check-in that was already running at the press
  * (Check now beside a scheduled one) from ending it when it lands. It also
  * stops at five minutes (`timed-out`), when the page can't show the task
- * (`updates` turns null), on `stop()`, and on unmount.
+ * (`updates` turns null), on `stop()`, and on unmount; a `start()` after
+ * unmount does nothing.
  *
  * The re-read it is given should be quiet (`useTask().refreshQuietly`): the
  * ordinary refresh disables the page's buttons while it runs and alarms on a
@@ -84,6 +85,11 @@ export function useTaskPoll(
   });
   const press = useRef<{ at: number; seen: ReadonlySet<string> } | null>(null);
   const timers = useRef<{ tick: ReturnType<typeof setInterval>; limit: ReturnType<typeof setTimeout> } | null>(null);
+  // False once the page is gone: Check now and a reply call `start` after an
+  // await, which can land after unmount, and a timer started then would never
+  // be cleared. Set inside the effect (not at declaration) so StrictMode's
+  // mount-unmount-mount leaves it true.
+  const mounted = useRef(false);
 
   const clear = useCallback(() => {
     if (timers.current === null) return;
@@ -94,6 +100,7 @@ export function useTaskPoll(
 
   const start = useCallback(
     (by: TaskPollStarter) => {
+      if (!mounted.current) return;
       clear();
       press.current = {
         at: Date.now(),
@@ -117,8 +124,14 @@ export function useTaskPoll(
     setPoll(IDLE);
   }, [clear]);
 
-  // Unmount: no re-read outlives the page.
-  useEffect(() => clear, [clear]);
+  // Unmount: no re-read outlives the page, and none starts after it.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clear();
+    };
+  }, [clear]);
 
   useEffect(() => {
     if (poll.phase !== 'checking' || press.current === null) return;
