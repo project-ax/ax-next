@@ -7,9 +7,13 @@
  * keeps its newest and folds the rest. Anything else (a failed check-in, one
  * with no report, one that said needs-you or off-track) always stands alone.
  *
+ * It also says what an entry says (`updateText`, shared with a check-in's
+ * page) and which check-in the latest update came from (`latestUpdateCheckIn`,
+ * TASK-911).
+ *
  * Pure, with relative imports only: the server-side wire types live next door.
  */
-import type { TaskUpdate } from './workspace-types.js';
+import type { TaskDetailReport, TaskUpdate } from './workspace-types.js';
 
 /** A fold hides at least this many; a shorter tail stays as single updates. */
 export const FOLD_MIN_HIDDEN = 2;
@@ -42,4 +46,41 @@ export function foldUpdates(updates: readonly TaskUpdate[]): UpdateItem[] {
     i = end;
   }
   return items;
+}
+
+/** What an Updates entry says: the agent's update, or why there isn't one (TASK-910's words, now shared with a check-in's page). */
+export function updateText(update: Pick<TaskUpdate, 'status' | 'report'>): string {
+  const { report } = update;
+  if (report !== null) {
+    return report.update === null || report.update === ''
+      ? 'It left an update we can’t show.'
+      : report.update;
+  }
+  return update.status === 'error'
+    ? 'This check-in didn’t finish.'
+    : 'Checked in but didn’t leave an update';
+}
+
+/**
+ * The check-in the task's latest update came from (TASK-911, decisions row
+ * 12), or null.
+ *
+ * A check-in still running when the page was read has already reported, but it
+ * isn't in Updates until it finishes (`finishDispatch` writes the fire row).
+ * Without the equality check, the card would open the check-in before it,
+ * which said something else. One that repeated the earlier report word for
+ * word still links to the earlier check-in, which ended with that same report.
+ * The exact signal would be the run's start (`task_report_accepted_at`), which
+ * the task view doesn't carry.
+ */
+export function latestUpdateCheckIn(
+  task: Pick<TaskDetailReport, 'status' | 'update'> | null,
+  updates: readonly TaskUpdate[],
+): string | null {
+  if (task === null) return null;
+  const newest = updates.find((u) => u.report !== null);
+  if (newest === undefined || newest.report === null || newest.conversationId === null) return null;
+  return newest.report.status === task.status && newest.report.update === task.update
+    ? newest.conversationId
+    : null;
 }

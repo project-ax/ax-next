@@ -197,6 +197,54 @@ describe('TaskPage (TASK-910)', () => {
     ).toBeInTheDocument();
   });
 
+  it('the latest update links to the check-in it came from', async () => {
+    const said = '3 open. I’m answering #4411 and #4412 now.';
+    taskMock.mockResolvedValue(
+      detail({
+        updates: [
+          {
+            firedAt: REPORTED,
+            status: 'ok',
+            error: null,
+            report: { status: 'needs-you', update: said },
+            conversationId: 'c1',
+          },
+        ],
+      }),
+    );
+    const { onNavigate } = await renderReady();
+    const link = within(latestUpdate()).getByRole('link', { name: 'See what it did' });
+    expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c1');
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: 'task-checkin',
+      agentId: 'a1',
+      routineId: 't1',
+      conversationId: 'c1',
+    });
+  });
+
+  // A check-in still running when the page loaded has already reported, but it
+  // isn't in Updates until it finishes (decisions row 12).
+  it('no link while a check-in with a new update is still running', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        task: report({ update: 'Just now: 2 open.' }),
+        updates: [
+          {
+            firedAt: REPORTED,
+            status: 'ok',
+            error: null,
+            report: { status: 'needs-you', update: '3 open. I’m answering #4411 and #4412 now.' },
+            conversationId: 'c1',
+          },
+        ],
+      }),
+    );
+    await renderReady();
+    expect(within(latestUpdate()).queryByRole('link')).toBeNull();
+  });
+
   it('a paused task says so where it would say when it checks next', async () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
     await renderReady();

@@ -5,8 +5,9 @@
  * The copy is asserted verbatim because it is decided (TASK-910 decisions rows
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
 import type { TaskUpdate } from '@/lib/workspace-types';
 import { TaskUpdates } from '../TaskUpdates';
@@ -31,7 +32,11 @@ function onTrack(n: number): TaskUpdate {
 }
 
 function renderThread(updates: TaskUpdate[]) {
-  return render(<TaskUpdates updates={updates} now={NOW} />);
+  const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
+  const view = render(
+    <TaskUpdates updates={updates} now={NOW} agentId="a1" routineId="t1" onNavigate={onNavigate} />,
+  );
+  return { ...view, onNavigate };
 }
 
 describe('TaskUpdates (TASK-910)', () => {
@@ -155,9 +160,48 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(container.querySelector('strong, b, a, img')).toBeNull();
   });
 
-  it('leaves room after an update for a link to follow', () => {
-    renderThread([update()]);
-    const body = screen.getByText('Nothing new.').closest('div');
-    expect(body).toHaveClass('min-w-0', 'flex-1');
+  it('each check-in links to what it did', () => {
+    const { onNavigate } = renderThread([update({ conversationId: 'c1' })]);
+    const stamp = updateStamp('2026-10-22T14:00:00.000Z', NOW);
+    // The name carries the entry's time, so a list of these still says which is
+    // which. jsdom puts a space before the visually hidden span when it
+    // computes the name (a real browser doesn't), so the exact words are
+    // pinned on the text and the name is matched around that space.
+    const link = screen.getByRole('link', {
+      name: new RegExp(`^See what it did ?, ${stamp}$`),
+    });
+    expect(link.textContent).toBe(`See what it did, ${stamp}`);
+    expect(within(link).getByText(`, ${stamp}`)).toHaveClass('sr-only');
+    expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c1');
+    // A modified click is the browser's (a new tab), not a route change.
+    // jsdom can't navigate, so the click the link leaves to the browser is
+    // cancelled once React has seen it (the document listener runs after).
+    const cancel = (e: Event) => e.preventDefault();
+    document.addEventListener('click', cancel);
+    fireEvent.click(link, { ctrlKey: true });
+    document.removeEventListener('click', cancel);
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith({
+      kind: 'task-checkin',
+      agentId: 'a1',
+      routineId: 't1',
+      conversationId: 'c1',
+    });
+  });
+
+  it('a check-in that recorded no conversation has no link', () => {
+    renderThread([update({ conversationId: null })]);
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('a folded check-in links too', () => {
+    renderThread(
+      [1, 2, 3, 4, 5, 6].map((n) => ({ ...onTrack(n), conversationId: `c${n}` })),
+    );
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '5 earlier check-ins, all on track' }));
+    expect(screen.getAllByRole('link')).toHaveLength(6);
   });
 });

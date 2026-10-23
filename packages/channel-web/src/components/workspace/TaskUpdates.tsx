@@ -14,8 +14,10 @@
  * never `dangerouslySetInnerHTML`, never the markdown renderer, so `**bold**`
  * or `<img>` shows as those characters.
  *
- * Each entry's body is `min-w-0 flex-1` and stops short of the row's end on
- * purpose: TASK-911 adds a "See what it did" link after it.
+ * Each entry links to that check-in's transcript, read-only (See what it did,
+ * TASK-911), when the check-in recorded one. It is a real link, so it opens in
+ * a new tab too, and its name carries the entry's time, so a list of them
+ * still says which is which.
  */
 import { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
@@ -25,15 +27,38 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { foldUpdates } from '@/lib/task-updates';
+import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
+import { routeLinkProps } from '@/lib/route-link';
+import { foldUpdates, updateText } from '@/lib/task-updates';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
 import type { TaskUpdate } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 
-export function TaskUpdates({ updates, now }: { updates: TaskUpdate[]; now: Date }) {
+/** Where an entry's "See what it did" goes: the task it is listed under. */
+interface EntryLinks {
+  agentId: string;
+  routineId: string;
+  onNavigate: (route: WorkspaceRoute) => void;
+}
+
+export function TaskUpdates({
+  updates,
+  now,
+  agentId,
+  routineId,
+  onNavigate,
+}: {
+  updates: TaskUpdate[];
+  now: Date;
+  agentId: string;
+  routineId: string;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
   const headingId = useId();
+  const links: EntryLinks = { agentId, routineId, onNavigate };
   const items = foldUpdates(updates);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
@@ -46,10 +71,15 @@ export function TaskUpdates({ updates, now }: { updates: TaskUpdate[]; now: Date
         <ul className="flex flex-col">
           {items.map((item, i) =>
             item.kind === 'update' ? (
-              <UpdateEntry key={`${item.update.firedAt}:${i}`} update={item.update} now={now} />
+              <UpdateEntry
+                key={`${item.update.firedAt}:${i}`}
+                update={item.update}
+                now={now}
+                links={links}
+              />
             ) : (
               <li key={`fold:${item.updates[0]?.firedAt}:${i}`}>
-                <Fold updates={item.updates} now={now} />
+                <Fold updates={item.updates} now={now} links={links} />
               </li>
             ),
           )}
@@ -59,7 +89,7 @@ export function TaskUpdates({ updates, now }: { updates: TaskUpdate[]; now: Date
   );
 }
 
-function Fold({ updates, now }: { updates: TaskUpdate[]; now: Date }) {
+function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links: EntryLinks }) {
   const [open, setOpen] = useState(false);
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col">
@@ -76,7 +106,7 @@ function Fold({ updates, now }: { updates: TaskUpdate[]; now: Date }) {
       <CollapsibleContent>
         <ul className="flex flex-col">
           {updates.map((update, i) => (
-            <UpdateEntry key={`${update.firedAt}:${i}`} update={update} now={now} />
+            <UpdateEntry key={`${update.firedAt}:${i}`} update={update} now={now} links={links} />
           ))}
         </ul>
       </CollapsibleContent>
@@ -84,20 +114,15 @@ function Fold({ updates, now }: { updates: TaskUpdate[]; now: Date }) {
   );
 }
 
-/** What the entry says: the agent's update, or why there isn't one. */
-function entryText(update: TaskUpdate): string {
-  const { report } = update;
-  if (report !== null) {
-    return report.update === null || report.update === ''
-      ? 'It left an update we can’t show.'
-      : report.update;
-  }
-  return update.status === 'error'
-    ? 'This check-in didn’t finish.'
-    : 'Checked in but didn’t leave an update';
-}
-
-function UpdateEntry({ update, now }: { update: TaskUpdate; now: Date }) {
+function UpdateEntry({
+  update,
+  now,
+  links,
+}: {
+  update: TaskUpdate;
+  now: Date;
+  links: EntryLinks;
+}) {
   const mark = update.report?.status ?? 'no-update';
   const stamp = updateStamp(update.firedAt, now);
   return (
@@ -112,13 +137,33 @@ function UpdateEntry({ update, now }: { update: TaskUpdate; now: Date }) {
       </span>
       <span className="sr-only">{TASK_GROUP_LABELS[mark]}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <p className="whitespace-pre-wrap break-words text-[13px] leading-5">{entryText(update)}</p>
+        <p className="whitespace-pre-wrap break-words text-[13px] leading-5">{updateText(update)}</p>
         {update.status === 'error' && (
           <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
             {update.error ?? 'No reason was recorded.'}
           </p>
         )}
       </div>
+      {update.conversationId !== null && (
+        <a
+          {...routeLinkProps(
+            {
+              kind: 'task-checkin',
+              agentId: links.agentId,
+              routineId: links.routineId,
+              conversationId: update.conversationId,
+            },
+            links.onNavigate,
+          )}
+          className={cn(
+            'shrink-0 rounded-sm text-[12px] leading-5 text-muted-foreground underline underline-offset-2 hover:text-foreground',
+            RESOLUTION_FOCUS_RING,
+          )}
+        >
+          See what it did
+          {stamp !== null && <span className="sr-only">, {stamp}</span>}
+        </a>
+      )}
     </li>
   );
 }
