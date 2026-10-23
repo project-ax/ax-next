@@ -302,7 +302,8 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // the task runs and the caller may start its check-ins (replyCheckIn), keyed on the reply, so a
   // retry can't start two. The whole hook runs inside admitDispatch, like fire-now, so a shutting-down
   // host refuses it before anything is written. Neither a tool nor an IPC action: a reply reaches a
-  // model only in a check-in message. The log line carries ids and closed words, never the text.
+  // model only in a check-in message. The log lines carry ids and closed words, never the text: one
+  // per reply, and a warn when a stored reply's check-in step throws.
   register('reply', C.RoutineReplyInputSchema, C.RoutineReplyOutputSchema, (ctx, input) => admitDispatch(async () => {
     const a = await access(ctx, input.agentId);
     const send = dispatch;
@@ -312,7 +313,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
-    const checkIn = await replyCheckIn(ctx, a.allowed, outcome.row, outcome.replyId, send);
+    let checkIn: C.RoutineReplyCheckIn;
+    try {
+      checkIn = await replyCheckIn(ctx, a.allowed, outcome.row, outcome.replyId, send);
+    } catch (err) {
+      // The reply is stored, but its check-in step failed: say so (ids only; the error may carry
+      // anything) so a stored reply with no check-in behind it can be found.
+      ctx.logger.warn('routines_reply_check_in_failed', { agentId: input.agentId, routineId: input.routineId });
+      throw err;
+    }
     ctx.logger.info('routines_reply_added', { agentId: input.agentId, routineId: input.routineId, checkIn, replayed: outcome.outcome === 'replayed' });
     return { replyId: outcome.replyId, checkIn };
   }));

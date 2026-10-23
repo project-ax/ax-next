@@ -275,6 +275,42 @@ describe('routines:reply (TASK-931)', () => {
     }
     expect([...first.lines, ...retry.lines].join('\n')).not.toContain('7731');
   });
+
+  it("logs one ids-only warn line when a stored reply's check-in step throws, and rethrows", async () => {
+    const task = await createTask();
+    const row = (await f.store.findOne(keyOf(task)))!;
+    const KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'routineId'];
+    const text = 'The refund code is 7731.';
+    const cases: Array<[label: string, store: Partial<RoutinesStore>, toolCode: string | null]> = [
+      ['the accept throws', { acceptDispatch: async () => { throw new Error('connection reset 7731'); } }, null],
+      ['edited meanwhile', { acceptDispatch: async () => null, findOne: async () => ({ ...row, revision: 'rev_later' }) }, 'unavailable'],
+      ['deleted meanwhile', { acceptDispatch: async () => null, findOne: async () => null }, 'not-found'],
+    ];
+    let n = 0;
+    for (const [label, swapped, toolCode] of cases) {
+      const s = services({ store: swapped });
+      const log = logged(s.as('owner'));
+      const sent = s.reply(replyTo(task, `w${++n}`, text), log.ctx);
+      if (toolCode === null) await expect(sent, label).rejects.toThrow('connection reset');
+      else await expect(sent, label).rejects.toMatchObject({ toolCode });
+      const entries = log.lines.map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(entries.filter(entry => entry.msg === 'routines_reply_check_in_failed'), label).toEqual([
+        expect.objectContaining({ level: 'warn', agentId: 'a', routineId: task.routineId }),
+      ]);
+      for (const entry of entries) for (const key of Object.keys(entry)) expect(KEYS, `${label}: ${key}`).toContain(key);
+      expect(log.lines.join('\n'), label).not.toContain('7731');
+    }
+    // Stored all the same.
+    expect(await storedReplies()).toHaveLength(cases.length);
+  });
+
+  it('a refusal before the reply is stored logs no check-in failure', async () => {
+    const task = await createTask();
+    const s = services();
+    const log = logged(s.as('teammate'));
+    await expect(s.reply(replyTo(task, 'q1', 'Hello.'), log.ctx)).rejects.toMatchObject({ toolCode: 'forbidden' });
+    expect(log.lines.join('\n')).not.toContain('routines_reply_check_in_failed');
+  });
 });
 
 describe('routines:recent-replies (TASK-931)', () => {
