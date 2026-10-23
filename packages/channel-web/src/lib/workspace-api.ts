@@ -103,6 +103,8 @@ CounterRow,
   TaskCheckin,
   TaskDetail,
   TaskReplyResponse,
+  TaskRow,
+  TaskRowReport,
   TasksResponse,
   UserFilesAnswer,
   WorkspaceAgent,
@@ -452,17 +454,24 @@ function isString(v: unknown): v is string {
 
 /**
  * `task` is null until the first report; a report is drawn from all four
- * fields. The ask (TASK-933) is checked like the update: text or null, and a
- * missing one fails the read.
+ * fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
+ * host from before TASK-933 (an SPA synced onto an older host by `make
+ * dev-fast`), and reads as null (`withAsk`) rather than failing the Tasks page.
  */
 function isTaskReport(v: unknown): boolean {
   return (
     isRecord(v) &&
     ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
     (v.update === null || isString(v.update)) &&
-    (v.ask === null || isString(v.ask)) &&
+    (!('ask' in v) || v.ask === null || isString(v.ask)) &&
     isString(v.reportedAt)
   );
+}
+
+/** A checked row with its report's absent ask read as null. */
+function withAsk(row: TaskRow): TaskRow {
+  if (row.task === null || 'ask' in row.task) return row;
+  return { ...row, task: { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null } };
 }
 
 /** A task's missed check-ins (TASK-930): a count of at least one, a closed reason, an instant, a flag. */
@@ -1025,7 +1034,8 @@ export const workspaceApi = {
    */
   tasks: async () => {
     const body = await req<unknown>('/tasks');
-    return checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
+    const page = checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
+    return { ...page, tasks: page.tasks.map(withAsk) };
   },
 
   /**

@@ -75,17 +75,30 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     }
   });
 
-  it.each<[unknown]>([[42], [{}], [undefined]])(
+  it.each<[unknown]>([[42], [{}]])(
     'refuses a report whose ask is %s',
     async (ask) => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
-      // `undefined` means the key is absent: the ask is checked like the update.
-      const { ask: _gone, ...withoutAsk } = ROW.task;
-      const task = ask === undefined ? withoutAsk : { ...withoutAsk, ask };
-      respondWith({ tasks: [{ ...ROW, task }], unavailableAgents: [] });
+      respondWith({ tasks: [{ ...ROW, task: { ...ROW.task, ask } }], unavailableAgents: [] });
       await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
     },
   );
+
+  it('reads a report with no ask key as ask: null (a host from before TASK-933)', async () => {
+    // An SPA synced onto an older host (`make dev-fast`) must still load Tasks.
+    const { ask: _gone, ...withoutAsk } = ROW.task;
+    respondWith({
+      tasks: [{ ...ROW, task: { ...withoutAsk, status: 'needs-you' } }, { ...ROW, routineId: 'r-2', task: null }],
+      unavailableAgents: [],
+    });
+    await expect(workspaceApi.tasks()).resolves.toEqual({
+      tasks: [
+        { ...ROW, task: { ...withoutAsk, status: 'needs-you', ask: null } },
+        { ...ROW, routineId: 'r-2', task: null },
+      ],
+      unavailableAgents: [],
+    });
+  });
 
   it('reads a row with missed check-ins, for every reason the contract names', async () => {
     for (const reason of CHECK_IN_MISSES) {
