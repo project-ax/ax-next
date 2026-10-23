@@ -38,7 +38,9 @@ import {
   RESOLUTION_FOCUS_RING,
   useResolutionFocus,
 } from '@/lib/consent-focus';
+import { routeLinkProps } from '@/lib/route-link';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { StateDot, StateDotSlot, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { DecisionRequestBlock } from './DecisionRequestBlock';
@@ -78,6 +80,11 @@ interface Props {
   expanded: boolean;
   onToggle: () => void;
   onOpenAgent: () => void;
+  /**
+   * Follows an in-app link (TASK-932's Open task). Without it the row draws no
+   * link, rather than one that goes nowhere; `TodayView` always passes it.
+   */
+  onNavigate?: (route: WorkspaceRoute) => void;
   onApprove: (scope?: 'once' | 'agent-routines') => void;
   onDismiss: () => void;
   onUndo: () => void;
@@ -93,6 +100,7 @@ export function DecisionRow({
   expanded,
   onToggle,
   onOpenAgent,
+  onNavigate,
   onApprove,
   onDismiss,
   onUndo,
@@ -106,6 +114,8 @@ export function DecisionRow({
   const undoLeft = undoSecondsLeft(d, now);
   const expiry = expiresSoonNote(d, now);
   const stale = d.status === 'stale';
+  // Absent reads as null, as in `decisionProvenance`.
+  const checkIn = d.checkIn ?? null;
   /*
     Focus follows whatever the row says back, and there are THREE answers, not
     two. Approving a row whose freshness guard trips does not resolve it: the
@@ -353,7 +363,7 @@ export function DecisionRow({
               still true — `decisionProvenance` says why a stale row drops the
               second half. Shared with `ApprovalCard`'s unattended card.
             */}
-            <p className="mt-3 text-[11.5px] text-muted-foreground">
+            <p className="mt-3 break-words text-[11.5px] text-muted-foreground">
               {decisionProvenance(d, agent.name)}
             </p>
 
@@ -430,15 +440,37 @@ export function DecisionRow({
                 */}
                 {busy ? 'Working on it…' : DECISION_NOTHING_YET}
               </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={onOpenAgent}
-                className="ml-auto gap-1.5 text-primary"
-              >
-                Open {agent.name}
-                <ArrowRight size={11} />
-              </Button>
+              <div className="ml-auto flex items-center gap-1">
+                {/*
+                  TASK-932: the task this check-in's approval came from. Ghost,
+                  like its neighbour — Approve stays the one primary action —
+                  and BEFORE Open {agent} so Tab runs from the narrow place
+                  (this task) to the wide one (the whole agent). A real
+                  `<a href>`: a modified or middle click is the browser's.
+                */}
+                {checkIn !== null && onNavigate !== undefined && (
+                  <Button asChild size="sm" variant="ghost" className="gap-1.5 text-primary">
+                    <a
+                      {...routeLinkProps(
+                        { kind: 'task', agentId: d.agentId, routineId: checkIn.routineId },
+                        onNavigate,
+                      )}
+                    >
+                      Open task
+                      <ArrowRight size={11} />
+                    </a>
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={onOpenAgent}
+                  className="gap-1.5 text-primary"
+                >
+                  Open {agent.name}
+                  <ArrowRight size={11} />
+                </Button>
+              </div>
             </div>
           </div>
         )}

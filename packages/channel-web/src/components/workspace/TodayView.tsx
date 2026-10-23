@@ -28,6 +28,7 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { readAlertVariant } from '@/lib/read-register';
 import { isJustResolved, isOpenDecision } from '@/lib/workspace-types';
+import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
@@ -84,6 +85,8 @@ interface Props {
   expandedId: string | null;
   onExpand: (id: string | null) => void;
   onOpenAgent: (id: string) => void;
+  /** Where an expanded row's links go: the shell's `navigate` (TASK-932's Open task, to the task page). */
+  onNavigate: (route: WorkspaceRoute) => void;
   /**
    * The three ways out of a decision. REQUIRED — the routes behind them ship in
    * the same change as the rows themselves, so there is no longer a state where
@@ -143,6 +146,7 @@ export function TodayView({
   expandedId,
   onExpand,
   onOpenAgent,
+  onNavigate,
   onApprove,
   onDismiss,
   onUndo,
@@ -264,6 +268,7 @@ export function TodayView({
           if (expandable) onExpand(expandedId === d.id ? null : d.id);
         }}
         onOpenAgent={() => onOpenAgent(d.agentId)}
+        onNavigate={onNavigate}
         onApprove={(scope) => onApprove(d.id, scope)}
         onDismiss={() => onDismiss(d.id)}
         onUndo={() => onUndo(d.id)}

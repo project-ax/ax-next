@@ -8,7 +8,7 @@
  * back does not get rendered.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { TodayView } from '../TodayView';
 import { decisionFixture } from './decision-fixture';
@@ -76,6 +76,7 @@ function renderToday(
       expandedId={null}
       onExpand={vi.fn()}
       onOpenAgent={vi.fn()}
+      onNavigate={vi.fn()}
       onApprove={vi.fn()}
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
@@ -476,5 +477,24 @@ describe('a clamped activity line (TASK-436)', () => {
       agents: [agent({ state: 'working' })],
     });
     expect(container.querySelector('[title=""]')).toBeNull();
+  });
+});
+
+describe("an expanded check-in row (TASK-932)", () => {
+  it('hands an expanded check-in row the shell’s navigation', () => {
+    const onNavigate = vi.fn();
+    renderToday({
+      decisions: [
+        decision({
+          attendance: 'unattended',
+          agentId: 'a-quill',
+          checkIn: { routineId: 't1', taskName: 'Zero open support tickets' },
+        }),
+      ],
+      expandedId: 'd1',
+      onNavigate,
+    });
+    fireEvent.click(screen.getByRole('link', { name: /^Open task/ }));
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'a-quill', routineId: 't1' });
   });
 });
