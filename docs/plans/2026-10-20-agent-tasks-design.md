@@ -275,6 +275,8 @@ Three things are waiting on you
 
 PR 1 ships part of this table (TASK-909). The Tasks page draws ○ as **No update yet** for a task that has never reported. A check-in that fails, or ends without a report, leaves the task showing its last report until PR 2 adds No recent update and failure counting. Telling those apart needs each run's report: a task's last-run time moves when a check-in starts and when one is skipped outside its active hours, so it can't stand in for "the last check-in".
 
+PR 2 (TASK-930) builds the rest. A check-in that finishes without a report counts, whatever its status. A report resets the count. One or two misses show ○ No recent update with the reason and a fix. Three or more show ◆ Needs you. The fifth pauses the task: it is no longer enabled, it has a new revision and no next run. While it is paused by misses the count freezes, so a late run (a Check now that overlapped the fifth) neither adds to it nor clears the paused state, even if it reports. Only a person's Resume, or a change of kind, starts the count over. An edit that keeps it paused doesn't. The agent can't resume a paused task: its `routine_update` with `enabled: true` is refused (`forbidden`, field `enabled`), before any approval and again at run time. The reason is one of six codes, set where the miss is seen and never read out of an error string: `no-report`, `brief-missing`, `brief-unconfirmed`, `brief-too-long`, `interrupted`, `failed`. The belt that fails a check-in with no landed confirmation gets its own code, because that run may have had its brief.
+
 ### 3.7 Activity goes away
 
 Today the Activity page in the sidebar and the Activity tab on an agent show
@@ -451,7 +453,7 @@ the model that people call routines "tasks".
 | Piece | Change |
 |---|---|
 | Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. |
-| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row. The agent and the person can both edit steps without an approval. |
+| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. |
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
@@ -640,7 +642,7 @@ suggest a short body for known apps.
   outside content in the message and never reach the system prompt.
 - **Cost stays bounded.** Check-ins are fresh, small sessions. The shortest
   schedule is 15 minutes, "respond within" caps update check-ins, usage limits
-  apply as they do now, and five failed check-ins in a row pause the task.
+  apply as they do now, and five check-ins in a row that end without a report pause the task. Only a person's Resume starts the count over (TASK-930).
 - Run the `security-checklist` skill on `routine_report`, the W1 provider and
   the check-in message when they're built.
 
@@ -884,7 +886,7 @@ view-only sharing of a task and an "Also ask" list.
   `routines:tasks-for-conversations` (TASK-932, owner-only, absent for
   anything that isn't the caller's own check-in),
   `routines:reply`, `routines:set-steps`, `routines:complete`,
-  `routines:reopen`; task state on `routines:list` and `routines:get`; the
+  `routines:reopen`; task state on `routines:list` and `routines:get`, and `noRecentUpdate` (TASK-930); the
   `system-prompt:augment:optional:routines` provider; the
   veto-capable `chat:system-prompt-landed { reqId: string; providers: string[] }`
   (TASK-908, modelled on `chat:connectors-skipped`); and the veto-capable
@@ -953,3 +955,8 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-22 | Decided | A check-in’s transcript opens read-only from its task’s page, only for the task’s owner and only for one of its newest 200 check-ins; anything else is a 404. Nothing on the page can send into, stop or continue the check-in, and an approval in it is answered as on Today (TASK-911). |
 | 2026-10-22 | Decided | The transcript shows what the agent said and did as the agent view draws it: each tool as one line, never its full input or output, and not the host-written check-in message (TASK-911). |
 | 2026-10-23 | Decided | An approval held during a task check-in names its task on Today, "Held during a check-in on “{task}”", with an Open task link on the expanded row. Routines answers which conversations are the caller's own check-ins (`routines:tasks-for-conversations`) from the run's dispatch binding, so a check-in still running is named too. It is owner-only and a label only: approving is unchanged, and a conversation several runs shared is never named (TASK-932). |
+| 2026-10-23 | Decided | Six reason codes, not five. The belt that fails a check-in with no landed confirmation records `brief-unconfirmed`, not `brief-missing`, because that run may have had its brief (TASK-930). |
+| 2026-10-23 | Decided | Auto-pause moves what a person's pause moves: not enabled, a new revision, a recomputed hash, no next run. So a paused task never shows a next check (TASK-930). |
+| 2026-10-23 | Decided | While a task is paused by misses its count freezes, so a late run can't push it past 5 or clear the paused state by reporting. Only a person's Resume or a kind change ends the freeze (TASK-930). |
+| 2026-10-23 | Decided | The agent's `routine_update` can't resume a paused task. `enabled: true` is refused with `forbidden` on field `enabled`, before any approval and again at run time. This closes the Always Allow gap from TASK-906 (TASK-930). |
+| 2026-10-23 | Decided | The words for each reason, and the count sentence once it reaches three, live in one table in channel-web. A paused task's fix says to resume, never Check now. "See what it did" links the check-in that missed, found by its start time (TASK-930). |
