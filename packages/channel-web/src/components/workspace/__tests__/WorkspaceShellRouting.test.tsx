@@ -808,6 +808,55 @@ describe('one tasks read (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(3);
   });
 
+  // The reload rule must survive a hop: the task page's writes (and the agent
+  // settings' routine editor's) postdate a read started before them, however
+  // many pages sit between that page and the next Today or Tasks.
+  it('a hop through an agent page still reads afresh on the way back to Tasks (TASK-933 review)', async () => {
+    renderAt('/workspace');
+    await screen.findByRole('heading', { name: 'Today' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    // Entering Tasks starts a read that never answers.
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    // Task page → an agent page → Tasks, that read still held.
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks/a1/t1');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    fireEvent.click(await screen.findByRole('button', { name: /^Quill\s*,/ }));
+    await screen.findByRole('tab', { name: /files/i });
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+  });
+
+  // The check-in arm: a check-in page's decisions also write task rows. Drop
+  // `task-checkin` from the shell's rule and this goes back to joining the
+  // held read (one call), which is what fails here.
+  it('coming back to Tasks from a check-in page reads afresh (TASK-933 review)', async () => {
+    tasksMock.mockReturnValueOnce(new Promise(() => {}));
+    renderAt('/workspace/tasks');
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks/a1/t1/checkins/c1');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() => expect(taskCheckinMock).toHaveBeenCalledWith('a1', 't1', 'c1'));
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));
+    await screen.findByRole('heading', { name: 'Tasks' });
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+  });
+
   it('the badge counts a task that needs you on an agent’s page too (TASK-933)', async () => {
     tasksMock.mockResolvedValue({
       tasks: [

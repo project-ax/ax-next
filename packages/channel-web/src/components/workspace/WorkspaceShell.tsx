@@ -355,9 +355,11 @@ function Inner({
     a stale list, and after a reply sent from Today. It doesn't poll, and the
     task page's own buttons don't re-read it (Back or Today does). Entering a
     route and Try again join a read already in flight (`retry`), except coming
-    from a task or check-in page: a reply, Pause or Resume there may postdate
-    the read in flight, so that entry starts a fresh one (`reload`), as a reply
-    from Today does. The fresh answer wins whichever lands last.
+    after a visit to a page that writes task rows (a task or check-in page, or
+    an agent's settings, where routines are edited): a reply, Pause, Resume or
+    edit there may postdate the read in flight, so the next entry into Today or
+    Tasks starts a fresh one (`reload`), however many other pages came between,
+    as a reply from Today does. The fresh answer wins whichever lands last.
   */
   const taskRead = useTasks();
   // What Today and the badge read from it (not `today`: that's the date helper above).
@@ -365,18 +367,25 @@ function Inner({
   const retryTaskRead = taskRead.retry;
   const reloadTaskRead = taskRead.reload;
   const previousRouteKind = useRef<WorkspaceRoute['kind'] | null>(null);
+  // A page that can write task rows has been on screen since the last Today/Tasks entry.
+  const sawTaskWrites = useRef(false);
   const routeKind = route.kind;
   useEffect(() => {
     const before = previousRouteKind.current;
     previousRouteKind.current = routeKind;
+    if (routeKind === 'task' || routeKind === 'task-checkin' || routeKind === 'agent-settings') {
+      sawTaskWrites.current = true;
+    }
     // `before === null` is the mount, which `useTasks` has just read for.
     if (
       before !== null &&
       before !== routeKind &&
       (routeKind === 'today' || routeKind === 'tasks')
     ) {
-      if (before === 'task' || before === 'task-checkin') reloadTaskRead();
-      else retryTaskRead();
+      if (sawTaskWrites.current) {
+        sawTaskWrites.current = false;
+        reloadTaskRead();
+      } else retryTaskRead();
     }
   }, [routeKind, retryTaskRead, reloadTaskRead]);
   /*
