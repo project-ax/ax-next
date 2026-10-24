@@ -56,6 +56,7 @@ function row(name: string, over: Partial<TaskRow> = {}): TaskRow {
     enabled: true,
     kind: 'stay-on-top',
     steps: null,
+    finishBy: null,
     task: null,
     noRecentUpdate: null,
     ...over,

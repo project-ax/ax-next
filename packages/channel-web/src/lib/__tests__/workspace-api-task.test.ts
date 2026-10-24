@@ -73,6 +73,7 @@ const DETAIL: TaskDetail = {
   brief: { promptBody: 'Read new tickets.', goodWhen: 'No ticket waits a day.' },
   task: REPORT,
   steps: [],
+  finishBy: null,
   noRecentUpdate: null,
   updates: [
     UPDATE,

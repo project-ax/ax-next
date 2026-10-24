@@ -10,6 +10,7 @@
  * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the agent's notes on that task (TASK-910)
  * POST /api/workspace/tasks/:agentId/:routineId/replies — reply to the agent about that task (TASK-931)
  * POST /api/workspace/tasks/:agentId/:routineId/steps — add, tick, reword or delete a step on that task (TASK-949)
+ * PUT  /api/workspace/tasks/:agentId/:routineId/finish-by — set or remove a "get-done" task's finish date (TASK-951)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
@@ -159,15 +160,20 @@ import {
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   ROUTINE_STEP_TEXT_MAX_CHARS,
   RoutineCreateToolInputSchema,
+  RoutineFinishBySchema,
   RoutineOpaqueStringSchema,
+  RoutineTimezoneSchema,
   RoutineUpdateToolInputSchema,
+  calendarDaysUntil,
   routineBriefFields,
+  taskTimeZone,
 } from '@ax/routines-contract';
 import type {
   RoutineCheckInView,
   RoutineFireView,
   RoutineReplyOutput,
   RoutineReplyView,
+  RoutineSetFinishByOutput,
   RoutineTasksForConversationsInput,
   RoutineTasksForConversationsOutput,
   RoutineView,
@@ -218,6 +224,8 @@ import type {
   RailActivity,
   TaskCheckin,
   TaskDetail,
+  TaskFinishBy,
+  TaskFinishByResponse,
   TaskNoRecentUpdate,
   TaskReading,
   TaskReply,
@@ -753,11 +761,23 @@ interface RoutinesListOutput {
 /**
  * What the Tasks page (TASK-909) reads off one `routines:list` view. The bus
  * has already parsed the answer through `RoutineListOutputSchema` (the
- * service's `returns`), so these fields are read, not validated again.
+ * service's `returns`), so these fields are read, not validated again. The
+ * trigger and the active hours are read only for a finish date's time zone
+ * (TASK-951).
  */
 type TaskListView = Pick<
   RoutineView,
-  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task' | 'noRecentUpdate' | 'steps'
+  | 'routineId'
+  | 'name'
+  | 'kind'
+  | 'enabled'
+  | 'permissions'
+  | 'task'
+  | 'noRecentUpdate'
+  | 'steps'
+  | 'finishBy'
+  | 'trigger'
+  | 'activeHours'
 >;
 interface TaskListOutput {
   routines: TaskListView[];
@@ -785,6 +805,7 @@ type TaskDetailView = Pick<
   | 'task'
   | 'noRecentUpdate'
   | 'steps'
+  | 'finishBy'
 >;
 type TaskFireView = Pick<
   RoutineFireView,
@@ -842,6 +863,16 @@ interface TaskStepsOutput {
   steps: unknown;
   skipped: number;
 }
+
+/**
+ * `routines:set-finish-by` (TASK-951), as the task page uses it. The bus has
+ * already parsed the answer through the service's `returns`
+ * (`RoutineSetFinishByOutputSchema`).
+ */
+interface TaskSetFinishByInput extends TaskKeyInput {
+  finishBy: string | null;
+}
+type TaskSetFinishByOutput = Pick<RoutineSetFinishByOutput, 'finishBy'>;
 
 /**
  * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
@@ -3467,10 +3498,15 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * doesn't know reads as stay-on-top). A get-done task's steps cross as counts
  * only (`toTaskStepCounts`), never their text or ids: the list feeds Today and
  * the badge, and a step's words belong on its task's own page.
+ *
+ * TASK-951: a get-done task's finish date crosses as the date and the days
+ * left to it at `now`, counted in the task's own time zone (`toTaskFinishBy`),
+ * as its page counts them.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
   views: readonly TaskListView[],
+  now: Date,
 ): TaskRow[] {
   return views
     .filter((view) => view.kind !== 'repeat' && isOwnTask(view))
@@ -3482,6 +3518,7 @@ function toTaskRows(
       enabled: view.enabled,
       kind: toTaskKind(view.kind),
       steps: toTaskStepCounts(view),
+      finishBy: toTaskFinishBy(view, now),
       task:
         view.task === null
           ? null
@@ -3583,6 +3620,32 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
   if (view.kind !== 'get-done') return null;
   const steps = readSteps(view);
   return { done: steps.filter((step) => step.done).length, total: steps.length };
+}
+
+/**
+ * A view's finish date → the wire's (TASK-951): none unless the task is
+ * `get-done` and its date is one the contract's rule accepts, else the date
+ * and the whole days left to it at `now`, counted in the task's own time zone
+ * (`taskTimeZone`), never the reader's or the host's, so the Tasks row, the
+ * page and the check-in's brief agree.
+ *
+ * Lenient about a view the schema didn't parse (TASK-913), as
+ * `toTaskNoRecentUpdate` is, and never a thrown request: a date the rule
+ * refuses reads as none, a day no calendar has included, which would draw as
+ * another day or make `Intl` throw. So does a time zone this runtime doesn't
+ * know, which the count would throw on (a parsed view's zone was checked on
+ * this runtime).
+ */
+function toTaskFinishBy(
+  view: Pick<RoutineView, 'kind' | 'finishBy' | 'trigger' | 'activeHours'>,
+  now: Date,
+): TaskFinishBy | null {
+  const date: unknown = view.finishBy;
+  if (view.kind !== 'get-done' || typeof date !== 'string') return null;
+  if (!RoutineFinishBySchema.safeParse(date).success) return null;
+  const tz = taskTimeZone(view);
+  if (!RoutineTimezoneSchema.safeParse(tz).success) return null;
+  return { date, daysLeft: calendarDaysUntil(date, now, tz) };
 }
 
 /**
@@ -3711,6 +3774,20 @@ function readTaskStepsBody(parsed: unknown): { requestId: string; ops: unknown[]
 }
 
 /**
+ * A finish date's body (TASK-951): an object with its own `finishBy`, a
+ * string or null (to remove the date), or null. Only its shape is checked
+ * here. Whether the string is a date a task can have is the contract's rule,
+ * which `routines:set-finish-by` applies before it writes anything; anything
+ * else in the body is left behind.
+ */
+function readTaskFinishByBody(parsed: unknown): { finishBy: string | null } | null {
+  if (typeof parsed !== 'object' || parsed === null || !Object.hasOwn(parsed, 'finishBy')) return null;
+  const { finishBy } = parsed as Record<string, unknown>;
+  if (finishBy !== null && typeof finishBy !== 'string') return null;
+  return { finishBy };
+}
+
+/**
  * One task's `routines:get` view and its check-ins → its own page (TASK-910).
  *
  * Built field by field, never spread from the view, so nothing rides along
@@ -3744,6 +3821,10 @@ function readTaskStepsBody(parsed: unknown): { requestId: string; ops: unknown[]
  * task's steps are agent- or person-written, fenced here to one line each
  * (`toTaskStep`), in their stored order, with `byAgent` from the host-set
  * author; any other kind has none.
+ *
+ * TASK-951: a get-done task's finish date crosses as the date and the days
+ * left to it at `now`, in the task's own time zone (`toTaskFinishBy`), as its
+ * Tasks row counts them. The person set it, and it holds no text.
  */
 function toTaskDetail(
   agent: { displayName: string },
@@ -3751,6 +3832,7 @@ function toTaskDetail(
   fires: readonly TaskFireView[],
   replies: readonly TaskReplyView[],
   userId: string,
+  now: Date,
 ): TaskDetail {
   return {
     agentName: agent.displayName,
@@ -3790,6 +3872,7 @@ function toTaskDetail(
             reportedAt: view.task.reportedAt,
           },
     steps: readSteps(view).map(toTaskStep),
+    finishBy: toTaskFinishBy(view, now),
     noRecentUpdate: toTaskNoRecentUpdate(view),
     updates: fires.map(toTaskUpdate),
     replies: replies.map((reply) => toTaskReply(reply, userId)),
@@ -4302,14 +4385,16 @@ export interface WorkspaceHandlerDeps {
    * Time seam for the "This week" window, and for the `declinedAt` a "Not now"
    * is recorded with (TASK-444). Injected so the counter's boundary is
    * testable — a counter whose definition cannot be tested at its edge is a
-   * counter whose definition will drift.
+   * counter whose definition will drift. A get-done task's days left to its
+   * finish date are counted from it too (TASK-951, `toTaskFinishBy`).
    *
    * IT HAS A TWIN: `ChunkBufferOptions.now` in chunk-buffer.ts stamps the
    * `raisedAt` this `declinedAt` is compared against (`withoutDeclinedGrants`).
    * Production injects NEITHER — both are the system clock, which is the only
    * reason the comparison means anything. Nothing structurally forces that, so
-   * a test that stubs one and not the other is comparing two unrelated clocks:
-   * stub both or stub neither.
+   * a test of that comparison that stubs one and not the other is comparing
+   * two unrelated clocks: stub both or stub neither. (The days-left count is
+   * compared with nothing the buffer stamps, so its tests stub this one alone.)
    */
   now?: () => Date;
 }
@@ -4717,7 +4802,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         }, TASKS_AGENT_READ_DEADLINE_MS);
       });
       const out = await Promise.race([read, deadline]);
-      return { ok: true, tasks: toTaskRows(agent, out.routines) };
+      return { ok: true, tasks: toTaskRows(agent, out.routines, now()) };
     } catch (err) {
       initCtx.logger.warn('workspace_tasks_read_failed', {
         agentId: agent.id,
@@ -7496,7 +7581,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             )
           ).replies
         : [];
-      res.status(200).json(toTaskDetail(own.agent, own.view, fires, replies, userId));
+      res.status(200).json(toTaskDetail(own.agent, own.view, fires, replies, userId, now()));
     },
 
     /**
@@ -7684,6 +7769,80 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         steps: readStepList(out.steps).map(toTaskStep),
         skipped: out.skipped,
       } satisfies TaskStepsResponse);
+    },
+
+    /**
+     * PUT /api/workspace/tasks/:agentId/:routineId/finish-by — a task's owner
+     * sets or removes a "get-done" task's finish date (TASK-951, decisions
+     * row 14). The body is `{ finishBy }`: a date, `YYYY-MM-DD`, or null to
+     * remove it.
+     *
+     * `authOr401` → ids (400) → the body: JSON holding its own `finishBy`, a
+     * string or null (400 `finish-by-body-invalid`, unparseable JSON
+     * included) → without `routines:set-finish-by`, 503 → `ownTaskOr404`, the
+     * task page's own order → `routines:set-finish-by` as the caller, its
+     * input built field by field, so nothing else in the body rides along
+     * and the address, not the body, names the task.
+     *
+     * The read supplies the task's time zone, which the answer's days left
+     * are counted in, and makes this route's 404s the page's own, but it is
+     * not the authority. The service decides who may (the task's owner) and
+     * that the task is still get-done, under the routine's row lock, and its
+     * input check, the contract's rule, refuses a date no calendar has
+     * before anything is written. A `validation` refusal is that date and
+     * answers 400 `finish-by-invalid`, checked before `isTaskRefusal`, which
+     * counts `validation` as a read's 404. `not-found` (no such task, or one
+     * that is no longer get-done) and `forbidden` (not its owner) are the
+     * page's own 404. Anything else fails the request: "we don't know" must
+     * not read as "not found".
+     *
+     * The answer is the date and the days left to it, as the page and the
+     * Tasks row carry them (`toTaskFinishBy`), or null once removed. No
+     * request id: the same date set twice is the same write. CSRF is
+     * @ax/http-server's global guard, as for Clear notes.
+     */
+    async setTaskFinishBy(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'finish-by-body-invalid' });
+        return;
+      }
+      const body = readTaskFinishByBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'finish-by-body-invalid' });
+        return;
+      }
+      if (!bus.hasService('routines:set-finish-by')) {
+        res.status(503).json({ error: 'task-finish-by-unavailable' });
+        return;
+      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
+      let out: TaskSetFinishByOutput;
+      try {
+        out = await bus.call<TaskSetFinishByInput, TaskSetFinishByOutput>(
+          'routines:set-finish-by',
+          own.ctx,
+          { agentId: key.agentId, routineId: key.routineId, finishBy: body.finishBy },
+        );
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'finish-by-invalid' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({
+        finishBy: toTaskFinishBy({ ...own.view, finishBy: out.finishBy }, now()),
+      } satisfies TaskFinishByResponse);
     },
 
     /**
@@ -10063,6 +10222,13 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/tasks/:agentId/:routineId/steps',
       handler: handlers.taskSteps as unknown as RouteHandler,
+    },
+    {
+      // TASK-951 — the task's owner sets or removes a "get-done" task's finish
+      // date. The service decides who may, under the routine's row lock.
+      method: 'PUT',
+      path: '/api/workspace/tasks/:agentId/:routineId/finish-by',
+      handler: handlers.setTaskFinishBy as unknown as RouteHandler,
     },
     {
       // TASK-911 — one check-in's transcript, for the task's owner. The only

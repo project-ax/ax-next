@@ -30,6 +30,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     brief: { promptBody: null, goodWhen: null },
     task: null,
     steps: [],
+    finishBy: null,
     noRecentUpdate: null,
     updates: [],
     replies: [],

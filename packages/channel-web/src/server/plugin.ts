@@ -81,6 +81,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     showing none without it.
 //     TASK-949 adds no hard call either: a task's owner changes its steps
 //     through the optional routines:set-steps, answering 503 without it.
+//     TASK-951 adds no hard call either: a task's owner sets or removes a
+//     "get-done" task's finish date through the optional
+//     routines:set-finish-by, answering 503 without it. The date itself
+//     reaches the Tasks page and the task page on the routines:list and
+//     routines:get views they already read.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -366,6 +371,14 @@ export function createChannelWebServerPlugin(
           hook: 'routines:set-steps',
           degradation:
             'the task page shows a get-done task\'s steps but can\'t change them: adding, ticking, rewording or deleting one (POST /api/workspace/tasks/:agentId/:routineId/steps) answers 503',
+        },
+        {
+          // TASK-951 — a person sets or removes a "get-done" task's finish
+          // date. The service decides who may (the task's owner), under the
+          // routine's row lock.
+          hook: 'routines:set-finish-by',
+          degradation:
+            'Setting or removing a finish date on the task page (PUT /api/workspace/tasks/:agentId/:routineId/finish-by) answers 503 and the date stays as it was',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

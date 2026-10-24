@@ -84,6 +84,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
     },
     task: report(),
     steps: [],
+    finishBy: null,
     noRecentUpdate: null,
     updates: [
       {

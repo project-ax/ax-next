@@ -149,7 +149,9 @@ interface ListCall {
   input: { agentId: string };
 }
 
-function setup(over: Partial<World> = {}) {
+/** `now`: the handlers' clock (TASK-951's days left); the system clock when left out. */
+function setup(over: Partial<World> & { now?: () => Date } = {}) {
+  const { now, ...worldOver } = over;
   const world: World = {
     viewer: 'alice',
     rosters: {
@@ -169,7 +171,7 @@ function setup(over: Partial<World> = {}) {
     unvalidated: false,
     viewMiss: null,
     viewPatch: null,
-    ...over,
+    ...worldOver,
   };
   const bus = new HookBus();
   const rosterCalls: string[] = [];
@@ -224,7 +226,9 @@ function setup(over: Partial<World> = {}) {
     );
   }
 
-  const handlers = makeWorkspaceHandlers({ bus, initCtx });
+  // Spread in only when set: the deps' `now` is optional, and
+  // exactOptionalPropertyTypes refuses an explicit undefined.
+  const handlers = makeWorkspaceHandlers({ bus, initCtx, ...(now === undefined ? {} : { now }) });
   /** What the last request wrote, kept even when the handler throws. */
   let last: CapturedRes | null = null;
   async function get(req: RouteRequest = mkReq()): Promise<CapturedRes> {
@@ -300,6 +304,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       enabled: true,
       kind: 'stay-on-top',
       steps: null,
+      finishBy: null,
       task: {
         status: 'needs-you',
         update: 'Queue is empty.',
@@ -1010,5 +1015,64 @@ describe('GET /api/workspace/tasks, the kind and the checklist (TASK-948)', () =
         ],
       }),
     ).toStrictEqual({ kind: 'get-done', steps: { done: 1, total: 1 } });
+  });
+});
+
+describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
+  /** 18:00 on 4 November in Los Angeles, when it is already the 5th in UTC. */
+  const LA_EVENING = (): Date => new Date('2026-11-05T02:00:00.000Z');
+
+  it("each get-done row carries its finish date and the days left in its own task's time zone (TASK-951)", async () => {
+    const { get } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 'la',
+          kind: 'get-done',
+          trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
+          finishBy: '2026-11-14',
+        }),
+        // An interval with no active hours runs on UTC's calendar.
+        stored({ agentId: 'a1', routineId: 'utc', kind: 'get-done', finishBy: '2026-11-14' }),
+        stored({ agentId: 'a1', routineId: 'queue', finishBy: '2026-11-14' }),
+      ],
+      now: LA_EVENING,
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.finishBy])).toStrictEqual([
+      // Still the 4th in Los Angeles: 10 days.
+      ['la', { date: '2026-11-14', daysLeft: 10 }],
+      ['utc', { date: '2026-11-14', daysLeft: 9 }],
+      // A stay-on-top task never has one.
+      ['queue', null],
+    ]);
+  });
+
+  it('a finish date the contract refuses, or one on a stay-on-top task, reaches the Tasks row as none', async () => {
+    // Views the schema didn't parse (TASK-913's shape): the patch is merged
+    // into every view, so this pins the route's own gates, not routines'.
+    const listed = async (viewPatch: Record<string, unknown>) => {
+      const { get } = setup({
+        unvalidated: true,
+        viewPatch,
+        rows: [
+          stored({ agentId: 'a1', routineId: 'docs', kind: 'get-done' }),
+          stored({ agentId: 'a1', routineId: 'queue' }),
+        ],
+        now: LA_EVENING,
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      return bodyOf(captured).tasks.map((t) => [t.routineId, t.finishBy]);
+    };
+    expect(await listed({ finishBy: '2026-11-14' })).toStrictEqual([
+      ['docs', { date: '2026-11-14', daysLeft: 9 }],
+      ['queue', null],
+    ]);
+    expect(await listed({ finishBy: '2026-02-30' })).toStrictEqual([
+      ['docs', null],
+      ['queue', null],
+    ]);
   });
 });

@@ -639,6 +639,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
       enabled: true,
       kind: 'stay-on-top',
       steps: null,
+      finishBy: null,
       task: {
         status: 'needs-you',
         update: 'Two tickets are still open.',

@@ -3,8 +3,9 @@
  * The task page's routes: `GET /api/workspace/tasks/:agentId/:routineId`, one
  * task's own page, and `DELETE …/notes`, which clears the agent's notes on it
  * (TASK-910); `POST …/replies`, the task's owner writing to their agent
- * about it (TASK-931); and `POST …/steps`, the task's owner changing its steps
- * (TASK-949).
+ * about it (TASK-931); `POST …/steps`, the task's owner changing its steps
+ * (TASK-949); and `PUT …/finish-by`, the owner setting or removing a
+ * "get-done" task's finish date (TASK-951).
  *
  * `routines:get` here is the real view producer, not a literal. Each view is
  * made by @ax/routines' own `routineView` and parsed on the bus through
@@ -20,6 +21,9 @@
  * route forwards that the service doesn't take fails the request.
  * `routines:set-steps` does the same with `RoutineSetStepsInputSchema`, and
  * its answer is parsed through `RoutineSetStepsOutputSchema`.
+ * `routines:set-finish-by` checks its input with `RoutineSetFinishByInputSchema`
+ * the same way, so a date the contract's rule refuses is a real `validation`
+ * refusal too.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -43,6 +47,8 @@ import {
   RoutineRecentRepliesOutputSchema,
   RoutineReplyInputSchema,
   RoutineReplyOutputSchema,
+  RoutineSetFinishByInputSchema,
+  RoutineSetFinishByOutputSchema,
   RoutineSetStepsInputSchema,
   RoutineSetStepsOutputSchema,
   type RoutineFireView,
@@ -56,7 +62,7 @@ import {
   makeWorkspaceHandlers,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
-import type { TaskDetail, TaskStepsResponse } from '../../lib/workspace-types.js';
+import type { TaskDetail, TaskFinishByResponse, TaskStepsResponse } from '../../lib/workspace-types.js';
 import { parseRoutineInput, routineView } from '../../../../routines/src/services.js';
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
@@ -195,6 +201,8 @@ interface World {
   stepsAnswer: RoutineSetStepsOutput;
   /** Set: `routines:set-steps` throws this, after its input check. */
   stepsFailure: Error | null;
+  /** Set: `routines:set-finish-by` throws this, after its input check (TASK-951). */
+  finishByFailure: Error | null;
   /**
    * True: `routines:get`, `routines:recent-fires` and (TASK-949)
    * `routines:set-steps` are registered without `returns`, so their answers
@@ -216,7 +224,9 @@ interface Call<I> {
 type Key = { agentId: string; routineId: string };
 const KEY: Key = { agentId: 'a1', routineId: 't1' };
 
-function setup(over: Partial<World> = {}) {
+/** `now`: the handlers' clock (TASK-951's days left); the system clock when left out. */
+function setup(over: Partial<World> & { now?: () => Date } = {}) {
+  const { now, ...worldOver } = over;
   const world: World = {
     viewer: 'alice',
     agents: { a1: { displayName: 'Caveman', users: ['alice'] } },
@@ -233,10 +243,11 @@ function setup(over: Partial<World> = {}) {
     replyFailure: null,
     stepsAnswer: { steps: [], skipped: 0 },
     stepsFailure: null,
+    finishByFailure: null,
     unvalidated: false,
     viewMiss: null,
     viewPatch: null,
-    ...over,
+    ...worldOver,
   };
   const bus = new HookBus();
   const resolveCalls: Array<{ agentId: string; userId: string }> = [];
@@ -246,6 +257,7 @@ function setup(over: Partial<World> = {}) {
   const repliesCalls: Array<Call<unknown>> = [];
   const replyCalls: Array<Call<unknown>> = [];
   const stepsCalls: Array<Call<unknown>> = [];
+  const finishByCalls: Array<Call<unknown>> = [];
   /** Every routines hook asked, in the order it was asked. */
   const order: string[] = [];
 
@@ -362,8 +374,27 @@ function setup(over: Partial<World> = {}) {
       { returns: RoutineClearNotesOutputSchema },
     );
   }
+  if (!world.absent.has('routines:set-finish-by')) {
+    bus.registerService(
+      'routines:set-finish-by',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        finishByCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:set-finish-by');
+        // The service's own input check, before anything else: the contract's
+        // rule refuses a date no calendar has as `validation`, and so does a
+        // key the service doesn't take.
+        const input = parseRoutineInput(RoutineSetFinishByInputSchema, raw);
+        if (world.finishByFailure !== null) throw world.finishByFailure;
+        return { finishBy: input.finishBy };
+      },
+      { returns: RoutineSetFinishByOutputSchema },
+    );
+  }
 
-  const handlers = makeWorkspaceHandlers({ bus, initCtx });
+  // Spread in only when set: the deps' `now` is optional, and
+  // exactOptionalPropertyTypes refuses an explicit undefined.
+  const handlers = makeWorkspaceHandlers({ bus, initCtx, ...(now === undefined ? {} : { now }) });
   /** What the last request wrote, kept even when the handler throws. */
   let last: CapturedRes | null = null;
   async function detail(params: Record<string, string> = KEY): Promise<CapturedRes> {
@@ -396,11 +427,21 @@ function setup(over: Partial<World> = {}) {
     await handlers.taskSteps(mkReq(params, body), res);
     return captured;
   }
+  async function finishBy(
+    params: Record<string, string> = KEY,
+    body: unknown = SET,
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.setTaskFinishBy(mkReq(params, body), res);
+    return captured;
+  }
   return {
     detail,
     clear,
     reply,
     steps,
+    finishBy,
     resolveCalls,
     getCalls,
     firesCalls,
@@ -408,6 +449,7 @@ function setup(over: Partial<World> = {}) {
     repliesCalls,
     replyCalls,
     stepsCalls,
+    finishByCalls,
     order,
     lastWritten: () => last,
   };
@@ -419,6 +461,8 @@ const SENT = { text: 'Refunds under $100 are fine.', requestId: 'req-1' };
 /** A step change as the task page sends it (TASK-949). */
 const ADD = { op: 'add', text: 'Ask Dana to review billing' } as const;
 const CHANGE = { requestId: 'req-1', ops: [ADD] };
+/** A finish date as the task page sends it (TASK-951). */
+const SET = { finishBy: '2026-11-14' };
 
 function bodyOf(captured: CapturedRes): TaskDetail {
   return captured.body as TaskDetail;
@@ -488,6 +532,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         reportedAt: '2026-10-22T14:58:00.000Z',
       },
       steps: [],
+      finishBy: null,
       noRecentUpdate: null,
       updates: [
         {
@@ -1007,6 +1052,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         'routines:recent-replies',
         'routines:reply',
         'routines:set-steps',
+        'routines:set-finish-by',
       ],
     ],
     ['without routines:get', ['routines:get']],
@@ -1168,6 +1214,86 @@ describe("GET /api/workspace/tasks/:agentId/:routineId, the agent's reading (TAS
     expect(body.task?.reading).toBeNull();
     expect(body.updates[0]?.report?.update).toBe('Queue is empty.');
     expect(body.updates[0]?.report?.reading).toBeNull();
+  });
+});
+
+/** A get-done task of alice's that checks in on Los Angeles time, to be finished by 14 November (TASK-951). */
+function laTask(over: Partial<StoredRoutine> = {}): StoredRoutine {
+  return stored({
+    agentId: 'a1',
+    routineId: 't1',
+    kind: 'get-done',
+    trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
+    finishBy: '2026-11-14',
+    ...over,
+  });
+}
+
+/** 18:00 on 4 November in Los Angeles, when it is already the 5th in UTC (TASK-951). */
+const LA_EVENING = (): Date => new Date('2026-11-05T02:00:00.000Z');
+
+describe('GET /api/workspace/tasks/:agentId/:routineId, the finish date (TASK-951)', () => {
+  it("a get-done task's page carries its finish date and the days left in the task's own time zone (TASK-951)", async () => {
+    const { detail } = setup({ rows: [laTask()], now: LA_EVENING });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    // Still the 4th in Los Angeles: 10 days. UTC, already on the 5th, would count 9.
+    expect(bodyOf(captured).finishBy).toStrictEqual({ date: '2026-11-14', daysLeft: 10 });
+  });
+
+  it('a get-done task without a finish date has none on its page', async () => {
+    const { detail } = setup({ rows: [laTask({ finishBy: null })], now: LA_EVENING });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).finishBy).toBeNull();
+  });
+
+  it('a stay-on-top task’s page shows no finish date, even when its view carries one', async () => {
+    // A view the schema didn't parse (TASK-913's shape). routines' own view
+    // already leaves a stay-on-top task's date out, so this pins the route's
+    // own kind gate.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { finishBy: '2026-11-14' },
+      rows: [stored({ agentId: 'a1', routineId: 't1' })],
+      now: LA_EVENING,
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).finishBy).toBeNull();
+  });
+
+  it.each<[string, unknown]>([
+    ['a month no calendar has', '2026-13-45'],
+    ['a day its month doesn’t have', '2026-02-30'],
+    ['a date in words', 'Nov 14'],
+    ['a number', 14],
+  ])('a finish date the contract refuses reaches the page as none (%s)', async (_what, finishBy) => {
+    // Views the schema didn't parse (TASK-913's shape). Intl throws on a day no
+    // calendar has, so a page drawing one would crash; it answers as no date.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { finishBy },
+      rows: [laTask()],
+      now: LA_EVENING,
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).finishBy).toBeNull();
+  });
+
+  it('a finish date on a task whose time zone this host doesn’t know reads as none, and the page still answers', async () => {
+    // A view the schema didn't parse (TASK-913's shape). A parsed view's zone
+    // was checked on this runtime; counting in an unknown one would throw.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Mars/Olympus_Mons' } },
+      rows: [laTask()],
+      now: LA_EVENING,
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).finishBy).toBeNull();
   });
 });
 
@@ -1543,4 +1669,161 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/steps (TASK-949)', () =>
       skipped: 1,
     });
   });
+});
+
+describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', () => {
+  it('sets the date as the caller, and answers it with the days left in the task’s own time zone', async () => {
+    const { finishBy, finishByCalls, order } = setup({
+      rows: [laTask({ finishBy: null })],
+      now: LA_EVENING,
+    });
+    // The address names the task. Nothing else in the body rides along.
+    const captured = await finishBy(KEY, { finishBy: '2026-11-14', extra: 1 });
+    expect(captured.statusCode).toBe(200);
+    // Still the 4th in Los Angeles: 10 days. UTC, already on the 5th, would count 9.
+    expect(captured.body).toStrictEqual({
+      finishBy: { date: '2026-11-14', daysLeft: 10 },
+    } satisfies TaskFinishByResponse);
+    expect(finishByCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: { agentId: 'a1', routineId: 't1', finishBy: '2026-11-14' },
+      },
+    ]);
+    // The task is read first: its time zone counts the days, and its 404s are the page's.
+    expect(order).toEqual(['routines:get', 'routines:set-finish-by']);
+  });
+
+  it('removes the date, and answers none', async () => {
+    const { finishBy, finishByCalls } = setup({ rows: [laTask()], now: LA_EVENING });
+    const captured = await finishBy(KEY, { finishBy: null });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ finishBy: null } satisfies TaskFinishByResponse);
+    expect(finishByCalls).toStrictEqual([
+      { userId: 'alice', agentId: 'a1', input: { agentId: 'a1', routineId: 't1', finishBy: null } },
+    ]);
+  });
+
+  it('401s without a session, and asks no one', async () => {
+    const { finishBy, resolveCalls, order } = setup({ viewer: null, rows: [laTask()] });
+    const captured = await finishBy();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each([
+    ['a blank routine id', { agentId: 'a1', routineId: '  ' }],
+    ['a blank agent id', { agentId: ' ', routineId: 't1' }],
+    ['no ids at all', {}],
+  ])('400s %s, and asks no one', async (_what, params: Record<string, string>) => {
+    const { finishBy, resolveCalls, order } = setup({ rows: [laTask()] });
+    const captured = await finishBy(params);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['not JSON', Buffer.from('not json', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+    ['an empty object', {}],
+    ['a date that isn’t text', { finishBy: 14 }],
+    ['a list', []],
+    ['null', null],
+  ])('400s a body that is %s as finish-by-body-invalid, and asks no one', async (_what, body) => {
+    const { finishBy, resolveCalls, order } = setup({ rows: [laTask()] });
+    const captured = await finishBy(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'finish-by-body-invalid' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it('503s without routines:set-finish-by, and reads nothing', async () => {
+    const { finishBy, resolveCalls, order } = setup({
+      rows: [laTask()],
+      absent: new Set(['routines:set-finish-by']),
+    });
+    const captured = await finishBy();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-finish-by-unavailable' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it('404s an agent the caller can’t reach, and reads or sets nothing', async () => {
+    const { finishBy, resolveCalls, order } = setup({ viewer: 'mallory', rows: [laTask()] });
+    const captured = await finishBy();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(order).toEqual([]);
+  });
+
+  it.each<[string, Partial<World>, Key]>([
+    [
+      'someone else’s task on a team agent',
+      {
+        agents: TEAM_AGENTS,
+        managers: { team: ['alice', 'bob'] },
+        rows: [laTask({ agentId: 'team', routineId: 'tB', ownerUserId: 'bob' })],
+      },
+      { agentId: 'team', routineId: 'tB' },
+    ],
+    [
+      'a repeat routine',
+      { rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null })] },
+      KEY,
+    ],
+    ['a routine that isn’t there', { rows: [] }, KEY],
+  ])('404s %s as task-not-found, and never asks to set a date', async (_what, world, key) => {
+    const { finishBy, finishByCalls } = setup(world);
+    const captured = await finishBy(key);
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(finishByCalls).toEqual([]);
+  });
+
+  it.each([
+    ['not-found (a task that isn’t get-done)', new SafeToolError('not-found', 'routineId')],
+    ['forbidden', new SafeToolError('forbidden', 'input')],
+  ])('404s when the service refuses with %s', async (_what, failure) => {
+    const { finishBy, finishByCalls } = setup({ rows: [laTask()], finishByFailure: failure });
+    const captured = await finishBy();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(finishByCalls).toHaveLength(1);
+  });
+
+  it('400s a date the contract’s rule refuses as finish-by-invalid', async () => {
+    // The route checks only that the date is text. The service's input check,
+    // the contract's rule, refuses a day no calendar has.
+    const { finishBy, finishByCalls } = setup({ rows: [laTask()] });
+    const captured = await finishBy(KEY, { finishBy: '2026-02-30' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'finish-by-invalid' });
+    expect(finishByCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['an unavailable service', new SafeToolError('unavailable', 'input'), 'temporarily unavailable'],
+    ['any other failure', new Error('db down'), 'db down'],
+  ])(
+    'fails the request when the service fails with %s, rather than calling the task missing',
+    async (_what, failure, message) => {
+      // "We don't know" must not read as "not found" (TASK-910 decisions row 11).
+      const { finishBy, finishByCalls, lastWritten } = setup({
+        rows: [laTask()],
+        finishByFailure: failure,
+      });
+      await expect(finishBy()).rejects.toThrow(message);
+      expect(finishByCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
 });
