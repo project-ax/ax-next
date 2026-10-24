@@ -1,9 +1,10 @@
 import { clampCodeUnits } from '@ax/core';
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_READING_LABEL_MAX_CHARS, ROUTINE_REPLY_MAX_CHARS, ROUTINE_REPORT_UPDATE_MAX_CHARS,
+  ROUTINE_STEP_TEXT_MAX_CHARS,
 } from '@ax/routines-contract';
 import { quoteLines } from './brief.js';
-import type { FireReport, FireSource, StoredReading } from './types.js';
+import type { FireReport, FireSource, StoredReading, StoredStep } from './types.js';
 
 // ---------------------------------------------------------------------------
 // A task check-in's message (TASK-908): the user turn the run starts with, in
@@ -37,6 +38,13 @@ export type CheckInMessageInput = {
    * as the host counted them. Anything that isn't at least 1 adds no line.
    */
   missesInARow: number;
+  /**
+   * TASK-948. A "get-done" task's checklist, in order, from the accepted row:
+   * the same snapshot the brief and the notes come from. Agent- or
+   * person-written, with who wrote each step in `addedBy`, which only the host
+   * sets. Null for any other kind of task, which gets no steps paragraph.
+   */
+  steps: ReadonlyArray<StoredStep> | null;
 };
 
 function opening(source: FireSource): string {
@@ -94,6 +102,30 @@ function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport:
 }
 
 /**
+ * TASK-948. A "get-done" task's checklist, a paragraph of its own: how many of
+ * its steps are done and what the agent may do with them, then each step in
+ * order under its mark, its id and who wrote it, with its text quoted line by
+ * line. The id is the one the agent's changes name; it prints as is, since
+ * `storedSteps` reads only ids of `[A-Za-z0-9_-]`. Only a step whose `addedBy`
+ * says the person wrote it is labelled theirs; anything else reads as the
+ * agent's own. With no steps yet, the host asks for a draft. Null for any other
+ * kind of task.
+ */
+function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
+  if (steps === null) return null;
+  if (steps.length === 0) {
+    return 'This task has no steps yet. Before you start, draft the steps you’ll work through. Send them as add changes in your routine_report’s steps field, with done true for any you finish in this check-in.';
+  }
+  const done = steps.filter(step => step.done).length;
+  return [`The task’s steps, ${done} of ${steps.length} done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. A step the person wrote is in their words:`,
+    ...steps.map(step => {
+      const author = step.addedBy === 'person' ? 'the person wrote this' : 'you added this';
+      return `- [${step.done ? 'x' : ' '}] ${step.id} (${author}):\n${quoteLines(cut(step.text, ROUTINE_STEP_TEXT_MAX_CHARS), '  ')}`;
+    }),
+  ].join('\n');
+}
+
+/**
  * A task check-in's message. The notes and reports in it are agent-written:
  * TASK-907's writer capped and screened them (no invisible characters, an
  * update on one line), and they're quoted line by line and labelled here as
@@ -101,8 +133,12 @@ function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport:
  * person. The replies in it are person-written (TASK-931): the task's current
  * owner's own words on its page, screened by `RoutineReplyTextSchema` before
  * they were stored, and quoted line by line and labelled here as the person's.
- * Neither goes into `brief`, which holds only the task's own fields, as the
- * person approved them (TASK-906 decisions row 18). Replies reach a model
+ * A "get-done" task's steps (TASK-948) are agent- or person-written: screened
+ * by `RoutineStepTextSchema` before they were stored, and each quoted line by
+ * line and labelled by who wrote it, from the host-set `addedBy`, so text the
+ * agent wrote reads as its own and can't pose as the person's.
+ * None of them goes into `brief`, which holds only the task's own fields, as
+ * the person approved them (TASK-906 decisions row 18). Replies reach a model
  * nowhere else.
  * The caps are applied again, since stored text isn't re-checked (TASK-913). A
  * report's `ask` is left out, and so is any person's name. A report's status
@@ -110,8 +146,8 @@ function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport:
  * quoted. A report's reading (TASK-952) is agent-written too: its label is cut
  * and kept on the report's line, and the paragraph's own framing covers it.
  * When the task's last check-ins left no report, the host says so on the line
- * after the opening, from a count alone (TASK-930). Reads nothing but its
- * argument.
+ * after the opening, from a count alone (TASK-930); the steps come next. Reads
+ * nothing but its argument.
  */
 export function renderCheckInMessage(input: CheckInMessageInput): string {
   const reports = input.reports.slice(0, CHECK_IN_REPORTS);
@@ -128,6 +164,10 @@ export function renderCheckInMessage(input: CheckInMessageInput): string {
       }),
     ].join('\n');
   const missed = missedLine(input.missesInARow);
+  const steps = stepsParagraph(input.steps);
   const replies = repliesParagraph(input.replies, input.reports[0]?.firedAt);
-  return [opening(input.source), ...(missed === null ? [] : [missed]), notes, replies, recent, 'Work on the task now, then finish with one routine_report.'].join('\n\n');
+  return [
+    opening(input.source), ...(missed === null ? [] : [missed]), ...(steps === null ? [] : [steps]),
+    notes, replies, recent, 'Work on the task now, then finish with one routine_report.',
+  ].join('\n\n');
 }

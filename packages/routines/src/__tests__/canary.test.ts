@@ -819,3 +819,62 @@ describe('reading canary (TASK-952)', () => {
     expect((await get()).task?.reading).toEqual({ value: 3, label: 'Open tickets' });
   });
 });
+
+// TASK-948: a "Get something done" task, end to end through the real routines, agents, tool-policy and decisions
+// plugins and Postgres. The agent proposes it in a chat on a team agent and the person approves it once. Its first
+// check-in drafts two steps; the next lists them with their ids, and ticks one by its id. The owner reads both steps,
+// one done, both the agent's; a teammate who sees the routine reads none.
+describe('get-done canary (TASK-948)', () => {
+  it('the agent drafts a task’s steps at its first check-in and ticks one at the next; only the owner reads them', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const chat = makeAgentContext({ ...h.owner, agentId: h.teamAgentId, conversationId: 'chat' });
+    const call = { id: 'propose-task', name: 'routine_create', input: {
+      requestId: 'propose-task', definition: RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site and the old links redirect.',
+      }),
+    } };
+    // Creating either kind of task asks the person, even with Always Allow; here tool policy holds it.
+    const held = await h.bus.fire('tool:pre-call', chat, call);
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    await h.bus.call('decisions:approve', chat, { decisionId: held.hold.decisionId, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const task = await h.bus.call<unknown, RoutineView>('tool:execute:routine_create', chat, call);
+    expect(task).toMatchObject({ kind: 'get-done', steps: [], task: null });
+
+    // The first check-in: no steps yet. The agent drafts two in its one report.
+    const first = await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Drafted the plan.', steps: [
+          { op: 'add', text: 'Export every article from the old help center' },
+          { op: 'add', text: 'Upload them to the new site' },
+        ],
+      } })).toStrictEqual({ recorded: true, steps: { applied: 2, skipped: 0 } });
+    });
+    expect(first.message).toContain('This task has no steps yet.');
+    expect((first.brief as { brief?: string }).brief).toContain('- This task finishes.');
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+
+    // The next one lists both, with the ids the agent ticks by.
+    const get = (as: AgentContext) => h.bus.call<unknown, RoutineView>('routines:get', as, { agentId: task.agentId, routineId: task.routineId });
+    const drafted = await get(h.owner);
+    const [exported, uploaded] = drafted.steps;
+    const second = await ch.checkIn(drafted, 'run-2', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Exported all 142 articles.', steps: [{ op: 'tick', id: exported!.id }],
+      } })).toStrictEqual({ recorded: true, steps: { applied: 1, skipped: 0 } });
+    });
+    expect(second.message).toContain('The task’s steps, 0 of 2 done.');
+    expect(second.message).toContain(`- [ ] ${exported!.id} (you added this):\n  > Export every article from the old help center`);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(2);
+
+    expect((await get(h.owner)).steps).toEqual([
+      { id: exported!.id, text: 'Export every article from the old help center', done: true, addedBy: 'agent' },
+      { id: uploaded!.id, text: 'Upload them to the new site', done: false, addedBy: 'agent' },
+    ]);
+    expect(await get(h.teamMember)).toMatchObject({ routineId: task.routineId, kind: 'get-done', steps: [] });
+  });
+});

@@ -14,6 +14,7 @@ const SUPPORT_QUEUE = {
   name: 'Support queue',
   promptBody: 'Keep the support queue empty.\r\nAnswer the easy ones.',
   goodWhen: 'No ticket waits longer than an hour.',
+  kind: 'stay-on-top' as const,
 };
 const lines = (text: string): string[] => text.split('\n');
 
@@ -82,6 +83,19 @@ describe("a task check-in's brief (TASK-908)", () => {
   it('isTaskRun is false for a repeat routine and true for a task', () => {
     expect(isTaskRun({ kind: 'repeat' })).toBe(false);
     expect(isTaskRun({ kind: 'stay-on-top' })).toBe(true);
+    expect(isTaskRun({ kind: 'get-done' })).toBe(true);
+  });
+
+  it("a get-done task's brief adds two fixed lines, and only that kind's (TASK-948)", () => {
+    const finish = '- Finish with exactly one routine_report call, as the last thing you do:';
+    const added = [
+      '- This task finishes. Its steps are in the check-in message. Work through them, tick each one when it’s done, and add any step you find you need, with routine_report’s steps field.',
+      '- Only the person can mark this task done. If you think it is, say so in your update and report "needs-you".',
+    ];
+    const stay = renderTaskBrief(SUPPORT_QUEUE);
+    expect(lines(stay)).toContain(finish);
+    expect(renderTaskBrief({ ...SUPPORT_QUEUE, kind: 'get-done' })).toBe(stay.replace(finish, [...added, finish].join('\n')));
+    for (const line of added) expect(stay).not.toContain(line);
   });
 
   it('names its W1 provider as an optional one', () => {
@@ -138,6 +152,17 @@ describe('no brief, no check-in (TASK-908)', () => {
     ];
     for (const ctx of strangers) expect(checkInBrief(pending, ctx), JSON.stringify({ ...ctx, logger: undefined })).toEqual({});
     expect([...pending.values()].map(e => e.brief)).toEqual(['sent', 'waiting']);
+  });
+
+  it('a get-done check-in’s brief never carries its steps (TASK-948)', () => {
+    // The steps are part agent-written: they go in the check-in message, never the brief.
+    const row: StoredRoutine = {
+      ...storedRow({ ...TASK, kind: 'get-done' }),
+      steps: [{ id: 'saaaaaa', text: 'STEP-TEXT Export every article', done: false, addedBy: 'agent' }],
+    };
+    const answer = checkInBrief(new Map([['rA', entry(row)]]), runCtx());
+    expect(answer.brief).toContain('- This task finishes.');
+    expect(JSON.stringify(answer)).not.toContain('STEP-TEXT');
   });
 
   it("two open runs of one task: each run's brief and veto follow its own reqId", () => {

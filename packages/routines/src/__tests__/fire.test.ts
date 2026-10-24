@@ -159,7 +159,7 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     const h = await setup({ definition: TASK });
     const result = await h.fire(h.accepted);
     expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBeNull();
-    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0 }) } });
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null }) } });
     expect(result).toMatchObject({ status: 'ok', renderedPrompt: null, recordedAtTurnEnd: true });
   });
   // TASK-931: the person's replies on the task reach the run only in its check-in message.

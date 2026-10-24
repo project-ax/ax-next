@@ -1442,7 +1442,7 @@ const ALWAYS_ON_BROKER_TOOLS = [
 //   run-runner). Without this, a team agent's check-ins could never report.
 // - Visibility isn't a grant. routine_report's host gate (TASK-907: @ax/routines
 //   `prepareReport`, checked again under locks by `routines:report`) refuses
-//   anywhere but a stay-on-top task's own check-in. A repeat routine's run of
+//   anywhere but a task's own check-in. A repeat routine's run of
 //   such an agent sees the tool too, and is refused if it calls it.
 //
 // A wildcard agent already sees the whole catalog, routine_report included, so

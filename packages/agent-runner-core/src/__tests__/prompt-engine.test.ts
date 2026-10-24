@@ -521,6 +521,7 @@ describe('buildSystemPrompt — memoryRoot forwarding', () => {
     expect(normal).toContain('Use the routine tools to schedule unattended work');
     expect(normal).toContain('Report success only after the tool confirms it. Do not create routine files.');
     expect(normal).toContain('always asks the person');
+    expect(normal).toContain('Creating a task (kind "stay-on-top" or "get-done")');
     expect(await buildSystemPrompt('Ada', '', dir, undefined)).not.toContain('Use the routine tools');
     await writeAx('BOOTSTRAP.md', 'bootstrap only');
     expect(await buildSystemPrompt('Ada', '', dir, undefined, false, undefined, dir, undefined, '', true)).not.toContain('Use the routine tools');
