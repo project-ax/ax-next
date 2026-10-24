@@ -128,6 +128,18 @@ describe("a person's step changes (store, TASK-949)", () => {
     expect(await receipts()).toEqual([]);
   });
 
+  it('a stranger on a stay-on-top task gets not-found, the same as the owner does, never forbidden', async () => {
+    const stay = await f.store.createAuthored({ ...createInput('stay'), definition: RoutineDefinitionSchema.parse({
+      name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
+      kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
+    }) });
+    const add: RoutineStepOp[] = [{ op: 'add', text: 'Export every article' }];
+    expect(await change(stay, 'r1', add, 'teammate')).toBe('not-found');
+    expect(await change(stay, 'r1', add, 'owner')).toBe('not-found');
+    expect(await stepsColumn(stay.routineId)).toEqual([]);
+    expect(await receipts()).toEqual([]);
+  });
+
   it('a retired agent is not-found', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     await f.store.purgeAgent('a');
@@ -189,6 +201,26 @@ describe("a person's step changes (store, TASK-949)", () => {
     await sql`UPDATE routines_v1_definitions SET owner_user_id = 'owner' WHERE routine_id = ${task.routineId}`.execute(f.db);
     await f.store.deleteAuthored({ agentId: 'a', routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', requestId: 'delete', now });
     expect(await change(task, 'r1', add)).toBe('not-found');
+  });
+
+  it('a replay that waits on the task’s row lock answers the steps, and the owner, as that writer left them', async () => {
+    const add: RoutineStepOp[] = [{ op: 'add', text: 'Export every article' }];
+    // The steps: the holder ticks the step and adds one, and the replay answers both.
+    const task = await f.store.createAuthored(taskInput('task'));
+    const [exported] = (await changed(task, 'r1', add)).steps;
+    const upload = step('s000002', 'Upload them');
+    const after = [{ ...exported!, done: true }, upload];
+    expect(await whileHeld(task,
+      () => change(task, 'r1', add),
+      trx => writeSteps(task.routineId, after, trx),
+    )).toEqual({ steps: after, skipped: 0 });
+    // The owner: the holder hands the task over, and the replay is refused. It reads the owner under the lock too.
+    const other = await f.store.createAuthored(taskInput('other'));
+    await changed(other, 'r2', add);
+    expect(await whileHeld(other,
+      () => change(other, 'r2', add),
+      trx => sql`UPDATE routines_v1_definitions SET owner_user_id = 'someone-else' WHERE routine_id = ${other.routineId}`.execute(trx),
+    )).toBe('forbidden');
   });
 
   it('a person’s change and a report that wait on each other both land, in either order', async () => {
