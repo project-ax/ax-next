@@ -159,6 +159,12 @@ for (const [consumer, { version, flavors }] of loaded) {
             ['map value', z.map(z.string(), el), new Map([...entries, ['kx', 0]])],
             ['map key', z.map(el, z.string()), new Map([...entries.map(([k, v]) => [v, k]), [0, 'x']])],
             ['map value under a non-property key', z.map(z.any(), el), new Map([...entries, [{}, soft(0)]])],
+            // A failing non-property key (an object) aborts even when its own issue is soft.
+            [
+              'map key under a non-property key',
+              z.map(z.any().refine((k) => typeof k === 'string'), el),
+              new Map([...entries, [{}, 'abcdefgh']]),
+            ],
           ];
           for (const [name, schema, input] of cases) {
             const r = schema.transform(mustNotRun).safeParse(input);
@@ -174,6 +180,21 @@ for (const [consumer, { version, flavors }] of loaded) {
             const r = await schema.transform(mustNotRun).safeParseAsync(input);
             expect(r.success, name).toBe(false);
           }
+        });
+
+        it('still runs a collection refine when every issue past the cap was soft', () => {
+          // The other half of the abort rule: dropping soft issues must not abort.
+          // Unpatched, the refine runs here too.
+          let ran = false;
+          const r = z
+            .array(z.string().min(5))
+            .refine(() => {
+              ran = true;
+              return true;
+            })
+            .safeParse(Array.from({ length: CAP + 50 }, (_, i) => `a${i}`));
+          expect(r.success).toBe(false);
+          expect(ran).toBe(true);
         });
 
         it('keeps the error message small (ipc-core echoes it into its 400 body)', () => {
