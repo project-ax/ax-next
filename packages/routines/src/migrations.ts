@@ -90,6 +90,16 @@ export interface RoutinesFiresRow {
   report_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
   report_update: ColumnType<string | null, string | null | undefined, string | null>;
   report_ask: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 9 (TASK-936). Who the run ran as: its routine's owner when it was accepted
+   * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it on the
+   * dispatch and `finishDispatch` copies it here. `reconcileOwners` never moves it, and
+   * that is the point. Rows from before version 9 read as their routine's owner at the
+   * upgrade, the person code before it showed their reports to; a gone routine's rows
+   * stay NULL, and NULL means not known. Additive and rollback-safe: older code ignores
+   * it, and a re-run stamps only NULL rows (`addRunAsColumns`).
+   */
+  run_as_user_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface DefaultRoutinesRow {
@@ -141,6 +151,16 @@ export interface DispatchesRow {
   conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
   report: ColumnType<unknown | null, string | null | undefined, string | null>;
+  /**
+   * Version 9 (TASK-936). Who the run runs as: its routine's owner when it was accepted
+   * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it and
+   * `finishDispatch` copies it to the fire row. `reconcileOwners` never moves it, and
+   * that is the point. Rows from before version 9 read as their routine's owner at the
+   * upgrade, the person code before it showed their reports to; a gone routine's rows
+   * stay NULL, and NULL means not known. Additive and rollback-safe: older code ignores
+   * it, and a re-run stamps only NULL rows (`addRunAsColumns`).
+   */
+  run_as_user_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 /**
  * Version 8 (TASK-931). A person's reply on a task, in their own words. Written
@@ -202,7 +222,44 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addRepliesTable(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (8)`.execute(trx);
     }
+    if (!await done(9)) {
+      await addRunAsColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (9)`.execute(trx);
+    }
   });
+}
+
+/** Version 9 (TASK-936): who each run ran as, on its dispatch and on its fire row.
+ * A run runs as its routine's owner when it is accepted (`fire.ts` runs as
+ * `accepted.row.ownerUserId`). `acceptDispatch` writes that person on the
+ * dispatch, and `finishDispatch` copies it to the fire row. The fire row is
+ * written only when the run ends, perhaps after the routine has moved, so only
+ * the accept knows who the run runs as, and the dispatch carries it until then.
+ * `reconcileOwners` never moves it, and that is the point: after a change
+ * of owner, each run still names the person it ran as, so a read can tell the
+ * earlier owner's runs from the new owner's. The backfill reads every existing
+ * row as its routine's owner at the upgrade, the person code before this version
+ * showed their reports to, so the upgrade itself widens or narrows nothing. A
+ * gone routine's rows stay NULL, as do rows that code from before this version
+ * writes after a rollback: NULL means not known. Nullable TEXT holding a host-set
+ * user id, with no foreign key, CHECK or index. Additive and rollback-safe: code
+ * from before this version ignores the columns, and a re-run stamps only NULL
+ * rows, so it keeps every value already written, even once the routine has
+ * another owner.
+ */
+async function addRunAsColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS run_as_user_id TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS run_as_user_id TEXT`.execute(db);
+  await sql`
+    UPDATE routines_v1_dispatches d SET run_as_user_id = r.owner_user_id
+      FROM routines_v1_definitions r
+     WHERE d.run_as_user_id IS NULL AND r.agent_id = d.agent_id AND r.routine_id = d.routine_id
+  `.execute(db);
+  await sql`
+    UPDATE routines_v1_fires f SET run_as_user_id = r.owner_user_id
+      FROM routines_v1_definitions r
+     WHERE f.run_as_user_id IS NULL AND r.agent_id = f.agent_id AND r.routine_id = f.routine_id
+  `.execute(db);
 }
 
 /** Version 8 (TASK-931): a person's replies on a task, which every later check-in
