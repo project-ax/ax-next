@@ -40,6 +40,7 @@ const REPORT: TaskDetailReport = {
   update: 'Two tickets need a refund decision',
   ask: 'Can I refund order 1182?',
   agentNotes: 'Ticket 1182 is waiting on finance.',
+  reading: null,
   reportedAt: '2026-10-22T12:00:00.000Z',
 };
 
@@ -47,7 +48,7 @@ const UPDATE: TaskUpdate = {
   firedAt: '2026-10-22T12:00:00.000Z',
   status: 'ok',
   error: null,
-  report: { status: 'needs-you', update: 'Two tickets need a refund decision' },
+  report: { status: 'needs-you', update: 'Two tickets need a refund decision', reading: null },
   conversationId: 'c1',
 };
 
@@ -72,7 +73,7 @@ const DETAIL: TaskDetail = {
   updates: [
     UPDATE,
     { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
-    { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null }, conversationId: 'c3' },
+    { firedAt: '2026-10-22T10:00:00.000Z', status: 'silenced', error: null, report: { status: 'on-track', update: null, reading: null }, conversationId: 'c3' },
   ],
   replies: [],
 };
@@ -123,6 +124,17 @@ describe('workspaceApi.task (TASK-910)', () => {
     }
   });
 
+  it('reads the agent’s reading on its report and on an update (TASK-952)', async () => {
+    const reading = { label: 'Open tickets', value: 3 };
+    const body: TaskDetail = {
+      ...DETAIL,
+      task: { ...REPORT, reading },
+      updates: [{ ...UPDATE, report: { status: 'needs-you', update: 'Two tickets need a refund decision', reading } }],
+    };
+    respondWith(body);
+    await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
+  });
+
   it('refuses an update with a status it doesn’t know', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ ...DETAIL, updates: [{ ...UPDATE, status: 'skipped' }] });
@@ -154,6 +166,9 @@ describe('workspaceApi.task (TASK-910)', () => {
     ['a report without an ask', { ...DETAIL, task: { ...REPORT, ask: undefined } }],
     ['a report without the agent’s notes', { ...DETAIL, task: { ...REPORT, agentNotes: undefined } }],
     ['a report without when it reported', { ...DETAIL, task: { ...REPORT, reportedAt: undefined } }],
+    // The page draws the reading (TASK-952), so it must be present: null or a reading.
+    ['a report without a reading', { ...DETAIL, task: { ...REPORT, reading: undefined } }],
+    ['a report whose reading has no label', { ...DETAIL, task: { ...REPORT, reading: { value: 3 } } }],
     ['no missed-check-ins key', { ...DETAIL, noRecentUpdate: undefined }],
     ['missed check-ins with a zero count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 0 } }],
     ['missed check-ins with a fractional count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 1.5 } }],
@@ -177,11 +192,24 @@ describe('workspaceApi.task (TASK-910)', () => {
     ['an update whose conversation is left out', { ...DETAIL, updates: [{ ...UPDATE, conversationId: undefined }] }],
     [
       'an update whose report has a status it doesn’t know',
-      { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'stuck', update: null } }] },
+      { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'stuck', update: null, reading: null } }] },
     ],
     [
       'an update whose report’s text isn’t text',
-      { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'on-track', update: 3 } }] },
+      { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'on-track', update: 3, reading: null } }] },
+    ],
+    [
+      'an update whose report has no reading',
+      { ...DETAIL, updates: [{ ...UPDATE, report: { status: 'on-track', update: null } }] },
+    ],
+    [
+      'an update whose reading’s value is text',
+      {
+        ...DETAIL,
+        updates: [
+          { ...UPDATE, report: { status: 'on-track', update: null, reading: { label: 'Open tickets', value: '3' } } },
+        ],
+      },
     ],
   ])('refuses %s', async (_label, body) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});

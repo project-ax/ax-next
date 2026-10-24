@@ -557,6 +557,7 @@ function report(
     status,
     update: 'Two tickets are still open.',
     ask: null,
+    reading: null,
     reportedAt: '2026-10-23T10:00:00.000Z',
     ...over,
   };

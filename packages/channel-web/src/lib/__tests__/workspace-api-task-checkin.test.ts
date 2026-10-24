@@ -34,7 +34,7 @@ const CHECKIN: TaskCheckin = {
     firedAt: '2026-10-22T12:00:00.000Z',
     status: 'ok',
     error: null,
-    report: { status: 'needs-you', update: 'Two tickets need a refund decision' },
+    report: { status: 'needs-you', update: 'Two tickets need a refund decision', reading: null },
     conversationId: 'c1',
   },
   triggerSource: 'tick',

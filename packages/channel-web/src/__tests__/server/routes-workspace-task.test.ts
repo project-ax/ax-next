@@ -182,7 +182,7 @@ interface World {
   replyAnswer: RoutineReplyOutput;
   /** Set: `routines:reply` throws this, after its input check. */
   replyFailure: Error | null;
-  /** True: `routines:get` is registered without `returns`, so a view reaches the route unparsed (TASK-913's shape). */
+  /** True: `routines:get` and `routines:recent-fires` are registered without `returns`, so their views reach the route unparsed (TASK-913's shape). */
   unvalidated: boolean;
   /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
   viewMiss: { value: unknown } | null;
@@ -275,7 +275,7 @@ function setup(over: Partial<World> = {}) {
         if (world.firesFailure !== null) throw world.firesFailure;
         return { fires: world.fires };
       },
-      { returns: RoutineRecentFiresOutputSchema },
+      world.unvalidated ? undefined : { returns: RoutineRecentFiresOutputSchema },
     );
   }
   if (!world.absent.has('routines:recent-replies')) {
@@ -427,6 +427,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         update: 'Two tickets have waited over an hour.',
         ask: 'Want me to draft replies to both?',
         agentNotes: 'Acme is an enterprise customer.\nReply within the hour.',
+        reading: null,
         reportedAt: '2026-10-22T14:58:00.000Z',
       },
       noRecentUpdate: null,
@@ -435,7 +436,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
           firedAt: '2026-10-22T14:57:00.000Z',
           status: 'ok',
           error: null,
-          report: { status: 'needs-you', update: 'Two tickets have waited over an hour.' },
+          report: { status: 'needs-you', update: 'Two tickets have waited over an hour.', reading: null },
           conversationId: 'CONVERSATION-ID',
         },
         {
@@ -967,6 +968,79 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, missed check-ins (TASK-9
     const captured = await detail();
     expect(captured.statusCode).toBe(200);
     expect(noRecentUpdateOf(captured)).toBeNull();
+  });
+});
+
+describe("GET /api/workspace/tasks/:agentId/:routineId, the agent's reading (TASK-952)", () => {
+  /** A check-in that ended with a report which sent this reading. */
+  const firedWith = (firedAt: string, reading: NonNullable<RoutineFireView['report']>['reading']) =>
+    fire({ firedAt, report: { status: 'on-track', update: 'Queue is empty.', ask: null, reading } });
+
+  it('carries the reading on the page and on each update, its label fenced to one line of 40 characters', async () => {
+    // Stored text isn't re-checked against the writer's rules (TASK-913), and
+    // the view schemas check only types, so the route is where a label is fenced.
+    const { detail } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 't1',
+          task: report('on-track', {
+            reading: { value: 3, label: `Open${String.fromCharCode(0x0a)}tickets` },
+          }),
+        }),
+      ],
+      fires: [
+        firedWith('2026-10-22T09:57:00.000Z', { value: 3, label: 'Open tickets' }),
+        firedWith('2026-10-22T08:57:00.000Z', { value: 5, label: 'x'.repeat(50) }),
+        firedWith('2026-10-22T07:57:00.000Z', {
+          value: 0,
+          label: `Open${String.fromCodePoint(0x202e)}tickets`,
+        }),
+        firedWith('2026-10-22T06:57:00.000Z', {
+          value: 9,
+          label: String.fromCodePoint(0x200b).repeat(3),
+        }),
+        firedWith('2026-10-22T05:57:00.000Z', { value: -1.5, label: '<img src=x onerror=alert(1)>' }),
+        firedWith('2026-10-22T04:57:00.000Z', null),
+      ],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    const body = bodyOf(captured);
+    expect(body.task?.reading).toStrictEqual({ label: 'Open tickets', value: 3 });
+    expect(body.updates.map((u) => u.report?.reading)).toStrictEqual([
+      { label: 'Open tickets', value: 3 },
+      { label: `${'x'.repeat(39)}…`, value: 5 },
+      { label: 'Open tickets', value: 0 },
+      // Nothing legible is left to say what was counted, so no reading crosses.
+      null,
+      // Markup is only text: it crosses as written, and the page draws it as text.
+      { label: '<img src=x onerror=alert(1)>', value: -1.5 },
+      null,
+    ]);
+    // A reading that didn't cross leaves its report alone.
+    expect(body.updates[3]?.report?.update).toBe('Queue is empty.');
+  });
+
+  it.each<[string, unknown]>([
+    ['NaN', Number.NaN],
+    ['an infinity', Number.POSITIVE_INFINITY],
+    ['a number written as text', '3'],
+  ])('drops a reading whose value is %s, on the page and on its update, and keeps both reports', async (_what, value) => {
+    // Views the schemas didn't parse reach the route as they are (TASK-913's shape).
+    const reading = { value: value as number, label: 'Open tickets' };
+    const { detail } = setup({
+      unvalidated: true,
+      rows: [stored({ agentId: 'a1', routineId: 't1', task: report('on-track', { reading }) })],
+      fires: [firedWith('2026-10-22T09:57:00.000Z', reading)],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    const body = bodyOf(captured);
+    expect(body.task?.update).toBe('Queue is empty.');
+    expect(body.task?.reading).toBeNull();
+    expect(body.updates[0]?.report?.update).toBe('Queue is empty.');
+    expect(body.updates[0]?.report?.reading).toBeNull();
   });
 });
 

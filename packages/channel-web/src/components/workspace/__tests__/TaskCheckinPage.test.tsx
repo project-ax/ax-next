@@ -55,7 +55,7 @@ function checkIn(over: Partial<TaskUpdate> = {}): TaskUpdate {
     firedAt: FIRED,
     status: 'ok',
     error: null,
-    report: { status: 'needs-you', update: UPDATE },
+    report: { status: 'needs-you', update: UPDATE, reading: null },
     conversationId: 'c1',
     ...over,
   };
@@ -344,7 +344,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
     const raw = '**bold** <b>x</b>';
     checkinMock.mockResolvedValue(
       page({
-        checkIn: checkIn({ report: { status: 'on-track', update: raw } }),
+        checkIn: checkIn({ report: { status: 'on-track', update: raw, reading: null } }),
         thread: [
           {
             kind: 'agent',
