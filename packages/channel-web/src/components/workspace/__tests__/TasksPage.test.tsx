@@ -503,6 +503,45 @@ describe('TasksPage (TASK-909)', () => {
       routineId: 't1',
     });
   });
+
+  it('a get-done task’s row says how many steps are done, in place of when it checked (TASK-948)', async () => {
+    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    tasksMock.mockResolvedValue(
+      page([
+        row('Move the help docs', {
+          kind: 'get-done',
+          steps: { done: 2, total: 5 },
+          task: report('on-track', {
+            reportedAt: new Date(NOW.getTime() - 4 * 60_000).toISOString(),
+          }),
+        }),
+      ]),
+    );
+    renderPage();
+    expect(await screen.findByText('Caveman · 2 of 5 steps')).toBeInTheDocument();
+    expect(screen.queryByText(/checked/)).toBeNull();
+  });
+
+  it('a get-done task with no steps yet reads as any other row (TASK-948)', async () => {
+    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    tasksMock.mockResolvedValue(
+      page([
+        row('Move the help docs', {
+          kind: 'get-done',
+          steps: { done: 0, total: 0 },
+          task: report('on-track', {
+            reportedAt: new Date(NOW.getTime() - 4 * 60_000).toISOString(),
+          }),
+        }),
+      ]),
+    );
+    renderPage();
+    expect(await screen.findByText('Caveman · checked 4 min ago')).toBeInTheDocument();
+  });
 });
 
 describe('TasksPage: the agent’s reading (TASK-952)', () => {

@@ -879,6 +879,46 @@ describe('TaskPage (TASK-910)', () => {
   });
 });
 
+describe('TaskPage: a get-done task (TASK-948)', () => {
+  const STEPS = [
+    { id: 's1', text: 'Export every article', done: true, byAgent: true },
+    { id: 's2', text: 'Check the redirects', done: false, byAgent: false },
+  ];
+
+  it('names a get-done task’s kind, and shows its steps between the latest update and the brief (TASK-948)', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
+    await renderReady();
+    expect(
+      screen.getByText(
+        'Quill · Get something done · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
+      ),
+    ).toBeInTheDocument();
+    const steps = screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 2 done' });
+    const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(latestUpdate(), steps)).toBeTruthy();
+    expect(after(steps, screen.getByRole('region', { name: 'About this task' }))).toBeTruthy();
+    expect(screen.getByText('Check the redirects')).toBeInTheDocument();
+  });
+
+  it('a stay-on-top page has no steps section, and keeps its kind line', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    expect(screen.queryByRole('heading', { name: /^Steps/ })).toBeNull();
+    expect(
+      screen.getByText(
+        'Quill · Stay on top of something · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('a paused get-done task with no schedule still names its kind', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', schedule: null }));
+    await renderReady();
+    expect(screen.getByText('Quill · Get something done')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument();
+  });
+});
+
 describe('TaskPage: a missed check-in (TASK-930)', () => {
   const MISSED = new Date(2026, 9, 22, 11, 2).toISOString();
   const LAST_UPDATE = '3 open. I’m answering #4411 and #4412 now.';

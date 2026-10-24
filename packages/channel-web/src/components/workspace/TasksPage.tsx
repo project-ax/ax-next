@@ -347,6 +347,15 @@ function TaskItem({
         : (row.task?.update ?? null);
   const reading =
     row.noRecentUpdate === null && row.task?.update != null ? (row.task.reading ?? null) : null;
+  // A get-done task with steps says how far along it is where a stay-on-top
+  // one says when it last checked in (TASK-948). One with none yet reads as any
+  // other, so a row never claims "0 of 0 steps".
+  const secondLine =
+    row.kind === 'get-done' && row.steps !== null && row.steps.total > 0
+      ? `${row.agentName} · ${row.steps.done} of ${row.steps.total} steps`
+      : ago === null
+        ? row.agentName
+        : `${row.agentName} · checked ${ago}`;
   return (
     <a
       {...routeLinkProps(
@@ -359,7 +368,7 @@ function TaskItem({
         {row.name}
       </span>
       <span className="break-words text-[12px] text-muted-foreground">
-        {ago === null ? row.agentName : `${row.agentName} · checked ${ago}`}
+        {secondLine}
       </span>
       {third !== null && (
         <p className="line-clamp-2 break-words text-[13px]" title={third}>

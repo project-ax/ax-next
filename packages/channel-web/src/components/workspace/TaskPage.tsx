@@ -1,6 +1,6 @@
 /**
- * `/workspace/tasks/<agentId>/<routineId>` — one "Stay on top of something"
- * task's own page (TASK-910).
+ * `/workspace/tasks/<agentId>/<routineId>` — one task's own page, of either
+ * kind (TASK-910; "Get something done" with its steps, TASK-948).
  *
  * It reads like a thread (design §3.3): the latest update at the top, the
  * agent's reading under it when the latest report sent one (TASK-952), the
@@ -12,12 +12,12 @@
  * task's ids, since a refresh keeps what's on screen.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
- * ask, its reading's label and the agent's notes were written by a model, and
- * an update can quote a ticket or an email; the brief was written by a person.
- * The server fenced and capped every one before it left
- * (`server/routes-workspace.ts`). Here they are only ever React text children:
- * never `dangerouslySetInnerHTML`, never the markdown renderer, and no
- * attribute is built from them. `**bold**` and `<img>` show as those
+ * ask, its reading's label, the agent's notes and a get-done task's steps were
+ * written by a model, and an update can quote a ticket or an email; the brief
+ * was written by a person. The server fenced and capped every one before it
+ * left (`server/routes-workspace.ts`). Here they are only ever React text
+ * children: never `dangerouslySetInnerHTML`, never the markdown renderer, and
+ * no attribute is built from them. `**bold**` and `<img>` show as those
  * characters.
  *
  * THE ACTIONS go through the routines admin routes (`routineApi`), so the
@@ -88,6 +88,7 @@ import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { taskGroup, TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
 import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
@@ -100,6 +101,7 @@ import { StateDot, StateDotSlot } from './bits';
 import { TaskNotes } from './TaskNotes';
 import { TaskReadingBlock } from './TaskReadingBlock';
 import { TaskReplyBox } from './TaskReplyBox';
+import { TaskSteps } from './TaskSteps';
 import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
 
@@ -492,10 +494,8 @@ function TaskBody({
   const briefId = useId();
   const note = actionNote(detail);
   const { agentName } = detail;
-  const meta =
-    detail.schedule === null
-      ? `${agentName} · Stay on top of something`
-      : `${agentName} · Stay on top of something · checks in ${detail.schedule}`;
+  const kindMeta = `${agentName} · ${TASK_KIND_LABELS[detail.kind]}`;
+  const meta = detail.schedule === null ? kindMeta : `${kindMeta} · checks in ${detail.schedule}`;
 
   return (
     <>
@@ -554,6 +554,7 @@ function TaskBody({
       />
       {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
       <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
+      {detail.kind === 'get-done' && <TaskSteps steps={detail.steps} agentName={agentName} />}
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
         <h2 id={briefId} className="sr-only">
           About this task

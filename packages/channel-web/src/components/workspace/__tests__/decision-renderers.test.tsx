@@ -40,6 +40,7 @@ import {
   DECISION_TASK_GOOD_WHEN_LABEL,
   DECISION_TASK_HEADING_CHANGE,
   DECISION_TASK_HEADING_START,
+  DECISION_TASK_KIND_LABEL,
   DECISION_TASK_NAME_LABEL,
   DECISION_TASK_LINE_COLUMNS,
   DECISION_TASK_SCROLL_NOTE,
@@ -709,6 +710,67 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
     }
     expect(queueText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
     expect(cardText(plain)).not.toContain(DECISION_TASK_GOOD_WHEN_LABEL);
+  });
+});
+
+describe('TASK-948 — both renderers say which kind of task is proposed', () => {
+  const base: NonNullable<Decision['task']> = {
+    action: 'start',
+    kind: 'get-done',
+    name: 'Move the help docs',
+    instructions: { text: 'Move every article.', truncated: false },
+    goodWhen: { text: 'Every article is moved.', truncated: false },
+    checksIn: 'Runs every hour',
+  };
+  const held = (task: NonNullable<Decision['task']>) =>
+    decisionFixture({ summary: 'Wants to start a task', routineOperation: 'routine_create', task });
+  const both = (d: Decision) => [
+    <DecisionRow
+      key="q"
+      decision={d}
+      agent={agent}
+      expanded
+      onToggle={vi.fn()}
+      onOpenAgent={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+    />,
+    <ApprovalCard key="c" decision={d} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+  ];
+  const terms = () => [...screen.getByTestId('decision-task').querySelectorAll('dt')].map((dt) => dt.textContent);
+
+  it('names the kind first, in its own words', () => {
+    for (const [kind, label] of [
+      ['get-done', 'Get something done'],
+      ['stay-on-top', 'Stay on top of something'],
+    ] as const) {
+      for (const ui of both(held({ ...base, kind }))) {
+        const { unmount } = render(ui);
+        const term = screen.getByText(DECISION_TASK_KIND_LABEL, { selector: 'dt' });
+        expect(term.nextElementSibling?.textContent).toBe(label);
+        expect(terms()[0]).toBe(DECISION_TASK_KIND_LABEL);
+        expect(terms()[1]).toBe(DECISION_TASK_NAME_LABEL);
+        unmount();
+      }
+    }
+  });
+
+  it('draws no Kind row when the host sent none', () => {
+    for (const ui of both(held({ ...base, kind: null }))) {
+      const { unmount } = render(ui);
+      expect(terms()).not.toContain(DECISION_TASK_KIND_LABEL);
+      unmount();
+    }
+  });
+
+  it('draws no Kind row for a kind it has no words for', () => {
+    const odd = { ...base, kind: 'brand-new' } as unknown as NonNullable<Decision['task']>;
+    for (const ui of both(held(odd))) {
+      const { unmount } = render(ui);
+      expect(terms()).not.toContain(DECISION_TASK_KIND_LABEL);
+      unmount();
+    }
   });
 });
 
