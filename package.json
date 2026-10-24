@@ -75,7 +75,8 @@
     },
     "patchedDependencies": {
       "testcontainers@11.14.0": "patches/testcontainers@11.14.0.patch",
-      "node-forge@1.4.0": "patches/node-forge@1.4.0.patch"
+      "node-forge@1.4.0": "patches/node-forge@1.4.0.patch",
+      "zod@3.25.76": "patches/zod@3.25.76.patch"
     },
     "auditConfig": {
       "ignoreGhsas": [
