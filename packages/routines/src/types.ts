@@ -127,7 +127,8 @@ export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'rout
  * change the notes (TASK-910). TASK-952: `reading` left out or null means none
  * this time, so the task's latest reading becomes none, unlike `notes`.
  * TASK-948: `steps`, the report's changes to a get-done task's checklist,
- * applied in order (`applyStepOps`); left out, the checklist is left alone.
+ * applied in order as the agent's (`changeStoredSteps`, TASK-949); left out,
+ * the checklist is left alone.
  */
 export type RecordReportInput = {
   agentId: string; dispatchId: string; conversationId: string; actorUserId: string;

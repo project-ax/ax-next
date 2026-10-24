@@ -4,8 +4,8 @@ import {
   RoutineStepOpSchema, RoutineStepTextSchema, RoutineStepViewSchema, RoutineToolJsonSchemas,
 } from '../index.js';
 
-// TASK-948: a "get-done" task's steps. The text rule's messages reach a person (TASK-949's box shows them), so
-// each says what to fix; the agent gets only the field's name (core's fixed template).
+// TASK-948: a "get-done" task's steps. The text rule's messages reach a person (the task page's step editor shows
+// them, TASK-949), so each says what to fix; the agent gets only the field's name (core's fixed template).
 const issues = (value: unknown) => {
   const result = RoutineStepTextSchema.safeParse(value);
   return result.success ? [] : result.error.issues.map(issue => issue.message);

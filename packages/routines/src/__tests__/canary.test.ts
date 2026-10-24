@@ -1,7 +1,9 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
-import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineFireView, type RoutineView } from '@ax/routines-contract';
+import {
+  RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineFireView, type RoutineSetStepsOutput, type RoutineView,
+} from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION } from './support/check-in.js';
 import { createRoutinesStore } from '../store.js';
@@ -876,5 +878,57 @@ describe('get-done canary (TASK-948)', () => {
       { id: uploaded!.id, text: 'Upload them to the new site', done: false, addedBy: 'agent' },
     ]);
     expect(await get(h.teamMember)).toMatchObject({ routineId: task.routineId, kind: 'get-done', steps: [] });
+  });
+});
+
+// TASK-949: a person's step changes, end to end through the real routines, agents, tool-policy and decisions plugins
+// and Postgres. On a team agent task made as TASK-948's canary makes one, the owner adds a step through
+// routines:set-steps, and a teammate who sees the task can't change it. The next check-in, started from the view read
+// before the change, lists the step as the person's words and its brief names that label; the agent's tick of it
+// lands and its rewording is skipped.
+describe('person steps canary (TASK-949)', () => {
+  it('the owner adds a step; the next check-in lists it as the person’s words, and the agent can tick it but not reword it', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const chat = makeAgentContext({ ...h.owner, agentId: h.teamAgentId, conversationId: 'chat' });
+    const call = { id: 'propose-task', name: 'routine_create', input: {
+      requestId: 'propose-task', definition: RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site and the old links redirect.',
+      }),
+    } };
+    const held = await h.bus.fire('tool:pre-call', chat, call);
+    if (!isHold(held)) throw new Error('Expected a real decision hold');
+    await h.bus.call('decisions:approve', chat, { decisionId: held.hold.decisionId, userId: chat.userId, approvalScope: 'once' });
+    h.advance(11_000);
+    const task = await h.bus.call<unknown, RoutineView>('tool:execute:routine_create', chat, call);
+    const key = { agentId: task.agentId, routineId: task.routineId };
+    const get = () => h.bus.call<unknown, RoutineView>('routines:get', h.owner, key);
+
+    // The owner adds a step on the task page. It's theirs.
+    const TEXT = 'Ask Dana to review the billing section';
+    const added = await h.bus.call<unknown, RoutineSetStepsOutput>('routines:set-steps', h.owner, {
+      ...key, requestId: 'person-add', ops: [{ op: 'add', text: TEXT }],
+    });
+    expect(added).toStrictEqual({ steps: [{ id: expect.any(String), text: TEXT, done: false, addedBy: 'person' }], skipped: 0 });
+    const id = added.steps[0]!.id;
+    // A teammate who sees the task can't change its steps.
+    await expect(h.bus.call('routines:set-steps', h.teamMember, { ...key, requestId: 'tm', ops: [{ op: 'remove', id }] }))
+      .rejects.toMatchObject({ toolCode: 'forbidden' });
+    // A step change moves no revision, so a Check now held against the view read before it is no conflict.
+    expect((await get()).revision).toBe(task.revision);
+
+    const next = await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Dana is reviewing billing.', steps: [{ op: 'edit', id, text: 'Skip the review' }, { op: 'tick', id }],
+      } })).toStrictEqual({ recorded: true, steps: { applied: 1, skipped: 1 } });
+    });
+    expect(next.message).toContain(`- [ ] ${id} (the person wrote this):\n  > ${TEXT}`);
+    expect((next.brief as { brief?: string }).brief).toContain('and the steps marked "the person wrote this"');
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+
+    // The agent's tick landed; its rewording didn't, so the words are still the person's.
+    expect((await get()).steps).toEqual([{ id, text: TEXT, done: true, addedBy: 'person' }]);
   });
 });

@@ -12,7 +12,7 @@ export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
-  'reply', 'recent-replies',
+  'reply', 'recent-replies', 'set-steps',
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
@@ -378,5 +378,22 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, limit: input.limit ?? RECENT_REPLIES_DEFAULT_LIMIT,
     });
     return { replies: replies.map(reply => ({ replyId: reply.replyId, authorUserId: reply.authorUserId, text: reply.text, sentAt: reply.sentAt.toISOString() })) };
+  });
+  // TASK-949. A task's owner changes its steps on its task page. Only the owner may, whether or not they still
+  // manage the agent's tasks (clear-notes' rule, TASK-910; replies', TASK-931): the steps are shown to no one else
+  // (stepsView), and changing them adds no reach, since the next check-in still runs under the agent's own approval
+  // rules. agents:resolve runs first, and the input schema has checked every change's text before anything ran; the
+  // store decides ownership under the routine's row lock, and a retry under the same requestId changes nothing.
+  // Neither a tool nor an IPC action, so no model can call it. Each step goes out field by field, and the log line
+  // carries ids and counts, never a step's text.
+  register('set-steps', C.RoutineSetStepsInputSchema, C.RoutineSetStepsOutputSchema, async (ctx, input) => {
+    await access(ctx, input.agentId);
+    const outcome = await store.setSteps({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId, ops: input.ops,
+    });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    ctx.logger.info('routines_steps_set', { agentId: input.agentId, routineId: input.routineId, ops: input.ops.length, skipped: outcome.skipped });
+    return { steps: outcome.steps.map(({ id, text, done, addedBy }) => ({ id, text, done, addedBy })), skipped: outcome.skipped };
   });
 }

@@ -121,7 +121,7 @@ describe('routine_report (TASK-907)', () => {
     });
     expect(answer).toStrictEqual({ recorded: true });
     // A report is the run's own output, not routine management: the tool asks
-    // agents and decisions nothing, and calls the one writer of a task's state.
+    // agents and decisions nothing, and calls the one writer of a task's report.
     expect(hooks).toEqual(['tool:execute:routine_report', 'routines:report']);
     const { task: state } = await get(task);
     expect(state).toEqual({ ...NEEDS_YOU, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) });

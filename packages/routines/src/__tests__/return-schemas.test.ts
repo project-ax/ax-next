@@ -136,16 +136,23 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineReportOutputSchema.safeParse({ recorded: true, steps: { applied: 2 } }).success).toBe(false);
     });
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, and a person's replies", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(20);
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and a person's step changes", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(21);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
     expect(ROUTINE_SERVICES).toContain('routines:tasks-for-conversations');
     expect(ROUTINE_SERVICES).toContain('routines:reply');
     expect(ROUTINE_SERVICES).toContain('routines:recent-replies');
+    expect(ROUTINE_SERVICES).toContain('routines:set-steps');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
+  });
+  it("answers a person's step changes with the steps and a count, and nothing else (TASK-949)", () => {
+    const answer = { steps: [{ id: 's000001', text: 'Ask Dana to review billing', done: false, addedBy: 'person' }], skipped: 1 };
+    expect(C.RoutineSetStepsOutputSchema.parse(answer)).toStrictEqual(answer);
+    // Never a change's text beside the list.
+    expect(() => C.RoutineSetStepsOutputSchema.parse({ ...answer, text: 'Ask Dana to review billing' })).toThrow();
   });
   it("answers a reply with its id and what its check-in did, and reads a reply back without its task's owner (TASK-931)", () => {
     expect(C.RoutineReplyOutputSchema.parse({ replyId: 'reply_1', checkIn: 'started' })).toStrictEqual({ replyId: 'reply_1', checkIn: 'started' });
