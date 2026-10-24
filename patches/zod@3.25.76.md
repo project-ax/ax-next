@@ -17,18 +17,27 @@ CommonJS (`.cjs`) builds.
   over its `.max()` or `.size()`, now reports only the size issue and does not
   parse its elements. That is upstream zod 4.6.6's behaviour
   ([PR #6652](https://github.com/colinhacks/zod/pull/6652), commit
-  `a0ebf970f2d752e5f58527cd2942ff48be4f46bd`).
+  `a0ebf970f2d752e5f58527cd2942ff48be4f46bd`). An oversized collection now
+  aborts the parse, so a `.refine()` or `.superRefine()` on it, or on any schema
+  that contains it, no longer runs. A union with such an option now fails as
+  `invalid_union` instead of adopting that option's `too_big`. The parse still
+  fails either way.
 - **The zod 4 core under `zod/v4`** (`v4/core/schemas`), which
   `@modelcontextprotocol/sdk` uses to parse what remote MCP and OAuth servers
-  send. Arrays, tuple rests, records, object catchalls, maps and sets stop
-  taking their elements' issues once they hold 100. When the cap drops a hard
-  failure (a wrong type, not a soft check like `.min()`), the collection still
-  counts as aborted, so no later `.refine()`, `.transform()` or `.pipe()` reads
-  input that failed validation. Upstream's `capSize` does the same.
+  send. Arrays, tuples, records, objects (declared keys and catchall), maps and
+  sets stop taking their elements' issues once they hold 100. The sync JIT path
+  for declared object keys is not capped; it is bounded by the schema's own
+  shape, so a sync parse can report a few more issues than an async one.
+- When the v4 cap drops a hard failure (a wrong type, not a soft check like
+  `.min()`), the collection still counts as aborted. Upstream's `capSize` does
+  the same. So a `.refine()`, `.transform()` or `.pipe()` never reads input that
+  failed with a hard error. After soft failures only, they still run, exactly
+  as unpatched.
 
 The first issue always lands, so a failed parse is still a normal `ZodError`
 and `safeParse` still returns `success: false`. Valid input parses exactly as
-before. A parse with 100 issues or fewer reports exactly what it did before.
+before. Apart from the size short-circuit above, a parse with 100 issues or
+fewer reports exactly what it did before.
 
 The cap goes further than upstream. zod 4.6.6 and later stop early only for
 collections that declare a size limit. An unbounded `z.array()` still builds an
