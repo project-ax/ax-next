@@ -537,6 +537,15 @@ describe('TasksPage: the agent’s reading (TASK-952)', () => {
     expect(screen.queryByText(/’s reading/)).not.toBeInTheDocument();
   });
 
+  it('a row whose update fenced to nothing shows no reading, since it shows no update', async () => {
+    tasksMock.mockResolvedValue(
+      page([row('Support queue', { task: report('on-track', { update: null, reading: OPEN_3 }) })]),
+    );
+    renderPage();
+    await screen.findByText('Support queue');
+    expect(screen.queryByText(/’s reading/)).not.toBeInTheDocument();
+  });
+
   it('a row without a reading shows none', async () => {
     tasksMock.mockResolvedValue(page([row('Support queue', { task: report('on-track') })]));
     renderPage();

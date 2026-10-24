@@ -337,14 +337,16 @@ function TaskItem({
   // or a kind change also moves it, and not every finish does). All of it
   // host-written except the update.
   // The agent's reading (TASK-952) shows only beside that update: next to a
-  // miss, the same stale report's number would contradict it.
+  // miss, the same stale report's number would contradict it, and with no
+  // update line (it fenced to nothing) it would hang under nothing.
   const third =
     !row.enabled && row.noRecentUpdate?.autoPaused
       ? AUTO_PAUSED_LINE
       : row.noRecentUpdate !== null
         ? missSummary(row.noRecentUpdate)
         : (row.task?.update ?? null);
-  const reading = row.noRecentUpdate === null ? (row.task?.reading ?? null) : null;
+  const reading =
+    row.noRecentUpdate === null && row.task?.update != null ? (row.task.reading ?? null) : null;
   return (
     <a
       {...routeLinkProps(
