@@ -73,6 +73,7 @@ describe('TaskReadingBlock (TASK-952)', () => {
     const svg = region.querySelector('svg');
     expect(svg).not.toBeNull();
     expect(svg).toHaveAttribute('aria-hidden', 'true');
+    expect(svg).toHaveClass('text-muted-foreground');
     // One line and nothing else: no fill, axes, target or forecast (design §3).
     expect(svg?.children).toHaveLength(1);
     const line = svg?.querySelector('polyline');
