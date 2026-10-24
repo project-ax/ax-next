@@ -1,4 +1,4 @@
-import type { CheckInMiss, RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
+import type { CheckInMiss, RoutineDefinition, RoutineKind, RoutineReportStatus, RoutineStepAuthor } from '@ax/routines-contract';
 export type { ActiveHours, CheckInMiss, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
@@ -22,6 +22,8 @@ export type StoredTaskState = { status: RoutineReportStatus; update: string; ask
  * agent text.
  */
 export type StoredNoRecentUpdate = { inARow: number; reason: CheckInMiss; at: Date; autoPausedAt: Date | null };
+/** TASK-948. One step of a "get-done" task's checklist, as stored. The id is host-made; the text is agent- or person-written. */
+export type StoredStep = { id: string; text: string; done: boolean; addedBy: RoutineStepAuthor };
 /** Below the hook bus. Owner identity is pinned independently from the editing actor. */
 export type StoredRoutine = RoutineDefinition & {
   agentId: string; routineId: string; revision: string; ownerUserId: string;
@@ -40,6 +42,11 @@ export type StoredRoutine = RoutineDefinition & {
    * `reconcileOwners` (TASK-936); the last two only clear them.
    */
   noRecentUpdate: StoredNoRecentUpdate | null;
+  /**
+   * TASK-948. A "get-done" task's checklist, in order. Empty for any other
+   * kind, until the agent drafts it, and after a change of kind or of owner.
+   */
+  steps: StoredStep[];
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;

@@ -8,7 +8,7 @@ const row: StoredRoutine = {
   ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
   agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
   definitionId: null, definitionUpdatedAt: null, nextRunAt: new Date('2030-01-01T00:00:00Z'), lastRunAt: null,
-  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null,
+  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [],
 };
 describe('canonical routine return schemas', () => {
   it('projects every editable/status field without private owner or storage state', () => {

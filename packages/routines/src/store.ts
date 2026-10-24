@@ -10,6 +10,7 @@ import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, Rout
 import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
+import { storedSteps } from './steps.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -286,11 +287,17 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * TASK-952: the latest report's reading goes with it, its value, label and
  * stamp, so a kind change or a change of owner clears it too. The runs keep
  * theirs on their fire rows, as they keep their reports.
+ *
+ * TASK-948: a get-done task's checklist is task state too, so a change of kind
+ * or of owner starts it over: `task_steps` goes back to `[]`, written as the
+ * JSON text the column parses. Steps the agent added can carry what only the
+ * earlier owner could reach.
  */
 const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
   task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
+  task_steps: '[]',
   ...NO_MISSES,
 } as const;
 /**
@@ -429,7 +436,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
-    noRecentUpdate: noRecentUpdate(row),
+    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps),
   });
 }
 /**
@@ -481,13 +488,15 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * (a report, the agent's notes) that the task row already holds, once, where a
  * person can see and clear it. TASK-930: the task's missed check-ins stay out
  * too. They're the task's, not the request's, and move on without it.
- * Both keys are left out, not stored as null, so code from before each field
- * (whose strict schema has no such key) still reads the receipt after a
- * rollback; `.default(null)` fills them in on read. So an exact replay answers
- * with `task: null` and `noRecentUpdate: null`: a replay answers from its
- * receipt, never from a fresh read. The live answer is the effect's own, state
- * and all, so `acceptDispatch`'s `accepted.row` still holds the task's state and
- * misses as it read them under the row lock.
+ * TASK-948: so do a get-done task's steps, beside the report and the misses:
+ * agent- or person-written text the task row already holds, once.
+ * All three keys are left out, not stored as null or `[]`, so code from before
+ * each field (whose strict schema has no such key) still reads the receipt
+ * after a rollback; the schema's defaults fill them in on read. So an exact
+ * replay answers with `task: null`, `noRecentUpdate: null` and `steps: []`: a
+ * replay answers from its receipt, never from a fresh read. The live answer is
+ * the effect's own, state and all, so `acceptDispatch`'s `accepted.row` still
+ * holds the task's state, misses and steps as it read them under the row lock.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
   if (operation === 'create' || operation === 'update') return withoutTaskState(result as StoredRoutine);
@@ -497,7 +506,7 @@ function receiptCopy(operation: string, result: unknown): unknown {
   }
   return result;
 }
-function withoutTaskState({ task: _task, noRecentUpdate: _misses, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate'> { return routine; }
+function withoutTaskState({ task: _task, noRecentUpdate: _misses, steps: _steps, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate' | 'steps'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
