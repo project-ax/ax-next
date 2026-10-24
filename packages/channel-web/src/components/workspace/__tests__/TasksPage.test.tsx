@@ -587,6 +587,25 @@ describe('TasksPage: the agent’s reading (TASK-952)', () => {
     expect(screen.queryByText(/’s reading/)).not.toBeInTheDocument();
   });
 
+  it('a get-done row keeps its step count on its second line, and the reading after the update (TASK-948)', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Move the help docs', {
+          kind: 'get-done',
+          steps: { done: 2, total: 5 },
+          task: report('on-track', { reading: OPEN_3 }),
+        }),
+      ]),
+    );
+    renderPage();
+    const count = await screen.findByText('Caveman · 2 of 5 steps');
+    const update = screen.getByText('Nothing new since this morning.');
+    const line = screen.getByText('Caveman’s reading · Open tickets: 3');
+    const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(count, update)).toBeTruthy();
+    expect(after(update, line)).toBeTruthy();
+  });
+
   it('a row without a reading shows none', async () => {
     tasksMock.mockResolvedValue(page([row('Support queue', { task: report('on-track') })]));
     renderPage();

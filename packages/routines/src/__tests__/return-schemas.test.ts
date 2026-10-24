@@ -38,10 +38,12 @@ describe('canonical routine return schemas', () => {
       reading: OPEN_3, reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
-    // The list tools' view is the same report without its agent notes: the reading stays (TASK-952).
+    // The list tools' view is the same report without its agent notes: the reading stays (TASK-952). It
+    // leaves a get-done task's steps out too (TASK-948), so the tools' view has no steps key at all.
     const { agentNotes: _agentNotes, ...listed } = projected.task!;
-    expect(C.RoutineListToolOutputSchema.parse({ routines: [{ ...projected, task: listed }] })).toEqual({ routines: [{ ...projected, task: listed }] });
-    expect(C.RoutineUpdateToolOutputSchema.parse({ ...projected, task: listed }).task?.reading).toEqual(OPEN_3);
+    const { steps: _steps, ...toolView } = projected;
+    expect(C.RoutineListToolOutputSchema.parse({ routines: [{ ...toolView, task: listed }] })).toEqual({ routines: [{ ...toolView, task: listed }] });
+    expect(C.RoutineUpdateToolOutputSchema.parse({ ...toolView, task: listed }).task?.reading).toEqual(OPEN_3);
     // Field by field, never a spread: a key the store's reading picked up never reaches the view.
     const stray = { ...task, task: { ...task.task!, reading: { ...OPEN_3, unit: 'tickets' } as StoredReading } };
     expect(routineView(stray, 'owner', true).task?.reading).toStrictEqual(OPEN_3);

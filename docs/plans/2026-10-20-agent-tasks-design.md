@@ -29,7 +29,7 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Now:** §12 PR 3, "Get something done". TASK-948 adds the kind and the steps its agent drafts and ticks; a person editing steps (TASK-949) and Mark done (TASK-950) come next.
+- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); a person editing steps (TASK-949) and Mark done (TASK-950) come next.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -250,7 +250,7 @@ moves to Needs you, and the person presses **Mark done** or **Not yet** (with a
 reply). A finished task stops checking in. This one rule replaces the goals
 design's judge model and its counted or estimated measures.
 
-> PR 3 (TASK-948): A "Get something done" task's agent drafts its steps at its first check-in, through routine_report, so the approval card is unchanged. It can tick or untick any step and add steps (up to 50, one line of up to 200 characters each), which the page labels "added by {agent}"; it can reword or remove only the steps it added. The task page shows the steps read-only for now, and the Tasks row says "2 of 5 steps". A change of kind or of owner starts the checklist over. A person editing steps is TASK-949; "I think it's done" and Mark done are TASK-950.
+> PR 3 (TASK-948): A "Get something done" task's agent drafts its steps at its first check-in, through routine_report, so the approval card is unchanged. It can tick or untick any step and add steps (up to 50, one line of up to 200 characters each), which the page labels "added by {agent}"; it can reword or remove only the steps it added. The task page shows the steps read-only for now, under the agent's reading when its latest report sent one (TASK-952) and above the brief, and the Tasks row says "2 of 5 steps". A change of kind or of owner starts the checklist over. A person editing steps is TASK-949; "I think it's done" and Mark done are TASK-950.
 
 ### 3.5 Today
 

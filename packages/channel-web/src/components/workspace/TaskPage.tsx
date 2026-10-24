@@ -3,11 +3,11 @@
  * kind (TASK-910; "Get something done" with its steps, TASK-948).
  *
  * It reads like a thread (design §3.3): the latest update at the top, the
- * agent's reading under it when the latest report sent one (TASK-952), the
- * brief under that, then every check-in and the person's replies, then the
- * reply box (TASK-931; the latest update's ask has a Reply button that focuses
- * it). The header holds the page's two actions,
- * Check now and Pause, or Resume while it's paused. The page reads its own task
+ * agent's reading under it when the latest report sent one (TASK-952), a
+ * get-done task's steps under that (TASK-948), the brief under those, then
+ * every check-in and the person's replies, then the reply box (TASK-931; the
+ * latest update's ask has a Reply button that focuses it). The header holds
+ * the page's two actions, Check now and Pause, or Resume while it's paused. The page reads its own task
  * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
  * task's ids, since a refresh keeps what's on screen.
  *

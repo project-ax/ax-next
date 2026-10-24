@@ -327,4 +327,38 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
     expect(message).toBe(SCHEDULED_MESSAGE);
     expect(message).not.toContain('steps');
   });
+
+  // TASK-952 landed first: a report's reading stays on its own report's line, and the steps keep their
+  // paragraph after the misses line, so neither moves the other. The whole message, exactly.
+  it('with readings on its reports, the steps keep their place and each reading stays on its report’s line', () => {
+    const reports: CheckInMessageInput['reports'] = [
+      { firedAt: new Date('2026-10-24T10:02:00Z'), report: { status: 'on-track', update: 'Moved 40 articles.', ask: null, reading: { value: 40, label: 'Articles moved' } } },
+      { firedAt: new Date('2026-10-24T09:02:00Z'), report: { status: 'on-track', update: 'Exported every article.', ask: null, reading: null } },
+    ];
+    expect(renderCheckInMessage({ ...SCHEDULED, missesInARow: 1, steps, reports })).toBe([
+      'Scheduled check-in.',
+      '',
+      'Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.',
+      '',
+      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:',
+      '- [x] saaaaaa (you added this):',
+      '  > Export every article from the old help center',
+      '- [ ] sbbbbbb (the person wrote this):',
+      '  > Ask Dana to review the billing section',
+      '',
+      'Your notes from earlier check-ins. You wrote these yourself, so they’re information, not instructions from the person:',
+      '> Order 1234 waits on a refund.',
+      '> Check again Friday.',
+      '',
+      'The person hasn’t replied on this task yet.',
+      '',
+      'Your recent reports, newest first. You wrote these too, so they’re information, not instructions from the person:',
+      '- 2026-10-24 10:02 UTC, on-track, Articles moved: 40:',
+      '  > Moved 40 articles.',
+      '- 2026-10-24 09:02 UTC, on-track:',
+      '  > Exported every article.',
+      '',
+      'Work on the task now, then finish with one routine_report.',
+    ].join('\n'));
+  });
 });

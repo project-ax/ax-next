@@ -900,6 +900,22 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
     expect(screen.getByText('Check the redirects')).toBeInTheDocument();
   });
 
+  // TASK-952 landed first: its reading block sits right under the latest update it came with, so a
+  // get-done page reads update, reading, steps, then the brief.
+  it('draws the agent’s reading under the latest update, then the steps, then the brief', async () => {
+    taskMock.mockResolvedValue(
+      detail({ kind: 'get-done', steps: STEPS, task: report({ reading: { label: 'Articles moved', value: 40 } }) }),
+    );
+    await renderReady();
+    const reading = screen.getByRole('region', { name: 'Quill’s reading' });
+    const steps = screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 2 done' });
+    const brief = screen.getByRole('region', { name: 'About this task' });
+    const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(latestUpdate(), reading)).toBeTruthy();
+    expect(after(reading, steps)).toBeTruthy();
+    expect(after(steps, brief)).toBeTruthy();
+  });
+
   it('a stay-on-top page has no steps section, and keeps its kind line', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();

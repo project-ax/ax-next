@@ -4,7 +4,7 @@
 
 **Goal:** A routine can be `kind: 'get-done'`: a task that keeps a schedule like "Stay on top", carries a checklist of up to 50 steps that its agent drafts at its first check-in and then ticks, unticks and adds through `routine_report` (rewording or removing only the steps it added), lists the steps in every check-in message, and shows them read-only on the task page, with "2 of 5 steps" on its Tasks row.
 
-**Architecture:** The contract gains the kind (sharing stay-on-top's validation branch), an explicit `TASK_KINDS` allowlist for write paths, and the step vocabulary (text rule, op union, view). The store keeps a task's steps as one JSONB list on its definition row (schema version 10), read leniently, cleared with the rest of the task state on a change of kind or owner (`NO_TASK_STATE`), and edited only by `recordReport`, which applies a report's ops by id, in order, under the row lock it already takes, in its own UPDATE with no accepted-at guard. A pure `steps.ts` module holds the lenient reader, the id maker and the op applier, so the rules are unit-tested without Postgres. The services show steps to the task's owner only; the list and update tools leave them out. The check-in message lists them (never the brief). channel-web projects counts onto the Tasks row and fenced steps onto the task page.
+**Architecture:** The contract gains the kind (sharing stay-on-top's validation branch), an explicit `TASK_KINDS` allowlist for write paths, and the step vocabulary (text rule, op union, view). The store keeps a task's steps as one JSONB list on its definition row (schema version 11), read leniently, cleared with the rest of the task state on a change of kind or owner (`NO_TASK_STATE`), and edited only by `recordReport`, which applies a report's ops by id, in order, under the row lock it already takes, in its own UPDATE with no accepted-at guard. A pure `steps.ts` module holds the lenient reader, the id maker and the op applier, so the rules are unit-tested without Postgres. The services show steps to the task's owner only; the list and update tools leave them out. The check-in message lists them (never the brief). channel-web projects counts onto the Tasks row and fenced steps onto the task page.
 
 **Tech Stack:** TypeScript, zod 3.25, Kysely on Postgres (testcontainers, or the local-pg shim), vitest, React + shadcn (channel-web).
 
@@ -20,11 +20,11 @@ Every MEASURED predecessor learning in the card checked out against 08b9c4cc2. T
 4. **`recordReport`'s answer stays `'recorded'` when no ops were sent;** it is `{ outcome: 'recorded', applied, skipped }` only when they were. About 40 existing assertions read `'recorded'`, and TASK-952 edits the same tests [row 12].
 5. **A kind change can land between the tool's check and the store's write.** The store skips every op for a task that is no longer `get-done`, under the lock, and the report still lands [row 6].
 6. **Stale prose the card didn't list** (fixed in the task that touches each file): `packages/routines/src/brief.ts:18-25` (`isTaskRun`'s doc says `routine_report` keeps `=== 'stay-on-top'`), `brief.ts:72`, `packages/routines/src/store.ts:48-55`, `packages/routines/src/services.ts:258-262`, `packages/routines/src/tools.ts:76`, `packages/routines-contract/src/definition.ts:15`, the tool JSON-schema descriptions at `packages/routines-contract/src/tools.ts:196-197,217-218`, `packages/decisions/src/templates.ts:123-124`, `packages/channel-web/src/lib/workspace-types.ts:231-233`, `packages/channel-web/src/components/workspace/DecisionTaskBlock.tsx:5`, and design §4.3 (`docs/plans/2026-10-20-agent-tasks-design.md:443`, "a "stay on top" task run as the calling person") [row 22].
-7. **The card's INFERRED rollback note understates it.** Code from before version 10 maps every claimed row through `rowToRoutine` (`store.ts:961`), so one due `get-done` row fails the whole tick batch, not just its own agent's reads. See Rollback [row 20].
+7. **The card's INFERRED rollback note understates it.** Code from before version 11 maps every claimed row through `rowToRoutine` (`store.ts:961`), so one due `get-done` row fails the whole tick batch, not just its own agent's reads. See Rollback [row 20].
 
 ## Global Constraints
 
-- Base on origin/main 08b9c4cc2 or later. Routines schema **version 10**. TASK-952 (the reading trend, building in parallel) also takes 10 and edits the report schemas, `recordReport`, `NO_TASK_STATE`, the check-in message, `BRIEF_HOW`, `TOOL_FIELDS` and the task page. Whichever merges second rebases, takes the next free number everywhere (`migrations.ts`, every `versions()` list in `migrations.test.ts`, comments, the design doc), and re-runs the routines suite. Keep `steps` out of `RoutineReportFieldShape` (TASK-952 extends that shape).
+- Base on origin/main 08b9c4cc2 or later. Routines schema **version 11**: the plan took 10, and TASK-952 (the reading trend, building in parallel) merged first with 10, so this card took the next free number when it rebased onto 03c998af6. TASK-952 also edits the report schemas, `recordReport`, `NO_TASK_STATE`, the check-in message, `BRIEF_HOW`, `TOOL_FIELDS` and the task page. Whichever merges second rebases, takes the next free number everywhere (`migrations.ts`, every `versions()` list in `migrations.test.ts`, comments, the design doc), and re-runs the routines suite. Keep `steps` out of `RoutineReportFieldShape` (TASK-952 extends that shape).
 - Copy is exact and asserted verbatim. Apostrophes are U+2019 (’), the separator is U+00B7 (·) as in the task page's meta line, `BRIEF_HOW`'s quotes are straight (`"needs-you"`).
 - Test inputs with invisible or broken characters are written as `\uXXXX` escape text. The Write/Edit tools have turned such escapes into raw characters three times (memory `mistakes/2026-10-20-TASK-904.md`, `2026-10-22-TASK-907.md`, `2026-10-23-TASK-932.md`). After writing any file with an escape, run the code-point scan and re-escape what it finds:
   `python3 -c "import sys;t=open(sys.argv[1]).read();print([hex(ord(c)) for c in t if (ord(c)<32 and c not in '\n\t') or 0x7f<=ord(c)<=0x9f or 0x200b<=ord(c)<=0x200f or 0x2028<=ord(c)<=0x202e or 0x2060<=ord(c)<=0x2064 or ord(c)==0xfeff or 0xd800<=ord(c)<=0xdfff])" <file>` must print `[]`.
@@ -68,14 +68,14 @@ Flagged tasks: 1 (screening model-written text), 3 (writing it under a lock), 4 
 
 ## Rollback
 
-Version 10 is additive: older code ignores `task_steps`, and the swapped CHECK still allows every kind it knows. But older code can't read a `get-done` row (`RoutineKindSchema` refuses it): that agent's `routines:list`/`get` fail, and because older `claimDue` maps every claimed row through `rowToRoutine` (`store.ts:961`), one due `get-done` row fails the whole tick batch, so every routine claimed beside it is pushed a claim window and skipped. Before rolling back below version 10, delete every `get-done` task (pausing one keeps the tick safe, since paused rows aren't claimed, but not its agent's list). Nothing from Agent Tasks PR 1–3 is deployed yet.
+Version 11 is additive: older code ignores `task_steps`, and the swapped CHECK still allows every kind it knows. But older code can't read a `get-done` row (`RoutineKindSchema` refuses it): that agent's `routines:list`/`get` fail, and because older `claimDue` maps every claimed row through `rowToRoutine` (`store.ts:961`), one due `get-done` row fails the whole tick batch, so every routine claimed beside it is pushed a claim window and skipped. Before rolling back below version 11, delete every `get-done` task (pausing one keeps the tick safe, since paused rows aren't claimed, but not its agent's list). Nothing from Agent Tasks PR 1–3 is deployed yet.
 
 ## Tiers and order
 
 | Task | Tier | Needs | security-checklist |
 |---|---|---|---|
 | 1 Contract: kind, steps vocabulary, report I/O, tool words | sensitive | — | flagged |
-| 2 Store: version 10 and the stored checklist | sensitive | 1 | PR note |
+| 2 Store: version 11 and the stored checklist | sensitive | 1 | PR note |
 | 3 Store: a report's step changes | sensitive | 2 | flagged |
 | 4 Services and tools: who sees steps, the report gate | sensitive | 3 | flagged |
 | 5 Check-in message, brief, prompt, canary | sensitive | 4 | flagged |
@@ -304,10 +304,10 @@ git commit -m "[TASK-948] routines-contract: the get-done kind and the steps voc
 
 ---
 
-### Task 2: Store: schema version 10 and the stored checklist [tier: sensitive]
+### Task 2: Store: schema version 11 and the stored checklist [tier: sensitive]
 
 **Files:**
-- Modify: `packages/routines/src/migrations.ts`: a `task_steps` field on `RoutinesDefinitionsRow` (after the version-7 fields), `if (!await done(10))` after version 9 in `runRoutinesMigration` (:229-232), and a new `addGetDoneSteps` above `addRunAsColumns`.
+- Modify: `packages/routines/src/migrations.ts`: a `task_steps` field on `RoutinesDefinitionsRow` (after the version-10 reading fields), `if (!await done(11))` after version 10 in `runRoutinesMigration`, and a new `addGetDoneSteps` above `addReadingColumns`.
 - Create: `packages/routines/src/steps.ts` (the lenient reader; Task 3 adds the rest).
 - Modify: `packages/routines/src/types.ts`: `StoredStep`, `StoredRoutine.steps`.
 - Modify: `packages/routines/src/definition.ts`: `StoredRoutineSchema` (:47-70) gains `steps`.
@@ -465,35 +465,35 @@ describe("a get-done task's stored checklist (TASK-948)", () => {
 ```
 
 In `migrations.test.ts`:
-- change every `[2, 3, 4, 5, 6, 7, 8, 9]` to `[2, 3, 4, 5, 6, 7, 8, 9, 10]` (`grep -n "\[2, 3, 4, 5, 6, 7, 8, 9\]"` then finds none);
+- change every `[2, 3, 4, 5, 6, 7, 8, 9, 10]` to `[2, 3, 4, 5, 6, 7, 8, 9, 10, 11]` (`grep -n "\[2, 3, 4, 5, 6, 7, 8, 9, 10\]"` then finds none);
 - in 'refuses an unknown kind at the database' (:77-81), insert `'nope'` instead of `'get-done'`;
-- after the version-9 test, add:
+- after the version-10 test, add:
 
 ```ts
-it('version 10 lets a task be get-done and gives every task an empty checklist; a re-run keeps both (TASK-948)', async () => {
+it('version 11 lets a task be get-done and gives every task an empty checklist; a re-run keeps both (TASK-948)', async () => {
   const insertKind = (routineId: string, kind: string) => sql`INSERT INTO routines_v1_definitions (agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,trigger_kind,trigger_spec,conversation,prompt_body,kind,good_when) VALUES ('a',${routineId},'rev','owner','task','','hash','interval','{"kind":"interval","every":"15m"}','per-fire','body',${kind},'Done when it is done.')`.execute(db);
   const stepsOf = async (routineId: string) => (await sql<{ task_steps: unknown }>`SELECT task_steps FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(db)).rows[0]?.task_steps;
   await runRoutinesMigration(db);
-  // Back to version 9: the column gone and the old check in place.
+  // Back to version 10: the column gone and the old check in place.
   await sql`ALTER TABLE routines_v1_definitions DROP COLUMN IF EXISTS task_steps`.execute(db);
   await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_kind_chk, ADD CONSTRAINT routines_v1_definitions_kind_chk CHECK (kind IN ('repeat', 'stay-on-top'))`.execute(db);
-  await sql`DELETE FROM routines_schema_versions WHERE version = 10`.execute(db);
+  await sql`DELETE FROM routines_schema_versions WHERE version = 11`.execute(db);
   await insertTask();
   await expect(insertKind('r_early', 'get-done')).rejects.toMatchObject({ code: '23514', constraint: 'routines_v1_definitions_kind_chk' });
   await runRoutinesMigration(db); await runRoutinesMigration(db);
-  expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   expect(await kindChecks()).toBe(1);
   expect((await sql`SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='routines_v1_definitions' AND column_name='task_steps'`.execute(db)).rows)
     .toEqual([{ data_type: 'jsonb', is_nullable: 'NO', column_default: "'[]'::jsonb" }]);
   expect(await stepsOf('r_task')).toEqual([]);
   await insertKind('r_get_done', 'get-done');
   await expect(insertKind('r_nope', 'nope')).rejects.toMatchObject({ code: '23514', constraint: 'routines_v1_definitions_kind_chk' });
-  // Finishing version 10 over the swap it already made keeps the check and every checklist.
+  // Finishing version 11 over the swap it already made keeps the check and every checklist.
   const kept = [{ id: 's000001', text: 'Keep me', done: true, addedBy: 'agent' }];
   await sql`UPDATE routines_v1_definitions SET task_steps = ${JSON.stringify(kept)}::jsonb WHERE routine_id = 'r_get_done'`.execute(db);
-  await sql`DELETE FROM routines_schema_versions WHERE version = 10`.execute(db);
+  await sql`DELETE FROM routines_schema_versions WHERE version = 11`.execute(db);
   await runRoutinesMigration(db);
-  expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   expect(await kindChecks()).toBe(1);
   expect(await stepsOf('r_get_done')).toEqual(kept);
   await expect(insertKind('r_nope_2', 'nope')).rejects.toMatchObject({ code: '23514', constraint: 'routines_v1_definitions_kind_chk' });
@@ -503,17 +503,17 @@ it('version 10 lets a task be get-done and gives every task an empty checklist; 
 - [ ] **Step 2: Run them and see them fail**
 
 Run: `pnpm --filter @ax/routines exec vitest run src/__tests__/stored-steps.test.ts src/__tests__/steps-store.test.ts src/__tests__/migrations.test.ts`
-Expected: FAIL. `steps.ts` doesn't exist, the version lists stop at 9, and the database refuses `get-done`.
+Expected: FAIL. `steps.ts` doesn't exist, the version lists stop at 10, and the database refuses `get-done`.
 
 - [ ] **Step 3: Implement.**
-  - `addGetDoneSteps(db)` runs under `if (!await done(10)) { await addGetDoneSteps(trx); INSERT … VALUES (10) }`. One statement: `ALTER TABLE routines_v1_definitions DROP CONSTRAINT IF EXISTS routines_v1_definitions_kind_chk, ADD CONSTRAINT routines_v1_definitions_kind_chk CHECK (kind IN ('repeat', 'stay-on-top', 'get-done')), ADD COLUMN IF NOT EXISTS task_steps JSONB NOT NULL DEFAULT '[]'::jsonb`. Its doc says:
-    - version 10 is the "get-done" kind and its checklist;
+  - `addGetDoneSteps(db)` runs under `if (!await done(11)) { await addGetDoneSteps(trx); INSERT … VALUES (11) }`. One statement: `ALTER TABLE routines_v1_definitions DROP CONSTRAINT IF EXISTS routines_v1_definitions_kind_chk, ADD CONSTRAINT routines_v1_definitions_kind_chk CHECK (kind IN ('repeat', 'stay-on-top', 'get-done')), ADD COLUMN IF NOT EXISTS task_steps JSONB NOT NULL DEFAULT '[]'::jsonb`. Its doc says:
+    - version 11 is the "get-done" kind and its checklist;
     - the named check is swapped (dropped if it exists, then added), as version 3 named it for;
     - every existing row reads an empty checklist;
     - it's additive and a re-run is a no-op;
     - the rollback hazard in this plan's Rollback section.
   - The `task_steps` row doc says:
-    - Version 10 (TASK-948): a "get-done" task's checklist, a JSON list of `{ id, text, done, addedBy }`, `[]` until its agent drafts it;
+    - Version 11 (TASK-948): a "get-done" task's checklist, a JSON list of `{ id, text, done, addedBy }`, `[]` until its agent drafts it;
     - written only by `recordReport` (a later card's person edits will write it too);
     - set back to `[]` by a change of kind (`updateAuthored`) or of owner (`reconcileOwners`), through `NO_TASK_STATE`;
     - read leniently (`storedSteps`), so one odd value can't stop a read or the tick.
@@ -532,7 +532,7 @@ Expected: PASS and clean. The existing receipt tests (`report-views.test.ts` "re
 
 ```bash
 git add packages/routines/src packages/channel-web/src/__tests__/server/routes-workspace-checkin.test.ts packages/channel-web/src/__tests__/server/routes-workspace-task.test.ts packages/channel-web/src/__tests__/server/routes-workspace-tasks.test.ts packages/channel-web/src/__tests__/routine-manager-producer.test.tsx
-git commit -m "[TASK-948] routines: schema version 10 keeps a get-done task's checklist"
+git commit -m "[TASK-948] routines: schema version 11 keeps a get-done task's checklist"
 ```
 
 ---
@@ -1223,7 +1223,7 @@ git commit -m "[TASK-948] channel-web: a get-done task's steps on its page, its 
   - **Resume here** (:32): `**Next:** §12 PR 3, "Get something done".` becomes `**Now:** §12 PR 3, "Get something done". TASK-948 adds the kind and the steps its agent drafts and ticks; a person editing steps (TASK-949) and Mark done (TASK-950) come next.`
   - **§3.4**, a note after the "A person confirms "done"" paragraph (:248-251): `> PR 3 (TASK-948): A "Get something done" task's agent drafts its steps at its first check-in, through routine_report, so the approval card is unchanged. It can tick or untick any step and add steps (up to 50, one line of up to 200 characters each), which the page labels "added by {agent}"; it can reword or remove only the steps it added. The task page shows the steps read-only for now, and the Tasks row says "2 of 5 steps". A change of kind or of owner starts the checklist over. A person editing steps is TASK-949; "I think it's done" and Mark done are TASK-950.`
   - **§4.3** (:443): "that check-in belongs to a "stay on top" task run as the calling person" becomes "that check-in belongs to a task (either kind) run as the calling person".
-  - **§4.5**, Routine definition row (:467): append `(As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 10, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.)`. Use the version number Task 2 actually took (TASK-952 may own 10).
+  - **§4.5**, Routine definition row (:467): append `(As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 11, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.)`. Use the version number Task 2 actually took (11: TASK-952 owns 10).
   - **§4.5**, Task state row (:468): append `(TASK-948: steps are one JSON list on the routine, edited only by the agent's report so far, by id, and cleared with the rest of the state on a change of kind or owner.)`
   - **§7**, the "Reports, steps and notes" bullet (:647-654): append `Steps (TASK-948) are one line of up to 200 characters, at most 50 per task, refused with invisible or broken characters before they're stored, and labelled in the check-in message by who wrote them, a label the agent can't set.`
   - **§15**: append three rows dated 2026-10-24, all Decided:
