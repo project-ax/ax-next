@@ -1,16 +1,16 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
-import { storedSteps } from './steps.js';
+import { applyStepOps, storedSteps } from './steps.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -47,14 +47,19 @@ export interface RoutinesStore {
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
   /**
-   * TASK-907. The one writer of a task's report: `updateAuthored` (a kind
-   * change) and `reconcileOwners` (a change of owner, TASK-936) only clear it.
-   * `'recorded'`, or why nothing was written: the run must be an open check-in,
-   * bound to the report's conversation, of a stay-on-top task its actor owns,
-   * on a live agent. TASK-952: the report's reading, or its absence, lands
-   * with it, on the run and under the same guard on the task.
+   * TASK-907. The one writer of a task's report, and (TASK-948) of a get-done
+   * task's checklist: `updateAuthored` (a kind change) and `reconcileOwners` (a
+   * change of owner, TASK-936) only clear them. Nothing is written, and the
+   * answer says why, unless the run is an open check-in, bound to the report's
+   * conversation, of a task (`TASK_KINDS`) its actor owns, on a live agent.
+   * TASK-952: the report's reading, or its absence, lands with it, on the run
+   * and under the same guard on the task. A report's step changes apply in
+   * order, by id, under the routine's row lock, whatever order overlapping runs
+   * report in (`applyStepOps`); a task that is no longer get-done skips them
+   * all. The answer is `'recorded'` when the report sent no step changes, and
+   * counts those that applied and those skipped when it did.
    */
-  recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
+  recordReport(input: RecordReportInput): Promise<'recorded' | RecordedSteps | ReportRefusal>;
   /**
    * TASK-910. The person clears a task's agent notes. Owner only, decided under
    * the routine's row lock. No run accepted at or before the clear can write
@@ -814,7 +819,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       });
     },
     async recordReport(input) {
-      return db.transaction().execute(async trx => {
+      return db.transaction().execute(async (trx): Promise<'recorded' | RecordedSteps | ReportRefusal> => {
         // finishDispatch's order (agent fence, dispatch row, definition row), so the two serialize.
         if (!await lockLiveAgent(trx, input.agentId)) return 'agent-retired';
         const dispatch = await trx.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'agent_id', 'routine_id', 'accepted_at', 'completed_at', 'conversation_id'])
@@ -823,10 +828,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
         if (!dispatch || dispatch.completed_at !== null) return 'run-closed';
         if (dispatch.conversation_id !== input.conversationId) return 'not-bound';
-        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'agent_notes_cleared_at'])
+        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'agent_notes_cleared_at', 'task_steps'])
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         if (!definition) return 'routine-gone';
-        if (definition.kind !== 'stay-on-top') return 'kind';
+        // An explicit allowlist (TASK-948): a write path refuses a kind it doesn't know.
+        if (!isTaskKind(definition.kind)) return 'kind';
         if (definition.owner_user_id !== input.actorUserId) return 'owner';
         const { status, update, ask } = input.report;
         // TASK-952: left out or null, this report has no reading, so the task's latest has none either.
@@ -835,6 +841,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // they cleared, so it can't write any back. The rest of its report lands as usual.
         const clearedAt = definition.agent_notes_cleared_at;
         const writesNotes = input.notes !== undefined && (clearedAt === null || clearedAt.getTime() < dispatch.accepted_at.getTime());
+        // TASK-948: the report's step changes, applied to the checklist as read under the row lock, so
+        // reports that overlap compose: one waiting on the lock re-reads the list the other just wrote.
+        // A task that is no longer get-done (a kind change landed after the tool checked the kind)
+        // skips them all, writes no checklist, and its report still lands.
+        const changes = input.steps === undefined ? null
+          : definition.kind === 'get-done' ? applyStepOps(storedSteps(definition.task_steps), input.steps)
+          : { steps: [], applied: 0, skipped: input.steps.length };
         try {
           // A later report in the same check-in replaces this one, reading and all. The JSON keeps
           // its three keys: the reading has columns of its own (card decision 4).
@@ -854,10 +867,17 @@ export function createRoutinesStore(db: DB): RoutinesStore {
             ...(writesNotes ? { agent_notes: input.notes } : {}),
           }).where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id)
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
+          // A step change is an edit by id, not a snapshot like the status, so there's no accepted-at
+          // clause: an older overlapping run's ticks still land. Like the state, the checklist never
+          // moves revision, spec_hash or updated_at.
+          if (changes !== null && changes.applied > 0) {
+            await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.steps) })
+              .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
+          }
         } catch (error) {
           throw reportWriteError(dispatch.dispatch_id, error);
         }
-        return 'recorded';
+        return changes === null ? 'recorded' : { outcome: 'recorded', applied: changes.applied, skipped: changes.skipped };
       });
     },
     async clearAgentNotes(input) {

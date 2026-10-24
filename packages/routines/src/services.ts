@@ -282,7 +282,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const outcome = await store.recordReport({
       agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), reading: reading ?? null, now: now(),
     });
-    if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
+    if (typeof outcome === 'string' && outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
     return { recorded: true as const };
   });
   // TASK-910. The person clears a task's agent notes on its task page. Only the task's owner may,

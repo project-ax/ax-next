@@ -1,13 +1,15 @@
+import { inspect } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, ROUTINE_STEPS_MAX, type RoutineKey, type RoutineStepOp } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { StoredRoutineSchema } from '../definition.js';
-import type { StoredStep } from '../types.js';
+import type { DispatchReport, StoredStep } from '../types.js';
 
 // TASK-948: a "get-done" task's checklist, as the store keeps it: one JSONB list on the routine's row, read
 // leniently, cleared with the rest of a task's state, and edited only by its check-ins' reports.
 const f = fixture();
+const minute = (n: number) => new Date(now.getTime() + n * 60_000);
 const GET_DONE = RoutineDefinitionSchema.parse({
   name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
   kind: 'get-done', goodWhen: 'Every article is on the new site.',
@@ -85,5 +87,92 @@ describe("a get-done task's stored checklist (TASK-948)", () => {
     // An exact replay answers from its receipt: no steps.
     expect((await f.store.updateAuthored(edit)).steps).toEqual([]);
     expect((await f.store.acceptDispatch(dispatch))?.accepted.row.steps).toEqual([]);
+  });
+});
+
+describe("a report's step changes (TASK-948)", () => {
+  const onTrack = { status: 'on-track', update: 'Moving.', ask: null } as const;
+  const needsYou = { status: 'needs-you', update: 'Waiting on Dana.', ask: 'Can Dana review billing?' } as const;
+  /** A run of the routine at its current revision, accepted at `at` and bound to its own conversation. */
+  const bound = async (key: RoutineKey, requestId: string, at: Date) => {
+    const row = (await f.store.findOne(key))!;
+    const { accepted } = (await f.store.acceptDispatch({
+      agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
+    }))!;
+    await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });
+    return { ...accepted, conversationId: `c-${requestId}` };
+  };
+  const record = (run: Awaited<ReturnType<typeof bound>>, report: DispatchReport, steps?: RoutineStepOp[]) => f.store.recordReport({
+    agentId: run.row.agentId, dispatchId: run.dispatchId, conversationId: run.conversationId, actorUserId: 'owner', report,
+    ...(steps === undefined ? {} : { steps }), now: minute(30),
+  });
+
+  it('applies a check-in’s changes in order and answers how many applied and how many were skipped', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(task, 'run', minute(1));
+    expect(await record(run, onTrack, [{ op: 'add', text: 'Export every article' }, { op: 'add', text: 'Upload them', done: true }]))
+      .toEqual({ outcome: 'recorded', applied: 2, skipped: 0 });
+    const [exported, uploaded] = (await f.store.findOne(task))!.steps;
+    expect([exported, uploaded]).toEqual([
+      { id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'Export every article', done: false, addedBy: 'agent' },
+      { id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'Upload them', done: true, addedBy: 'agent' },
+    ]);
+    // A second report in the same check-in replaces the first's status and applies its changes on top.
+    expect(await record(run, needsYou, [
+      { op: 'tick', id: exported!.id }, { op: 'untick', id: uploaded!.id }, { op: 'edit', id: uploaded!.id, text: 'Upload all 142' }, { op: 'remove', id: exported!.id },
+    ])).toEqual({ outcome: 'recorded', applied: 4, skipped: 0 });
+    expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'needs-you' }, steps: [{ id: uploaded!.id, text: 'Upload all 142', done: false, addedBy: 'agent' }] });
+    // A report with no changes answers as it always has and leaves the checklist alone.
+    expect(await record(run, onTrack)).toBe('recorded');
+    expect((await f.store.findOne(task))?.steps).toHaveLength(1);
+  });
+
+  it('skips what the agent may not do (a person’s step’s words, a step that isn’t there, one already on the list, a full list) and still lands the report', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const persons = step('s000000', 'Ask Dana to review billing', { addedBy: 'person' });
+    const full = [persons, ...Array.from({ length: ROUTINE_STEPS_MAX - 1 }, (_, i) => step(`s${String(i + 1).padStart(6, '0')}`, `Step ${i + 1}`))];
+    await setSteps(task.routineId, full);
+    const run = await bound(task, 'run', minute(1));
+    expect(await record(run, onTrack, [
+      { op: 'edit', id: persons.id, text: 'Skip the review' }, { op: 'remove', id: persons.id }, { op: 'tick', id: 'sgone00' },
+      { op: 'add', text: 'Step 1' }, { op: 'add', text: 'One more' },
+      // Ticking the person's step is the agent's to do.
+      { op: 'tick', id: persons.id },
+    ])).toEqual({ outcome: 'recorded', applied: 1, skipped: 5 });
+    expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'on-track' }, steps: [{ ...persons, done: true }, ...full.slice(1)] });
+  });
+
+  it('a check-in that started earlier still ticks after a newer one reported, but its status doesn’t replace the newer report', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await setSteps(task.routineId, [step('s000001', 'Export every article')]);
+    const older = await bound(task, 'older', minute(1));
+    const newer = await bound(task, 'newer', minute(2));
+    expect(await record(newer, onTrack)).toBe('recorded');
+    expect(await record(older, needsYou, [{ op: 'tick', id: 's000001' }])).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
+    expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'on-track' }, steps: [step('s000001', 'Export every article', { done: true })] });
+  });
+
+  it('a check-in whose task stopped being get-done skips every change, and its report still lands', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(task, 'run', minute(1));
+    await f.store.updateAuthored({ agentId: 'a', routineId: task.routineId, expectedRevision: (await f.store.findOne(task))!.revision, actorUserId: 'owner', requestId: 'to-stay-on-top', patch: { kind: 'stay-on-top' }, now, stopOnly: false });
+    expect(await record(run, onTrack, [{ op: 'add', text: 'Export every article' }])).toEqual({ outcome: 'recorded', applied: 0, skipped: 1 });
+    expect(await f.store.findOne(task)).toMatchObject({ kind: 'stay-on-top', task: { status: 'on-track' }, steps: [] });
+    expect(await stepsColumn(task.routineId)).toEqual([]);
+  });
+
+  it('a checklist write that fails names only the run and the SQLSTATE, and nothing of the report lands', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(task, 'run', minute(1));
+    await sql`ALTER TABLE routines_v1_definitions ADD CONSTRAINT task_948_no_steps CHECK (jsonb_array_length(task_steps) = 0)`.execute(f.db);
+    let failure: unknown;
+    try {
+      failure = await record(run, onTrack, [{ op: 'add', text: 'SECRET step text' }]).then(() => null, (error: unknown) => error);
+    } finally {
+      await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT IF EXISTS task_948_no_steps`.execute(f.db);
+    }
+    expect((failure as Error).message).toBe(`Could not save the report for dispatch ${run.dispatchId} (SQLSTATE 23514).`);
+    expect(inspect(failure)).not.toContain('SECRET');
+    expect(await f.store.findOne(task)).toMatchObject({ task: null, steps: [] });
   });
 });
