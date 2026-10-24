@@ -45,11 +45,13 @@ export const RoutineFireReportViewSchema = z.object({
  * `agentId` and `dispatchId` from the host-set session, never from the model.
  * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
  * A run accepted at or before the person last cleared the notes can't change them (TASK-910).
+ * Absent or null `reading`: none this time (TASK-952).
  */
 export const RoutineReportInputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
   status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
   ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
+  reading: RoutineReportFieldShape.reading.optional(),
 }).strict();
 export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) }).strict();
 /**

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 import {
-  ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_REPORT_ASK_MAX_CHARS, ROUTINE_REPORT_STATUSES,
+  ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_READING_LABEL_MAX_CHARS, ROUTINE_READING_MAX_ABS, ROUTINE_REPORT_ASK_MAX_CHARS, ROUTINE_REPORT_STATUSES,
   ROUTINE_REPORT_UPDATE_MAX_CHARS, RoutineDefinitionSchema, RoutineFireReportViewSchema,
-  RoutineFireViewSchema, RoutineReportFieldShape, RoutineReportInputSchema,
+  RoutineFireViewSchema, RoutineReadingSchema, RoutineReportFieldShape, RoutineReportInputSchema,
   RoutineReportOutputSchema, RoutineReportStatusSchema, RoutineReportToolInputSchema,
   RoutineListToolOutputSchema, RoutineTaskViewSchema, RoutineToolDescriptions, RoutineUpdateToolOutputSchema, RoutineViewSchema, firstHiddenCharacter,
 } from '../index.js';
@@ -24,6 +24,7 @@ const BROKEN = 'A report can’t contain broken characters.';
 const ONE_LINE = 'An update is one line.';
 const BLANK_UPDATE = 'Say how the task is going.';
 const BLANK_TEXT = 'Write something, or send null.';
+const BLANK_LABEL = 'Name what you read, for example "Open tickets".';
 
 /** The tool input with `value` in `field`, and the rest minimal. */
 const report = (field: Field, value: unknown): Record<string, unknown> => ({ ...minimal, [field]: value });
@@ -77,7 +78,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
   });
 
   it('names no target', () => {
-    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'status', 'update']);
+    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'update']);
     for (const key of ['routineId', 'dispatchId', 'conversationId', 'agentId', 'taskId', 'steps', 'userId', 'source', 'Notes']) {
       expect(refused({ status: 'on-track', update: 'ok', [key]: 'x' }), key).toBe(true);
     }
@@ -85,9 +86,9 @@ describe('a task’s report: its shape (TASK-907)', () => {
     expect(refused(JSON.parse('{"status":"on-track","update":"ok","__proto__":{"routineId":"r"}}'))).toBe(true);
   });
 
-  it('shares one field shape: ask and notes are nullable and required, and each schema picks its own default', () => {
-    expect(Object.keys(RoutineReportFieldShape).sort()).toEqual(['ask', 'notes', 'status', 'update']);
-    for (const field of ['ask', 'notes'] as const) {
+  it('shares one field shape: ask, notes and reading are nullable and required, and each schema picks its own default', () => {
+    expect(Object.keys(RoutineReportFieldShape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'update']);
+    for (const field of ['ask', 'notes', 'reading'] as const) {
       expect(RoutineReportFieldShape[field].safeParse(null).success, field).toBe(true);
       expect(RoutineReportFieldShape[field].safeParse(undefined).success, field).toBe(false);
     }
@@ -348,5 +349,96 @@ describe('a task’s report can’t say more than the page shows (TASK-907)', ()
     // "Keep the queue empty " is 21 characters, the emoji the 22nd (two UTF-16 units), the tag character the 23rd.
     expect(firstHiddenCharacter('Keep the queue empty \u{1F600}\u{E0041}')).toEqual({ codePoint: 0xE0041, position: 23 });
     expect(firstHiddenCharacter('Keep the queue empty \u2764\uFE0F')).toBeNull();
+  });
+});
+
+// A reading is one number the agent read at a check-in, with a short label it
+// chose ("Open tickets: 3"). The person sees it as the agent's reading, next to
+// its earlier ones, and the label goes back to a model at later check-ins, so
+// the label follows the report's own text rule. Invisible-character inputs are
+// built from code points here, never written as escapes.
+describe('a report\u2019s reading (TASK-952)', () => {
+  const LABEL = 'Open tickets';
+  const withReading = (value: unknown): Record<string, unknown> => ({ ...minimal, reading: value });
+  const smile = String.fromCodePoint(0x1F600);
+  /** Values a reading refuses: it's one finite number within \u00B11e12. */
+  const badValues: Array<[string, unknown]> = [
+    ['NaN', Number.NaN], ['Infinity', Number.POSITIVE_INFINITY], ['-Infinity', Number.NEGATIVE_INFINITY],
+    ['1e13', 1e13], ['-1e13', -1e13], ['1e12 + 1', 1e12 + 1], ['a numeric string', '3'], ['null', null], ['true', true],
+  ];
+  /** Labels a reading refuses, and the rule's one reason, or 'cap' where zod's own check speaks alone. */
+  const badLabels: Array<[string, string, string[] | 'cap']> = [
+    ['empty', '', 'cap'],
+    ['blank', '   ', [BLANK_LABEL]],
+    ['41 characters', 'x'.repeat(41), 'cap'],
+    ['a line feed', `Open${String.fromCharCode(0x0A)}tickets`, [ONE_LINE]],
+    ['a carriage return', `Open${String.fromCharCode(0x0D)}tickets`, [ONE_LINE]],
+    ['a zero-width space', `Open${String.fromCodePoint(0x200B)}tickets`, [HIDDEN]],
+    ['tag characters', `${LABEL}${tags('IGN')}`, [HIDDEN]],
+    ['a line separator', `a${String.fromCodePoint(0x2028)}b`, [HIDDEN]],
+    ['a lone surrogate', `Open${String.fromCharCode(0xD800)}`, [BROKEN]],
+  ];
+  /** Anything but `{ value, label }`. */
+  const badShapes: Array<[string, unknown]> = [
+    ['another key', { value: 3, label: LABEL, unit: 'tickets' }], ['no label', { value: 3 }], ['no value', { label: LABEL }],
+    ['a bare number', 3], ['a sentence', 'Open tickets: 3'], ['a pair', [3, LABEL]],
+  ];
+  /** Every reading refused above, for the schemas that share the rule. */
+  const badReadings: Array<[string, unknown]> = [
+    ...badValues.map(([name, value]): [string, unknown] => [`value ${name}`, { value, label: LABEL }]),
+    ...badLabels.map(([name, label]): [string, unknown] => [`label ${name}`, { value: 3, label }]),
+    ...badShapes,
+  ];
+
+  it('accepts one finite number within \u00B11e12 and a label of up to 40 characters', () => {
+    expect(ROUTINE_READING_LABEL_MAX_CHARS).toBe(40);
+    expect(ROUTINE_READING_MAX_ABS).toBe(1e12);
+    for (const value of [3, -2.5, 0, 1e12, -1e12]) expect(messagesOf(withReading({ value, label: LABEL })), String(value)).toEqual([]);
+    expect(RoutineReportToolInputSchema.parse(withReading({ value: 3, label: LABEL }))).toEqual({ ...minimal, ask: null, reading: { value: 3, label: LABEL } });
+    expect(RoutineReadingSchema.parse({ value: -2.5, label: LABEL })).toEqual({ value: -2.5, label: LABEL });
+    expect(messagesOf(withReading({ value: 3, label: 'x'.repeat(40) }))).toEqual([]);
+    expect(messagesOf(withReading({ value: 3, label: `Happy customers ${smile}` }))).toEqual([]);
+    // Counted in UTF-16 units, like the rest of the contract: an emoji is two.
+    expect(messagesOf(withReading({ value: 3, label: smile.repeat(20) }))).toEqual([]);
+    expect(refused(withReading({ value: 3, label: `${smile.repeat(20)}a` }))).toBe(true);
+  });
+
+  it('null and leaving it out both mean no reading this time', () => {
+    expect(RoutineReportToolInputSchema.parse(withReading(null))).toEqual({ ...minimal, ask: null, reading: null });
+    expect('reading' in RoutineReportToolInputSchema.parse(minimal)).toBe(false);
+  });
+
+  it('refuses a value that isn\u2019t one finite number within \u00B11e12', () => {
+    for (const [name, value] of badValues) expect(refused(withReading({ value, label: LABEL })), name).toBe(true);
+    expect(refused(withReading({ label: LABEL })), 'a missing value').toBe(true);
+  });
+
+  it('checks the label like a report\u2019s text, with one reason each', () => {
+    for (const [name, label, expected] of badLabels) {
+      const messages = messagesOf(withReading({ value: 3, label }));
+      if (expected !== 'cap') {
+        expect(messages, name).toEqual(expected);
+        continue;
+      }
+      // An empty label or one over the cap gets zod's own message, alone.
+      expect(messages, name).toHaveLength(1);
+      expect([BLANK_LABEL, ONE_LINE, HIDDEN, BROKEN], name).not.toContain(messages[0]);
+    }
+  });
+
+  it('refuses any other shape', () => {
+    for (const [name, reading] of badShapes) expect(refused(withReading(reading)), name).toBe(true);
+  });
+
+  it('the service input takes it too, optional, and refuses what the tool refuses', () => {
+    const input = { ...binding, ...minimal, ask: null };
+    expect('reading' in RoutineReportInputSchema.parse(input)).toBe(false);
+    expect(RoutineReportInputSchema.parse({ ...input, reading: null })).toEqual({ ...input, reading: null });
+    const reading = { value: -2.5, label: LABEL };
+    expect(RoutineReportInputSchema.parse({ ...input, reading })).toEqual({ ...input, reading });
+    for (const [name, bad] of badReadings) {
+      expect(RoutineReportInputSchema.safeParse({ ...input, reading: bad }).success, name).toBe(false);
+      expect(refused(withReading(bad)), name).toBe(true);
+    }
   });
 });

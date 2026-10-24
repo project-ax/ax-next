@@ -470,6 +470,16 @@ export type RoutineReportStatus = z.output<typeof RoutineReportStatusSchema>;
 export const ROUTINE_REPORT_UPDATE_MAX_CHARS = 500;
 export const ROUTINE_REPORT_ASK_MAX_CHARS = 500;
 export const ROUTINE_AGENT_NOTES_MAX_CHARS = 2000;
+/**
+ * TASK-952: a report's optional reading is one number the agent read at this
+ * check-in, with a short label it chose ("Open tickets: 3"). It's shown as the
+ * agent's reading, never as a measure ax computed or checked. The label follows
+ * the report's text rule, one line like an update. The value is a finite number
+ * within ±`ROUTINE_READING_MAX_ABS`. Like the rest of a report, it's checked at
+ * the writer's input only (TASK-913).
+ */
+export const ROUTINE_READING_LABEL_MAX_CHARS = 40;
+export const ROUTINE_READING_MAX_ABS = 1e12;
 
 /** Half of a character. With the `u` flag a pair reads as one code point, so only a surrogate with no partner matches. */
 const LONE_SURROGATE = /\p{Surrogate}/u;
@@ -491,16 +501,26 @@ function reportText(rule: { max: number; blank: string; oneLine: boolean }): z.Z
   });
 }
 
+/** A report's reading (TASK-952): exactly `{ value, label }`. A refusal's path names the part that's wrong. */
+export const RoutineReadingSchema = z.object({
+  value: z.number().finite().min(-ROUTINE_READING_MAX_ABS).max(ROUTINE_READING_MAX_ABS),
+  label: reportText({ max: ROUTINE_READING_LABEL_MAX_CHARS, blank: 'Name what you read, for example "Open tickets".', oneLine: true }),
+}).strict();
+export type RoutineReading = z.output<typeof RoutineReadingSchema>;
+
 /**
  * A report's fields as the agent writes them. `ask` and `notes` are nullable and
  * required here, and each schema that uses them picks its own default: the tool
  * fills a missing `ask` with null, and leaving `notes` out keeps the saved ones.
+ * `reading` is nullable and required here too; the tool and the service take it
+ * optional, and absent or null both mean no reading this time.
  */
 export const RoutineReportFieldShape = {
   status: RoutineReportStatusSchema,
   update: reportText({ max: ROUTINE_REPORT_UPDATE_MAX_CHARS, blank: 'Say how the task is going.', oneLine: true }),
   ask: reportText({ max: ROUTINE_REPORT_ASK_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
   notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
+  reading: RoutineReadingSchema.nullable(),
 };
 
 /*

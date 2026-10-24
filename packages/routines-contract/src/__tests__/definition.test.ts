@@ -182,6 +182,13 @@ describe('public services and tools', () => {
     expect(properties.status.enum).toEqual(contract.ROUTINE_REPORT_STATUSES);
     expect([properties.update.maxLength, properties.ask.anyOf[0].maxLength, properties.notes.anyOf[0].maxLength])
       .toEqual([contract.ROUTINE_REPORT_UPDATE_MAX_CHARS, contract.ROUTINE_REPORT_ASK_MAX_CHARS, contract.ROUTINE_AGENT_NOTES_MAX_CHARS]);
+    // TASK-952: a reading is { value, label } or null, with nothing else.
+    const [reading, none] = properties.reading.anyOf;
+    expect(reading).toMatchObject({ type: 'object', additionalProperties: false, required: ['value', 'label'] });
+    expect([reading.properties.label.maxLength, reading.properties.value.maximum, reading.properties.value.minimum])
+      .toEqual([contract.ROUTINE_READING_LABEL_MAX_CHARS, contract.ROUTINE_READING_MAX_ABS, -contract.ROUTINE_READING_MAX_ABS]);
+    expect(none).toEqual({ type: 'null' });
+    expect(RoutineToolDescriptions.routine_report).toContain('reading is optional: one number you read at this check-in, with a short label of up to 40 characters');
   });
   it('does not classify prototype names or other tools as routine tools', () => {
     for (const name of ['routine_unknown', 'constructor', 'toString', '__proto__', 'Bash']) expect(routineToolKind(name)).toBeNull();

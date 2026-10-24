@@ -400,7 +400,7 @@ describe('routine_report (TASK-907)', () => {
     await checkIn(repeat, 'repeat-run', async ctx => { await refused("a repeat routine's check-in", runner(ctx), 'wrong-kind'); });
   });
 
-  it('routine_report takes only its four fields, and a refusal names the field', async () => {
+  it('routine_report takes only its fields, and a refusal names the field', async () => {
     await start();
     const task = await create(TASK, 'task');
     const valid = { status: 'on-track', update: 'Queue is empty.', ask: null };
@@ -414,6 +414,15 @@ describe('routine_report (TASK-907)', () => {
       ['a blank ask', { ...valid, ask: ' ' }, 'ask'],
       ['notes of 2,001 characters', { ...valid, notes: 'n'.repeat(2001) }, 'notes'],
       ['notes with a tag character', { ...valid, notes: 'Keep going.\u{E0049}' }, 'notes'],
+      // TASK-952: a reading's refusal names the part that's wrong. Invisible inputs are built from code points.
+      ['a reading that isn’t a finite number', { ...valid, reading: { value: Number.POSITIVE_INFINITY, label: 'Open tickets' } }, 'reading.value'],
+      ['a reading past 1e12', { ...valid, reading: { value: 1e13, label: 'Open tickets' } }, 'reading.value'],
+      ['a reading with a blank label', { ...valid, reading: { value: 3, label: ' ' } }, 'reading.label'],
+      ['a reading label of 41 characters', { ...valid, reading: { value: 3, label: 'x'.repeat(41) } }, 'reading.label'],
+      ['a reading label on two lines', { ...valid, reading: { value: 3, label: `Open${String.fromCharCode(0x0A)}tickets` } }, 'reading.label'],
+      ['a reading label with a tag character', { ...valid, reading: { value: 3, label: `Open tickets${String.fromCodePoint(0xE0049)}` } }, 'reading.label'],
+      ['a reading with another key', { ...valid, reading: { value: 3, label: 'Open tickets', unit: 'tickets' } }, 'reading'],
+      ['a reading written as a sentence', { ...valid, reading: 'Open tickets: 3' }, 'reading'],
     ];
     await checkIn(task, 'run', async ctx => {
       for (const [label, input, field] of invalid) {
