@@ -7,13 +7,13 @@
  * and their order; each group's mark is `StateDot`'s task mark, so a task
  * waiting on you looks exactly like an agent waiting on you.
  *
- * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. A task's `name` and its report's
- * `update` were written by a model, and an update can quote a ticket or an
- * email. The server fences both to one line and caps them before they leave
- * (`server/routes-workspace.ts`). Here they are only ever React text children:
- * never `dangerouslySetInnerHTML`, never the markdown renderer, so `**bold**`
- * or `<img>` in an update shows as those characters. Each clamped one keeps
- * the whole fenced value in a `title` (TASK-436).
+ * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. A task's `name`, its report's `update`
+ * and its reading's label (TASK-952) were written by a model, and an update can
+ * quote a ticket or an email. The server fences each to one line and caps it
+ * before it leaves (`server/routes-workspace.ts`). Here they are only ever
+ * React text children: never `dangerouslySetInnerHTML`, never the markdown
+ * renderer, so `**bold**` or `<img>` in an update shows as those characters.
+ * Each clamped one keeps the whole fenced value in a `title` (TASK-436).
  *
  * Each row opens its task page (TASK-910) through a real link, so it can open in a new tab too.
  */
@@ -41,6 +41,7 @@ import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
 import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
+import { formatReading } from '@/lib/task-reading';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
@@ -312,7 +313,8 @@ function TaskList({
 
 /**
  * One task: its name, whose it is and when it last checked in, then the
- * agent's latest update, or, when its last check-ins left none, why (TASK-930).
+ * agent's latest update, or, when its last check-ins left none, why (TASK-930),
+ * and the agent's reading from that update's report (TASK-952).
  * "checked" still dates the last real report. A never-reported task shows its agent's name alone:
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
@@ -334,12 +336,15 @@ function TaskItem({
   // until a later finish moves the count: a report alone never does (a Resume
   // or a kind change also moves it, and not every finish does). All of it
   // host-written except the update.
+  // The agent's reading (TASK-952) shows only beside that update: next to a
+  // miss, the same stale report's number would contradict it.
   const third =
     !row.enabled && row.noRecentUpdate?.autoPaused
       ? AUTO_PAUSED_LINE
       : row.noRecentUpdate !== null
         ? missSummary(row.noRecentUpdate)
         : (row.task?.update ?? null);
+  const reading = row.noRecentUpdate === null ? (row.task?.reading ?? null) : null;
   return (
     <a
       {...routeLinkProps(
@@ -357,6 +362,11 @@ function TaskItem({
       {third !== null && (
         <p className="line-clamp-2 break-words text-[13px]" title={third}>
           {third}
+        </p>
+      )}
+      {reading !== null && (
+        <p className="break-words text-[12px] text-muted-foreground">
+          {`${row.agentName}’s reading · ${reading.label}: ${formatReading(reading.value)}`}
         </p>
       )}
     </a>

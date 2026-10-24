@@ -11,11 +11,12 @@
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. An update was written by a model and
  * can quote a ticket or an email, and a failed check-in's reason can carry
- * text from outside. The server fences both to one line before they leave
- * (`server/routes-workspace.ts`). Here they are only ever React text children:
- * never `dangerouslySetInnerHTML`, never the markdown renderer, so `**bold**`
- * or `<img>` shows as those characters. So is a reply, which keeps its line
- * breaks (`whitespace-pre-wrap`) and has no link.
+ * text from outside. A reading's label (TASK-952) is the agent's too: an entry
+ * adds it after the update, muted. The server fences all three to one line
+ * before they leave (`server/routes-workspace.ts`). Here they are only ever
+ * React text children: never `dangerouslySetInnerHTML`, never the markdown
+ * renderer, so `**bold**` or `<img>` shows as those characters. So is a reply,
+ * which keeps its line breaks (`whitespace-pre-wrap`) and has no link.
  *
  * Each entry links to that check-in's transcript, read-only (See what it did,
  * TASK-911), when the check-in recorded one that no other entry shares. It is
@@ -39,6 +40,7 @@ import {
 } from '@/components/ui/collapsible';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { routeLinkProps } from '@/lib/route-link';
+import { formatReading } from '@/lib/task-reading';
 import { foldTimeline, sharedConversationIds, updateText } from '@/lib/task-updates';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
@@ -168,6 +170,8 @@ function UpdateEntry({
 }) {
   const mark = update.report?.status ?? 'no-update';
   const stamp = updateStamp(update.firedAt, now);
+  // Here, not in the shared `updateText`: a check-in's own page doesn't draw it.
+  const reading = update.report?.reading ?? null;
   return (
     <li className="flex items-start gap-3 py-2">
       <span className="w-28 shrink-0 text-[12px] leading-5 tabular-nums text-muted-foreground">
@@ -180,7 +184,14 @@ function UpdateEntry({
       </span>
       <span className="sr-only">{TASK_GROUP_LABELS[mark]}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <p className="whitespace-pre-wrap break-words text-[13px] leading-5">{updateText(update)}</p>
+        <p className="whitespace-pre-wrap break-words text-[13px] leading-5">
+          {updateText(update)}
+          {reading !== null && (
+            <span className="text-muted-foreground">
+              {` · ${reading.label}: ${formatReading(reading.value)}`}
+            </span>
+          )}
+        </p>
         {update.status === 'error' && (
           <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
             {update.error ?? 'No reason was recorded.'}

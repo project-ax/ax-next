@@ -502,3 +502,57 @@ describe('TasksPage (TASK-909)', () => {
     });
   });
 });
+
+describe('TasksPage: the agent’s reading (TASK-952)', () => {
+  const OPEN_3 = { label: 'Open tickets', value: 3 };
+
+  it('a row shows the agent’s reading under its update, muted', async () => {
+    tasksMock.mockResolvedValue(
+      page([row('Support queue', { task: report('on-track', { reading: OPEN_3 }) })]),
+    );
+    renderPage();
+    const line = await screen.findByText('Caveman’s reading · Open tickets: 3');
+    expect(line).toHaveClass('text-muted-foreground');
+    const update = screen.getByText('Nothing new since this morning.');
+    expect(update.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a row with missed check-ins shows no reading, since it shows no update', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Morning inbox', {
+          task: report('on-track', { reading: OPEN_3 }),
+          noRecentUpdate: {
+            inARow: 1,
+            reason: 'no-report',
+            at: '2026-10-22T11:00:00.000Z',
+            autoPaused: false,
+          },
+        }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Morning inbox');
+    expect(screen.queryByText('Nothing new since this morning.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/’s reading/)).not.toBeInTheDocument();
+  });
+
+  it('a row without a reading shows none', async () => {
+    tasksMock.mockResolvedValue(page([row('Support queue', { task: report('on-track') })]));
+    renderPage();
+    await screen.findByText('Nothing new since this morning.');
+    expect(screen.queryByText(/’s reading/)).not.toBeInTheDocument();
+  });
+
+  it('draws a label with HTML as text, and the row keeps its one link', async () => {
+    const label = '<img src=x onerror=alert(1)>';
+    tasksMock.mockResolvedValue(
+      page([row('Support queue', { task: report('on-track', { reading: { label, value: 3 } }) })]),
+    );
+    const { container } = renderPage();
+    const line = await screen.findByText(`Caveman’s reading · ${label}: 3`);
+    expect(line.textContent).toBe(`Caveman’s reading · ${label}: 3`);
+    expect(container.querySelector('ul img')).toBeNull();
+    expect(container.querySelectorAll('ul a')).toHaveLength(1);
+  });
+});

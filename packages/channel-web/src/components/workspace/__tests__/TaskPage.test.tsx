@@ -1431,3 +1431,76 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(taskMock).toHaveBeenCalledTimes(reads);
   });
 });
+
+describe('TaskPage: the agent’s reading (TASK-952)', () => {
+  const OPEN_3 = { label: 'Open tickets', value: 3 };
+  const SAID = '3 open. I’m answering #4411 and #4412 now.';
+
+  function readingBlock(): HTMLElement {
+    return screen.getByRole('region', { name: 'Quill’s reading' });
+  }
+
+  it('draws Quill’s reading after the latest update and before the brief', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ reading: OPEN_3 }) }));
+    await renderReady();
+    const block = readingBlock();
+    expect(within(block).getByText('Open tickets')).toBeInTheDocument();
+    expect(within(block).getByText('3')).toBeInTheDocument();
+    const latest = latestUpdate();
+    expect(latest).not.toContainElement(block);
+    expect(latest.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const brief = screen.getByRole('region', { name: 'About this task' });
+    expect(block.compareDocumentPosition(brief) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('draws no reading when the latest report has none', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    expect(screen.queryByRole('region', { name: 'Quill’s reading' })).toBeNull();
+  });
+
+  it('draws the trend from the check-ins under Updates', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        task: report({ reading: OPEN_3 }),
+        updates: [
+          {
+            firedAt: REPORTED,
+            status: 'ok',
+            error: null,
+            report: { status: 'needs-you', update: SAID, reading: OPEN_3 },
+            conversationId: null,
+          },
+          {
+            firedAt: new Date(2026, 9, 22, 9, 2).toISOString(),
+            status: 'ok',
+            error: null,
+            report: { status: 'on-track', update: '5 open.', reading: { label: 'Open tickets', value: 5 } },
+            conversationId: null,
+          },
+        ],
+      }),
+    );
+    await renderReady();
+    const block = readingBlock();
+    expect(within(block).getByText('Earlier: 5')).toBeInTheDocument();
+    expect(block.querySelector('svg')).not.toBeNull();
+  });
+
+  it('keeps the reading under a missed check-in, whose card still shows the last update', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        task: report({ status: 'on-track', ask: null, reading: OPEN_3 }),
+        noRecentUpdate: {
+          inARow: 1,
+          reason: 'no-report',
+          at: new Date(2026, 9, 22, 11, 2).toISOString(),
+          autoPaused: false,
+        },
+      }),
+    );
+    await renderReady();
+    expect(within(latestUpdate()).getByText('No recent update')).toBeInTheDocument();
+    expect(within(readingBlock()).getByText('Open tickets')).toBeInTheDocument();
+  });
+});

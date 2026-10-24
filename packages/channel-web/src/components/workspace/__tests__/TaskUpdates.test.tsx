@@ -291,4 +291,37 @@ describe('TaskUpdates (TASK-910)', () => {
       expect(screen.getByText('Refunds under $100 are fine.', { exact: false })).toBeInTheDocument();
     });
   });
+
+  describe('the agent’s reading (TASK-952)', () => {
+    it('an entry ends with the reading its check-in sent, muted', () => {
+      renderThread([
+        update({
+          report: {
+            status: 'on-track',
+            update: 'Answered two.',
+            reading: { label: 'Open tickets', value: 3 },
+          },
+        }),
+      ]);
+      const line = screen.getByText('Answered two.');
+      expect(line.textContent).toBe('Answered two. · Open tickets: 3');
+      expect(within(line).getByText('· Open tickets: 3')).toHaveClass('text-muted-foreground');
+    });
+
+    it('an entry without a reading adds nothing', () => {
+      renderThread([
+        update({ report: { status: 'on-track', update: 'Answered two.', reading: null } }),
+      ]);
+      expect(screen.getByRole('listitem').textContent).not.toContain(' · ');
+    });
+
+    it('draws the reading’s label as plain text', () => {
+      const label = '<img src=x onerror=alert(1)>';
+      const { container } = renderThread([
+        update({ report: { status: 'on-track', update: 'Answered two.', reading: { label, value: 3 } } }),
+      ]);
+      expect(screen.getByText('Answered two.').textContent).toBe(`Answered two. · ${label}: 3`);
+      expect(container.querySelector('img')).toBeNull();
+    });
+  });
 });
