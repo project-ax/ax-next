@@ -29,7 +29,7 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Next:** §12 PR 3, "Get something done".
+- **Now:** §12 PR 3, "Get something done". TASK-948 adds the kind and the steps its agent drafts and ticks; a person editing steps (TASK-949) and Mark done (TASK-950) come next.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -250,6 +250,8 @@ moves to Needs you, and the person presses **Mark done** or **Not yet** (with a
 reply). A finished task stops checking in. This one rule replaces the goals
 design's judge model and its counted or estimated measures.
 
+> PR 3 (TASK-948): A "Get something done" task's agent drafts its steps at its first check-in, through routine_report, so the approval card is unchanged. It can tick or untick any step and add steps (up to 50, one line of up to 200 characters each), which the page labels "added by {agent}"; it can reword or remove only the steps it added. The task page shows the steps read-only for now, and the Tasks row says "2 of 5 steps". A change of kind or of owner starts the checklist over. A person editing steps is TASK-949; "I think it's done" and Mark done are TASK-950.
+
 ### 3.5 Today
 
 Today stays the one inbox. Anything a task needs from a person joins the
@@ -440,7 +442,7 @@ there. The zero-plumbing answer:
 - The tool looks up the open dispatch for the host-set `ctx.conversationId` and
   agent. It refuses unless the call comes from a routine run (`ctx.source`),
   exactly one open check-in has that conversation, and that check-in belongs to
-  a "stay on top" task run as the calling person. `routines:report` checks the
+  a task (either kind) run as the calling person. `routines:report` checks the
   whole binding again, the run's own conversation included, under its row lock,
   before it writes (TASK-907).
 
@@ -464,8 +466,8 @@ the model that people call routines "tasks".
 
 | Piece | Change |
 |---|---|
-| Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. |
-| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). |
+| Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. (As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 11, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.) |
+| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). (TASK-948: steps are one JSON list on the routine, edited only by the agent's report so far, by id, and cleared with the rest of the state on a change of kind or owner.) |
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. (TASK-936: and who it ran as, schema version 9; Updates and the check-in message read only the runs that ran as the task's current owner) (TASK-952: and its reading, schema version 10). |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. (TASK-931: `routines_v1_replies`, schema version 8, with each reply's request id so a retry is stored once; the task page shows the last 50.) |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
@@ -652,6 +654,7 @@ suggest a short body for known apps.
   check-in already running: one that started before the clear still reports,
   but can’t put notes back (TASK-910). Updates from other apps are fenced as
   outside content in the message and never reach the system prompt.
+  Steps (TASK-948) are one line of up to 200 characters, at most 50 per task, refused with invisible or broken characters before they're stored, and labelled in the check-in message by who wrote them, a label the agent can't set.
 - **A reply is the owner's own words.** Owner-only, read only while its author owns the task, screened before it's stored, and it reaches a model only in a check-in's message, quoted and labelled, never in the brief, never in run history anyone else reads, never in memory. Each reply starts at most one check-in, under the usual limits (TASK-931).
 - **A task's state is its owner's.** If the task moves to a new owner, it starts over: its report, notes and missed check-ins go, and so do the last run's status, error and warning. A run's report reaches only the person the run ran as, while they own the task. After a move, the earlier owner's runs list for no one, on the new owner's page or in their check-ins, until the task moves back. On a team agent every member still sees a task's runs, without their reports. Once a task is deleted, its runs list again, without reports (TASK-936).
 - **Cost stays bounded.** Check-ins are fresh, small sessions. The shortest
@@ -992,3 +995,6 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-23 | Decided | A change of owner starts a task over in the statement that moves it, as a change of kind does (report, ask, agent notes and missed check-ins); it also clears the last run's status, error and warning, which a change of kind keeps. A task paused for misses stays paused, as a plain pause (TASK-936). |
 | 2026-10-23 | Decided | Each run records who it ran as (schema version 9). A routine's history and a check-in's earlier reports hold only the runs that ran as its current owner, so an earlier owner's check-ins reach neither the new owner's page nor their check-ins. They read again only if the task moves back, as replies do. Runs recorded before version 9 count as their routine's owner's at the upgrade (TASK-936). |
 | 2026-10-24 | Decided | A check-in of either task kind may add one reading to its report: a number and a short label the agent chooses. The trend uses the readings that share the latest label. Every surface calls it the agent's reading, never a computed measure. It's task state, so a change of kind or owner clears the latest, while past runs keep theirs (TASK-952). |
+| 2026-10-24 | Decided | "Get something done" shares stay-on-top's rules, and its field is "Going well when" like every kind (questions Q6) (TASK-948). |
+| 2026-10-24 | Decided | The agent drafts a task's steps at its first check-in, and the approval card is unchanged (questions Q1). It can tick or untick any step and add steps, labelled as its own; it can reword or remove only the steps it added. Its changes apply by id, so an older check-in's tick still lands (TASK-948). |
+| 2026-10-24 | Decided | A change of kind or of owner starts a task's checklist over, and `routine_list` and `routine_update` leave steps out (`routine_get` has them) (TASK-948). |
