@@ -152,6 +152,17 @@ describe("a report's step changes (TASK-948)", () => {
     expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'on-track' }, steps: [{ ...persons, done: true }, ...full.slice(1)] });
   });
 
+  it('a report whose every change is skipped writes no checklist, so stored entries this version can’t read stay as they were', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    // An entry from a later version (an author this one doesn't know) reads as nothing, but it stays stored.
+    const stored = [step('s000001', 'Export every article', { addedBy: 'person' }), { ...step('s000002', 'From later'), addedBy: 'app' }];
+    await setSteps(task.routineId, stored);
+    const run = await bound(task, 'run', minute(1));
+    expect(await record(run, onTrack, [{ op: 'edit', id: 's000001', text: 'Mine now' }, { op: 'tick', id: 'sgone00' }]))
+      .toEqual({ outcome: 'recorded', applied: 0, skipped: 2 });
+    expect(await stepsColumn(task.routineId)).toEqual(stored);
+  });
+
   it('a check-in that started earlier still ticks after a newer one reported, but its status doesn’t replace the newer report', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     await setSteps(task.routineId, [step('s000001', 'Export every article')]);
