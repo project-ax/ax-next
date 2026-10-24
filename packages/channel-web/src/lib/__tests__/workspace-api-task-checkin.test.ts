@@ -81,6 +81,19 @@ describe('workspaceApi.taskCheckin (TASK-911)', () => {
     ['a row without an id', { ...CHECKIN, thread: [{ kind: 'assistant' }] }],
     ['no decisions', { ...CHECKIN, decisions: undefined }],
     ['a decisions status it doesn’t know', { ...CHECKIN, decisions: { status: 'stale' } }],
+    // The reading (TASK-952) is drawn from, so it is checked like the rest.
+    [
+      'a reading whose value is text',
+      { ...CHECKIN, checkIn: { ...CHECKIN.checkIn, report: { status: 'on-track', update: null, reading: { label: 'x', value: 'NaN' } } } },
+    ],
+    [
+      'a reading past the bound',
+      { ...CHECKIN, checkIn: { ...CHECKIN.checkIn, report: { status: 'on-track', update: null, reading: { label: 'x', value: 1e13 } } } },
+    ],
+    [
+      'a report with no reading key',
+      { ...CHECKIN, checkIn: { ...CHECKIN.checkIn, report: { status: 'on-track', update: null } } },
+    ],
   ])('refuses %s', async (_label, body) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith(body);

@@ -39,6 +39,7 @@
  */
 import {
   CHECK_IN_MISSES,
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPLY_CHECK_INS,
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
@@ -453,12 +454,18 @@ function isString(v: unknown): v is string {
 }
 
 /**
- * The agent's reading (TASK-952): a label and a finite number. Finite matters
- * even off the wire: JSON can spell a number too big for a double, and it
- * parses as Infinity.
+ * The agent's reading (TASK-952): a label and a finite number within
+ * ±ROUTINE_READING_MAX_ABS. Finite matters even off the wire: JSON can spell
+ * a number too big for a double, and it parses as Infinity.
  */
 function isTaskReading(v: unknown): boolean {
-  return isRecord(v) && isString(v.label) && typeof v.value === 'number' && Number.isFinite(v.value);
+  return (
+    isRecord(v) &&
+    isString(v.label) &&
+    typeof v.value === 'number' &&
+    Number.isFinite(v.value) &&
+    Math.abs(v.value) <= ROUTINE_READING_MAX_ABS
+  );
 }
 
 /**

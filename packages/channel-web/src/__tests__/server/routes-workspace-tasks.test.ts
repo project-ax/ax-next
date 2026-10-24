@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineListOutputSchema,
@@ -873,6 +874,8 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       ['NaN', Number.NaN],
       ['an infinity', Number.POSITIVE_INFINITY],
       ['a number written as text', '3'],
+      ['past the bound', ROUTINE_READING_MAX_ABS * 10],
+      ['past the bound, negative', -ROUTINE_READING_MAX_ABS * 10],
     ])('drops a reading whose value is %s, and keeps the report', async (_what, value) => {
       // A view the schema didn't parse reaches the route as it is (TASK-913's shape).
       const { get } = setup({
@@ -882,6 +885,42 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
             agentId: 'a1',
             routineId: 't1',
             task: report('on-track', { reading: { value: value as number, label: 'Open tickets' } }),
+          }),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      const task = bodyOf(captured).tasks[0]?.task;
+      expect(task?.update).toBe('Queue is empty.');
+      expect(task?.reading).toBeNull();
+    });
+
+    it('lets a value at exactly the bound cross, either way', async () => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          withReading(1, ROUTINE_READING_MAX_ABS, 'Revenue'),
+          withReading(2, -ROUTINE_READING_MAX_ABS, 'Balance'),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(readingOf(captured, 't1')).toStrictEqual({ label: 'Revenue', value: ROUTINE_READING_MAX_ABS });
+      expect(readingOf(captured, 't2')).toStrictEqual({ label: 'Balance', value: -ROUTINE_READING_MAX_ABS });
+    });
+
+    it.each<[string, unknown]>([
+      ['missing', undefined],
+      ['a number', 7],
+      ['null', null],
+    ])('drops a reading whose label is %s, and keeps the report', async (_what, label) => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            task: report('on-track', { reading: { value: 3, label: label as string } }),
           }),
         ],
       });

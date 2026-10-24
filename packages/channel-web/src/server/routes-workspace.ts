@@ -148,6 +148,7 @@ import {
   ROUTINE_HISTORY_MAX_LIMIT,
   ROUTINE_NAME_MAX_CHARS,
   ROUTINE_READING_LABEL_MAX_CHARS,
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
@@ -3472,8 +3473,9 @@ function toTaskNoRecentUpdate(view: Pick<RoutineView, 'noRecentUpdate'>): TaskNo
 /**
  * A view's reading → the wire's (TASK-952). Built field by field, and lenient
  * about a view the schema didn't parse (TASK-913), as `toTaskNoRecentUpdate`
- * is. The value crosses only as a finite number: the view schema checks only
- * that it is a number, which an infinity is. The label crosses only fenced to
+ * is. The value crosses only as a finite number within
+ * ±ROUTINE_READING_MAX_ABS: the view schema checks only that it is a number,
+ * which an infinity is. The label crosses only fenced to
  * one line of at most ROUTINE_READING_LABEL_MAX_CHARS code points. A reading
  * missing either, or whose label has nothing legible left, crosses as none:
  * the label is what tells a person what was counted. Agent-written, so the
@@ -3482,7 +3484,7 @@ function toTaskNoRecentUpdate(view: Pick<RoutineView, 'noRecentUpdate'>): TaskNo
 function toTaskReading(reading: unknown): TaskReading | null {
   if (reading === null || typeof reading !== 'object') return null;
   const { value, label } = reading as Record<string, unknown>;
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > ROUTINE_READING_MAX_ABS) return null;
   const fenced = fenceLine(typeof label === 'string' ? label : null, ROUTINE_READING_LABEL_MAX_CHARS);
   return fenced === null ? null : { label: fenced, value };
 }

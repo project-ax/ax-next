@@ -102,7 +102,7 @@ describe('workspaceApi.tasks (TASK-909)', () => {
   });
 
   it('accepts a report whose reading is null, or a number with its label (TASK-952)', async () => {
-    for (const reading of [null, { label: 'Open tickets', value: 3 }, { label: 'Balance', value: -2.5 }]) {
+    for (const reading of [null, { label: 'Open tickets', value: 3 }, { label: 'Balance', value: -2.5 }, { label: 'Top', value: 1e12 }, { label: 'Bottom', value: -1e12 }]) {
       const body = { tasks: [{ ...ROW, task: { ...ROW.task, reading } }], unavailableAgents: [] };
       respondWith(body);
       await expect(workspaceApi.tasks()).resolves.toEqual(body);
@@ -124,6 +124,8 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     ['a value that isn’t a number', { label: 'Open tickets', value: '3' }],
     ['no value', { label: 'Open tickets' }],
     ['a value that isn’t finite', { label: 'Open tickets', value: Number.POSITIVE_INFINITY }],
+    ['a value past the bound', { label: 'Open tickets', value: 1e13 }],
+    ['a value past the bound, negative', { label: 'Open tickets', value: -1e13 }],
   ])('refuses a report whose reading has %s (TASK-952)', async (_label, reading) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ tasks: [{ ...ROW, task: { ...ROW.task, reading } }], unavailableAgents: [] });
