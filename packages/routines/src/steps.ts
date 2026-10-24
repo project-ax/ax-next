@@ -168,13 +168,16 @@ export type StepsChange = { steps: StoredStep[]; applied: number; skipped: numbe
  * holds it (`task_steps`). Both of its writers go through this: `recordReport`
  * as the agent and `setSteps` as the person. The changes apply to the steps
  * `readStoredSteps` reads (`applyStepOps`). When any applied, `write` is those
- * steps, as changed, then every entry this version can't read, in their order,
- * so a later version's step survives a write made during a rollback; when none
- * did, it is null and nothing is written. A new step's id is drawn against the
- * kept entries' ids too: a later version reads first-wins, so a new step that
- * took a kept entry's id would hide it there. A value that isn't a list can't
- * keep steps beside it, so every change to it is skipped. Never mutates its
- * input.
+ * steps, as changed, then every entry this version can't read, appended after
+ * them in the order they were stored, so a later version's step survives a
+ * write made during a rollback; when none did, it is null and nothing is
+ * written. A new step's id is drawn against the kept entries' ids too: a later
+ * version reads first-wins, so a new step that took a kept entry's id would
+ * hide it there. The step cap counts only the steps read here, so kept entries
+ * can leave the stored list longer than `ROUTINE_STEPS_MAX`; this version never
+ * shows them, and a later one decides what to do with them. A value that isn't
+ * a list can't keep steps beside it, so every change to it is skipped. Never
+ * mutates its input.
  */
 export function changeStoredSteps(
   value: unknown, ops: readonly RoutineStepOp[], actor: RoutineStepAuthor,
