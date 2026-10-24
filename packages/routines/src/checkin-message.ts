@@ -17,7 +17,12 @@ export type CheckInMessageInput = {
   source: FireSource;
   /** The task's notes between check-ins: agent-written. */
   agentNotes: string | null;
-  /** Newest first, as `RoutinesStore.recentReports` reads them. Agent-written. */
+  /**
+   * Newest first, as `RoutinesStore.recentReports` reads them for the person
+   * the check-in runs as, the way it reads replies (TASK-936): only this task's
+   * runs that ran as them, while the task is still theirs. Agent-written. An
+   * earlier owner's reports are never among them.
+   */
   reports: ReadonlyArray<{ firedAt: Date; report: DispatchReport }>;
   /**
    * Newest first, as `RoutinesStore.recentReplies` reads them for the person

@@ -23,12 +23,6 @@ export interface RoutinesStore {
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
-  /**
-   * TASK-907. Who owns each of these routines now, for deciding who may see a
-   * run's report. A routine that's gone has no entry. Reads only the owner, so a
-   * row another read couldn't parse can't fail a history read.
-   */
-  routineOwners(input: { agentId: string; routineIds: readonly string[] }): Promise<Map<string, string>>;
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
@@ -38,8 +32,13 @@ export interface RoutinesStore {
    * agent is retired. Every run of every routine ends here, so TASK-930 counts a
    * task's missed check-ins here too, and pauses the task at the fifth in a row
    * (`missesAfterRun`). Runs that overlap count in the order they started, as
-   * `recordReport` keeps reports, whatever order they finish in. It and
-   * `updateAuthored` are the count's only writers.
+   * `recordReport` keeps reports, whatever order they finish in. It writes the
+   * count; `updateAuthored` (a person's Resume, a kind change) and
+   * `reconcileOwners` (a change of owner, TASK-936) only start it over.
+   * TASK-936: the fire row takes who the run ran as from its dispatch, and a run
+   * that ran as someone who no longer owns the routine leaves the count alone,
+   * as `recordReport` refuses its report; one with no record of who it ran as
+   * (accepted by code from before version 9) counts as before.
    */
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
@@ -47,9 +46,11 @@ export interface RoutinesStore {
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
   /**
-   * TASK-907. The one writer of a task's state. `'recorded'`, or why nothing was
-   * written: the run must be an open check-in, bound to the report's
-   * conversation, of a stay-on-top task its actor owns, on a live agent.
+   * TASK-907. The one writer of a task's report: `updateAuthored` (a kind
+   * change) and `reconcileOwners` (a change of owner, TASK-936) only clear it.
+   * `'recorded'`, or why nothing was written: the run must be an open check-in,
+   * bound to the report's conversation, of a stay-on-top task its actor owns,
+   * on a live agent.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
   /**
@@ -83,14 +84,28 @@ export interface RoutinesStore {
   recentReplies(input: RoutineKey & Actor & { limit: number }): Promise<StoredReply[]>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
+  /**
+   * A routine's runs, newest first; `limit` is clamped to 1-200. TASK-936: a
+   * live routine's runs only when they ran as its current owner, so after a
+   * change of owner the earlier owner's runs reach no one until the routine
+   * returns to them; every run of a routine that's gone. Each row carries the
+   * owner read in the same statement (`routineOwnerUserId`, `historyQuery`).
+   */
   recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
+  /** An agent's runs, newest first, older than `before` when it's given, under `recentFires`' rule. */
   recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
   /**
    * TASK-908. A routine's latest reports, for its next check-in's message:
    * finished runs with a report, newest first, however many runs without one
-   * came in between. `limit` is clamped to 1-10. The text is agent-written.
+   * came in between. TASK-936: read as `recentReplies` reads replies, the
+   * reports of runs that ran as `actorUserId`, on a routine they own now. None
+   * when the routine is gone or someone else owns it, so an earlier owner's
+   * reports reach neither a new owner nor a check-in run as them, and read
+   * again only if the routine returns to them. One statement, so the owner
+   * can't change between the check and the read. `limit` is clamped to 1-10.
+   * The text is agent-written.
    */
-  recentReports(input: RoutineKey & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
+  recentReports(input: RoutineKey & Actor & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
   /**
    * TASK-908. Whether `conversationId` is a task check-in's conversation on
    * `agentId`: some run of that agent, open or finished, is bound to it, and
@@ -122,8 +137,25 @@ export interface RoutinesStore {
   refreshStale(input: { now: Date }): Promise<void>;
   /**
    * TASK-397. Moves every routine of each of these user-owned agents to the
-   * agent's owner, at a new revision. Replies stay where they are: a read
-   * returns only the replies the current owner wrote (`recentReplies`, TASK-931).
+   * agent's owner, at a new revision. TASK-936: in the same statement it starts
+   * each one over, as a change of kind does (`NO_TASK_STATE`), whatever its
+   * kind, because a task's state is its owner's: the report, its ask, the agent
+   * notes and the missed check-ins came from runs as the earlier owner, with
+   * what only they can reach. One statement, so no read finds the new owner
+   * beside the old state. `enabled`, the schedule and `agent_notes_cleared_at`
+   * stay, so a task ax paused for misses stays paused, now as a plain pause.
+   * The last run's status, error and warning are cleared as well (they
+   * describe a run only the earlier owner can see, and name what only they
+   * could reach); its time stays. A change of kind keeps them.
+   * Replies stay where they are: a read returns only the replies the current
+   * owner wrote (`recentReplies`, TASK-931). Runs stay stored too, each with who
+   * it ran as, which this never moves. While the routine lives, its history
+   * lists only the runs that ran as its current owner (`recentFires`,
+   * `recentFiresForAgent`), and a check-in reads only the reports of runs that
+   * ran as its own person, while that person owns the routine
+   * (`recentReports`), so the earlier owner's runs list for no one until the
+   * routine returns to them. Once the routine is deleted, all its runs list
+   * again, with no report.
    */
   reconcileOwners(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }> }): Promise<number>;
   setAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string; ownerUserId: string; enabled: boolean }): Promise<void>;
@@ -225,6 +257,14 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * TASK-930: its missed check-ins start over with the rest (`NO_MISSES`), a pause
  * for them included. `enabled` isn't touched, so a task ax paused stays paused
  * through a kind change; only a Resume runs it again.
+ *
+ * TASK-936: a change of owner sets these too, in the statement that moves the
+ * routine (`reconcileOwners`), whatever its kind, because a task's state is its
+ * owner's. There too `enabled` isn't touched, so a task ax paused stays paused,
+ * now as a plain pause. Unlike a kind round trip, a run still open from before
+ * the move can't report into the new owner's task: it runs as the earlier
+ * owner, and `recordReport` refuses a report whose actor doesn't own the
+ * routine.
  */
 const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
@@ -249,9 +289,10 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * leaves them as they are: for a repeat routine, and while the task is paused for
  * them (`task_auto_paused_at` set and not enabled), so a run that started before
  * the pause (a Check now beside the fifth check-in) can't count past it, or clear
- * it by reporting. Only a person's Resume or a kind change ends that
- * (`updateAuthored`). Keyed on `enabled` too: a row resumed without a reset (code
- * from before version 7, after a rollback) counts again, and can pause again.
+ * it by reporting. Only a person's Resume or a kind change (`updateAuthored`),
+ * or a change of owner (`reconcileOwners`, TASK-936), ends that. Keyed on
+ * `enabled` too: a row resumed without a reset (code from before version 7,
+ * after a rollback) counts again, and can pause again.
  *
  * Runs that overlap (a Check now beside a scheduled check-in) answer in the
  * order they started, whatever order they finish in, as `recordReport` keeps
@@ -369,12 +410,30 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     noRecentUpdate: noRecentUpdate(row),
   });
 }
-function rowToFire(r: Selectable<RoutinesFiresRow>): FireRow {
+/**
+ * TASK-936. The one query both history reads (`recentFires`,
+ * `recentFiresForAgent`) build on: fire rows, each with its routine's owner read
+ * in the same statement, so which runs list and who may read their reports
+ * (`fireViews`) can't disagree across a change of owner. A live routine's runs
+ * list only when they ran as its current owner, so after a move the earlier
+ * owner's runs reach no one, and list again only if the routine returns to
+ * them. One with no record of who it ran as (written by code from before
+ * version 9) lists for no one while its routine lives. Every run of a routine
+ * that's gone lists, as before, with no owner, so it shows no report.
+ */
+function historyQuery(db: DB) {
+  return db.selectFrom('routines_v1_fires as f')
+    .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'f.agent_id').onRef('r.routine_id', '=', 'f.routine_id'))
+    .selectAll('f').select('r.owner_user_id as routine_owner_user_id')
+    .where(eb => eb.or([eb('r.routine_id', 'is', null), eb('f.run_as_user_id', '=', eb.ref('r.owner_user_id'))]));
+}
+function rowToFire(r: Selectable<RoutinesFiresRow> & { routine_owner_user_id: string | null }): FireRow {
   return {
     id: Number(r.id), agentId: r.agent_id, routineId: r.routine_id, firedAt: r.fired_at, triggerSource: r.trigger_source,
     conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning,
     // Nested, so no column name reaches the view. A row with only part of a report has none (TASK-907, TASK-913).
-    report: r.report_status === null || r.report_update === null ? null : { status: r.report_status, update: r.report_update, ask: r.report_ask }
+    report: r.report_status === null || r.report_update === null ? null : { status: r.report_status, update: r.report_update, ask: r.report_ask },
+    routineOwnerUserId: r.routine_owner_user_id,
   };
 }
 function defaultRowToDetail(row: Selectable<DefaultRoutinesRow>): DefaultRoutineDetailRow {
@@ -588,7 +647,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         const result: AcceptedDispatch = { dispatchId: opaqueId('dispatch'), reqId: opaqueId('routine_run'), row: rowToRoutine(raw), source: input.source, acceptedAt: input.now };
         await trx.insertInto('routines_v1_dispatches').values({
           dispatch_id: result.dispatchId, agent_id: input.agentId, routine_id: input.routineId,
-          revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source
+          revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source,
+          // TASK-936: who the run runs as, the owner read under this row lock (fire.ts runs as
+          // accepted.row.ownerUserId), never the actor who asked for it. Nothing moves it later.
+          run_as_user_id: raw.owner_user_id,
         }).execute();
         return result;
       }, () => { replayed = true; });
@@ -633,6 +695,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
           error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning,
           report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
+          // TASK-936: copied from the dispatch, not read from the routine, which may have moved since the accept.
+          run_as_user_id: dispatch.run_as_user_id,
         }).execute();
         // The fire row has the report now; one copy of the text is enough (TASK-907).
         await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null }).where('dispatch_id', '=', input.dispatchId).execute();
@@ -642,7 +706,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // TASK-930: the missed check-ins, only now. The pause mints a new revision, so before the
         // update above it would make that update skip the fifth run's own status and error. No
         // revision clause here: an edit during a check-in can't drop its miss, as it can't its report.
-        const misses = definition === undefined ? null : await missesAfterRun(trx, definition, {
+        // TASK-936: none for a run that ran as someone who no longer owns the routine. Like its refused
+        // report, it can't touch the new owner's task. A run with no record of who it ran as (accepted
+        // by code from before version 9) counts as before.
+        const ranAsAnother = definition !== undefined && dispatch.run_as_user_id !== null && dispatch.run_as_user_id !== definition.owner_user_id;
+        const misses = definition === undefined || ranAsAnother ? null : await missesAfterRun(trx, definition, {
           reported: stored.report !== null, status: outcome.status, miss: outcome.miss, acceptedAt: dispatch.accepted_at,
         }, finishedAt);
         if (misses !== null) {
@@ -895,12 +963,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async recentFires(input) {
       const limit = Math.min(200, Math.max(1, input.limit ?? 20));
-      const rows = await db
-        .selectFrom('routines_v1_fires')
-        .selectAll()
-        .where('agent_id', '=', input.agentId)
-        .where('routine_id', '=', input.routineId)
-        .orderBy('fired_at', 'desc')
+      const rows = await historyQuery(db)
+        .where('f.agent_id', '=', input.agentId)
+        .where('f.routine_id', '=', input.routineId)
+        .orderBy('f.fired_at', 'desc')
         .limit(limit)
         .execute();
       return rows.map(rowToFire);
@@ -908,13 +974,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async recentFiresForAgent(input) {
       const limit = Math.min(200, Math.max(1, input.limit ?? 20));
-      let q = db
-        .selectFrom('routines_v1_fires')
-        .selectAll()
-        .where('agent_id', '=', input.agentId);
-      if (input.before !== undefined) q = q.where('fired_at', '<', input.before);
+      let q = historyQuery(db).where('f.agent_id', '=', input.agentId);
+      if (input.before !== undefined) q = q.where('f.fired_at', '<', input.before);
       const rows = await q
-        .orderBy('fired_at', 'desc')
+        .orderBy('f.fired_at', 'desc')
         .limit(limit)
         .execute();
       return rows.map(rowToFire);
@@ -922,15 +985,24 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async recentReports(input) {
       const limit = Math.min(10, Math.max(1, input.limit));
+      // recentReplies' rule (TASK-936): the join keeps a run only while the person it ran as owns its
+      // routine, and the reader must be that person. A routine that's gone keeps none. Filtered before
+      // the limit, so another person's newer reports can't crowd the reader's out. Every column is
+      // qualified: agent_id and routine_id are on both tables, and Postgres refuses a bare one (42702).
       const rows = await db
-        .selectFrom('routines_v1_fires')
-        .select(['fired_at', 'report_status', 'report_update', 'report_ask'])
-        .where('agent_id', '=', input.agentId)
-        .where('routine_id', '=', input.routineId)
-        .where('report_status', 'is not', null)
-        .where('report_update', 'is not', null)
-        .orderBy('fired_at', 'desc')
-        .orderBy('id', 'desc')
+        .selectFrom('routines_v1_fires as f')
+        .innerJoin('routines_v1_definitions as r', join => join
+          .onRef('r.agent_id', '=', 'f.agent_id')
+          .onRef('r.routine_id', '=', 'f.routine_id')
+          .onRef('r.owner_user_id', '=', 'f.run_as_user_id'))
+        .select(['f.fired_at', 'f.report_status', 'f.report_update', 'f.report_ask'])
+        .where('f.agent_id', '=', input.agentId)
+        .where('f.routine_id', '=', input.routineId)
+        .where('f.run_as_user_id', '=', input.actorUserId)
+        .where('f.report_status', 'is not', null)
+        .where('f.report_update', 'is not', null)
+        .orderBy('f.fired_at', 'desc')
+        .orderBy('f.id', 'desc')
         .limit(limit)
         .execute();
       // The query already skips a row with only part of a report (rowToFire's rule); this narrows the types.
@@ -974,13 +1046,6 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .where('routine_id', '=', input.routineId)
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
-    },
-
-    async routineOwners(input) {
-      if (input.routineIds.length === 0) return new Map();
-      const rows = await db.selectFrom('routines_v1_definitions').select(['routine_id', 'owner_user_id'])
-        .where('agent_id', '=', input.agentId).where('routine_id', 'in', [...input.routineIds]).execute();
-      return new Map(rows.map(row => [row.routine_id, row.owner_user_id]));
     },
 
     async upsertDefault(input) {
@@ -1123,11 +1188,22 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       if (input.agents.length === 0) return 0;
       const agentIds = input.agents.map((a) => a.agentId);
       const ownerIds = input.agents.map((a) => a.ownerUserId);
+      // TASK-936: the task state goes in the statement that moves the routine, from the one list a
+      // change of kind clears too. Each column name is one of NO_TASK_STATE's own keys, never input,
+      // and each value is bound. The last run's status, error and warning go too: they describe a run
+      // only the earlier owner can now see, the error and warning name connectors only they could
+      // reach, and a run of the new owner's that fails early carries the routine's last warning into
+      // its own fire row (fire.ts). Its time stays, since default-routine scheduling keys off
+      // last_run_at.
       const res = await sql`
         UPDATE routines_v1_definitions r
            SET owner_user_id = a.owner_user_id,
                revision = 'rev_' || replace(gen_random_uuid()::text, '-', ''),
-               updated_at = now()
+               updated_at = now(),
+               last_status = NULL,
+               last_error = NULL,
+               last_warning = NULL,
+               ${sql.join(Object.entries(NO_TASK_STATE).map(([column, value]) => sql`${sql.ref(column)} = ${value}`))}
           FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
             AS a(agent_id, owner_user_id)
          WHERE r.agent_id = a.agent_id

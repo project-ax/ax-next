@@ -381,7 +381,7 @@ describe('recentReports (TASK-908)', () => {
     if (report !== null) expect(await record(run, { report })).toBe('recorded');
     expect(await finish(run.dispatchId)).toBe(true);
   };
-  const recent = (routineId: string, limit: number, agentId = 'a') => f.store.recentReports({ agentId, routineId, limit });
+  const recent = (routineId: string, limit: number, agentId = 'a') => f.store.recentReports({ agentId, routineId, actorUserId: 'owner', limit });
 
   it('newest reported runs first, skipping runs without a report', async () => {
     const row = await f.store.createAuthored(taskInput('recent'));

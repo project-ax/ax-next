@@ -25,9 +25,11 @@ export interface RoutinesDefinitionsRow {
   prompt_body: string;
   next_run_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   last_run_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /** The last recorded fire's status. Written by `finishDispatch`; cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_status: 'ok' | 'silenced' | 'error' | null;
+  /** The last recorded fire's error. Written by `finishDispatch`; cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_error: string | null;
-  /** Slice 6 — the last recorded fire's skipped-connector warning, or null. */
+  /** Slice 6 — the last recorded fire's skipped-connector warning, or null. Cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_warning: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, Date | undefined, Date>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
@@ -39,7 +41,8 @@ export interface RoutinesDefinitionsRow {
   /**
    * Version 4 (TASK-907). A task's latest report, written only by `recordReport`,
    * and the notes it keeps between check-ins. NULL until the first report, and
-   * NULL again after an edit that changes the routine's kind (`updateAuthored`).
+   * NULL again after an edit that changes the routine's kind (`updateAuthored`)
+   * or a change of owner (`reconcileOwners`, TASK-936).
    * `agent_notes` alone is NULL again after the person clears them
    * (`routines:clear-notes`, TASK-910).
    * `task_report_accepted_at` is the reporting run's acceptance time: the run
@@ -62,10 +65,11 @@ export interface RoutinesDefinitionsRow {
    * Version 7 (TASK-930). A task's check-ins in a row that ended without a
    * report, the last one's reason and start (its run's `accepted_at`), and when
    * the host paused the task for them. 0 and NULL when there are none. Written
-   * only by `finishDispatch` and `updateAuthored` (a person's Resume, a kind
-   * change); nothing an agent sends reaches them. The reason reads back as a
-   * plain string: `rowToRoutine` reads one no code knows as `failed`, so a later
-   * version's reason still reads after a rollback (TASK-913).
+   * only by `finishDispatch`, `updateAuthored` (a person's Resume, a kind
+   * change) and `reconcileOwners` (a change of owner, TASK-936), the last two
+   * only clearing them; nothing an agent sends reaches them. The reason reads
+   * back as a plain string: `rowToRoutine` reads one no code knows as `failed`,
+   * so a later version's reason still reads after a rollback (TASK-913).
    */
   task_misses_in_a_row: ColumnType<number, number | undefined, number>;
   task_miss_reason: ColumnType<string | null, CheckInMiss | null | undefined, CheckInMiss | null>;
@@ -90,6 +94,16 @@ export interface RoutinesFiresRow {
   report_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
   report_update: ColumnType<string | null, string | null | undefined, string | null>;
   report_ask: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 9 (TASK-936). Who the run ran as: its routine's owner when it was accepted
+   * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it on the
+   * dispatch and `finishDispatch` copies it here. `reconcileOwners` never moves it, and
+   * that is the point. Rows from before version 9 read as their routine's owner at the
+   * upgrade, the person code before it showed their reports to; a gone routine's rows
+   * stay NULL, and NULL means not known. Additive and rollback-safe: older code ignores
+   * it, and a re-run stamps only NULL rows (`addRunAsColumns`).
+   */
+  run_as_user_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface DefaultRoutinesRow {
@@ -141,6 +155,16 @@ export interface DispatchesRow {
   conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
   report: ColumnType<unknown | null, string | null | undefined, string | null>;
+  /**
+   * Version 9 (TASK-936). Who the run runs as: its routine's owner when it was accepted
+   * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it and
+   * `finishDispatch` copies it to the fire row. `reconcileOwners` never moves it, and
+   * that is the point. Rows from before version 9 read as their routine's owner at the
+   * upgrade, the person code before it showed their reports to; a gone routine's rows
+   * stay NULL, and NULL means not known. Additive and rollback-safe: older code ignores
+   * it, and a re-run stamps only NULL rows (`addRunAsColumns`).
+   */
+  run_as_user_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 /**
  * Version 8 (TASK-931). A person's reply on a task, in their own words. Written
@@ -202,7 +226,44 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addRepliesTable(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (8)`.execute(trx);
     }
+    if (!await done(9)) {
+      await addRunAsColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (9)`.execute(trx);
+    }
   });
+}
+
+/** Version 9 (TASK-936): who each run ran as, on its dispatch and on its fire row.
+ * A run runs as its routine's owner when it is accepted (`fire.ts` runs as
+ * `accepted.row.ownerUserId`). `acceptDispatch` writes that person on the
+ * dispatch, and `finishDispatch` copies it to the fire row. The fire row is
+ * written only when the run ends, perhaps after the routine has moved, so only
+ * the accept knows who the run runs as, and the dispatch carries it until then.
+ * `reconcileOwners` never moves it, and that is the point: after a change
+ * of owner, each run still names the person it ran as, so a read can tell the
+ * earlier owner's runs from the new owner's. The backfill reads every existing
+ * row as its routine's owner at the upgrade, the person code before this version
+ * showed their reports to, so the upgrade itself widens or narrows nothing. A
+ * gone routine's rows stay NULL, as do rows that code from before this version
+ * writes after a rollback: NULL means not known. Nullable TEXT holding a host-set
+ * user id, with no foreign key, CHECK or index. Additive and rollback-safe: code
+ * from before this version ignores the columns, and a re-run stamps only NULL
+ * rows, so it keeps every value already written, even once the routine has
+ * another owner.
+ */
+async function addRunAsColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS run_as_user_id TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS run_as_user_id TEXT`.execute(db);
+  await sql`
+    UPDATE routines_v1_dispatches d SET run_as_user_id = r.owner_user_id
+      FROM routines_v1_definitions r
+     WHERE d.run_as_user_id IS NULL AND r.agent_id = d.agent_id AND r.routine_id = d.routine_id
+  `.execute(db);
+  await sql`
+    UPDATE routines_v1_fires f SET run_as_user_id = r.owner_user_id
+      FROM routines_v1_definitions r
+     WHERE f.run_as_user_id IS NULL AND r.agent_id = f.agent_id AND r.routine_id = f.routine_id
+  `.execute(db);
 }
 
 /** Version 8 (TASK-931): a person's replies on a task, which every later check-in
@@ -241,8 +302,9 @@ async function addRepliesTable(db: Kysely<RoutinesDatabase>): Promise<void> {
 /** Version 7 (TASK-930): a task's check-ins in a row that ended without a report,
  * the last one's reason and start, and when the host paused the task for them.
  * Written only by `finishDispatch` (a miss adds one, a report clears them, the
- * fifth in a row pauses the task) and `updateAuthored` (a person's Resume or a
- * kind change clears them). Additive, with no backfill: existing rows read 0 and
+ * fifth in a row pauses the task), `updateAuthored` (a person's Resume or a
+ * kind change clears them) and `reconcileOwners` (a change of owner clears
+ * them, TASK-936). Additive, with no backfill: existing rows read 0 and
  * NULL (no misses), and code from before this version ignores the columns. Every
  * statement only adds what is missing, so a re-run keeps the columns' values.
  * The reason's CHECK lists the codes as they are at this version (a migration

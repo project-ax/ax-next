@@ -119,9 +119,16 @@ export const RoutineFireViewSchema = z.object({
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
   conversationId: RoutineOpaqueStringSchema.nullable(), status: RoutineStatusSchema,
   error: z.string().nullable(), renderedPrompt: z.string().nullable(), warning: z.string().nullable(),
-  /** TASK-907. Null when the run made no report, and for anyone but the routine's owner: a report is its task's state. */
+  /** TASK-907. Null when the run made no report, and for anyone but the routine's owner, who is also the person the run ran as (TASK-936): a report is its task's state. */
   report: RoutineFireReportViewSchema.nullable(),
 }).strict();
+/**
+ * `routines:recent-fires` and `routines:recent-fires-for-agent` (TASK-936): a
+ * routine's runs, newest first. For a live routine, only the runs that ran as
+ * its current owner. After a change of owner the earlier owner's runs reach no
+ * one, their reports included, until the routine moves back. A gone routine's
+ * runs all list, with no report.
+ */
 export const RoutineRecentFiresOutputSchema = z.object({ fires: z.array(RoutineFireViewSchema) }).strict();
 export const RoutineRecentFiresForAgentOutputSchema = RoutineRecentFiresOutputSchema;
 

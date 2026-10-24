@@ -90,18 +90,20 @@ export function reportRefused(ctx: AgentContext, stage: 'tool' | 'hook', reason:
 }
 /**
  * TASK-907. A run's report is its task's state as that run left it, so it goes
- * where the task's state goes: only to the routine's owner (`taskView`). The owners
- * are read only when some run has a report, and a run whose routine is gone shows none.
+ * where the task's state goes: only to the routine's owner (`taskView`).
+ * TASK-936: that owner comes with each row, read in the statement that listed
+ * the run (`FireRow.routineOwnerUserId`), and that statement lists a live
+ * routine's runs only when they ran as its owner. So who ran a run and who may
+ * read its report come from one read, and can't disagree across a change of
+ * owner. The owner is dropped here, so it never reaches a view.
  */
-async function fireViews(store: RoutinesStore, agentId: string, userId: string, fires: FireRow[]): Promise<C.RoutineFireView[]> {
-  const reported = [...new Set(fires.flatMap(fire => fire.report === null ? [] : [fire.routineId]))];
-  const owners = reported.length === 0 ? new Map<string, string>() : await store.routineOwners({ agentId, routineIds: reported });
-  return fires.map(({ id: _id, firedAt, report, ...fire }) => {
-    // Fails closed: a report shows only when an owner is found and it is this person.
+function fireViews(userId: string, fires: FireRow[]): C.RoutineFireView[] {
+  return fires.map(({ id: _id, firedAt, report, routineOwnerUserId, ...fire }) => ({
+    ...fire, firedAt: firedAt.toISOString(),
+    // Fails closed: a report shows only when the run's routine has an owner and it is this person.
     // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
-    const owner = owners.get(fire.routineId);
-    return { ...fire, firedAt: firedAt.toISOString(), report: owner !== undefined && owner === userId ? report : null };
-  });
+    report: routineOwnerUserId !== null && routineOwnerUserId === userId ? report : null,
+  }));
 }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;
@@ -215,13 +217,13 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   register('recent-fires', C.RoutineRecentFiresInputSchema, C.RoutineRecentFiresOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     const fires = await store.recentFires({ agentId: input.agentId, routineId: input.routineId, ...(input.limit === undefined ? {} : { limit: input.limit }) });
-    return { fires: await fireViews(store, input.agentId, ctx.userId, fires) };
+    return { fires: fireViews(ctx.userId, fires) };
   });
   register('recent-fires-for-agent', C.RoutineRecentFiresForAgentInputSchema, C.RoutineRecentFiresForAgentOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     const { before } = input;
     const fires = await store.recentFiresForAgent({ agentId: input.agentId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
-    return { fires: await fireViews(store, input.agentId, ctx.userId, fires) };
+    return { fires: fireViews(ctx.userId, fires) };
   });
   register('set-webhook-secret', C.RoutineSecretInputSchema, C.RoutineSecretOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
