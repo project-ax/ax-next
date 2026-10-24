@@ -10,7 +10,7 @@ import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, Rout
 import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
-import { applyStepOps, storedSteps } from './steps.js';
+import { changeStoredSteps, storedSteps } from './steps.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -47,17 +47,19 @@ export interface RoutinesStore {
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
   /**
-   * TASK-907. The one writer of a task's report, and (TASK-948) of a get-done
-   * task's checklist: `updateAuthored` (a kind change) and `reconcileOwners` (a
-   * change of owner, TASK-936) only clear them. Nothing is written, and the
-   * answer says why, unless the run is an open check-in, bound to the report's
-   * conversation, of a task (`TASK_KINDS`) its actor owns, on a live agent.
-   * TASK-952: the report's reading, or its absence, lands with it, on the run
-   * and under the same guard on the task. A report's step changes apply in
-   * order, by id, under the routine's row lock, whatever order overlapping runs
-   * report in (`applyStepOps`); a task that is no longer get-done skips them
-   * all. The answer is `'recorded'` when the report sent no step changes, and
-   * counts those that applied and those skipped when it did.
+   * TASK-907. The one writer of a task's report, and one of the two writers of
+   * a get-done task's checklist (TASK-949: `setSteps` is the other; both keep
+   * entries this version can't read): `updateAuthored` (a kind change) and
+   * `reconcileOwners` (a change of owner, TASK-936) only clear them. Nothing is
+   * written, and the answer says why, unless the run is an open check-in, bound
+   * to the report's conversation, of a task (`TASK_KINDS`) its actor owns, on a
+   * live agent. TASK-952: the report's reading, or its absence, lands with it,
+   * on the run and under the same guard on the task. A report's step changes
+   * apply as the agent's, in order, by id, under the routine's row lock,
+   * whatever order overlapping runs report in (`changeStoredSteps`); a task
+   * that is no longer get-done skips them all. The answer is `'recorded'` when
+   * the report sent no step changes, and counts those that applied and those
+   * skipped when it did.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | RecordedSteps | ReportRefusal>;
   /**
@@ -841,13 +843,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // they cleared, so it can't write any back. The rest of its report lands as usual.
         const clearedAt = definition.agent_notes_cleared_at;
         const writesNotes = input.notes !== undefined && (clearedAt === null || clearedAt.getTime() < dispatch.accepted_at.getTime());
-        // TASK-948: the report's step changes, applied to the checklist as read under the row lock, so
-        // reports that overlap compose: one waiting on the lock re-reads the list the other just wrote.
-        // A task that is no longer get-done (a kind change landed after the tool checked the kind)
+        // TASK-948: the report's step changes, applied as the agent to the checklist as read under the row
+        // lock, so reports that overlap compose: one waiting on the lock re-reads the list the other just
+        // wrote. A task that is no longer get-done (a kind change landed after the tool checked the kind)
         // skips them all, writes no checklist, and its report still lands.
         const changes = input.steps === undefined ? null
-          : definition.kind === 'get-done' ? applyStepOps(storedSteps(definition.task_steps), input.steps)
-          : { steps: [], applied: 0, skipped: input.steps.length };
+          : definition.kind === 'get-done' ? changeStoredSteps(definition.task_steps, input.steps, 'agent')
+          : { steps: [], applied: 0, skipped: input.steps.length, write: null };
         try {
           // A later report in the same check-in replaces this one, reading and all. The JSON keeps
           // its three keys: the reading has columns of its own (card decision 4).
@@ -869,9 +871,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
           // A step change is an edit by id, not a snapshot like the status, so there's no accepted-at
           // clause: an older overlapping run's ticks still land. Like the state, the checklist never
-          // moves revision, spec_hash or updated_at.
-          if (changes !== null && changes.applied > 0) {
-            await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.steps) })
+          // moves revision, spec_hash or updated_at. TASK-949: the write keeps the stored entries this
+          // version can't read (changeStoredSteps).
+          if (changes !== null && changes.write !== null) {
+            await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.write) })
               .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
           }
         } catch (error) {

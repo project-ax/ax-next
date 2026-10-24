@@ -7,7 +7,8 @@ import { StoredRoutineSchema } from '../definition.js';
 import type { DispatchReport, StoredStep } from '../types.js';
 
 // TASK-948: a "get-done" task's checklist, as the store keeps it: one JSONB list on the routine's row, read
-// leniently, cleared with the rest of a task's state, and edited only by its check-ins' reports.
+// leniently, cleared with the rest of a task's state, and edited by its check-ins' reports and, from TASK-949,
+// by its owner.
 const f = fixture();
 const minute = (n: number) => new Date(now.getTime() + n * 60_000);
 const GET_DONE = RoutineDefinitionSchema.parse({
@@ -161,6 +162,24 @@ describe("a report's step changes (TASK-948)", () => {
     expect(await record(run, onTrack, [{ op: 'edit', id: 's000001', text: 'Mine now' }, { op: 'tick', id: 'sgone00' }]))
       .toEqual({ outcome: 'recorded', applied: 0, skipped: 2 });
     expect(await stepsColumn(task.routineId)).toEqual(stored);
+  });
+
+  it('a report that applies a change keeps the stored entries this version can’t read (TASK-949)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const later = { ...step('s000002', 'From later'), addedBy: 'app' };
+    await setSteps(task.routineId, [step('s000001', 'Export every article'), later]);
+    const run = await bound(task, 'run', minute(1));
+    expect(await record(run, onTrack, [{ op: 'tick', id: 's000001' }])).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
+    expect(await stepsColumn(task.routineId)).toEqual([step('s000001', 'Export every article', { done: true }), later]);
+  });
+
+  it('a report against a checklist that isn’t a list skips every change and leaves it (TASK-949)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await setSteps(task.routineId, { not: 'a list' });
+    const run = await bound(task, 'run', minute(1));
+    expect(await record(run, onTrack, [{ op: 'add', text: 'Export every article' }])).toEqual({ outcome: 'recorded', applied: 0, skipped: 1 });
+    expect(await stepsColumn(task.routineId)).toEqual({ not: 'a list' });
+    expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'on-track', update: 'Moving.' }, steps: [] });
   });
 
   it('a check-in that started earlier still ticks after a newer one reported, but its status doesn’t replace the newer report', async () => {
