@@ -40,7 +40,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
-    noRecentUpdate: noRecentUpdateView(row, userId) };
+    noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -49,12 +49,13 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * routine still sees the routine. Decided here, where every view is made (list,
  * get, create, update, their replays, the tools' recovery), so no caller (a tool,
  * the Settings routes, the Tasks page) needs a rule of its own for these. It covers
- * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`) and
- * `report` only: a fire's `renderedPrompt` is not gated here (a task run's
- * check-in message never lands there: fire.ts stores `renderedPrompt: null` for task
- * runs, TASK-908). A repeat routine shows none either: changing a kind clears it, and
- * this hides any a row holds anyway. TASK-952: a report's reading is part of `task`
- * and of `report`, so it follows the same rule.
+ * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`), a
+ * "get-done" task's steps (TASK-948: `stepsView`) and `report` only: a fire's
+ * `renderedPrompt` is not gated here (a task run's check-in message never lands
+ * there: fire.ts stores `renderedPrompt: null` for task runs, TASK-908). A repeat
+ * routine shows none either: changing a kind clears it, and this hides any a row
+ * holds anyway. TASK-952: a report's reading is part of `task` and of `report`,
+ * so it follows the same rule.
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
@@ -64,6 +65,17 @@ function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null 
 /** TASK-952. A report's reading as a view shows it: field by field, never a spread, so nothing the store reads reaches the view unnamed. */
 function readingView(reading: StoredReading | null): C.RoutineReadingView | null {
   return reading === null ? null : { value: reading.value, label: reading.label };
+}
+/**
+ * TASK-948. A "get-done" task's checklist, under `taskView`'s rule: only its
+ * owner sees it. `=== 'get-done'`, an explicit allowlist: no other kind has a
+ * checklist, so a stay-on-top row that holds steps (a hand edit) shows none,
+ * and so does a kind this code doesn't know. Each step is projected field by
+ * field, so whatever else a stored step holds stays here.
+ */
+function stepsView(row: StoredRoutine, userId: string): C.RoutineStepView[] {
+  if (row.ownerUserId !== userId || row.kind !== 'get-done') return [];
+  return row.steps.map(({ id, text, done, addedBy }) => ({ id, text, done, addedBy }));
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under
@@ -265,25 +277,33 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // TASK-907. A check-in's report is the run's own output, not routine management, so there's no
   // access check here. The hook checks the whole binding itself, whoever calls it: a routine run's
   // context, for the run's own agent; then the store requires the run to be open, bound to that
-  // context's conversation, and a check-in of a stay-on-top task its actor owns, all under the
-  // run's row lock. It writes nothing when it refuses. It tries the write once. A failed write
-  // throws an error naming only the run and the SQLSTATE (store.ts, reportWriteError); its other
-  // statements (the fence, the locked reads, the commit) carry no report text, so their errors
-  // can't quote it either. The tool logs a failure as one routines_report_failed warn line and
-  // answers the closed "unavailable", a 503, which the runner's IPC client retries up to its 5xx
-  // cap: a retry runs the whole report again, and a report that lands just replaces the run's report.
+  // context's conversation, and a check-in of a task (any task kind, TASK_KINDS) its actor owns,
+  // all under the run's row lock. It writes nothing when it refuses. TASK-948: the store applies a
+  // report's step changes under the same lock (and skips them all for a task that isn't get-done).
+  // The answer counts them, and one info line, routines_report_steps, carries the counts and ids,
+  // never a step's text. It tries the write once. A failed write throws an error naming only the
+  // run and the SQLSTATE (store.ts, reportWriteError); its other statements (the fence, the locked
+  // reads, the commit) carry no report text, so their errors can't quote it either. The tool logs a
+  // failure as one routines_report_failed warn line and answers the closed "unavailable", a 503,
+  // which the runner's IPC client retries up to its 5xx cap: a retry runs the whole report again. A
+  // report that lands just replaces the run's report, and its step changes find their work done (an
+  // add whose text is already on the list is skipped), so only the counts differ.
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
-    const { agentId, dispatchId, notes, reading, ...report } = input;
+    const { agentId, dispatchId, notes, reading, steps, ...report } = input;
     const conversationId = ctx.conversationId;
     if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
     if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
     if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
     // TASK-952: a reading left out or sent as null is none this time.
     const outcome = await store.recordReport({
-      agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), reading: reading ?? null, now: now(),
+      agentId, dispatchId, conversationId, actorUserId: ctx.userId, report,
+      ...(notes === undefined ? {} : { notes }), reading: reading ?? null, ...(steps === undefined ? {} : { steps }), now: now(),
     });
-    if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
-    return { recorded: true as const };
+    if (outcome === 'recorded') return { recorded: true as const };
+    if (typeof outcome === 'string') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
+    const { applied, skipped } = outcome;
+    ctx.logger.info('routines_report_steps', { agentId, dispatchId, applied, skipped });
+    return { recorded: true as const, steps: { applied, skipped } };
   });
   // TASK-910. The person clears a task's agent notes on its task page. Only the task's owner may,
   // whether or not they still manage the agent's tasks: the owner is the only person the notes are

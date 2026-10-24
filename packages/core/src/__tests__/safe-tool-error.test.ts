@@ -47,4 +47,10 @@ describe('safe routine tool failures', () => {
     // The view's name for the notes is no input field.
     expect(new SafeToolError('validation', 'agentNotes' as SafeToolField).field).toBe('input');
   });
+  it('names a report’s steps (TASK-948)', () => {
+    const error = new SafeToolError('validation', 'steps');
+    expect(error.field).toBe('steps');
+    expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: steps');
+    expect(safeToolMessage('validation', 'steps')).toBe(error.message);
+  });
 });

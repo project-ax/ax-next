@@ -21,6 +21,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
   return {
     agentName: 'Quill',
     name,
+    kind: 'stay-on-top',
     enabled: true,
     revision: 'rev-1',
     permissions: { fire: true, stop: true, edit: true },
@@ -28,6 +29,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     nextCheckAt: null,
     brief: { promptBody: null, goodWhen: null },
     task: null,
+    steps: [],
     noRecentUpdate: null,
     updates: [],
     replies: [],

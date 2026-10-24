@@ -24,4 +24,5 @@ export const routineFixture: RoutineView = {
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
   task: null,
   noRecentUpdate: null,
+  steps: [],
 };

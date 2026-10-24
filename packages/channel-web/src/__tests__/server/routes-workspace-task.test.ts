@@ -110,6 +110,7 @@ type StoredTask = NonNullable<StoredRoutine['task']>;
 function stored(over: Partial<StoredRoutine>): StoredRoutine {
   return {
     ...routineFixture,
+    steps: [],
     kind: 'stay-on-top',
     goodWhen: 'No ticket waits longer than an hour.',
     ownerUserId: 'alice',
@@ -186,6 +187,8 @@ interface World {
   unvalidated: boolean;
   /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
   viewMiss: { value: unknown } | null;
+  /** Set, with `unvalidated`: merged into the view (TASK-948: a kind or steps the schema would refuse). */
+  viewPatch: Record<string, unknown> | null;
 }
 
 interface Call<I> {
@@ -214,6 +217,7 @@ function setup(over: Partial<World> = {}) {
     replyFailure: null,
     unvalidated: false,
     viewMiss: null,
+    viewPatch: null,
     ...over,
   };
   const bus = new HookBus();
@@ -260,7 +264,8 @@ function setup(over: Partial<World> = {}) {
         if (row === undefined) throw new SafeToolError('not-found', 'routineId');
         const allowed = world.managers[input.agentId]?.includes(ctx.userId) ?? false;
         const view = routineView(row, ctx.userId, allowed);
-        return world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
+        const missed = world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
+        return world.viewPatch === null ? missed : { ...missed, ...world.viewPatch };
       },
       world.unvalidated ? undefined : { returns: RoutineGetOutputSchema },
     );
@@ -413,6 +418,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.body).toStrictEqual({
       agentName: 'Caveman',
       name: 'Project check-in',
+      kind: 'stay-on-top',
       enabled: true,
       revision: 'rev-7',
       permissions: { fire: true, stop: true, edit: true },
@@ -430,6 +436,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         reading: null,
         reportedAt: '2026-10-22T14:58:00.000Z',
       },
+      steps: [],
       noRecentUpdate: null,
       updates: [
         {
@@ -461,6 +468,74 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     ]) {
       expect(wire).not.toContain(marker);
     }
+  });
+
+  it('a get-done task’s page carries its kind and its steps, in order, fenced, each with its id and whether the agent added it (TASK-948)', async () => {
+    const { detail } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 't1',
+          kind: 'get-done',
+          steps: [
+            { id: 'saaaaaa', text: 'Export   every\tarticle', done: true, addedBy: 'agent' },
+            { id: 'sbbbbbb', text: 'Ask Dana to review billing', done: false, addedBy: 'person' },
+            { id: 'scccccc', text: 'x'.repeat(250), done: false, addedBy: 'agent' },
+            { id: 'sdddddd', text: '\u202E', done: false, addedBy: 'agent' },
+          ],
+        }),
+      ],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    const body = bodyOf(captured);
+    expect(body.kind).toBe('get-done');
+    expect(body.steps).toStrictEqual([
+      { id: 'saaaaaa', text: 'Export every article', done: true, byAgent: true },
+      { id: 'sbbbbbb', text: 'Ask Dana to review billing', done: false, byAgent: false },
+      // A stored step past the writer's cap (TASK-913) shows at least what a check-in reads: 200 characters, then "…".
+      { id: 'scccccc', text: `${'x'.repeat(200)}…`, done: false, byAgent: true },
+      { id: 'sdddddd', text: null, done: false, byAgent: true },
+    ]);
+  });
+
+  it('reads a kind it doesn’t know as stay-on-top, with no steps (TASK-948)', async () => {
+    // A view the schema didn't parse (TASK-913's shape), from a later routines plugin.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: {
+        kind: 'later-kind',
+        steps: [{ id: 's1', text: 'Export every article', done: true, addedBy: 'agent' }],
+      },
+      rows: [stored({ agentId: 'a1', routineId: 't1' })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).kind).toBe('stay-on-top');
+    expect(bodyOf(captured).steps).toStrictEqual([]);
+  });
+
+  it('labels a step whose author it doesn’t know as the agent’s, and leaves out what isn’t a whole step (TASK-948)', async () => {
+    // The label is how a person spots text that isn't theirs, so only a step
+    // the host says a person wrote reads as one.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: {
+        steps: [
+          { id: 's1', text: 'Export every article', done: false, addedBy: 'later-author' },
+          { id: 's2', text: 'Ask Dana to review billing', done: true, addedBy: 'person' },
+          { id: 7, text: 'An id that isn’t one', done: false, addedBy: 'agent' },
+          { id: 's3', text: 'No author', done: false },
+        ],
+      },
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'get-done' })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).steps).toStrictEqual([
+      { id: 's1', text: 'Export every article', done: false, byAgent: true },
+      { id: 's2', text: 'Ask Dana to review billing', done: true, byAgent: false },
+    ]);
   });
 
   it('each update names its check-in’s conversation, and one that recorded none says so', async () => {

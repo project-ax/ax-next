@@ -543,6 +543,8 @@ function taskRow(over: Partial<TaskRow> = {}): TaskRow {
     routineId: 't1',
     name: TASK_NAME,
     enabled: true,
+    kind: 'stay-on-top',
+    steps: null,
     task: null,
     noRecentUpdate: null,
     ...over,

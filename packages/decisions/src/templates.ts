@@ -121,7 +121,7 @@ export interface DecisionTextInput {
   toolTitle?: string | null | undefined;
   /**
    * TASK-906 — whether a routine tool call is proposing to start or change a
-   * task (a "stay on top of something" routine). A closed enum derived from the
+   * task (a routine of any kind but repeat). A closed enum derived from the
    * call's input by `routineTaskProposal`; it is never input text. Ignored for
    * every tool but `routine_create` / `routine_update`.
    */

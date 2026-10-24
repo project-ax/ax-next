@@ -1,4 +1,4 @@
-import type { CheckInMiss, RoutineDefinition, RoutineKind, RoutineReportStatus } from '@ax/routines-contract';
+import type { CheckInMiss, RoutineDefinition, RoutineKind, RoutineReportStatus, RoutineStepAuthor, RoutineStepOp } from '@ax/routines-contract';
 export type { ActiveHours, CheckInMiss, RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
@@ -22,6 +22,8 @@ export type StoredTaskState = { status: RoutineReportStatus; update: string; ask
  * agent text.
  */
 export type StoredNoRecentUpdate = { inARow: number; reason: CheckInMiss; at: Date; autoPausedAt: Date | null };
+/** TASK-948. One step of a "get-done" task's checklist, as stored. The id is host-made; the text is agent- or person-written. */
+export type StoredStep = { id: string; text: string; done: boolean; addedBy: RoutineStepAuthor };
 /** Below the hook bus. Owner identity is pinned independently from the editing actor. */
 export type StoredRoutine = RoutineDefinition & {
   agentId: string; routineId: string; revision: string; ownerUserId: string;
@@ -40,6 +42,11 @@ export type StoredRoutine = RoutineDefinition & {
    * `reconcileOwners` (TASK-936); the last two only clear them.
    */
   noRecentUpdate: StoredNoRecentUpdate | null;
+  /**
+   * TASK-948. A "get-done" task's checklist, in order. Empty for any other
+   * kind, until the agent drafts it, and after a change of kind or of owner.
+   */
+  steps: StoredStep[];
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
@@ -99,7 +106,11 @@ export type FireReport = DispatchReport & { reading: StoredReading | null };
 export type OpenCheckIn = { dispatchId: string; routineId: string; kind: RoutineKind; ownerUserId: string };
 /** TASK-907. What `routine_report`'s lookup found in a conversation: its one open run, or why there's none to report on. */
 export type OpenCheckInLookup = { run: OpenCheckIn } | { run: null; reason: 'no-open-run' | 'ambiguous' | 'routine-gone' };
-/** TASK-907. Why `recordReport` wrote nothing, decided under the run's locks: fixed words an operator's log can carry. */
+/**
+ * TASK-907. Why `recordReport` wrote nothing, decided under the run's locks:
+ * fixed words an operator's log can carry. `kind`: the routine isn't a task
+ * kind (`TASK_KINDS`, TASK-948).
+ */
 export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'routine-gone' | 'kind' | 'owner';
 /**
  * TASK-907. `conversationId` is the conversation the report came from (host-set
@@ -107,8 +118,15 @@ export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'rout
  * notes; null clears them. A run accepted at or before the last clear can't
  * change the notes (TASK-910). TASK-952: `reading` left out or null means none
  * this time, so the task's latest reading becomes none, unlike `notes`.
+ * TASK-948: `steps`, the report's changes to a get-done task's checklist,
+ * applied in order (`applyStepOps`); left out, the checklist is left alone.
  */
 export type RecordReportInput = {
   agentId: string; dispatchId: string; conversationId: string; actorUserId: string;
-  report: DispatchReport; notes?: string | null; reading?: StoredReading | null; now: Date;
+  report: DispatchReport; notes?: string | null; reading?: StoredReading | null; steps?: readonly RoutineStepOp[]; now: Date;
 };
+/**
+ * TASK-948. A report that sent step changes landed: how many of them applied
+ * and how many were skipped. Counts only, never a step's text.
+ */
+export type RecordedSteps = { outcome: 'recorded'; applied: number; skipped: number };

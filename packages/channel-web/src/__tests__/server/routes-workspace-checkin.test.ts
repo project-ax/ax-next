@@ -90,6 +90,7 @@ type StoredTask = NonNullable<StoredRoutine['task']>;
 function stored(over: Partial<StoredRoutine>): StoredRoutine {
   return {
     ...routineFixture,
+    steps: [],
     kind: 'stay-on-top',
     goodWhen: 'No ticket waits longer than an hour.',
     ownerUserId: 'alice',

@@ -12,6 +12,8 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     routineId: 't1',
     name: 'Zero open tickets',
     enabled: true,
+    kind: 'stay-on-top',
+    steps: null,
     task: null,
     noRecentUpdate: null,
     ...over,

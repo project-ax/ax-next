@@ -219,3 +219,52 @@ describe('routines:report (TASK-907)', () => {
     }
   });
 });
+
+describe("routines:report and a get-done task's steps (TASK-948)", () => {
+  const getDoneInput = (requestId: string) => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
+    name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+    kind: 'get-done', goodWhen: 'Every article is on the new site.',
+  }) });
+  const moving = { status: 'on-track', update: 'Moving the articles.', ask: null } as const;
+  /** Every key the counts' log line may carry: the logger's own, ids and the two counts, never a step's text. */
+  const STEPS_LOG_KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'dispatchId', 'applied', 'skipped'];
+  const countLines = (lines: readonly string[]) =>
+    lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.msg === 'routines_report_steps');
+  const stepsColumn = async (routineId: string) =>
+    (await sql<{ task_steps: unknown }>`SELECT task_steps FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0]?.task_steps;
+
+  it('answers with the counts, and leaves one info line of counts and ids, none of the steps', async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(getDoneInput('task'));
+    const run = await bound(row, 'run');
+    const log = logged(run.ctx);
+    const steps = [{ op: 'add', text: 'Upload the refund policy' }, { op: 'remove', id: 'snothere' }];
+    expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...moving, steps }, log.ctx))
+      .toStrictEqual({ recorded: true, steps: { applied: 1, skipped: 1 } });
+    const entries = countLines(log.lines);
+    expect(entries).toEqual([expect.objectContaining({ level: 'info', agentId: 'a', dispatchId: run.dispatchId, applied: 1, skipped: 1 })]);
+    for (const key of Object.keys(entries[0]!)) expect(STEPS_LOG_KEYS, key).toContain(key);
+    expect(log.lines.join('\n')).not.toMatch(/refund policy/);
+    expect((await f.store.findOne(row))?.steps).toEqual([{ id: expect.any(String), text: 'Upload the refund policy', done: false, addedBy: 'agent' }]);
+  });
+
+  it('a report with no steps answers exactly { recorded: true } and logs no counts', async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(getDoneInput('task'));
+    const run = await bound(row, 'run');
+    const log = logged(run.ctx);
+    expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...moving }, log.ctx)).toStrictEqual({ recorded: true });
+    expect(countLines(log.lines)).toEqual([]);
+    expect((await f.store.findOne(row))?.task).toMatchObject(moving);
+  });
+
+  it("steps sent through the hook for a stay-on-top task's check-in are all skipped, and its report still lands", async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'run');
+    expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, steps: [{ op: 'add', text: 'Answer ticket 4410' }] }, run.ctx))
+      .toStrictEqual({ recorded: true, steps: { applied: 0, skipped: 1 } });
+    expect((await f.store.findOne(row))?.task).toMatchObject({ status: 'needs-you', update: needsYou.update });
+    expect(await stepsColumn(row.routineId)).toEqual([]);
+  });
+});

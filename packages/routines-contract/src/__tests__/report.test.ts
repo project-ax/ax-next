@@ -78,8 +78,9 @@ describe('a task’s report: its shape (TASK-907)', () => {
   });
 
   it('names no target', () => {
-    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'update']);
-    for (const key of ['routineId', 'dispatchId', 'conversationId', 'agentId', 'taskId', 'steps', 'userId', 'source', 'Notes']) {
+    // `steps` is a field since TASK-948: a get-done task's checklist changes (steps.test.ts owns its shape).
+    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'steps', 'update']);
+    for (const key of ['routineId', 'dispatchId', 'conversationId', 'agentId', 'taskId', 'userId', 'source', 'Notes']) {
       expect(refused({ status: 'on-track', update: 'ok', [key]: 'x' }), key).toBe(true);
     }
     // A JSON body can make `__proto__` an own key. Strict refuses it like any other.
@@ -164,7 +165,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
     const view = {
       ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
       nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null,
+      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, steps: [],
     } as const;
     const task = {
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?', reading: null,
@@ -212,8 +213,10 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     }
     // The task field is still required, so no reader mistakes an old shape for "none".
     expect(RoutineListToolOutputSchema.safeParse({ routines: [view] }).success).toBe(false);
-    // Get keeps them.
-    expect(RoutineViewSchema.safeParse({ ...view, task: { ...shown, agentNotes: 'n' } }).success).toBe(true);
+    // Nor does a get-done task's checklist ride along (TASK-948).
+    expect(RoutineListToolOutputSchema.safeParse({ routines: [{ ...view, task: null, steps: [] }] }).success).toBe(false);
+    // Get keeps them, and has a get-done task's steps (TASK-948), which the list's view leaves out.
+    expect(RoutineViewSchema.safeParse({ ...view, task: { ...shown, agentNotes: 'n' }, steps: [] }).success).toBe(true);
   });
 
   it('the descriptions say so', () => {

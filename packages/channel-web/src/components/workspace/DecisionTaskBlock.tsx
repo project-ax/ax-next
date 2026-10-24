@@ -2,7 +2,7 @@
  * DecisionTaskBlock — the brief a held call writes, in its own fields
  * (TASK-906).
  *
- * When an agent asks to start a "Stay on top of something" task, or to change
+ * When an agent asks to start a task (either kind, TASK-948), or to change
  * a routine's name, instructions or going-well-when, the request block shows
  * the whole call as JSON, cut short past 2000 characters. That isn't how a
  * person reads a brief, and it isn't all of it. This block shows what they're
@@ -23,11 +23,13 @@
  */
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { cn } from '@/lib/utils';
+import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import type { DecisionTask } from '@/lib/workspace-types';
 import { DECISION_REQUEST_PROVENANCE } from './DecisionRequestBlock';
 
 export const DECISION_TASK_HEADING_START = 'The task';
 export const DECISION_TASK_HEADING_CHANGE = 'What changes';
+export const DECISION_TASK_KIND_LABEL = 'Kind';
 export const DECISION_TASK_NAME_LABEL = 'Name';
 export function decisionTaskInstructionsLabel(agentName: string): string {
   return `What ${agentName} will do`;
@@ -165,6 +167,13 @@ export function DecisionTaskBlock({
         {task.action === 'start' ? DECISION_TASK_HEADING_START : DECISION_TASK_HEADING_CHANGE}
       </div>
       <dl className="mt-1.5 flex flex-col gap-2">
+        {/* Absent from an older host, or a kind this page has no words for: no row. */}
+        {task.kind !== null && Object.hasOwn(TASK_KIND_LABELS, task.kind) && (
+          <div className="flex flex-col gap-0.5">
+            <dt className={LABEL}>{DECISION_TASK_KIND_LABEL}</dt>
+            <dd className={cn(VALUE, 'break-words')}>{TASK_KIND_LABELS[task.kind]}</dd>
+          </div>
+        )}
         {task.name !== null && (
           <div className="flex flex-col gap-0.5">
             <dt className={LABEL}>{DECISION_TASK_NAME_LABEL}</dt>

@@ -92,6 +92,15 @@ export interface RoutinesDefinitionsRow {
    * report from code before version 10 shows no older reading (`addReadingColumns`).
    */
   task_reading_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /**
+   * Version 11 (TASK-948). A "get-done" task's checklist: a JSON list of
+   * `{ id, text, done, addedBy }`, `[]` until its agent drafts it. Written only
+   * by `recordReport`, as `JSON.stringify(...)` (a later card's person edits will
+   * write it too), and set back to `[]` by a change of kind (`updateAuthored`)
+   * or of owner (`reconcileOwners`, TASK-936), through `NO_TASK_STATE`. Read
+   * leniently (`storedSteps`), so one odd value can't stop a read or the tick.
+   */
+  task_steps: ColumnType<unknown, string | undefined, string>;
 }
 
 export interface RoutinesFiresRow {
@@ -265,7 +274,35 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addReadingColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (10)`.execute(trx);
     }
+    if (!await done(11)) {
+      await addGetDoneSteps(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (11)`.execute(trx);
+    }
   });
+}
+
+/** Version 11 (TASK-948): the "get-done" kind and its checklist. The kind
+ * check, which version 3 named so a later kind could swap it, is swapped:
+ * dropped if it exists, then added with "get-done", in one statement. Every
+ * existing row reads an empty checklist, the column's default. Additive, and a
+ * re-run is a no-op: it puts back the same check, and the column keeps every
+ * value already written. Code from before this version ignores the column, and
+ * the new check still allows every kind it knows, but it can't read a get-done
+ * row (its `RoutineKindSchema` refuses the kind). That agent's `routines:list`
+ * and `routines:get` fail, and since its `claimDue` maps every claimed row
+ * through `rowToRoutine`, one due get-done row fails the whole tick batch: every
+ * routine claimed beside it is pushed a claim window and skipped. So before
+ * rolling back below this version, delete every get-done task. Pausing one
+ * keeps the tick safe, since a paused row isn't claimed, but not its agent's
+ * list.
+ */
+async function addGetDoneSteps(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`
+    ALTER TABLE routines_v1_definitions
+      DROP CONSTRAINT IF EXISTS routines_v1_definitions_kind_chk,
+      ADD CONSTRAINT routines_v1_definitions_kind_chk CHECK (kind IN ('repeat', 'stay-on-top', 'get-done')),
+      ADD COLUMN IF NOT EXISTS task_steps JSONB NOT NULL DEFAULT '[]'::jsonb
+  `.execute(db);
 }
 
 /** Version 10 (TASK-952): a report's optional reading, one number the agent read

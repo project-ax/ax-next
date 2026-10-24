@@ -53,16 +53,20 @@ describe('a view’s noRecentUpdate (TASK-930)', () => {
   } as const;
   const paused = { inARow: 5, reason: 'interrupted', at: '2026-10-23T11:00:00.000Z', autoPaused: true } as const;
 
-  it.each([['RoutineViewSchema', RoutineViewSchema], ['RoutineListToolViewSchema', RoutineListToolViewSchema]] as const)('%s requires it, takes null or a miss, and checks what a miss holds', (_name, schema) => {
+  // The services' view carries a get-done task's steps (TASK-948); the tools' list view leaves them out.
+  it.each([
+    ['RoutineViewSchema', RoutineViewSchema, { ...view, steps: [] }],
+    ['RoutineListToolViewSchema', RoutineListToolViewSchema, view],
+  ] as const)('%s requires it, takes null or a miss, and checks what a miss holds', (_name, schema, partial) => {
     // Left out is refused, so no reader mistakes an older producer's view for "no misses".
-    expect(schema.safeParse(view).success).toBe(false);
-    for (const noRecentUpdate of [null, good, paused]) expect(schema.parse({ ...view, noRecentUpdate })).toEqual({ ...view, noRecentUpdate });
+    expect(schema.safeParse(partial).success).toBe(false);
+    for (const noRecentUpdate of [null, good, paused]) expect(schema.parse({ ...partial, noRecentUpdate })).toEqual({ ...partial, noRecentUpdate });
     // The stored shape's pause time never crosses, nor does anything else the view doesn't name.
     for (const extra of [{ autoPausedAt: paused.at }, { dispatchId: 'd' }]) {
-      expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, ...extra } }).success, JSON.stringify(extra)).toBe(false);
+      expect(schema.safeParse({ ...partial, noRecentUpdate: { ...good, ...extra } }).success, JSON.stringify(extra)).toBe(false);
     }
-    expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, inARow: 0 } }).success).toBe(false);
-    expect(schema.safeParse({ ...view, noRecentUpdate: { ...good, reason: 'gremlins' } }).success).toBe(false);
+    expect(schema.safeParse({ ...partial, noRecentUpdate: { ...good, inARow: 0 } }).success).toBe(false);
+    expect(schema.safeParse({ ...partial, noRecentUpdate: { ...good, reason: 'gremlins' } }).success).toBe(false);
   });
 
   it('the tools’ answers carry it', () => {

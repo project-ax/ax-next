@@ -49,7 +49,15 @@ import type {
   RoutineFireView,
   RoutineReplyOutput,
   RoutineReportStatus,
+  TaskKind,
 } from '@ax/routines-contract';
+
+/**
+ * TASK-948 — a task's kind, the routines contract's own list (`TASK_KINDS`),
+ * not a copy: `'stay-on-top' | 'get-done'`. What each is called, and how a
+ * kind this page doesn't know is read, live in `./task-kinds.js`.
+ */
+export type { TaskKind };
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -161,6 +169,12 @@ export interface DecisionRequest {
 /** TASK-906 — a task create or a routine brief edit on an OPEN row. Every string is server-fenced, agent-authored data. */
 export interface DecisionTask {
   action: 'start' | 'change';
+  /**
+   * TASK-948 — the kind of task the call starts, or turns the routine into:
+   * one of two words, never free text. Null when a change sets no task kind
+   * (an edit of the brief alone, or a change back to a repeat routine).
+   */
+  kind: TaskKind | null;
   name: string | null;
   instructions: { text: string; truncated: boolean } | null;
   goodWhen: { text: string; truncated: boolean } | null;
@@ -229,11 +243,11 @@ export interface Decision {
   request: DecisionRequest | null;
   /**
    * THE BRIEF THE HELD CALL WRITES (TASK-906), in its own fields — or null.
-   * Non-null only on an open row whose call starts a "Stay on top of
-   * something" task, or edits a routine's name, instructions or
-   * going-well-when (or makes it a task, which sends all three). An edit is
-   * drawn whatever the routine's kind: the server can't look it up, and an
-   * existing task's new instructions have to show whole.
+   * Non-null only on an open row whose call starts a task, or edits a
+   * routine's name, instructions or going-well-when (or makes it a task,
+   * which sends all three). An edit is drawn whatever the routine's kind:
+   * the server can't look it up, and an existing task's new instructions
+   * have to show whole.
    * `routineBriefFields` in `@ax/routines-contract` decides that. It covers
    * every call `routineTaskProposal`, the reading `@ax/decisions` words the
    * summary from, calls a task, so the block never shows less than the
@@ -1375,6 +1389,12 @@ export interface TaskNoRecentUpdate {
   autoPaused: boolean;
 }
 
+/** How many of a "get-done" task's steps are done (TASK-948). Counts only: no step's text crosses on the list. */
+export interface TaskStepCounts {
+  done: number;
+  total: number;
+}
+
 /** One row of `GET /api/workspace/tasks`: a task the caller owns, on an agent they can see. `task` is null until its first report. */
 export interface TaskRow {
   agentId: string;
@@ -1382,6 +1402,10 @@ export interface TaskRow {
   routineId: string;
   name: string;
   enabled: boolean;
+  /** TASK-948. The server reads a kind it doesn't know (a newer routines plugin) as `'stay-on-top'`. */
+  kind: TaskKind;
+  /** TASK-948. Null unless the task is `'get-done'`; zero of zero for one with no steps yet. */
+  steps: TaskStepCounts | null;
   task: TaskRowReport | null;
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
@@ -1456,10 +1480,25 @@ export interface TaskReplyResponse {
   checkIn: TaskReplyCheckIn;
 }
 
+/**
+ * One step on a task's page (TASK-948). `text` is agent- or person-written,
+ * fenced to one line; null when nothing legible survived. `id` is an opaque
+ * host id, for the next card's edits. `byAgent` comes from the host-set
+ * author, and anything but a person reads as the agent's.
+ */
+export interface TaskStep {
+  id: string;
+  text: string | null;
+  done: boolean;
+  byAgent: boolean;
+}
+
 /** Everything a task's own page shows (TASK-910). */
 export interface TaskDetail {
   agentName: string;
   name: string;
+  /** TASK-948. The server reads a kind it doesn't know (a newer routines plugin) as `'stay-on-top'`. */
+  kind: TaskKind;
   enabled: boolean;
   /** Check now's and Pause/Resume's `expectedRevision`. */
   revision: string;
@@ -1472,6 +1511,8 @@ export interface TaskDetail {
   /** The person-written brief, fenced. */
   brief: { promptBody: string | null; goodWhen: string | null };
   task: TaskDetailReport | null;
+  /** A "get-done" task's checklist, in order (TASK-948); empty for any other kind. */
+  steps: TaskStep[];
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
   /** Newest first, at most 50. */

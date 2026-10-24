@@ -33,7 +33,7 @@ describe('the check-in message (TASK-908)', () => {
     h = await createCheckInHarness();
     const task = await create(TASK_DEFINITION, 'task');
     const { message } = await h.checkIn(task, 'run', async () => {});
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0 }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null }));
     expect(message).not.toContain(TASK_DEFINITION.promptBody);
     expect(message).not.toContain(TASK_DEFINITION.goodWhen);
   });
@@ -51,7 +51,7 @@ describe('the check-in message (TASK-908)', () => {
     expect(message).not.toContain(NEEDS_YOU.ask);
     // Word for word: the task's notes and run 1's report, at the time run 1 started.
     const [, first] = await storedRuns(task);
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: NOTES, reports: [{ firedAt: first!.firedAt, report: { ...NEEDS_YOU, reading: null } }], replies: [], missesInARow: 0 }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: NOTES, reports: [{ firedAt: first!.firedAt, report: { ...NEEDS_YOU, reading: null } }], replies: [], missesInARow: 0, steps: null }));
   });
 
   it('a check-in after one that left no report is told so; after a report it isn’t', async () => {
@@ -290,7 +290,7 @@ describe('clearing a task’s notes (TASK-910)', () => {
     expect(await clearNotes(task)).toStrictEqual({ cleared: true });
     const { message } = await h.checkIn(task, 'run-2', async () => {});
     // Run 1's report is still there; its notes aren't.
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [{ firedAt: first!.firedAt, report: { ...NEEDS_YOU, reading: null } }], replies: [], missesInARow: 0 }));
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [{ firedAt: first!.firedAt, report: { ...NEEDS_YOU, reading: null } }], replies: [], missesInARow: 0, steps: null }));
     expect(message).not.toContain(NOTES);
   });
 
@@ -312,7 +312,7 @@ describe('clearing a task’s notes (TASK-910)', () => {
     expect((await get(task)).task).toEqual({ ...RUN_2, reading: null, agentNotes: null, reportedAt: expect.any(String) });
     const [second, first] = await runs(task, 2);
     const { message } = await h.checkIn(task, 'run-3', async () => {});
-    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, replies: [], missesInARow: 0, reports: [
+    expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, replies: [], missesInARow: 0, steps: null, reports: [
       { firedAt: second!.firedAt, report: { ...RUN_2, reading: null } }, { firedAt: first!.firedAt, report: { ...NEEDS_YOU, reading: null } },
     ] }));
     expect(message).not.toContain(NOTES);

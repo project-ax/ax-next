@@ -71,6 +71,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
   return {
     agentName: 'Quill',
     name: 'Zero open support tickets',
+    kind: 'stay-on-top',
     enabled: true,
     revision: 'rev-1',
     permissions: { fire: true, stop: true, edit: true },
@@ -81,6 +82,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
       goodWhen: 'No ticket is open longer than an hour.',
     },
     task: report(),
+    steps: [],
     noRecentUpdate: null,
     updates: [
       {
@@ -874,6 +876,62 @@ describe('TaskPage (TASK-910)', () => {
     expect(
       within(updates).getByText('3 open. I’m answering #4411 and #4412 now.'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage: a get-done task (TASK-948)', () => {
+  const STEPS = [
+    { id: 's1', text: 'Export every article', done: true, byAgent: true },
+    { id: 's2', text: 'Check the redirects', done: false, byAgent: false },
+  ];
+
+  it('names a get-done task’s kind, and shows its steps between the latest update and the brief (TASK-948)', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
+    await renderReady();
+    expect(
+      screen.getByText(
+        'Quill · Get something done · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
+      ),
+    ).toBeInTheDocument();
+    const steps = screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 2 done' });
+    const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(latestUpdate(), steps)).toBeTruthy();
+    expect(after(steps, screen.getByRole('region', { name: 'About this task' }))).toBeTruthy();
+    expect(screen.getByText('Check the redirects')).toBeInTheDocument();
+  });
+
+  // TASK-952 landed first: its reading block sits right under the latest update it came with, so a
+  // get-done page reads update, reading, steps, then the brief.
+  it('draws the agent’s reading under the latest update, then the steps, then the brief', async () => {
+    taskMock.mockResolvedValue(
+      detail({ kind: 'get-done', steps: STEPS, task: report({ reading: { label: 'Articles moved', value: 40 } }) }),
+    );
+    await renderReady();
+    const reading = screen.getByRole('region', { name: 'Quill’s reading' });
+    const steps = screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 2 done' });
+    const brief = screen.getByRole('region', { name: 'About this task' });
+    const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(latestUpdate(), reading)).toBeTruthy();
+    expect(after(reading, steps)).toBeTruthy();
+    expect(after(steps, brief)).toBeTruthy();
+  });
+
+  it('a stay-on-top page has no steps section, and keeps its kind line', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    expect(screen.queryByRole('heading', { name: /^Steps/ })).toBeNull();
+    expect(
+      screen.getByText(
+        'Quill · Stay on top of something · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('a paused get-done task with no schedule still names its kind', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', schedule: null }));
+    await renderReady();
+    expect(screen.getByText('Quill · Get something done')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument();
   });
 });
 

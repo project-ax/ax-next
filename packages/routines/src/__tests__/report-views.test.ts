@@ -6,7 +6,7 @@ import { fixture, createInput, now } from './store-fixture.js';
 import { registerRoutineServices } from '../services.js';
 import { parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
 import { AcceptedDispatchSchema } from '../dispatch.js';
-import type { DispatchReport, StoredReading } from '../types.js';
+import type { DispatchReport, StoredReading, StoredStep } from '../types.js';
 
 // TASK-907: what the reads show of a task's latest report, and of each run's.
 // Reports are recorded through the store here, the way `routines:report`
@@ -373,5 +373,58 @@ describe("a task's misses on the views (TASK-930)", () => {
     expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, noRecentUpdate: null });
     // The task itself still has them.
     expect((await get(bus, created.routineId)).noRecentUpdate).toEqual(edited.noRecentUpdate);
+  });
+});
+
+describe("a get-done task's steps on the views (TASK-948)", () => {
+  // The checklist is set by hand here, as a report's changes leave it: these tests are about what
+  // the views show of it, not about the changes (steps-store.test.ts).
+  const teammate = makeAgentContext({ userId: 'teammate', agentId: 'a', sessionId: 's' });
+  const GET_DONE = RoutineDefinitionSchema.parse({
+    name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+    kind: 'get-done', goodWhen: 'Every article is on the new site.',
+  });
+  const steps: StoredStep[] = [
+    { id: 's000001', text: 'Export every article', done: true, addedBy: 'agent' },
+    { id: 's000002', text: 'Ask Dana to review the billing articles', done: false, addedBy: 'person' },
+  ];
+  const setSteps = (routineId: string, value: unknown) =>
+    sql`UPDATE routines_v1_definitions SET task_steps = ${JSON.stringify(value)}::jsonb WHERE routine_id = ${routineId}`.execute(f.db);
+  const create = (bus: HookBus, definition: unknown) =>
+    bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition });
+
+  it("routines:get and routines:list show a get-done task's steps to its owner, and to no one else", async () => {
+    const bus = services();
+    const created = await create(bus, GET_DONE);
+    expect(created).toMatchObject({ kind: 'get-done', steps: [] });
+    await setSteps(created.routineId, steps);
+    expect((await get(bus, created.routineId)).steps).toEqual(steps);
+    expect((await list(bus)).map(view => view.steps)).toEqual([steps]);
+    // Someone else who can see the routine sees the routine, without them.
+    const seen = await bus.call<unknown, RoutineView>('routines:get', teammate, { agentId: 'a', routineId: created.routineId });
+    expect(seen).toMatchObject({ routineId: created.routineId, kind: 'get-done', steps: [] });
+    const listed = (await bus.call<unknown, { routines: RoutineView[] }>('routines:list', teammate, { agentId: 'a' })).routines;
+    expect(listed.map(view => [view.routineId, view.steps])).toEqual([[created.routineId, []]]);
+  });
+
+  it('a stay-on-top task shows none, even when its row holds some', async () => {
+    const bus = services();
+    const created = await create(bus, taskInput('create').definition);
+    await setSteps(created.routineId, steps);
+    expect((await f.store.findOne(created))?.steps).toEqual(steps);
+    expect((await get(bus, created.routineId)).steps).toEqual([]);
+    expect((await list(bus)).map(view => view.steps)).toEqual([[]]);
+  });
+
+  it('an exact routines:update replay answers with no steps: a receipt keeps none', async () => {
+    const bus = services();
+    const created = await create(bus, GET_DONE);
+    await setSteps(created.routineId, steps);
+    const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
+    const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
+    expect(edited.steps).toEqual(steps);
+    expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, steps: [] });
+    // The task itself still has them.
+    expect((await get(bus, created.routineId)).steps).toEqual(steps);
   });
 });

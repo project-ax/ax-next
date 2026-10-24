@@ -133,7 +133,7 @@ describe('webhooks', () => {
 });
 
 describe('public services and tools', () => {
-  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null };
+  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [] };
   it('round-trips the full view and forbids protected state and Date objects', () => {
     expect(RoutineViewSchema.parse(view)).toEqual(view);
     for (const extra of [{ ownerUserId: 'u' }, { specHash: 'hash' }, { nextRunAt: new Date() }, { nextRunAt: 'not-a-date' }, { permissions: { ...view.permissions, isAdmin: true } }]) expect(RoutineViewSchema.safeParse({ ...view, ...extra }).success).toBe(false);
@@ -264,7 +264,7 @@ describe('task kinds (TASK-906)', () => {
   const view = {
     ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [],
   };
 
   it('defaults kind to repeat and goodWhen to null', () => {
@@ -421,7 +421,7 @@ describe('task kinds (TASK-906)', () => {
 
     // A task keeps checking in. croner reads an expression with a ":" as one date, which
     // runs once or, if it's past, never; and a date no calendar has never comes at all.
-    const oneDate = 'A task that stays on top of something checks in again and again, so its schedule can’t be a single date.';
+    const oneDate = 'A task checks in again and again, so its schedule can’t be a single date.';
     const never = 'This schedule never checks in.';
 
     it.each([
@@ -492,7 +492,7 @@ describe('task kinds (TASK-906)', () => {
   });
 
   it('the JSON schema offers both fields', () => {
-    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top'], default: 'repeat' });
+    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top', 'get-done'], default: 'repeat' });
     expect(contract.RoutineDefinitionJsonSchema.properties.goodWhen).toMatchObject({ default: null });
   });
 });
@@ -523,7 +523,8 @@ describe('touchesTaskBrief (TASK-906)', () => {
     ['create stay-on-top', createCall(taskDef), true],
     ['create malformed', { name: 'routine_create', input: {} }, true],
     ['create invalid definition', createCall({ ...repeatDef, trigger: { kind: 'interval', every: '30s' } }), true],
-    ['create unknown kind', createCall({ ...repeatDef, kind: 'get-done' }), true],
+    // TASK-948 made 'get-done' a kind, so this names one the contract still doesn't know.
+    ['create unknown kind', createCall({ ...repeatDef, kind: 'finish-line' }), true],
     ['create kind in another case', createCall({ ...repeatDef, Kind: 'stay-on-top' }), true],
     ['create smuggled kind', createCall(JSON.parse('{"name":"n","promptBody":"p","trigger":{"kind":"interval","every":"15m"},"__proto__":{"kind":"stay-on-top"}}')), true],
     ['update enabled', upd({ enabled: false }), false],
@@ -759,7 +760,7 @@ describe('turning a routine into a task sends the whole brief (TASK-906)', () =>
 
 describe('tells the model the task rules (TASK-906)', () => {
   it('says that a task and its brief always ask', () => {
-    for (const text of ['People call routines "tasks".', 'goodWhen', '15 minutes', 'Creating a "stay-on-top" task always asks the person, even with Always Allow.']) {
+    for (const text of ['People call routines "tasks".', 'goodWhen', '15 minutes', 'Creating a task of either kind always asks the person, even with Always Allow.']) {
       expect(RoutineToolDescriptions.routine_create).toContain(text);
     }
     expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
@@ -767,7 +768,7 @@ describe('tells the model the task rules (TASK-906)', () => {
   });
   it('says a task’s cron can’t use “?”, and has to keep checking in', () => {
     for (const name of ['routine_create', 'routine_update'] as const) {
-      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a \\"stay-on-top\\" task, runs must be at least 15 minutes apart, the schedule must repeat (not a single date, nor a date that never comes, such as 31 February), and \\"?\\" is not allowed.');
+      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a task (\\"stay-on-top\\" or \\"get-done\\"), runs must be at least 15 minutes apart, the schedule must repeat (not a single date, nor a date that never comes, such as 31 February), and \\"?\\" is not allowed.');
     }
   });
   it('says a task’s brief can’t hide text', () => {
@@ -1003,7 +1004,7 @@ describe('a task’s brief can’t hide text from the card (TASK-906)', () => {
   });
 
   it('views recheck it, so a read never shows a task brief with hidden text', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [] };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${tags(' x')}` }).success).toBe(false);
   });
@@ -1185,8 +1186,93 @@ describe('a task’s brief can’t push text out of the card’s view (TASK-906)
   });
 
   it('views recheck it', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [] };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${'\n'.repeat(1000)}${payload}` }).success).toBe(false);
+  });
+});
+
+// TASK-948. A "Get something done" task keeps a schedule and a brief as a "Stay on top" one does,
+// so the two kinds share one set of rules, and the words a person reads fit either.
+describe('get-done tasks (TASK-948)', () => {
+  const getDone = { ...base, kind: 'get-done' as const, goodWhen: 'Every article is on the new site.', trigger: { kind: 'interval' as const, every: '15m' } };
+  const getDoneDef = RoutineDefinitionSchema.parse({
+    name: 'Move the help center', promptBody: 'Move every help article to the new site.', kind: 'get-done',
+    goodWhen: 'Every article is on the new site.', trigger: { kind: 'interval', every: '15m' },
+  });
+  const messages = (value: unknown): { path: (string | number)[]; message: string }[] => {
+    const result = RoutineDefinitionSchema.safeParse(value);
+    return result.success ? [] : result.error.issues.map(({ path, message }) => ({ path, message }));
+  };
+
+  it('is a kind, and one of the task kinds', () => {
+    expect(contract.ROUTINE_KINDS).toEqual(['repeat', 'stay-on-top', 'get-done']);
+    expect(contract.TASK_KINDS).toEqual(['stay-on-top', 'get-done']);
+    for (const kind of ['stay-on-top', 'get-done']) expect(contract.isTaskKind(kind), kind).toBe(true);
+    // Membership in the list, never a property lookup, so an inherited name isn't a kind.
+    for (const kind of ['repeat', 'nope', '', 'toString', '__proto__']) expect(contract.isTaskKind(kind), kind).toBe(false);
+  });
+
+  it.each([
+    getDone,
+    { ...getDone, trigger: { kind: 'interval', every: '1h' } },
+    { ...getDone, trigger: { kind: 'cron', expr: '0 * * * *', tz: 'UTC' } },
+  ])('parses unchanged %#', value => {
+    expect(RoutineDefinitionSchema.parse(value)).toEqual(value);
+  });
+
+  it.each([
+    ['no goodWhen', { ...getDone, goodWhen: null }, ['goodWhen'], 'Say how we’ll know this task is going well.'],
+    ['an update from another app', { ...getDone, trigger: { kind: 'webhook', path: '/zendesk' } }, ['trigger'], 'A task checks in on a schedule, not from an update from another app.'],
+    ['a shared conversation', { ...getDone, conversation: 'shared' }, ['conversation'], 'A task starts a fresh conversation for each check-in.'],
+    ['a silence token', { ...getDone, silenceToken: 'OK' }, ['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.'],
+    ['check-ins 14 minutes apart', { ...getDone, trigger: { kind: 'interval', every: '14m' } }, ['trigger', 'every'], 'Check-ins need to be at least 15 minutes apart.'],
+    ['a single date', { ...getDone, trigger: { kind: 'cron', expr: '2026-11-01T09:00:00', tz: 'UTC' } }, ['trigger', 'expr'], 'A task checks in again and again, so its schedule can’t be a single date.'],
+  ] as const)('refuses %s with its path and words, the same for both task kinds', (_label, value, path, message) => {
+    expect(messages(value)).toEqual([{ path, message }]);
+    expect(messages({ ...value, kind: 'stay-on-top' })).toEqual([{ path, message }]);
+  });
+
+  it('a repeat routine still can’t say when it’s going well', () => {
+    expect(messages({ ...base, goodWhen: 'x' })).toEqual([{ path: ['goodWhen'], message: 'Only a task can say when it’s going well.' }]);
+  });
+
+  it('holds the brief’s hidden-character rule', () => {
+    expect(messages({ ...getDone, name: 'Docs\u200B' }).map(issue => issue.path)).toEqual([['name']]);
+  });
+
+  it('a create starts a task, which always asks', () => {
+    expect(touchesTaskBrief(createCall(getDoneDef))).toBe(true);
+    expect(routineTaskProposal(createCall(getDoneDef))).toEqual({ action: 'start', definition: getDoneDef });
+    expect(routineBriefFields(createCall(getDoneDef))).toEqual({ action: 'start', definition: getDoneDef });
+  });
+
+  it('a routine turns into one only with the whole brief', () => {
+    const { name, promptBody, goodWhen } = getDoneDef;
+    expect(RoutineUpdateToolInputSchema.safeParse(upd({ kind: 'get-done', goodWhen }).input).success).toBe(false);
+    expect(touchesTaskBrief(upd({ kind: 'get-done', goodWhen }))).toBe(true);
+    const whole = { kind: 'get-done', name, promptBody, goodWhen };
+    expect(RoutineUpdateToolInputSchema.parse(upd(whole).input).patch).toEqual(whole);
+    expect(routineTaskProposal(upd(whole))).toEqual({ action: 'change', patch: whole });
+  });
+
+  it('the JSON schema offers it, and says what it is', () => {
+    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top', 'get-done'], default: 'repeat' });
+    expect(contract.RoutineDefinitionJsonSchema.properties.kind.description).toContain('"get-done" is a "Get something done" task: it works through a checklist of steps until the person marks it done. It needs goodWhen and a schedule, like "stay-on-top".');
+  });
+});
+
+describe('the tools name both task kinds (TASK-948)', () => {
+  it.each([
+    ['routine_create', ['kind "get-done" is a "Get something done" task: it works through a checklist of steps until the person marks it done, and you draft its steps at its first check-in.']],
+    ['routine_update', ['A task of either kind keeps check-ins at least 15 minutes apart.', 'without its agentNotes. It leaves a "get-done" task’s steps out too.']],
+    ['routine_list', ['A "get-done" task’s steps are left out here too: read a task with routine_get to see its steps.']],
+    ['routine_get', ['A "get-done" task’s steps field is its checklist, in order: each step’s id, its text, whether it is done, and who added it ("person" or "agent").']],
+    ['routine_report', [
+      'It works only during a task check-in (a run of a "stay-on-top" or "get-done" task, which ax starts on its own)',
+      'steps is for a "get-done" task only: a list of changes to its checklist, applied in order.',
+    ]],
+  ] as const)('%s', (name, sentences) => {
+    for (const sentence of sentences) expect(RoutineToolDescriptions[name]).toContain(sentence);
   });
 });
