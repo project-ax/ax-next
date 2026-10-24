@@ -136,8 +136,44 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineReportOutputSchema.safeParse({ recorded: true, steps: { applied: 2 } }).success).toBe(false);
     });
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and a person's step changes", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(21);
+  describe("a get-done task's finish date (TASK-951)", () => {
+    const task: StoredRoutine = {
+      ...row,
+      ...C.RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site.',
+      }),
+      steps: [{ id: 's000001', text: 'Export every article', done: true, addedBy: 'agent' }],
+      finishBy: '2026-11-14',
+    };
+    it("projects a get-done task's finish date to whoever sees it, and none for any other kind", () => {
+      const projected = routineView(task, 'owner', true);
+      expect(projected.finishBy).toBe('2026-11-14');
+      // Not owner-gated, unlike the task's steps: the date is about the work, and holds no agent text.
+      const teammate = routineView(task, 'teammate', true);
+      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), steps: [] });
+      // The list tools' view keeps it: they leave only the agent notes and the steps out.
+      const { steps: _steps, ...toolView } = projected;
+      expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] })).toEqual({ routines: [toolView] });
+      expect(C.RoutineUpdateToolOutputSchema.parse(toolView)).toEqual(toolView);
+      // Any other kind shows none, even when its row holds one.
+      const stayOnTop = routineView({ ...task, kind: 'stay-on-top' }, 'owner', true);
+      const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
+      for (const view of [stayOnTop, repeat]) expect(view.finishBy, view.kind).toBeNull();
+      for (const view of [projected, teammate, stayOnTop, repeat]) {
+        for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) {
+          expect(schema.parse(view)).toEqual(view);
+        }
+      }
+      // Required, so a view from a producer that doesn't know it is refused; and a type, not the rule (TASK-913).
+      const { finishBy: _finishBy, ...without } = projected;
+      expect(C.RoutineViewSchema.safeParse(without).success).toBe(false);
+      expect(C.RoutineViewSchema.safeParse({ ...projected, finishBy: 3 }).success).toBe(false);
+      expect(C.RoutineViewSchema.parse({ ...projected, finishBy: 'not a date' }).finishBy).toBe('not a date');
+    });
+  });
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies, a person's step changes and a task's finish date", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(22);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
@@ -145,8 +181,10 @@ describe('canonical routine return schemas', () => {
     expect(ROUTINE_SERVICES).toContain('routines:reply');
     expect(ROUTINE_SERVICES).toContain('routines:recent-replies');
     expect(ROUTINE_SERVICES).toContain('routines:set-steps');
+    expect(ROUTINE_SERVICES).toContain('routines:set-finish-by');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
+    expect(C.RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
   });
   it("answers a person's step changes with the steps and a count, and nothing else (TASK-949)", () => {
     const answer = { steps: [{ id: 's000001', text: 'Ask Dana to review billing', done: false, addedBy: 'person' }], skipped: 1 };
