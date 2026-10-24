@@ -152,7 +152,8 @@ for (const [consumer, { version, flavors }] of loaded) {
             ['array', z.array(el), arr],
             ['tuple rest', tuple, arr],
             ['record value', z.record(z.string(), el), obj],
-            ['record key', z.record(z.string().regex(/^k/), el), { ...obj, x: 'abcdefgh' }],
+            // Soft values only, so the bad key is the one hard failure.
+            ['record key', z.record(z.string().regex(/^k/), el), { ...Object.fromEntries(entries), x: 'abcdefgh' }],
             ['object catchall', z.object({}).catchall(el), obj],
             ['set', z.set(el), new Set(arr)],
             ['map value', z.map(z.string(), el), new Map([...entries, ['kx', 0]])],
