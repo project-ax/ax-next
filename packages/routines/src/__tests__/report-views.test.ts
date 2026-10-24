@@ -6,7 +6,7 @@ import { fixture, createInput, now } from './store-fixture.js';
 import { registerRoutineServices } from '../services.js';
 import { parseStoredRoutine, StoredRoutineSchema } from '../definition.js';
 import { AcceptedDispatchSchema } from '../dispatch.js';
-import type { DispatchReport } from '../types.js';
+import type { DispatchReport, StoredReading } from '../types.js';
 
 // TASK-907: what the reads show of a task's latest report, and of each run's.
 // Reports are recorded through the store here, the way `routines:report`
@@ -16,6 +16,7 @@ const owner = makeAgentContext({ userId: 'owner', agentId: 'a', sessionId: 's' }
 const needsYou = { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?' } as const;
 const onTrack = { status: 'on-track', update: 'Queue is empty.', ask: null } as const;
 const NOTES = 'Order 1234 waits on a refund.';
+const OPEN_5 = { value: 5, label: 'Open tickets' };
 const later = new Date(now.getTime() + 60_000);
 const taskInput = (requestId: string) => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
   name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
@@ -32,23 +33,30 @@ function services(): HookBus {
 const get = (bus: HookBus, routineId: string) => bus.call<unknown, RoutineView>('routines:get', owner, { agentId: 'a', routineId });
 const list = async (bus: HookBus) => (await bus.call<unknown, { routines: RoutineView[] }>('routines:list', owner, { agentId: 'a' })).routines;
 type Key = { agentId: string; routineId: string; revision: string };
-/** A run of `row`, accepted at `at` and bound to its own conversation, that reports `report` when there is one. */
-async function checkIn(row: Key, requestId: string, { at = now, report, notes }: { at?: Date; report?: DispatchReport; notes?: string | null } = {}) {
+/** A run of `row`, accepted at `at` and bound to its own conversation, that reports `report` (and `reading`, TASK-952) when there is one. */
+async function checkIn(row: Key, requestId: string, { at = now, report, notes, reading }: { at?: Date; report?: DispatchReport; notes?: string | null; reading?: StoredReading | null } = {}) {
   const { accepted } = (await f.store.acceptDispatch({
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });
   if (report !== undefined) {
-    expect(await f.store.recordReport({ agentId: row.agentId, dispatchId: accepted.dispatchId, conversationId: `c-${requestId}`, actorUserId: 'owner', report, ...(notes === undefined ? {} : { notes }), now: at })).toBe('recorded');
+    expect(await f.store.recordReport({
+      agentId: row.agentId, dispatchId: accepted.dispatchId, conversationId: `c-${requestId}`, actorUserId: 'owner', report,
+      ...(notes === undefined ? {} : { notes }), ...(reading === undefined ? {} : { reading }), now: at,
+    })).toBe('recorded');
   }
   return accepted;
 }
 const finish = async (dispatchId: string) => {
   expect(await f.store.finishDispatch({ dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'ran', warning: null } })).toBe(true);
 };
-const NO_TASK_COLUMNS = { task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null };
+const NO_TASK_COLUMNS = {
+  task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+  task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
+};
 const taskColumns = async (routineId: string) => (await sql<Record<string, unknown>>`
-  SELECT task_status, task_update, task_ask, task_reported_at, task_report_accepted_at, agent_notes
+  SELECT task_status, task_update, task_ask, task_reported_at, task_report_accepted_at, agent_notes,
+         task_reading_value, task_reading_label, task_reading_reported_at
     FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
 /** Due an hour after the row's next run, so `claimDue` takes it. */
 const claimed = async (row: { nextRunAt: Date | null }) =>
@@ -75,7 +83,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // The next check-in's dispatch holds the state as acceptDispatch read it,
     // notes included: TASK-908's check-in message takes them from there.
     const next = await f.store.acceptDispatch({ agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now });
-    expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later });
+    expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later, reading: null });
   });
 
   it("receipts keep no copy of a task's state; the live answers keep it", async () => {
@@ -89,7 +97,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const dispatch = { agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now } as const;
     const next = await f.store.acceptDispatch(dispatch);
     expect(next?.replayed).toBe(false);
-    expect(next?.accepted.row.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now });
+    expect(next?.accepted.row.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null });
     // The receipts (the create, both accepts, the edit) hold none of the agent's text.
     const receipts = (await sql<{ operation: string; result: unknown }>`SELECT operation, result FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation, request_id`.execute(f.db)).rows;
     expect(receipts.map(receipt => receipt.operation)).toEqual(['create', 'dispatch', 'dispatch', 'update']);
@@ -142,7 +150,9 @@ describe("a task's latest report on the views (TASK-907)", () => {
   it('a task turned back into a repeat routine drops its state, and comes back a task with none', async () => {
     const bus = services();
     const row = await f.store.createAuthored(taskInput('convert'));
-    await checkIn(row, 'convert-run', { report: needsYou, notes: NOTES });
+    await checkIn(row, 'convert-run', { report: needsYou, notes: NOTES, reading: OPEN_5 });
+    // TASK-952: its reading goes with the rest of its state.
+    expect(await taskColumns(row.routineId)).toMatchObject({ task_reading_value: 5, task_reading_label: 'Open tickets', task_reading_reported_at: now });
     const repeat = await f.store.updateAuthored({
       agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner',
       requestId: 'to-repeat', patch: { kind: 'repeat', goodWhen: null }, now, stopOnly: false,
@@ -172,7 +182,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await f.db.updateTable('routines_v1_definitions').set({
       task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, task_reported_at: now, task_report_accepted_at: now, agent_notes: NOTES,
     }).where('routine_id', '=', row.routineId).execute();
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null });
     const task = await f.store.updateAuthored({
       agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'to-task', now, stopOnly: false,
       patch: { kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.', trigger: { kind: 'interval', every: '15m' } },
@@ -221,6 +231,40 @@ describe("a task's latest report on the views (TASK-907)", () => {
     expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: null })]);
   });
 
+  it('a NaN, infinite or half-set reading, or one another report wrote, reads as none, and none of them stops the tick (TASK-952)', async () => {
+    const row = await f.store.createAuthored(taskInput('odd-reading'));
+    const run = await checkIn(row, 'odd-reading', { report: onTrack, reading: OPEN_5 });
+    const task = { ...onTrack, agentNotes: null, reportedAt: now };
+    // The reading as recordReport left it, and the row due again, before each case.
+    const reset = sql`task_reading_value = 5, task_reading_label = 'Open tickets', task_reading_reported_at = task_reported_at, next_run_at = ${row.nextRunAt}`;
+    const odd = {
+      'a NaN': sql`task_reading_value = 'NaN'::float8`,
+      'an infinity': sql`task_reading_value = 'Infinity'::float8`,
+      'no label': sql`task_reading_label = NULL`,
+      'an empty label': sql`task_reading_label = ''`,
+      // Code from before version 10 (after a rollback) wrote a later report and left the reading columns alone.
+      "another report's": sql`task_reading_reported_at = task_reported_at - interval '1 minute'`,
+    };
+    for (const [label, set] of Object.entries(odd)) {
+      await sql`UPDATE routines_v1_definitions SET ${reset} WHERE routine_id = ${row.routineId}`.execute(f.db);
+      expect((await f.store.findOne(row))?.task, label).toEqual({ ...task, reading: OPEN_5 });
+      await sql`UPDATE routines_v1_definitions SET ${set} WHERE routine_id = ${row.routineId}`.execute(f.db);
+      expect((await f.store.findOne(row))?.task, label).toEqual({ ...task, reading: null });
+      expect(await claimed(row), label).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reading: null } })]);
+    }
+    // A run's reading reads the same way, in its history and in the next check-in's reports.
+    await finish(run.dispatchId);
+    const fireReport = async () => (await f.store.recentFires(row))[0]?.report;
+    const lastReport = async () => (await f.store.recentReports({ agentId: 'a', routineId: row.routineId, actorUserId: 'owner', limit: 1 }))[0]?.report;
+    expect(await fireReport()).toEqual({ ...onTrack, reading: OPEN_5 });
+    for (const set of [sql`report_reading_value = 'NaN'::float8`, sql`report_reading_label = NULL`]) {
+      await sql`UPDATE routines_v1_fires SET report_reading_value = 5, report_reading_label = 'Open tickets' WHERE dispatch_id = ${run.dispatchId}`.execute(f.db);
+      await sql`UPDATE routines_v1_fires SET ${set} WHERE dispatch_id = ${run.dispatchId}`.execute(f.db);
+      expect(await fireReport()).toEqual({ ...onTrack, reading: null });
+      expect(await lastReport()).toEqual({ ...onTrack, reading: null });
+    }
+  });
+
   it('a run whose report columns are only partly set shows no report', async () => {
     const bus = services();
     const row = await f.store.createAuthored(taskInput('partial-run'));
@@ -239,11 +283,11 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const long = { status: 'off-track', update: 'u'.repeat(3000), ask: 'a'.repeat(3000) } as const;
     await finish((await checkIn(row, 'long-run', { report: long, notes: 'n'.repeat(9000) })).dispatchId);
     const task = { ...long, agentNotes: 'n'.repeat(9000) };
-    expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now, reading: null });
     expect((await get(bus, row.routineId)).task).toEqual({ ...task, reportedAt: now.toISOString() });
     const { fires } = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });
     expect(fires.map(fire => fire.report)).toEqual([long]);
-    expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now } })]);
+    expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now, reading: null } })]);
   });
 });
 

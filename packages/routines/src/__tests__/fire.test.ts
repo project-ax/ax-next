@@ -8,7 +8,7 @@ import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
 import { renderCheckInMessage } from '../checkin-message.js';
-import type { DispatchReport, StoredReply, StoredRoutine } from '../types.js';
+import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
@@ -19,7 +19,7 @@ async function setup(options: {
   grace?: number;
   definition?: object;
   bind?: () => Promise<void>;
-  reports?: () => Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
+  reports?: () => Promise<Array<{ firedAt: Date; report: FireReport }>>;
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
@@ -223,7 +223,7 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     { from: 'fire-now or the tick', definition: {}, payload: undefined, prompt: '  first line\n\nsecond line\n' },
     { from: 'a webhook', definition: { promptBody: 'Review {{payload.title}}' }, payload: { title: 'literal {{payload.title}}' }, prompt: 'Review literal {{payload.title}}' },
   ])("a repeat routine's run from $from is unchanged: its instructions, byte for byte, are its message and its prompt, and it reads no reports or replies", async ({ definition, payload, prompt }) => {
-    const reports = vi.fn(async (): Promise<Array<{ firedAt: Date; report: DispatchReport }>> => { throw new Error('a repeat run must not read reports'); });
+    const reports = vi.fn(async (): Promise<Array<{ firedAt: Date; report: FireReport }>> => { throw new Error('a repeat run must not read reports'); });
     const replies = vi.fn(async (): Promise<StoredReply[]> => { throw new Error('a repeat run must not read replies'); });
     const h = await setup({ definition, reports, replies });
     const result = await h.fire(h.accepted, payload);

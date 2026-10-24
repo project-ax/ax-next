@@ -3,11 +3,18 @@ export type { ActiveHours, CheckInMiss, RoutineTrigger as TriggerSpec } from '@a
 export type FireSource = 'tick' | 'webhook' | 'manual';
 export type FireStatus = 'ok' | 'silenced' | 'error';
 /**
+ * TASK-952. One number an agent read at a check-in, with the label it gave it.
+ * Agent-written. Kept in columns of its own beside a report, never in the
+ * dispatch's report JSON (`DispatchReportSchema` is strict, card decision 4).
+ */
+export type StoredReading = { value: number; label: string };
+/**
  * TASK-907. A task's latest report and the notes it keeps between check-ins
  * (`agentNotes`, the `agent_notes` column; the report's input calls them
- * `notes`). Agent-written text.
+ * `notes`). Agent-written text. TASK-952: `reading` is the reading that report
+ * sent, or null when it sent none.
  */
-export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date };
+export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date; reading: StoredReading | null };
 /**
  * TASK-930. A task's check-ins in a row that ended without a report: how many,
  * the last one's reason and start, and when the host paused the task for them
@@ -39,7 +46,7 @@ export interface FireRow {
   triggerSource: FireSource; conversationId: string | null;
   status: FireStatus; error: string | null; renderedPrompt: string | null; warning: string | null;
   /** TASK-907. Null when the run made no report. */
-  report: DispatchReport | null;
+  report: FireReport | null;
   /**
    * TASK-936. The routine's owner as the history read found it, in the same
    * statement. That read lists a live routine's runs only when they ran as its
@@ -79,8 +86,15 @@ export type StoredReply = { replyId: string; authorUserId: string; text: string;
  * the routine as read under its row lock.
  */
 export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine } | 'not-found' | 'forbidden';
-/** TASK-907. One run's report: kept on its dispatch, then on its fire row. The notes stay on the task. */
+/**
+ * TASK-907. One run's report: kept on its dispatch as JSON (`DispatchReportSchema`,
+ * strict), then on its fire row. The notes stay on the task. TASK-952: this is
+ * the JSON's shape, so it never holds the run's reading, which has columns of
+ * its own; history reads the two together as `FireReport`.
+ */
 export type DispatchReport = { status: RoutineReportStatus; update: string; ask: string | null };
+/** TASK-952. A finished run's report as history reads it: the dispatch's report plus the reading its run sent, or null. */
+export type FireReport = DispatchReport & { reading: StoredReading | null };
 /** TASK-907. The one open run in a conversation, as `routine_report` finds it. */
 export type OpenCheckIn = { dispatchId: string; routineId: string; kind: RoutineKind; ownerUserId: string };
 /** TASK-907. What `routine_report`'s lookup found in a conversation: its one open run, or why there's none to report on. */
@@ -91,9 +105,10 @@ export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'rout
  * TASK-907. `conversationId` is the conversation the report came from (host-set
  * context); the run must be bound to it. `notes` left out keeps the task's
  * notes; null clears them. A run accepted at or before the last clear can't
- * change the notes (TASK-910).
+ * change the notes (TASK-910). TASK-952: `reading` left out or null means none
+ * this time, so the task's latest reading becomes none, unlike `notes`.
  */
 export type RecordReportInput = {
   agentId: string; dispatchId: string; conversationId: string; actorUserId: string;
-  report: DispatchReport; notes?: string | null; now: Date;
+  report: DispatchReport; notes?: string | null; reading?: StoredReading | null; now: Date;
 };

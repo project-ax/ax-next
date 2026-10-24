@@ -3,7 +3,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
-import type { DispatchReport, RecordReportInput } from '../types.js';
+import type { DispatchReport, RecordReportInput, StoredReading } from '../types.js';
 
 // TASK-907: a check-in's conversation, its report and the task's state. Task
 // state isn't on StoredRoutine yet, so the rows are read with SQL.
@@ -45,6 +45,19 @@ const fireRow = async (dispatchId: string) => (await sql<Record<string, unknown>
   SELECT status, error, report_status, report_update, report_ask FROM routines_v1_fires WHERE dispatch_id = ${dispatchId}`.execute(f.db)).rows[0];
 const fireReport = (report: { status: string; update: string; ask: string | null } | null) =>
   ({ report_status: report?.status ?? null, report_update: report?.update ?? null, report_ask: report?.ask ?? null });
+// TASK-952: a report's reading, in columns of its own on the task, the run and its fire row.
+const OPEN_5 = { value: 5, label: 'Open tickets' };
+const OPEN_3 = { value: 3, label: 'Open tickets' };
+/** The task's reading, its stamp, and the report time a read compares the stamp with. */
+const readingRow = async (routineId: string) => (await sql<Record<string, unknown>>`
+  SELECT task_reading_value, task_reading_label, task_reading_reported_at, task_reported_at
+    FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
+const dispatchReading = async (dispatchId: string) => (await sql<Record<string, unknown>>`
+  SELECT report_reading_value, report_reading_label FROM routines_v1_dispatches WHERE dispatch_id = ${dispatchId}`.execute(f.db)).rows[0];
+const fireReading = async (dispatchId: string) => (await sql<Record<string, unknown>>`
+  SELECT report_reading_value, report_reading_label FROM routines_v1_fires WHERE dispatch_id = ${dispatchId}`.execute(f.db)).rows[0];
+const readingColumns = (reading: StoredReading | null) =>
+  ({ report_reading_value: reading?.value ?? null, report_reading_label: reading?.label ?? null });
 const snapshot = async () => ({
   dispatches: (await sql`SELECT * FROM routines_v1_dispatches ORDER BY dispatch_id`.execute(f.db)).rows,
   definitions: (await sql`SELECT * FROM routines_v1_definitions ORDER BY routine_id`.execute(f.db)).rows,
@@ -370,15 +383,110 @@ it('a report the database refuses fails naming only its run, and writes nothing'
   expect(await snapshot()).toEqual(before);
 });
 
+describe("a report's reading (TASK-952)", () => {
+  const NO_READING = { task_reading_value: null, task_reading_label: null, task_reading_reported_at: null };
+
+  it("lands on the task, the run and its fire row, and the run's report JSON keeps only its three keys", async () => {
+    const row = await f.store.createAuthored(taskInput('reading'));
+    const run = await bound(row, 'reading-fire', 'c1');
+    expect(await record(run, { report: onTrack, reading: OPEN_5 })).toBe('recorded');
+    // Stamped with its report's own time, which is what lets a read show it.
+    expect(await readingRow(row.routineId)).toEqual({ task_reading_value: 5, task_reading_label: 'Open tickets', task_reading_reported_at: later, task_reported_at: later });
+    expect(await dispatchReading(run.dispatchId)).toEqual(readingColumns(OPEN_5));
+    // Code from before version 10 reads this JSON with a strict schema, so it never gains a key (card decision 4).
+    expect((await dispatchRow(run.dispatchId))?.report).toStrictEqual(onTrack);
+    expect((await f.store.findOne(row))?.task?.reading).toEqual(OPEN_5);
+    expect(await finish(run.dispatchId)).toBe(true);
+    expect(await fireReading(run.dispatchId)).toEqual(readingColumns(OPEN_5));
+    // The fire row has it now. One copy of the agent's text is enough, as for the report (TASK-907).
+    expect(await dispatchReading(run.dispatchId)).toEqual(readingColumns(null));
+    expect((await f.store.recentFires(row))[0]?.report).toEqual({ ...onTrack, reading: OPEN_5 });
+  });
+
+  it("a later report without one clears the task's; one in the same check-in replaces both", async () => {
+    const row = await f.store.createAuthored(taskInput('reading-clear'));
+    const first = await bound(row, 'first', 'c-first');
+    expect(await record(first, { reading: OPEN_5 })).toBe('recorded');
+    expect(await finish(first.dispatchId)).toBe(true);
+    // The next check-in had nothing to count: no reading shows beside its report.
+    const next = await bound(row, 'next', 'c-next', new Date(now.getTime() + 1000));
+    expect(await record(next)).toBe('recorded');
+    expect(await readingRow(row.routineId)).toEqual({ ...NO_READING, task_reported_at: later });
+    expect((await f.store.findOne(row))?.task).toMatchObject({ ...onTrack, reading: null });
+    // A second report in one check-in replaces the first one's reading, on the run and on the task.
+    const again = await bound(row, 'again', 'c-again', new Date(now.getTime() + 2000));
+    const second = new Date(later.getTime() + 1000);
+    const third = new Date(later.getTime() + 2000);
+    expect(await record(again, { reading: OPEN_5 })).toBe('recorded');
+    expect(await record(again, { reading: OPEN_3, now: second })).toBe('recorded');
+    expect(await dispatchReading(again.dispatchId)).toEqual(readingColumns(OPEN_3));
+    expect(await readingRow(row.routineId)).toEqual({ task_reading_value: 3, task_reading_label: 'Open tickets', task_reading_reported_at: second, task_reported_at: second });
+    // A third, with reading null, clears both.
+    expect(await record(again, { reading: null, now: third })).toBe('recorded');
+    expect(await dispatchReading(again.dispatchId)).toEqual(readingColumns(null));
+    expect(await readingRow(row.routineId)).toEqual({ ...NO_READING, task_reported_at: third });
+    expect((await f.store.findOne(row))?.task?.reading).toBeNull();
+  });
+
+  it("an older check-in's late reading lands on its own run, never on the task", async () => {
+    const row = await f.store.createAuthored(taskInput('reading-two-runs'));
+    const older = await bound(row, 'older', 'old', now);
+    const newer = await bound(row, 'newer', 'new', new Date(now.getTime() + 1000));
+    expect(await record(newer, { reading: OPEN_3 })).toBe('recorded');
+    expect(await record(older, { reading: OPEN_5, now: new Date(later.getTime() + 5000) })).toBe('recorded');
+    const newerReading = { task_reading_value: 3, task_reading_label: 'Open tickets', task_reading_reported_at: later, task_reported_at: later };
+    expect(await readingRow(row.routineId)).toEqual(newerReading);
+    expect(await taskRow(row.routineId)).toMatchObject({ task_report_accepted_at: newer.acceptedAt });
+    expect(await dispatchReading(older.dispatchId)).toEqual(readingColumns(OPEN_5));
+    expect(await dispatchReading(newer.dispatchId)).toEqual(readingColumns(OPEN_3));
+    expect(await finish(newer.dispatchId)).toBe(true);
+    expect(await finish(older.dispatchId)).toBe(true);
+    expect(await fireReading(older.dispatchId)).toEqual(readingColumns(OPEN_5));
+    expect(await fireReading(newer.dispatchId)).toEqual(readingColumns(OPEN_3));
+    expect(await readingRow(row.routineId)).toEqual(newerReading);
+    expect((await f.store.findOne(row))?.task?.reading).toEqual(OPEN_3);
+  });
+
+  it("a run whose report didn't read keeps no reading", async () => {
+    const row = await f.store.createAuthored(taskInput('reading-unreadable'));
+    const run = await bound(row, 'reading-unreadable-fire', 'c1');
+    // A report this code can't read (a later version's, after a rollback), with a reading beside it.
+    await sql`UPDATE routines_v1_dispatches SET report = '{"status":"later-code"}'::jsonb, report_reading_value = 3, report_reading_label = 'Open tickets'
+      WHERE dispatch_id = ${run.dispatchId}`.execute(f.db);
+    const lines = captureStderr();
+    expect(await finish(run.dispatchId)).toBe(true);
+    vi.restoreAllMocks();
+    expect(lines.filter(line => line.startsWith('[ax/routines]'))).toEqual([`[ax/routines] dropped an unreadable report for dispatch ${run.dispatchId}\n`]);
+    expect(await fireRow(run.dispatchId)).toMatchObject(fireReport(null));
+    expect(await fireReading(run.dispatchId)).toEqual(readingColumns(null));
+    expect(await dispatchReading(run.dispatchId)).toEqual(readingColumns(null));
+  });
+
+  it('a reading the database refuses fails naming only its run, and writes nothing', async () => {
+    const row = await f.store.createAuthored(taskInput('reading-refused'));
+    const run = await bound(row, 'reading-refused-fire', 'c1');
+    const before = await snapshot();
+    // A NUL, which Postgres refuses in a TEXT column. The contract refuses it first (a control
+    // character); this is the store's own floor, as for the report's text.
+    const label = `Secret${String.fromCharCode(0)}label`;
+    const error = await record(run, { reading: { value: 3, label } }).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`Could not save the report for dispatch ${run.dispatchId} (SQLSTATE 22021).`);
+    expect((error as Error).cause).toBeUndefined();
+    expect(inspect(error, { depth: 10, showHidden: true })).not.toMatch(/Secret/);
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
 // TASK-908: the reports a task's next check-in message shows, read from the
 // runs' own fire rows.
 describe('recentReports (TASK-908)', () => {
   const offTrack = { status: 'off-track', update: 'Three tickets are past an hour.', ask: null } as const;
   const minute = (n: number) => new Date(now.getTime() + n * 60_000);
-  /** A finished run of `row` accepted at `at`, with `report` on it, or with none when it's null. */
-  const finished = async (row: Key, requestId: string, at: Date, report: DispatchReport | null) => {
+  /** A finished run of `row` accepted at `at`, with `report` on it, or with none when it's null, and its reading (TASK-952). */
+  const finished = async (row: Key, requestId: string, at: Date, report: DispatchReport | null, reading: StoredReading | null = null) => {
     const run = await bound(row, requestId, `c-${requestId}`, at);
-    if (report !== null) expect(await record(run, { report })).toBe('recorded');
+    if (report !== null) expect(await record(run, { report, reading })).toBe('recorded');
     expect(await finish(run.dispatchId)).toBe(true);
   };
   const recent = (routineId: string, limit: number, agentId = 'a') => f.store.recentReports({ agentId, routineId, actorUserId: 'owner', limit });
@@ -390,14 +498,14 @@ describe('recentReports (TASK-908)', () => {
     await finished(row, 'quiet', minute(3), null);
     await finished(row, 'newest', minute(4), needsYou);
     expect(await recent(row.routineId, 3)).toEqual([
-      { firedAt: minute(4), report: needsYou },
-      { firedAt: minute(2), report: offTrack },
-      { firedAt: minute(1), report: onTrack },
+      { firedAt: minute(4), report: { ...needsYou, reading: null } },
+      { firedAt: minute(2), report: { ...offTrack, reading: null } },
+      { firedAt: minute(1), report: { ...onTrack, reading: null } },
     ]);
     // Two runs that started at the same moment: the one that finished last comes first.
     await finished(row, 'tie-first', minute(5), onTrack);
     await finished(row, 'tie-second', minute(5), offTrack);
-    expect(await recent(row.routineId, 2)).toEqual([{ firedAt: minute(5), report: offTrack }, { firedAt: minute(5), report: onTrack }]);
+    expect(await recent(row.routineId, 2)).toEqual([{ firedAt: minute(5), report: { ...offTrack, reading: null } }, { firedAt: minute(5), report: { ...onTrack, reading: null } }]);
   });
 
   it("only this routine's runs", async () => {
@@ -405,8 +513,18 @@ describe('recentReports (TASK-908)', () => {
     const other = await f.store.createAuthored(taskInput('other'));
     await finished(row, 'mine-run', minute(1), onTrack);
     await finished(other, 'other-run', minute(2), needsYou);
-    expect(await recent(row.routineId, 3)).toEqual([{ firedAt: minute(1), report: onTrack }]);
+    expect(await recent(row.routineId, 3)).toEqual([{ firedAt: minute(1), report: { ...onTrack, reading: null } }]);
     expect(await recent(row.routineId, 3, 'b')).toEqual([]);
+  });
+
+  it("carries each run's reading, or none (TASK-952)", async () => {
+    const row = await f.store.createAuthored(taskInput('recent-reading'));
+    await finished(row, 'read', minute(1), onTrack, OPEN_5);
+    await finished(row, 'unread', minute(2), offTrack);
+    expect(await recent(row.routineId, 3)).toEqual([
+      { firedAt: minute(2), report: { ...offTrack, reading: null } },
+      { firedAt: minute(1), report: { ...onTrack, reading: OPEN_5 } },
+    ]);
   });
 
   it('limit is clamped', async () => {

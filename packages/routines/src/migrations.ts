@@ -75,6 +75,23 @@ export interface RoutinesDefinitionsRow {
   task_miss_reason: ColumnType<string | null, CheckInMiss | null | undefined, CheckInMiss | null>;
   task_miss_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   task_auto_paused_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /**
+   * Version 10 (TASK-952). The latest report's reading: one number the agent
+   * read and the label it gave it, agent-written. Written only by
+   * `recordReport`, with the report under its guard, and NULL when that report
+   * had none; cleared by a change of kind or of owner (`NO_TASK_STATE`). The
+   * value reads back as any double, NaN and infinities included, so a read takes
+   * it through `readingOf` (store.ts).
+   */
+  task_reading_value: ColumnType<number | null, number | null | undefined, number | null>;
+  task_reading_label: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 10 (TASK-952). The `task_reported_at` of the report the reading came
+   * with, written by `recordReport` beside it (NULL with no reading) and cleared
+   * by `NO_TASK_STATE`. A read shows the reading only while the two match, so a
+   * report from code before version 10 shows no older reading (`addReadingColumns`).
+   */
+  task_reading_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -94,6 +111,13 @@ export interface RoutinesFiresRow {
   report_status: ColumnType<RoutineReportStatus | null, RoutineReportStatus | null | undefined, RoutineReportStatus | null>;
   report_update: ColumnType<string | null, string | null | undefined, string | null>;
   report_ask: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 10 (TASK-952). The run's reading, copied from its dispatch by
+   * `finishDispatch` beside a report it could read, and through the same rule as
+   * every read (`readingOf`); NULL otherwise. Agent-written.
+   */
+  report_reading_value: ColumnType<number | null, number | null | undefined, number | null>;
+  report_reading_label: ColumnType<string | null, string | null | undefined, string | null>;
   /**
    * Version 9 (TASK-936). Who the run ran as: its routine's owner when it was accepted
    * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it on the
@@ -155,6 +179,13 @@ export interface DispatchesRow {
   conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
   report: ColumnType<unknown | null, string | null | undefined, string | null>;
+  /**
+   * Version 10 (TASK-952). The reading the run's latest report sent, beside its
+   * JSON and never in it. Written by `recordReport` (NULL when that report had
+   * none), and cleared by `finishDispatch` once the fire row takes it, as `report` is.
+   */
+  report_reading_value: ColumnType<number | null, number | null | undefined, number | null>;
+  report_reading_label: ColumnType<string | null, string | null | undefined, string | null>;
   /**
    * Version 9 (TASK-936). Who the run runs as: its routine's owner when it was accepted
    * (`fire.ts` runs as `accepted.row.ownerUserId`). `acceptDispatch` writes it and
@@ -230,7 +261,36 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addRunAsColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (9)`.execute(trx);
     }
+    if (!await done(10)) {
+      await addReadingColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (10)`.execute(trx);
+    }
   });
+}
+
+/** Version 10 (TASK-952): a report's optional reading, one number the agent read
+ * at a check-in and the label it gave it, on the task (its latest report's), on
+ * the run's dispatch until it finishes, and on the run's fire row. A reading has
+ * columns of its own, never keys in the dispatch's `report` JSON: code from before
+ * this version reads that JSON with a strict schema and would drop the whole
+ * report (card decision 4). `task_reading_reported_at` is the `task_reported_at`
+ * of the report the reading came with, and a read shows the reading only while
+ * the two match. Code from before this version, after a rollback, writes reports
+ * and moves owners without touching these columns, so a report it writes never
+ * shows an older report's reading, an earlier owner's included (TASK-952
+ * decisions row 3). No CHECK: stored values aren't re-checked (TASK-913), so a
+ * read takes them leniently instead (`readingOf`, store.ts). Additive and
+ * nullable, with no backfill: existing rows read back with no reading, code
+ * from before this version ignores the columns, and a re-run keeps their values.
+ */
+async function addReadingColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_reading_value DOUBLE PRECISION`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_reading_label TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_reading_reported_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS report_reading_value DOUBLE PRECISION`.execute(db);
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS report_reading_label TEXT`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS report_reading_value DOUBLE PRECISION`.execute(db);
+  await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS report_reading_label TEXT`.execute(db);
 }
 
 /** Version 9 (TASK-936): who each run ran as, on its dispatch and on its fire row.

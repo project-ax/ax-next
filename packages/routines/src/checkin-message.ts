@@ -1,7 +1,7 @@
 import { clampCodeUnits } from '@ax/core';
 import { ROUTINE_AGENT_NOTES_MAX_CHARS, ROUTINE_REPLY_MAX_CHARS, ROUTINE_REPORT_UPDATE_MAX_CHARS } from '@ax/routines-contract';
 import { quoteLines } from './brief.js';
-import type { DispatchReport, FireSource } from './types.js';
+import type { FireReport, FireSource } from './types.js';
 
 // ---------------------------------------------------------------------------
 // A task check-in's message (TASK-908): the user turn the run starts with, in
@@ -23,7 +23,7 @@ export type CheckInMessageInput = {
    * runs that ran as them, while the task is still theirs. Agent-written. An
    * earlier owner's reports are never among them.
    */
-  reports: ReadonlyArray<{ firedAt: Date; report: DispatchReport }>;
+  reports: ReadonlyArray<{ firedAt: Date; report: FireReport }>;
   /**
    * Newest first, as `RoutinesStore.recentReplies` reads them for the person
    * the check-in runs as. Person-written: the replies the task's current owner

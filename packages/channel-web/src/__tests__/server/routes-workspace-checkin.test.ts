@@ -111,6 +111,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     ask: 'Want me to draft a reply?',
     agentNotes: 'Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
+    reading: null,
     ...over,
   };
 }

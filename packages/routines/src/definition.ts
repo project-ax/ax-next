@@ -56,6 +56,8 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   task: z.object({
     status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
     agentNotes: z.string().nullable(), reportedAt: z.coerce.date(),
+    // TASK-952. Types only, like the rest (TASK-913).
+    reading: z.object({ value: z.number(), label: z.string() }).strict().nullable().default(null),
   }).strict().nullable().default(null),
   // TASK-930. Types and the reason enum only, as for `task`: rowToRoutine has already read the
   // columns leniently (store.ts, noRecentUpdate), so no stored row is refused here. Receipts

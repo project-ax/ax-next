@@ -7,7 +7,7 @@ import {
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 
@@ -50,7 +50,8 @@ export interface RoutinesStore {
    * change) and `reconcileOwners` (a change of owner, TASK-936) only clear it.
    * `'recorded'`, or why nothing was written: the run must be an open check-in,
    * bound to the report's conversation, of a stay-on-top task its actor owns,
-   * on a live agent.
+   * on a live agent. TASK-952: the report's reading, or its absence, lands
+   * with it, on the run and under the same guard on the task.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
   /**
@@ -103,9 +104,9 @@ export interface RoutinesStore {
    * reports reach neither a new owner nor a check-in run as them, and read
    * again only if the routine returns to them. One statement, so the owner
    * can't change between the check and the read. `limit` is clamped to 1-10.
-   * The text is agent-written.
+   * The text is agent-written, each report's reading too (TASK-952).
    */
-  recentReports(input: RoutineKey & Actor & { limit: number }): Promise<Array<{ firedAt: Date; report: DispatchReport }>>;
+  recentReports(input: RoutineKey & Actor & { limit: number }): Promise<Array<{ firedAt: Date; report: FireReport }>>;
   /**
    * TASK-908. Whether `conversationId` is a task check-in's conversation on
    * `agentId`: some run of that agent, open or finished, is bound to it, and
@@ -214,14 +215,30 @@ function definitionColumns(d: RoutineDefinition) {
   };
 }
 /**
+ * TASK-952. A stored reading, read leniently (TASK-913): a finite number and a
+ * non-empty label make one; a NaN, an infinity (both legal in DOUBLE PRECISION,
+ * and pg parses them to numbers) or a half-set pair (a rollback, a hand edit)
+ * reads as none, so claimDue can't fail on it.
+ */
+function readingOf(value: number | null, label: string | null): StoredReading | null {
+  return typeof value === 'number' && Number.isFinite(value) && typeof label === 'string' && label.length > 0 ? { value, label } : null;
+}
+/**
  * TASK-907. A task's state is its latest report, so it's there only when the
  * report's status, update and time all are. A row with only some of them (a
  * rollback, a hand edit) reads as never reported rather than failing every read
- * of it, claimDue's included (TASK-913).
+ * of it, claimDue's included (TASK-913). TASK-952: its reading shows only when
+ * it came with this report (`task_reading_reported_at` is this report's time):
+ * code from before version 10 writes a report without touching the reading, and
+ * the reading it leaves is an earlier report's.
  */
 function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | null {
   if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
-  return { status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at };
+  const ownReading = row.task_reading_reported_at !== null && row.task_reading_reported_at.getTime() === row.task_reported_at.getTime();
+  return {
+    status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at,
+    reading: ownReading ? readingOf(row.task_reading_value, row.task_reading_label) : null,
+  };
 }
 /**
  * TASK-930. A task's missed check-ins, read leniently (TASK-913): a count of at
@@ -265,10 +282,15 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * the move can't report into the new owner's task: it runs as the earlier
  * owner, and `recordReport` refuses a report whose actor doesn't own the
  * routine.
+ *
+ * TASK-952: the latest report's reading goes with it, its value, label and
+ * stamp, so a kind change or a change of owner clears it too. The runs keep
+ * theirs on their fire rows, as they keep their reports.
  */
 const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
+  task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
   ...NO_MISSES,
 } as const;
 /**
@@ -432,7 +454,9 @@ function rowToFire(r: Selectable<RoutinesFiresRow> & { routine_owner_user_id: st
     id: Number(r.id), agentId: r.agent_id, routineId: r.routine_id, firedAt: r.fired_at, triggerSource: r.trigger_source,
     conversationId: r.conversation_id, status: r.status, error: r.error, renderedPrompt: r.rendered_prompt, warning: r.warning,
     // Nested, so no column name reaches the view. A row with only part of a report has none (TASK-907, TASK-913).
-    report: r.report_status === null || r.report_update === null ? null : { status: r.report_status, update: r.report_update, ask: r.report_ask },
+    // TASK-952: its reading, read leniently like every reading.
+    report: r.report_status === null || r.report_update === null ? null
+      : { status: r.report_status, update: r.report_update, ask: r.report_ask, reading: readingOf(r.report_reading_value, r.report_reading_label) },
     routineOwnerUserId: r.routine_owner_user_id,
   };
 }
@@ -689,17 +713,22 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         const stored = storedReport(dispatch.report);
         unreadable = stored.unreadable;
+        // TASK-952: a reading goes with its report, so only beside one this code could read, and
+        // through the same rule as every read.
+        const reading = stored.report === null ? null : readingOf(dispatch.report_reading_value, dispatch.report_reading_label);
         const finishedAt = new Date();
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
           error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning,
           report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
+          report_reading_value: reading?.value ?? null, report_reading_label: reading?.label ?? null,
           // TASK-936: copied from the dispatch, not read from the routine, which may have moved since the accept.
           run_as_user_id: dispatch.run_as_user_id,
         }).execute();
-        // The fire row has the report now; one copy of the text is enough (TASK-907).
-        await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null }).where('dispatch_id', '=', input.dispatchId).execute();
+        // The fire row has the report and its reading now; one copy of the text is enough (TASK-907).
+        await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null, report_reading_value: null, report_reading_label: null })
+          .where('dispatch_id', '=', input.dispatchId).execute();
         await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
           .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
@@ -791,20 +820,28 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (definition.kind !== 'stay-on-top') return 'kind';
         if (definition.owner_user_id !== input.actorUserId) return 'owner';
         const { status, update, ask } = input.report;
+        // TASK-952: left out or null, this report has no reading, so the task's latest has none either.
+        const reading = input.reading ?? null;
         // TASK-910: a run accepted at or before the person last cleared the notes read the notes
         // they cleared, so it can't write any back. The rest of its report lands as usual.
         const clearedAt = definition.agent_notes_cleared_at;
         const writesNotes = input.notes !== undefined && (clearedAt === null || clearedAt.getTime() < dispatch.accepted_at.getTime());
         try {
-          // A later report in the same check-in replaces this one.
-          await trx.updateTable('routines_v1_dispatches').set({ report: JSON.stringify({ status, update, ask }) })
-            .where('dispatch_id', '=', dispatch.dispatch_id).execute();
+          // A later report in the same check-in replaces this one, reading and all. The JSON keeps
+          // its three keys: the reading has columns of its own (card decision 4).
+          await trx.updateTable('routines_v1_dispatches').set({
+            report: JSON.stringify({ status, update, ask }),
+            report_reading_value: reading?.value ?? null, report_reading_label: reading?.label ?? null,
+          }).where('dispatch_id', '=', dispatch.dispatch_id).execute();
           // The run accepted last owns the task's state, whatever order the runs report in. There's
           // no revision clause, so an edit during the check-in can't drop its report, and the state
-          // never moves revision, spec_hash or updated_at.
+          // never moves revision, spec_hash or updated_at. TASK-952: the reading is stamped with its
+          // report's time, which is what lets a read show it (taskState).
           await trx.updateTable('routines_v1_definitions').set({
             task_status: status, task_update: update, task_ask: ask,
             task_reported_at: input.now, task_report_accepted_at: dispatch.accepted_at,
+            task_reading_value: reading?.value ?? null, task_reading_label: reading?.label ?? null,
+            task_reading_reported_at: reading === null ? null : input.now,
             ...(writesNotes ? { agent_notes: input.notes } : {}),
           }).where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id)
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
@@ -995,7 +1032,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           .onRef('r.agent_id', '=', 'f.agent_id')
           .onRef('r.routine_id', '=', 'f.routine_id')
           .onRef('r.owner_user_id', '=', 'f.run_as_user_id'))
-        .select(['f.fired_at', 'f.report_status', 'f.report_update', 'f.report_ask'])
+        .select(['f.fired_at', 'f.report_status', 'f.report_update', 'f.report_ask', 'f.report_reading_value', 'f.report_reading_label'])
         .where('f.agent_id', '=', input.agentId)
         .where('f.routine_id', '=', input.routineId)
         .where('f.run_as_user_id', '=', input.actorUserId)
@@ -1006,8 +1043,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         .limit(limit)
         .execute();
       // The query already skips a row with only part of a report (rowToFire's rule); this narrows the types.
-      return rows.flatMap(r => r.report_status === null || r.report_update === null ? []
-        : [{ firedAt: r.fired_at, report: { status: r.report_status, update: r.report_update, ask: r.report_ask } }]);
+      return rows.flatMap(r => r.report_status === null || r.report_update === null ? [] : [{
+        firedAt: r.fired_at,
+        report: { status: r.report_status, update: r.report_update, ask: r.report_ask, reading: readingOf(r.report_reading_value, r.report_reading_label) },
+      }]);
     },
 
     async recentReplies(input) {

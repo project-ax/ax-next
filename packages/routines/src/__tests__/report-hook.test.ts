@@ -59,10 +59,10 @@ describe('routines:report (TASK-907)', () => {
     const run = await bound(row, 'run');
     expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES }, run.ctx)).toStrictEqual({ recorded: true });
     // The task's state, stamped by the hook's own clock.
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt, reading: null });
     // The run's report reaches its history row when the turn ends. The notes stay on the task.
     expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome })).toBe(true);
-    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([needsYou]);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([{ ...needsYou, reading: null }]);
   });
 
   it('refuses with not-in-check-in, writing nothing', async () => {
@@ -168,6 +168,26 @@ describe('routines:report (TASK-907)', () => {
     expect(await notes()).toBe(NOTES);
     await report(bus, { ...base, notes: null }, run.ctx);
     expect(await notes()).toBeNull();
+  });
+
+  it('a reading reaches the task and the run; leaving it out or sending null means none this time (TASK-952)', async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(row, 'run');
+    const base = { agentId: 'a', dispatchId: run.dispatchId, ...needsYou };
+    const OPEN_3 = { value: 3, label: 'Open tickets' };
+    const reading = async () => (await f.store.findOne(row))?.task?.reading;
+    expect(await report(bus, { ...base, reading: OPEN_3 }, run.ctx)).toStrictEqual({ recorded: true });
+    expect(await reading()).toEqual(OPEN_3);
+    await report(bus, base, run.ctx);
+    expect(await reading()).toBeNull();
+    await report(bus, { ...base, reading: OPEN_3 }, run.ctx);
+    await report(bus, { ...base, reading: null }, run.ctx);
+    expect(await reading()).toBeNull();
+    // The run keeps the reading its last report sent, for its history row.
+    await report(bus, { ...base, reading: OPEN_3 }, run.ctx);
+    expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome })).toBe(true);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([{ ...needsYou, reading: OPEN_3 }]);
   });
 
   it('a report the database refuses is an internal error naming only its run, tried once', async () => {

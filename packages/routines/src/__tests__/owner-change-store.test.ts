@@ -42,12 +42,14 @@ const finished = async (key: RoutineKey, requestId: string, at: Date, report: Di
 const stateRow = async (routineId: string) => (await sql<Record<string, unknown>>`
   SELECT owner_user_id, revision, enabled, next_run_at, agent_notes_cleared_at,
          task_status, task_update, task_ask, task_reported_at, task_report_accepted_at, agent_notes,
-         task_misses_in_a_row, task_miss_reason, task_miss_at, task_auto_paused_at
+         task_misses_in_a_row, task_miss_reason, task_miss_at, task_auto_paused_at,
+         task_reading_value, task_reading_label, task_reading_reported_at
     FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
 /** What NO_TASK_STATE leaves. */
 const CLEARED = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
   task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null,
+  task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
 };
 
 describe('a change of owner (store, TASK-936)', () => {
@@ -55,10 +57,11 @@ describe('a change of owner (store, TASK-936)', () => {
     const task = await f.store.createAuthored(taskInput('task'));
     const repeat = await f.store.createAuthored(createInput('repeat'));
     const other = await f.store.createAuthored(taskInput('other', 'b'));
-    // Every routine holds a report, notes, five misses and ax's pause, as recordReport and finishDispatch leave them.
+    // Every routine holds a report with its reading, notes, five misses and ax's pause, as recordReport and finishDispatch leave them.
     await sql`UPDATE routines_v1_definitions SET task_status = 'needs-you', task_update = ${needsYou.update}, task_ask = ${needsYou.ask},
       task_reported_at = ${minute(2)}, task_report_accepted_at = ${minute(1)}, agent_notes = 'Acme’s contact is Jo.',
       task_misses_in_a_row = 5, task_miss_reason = 'no-report', task_miss_at = ${minute(3)}, task_auto_paused_at = ${minute(4)},
+      task_reading_value = 3, task_reading_label = 'Open tickets', task_reading_reported_at = ${minute(2)},
       enabled = false, agent_notes_cleared_at = ${minute(0)}`.execute(f.db);
     const before = await stateRow(task.routineId);
     const otherBefore = await stateRow(other.routineId);
@@ -152,14 +155,14 @@ describe('a change of owner (store, TASK-936)', () => {
     const task = await f.store.createAuthored(taskInput('task'));
     const reports = (actorUserId: string) => f.store.recentReports({ agentId: 'a', routineId: task.routineId, actorUserId, limit: 3 });
     await finished(task, 'earlier', minute(1), needsYou);
-    expect(await reports('owner')).toEqual([{ firedAt: minute(1), report: needsYou }]);
+    expect(await reports('owner')).toEqual([{ firedAt: minute(1), report: { ...needsYou, reading: null } }]);
     await moveTo('new-owner');
     expect(await reports('new-owner')).toEqual([]);
     expect(await reports('owner')).toEqual([]);
     await finished(task, 'newer', minute(2), onTrack, 'new-owner');
-    expect(await reports('new-owner')).toEqual([{ firedAt: minute(2), report: onTrack }]);
+    expect(await reports('new-owner')).toEqual([{ firedAt: minute(2), report: { ...onTrack, reading: null } }]);
     await moveTo('owner');
-    expect(await reports('owner')).toEqual([{ firedAt: minute(1), report: needsYou }]);
+    expect(await reports('owner')).toEqual([{ firedAt: minute(1), report: { ...needsYou, reading: null } }]);
     expect(await reports('new-owner')).toEqual([]);
   });
 });

@@ -102,7 +102,9 @@ function fireViews(userId: string, fires: FireRow[]): C.RoutineFireView[] {
     ...fire, firedAt: firedAt.toISOString(),
     // Fails closed: a report shows only when the run's routine has an owner and it is this person.
     // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
-    report: routineOwnerUserId !== null && routineOwnerUserId === userId ? report : null,
+    // Field by field, never a spread, so nothing the store reads reaches the view unnamed.
+    report: routineOwnerUserId !== null && routineOwnerUserId === userId && report !== null
+      ? { status: report.status, update: report.update, ask: report.ask } : null,
   }));
 }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
@@ -266,12 +268,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // answers the closed "unavailable", a 503, which the runner's IPC client retries up to its 5xx
   // cap: a retry runs the whole report again, and a report that lands just replaces the run's report.
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
-    const { agentId, dispatchId, notes, ...report } = input;
+    const { agentId, dispatchId, notes, reading, ...report } = input;
     const conversationId = ctx.conversationId;
     if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
     if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
     if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
-    const outcome = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
+    // TASK-952: a reading left out or sent as null is none this time.
+    const outcome = await store.recordReport({
+      agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), reading: reading ?? null, now: now(),
+    });
     if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
     return { recorded: true as const };
   });
