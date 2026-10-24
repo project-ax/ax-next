@@ -3,7 +3,7 @@
  * the readings that share its label, oldest first, and the sparkline's points.
  * Formatting passes 'en-US', so nothing depends on where the suite runs.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   formatReading,
   READING_TREND_MAX,
@@ -51,6 +51,26 @@ describe('formatReading', () => {
     expect(formatReading(-0, 'en-US')).toBe('0');
     expect(formatReading(0, 'en-US')).toBe('0');
     expect(formatReading(-2.5, 'en-US')).toBe('-2.5');
+  });
+
+  // Browsers older than Chrome 106 / Safari 15.4 / Firefox 116 refuse
+  // signDisplay 'negative' with a RangeError, which would break the page's render.
+  it('formats without signDisplay, so an older browser doesn’t throw', () => {
+    const Real = Intl.NumberFormat;
+    const spy = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (
+      locales?: string | string[],
+      options?: Intl.NumberFormatOptions,
+    ) {
+      if (options?.signDisplay === 'negative') throw new RangeError('signDisplay');
+      return new Real(locales, options);
+    } as typeof Intl.NumberFormat);
+    try {
+      expect(formatReading(-0, 'en-US')).toBe('0');
+      expect(formatReading(-2.5, 'en-US')).toBe('-2.5');
+      expect(formatReading(0.0031, 'en-US')).toBe('0.0031');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // A small reading keeps its digits: rounding 0.0031 to "0" would show a flat
