@@ -144,15 +144,18 @@ export interface RoutinesStore {
    * what only they can reach. One statement, so no read finds the new owner
    * beside the old state. `enabled`, the schedule and `agent_notes_cleared_at`
    * stay, so a task ax paused for misses stays paused, now as a plain pause.
-   * The last run's error and warning are cleared as well (they name what only
-   * the earlier owner could reach); its time and status stay.
+   * The last run's status, error and warning are cleared as well (they
+   * describe a run only the earlier owner can see, and name what only they
+   * could reach); its time stays. A change of kind keeps them.
    * Replies stay where they are: a read returns only the replies the current
    * owner wrote (`recentReplies`, TASK-931). Runs stay stored too, each with who
    * it ran as, which this never moves. While the routine lives, its history
-   * lists only the runs that ran as its current owner (`recentFires`), and a
-   * check-in reads only its own person's reports (`recentReports`), so the
-   * earlier owner's runs list for no one until the routine returns to them.
-   * Once the routine is deleted, all its runs list again, with no report.
+   * lists only the runs that ran as its current owner (`recentFires`,
+   * `recentFiresForAgent`), and a check-in reads only the reports of runs that
+   * ran as its own person, while that person owns the routine
+   * (`recentReports`), so the earlier owner's runs list for no one until the
+   * routine returns to them. Once the routine is deleted, all its runs list
+   * again, with no report.
    */
   reconcileOwners(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }> }): Promise<number>;
   setAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string; ownerUserId: string; enabled: boolean }): Promise<void>;
@@ -1187,15 +1190,17 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const ownerIds = input.agents.map((a) => a.ownerUserId);
       // TASK-936: the task state goes in the statement that moves the routine, from the one list a
       // change of kind clears too. Each column name is one of NO_TASK_STATE's own keys, never input,
-      // and each value is bound. The last run's error and warning go too: they name connectors only
-      // the earlier owner could reach, and a run of the new owner's that fails early carries the
-      // routine's last warning into its own fire row (fire.ts). Its time and status stay, since
-      // default-routine scheduling keys off last_run_at.
+      // and each value is bound. The last run's status, error and warning go too: they describe a run
+      // only the earlier owner can now see, the error and warning name connectors only they could
+      // reach, and a run of the new owner's that fails early carries the routine's last warning into
+      // its own fire row (fire.ts). Its time stays, since default-routine scheduling keys off
+      // last_run_at.
       const res = await sql`
         UPDATE routines_v1_definitions r
            SET owner_user_id = a.owner_user_id,
                revision = 'rev_' || replace(gen_random_uuid()::text, '-', ''),
                updated_at = now(),
+               last_status = NULL,
                last_error = NULL,
                last_warning = NULL,
                ${sql.join(Object.entries(NO_TASK_STATE).map(([column, value]) => sql`${sql.ref(column)} = ${value}`))}

@@ -25,9 +25,11 @@ export interface RoutinesDefinitionsRow {
   prompt_body: string;
   next_run_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   last_run_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /** The last recorded fire's status. Written by `finishDispatch`; cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_status: 'ok' | 'silenced' | 'error' | null;
+  /** The last recorded fire's error. Written by `finishDispatch`; cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_error: string | null;
-  /** Slice 6 — the last recorded fire's skipped-connector warning, or null. */
+  /** Slice 6 — the last recorded fire's skipped-connector warning, or null. Cleared by a change of owner (`reconcileOwners`, TASK-936). */
   last_warning: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, Date | undefined, Date>;
   updated_at: ColumnType<Date, Date | undefined, Date>;

@@ -76,7 +76,7 @@ describe('a change of owner (store, TASK-936)', () => {
     expect(await stateRow(task.routineId)).toEqual(after);
   });
 
-  it('a change of owner clears the last run’s error and warning, which name what only the earlier owner could reach; its time and status stay', async () => {
+  it('a change of owner clears the last run’s status, error and warning, which describe a run only the earlier owner can see; its time stays', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     const other = await f.store.createAuthored(taskInput('other', 'b'));
     // As finishDispatch leaves them after a run as 'owner' that skipped their Gmail.
@@ -86,9 +86,9 @@ describe('a change of owner (store, TASK-936)', () => {
       SELECT last_run_at, last_status, last_error, last_warning FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
     const otherBefore = await lastRun(other.routineId);
     await moveTo('new-owner');
-    expect(await lastRun(task.routineId)).toEqual({ last_run_at: minute(5), last_status: 'error', last_error: null, last_warning: null });
+    expect(await lastRun(task.routineId)).toEqual({ last_run_at: minute(5), last_status: null, last_error: null, last_warning: null });
     // So a run of the new owner's that fails early (fire.ts carries the routine's last warning) can't copy it.
-    expect(await f.store.findOne(task)).toMatchObject({ ownerUserId: 'new-owner', lastError: null, lastWarning: null });
+    expect(await f.store.findOne(task)).toMatchObject({ ownerUserId: 'new-owner', lastStatus: null, lastError: null, lastWarning: null });
     expect(await lastRun(other.routineId)).toEqual(otherBefore);
   });
 
