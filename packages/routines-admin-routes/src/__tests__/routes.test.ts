@@ -35,6 +35,7 @@ const routine = {
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
   task: null,
   noRecentUpdate: null,
+  steps: [],
 };
 function req(
   body?: unknown,

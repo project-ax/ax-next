@@ -709,14 +709,26 @@ export const RoutineViewSchema = z.object({
    * routine), and in an exact replay's answer: a receipt keeps no task state.
    */
   task: RoutineTaskViewSchema.nullable(),
+  /**
+   * TASK-948. A "get-done" task's checklist, in order. Empty for any other
+   * kind, for anyone but the task's owner (`task`'s rule), and in an exact
+   * replay's answer: a receipt keeps none. Required, so a view from a producer
+   * that doesn't know it is refused rather than read as "no steps". Stored
+   * text isn't re-capped (TASK-913). `routine_list` and `routine_update` leave
+   * it out (`RoutineListToolViewSchema`).
+   */
+  steps: z.array(RoutineStepViewSchema),
 }).strict().superRefine(validateView);
 /**
  * A routine as `routine_list` and `routine_update` show it (TASK-907): the same
- * view, with a task's report but not its agent notes. A list reaches every chat
- * and holds every routine, so up to 2,000 characters of agent-written text per
- * task would ride along each time; "how's the support queue?" needs the report
- * alone, and an edit's answer needs no notes at all. `routine_get` and the
- * `routines:*` services keep the agent notes, for the task's owner.
+ * view, with a task's report but not its agent notes, and (TASK-948) without a
+ * "get-done" task's steps. A list reaches every chat and holds every routine,
+ * so up to 2,000 characters of agent-written notes per task, and up to 50
+ * steps of 200 characters, would ride along each time; "how's the support
+ * queue?" needs the report alone, and an edit's answer needs neither. Built
+ * from `RoutineViewShape`, which has no `steps`, so the strict schema refuses
+ * a view that carries them. `routine_get` and the `routines:*` services keep
+ * the agent notes and the steps, for the task's owner.
  */
 export const RoutineListToolViewSchema = z.object({
   ...RoutineViewShape,

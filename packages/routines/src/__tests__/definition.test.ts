@@ -62,6 +62,24 @@ describe('a refused routine input names its field', () => {
     expect(unknown.message).toBe('Routine input is invalid. Check the indicated field. Field: input');
   });
 
+  it('names steps for a refusal anywhere inside a report’s steps (TASK-948)', () => {
+    const report = (steps: unknown) => ({ status: 'on-track', update: 'ok', steps });
+    const refused: unknown[] = [
+      [],
+      Array.from({ length: 51 }, (_, i) => ({ op: 'add', text: `Step ${i + 1}` })),
+      [{ op: 'add', text: 'two\nlines' }],
+      [{ op: 'rename', id: 's1' }],
+      [{ op: 'add', text: 'x', addedBy: 'person' }],
+    ];
+    for (const steps of refused) {
+      expect(refusal(() => parseRoutineInput(C.RoutineReportToolInputSchema, report(steps))), JSON.stringify(steps))
+        .toMatchObject({ toolCode: 'validation', field: 'steps' });
+    }
+    // A whole list of changes parses.
+    const steps = [{ op: 'add', text: 'Export every article' }, { op: 'tick', id: 's1' }];
+    expect(parseRoutineInput(C.RoutineReportToolInputSchema, report(steps))).toMatchObject({ steps });
+  });
+
   it('says only the fixed template and the field, never the input or the schema’s message', () => {
     const error = refusal(() => validateDefinition({ ...task, promptBody: hidden })) as Error;
     expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: promptBody');

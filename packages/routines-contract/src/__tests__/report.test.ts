@@ -165,7 +165,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
     const view = {
       ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
       nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null,
+      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, steps: [],
     } as const;
     const task = {
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?', reading: null,
@@ -213,8 +213,10 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     }
     // The task field is still required, so no reader mistakes an old shape for "none".
     expect(RoutineListToolOutputSchema.safeParse({ routines: [view] }).success).toBe(false);
-    // Get keeps them.
-    expect(RoutineViewSchema.safeParse({ ...view, task: { ...shown, agentNotes: 'n' } }).success).toBe(true);
+    // Nor does a get-done task's checklist ride along (TASK-948).
+    expect(RoutineListToolOutputSchema.safeParse({ routines: [{ ...view, task: null, steps: [] }] }).success).toBe(false);
+    // Get keeps them, and has a get-done task's steps (TASK-948), which the list's view leaves out.
+    expect(RoutineViewSchema.safeParse({ ...view, task: { ...shown, agentNotes: 'n' }, steps: [] }).success).toBe(true);
   });
 
   it('the descriptions say so', () => {

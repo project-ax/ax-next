@@ -18,10 +18,11 @@ export const ROUTINES_AUGMENT_PROVIDER = `${SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFI
 /**
  * The one "this run is a task check-in" predicate in routines: the message,
  * the brief, its veto and belt, `renderedPrompt: null` and the memory refusal
- * all ask it. Not `=== 'stay-on-top'`: for each of them an unknown kind is
+ * all ask it. Not a list of task kinds: for each of them an unknown kind is
  * safer treated as a task (brief required, nothing stored, nothing captured),
- * as in TASK-906's `validateDefinition`. `routine_report` keeps its own
- * `=== 'stay-on-top'`, where refusing is the safe direction.
+ * as in TASK-906's `validateDefinition`. `routine_report` keeps its own check,
+ * `isTaskKind` (TASK-948), an explicit allowlist, where refusing an unknown
+ * kind is the safe direction.
  */
 export function isTaskRun(row: { kind: RoutineKind }): boolean {
   return row.kind !== 'repeat';

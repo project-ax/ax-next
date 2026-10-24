@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as C from '@ax/routines-contract';
 import { routinePermissions, routineView, ROUTINE_SERVICES } from '../services.js';
-import type { StoredReading, StoredRoutine } from '../types.js';
+import type { StoredReading, StoredRoutine, StoredStep } from '../types.js';
 /** TASK-952. A task report's reading, as the store hands it over. */
 const OPEN_3: StoredReading = { value: 3, label: 'Open tickets' };
 const row: StoredRoutine = {
@@ -73,12 +73,15 @@ describe('canonical routine return schemas', () => {
       // A repeat routine shows none, even when its row holds some.
       const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
       expect(repeat.noRecentUpdate).toBeNull();
-      // Every answer takes each view: the services' and, with no report to project, the tools'.
+      // Every answer takes each view: the services' and, with no report to project, the tools', which
+      // leave a get-done task's steps out (TASK-948).
       for (const view of [projected, teammate, repeat]) {
-        for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema, C.RoutineUpdateToolOutputSchema]) {
+        for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) {
           expect(schema.parse(view)).toEqual(view);
         }
-        expect(C.RoutineListToolOutputSchema.parse({ routines: [view] })).toEqual({ routines: [view] });
+        const { steps: _steps, ...toolView } = view;
+        expect(C.RoutineUpdateToolOutputSchema.parse(toolView)).toEqual(toolView);
+        expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] })).toEqual({ routines: [toolView] });
       }
     });
     it('says ax paused the task only while it is still paused', () => {
@@ -89,6 +92,46 @@ describe('canonical routine return schemas', () => {
       expect(routineView({ ...fifth, enabled: true }, 'owner', true).noRecentUpdate).toMatchObject({ inARow: 5, autoPaused: false });
       // A person's pause, with misses ax hadn't acted on yet.
       expect(routineView({ ...task, enabled: false }, 'owner', true).noRecentUpdate).toMatchObject({ inARow: 3, autoPaused: false });
+    });
+  });
+  describe("a get-done task's steps (TASK-948)", () => {
+    const stored: StoredStep[] = [
+      { id: 's000001', text: 'Ask Dana to review the billing articles', done: false, addedBy: 'person' },
+      { id: 's000002', text: 'Export every article', done: true, addedBy: 'agent' },
+    ];
+    const task: StoredRoutine = {
+      ...row,
+      ...C.RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site.',
+      }),
+      steps: stored,
+    };
+    it('projects them for its owner only, as copies, and for no other kind', () => {
+      const projected = routineView(task, 'owner', true);
+      expect(projected.steps).toEqual(stored);
+      expect(projected.steps[0]).not.toBe(stored[0]);
+      // Anyone but its owner sees the routine without them, and a stay-on-top task shows none, even when its row holds some.
+      const teammate = routineView(task, 'teammate', true);
+      expect(teammate.steps).toEqual([]);
+      const stayOnTop = routineView({ ...task, kind: 'stay-on-top' }, 'owner', true);
+      expect(stayOnTop.steps).toEqual([]);
+      for (const view of [projected, teammate, stayOnTop]) {
+        for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) {
+          expect(schema.parse(view)).toEqual(view);
+        }
+      }
+      // The services' view isn't a tool view: routine_list and routine_update leave the steps out.
+      expect(C.RoutineUpdateToolOutputSchema.safeParse(projected).success).toBe(false);
+      expect(C.RoutineListToolOutputSchema.safeParse({ routines: [projected] }).success).toBe(false);
+      // Who added a step is one of the two the host writes.
+      expect(C.RoutineViewSchema.safeParse({ ...projected, steps: [{ ...stored[1], addedBy: 'robot' }] }).success).toBe(false);
+    });
+    it('answers a report with its step counts only when it sent changes', () => {
+      expect(C.RoutineReportOutputSchema.parse({ recorded: true })).toStrictEqual({ recorded: true });
+      const counted = { recorded: true, steps: { applied: 2, skipped: 1 } };
+      expect(C.RoutineReportOutputSchema.parse(counted)).toStrictEqual(counted);
+      expect(C.RoutineReportOutputSchema.safeParse({ recorded: true, steps: { applied: 2 } }).success).toBe(false);
     });
   });
   it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, and a person's replies", () => {

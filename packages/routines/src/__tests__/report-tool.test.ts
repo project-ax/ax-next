@@ -407,13 +407,15 @@ describe('routine_report (TASK-907)', () => {
     await checkIn(repeat, 'repeat-run', async ctx => { await refused("a repeat routine's check-in", runner(ctx), 'wrong-kind'); });
   });
 
-  it('routine_report takes only its fields, and a refusal names the field', async () => {
+  it('routine_report takes only its own fields, and a refusal names the field', async () => {
     await start();
     const task = await create(TASK, 'task');
     const valid = { status: 'on-track', update: 'Queue is empty.', ask: null };
     const invalid: Array<[string, Record<string, unknown>, string]> = [
       ['an input naming a routine', { ...valid, routineId: task.routineId }, 'input'],
-      ['an unknown key', { ...valid, steps: ['Answer ticket 1234'] }, 'input'],
+      ['an unknown key', { ...valid, todo: ['Answer ticket 1234'] }, 'input'],
+      // TASK-948: steps is a field now, so a list of changes that aren't changes names it.
+      ['steps that aren’t changes', { ...valid, steps: ['Answer ticket 1234'] }, 'steps'],
       ['a status it doesn’t know', { ...valid, status: 'done' }, 'status'],
       ['an update of 501 characters', { ...valid, update: 'a'.repeat(501) }, 'update'],
       ['an update with a line feed', { ...valid, update: 'Queue is empty.\nNothing waits.' }, 'update'],
@@ -541,5 +543,54 @@ describe('routine_report (TASK-907)', () => {
       }
       expect(await written()).toEqual(NOTHING);
     });
+  });
+});
+
+describe('routine_report steps (TASK-948)', () => {
+  const GET_DONE = { ...TASK, name: 'Move the help docs', kind: 'get-done', goodWhen: 'Every article is on the new site.' };
+  const stepsOf = async (view: RoutineView) => (await sql<{ task_steps: unknown }>`
+    SELECT task_steps FROM routines_v1_definitions WHERE agent_id = ${view.agentId} AND routine_id = ${view.routineId}`.execute(h.db)).rows[0]?.task_steps;
+
+  it('steps on a stay-on-top check-in is refused at pre-call and at execute, naming steps, and writes nothing', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    const call = reportCall({ status: 'on-track', update: 'Queue is empty.', steps: [{ op: 'add', text: 'Answer #4410' }] });
+    await checkIn(task, 'run', async ctx => {
+      expect(await h.bus.fire('tool:pre-call', runner(ctx), call)).toMatchObject({ rejected: true, reason: INVALID('steps') });
+      await expect(report(runner(ctx), call)).rejects.toMatchObject({ toolCode: 'validation', field: 'steps' });
+    });
+    expect(await written()).toEqual(NOTHING);
+    expect(await stepsOf(task)).toEqual([]);
+  });
+
+  it('a get-done check-in reports its steps: the answer counts them, routine_get shows them, and routine_list leaves them out', async () => {
+    await start();
+    const task = await create(GET_DONE, 'task');
+    const call = reportCall({
+      status: 'on-track', update: 'Exporting the articles.',
+      steps: [{ op: 'add', text: 'STEP-ONE Export every article' }, { op: 'add', text: 'STEP-ONE Export every article' }, { op: 'tick', id: 'snothere' }],
+    });
+    let answer: unknown;
+    let hooks: string[] = [];
+    await checkIn(task, 'run', async ctx => {
+      const host = runner(ctx);
+      const calls = vi.spyOn(h.bus, 'call');
+      answer = await report(host, call);
+      hooks = calls.mock.calls.filter(([, callCtx]) => callCtx.reqId === host.reqId).map(([hook]) => hook);
+      calls.mockRestore();
+    });
+    // The repeated add and the unknown id are skipped, and counted.
+    expect(answer).toStrictEqual({ recorded: true, steps: { applied: 1, skipped: 2 } });
+    expect(hooks).toEqual(['tool:execute:routine_report', 'routines:report']);
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const execute = <T,>(name: string, input: Record<string, unknown>) =>
+      h.bus.call<ToolCall, T>(`tool:execute:${name}`, chat, { id: name, name, input });
+    expect((await execute<RoutineView>('routine_get', { routineId: task.routineId })).steps).toEqual([
+      { id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'STEP-ONE Export every article', done: false, addedBy: 'agent' },
+    ]);
+    const list = await execute<RoutineListToolOutput>('routine_list', {});
+    expect(list.routines.map(routine => routine.routineId)).toContain(task.routineId);
+    for (const routine of list.routines) expect('steps' in routine, routine.routineId).toBe(false);
+    expect(JSON.stringify(list)).not.toContain('STEP-ONE');
   });
 });

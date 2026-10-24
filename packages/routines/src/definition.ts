@@ -22,10 +22,15 @@ export function inputHash(input: unknown): string {
  * it is one of core's closed names and makes anything else (`goodWhen`, `kind`,
  * an array index) `input`, so neither the input nor the schema's message
  * reaches the agent. Anything that isn't a zod refusal is `input` too.
+ * TASK-948: a report's `steps` are one list the agent sent, so a refusal
+ * anywhere inside it (`steps.0.text`, an unknown op, an extra key) names the
+ * list, `steps`: a check-in has no person to ask which change to fix, and the
+ * tool's description says what each change takes.
  */
 export function validationError(error: unknown): SafeToolError {
   const path = error instanceof z.ZodError ? error.issues[0]?.path ?? [] : [];
-  const field = path[0] === 'definition' || path[0] === 'patch' ? path.slice(1) : path;
+  const unwrapped = path[0] === 'definition' || path[0] === 'patch' ? path.slice(1) : path;
+  const field = unwrapped[0] === 'steps' ? ['steps'] : unwrapped;
   return new SafeToolError('validation', field.join('.') as SafeToolField);
 }
 export function validateDefinition(input: unknown): RoutineDefinition {

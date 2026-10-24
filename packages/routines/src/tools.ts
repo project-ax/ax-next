@@ -54,10 +54,12 @@ function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeTo
  * resolves to, and the input names no task, run or conversation. Read-only, so
  * pre-call can run it too; `routines:report` checks the run again under its
  * locks before it writes. The one refusal tells the agent only that this isn't
- * a check-in; an info line tells the operator why (`reportRefused`).
+ * a check-in; an info line tells the operator why (`reportRefused`). TASK-948:
+ * `steps` on a check-in of a task with no checklist is a wrong call, refused
+ * as a validation error naming the field.
  */
 async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'ctx' | 'call'>): Promise<Prepared> {
-  const { notes, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
+  const { notes, steps, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
   const conversationId = ctx.conversationId;
   if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
   if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
@@ -73,11 +75,19 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
   if (lookup.run === null) throw reportRefused(ctx, 'tool', lookup.reason);
   const { run } = lookup;
   const ids = { dispatchId: run.dispatchId, routineId: run.routineId };
-  // `=== 'stay-on-top'`, not `!== 'repeat'`: a write path fails closed for a kind it doesn't know.
-  if (run.kind !== 'stay-on-top') throw reportRefused(ctx, 'tool', 'wrong-kind', ids);
+  // `TASK_KINDS`, not `!== 'repeat'`: an explicit allowlist, so a write path refuses a kind it doesn't know.
+  if (!C.isTaskKind(run.kind)) throw reportRefused(ctx, 'tool', 'wrong-kind', ids);
   if (run.ownerUserId !== ctx.userId) throw reportRefused(ctx, 'tool', 'wrong-owner', ids);
+  // TASK-948. A checklist is a "get-done" task's alone. Steps on any other task's check-in are a wrong
+  // call, not a race, so they're refused here, before anything is written, naming the field: the agent
+  // can send the report again without them. (The race, a kind change landing after this read, is the
+  // store's: under its row lock it skips every step change for a task that is no longer get-done.)
+  if (steps !== undefined && run.kind !== 'get-done') throw new SafeToolError('validation', 'steps');
   // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
-  return { hook: 'routines:report', input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }) }, run: ids };
+  return {
+    hook: 'routines:report', run: ids,
+    input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }), ...(steps === undefined ? {} : { steps }) },
+  };
 }
 
 /** Read-only validation. Ownership reconciliation belongs to management get/list, never preflight. */
@@ -188,20 +198,23 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
  * TASK-907. `routines:list` and `routines:update` keep a task's agent notes for
  * its owner (the Tasks page reads them), but their tools leave them out: a list
  * holds every routine and reaches every chat, and "how's the support queue?"
- * needs the report alone; an edit's answer needs no notes at all. Only
- * routine_get, read before working on a task, carries them. The projection is
- * explicit and the strict output schemas then enforce it, so an agentNotes key
- * can't ride along. Who sees a task's state at all is the services' rule
- * (`routineView`): anyone but the owner gets `task: null` before it gets here.
+ * needs the report alone; an edit's answer needs no notes at all. TASK-948: the
+ * same for a "get-done" task's steps, so these answers stay small: up to 50
+ * steps of 200 characters per task would otherwise ride along in every chat's
+ * list. Only routine_get, read before working on a task, carries both. The
+ * projection is explicit and the strict output schemas then enforce it, so an
+ * agentNotes or steps key can't ride along. Who sees a task's state at all is
+ * the services' rule (`routineView`): anyone but the owner gets `task: null`
+ * and no steps before it gets here.
  */
-function withoutAgentNotes({ task, ...routine }: C.RoutineView) {
+function listToolView({ task, steps: _steps, ...routine }: C.RoutineView) {
   if (task === null) return { ...routine, task };
   const { agentNotes: _agentNotes, ...report } = task;
   return { ...routine, task: report };
 }
 function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
-  return C.RoutineListToolOutputSchema.parse({ routines: routines.map(withoutAgentNotes) });
+  return C.RoutineListToolOutputSchema.parse({ routines: routines.map(listToolView) });
 }
 /**
  * Every answer routine_update gives leaves here: live, replayed by the service, or
@@ -210,11 +223,11 @@ function listToolOutput(output: unknown): C.RoutineListToolOutput {
  * replayed answers passed the service's `returns` schema, which is the first
  * parse here, and a recovered one is routineView over a receipt that passed
  * StoredRoutineSchema (the same definition rules, and ids the host made). The
- * strict check differs from that schema only by the agent notes the projection
- * takes out.
+ * strict check differs from that schema only by the agent notes and the steps
+ * the projection takes out (`listToolView`).
  */
 function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
-  return C.RoutineUpdateToolOutputSchema.parse(withoutAgentNotes(C.RoutineUpdateOutputSchema.parse(output)));
+  return C.RoutineUpdateToolOutputSchema.parse(listToolView(C.RoutineUpdateOutputSchema.parse(output)));
 }
 
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {

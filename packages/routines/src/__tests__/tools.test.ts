@@ -102,7 +102,8 @@ describe('routine tool validation and durable execution', () => {
     expect(await execute(call)).toEqual(row);
     const update = { id: 'edit', name: 'routine_update', input: { requestId: 'edit', routineId: row.routineId, expectedRevision: row.revision, patch: { description: 'Edited', silenceToken: null, enabled: false } } };
     await approve(update); const changed = await execute(update); expect(changed).toMatchObject({ enabled: false, description: 'Edited', name: row.name });
-    expect(await execute({ id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual(changed);
+    // routine_get is the edit's answer plus a get-done task's steps, which routine_update leaves out (TASK-948): none here.
+    expect(await execute({ id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual({ ...changed, steps: [] });
     const del = { id: 'delete', name: 'routine_delete', input: { requestId: 'delete', routineId: row.routineId, expectedRevision: changed.revision } };
     await approve(del); expect(await execute(del)).toEqual({ deleted: true, cleanupPending: false });
     expect(await h.bus.fire('tool:pre-call', actor(), del)).toEqual({ rejected: false, payload: del });
