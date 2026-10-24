@@ -2,8 +2,9 @@
 /**
  * The task page's routes: `GET /api/workspace/tasks/:agentId/:routineId`, one
  * task's own page, and `DELETE …/notes`, which clears the agent's notes on it
- * (TASK-910); and `POST …/replies`, the task's owner writing to their agent
- * about it (TASK-931).
+ * (TASK-910); `POST …/replies`, the task's owner writing to their agent
+ * about it (TASK-931); and `POST …/steps`, the task's owner changing its steps
+ * (TASK-949).
  *
  * `routines:get` here is the real view producer, not a literal. Each view is
  * made by @ax/routines' own `routineView` and parsed on the bus through
@@ -17,6 +18,8 @@
  * the contract's own `RoutineReplyInputSchema` first, as the service does, so
  * a text the reply rule refuses is a real `validation` refusal and a key the
  * route forwards that the service doesn't take fails the request.
+ * `routines:set-steps` does the same with `RoutineSetStepsInputSchema`, and
+ * its answer is parsed through `RoutineSetStepsOutputSchema`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -31,6 +34,7 @@ import {
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
+  ROUTINE_STEP_TEXT_MAX_CHARS,
   RoutineClearNotesOutputSchema,
   RoutineGetInputSchema,
   RoutineGetOutputSchema,
@@ -39,17 +43,20 @@ import {
   RoutineRecentRepliesOutputSchema,
   RoutineReplyInputSchema,
   RoutineReplyOutputSchema,
+  RoutineSetStepsInputSchema,
+  RoutineSetStepsOutputSchema,
   type RoutineFireView,
   type RoutineReplyOutput,
   type RoutineReplyView,
   type RoutineReportStatus,
+  type RoutineSetStepsOutput,
 } from '@ax/routines-contract';
 import {
   ACTIVITY_DETAIL_MAX_CHARS,
   makeWorkspaceHandlers,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
-import type { TaskDetail } from '../../lib/workspace-types.js';
+import type { TaskDetail, TaskStepsResponse } from '../../lib/workspace-types.js';
 import { parseRoutineInput, routineView } from '../../../../routines/src/services.js';
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
@@ -183,7 +190,15 @@ interface World {
   replyAnswer: RoutineReplyOutput;
   /** Set: `routines:reply` throws this, after its input check. */
   replyFailure: Error | null;
-  /** True: `routines:get` and `routines:recent-fires` are registered without `returns`, so their views reach the route unparsed (TASK-913's shape). */
+  /** What `routines:set-steps` answers when it takes a change (TASK-949). */
+  stepsAnswer: RoutineSetStepsOutput;
+  /** Set: `routines:set-steps` throws this, after its input check. */
+  stepsFailure: Error | null;
+  /**
+   * True: `routines:get`, `routines:recent-fires` and (TASK-949)
+   * `routines:set-steps` are registered without `returns`, so their answers
+   * reach the route unparsed (TASK-913's shape).
+   */
   unvalidated: boolean;
   /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
   viewMiss: { value: unknown } | null;
@@ -215,6 +230,8 @@ function setup(over: Partial<World> = {}) {
     repliesFailure: null,
     replyAnswer: { replyId: 'REPLY-ID-0', checkIn: 'started' },
     replyFailure: null,
+    stepsAnswer: { steps: [], skipped: 0 },
+    stepsFailure: null,
     unvalidated: false,
     viewMiss: null,
     viewPatch: null,
@@ -227,6 +244,7 @@ function setup(over: Partial<World> = {}) {
   const clearCalls: Array<Call<unknown>> = [];
   const repliesCalls: Array<Call<unknown>> = [];
   const replyCalls: Array<Call<unknown>> = [];
+  const stepsCalls: Array<Call<unknown>> = [];
   /** Every routines hook asked, in the order it was asked. */
   const order: string[] = [];
 
@@ -314,6 +332,23 @@ function setup(over: Partial<World> = {}) {
       { returns: RoutineReplyOutputSchema },
     );
   }
+  if (!world.absent.has('routines:set-steps')) {
+    bus.registerService(
+      'routines:set-steps',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        stepsCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:set-steps');
+        // The service's own input check, before anything else (TASK-949): the
+        // contract refuses a change it doesn't take as `validation`, its
+        // text's rule included, and so does a key the service doesn't take.
+        parseRoutineInput(RoutineSetStepsInputSchema, raw);
+        if (world.stepsFailure !== null) throw world.stepsFailure;
+        return world.stepsAnswer;
+      },
+      world.unvalidated ? undefined : { returns: RoutineSetStepsOutputSchema },
+    );
+  }
   if (!world.absent.has('routines:clear-notes')) {
     bus.registerService(
       'routines:clear-notes',
@@ -351,16 +386,27 @@ function setup(over: Partial<World> = {}) {
     await handlers.taskReply(mkReq(params, body), res);
     return captured;
   }
+  async function steps(
+    params: Record<string, string> = KEY,
+    body: unknown = CHANGE,
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.taskSteps(mkReq(params, body), res);
+    return captured;
+  }
   return {
     detail,
     clear,
     reply,
+    steps,
     resolveCalls,
     getCalls,
     firesCalls,
     clearCalls,
     repliesCalls,
     replyCalls,
+    stepsCalls,
     order,
     lastWritten: () => last,
   };
@@ -368,6 +414,10 @@ function setup(over: Partial<World> = {}) {
 
 /** A reply as the box sends it (TASK-931). */
 const SENT = { text: 'Refunds under $100 are fine.', requestId: 'req-1' };
+
+/** A step change as the task page sends it (TASK-949). */
+const ADD = { op: 'add', text: 'Ask Dana to review billing' } as const;
+const CHANGE = { requestId: 'req-1', ops: [ADD] };
 
 function bodyOf(captured: CapturedRes): TaskDetail {
   return captured.body as TaskDetail;
@@ -955,6 +1005,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         'routines:clear-notes',
         'routines:recent-replies',
         'routines:reply',
+        'routines:set-steps',
       ],
     ],
     ['without routines:get', ['routines:get']],
@@ -1311,4 +1362,184 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/replies (TASK-931)', () 
       expect(lastWritten()?.body).toBeUndefined();
     },
   );
+});
+
+describe('POST /api/workspace/tasks/:agentId/:routineId/steps (TASK-949)', () => {
+  it('401s without a session, and reads nothing', async () => {
+    const { steps, resolveCalls, stepsCalls } = setup({ viewer: null });
+    const captured = await steps();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(stepsCalls).toEqual([]);
+  });
+
+  it('400s a missing id, and reads nothing', async () => {
+    const { steps, resolveCalls, stepsCalls } = setup();
+    const captured = await steps({ agentId: 'a1', routineId: ' ' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(stepsCalls).toEqual([]);
+  });
+
+  it.each<[string, Buffer]>([
+    ['an unparseable body', Buffer.from('{"requestId": "req-1", "ops": [', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+  ])('400s %s as invalid-json, and reads nothing', async (_what, raw) => {
+    const { steps, resolveCalls, stepsCalls } = setup();
+    const captured = await steps(KEY, raw);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-json' });
+    expect(resolveCalls).toEqual([]);
+    expect(stepsCalls).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['a list', []],
+    ['null', null],
+    ['no request id', { ops: [] }],
+    ['an empty request id', { requestId: '', ops: [] }],
+    ['a request id that isn’t text', { requestId: 7, ops: [ADD] }],
+    ['changes that aren’t a list', { requestId: 'q', ops: 'add' }],
+  ])(
+    '400s a body that is %s as invalid-body, before the hook or the agent is read',
+    async (_what, body) => {
+      const { steps, resolveCalls, stepsCalls } = setup();
+      const captured = await steps(KEY, body);
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-body' });
+      expect(resolveCalls).toEqual([]);
+      expect(stepsCalls).toEqual([]);
+    },
+  );
+
+  it('503s without routines:set-steps, before reading the agent', async () => {
+    const { steps, resolveCalls } = setup({ absent: new Set(['routines:set-steps']) });
+    const captured = await steps();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-steps-unavailable' });
+    expect(resolveCalls).toEqual([]);
+  });
+
+  it('404s someone agents:resolve refuses, and never calls the hook', async () => {
+    const { steps, resolveCalls, stepsCalls } = setup({ viewer: 'mallory' });
+    const captured = await steps();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(stepsCalls).toEqual([]);
+  });
+
+  it.each([
+    ['a task that isn’t get-done, or isn’t there', new SafeToolError('not-found', 'routineId')],
+    ['someone else’s task', new SafeToolError('forbidden', 'input')],
+    ['an agent it can no longer reach', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
+  ])('404s %s as task-not-found', async (_what, failure) => {
+    const { steps, stepsCalls } = setup({ stepsFailure: failure });
+    const captured = await steps();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(stepsCalls).toHaveLength(1);
+  });
+
+  it.each<[string, unknown[]]>([
+    ['no changes at all', []],
+    ['a blank step', [{ op: 'add', text: '   ' }]],
+    ['a step with an invisible character', [{ op: 'add', text: `a${String.fromCodePoint(0x200b)}b` }]],
+    ['a step over 200 characters', [{ op: 'add', text: 'x'.repeat(ROUTINE_STEP_TEXT_MAX_CHARS + 1) }]],
+    ['a change it doesn’t know', [{ op: 'rename' }]],
+    ['a change that says who added the step', [{ ...ADD, addedBy: 'person' }]],
+  ])('400s %s as steps-invalid: the contract refuses it', async (_what, ops) => {
+    const { steps, stepsCalls } = setup();
+    const captured = await steps(KEY, { requestId: 'req-1', ops });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'steps-invalid' });
+    expect(stepsCalls).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'a request id already used for another change',
+      new SafeToolError('request-conflict', 'requestId'),
+      'This request ID was used for different input.',
+    ],
+    ['any other failure', new Error('boom'), 'boom'],
+  ])(
+    'fails the request when the service fails with %s, rather than answering any steps',
+    async (_kind, failure, message) => {
+      const { steps, stepsCalls, lastWritten } = setup({ stepsFailure: failure });
+      await expect(steps()).rejects.toThrow(message);
+      expect(stepsCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
+
+  it('calls the hook as the caller, with the address’s ids and only the request id and the changes', async () => {
+    const { steps, resolveCalls, stepsCalls, order } = setup();
+    // The address names the task. Nothing else in the body rides along.
+    const captured = await steps(KEY, { requestId: 'q', ops: [ADD], agentId: 'other', extra: 1 });
+    expect(captured.statusCode).toBe(200);
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'alice' }]);
+    expect(stepsCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: { agentId: 'a1', routineId: 't1', requestId: 'q', ops: [ADD] },
+      },
+    ]);
+    // It reads nothing first: the service decides ownership under the row lock.
+    expect(order).toEqual(['routines:set-steps']);
+  });
+
+  it('answers each step as the task page draws it, and the count', async () => {
+    // Agent-written text past the writer's cap (TASK-913: stored text isn't
+    // re-checked), with a run of spaces and markup in it.
+    const long = `<img src=x>${' '.repeat(4)}${'x'.repeat(285)}`;
+    const answered: RoutineSetStepsOutput['steps'] = [
+      { id: 'sbbbbbb', text: 'Ask Dana to review billing', done: false, addedBy: 'person' },
+      { id: 'saaaaaa', text: long, done: true, addedBy: 'agent' },
+    ];
+    const { steps, detail } = setup({
+      stepsAnswer: { steps: answered, skipped: 2 },
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'get-done', steps: answered })],
+    });
+    const changed = await steps();
+    expect(changed.statusCode).toBe(200);
+    expect(changed.body).toStrictEqual({
+      steps: [
+        { id: 'sbbbbbb', text: 'Ask Dana to review billing', done: false, byAgent: false },
+        // One line, and at least what a check-in reads: 200 characters, then "…". Markup is only text.
+        { id: 'saaaaaa', text: `<img src=x> ${'x'.repeat(188)}…`, done: true, byAgent: true },
+      ],
+      skipped: 2,
+    } satisfies TaskStepsResponse);
+    // One builder for both: the page's own read draws the same steps the same way.
+    const read = await detail();
+    expect(read.statusCode).toBe(200);
+    expect((changed.body as TaskStepsResponse).steps).toStrictEqual(bodyOf(read).steps);
+  });
+
+  it('leaves out an answered step it can’t read, rather than failing the change', async () => {
+    // An answer the bus didn't parse (TASK-913's shape) is read as leniently as a view.
+    const { steps } = setup({
+      unvalidated: true,
+      stepsAnswer: {
+        steps: [
+          { id: 's1', text: 'Ask Dana to review billing', done: false, addedBy: 'person' },
+          { id: 7, text: 'An id that isn’t one', done: false, addedBy: 'agent' },
+          { id: 's3', text: 'No author', done: false },
+          'not a step',
+        ] as unknown as RoutineSetStepsOutput['steps'],
+        skipped: 1,
+      },
+    });
+    const captured = await steps();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({
+      steps: [{ id: 's1', text: 'Ask Dana to review billing', done: false, byAgent: false }],
+      skipped: 1,
+    });
+  });
 });

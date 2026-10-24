@@ -805,6 +805,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation: 'the task page shows no replies in its Updates thread',
         },
         {
+          hook: 'routines:set-steps',
+          degradation:
+            'the task page shows a get-done task\'s steps but can\'t change them: adding, ticking, rewording or deleting one (POST /api/workspace/tasks/:agentId/:routineId/steps) answers 503',
+        },
+        {
           hook: 'connectors:list-effective',
           degradation:
             'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and adding a key-based connector all answer 503 (there is no list of what this agent may use to check against)',

@@ -79,6 +79,8 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     optional routines:reply, answering 503 without it, and the task page
 //     reads their replies through the optional routines:recent-replies,
 //     showing none without it.
+//     TASK-949 adds no hard call either: a task's owner changes its steps
+//     through the optional routines:set-steps, answering 503 without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -356,6 +358,14 @@ export function createChannelWebServerPlugin(
           // after the caller's own task is decided (`ownTaskOr404`).
           hook: 'routines:recent-replies',
           degradation: 'the task page shows no replies in its Updates thread',
+        },
+        {
+          // TASK-949 — a task's owner changes its steps on the task page. The
+          // service decides who may (the task's owner), under the routine's
+          // row lock.
+          hook: 'routines:set-steps',
+          degradation:
+            'the task page shows a get-done task\'s steps but can\'t change them: adding, ticking, rewording or deleting one (POST /api/workspace/tasks/:agentId/:routineId/steps) answers 503',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

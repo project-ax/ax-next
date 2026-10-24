@@ -1481,10 +1481,22 @@ export interface TaskReplyResponse {
 }
 
 /**
+ * `POST /api/workspace/tasks/:agentId/:routineId/steps`'s answer (TASK-949):
+ * the task's steps after the change, each built exactly as the task page's
+ * own read builds it, and how many of the change's ops were skipped (a step
+ * that was gone, an add past 50 or one already listed).
+ */
+export interface TaskStepsResponse {
+  steps: TaskStep[];
+  skipped: number;
+}
+
+/**
  * One step on a task's page (TASK-948). `text` is agent- or person-written,
  * fenced to one line; null when nothing legible survived. `id` is an opaque
- * host id, for the next card's edits. `byAgent` comes from the host-set
- * author, and anything but a person reads as the agent's.
+ * host id, never drawn: a change to the step names it (TASK-949). `byAgent`
+ * comes from the host-set author, and anything but a person reads as the
+ * agent's.
  */
 export interface TaskStep {
   id: string;
