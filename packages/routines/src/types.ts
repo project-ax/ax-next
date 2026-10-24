@@ -44,7 +44,8 @@ export type StoredRoutine = RoutineDefinition & {
   noRecentUpdate: StoredNoRecentUpdate | null;
   /**
    * TASK-948. A "get-done" task's checklist, in order. Empty for any other
-   * kind, until the agent drafts it, and after a change of kind or of owner.
+   * kind, until the agent drafts it or its owner adds a step (TASK-949), and
+   * after a change of kind or of owner.
    */
   steps: StoredStep[];
 };
@@ -93,6 +94,13 @@ export type StoredReply = { replyId: string; authorUserId: string; text: string;
  * the routine as read under its row lock.
  */
 export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine } | 'not-found' | 'forbidden';
+/**
+ * TASK-949. What `setSteps` did with a person's changes to a get-done task's
+ * steps: the steps after them, as read under the routine's row lock, and how
+ * many of the changes were skipped. A replay answers the first try's count
+ * with the steps as they are now.
+ */
+export type SetStepsResult = { steps: StoredStep[]; skipped: number } | 'not-found' | 'forbidden';
 /**
  * TASK-907. One run's report: kept on its dispatch as JSON (`DispatchReportSchema`,
  * strict), then on its fire row. The notes stay on the task. TASK-952: this is

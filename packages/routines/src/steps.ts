@@ -60,6 +60,14 @@ export function storedSteps(value: unknown): StoredStep[] {
   return readStoredSteps(value)?.steps ?? [];
 }
 
+/**
+ * TASK-949. What a person's step change keeps under its receipt (`set-steps`):
+ * the count of changes it skipped, and nothing else, so no step's text
+ * outlives the task row that holds it. `setSteps` reads it back, strictly, on
+ * its first try and on a replay.
+ */
+export const StepsReceiptSchema = z.object({ skipped: z.number().int().min(0) }).strict();
+
 /** The base-36 characters after a step id's `s`: 36^6, about 2.2 billion ids, for at most 50 on a task. */
 const STEP_ID_CHARS = 6;
 
