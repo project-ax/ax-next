@@ -3,7 +3,7 @@ import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
-  RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
+  RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
 } from './definition.js';
 
 export const ROUTINE_SECRET_MAX_BYTES = 64 * 1024;
@@ -51,14 +51,19 @@ export const RoutineFireReportViewSchema = z.object({
  * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
  * A run accepted at or before the person last cleared the notes can't change them (TASK-910).
  * Absent or null `reading`: none this time (TASK-952).
+ * `steps` (TASK-948) is for a "get-done" task only: changes to its checklist,
+ * applied in order. One that can't apply is skipped and counted, and the rest
+ * of the report still lands.
  */
 export const RoutineReportInputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
   status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
   ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
   reading: RoutineReportFieldShape.reading.optional(),
+  steps: RoutineReportStepsSchema.optional(),
 }).strict();
-export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) }).strict();
+/** `steps` is there only when the report sent changes: how many applied and how many were skipped (TASK-948). */
+export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true), steps: RoutineReportStepsOutcomeSchema.optional() }).strict();
 /**
  * `routines:clear-notes` (TASK-910): the person clears a task's agent notes,
  * the text its next check-in reads (design §7). Only the routine's owner may.

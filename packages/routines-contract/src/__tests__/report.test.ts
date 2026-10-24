@@ -78,8 +78,9 @@ describe('a task’s report: its shape (TASK-907)', () => {
   });
 
   it('names no target', () => {
-    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'update']);
-    for (const key of ['routineId', 'dispatchId', 'conversationId', 'agentId', 'taskId', 'steps', 'userId', 'source', 'Notes']) {
+    // `steps` is a field since TASK-948: a get-done task's checklist changes (steps.test.ts owns its shape).
+    expect(Object.keys(RoutineReportToolInputSchema.shape).sort()).toEqual(['ask', 'notes', 'reading', 'status', 'steps', 'update']);
+    for (const key of ['routineId', 'dispatchId', 'conversationId', 'agentId', 'taskId', 'userId', 'source', 'Notes']) {
       expect(refused({ status: 'on-track', update: 'ok', [key]: 'x' }), key).toBe(true);
     }
     // A JSON body can make `__proto__` an own key. Strict refuses it like any other.

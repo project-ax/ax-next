@@ -8,11 +8,21 @@ export const ROUTINE_OPAQUE_STRING_MAX_CHARS = 256;
 export const ROUTINE_NAME_MAX_CHARS = 128;
 export const RoutineOpaqueStringSchema = z.string().min(1).max(ROUTINE_OPAQUE_STRING_MAX_CHARS);
 
-export const ROUTINE_KINDS = ['repeat', 'stay-on-top'] as const;
+export const ROUTINE_KINDS = ['repeat', 'stay-on-top', 'get-done'] as const;
 export const RoutineKindSchema = z.enum(ROUTINE_KINDS);
 export type RoutineKind = z.output<typeof RoutineKindSchema>;
+/**
+ * The kinds that are tasks (TASK-948). Write paths check a kind against this
+ * list and refuse one they don't know; read paths keep `!== 'repeat'`.
+ */
+export const TASK_KINDS = ['stay-on-top', 'get-done'] as const satisfies readonly RoutineKind[];
+export type TaskKind = (typeof TASK_KINDS)[number];
+/** Membership in `TASK_KINDS`, never a property lookup, so an inherited name such as `toString` is no kind. */
+export function isTaskKind(kind: string): kind is TaskKind {
+  return (TASK_KINDS as readonly string[]).includes(kind);
+}
 export const ROUTINE_GOOD_WHEN_MAX_CHARS = 1024;
-/** A "stay on top of something" task checks in no more often than this. */
+/** A task checks in no more often than this. */
 export const TASK_CHECK_IN_FLOOR_SECONDS = 900;
 /** How many occurrences of a cron the check-in floor inspects. `cronWrapsTooSoon` covers the gap they can miss. */
 export const TASK_CRON_FLOOR_RUNS = 48;
@@ -58,7 +68,7 @@ export const WebhookTriggerSchema = z.object({
   hmac: WebhookHmacSchema.optional(),
 }).strict();
 const TASK_CRON_QUESTION_MARK_MESSAGE = 'A task’s schedule can’t use “?”. Write the exact time instead.';
-const TASK_CRON_ONE_DATE_MESSAGE = 'A task that stays on top of something checks in again and again, so its schedule can’t be a single date.';
+const TASK_CRON_ONE_DATE_MESSAGE = 'A task checks in again and again, so its schedule can’t be a single date.';
 const TASK_CRON_NEVER_MESSAGE = 'This schedule never checks in.';
 
 /**
@@ -349,16 +359,18 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
   }
   switch (definition.kind) {
     case 'repeat':
-      if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task that stays on top of something can say when it’s going well.');
+      if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task can say when it’s going well.');
       break;
-    case 'stay-on-top': {
+    // TASK-948: both task kinds keep a schedule and a brief, so they share one set of rules, in words that fit either.
+    case 'stay-on-top':
+    case 'get-done': {
       if (!flagged.has('goodWhen') && (definition.goodWhen === null || definition.goodWhen.trim() === '')) {
         issue(['goodWhen'], 'Say how we’ll know this task is going well.');
       }
       const { trigger } = definition;
-      if (trigger.kind === 'webhook') issue(['trigger'], 'A task that stays on top of something checks in on a schedule, not from a webhook.');
-      if (definition.conversation !== 'per-fire') issue(['conversation'], 'A task that stays on top of something starts a fresh conversation for each check-in.');
-      if (definition.silenceToken !== null) issue(['silenceToken'], 'A task that stays on top of something reports how it’s going, so it doesn’t use a silence token.');
+      if (trigger.kind === 'webhook') issue(['trigger'], 'A task checks in on a schedule, not from an update from another app.');
+      if (definition.conversation !== 'per-fire') issue(['conversation'], 'A task starts a fresh conversation for each check-in.');
+      if (definition.silenceToken !== null) issue(['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.');
       if (trigger.kind === 'interval') {
         const seconds = durationToSeconds(trigger.every);
         if (seconds !== null && seconds < TASK_CHECK_IN_FLOOR_SECONDS) issue(['trigger', 'every'], TASK_CHECK_IN_FLOOR_MESSAGE);
@@ -563,6 +575,81 @@ export const RoutineReplyTextSchema = z.string()
     const problem = replyTextIssue(value);
     if (problem !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   });
+
+/*
+ * A task's steps (TASK-948): a "get-done" task's checklist, at most
+ * `ROUTINE_STEPS_MAX` of them. The agent drafts them at its first check-in,
+ * then adds, ticks and unticks them through its report, and it can reword or
+ * remove only the steps it added. A step an agent wrote comes back in every
+ * later check-in message and shows on the task page, so the rules hold at the
+ * writer's input. A step's text:
+ *   - fits `ROUTINE_STEP_TEXT_MAX_CHARS`, counted in UTF-16 units like the rest
+ *     of the contract;
+ *   - has something on it to read;
+ *   - is one line, with no LF or CR, so it can't pose as a second step (the
+ *     other line breaks are invisible characters already);
+ *   - refuses what `firstHiddenCharacter` finds, the brief's own rule, and
+ *     names the first one and where it is;
+ *   - refuses a lone surrogate (half of a character), which a JSON body can
+ *     carry: Postgres refuses one in a JSONB value and quotes the value it
+ *     refused in its error.
+ * Like a reply's, these messages reach a person (TASK-949's box shows them),
+ * so each says what to fix; the agent gets only the field's name, through
+ * core's fixed template. Stored text isn't re-checked (TASK-913), so a view
+ * takes any string. A step's id is made by the host and opaque to everyone
+ * else, and no change can say who added a step: the host sets that.
+ */
+export const ROUTINE_STEPS_MAX = 50;
+export const ROUTINE_STEP_TEXT_MAX_CHARS = 200;
+/** A step's id is opaque and host-made; only its length is bounded. */
+export const ROUTINE_STEP_ID_MAX_CHARS = 32;
+export const ROUTINE_STEP_AUTHORS = ['person', 'agent'] as const;
+export const RoutineStepAuthorSchema = z.enum(ROUTINE_STEP_AUTHORS);
+export type RoutineStepAuthor = z.output<typeof RoutineStepAuthorSchema>;
+const STEP_BLANK = 'Write the step first.';
+
+/** The one thing wrong with a step's text that fits the cap, in the person's words, or null. */
+function stepTextIssue(value: string): string | null {
+  if (value.trim() === '') return STEP_BLANK;
+  if (/[\n\r]/.test(value)) return 'A step is one line.';
+  const hidden = firstHiddenCharacter(value);
+  if (hidden !== null) return `A step can’t contain invisible characters (${hiddenCharacterAt(hidden)}).`;
+  return LONE_SURROGATE.test(value) ? 'A step can’t contain broken characters.' : null;
+}
+
+/** zod's cap with the person's own words for it, then the first rule the text breaks, so it gets one reason. */
+export const RoutineStepTextSchema = z.string()
+  .min(1, STEP_BLANK)
+  .max(ROUTINE_STEP_TEXT_MAX_CHARS, 'A step can be up to 200 characters.')
+  .superRefine((value, ctx) => {
+    if (value.length < 1 || value.length > ROUTINE_STEP_TEXT_MAX_CHARS) return;
+    const problem = stepTextIssue(value);
+    if (problem !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  });
+export const RoutineStepIdSchema = z.string().min(1).max(ROUTINE_STEP_ID_MAX_CHARS);
+/** A step as a read shows it. `addedBy` is host-set, so a reader can tell the agent's words from the person's. */
+export const RoutineStepViewSchema = z.object({
+  id: RoutineStepIdSchema, text: z.string(), done: z.boolean(), addedBy: RoutineStepAuthorSchema,
+}).strict();
+export type RoutineStepView = z.output<typeof RoutineStepViewSchema>;
+/**
+ * One change to a task's steps, as the agent sends it in a report. Each is
+ * strict, so none can name a new step's id or say who added a step. `done` on
+ * an add is for a step finished in the same check-in: the host makes a new
+ * step's id, so the report can't tick it by id.
+ */
+export const RoutineStepOpSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add'), text: RoutineStepTextSchema, done: z.boolean().optional() }).strict(),
+  z.object({ op: z.literal('tick'), id: RoutineStepIdSchema }).strict(),
+  z.object({ op: z.literal('untick'), id: RoutineStepIdSchema }).strict(),
+  z.object({ op: z.literal('edit'), id: RoutineStepIdSchema, text: RoutineStepTextSchema }).strict(),
+  z.object({ op: z.literal('remove'), id: RoutineStepIdSchema }).strict(),
+]);
+export type RoutineStepOp = z.output<typeof RoutineStepOpSchema>;
+/** A report's changes to its task's steps, applied in order. Optional on both report inputs, and never empty when sent. */
+export const RoutineReportStepsSchema = z.array(RoutineStepOpSchema).min(1).max(ROUTINE_STEPS_MAX);
+/** What a report that sent changes hears back: how many applied and how many were skipped. Counts only, never a step's text. */
+export const RoutineReportStepsOutcomeSchema = z.object({ applied: z.number().int().min(0), skipped: z.number().int().min(0) }).strict();
 
 /**
  * TASK-952. A reading as a read shows it: the number the agent sent and its

@@ -126,7 +126,7 @@ describe('structured routine form', () => {
       fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
       expect(
         screen.getByText(
-          'A task that stays on top of something checks in on a schedule, not from a webhook.',
+          'A task checks in on a schedule, not from an update from another app.',
         ),
       ).toBeVisible();
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
