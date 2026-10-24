@@ -6,6 +6,7 @@ import {
   RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineStepViewSchema,
   RoutineViewSchema,
 } from './definition.js';
+import { RoutineFinishBySchema } from './finish-by.js';
 
 export const ROUTINE_SECRET_MAX_BYTES = 64 * 1024;
 export const ROUTINE_HISTORY_MAX_LIMIT = 200;
@@ -73,6 +74,14 @@ export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true), s
  */
 export const RoutineClearNotesInputSchema = RoutineKeySchema;
 export const RoutineClearNotesOutputSchema = z.object({ cleared: z.literal(true) }).strict();
+/**
+ * `routines:set-finish-by` (TASK-951): a person sets or removes a "get-done"
+ * task's finish date, on its task page. Only the routine's owner may, and only
+ * on a get-done task. It never changes the routine's revision. Neither a tool
+ * nor an IPC action, so no model can set it. Null removes it.
+ */
+export const RoutineSetFinishByInputSchema = RoutineKeySchema.extend({ finishBy: RoutineFinishBySchema.nullable() }).strict();
+export const RoutineSetFinishByOutputSchema = z.object({ finishBy: z.string().nullable() }).strict();
 /**
  * `routines:tasks-for-conversations` (TASK-932): which of these conversations
  * are check-ins of a task the caller owns, on this agent, so Today can name the
@@ -235,6 +244,8 @@ export type RoutineListAgentDefaultsInput = z.output<typeof RoutineListAgentDefa
 export type RoutineListAgentDefaultsOutput = z.output<typeof RoutineListAgentDefaultsOutputSchema>;
 export type RoutineClearNotesInput = z.output<typeof RoutineClearNotesInputSchema>;
 export type RoutineClearNotesOutput = z.output<typeof RoutineClearNotesOutputSchema>;
+export type RoutineSetFinishByInput = z.output<typeof RoutineSetFinishByInputSchema>;
+export type RoutineSetFinishByOutput = z.output<typeof RoutineSetFinishByOutputSchema>;
 export type RoutineTasksForConversationsInput = z.output<typeof RoutineTasksForConversationsInputSchema>;
 export type RoutineTasksForConversationsOutput = z.output<typeof RoutineTasksForConversationsOutputSchema>;
 export type RoutineCheckInView = z.output<typeof RoutineCheckInViewSchema>;
