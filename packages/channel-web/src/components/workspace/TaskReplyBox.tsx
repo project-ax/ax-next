@@ -41,7 +41,7 @@ import {
 } from '@/components/ui/field';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
-import { HTTP_SESSION_ENDED, HttpError, logRequestFailure } from '@/lib/http';
+import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { TaskReplyCheckIn } from '@/lib/workspace-types';
 
@@ -50,20 +50,9 @@ const UNCONFIRMED =
 const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
 const AS_WRITTEN = 'We couldn’t send that reply as written. Change it and try again.';
 
-/**
- * Statuses below 500 that still leave it unknown whether the reply was
- * stored: a timeout or a rate limit can come from anything in front of the
- * host, and neither is the person's text being wrong.
- */
-const UNCONFIRMED_4XX: ReadonlySet<number> = new Set([408, 429]);
-
-/** A refusal (1xx-4xx, but 408 and 429) is an answer; anything else leaves it unknown whether the reply was stored. */
-function confirmed(e: unknown): e is HttpError {
-  return e instanceof HttpError && e.status >= 1 && e.status < 500 && !UNCONFIRMED_4XX.has(e.status);
-}
-
+/** A refusal (1xx-4xx, but 408 and 429) is an answer (`isConfirmedRefusal`); anything else leaves it unknown whether the reply was stored. */
 function failureLine(e: unknown): string {
-  if (!confirmed(e)) return UNCONFIRMED;
+  if (!isConfirmedRefusal(e)) return UNCONFIRMED;
   if (e.status === 401) return HTTP_SESSION_ENDED;
   if (e.status === 403 || e.status === 404) return NOT_FOUND;
   return AS_WRITTEN;
@@ -166,7 +155,7 @@ export function TaskReplyBox({
       onSent(answer.checkIn);
     } catch (e) {
       logRequestFailure(e, 'task-reply');
-      if (confirmed(e)) pending.current = null;
+      if (isConfirmedRefusal(e)) pending.current = null;
       setFailure({ line: failureLine(e), rule: false });
     } finally {
       inFlight.current = false;
