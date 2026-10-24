@@ -25,6 +25,8 @@ const ROW = {
   routineId: 'r-1',
   name: 'Morning inbox sweep',
   enabled: true,
+  kind: 'stay-on-top',
+  steps: null,
   task: {
     status: 'on-track',
     update: 'Filed 12 receipts',
@@ -129,6 +131,40 @@ describe('workspaceApi.tasks (TASK-909)', () => {
   ])('refuses a report whose reading has %s (TASK-952)', async (_label, reading) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ tasks: [{ ...ROW, task: { ...ROW.task, reading } }], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+
+  it('accepts a get-done row with how many of its steps are done (TASK-948)', async () => {
+    for (const steps of [{ done: 2, total: 5 }, { done: 0, total: 0 }]) {
+      const body = { tasks: [{ ...ROW, kind: 'get-done', steps }], unavailableAgents: [] };
+      respondWith(body);
+      await expect(workspaceApi.tasks()).resolves.toEqual(body);
+    }
+  });
+
+  it('reads a row with no kind and no steps key as stay-on-top with no steps (a host from before TASK-948)', async () => {
+    // As for the ask: an SPA synced onto an older host (`make dev-fast`) must still load Tasks.
+    const { kind: _kind, steps: _steps, ...older } = ROW;
+    respondWith({ tasks: [older, { ...older, routineId: 'r-2', task: null }], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).resolves.toStrictEqual({
+      tasks: [
+        { ...older, kind: 'stay-on-top', steps: null },
+        { ...older, routineId: 'r-2', task: null, kind: 'stay-on-top', steps: null },
+      ],
+      unavailableAgents: [],
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['a repeat routine’s kind', { ...ROW, kind: 'repeat' }],
+    ['a kind it doesn’t know', { ...ROW, kind: 'nope' }],
+    ['steps as a list', { ...ROW, kind: 'get-done', steps: [] }],
+    ['more steps done than there are', { ...ROW, kind: 'get-done', steps: { done: 3, total: 2 } }],
+    ['a fractional count of steps', { ...ROW, kind: 'get-done', steps: { done: 1.5, total: 2 } }],
+    ['a negative count of steps', { ...ROW, kind: 'get-done', steps: { done: -1, total: 2 } }],
+  ])('refuses a row with %s (TASK-948)', async (_label, row) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith({ tasks: [row], unavailableAgents: [] });
     await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
   });
 

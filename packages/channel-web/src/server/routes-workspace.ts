@@ -152,6 +152,7 @@ import {
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
+  ROUTINE_STEP_TEXT_MAX_CHARS,
   RoutineCreateToolInputSchema,
   RoutineOpaqueStringSchema,
   RoutineUpdateToolInputSchema,
@@ -218,6 +219,8 @@ import type {
   TaskReplyResponse,
   TaskRow,
   TasksResponse,
+  TaskStep,
+  TaskStepCounts,
   TaskUpdate,
   ThreadAttachment,
   ThreadMessage,
@@ -232,6 +235,9 @@ import { fenceBlock, fenceLine } from '../lib/fence-line.js';
 // phrase (TASK-910). Pure, no DOM, and it imports its own sibling relatively,
 // so the built server can load it.
 import { checkInSchedule, describeCheckIns } from '../lib/task-schedule.js';
+// A task's kind as the wire carries it (TASK-948): one of the contract's task
+// kinds, and a kind this page doesn't know as the never-finishing one.
+import { toTaskKind } from '../lib/task-kinds.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The sentence a full storage limit answers a Rules Save with (TASK-719), and
 // the one test for "this refusal is the storage limit". The sentence is shared
@@ -745,7 +751,7 @@ interface RoutinesListOutput {
  */
 type TaskListView = Pick<
   RoutineView,
-  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task' | 'noRecentUpdate'
+  'routineId' | 'name' | 'kind' | 'enabled' | 'permissions' | 'task' | 'noRecentUpdate' | 'steps'
 >;
 interface TaskListOutput {
   routines: TaskListView[];
@@ -772,6 +778,7 @@ type TaskDetailView = Pick<
   | 'goodWhen'
   | 'task'
   | 'noRecentUpdate'
+  | 'steps'
 >;
 type TaskFireView = Pick<
   RoutineFireView,
@@ -2769,12 +2776,23 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
  * TOTAL, like `wireRequest`: the helper never throws and answers null for
  * anything it can't read, and so does `wireTask` when none of the four fields
  * the block draws survives. Open rows only, for the same reason as the request.
+ *
+ * TASK-948: `kind` names the kind of task a create starts, or the task kind a
+ * change's own `kind` turns the routine into, as one of two words
+ * (`toTaskKind`). A change that sets no kind, or sets `repeat`, names none:
+ * the card can't look up what the routine already is.
  */
 function wireTask(stored: StoredDecision): DecisionTask | null {
   if (!isOpenDecision(stored)) return null;
   const proposal = routineBriefFields({ name: stored.call?.name ?? '', input: stored.call?.input });
   if (proposal === null) return null;
   const fields = proposal.action === 'start' ? proposal.definition : proposal.patch;
+  const kind =
+    proposal.action === 'start'
+      ? toTaskKind(proposal.definition.kind)
+      : Object.hasOwn(proposal.patch, 'kind') && proposal.patch.kind !== 'repeat'
+        ? toTaskKind(proposal.patch.kind)
+        : null;
   const name = fenceLine(fields.name, DECISION_TASK_NAME_MAX_CHARS);
   const instructions = fenceBlock(fields.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
   const goodWhen = fenceBlock(fields.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
@@ -2788,7 +2806,7 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
   // carries the name, instructions and goodWhen (the contract refuses one that
   // doesn't), so it lands here only when all three are blank.
   if (name === null && instructions === null && goodWhen === null && checksIn === null) return null;
-  return { action: proposal.action, name, instructions, goodWhen, checksIn };
+  return { action: proposal.action, kind, name, instructions, goodWhen, checksIn };
 }
 
 export function toWireDecision(stored: StoredDecision, eligible = false, checkIn: CheckInSource | null = null): Decision {
@@ -3420,6 +3438,11 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * `agentName` is the roster's string as-is, the same one `/state` sends.
  * `noRecentUpdate` is host-written (a count, a closed reason, an instant, a
  * flag; `toTaskNoRecentUpdate`) and holds no agent-written text.
+ *
+ * TASK-948: the kind crosses as one of two words (`toTaskKind`: one this page
+ * doesn't know reads as stay-on-top). A get-done task's steps cross as counts
+ * only (`toTaskStepCounts`), never their text or ids: the list feeds Today and
+ * the badge, and a step's words belong on its task's own page.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3433,6 +3456,8 @@ function toTaskRows(
       routineId: view.routineId,
       name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
       enabled: view.enabled,
+      kind: toTaskKind(view.kind),
+      steps: toTaskStepCounts(view),
       task:
         view.task === null
           ? null
@@ -3489,6 +3514,62 @@ function toTaskReading(reading: unknown): TaskReading | null {
   return fenced === null ? null : { label: fenced, value };
 }
 
+/** A step as `readSteps` keeps it: every field there, and `addedBy` any string. */
+interface ReadStep {
+  id: string;
+  text: string;
+  done: boolean;
+  addedBy: string;
+}
+
+/**
+ * A view's checklist (TASK-948): none unless the task is `get-done` and its
+ * steps are a list. Lenient about a view the schema didn't parse (TASK-913),
+ * as `toTaskNoRecentUpdate` is: an entry without a non-empty string id, a
+ * string text, a boolean `done` and a string author is left out, never a
+ * thrown request. The Tasks row's counts and the task page's steps both read
+ * through here, so the two always agree.
+ */
+function readSteps(view: Pick<RoutineView, 'kind' | 'steps'>): ReadStep[] {
+  const steps: unknown = view.steps;
+  if (view.kind !== 'get-done' || !Array.isArray(steps)) return [];
+  return steps.flatMap((entry: unknown): ReadStep[] => {
+    if (entry === null || typeof entry !== 'object') return [];
+    const { id, text, done, addedBy } = entry as Record<string, unknown>;
+    if (typeof id !== 'string' || id.length === 0) return [];
+    if (typeof text !== 'string' || typeof done !== 'boolean' || typeof addedBy !== 'string') return [];
+    return [{ id, text, done, addedBy }];
+  });
+}
+
+/**
+ * A view's steps → the Tasks row's counts (TASK-948): null unless the task is
+ * `get-done`, and nothing of any step but whether it is done.
+ */
+function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCounts | null {
+  if (view.kind !== 'get-done') return null;
+  const steps = readSteps(view);
+  return { done: steps.filter((step) => step.done).length, total: steps.length };
+}
+
+/**
+ * One step → the task page's (TASK-948), field by field. The text is agent- or
+ * person-written, and stored text isn't re-checked against the writer's rules
+ * (TASK-913), so it is fenced HERE to one line (`TASK_STEP_TEXT_MAX_CHARS`).
+ * The id crosses as-is: an opaque host id, for the next card's edits, never
+ * drawn. `byAgent` comes from the host-set author, and anything but a person
+ * reads as the agent's: the label is how a person spots text that isn't
+ * theirs, so it fails toward "the agent wrote this".
+ */
+function toTaskStep(step: ReadStep): TaskStep {
+  return {
+    id: step.id,
+    text: fenceLine(step.text, TASK_STEP_TEXT_MAX_CHARS),
+    done: step.done,
+    byAgent: step.addedBy !== 'person',
+  };
+}
+
 /** How many check-ins a task page's Updates thread shows, newest first (TASK-910). */
 const TASK_UPDATES_LIMIT = 50;
 
@@ -3506,6 +3587,17 @@ const TASK_UPDATES_LIMIT = 50;
  */
 const TASK_NOTES_MAX_CHARS = 6 * ROUTINE_AGENT_NOTES_MAX_CHARS;
 const TASK_NOTES_MAX_LINES = ROUTINE_AGENT_NOTES_MAX_CHARS + 1;
+
+/**
+ * How much of one step a task's page carries (TASK-948 decisions row 18), by
+ * the notes' rule above: the page never shows less than the next check-in
+ * reads. A check-in's message reads a step's first
+ * `ROUTINE_STEP_TEXT_MAX_CHARS` UTF-16 units, at most that many code points;
+ * `fenceLine` counts code points and spends one on "…" when it cuts, so one
+ * more than the writer's cap keeps every one of them. A stored step longer
+ * than the writer allows shows more than the check-in reads, never less.
+ */
+const TASK_STEP_TEXT_MAX_CHARS = ROUTINE_STEP_TEXT_MAX_CHARS + 1;
 
 /** How many of a task's replies its page shows, newest first (TASK-931). */
 const TASK_REPLIES_LIMIT = 50;
@@ -3597,6 +3689,11 @@ function readTaskReplyBody(parsed: unknown): { text: string; requestId: string }
  * re-checked against the rule it was written under (TASK-913), so each is
  * fenced as a block like the notes (`TASK_REPLY_MAX_CHARS`). A reply carries
  * no author: only `byYou`, said against the caller, and never its id.
+ *
+ * TASK-948: the kind crosses as one of two words (`toTaskKind`). A get-done
+ * task's steps are agent- or person-written, fenced here to one line each
+ * (`toTaskStep`), in their stored order, with `byAgent` from the host-set
+ * author; any other kind has none.
  */
 function toTaskDetail(
   agent: { displayName: string },
@@ -3608,6 +3705,7 @@ function toTaskDetail(
   return {
     agentName: agent.displayName,
     name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
+    kind: toTaskKind(view.kind),
     enabled: view.enabled,
     revision: view.revision,
     permissions: {
@@ -3641,6 +3739,7 @@ function toTaskDetail(
             reading: toTaskReading(view.task.reading),
             reportedAt: view.task.reportedAt,
           },
+    steps: readSteps(view).map(toTaskStep),
     noRecentUpdate: toTaskNoRecentUpdate(view),
     updates: fires.map(toTaskUpdate),
     replies: replies.map((reply) => toTaskReply(reply, userId)),

@@ -637,6 +637,8 @@ describe('tasks on Today, and one count (TASK-933)', () => {
       routineId: 't1',
       name: 'Zero open support tickets',
       enabled: true,
+      kind: 'stay-on-top',
+      steps: null,
       task: {
         status: 'needs-you',
         update: 'Two tickets are still open.',

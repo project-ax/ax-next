@@ -44,6 +44,7 @@ import {
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
   RoutineStatusSchema,
+  TASK_KINDS,
 } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { attachmentRefBlock } from './attachment-upload';
@@ -472,9 +473,10 @@ function isTaskReading(v: unknown): boolean {
  * `task` is null until the first report; a report is drawn from every one of
  * its fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
  * host from before TASK-933 (an SPA synced onto an older host by `make
- * dev-fast`), and reads as null (`withAsk`) rather than failing the Tasks page.
- * The reading (TASK-952) follows the same rule: null or a reading when present,
- * and an absent one, from a host before TASK-952, reads as null (`withReading`).
+ * dev-fast`), and reads as null (`withRowDefaults`) rather than failing the
+ * Tasks page. The reading (TASK-952) follows the same rule: null or a reading
+ * when present, and an absent one, from a host before TASK-952, reads as null
+ * (`withReading`).
  */
 function isTaskReport(v: unknown): boolean {
   return (
@@ -487,10 +489,34 @@ function isTaskReport(v: unknown): boolean {
   );
 }
 
-/** A checked row with its report's absent ask read as null. */
-function withAsk(row: TaskRow): TaskRow {
-  if (row.task === null || 'ask' in row.task) return row;
-  return { ...row, task: { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null } };
+/**
+ * A checked row with what an older host leaves out filled in. A host from
+ * before TASK-933 sends no ask, and one from before TASK-948 no kind and no
+ * steps: a dev-fast SPA (`make dev-fast`) synced onto it must still load the
+ * Tasks page, Today and the badge, which all read this. An absent ask reads
+ * as null, an absent kind as `'stay-on-top'` (every task then was one) and
+ * absent steps as null.
+ */
+function withRowDefaults(row: TaskRow): TaskRow {
+  return {
+    ...row,
+    kind: 'kind' in row ? row.kind : 'stay-on-top',
+    steps: 'steps' in row ? row.steps : null,
+    task:
+      row.task === null || 'ask' in row.task
+        ? row.task
+        : { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null },
+  };
+}
+
+/** A whole count of zero or more. */
+function isCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
+}
+
+/** A get-done task's step counts on its Tasks row (TASK-948): whole, and no more done than there are. */
+function isTaskStepCounts(v: unknown): boolean {
+  return isRecord(v) && isCount(v.done) && isCount(v.total) && v.done <= v.total;
 }
 
 /** A checked row with its report's absent reading read as null (a host from before TASK-952). */
@@ -512,6 +538,11 @@ function isTaskNoRecentUpdate(v: unknown): boolean {
   );
 }
 
+/**
+ * One Tasks row. A kind or steps the row does carry is checked (TASK-948): a
+ * kind the contract doesn't call a task's is refused, not read as one. Left
+ * out, they are an older host's (`withRowDefaults`).
+ */
 function isTaskRow(v: unknown): boolean {
   return (
     isRecord(v) &&
@@ -520,6 +551,8 @@ function isTaskRow(v: unknown): boolean {
     isString(v.routineId) &&
     isString(v.name) &&
     typeof v.enabled === 'boolean' &&
+    (!('kind' in v) || TASK_KINDS.some((kind) => kind === v.kind)) &&
+    (!('steps' in v) || v.steps === null || isTaskStepCounts(v.steps)) &&
     (v.task === null || isTaskReport(v.task)) &&
     (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate))
   );
@@ -607,16 +640,30 @@ function isTaskBrief(v: unknown): boolean {
   return isRecord(v) && isStringOrNull(v.promptBody) && isStringOrNull(v.goodWhen);
 }
 
+/** One step on a task's page (TASK-948): its id, its fenced text or null, and two flags. */
+function isTaskStep(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.id) &&
+    isStringOrNull(v.text) &&
+    typeof v.done === 'boolean' &&
+    typeof v.byAgent === 'boolean'
+  );
+}
+
 /**
  * A task page's body, every field `TaskDetail` declares. The page reads them
  * during render (`permissions.fire`, `brief.promptBody`, each update's report),
  * so one missing object would crash it instead of saying "couldn't load".
+ * The kind and the steps (TASK-948) must be there too: `task()` doesn't fill
+ * them in, as it doesn't fill in the ask (`isTaskDetailReport`).
  */
 function isTaskDetail(b: unknown): boolean {
   return (
     isRecord(b) &&
     isString(b.agentName) &&
     isString(b.name) &&
+    TASK_KINDS.some((kind) => kind === b.kind) &&
     typeof b.enabled === 'boolean' &&
     isString(b.revision) &&
     isTaskPermissions(b.permissions) &&
@@ -624,6 +671,8 @@ function isTaskDetail(b: unknown): boolean {
     isStringOrNull(b.nextCheckAt) &&
     isTaskBrief(b.brief) &&
     (b.task === null || isTaskDetailReport(b.task)) &&
+    Array.isArray(b.steps) &&
+    b.steps.every(isTaskStep) &&
     (b.noRecentUpdate === null || isTaskNoRecentUpdate(b.noRecentUpdate)) &&
     Array.isArray(b.updates) &&
     b.updates.every(isTaskUpdate) &&
@@ -1080,7 +1129,7 @@ export const workspaceApi = {
   tasks: async () => {
     const body = await req<unknown>('/tasks');
     const page = checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
-    return { ...page, tasks: page.tasks.map((row) => withReading(withAsk(row))) };
+    return { ...page, tasks: page.tasks.map((row) => withReading(withRowDefaults(row))) };
   },
 
   /**

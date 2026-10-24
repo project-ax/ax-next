@@ -71,6 +71,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
   return {
     agentName: 'Quill',
     name: 'Zero open support tickets',
+    kind: 'stay-on-top',
     enabled: true,
     revision: 'rev-1',
     permissions: { fire: true, stop: true, edit: true },
@@ -81,6 +82,7 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
       goodWhen: 'No ticket is open longer than an hour.',
     },
     task: report(),
+    steps: [],
     noRecentUpdate: null,
     updates: [
       {

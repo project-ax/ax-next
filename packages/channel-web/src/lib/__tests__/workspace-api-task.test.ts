@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CHECK_IN_MISSES } from '@ax/routines-contract';
 import { workspaceApi, WorkspaceApiError, WorkspaceShapeError } from '../workspace-api';
-import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate, TaskUpdate } from '../workspace-types';
+import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate, TaskStep, TaskUpdate } from '../workspace-types';
 
 /**
  * Answers with `body` as it arrives off the wire: through JSON, so a fixture's
@@ -59,9 +59,12 @@ const MISS: TaskNoRecentUpdate = {
   autoPaused: false,
 };
 
+const STEP: TaskStep = { id: 's1', text: 'Export every article', done: true, byAgent: true };
+
 const DETAIL: TaskDetail = {
   agentName: 'Quill',
   name: 'Watch the support queue',
+  kind: 'stay-on-top',
   enabled: true,
   revision: 'rev-1',
   permissions: { fire: true, stop: true, edit: true },
@@ -69,6 +72,7 @@ const DETAIL: TaskDetail = {
   nextCheckAt: '2026-10-22T13:00:00.000Z',
   brief: { promptBody: 'Read new tickets.', goodWhen: 'No ticket waits a day.' },
   task: REPORT,
+  steps: [],
   noRecentUpdate: null,
   updates: [
     UPDATE,
@@ -116,6 +120,16 @@ describe('workspaceApi.task (TASK-910)', () => {
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
   });
 
+  it('reads a get-done task’s kind and its steps, a step with no legible text included (TASK-948)', async () => {
+    const body: TaskDetail = {
+      ...DETAIL,
+      kind: 'get-done',
+      steps: [STEP, { id: 's2', text: null, done: false, byAgent: true }, { ...STEP, id: 's3', byAgent: false }],
+    };
+    respondWith(body);
+    await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
+  });
+
   it('reads missed check-ins, for every reason the contract names', async () => {
     for (const reason of CHECK_IN_MISSES) {
       const body: TaskDetail = { ...DETAIL, noRecentUpdate: { ...MISS, reason, autoPaused: true } };
@@ -153,6 +167,14 @@ describe('workspaceApi.task (TASK-910)', () => {
   it.each<[string, unknown]>([
     ['no agent name', { ...DETAIL, agentName: undefined }],
     ['a name that isn’t text', { ...DETAIL, name: 7 }],
+    // TASK-948: `task()` doesn't fill in a kind or steps, so both must be there.
+    ['no kind', { ...DETAIL, kind: undefined }],
+    ['a repeat routine’s kind', { ...DETAIL, kind: 'repeat' }],
+    ['no steps', { ...DETAIL, steps: undefined }],
+    ['steps that aren’t a list', { ...DETAIL, steps: {} }],
+    ['a null step', { ...DETAIL, steps: [null] }],
+    ['a step without byAgent', { ...DETAIL, steps: [{ id: 's1', text: 'Export every article', done: true }] }],
+    ['a step whose text is a number', { ...DETAIL, steps: [{ ...STEP, text: 4 }] }],
     ['an enabled flag that isn’t true or false', { ...DETAIL, enabled: 'yes' }],
     ['no revision', { ...DETAIL, revision: undefined }],
     ['no permissions', { ...DETAIL, permissions: null }],

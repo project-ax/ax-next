@@ -138,6 +138,8 @@ interface World {
   unvalidated: boolean;
   /** Set, with `unvalidated`: every view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
   viewMiss: { value: unknown } | null;
+  /** Set, with `unvalidated`: merged into every view (TASK-948: a kind or steps the schema would refuse). */
+  viewPatch: Record<string, unknown> | null;
 }
 
 interface ListCall {
@@ -165,6 +167,7 @@ function setup(over: Partial<World> = {}) {
     rosterFailure: null,
     unvalidated: false,
     viewMiss: null,
+    viewPatch: null,
     ...over,
   };
   const bus = new HookBus();
@@ -211,7 +214,8 @@ function setup(over: Partial<World> = {}) {
             .filter((r) => r.agentId === input.agentId)
             .map((r) => {
               const view = routineView(r, ctx.userId, allowed);
-              return world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
+              const missed = world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
+              return world.viewPatch === null ? missed : { ...missed, ...world.viewPatch };
             }),
         };
       },
@@ -293,6 +297,8 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       routineId: 't1',
       name: 'Project check-in',
       enabled: true,
+      kind: 'stay-on-top',
+      steps: null,
       task: {
         status: 'needs-you',
         update: 'Queue is empty.',
@@ -931,5 +937,77 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       expect(task?.update).toBe('Queue is empty.');
       expect(task?.reading).toBeNull();
     });
+  });
+});
+
+describe('GET /api/workspace/tasks, the kind and the checklist (TASK-948)', () => {
+  it('a get-done row carries its kind and how many steps are done, and no step’s text or id crosses', async () => {
+    const { get } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 'docs',
+          kind: 'get-done',
+          steps: [
+            { id: 'sSTEPID1', text: 'STEP-TEXT Export every article', done: true, addedBy: 'agent' },
+            { id: 'sSTEPID2', text: 'STEP-TEXT Ask Dana to review billing', done: true, addedBy: 'person' },
+            { id: 'sSTEPID3', text: 'STEP-TEXT Publish the new docs', done: false, addedBy: 'agent' },
+          ],
+        }),
+        stored({ agentId: 'a1', routineId: 'queue' }),
+      ],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    const { tasks } = bodyOf(captured);
+    expect(tasks.map((t) => [t.routineId, t.kind, t.steps])).toEqual([
+      ['docs', 'get-done', { done: 2, total: 3 }],
+      ['queue', 'stay-on-top', null],
+    ]);
+    // Counts only: the list reaches Today and the badge, so a step's text and
+    // its id stay on the host.
+    const wire = JSON.stringify(captured.body);
+    expect(wire).not.toContain('STEP-TEXT');
+    expect(wire).not.toContain('sSTEPID');
+  });
+
+  it('reads a kind it doesn’t know as stay-on-top, and steps it can’t read as none', async () => {
+    // A view the schema didn't parse (TASK-913's shape): a later routines
+    // plugin's kind, or a checklist that isn't one, never fails the page.
+    const listed = async (viewPatch: Record<string, unknown>) => {
+      const { get } = setup({
+        unvalidated: true,
+        viewPatch,
+        rows: [stored({ agentId: 'a1', routineId: 't1' })],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      const [row] = bodyOf(captured).tasks;
+      return { kind: row?.kind, steps: row?.steps };
+    };
+    const keep = { id: 's1', text: 'Keep', done: true, addedBy: 'agent' };
+    expect(await listed({ kind: 'later-kind', steps: [keep] })).toStrictEqual({
+      kind: 'stay-on-top',
+      steps: null,
+    });
+    expect(await listed({ kind: 'get-done', steps: 'nope' })).toStrictEqual({
+      kind: 'get-done',
+      steps: { done: 0, total: 0 },
+    });
+    // Only whole steps count, so the list and the task's page agree.
+    expect(
+      await listed({
+        kind: 'get-done',
+        steps: [
+          keep,
+          { id: 7 },
+          null,
+          { ...keep, id: '' },
+          { ...keep, id: 's2', text: 5 },
+          { ...keep, id: 's3', done: 'yes' },
+          { ...keep, id: 's4', addedBy: null },
+        ],
+      }),
+    ).toStrictEqual({ kind: 'get-done', steps: { done: 1, total: 1 } });
   });
 });

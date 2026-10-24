@@ -3807,6 +3807,7 @@ describe('channel-web agent-workspace BFF', () => {
         const { task } = await getTask(h, 'upd');
         expect(task).toEqual({
           action: 'change',
+          kind: null,
           name: null,
           instructions: null,
           goodWhen: { text: 'Inbox at zero.', truncated: false },
@@ -3845,6 +3846,7 @@ describe('channel-web agent-workspace BFF', () => {
         const { task, body } = await getTask(h, 'instructions');
         expect(task).toEqual({
           action: 'change',
+          kind: null,
           name: null,
           instructions: { text: promptBody, truncated: false },
           goodWhen: null,
@@ -3857,6 +3859,7 @@ describe('channel-web agent-workspace BFF', () => {
 
         expect((await getTask(h, 'name')).task).toEqual({
           action: 'change',
+          kind: null,
           name: 'Zero open tickets',
           instructions: null,
           goodWhen: null,
@@ -3893,6 +3896,7 @@ describe('channel-web agent-workspace BFF', () => {
         const h = makeWorkspaceHandlers({ bus, initCtx });
         expect((await getTask(h, 'whole')).task).toEqual({
           action: 'change',
+          kind: 'stay-on-top',
           name: 'Zero open tickets',
           instructions: { text: 'Keep the queue empty.', truncated: false },
           goodWhen: { text: 'No ticket open longer than an hour.', truncated: false },
@@ -3904,6 +3908,45 @@ describe('channel-web agent-workspace BFF', () => {
           // The raw request block still shows what was asked.
           expect((body.decision['request'] as { input: string }).input).toContain('stay-on-top');
         }
+      });
+
+      it('names the kind a task proposal sets, and none when a change sets no task kind (TASK-948)', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const change = (id: string, patch: Record<string, unknown>) =>
+          decision({
+            id,
+            call: {
+              id: `tu-${id}`,
+              name: 'routine_update',
+              input: { routineId: 'r', requestId: 'q', expectedRevision: 'v', patch },
+            },
+          });
+        seed(
+          decision({ id: 'start-get-done', call: taskCreate({ kind: 'get-done' }) }),
+          decision({ id: 'start-stay-on-top', call: taskCreate() }),
+          change('into-get-done', {
+            kind: 'get-done',
+            name: 'Move the help center',
+            promptBody: 'Move every article to the new site.',
+            goodWhen: 'Every article reads right on the new site.',
+          }),
+          change('rename', { name: 'Zero open tickets now' }),
+          // Back to a repeat routine: no task kind to name.
+          change('into-repeat', { kind: 'repeat', name: 'Zero open tickets' }),
+        );
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const kinds: Record<string, unknown> = {};
+        for (const id of ['start-get-done', 'start-stay-on-top', 'into-get-done', 'rename', 'into-repeat']) {
+          kinds[id] = (await getTask(h, id)).task?.kind;
+        }
+        expect(kinds).toStrictEqual({
+          'start-get-done': 'get-done',
+          'start-stay-on-top': 'stay-on-top',
+          'into-get-done': 'get-done',
+          rename: null,
+          'into-repeat': null,
+        });
       });
 
       it('fences goodWhen like the brief: a bidi override is spelled out, a tab becomes two spaces', async () => {

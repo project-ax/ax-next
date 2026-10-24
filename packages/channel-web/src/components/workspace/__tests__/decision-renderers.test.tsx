@@ -425,6 +425,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
   const GOOD_WHEN = 'No ticket open **longer** than an hour.';
   const task: NonNullable<Decision['task']> = {
     action: 'start',
+    kind: 'stay-on-top',
     name: 'Zero open tickets',
     instructions: { text: HOSTILE, truncated: false },
     goodWhen: { text: GOOD_WHEN, truncated: false },
@@ -680,6 +681,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
       routineOperation: 'routine_update',
       task: {
         action: 'change',
+        kind: null,
         name: null,
         instructions: null,
         goodWhen: { text: 'Inbox at zero.', truncated: false },

@@ -1091,6 +1091,8 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
     routineId: LABEL.routineId,
     name: LABEL.taskName,
     enabled: true,
+    kind: 'stay-on-top',
+    steps: null,
     task: {
       status: 'needs-you',
       update: 'Two tickets are still open.',
