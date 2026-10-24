@@ -952,3 +952,47 @@ describe('person steps canary (TASK-949)', () => {
     expect((await get()).steps).toEqual([{ id, text: TEXT, done: true, addedBy: 'person' }]);
   });
 });
+
+// TASK-951: a "Get something done" task's Finish by date, end to end through the real routines, agents, tool-policy
+// and decisions plugins and Postgres. The person sets it on the task page, which doesn't move the task's revision, so
+// a Check now that carries the revision read before it still starts; and that check-in's brief counts the days to it
+// from the day the run was accepted.
+describe('finish-by canary (TASK-951)', () => {
+  it("a person sets a get-done task's finish date, its revision stays, and the next check-in's brief counts the days to it", async () => {
+    // Thursday, 5 November 2026, 15:00 UTC, and it stays there. The tick loop never wakes, so the only check-in
+    // is the one this test starts.
+    const clock: Clock = {
+      now: () => new Date('2026-11-05T15:00:00Z'),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      }),
+    };
+    const ch = await createCheckInHarness({ clock });
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    // An interval and no active hours, so the task's calendar is UTC's.
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site and the old links redirect.',
+      }),
+    });
+    expect(task).toMatchObject({ kind: 'get-done', finishBy: null });
+    const key = { agentId: h.agentId, routineId: task.routineId };
+    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
+    expect(await h.bus.call('routines:get', h.owner, key)).toMatchObject({ finishBy: '2026-11-14', revision: task.revision });
+
+    // Check now with the view as created: it carries the revision from before the date was set, so it starts only
+    // because setting the date didn't move it.
+    const checkIn = await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Moved the first ten articles.', ask: null,
+      } })).toStrictEqual({ recorded: true });
+    });
+    expect((checkIn.brief as { brief?: string }).brief).toContain(
+      'The person wants this finished by Saturday, 14 November 2026. That’s 9 days from today (Thursday, 5 November 2026). If the steps left won’t fit before then, report "off-track" and say why in your update.');
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    expect((await store.recentFires(task))[0]).toMatchObject({ status: 'ok', report: { status: 'on-track' } });
+  });
+});

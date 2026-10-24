@@ -27,6 +27,12 @@ export interface PendingFire {
   conversationId: string;
   source: FireSource;
   /**
+   * When the run was accepted (`AcceptedDispatch.acceptedAt`). Its brief counts
+   * a finish date's days from this day, in the task's time zone, as its row is
+   * the snapshot read then (TASK-951).
+   */
+  acceptedAt: Date;
+  /**
    * The prompt this fire's row records. Null for a task run (TASK-908): its
    * check-in message stays in the run's own hidden conversation, which only the
    * owner reads, and off its history row, which every member of a team agent
@@ -166,7 +172,7 @@ function refusedBeforeAssembly(reason: string): boolean {
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
   const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
-    const { row, source, reqId, dispatchId } = accepted;
+    const { row, source, reqId, dispatchId, acceptedAt } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
       const error = err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
@@ -295,7 +301,7 @@ export function createFireRoutine(deps: FireDeps) {
     const renderedPrompt = isTaskRun(row) ? null : prompt;
 
     deps.pending.set(reqId, {
-      row, dispatchId, conversationId, source,
+      row, dispatchId, conversationId, source, acceptedAt,
       renderedPrompt,
       agentName, skips: [], brief: 'waiting',
       onTurnEnd: async () => {},

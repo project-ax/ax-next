@@ -2,14 +2,16 @@ import {
   reject, SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS, SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX, SystemPromptLandedPayloadSchema,
   type AgentContext, type Rejection, type SystemPromptAugmentOutput,
 } from '@ax/core';
-import type { RoutineKind } from '@ax/routines-contract';
+import { calendarDateIn, calendarDaysBetween, taskTimeZone, type RoutineKind } from '@ax/routines-contract';
 import type { PendingFire, PendingFires } from './fire.js';
 import type { DispatchMiss } from './types.js';
 
 // ---------------------------------------------------------------------------
 // A task check-in's brief (TASK-908): what the run is for, in W1's `brief`
-// section of its system prompt. Built only from what the person wrote plus
-// fixed text, so nothing an agent can change reaches it.
+// section of its system prompt. Built only from what the person wrote, a date
+// only the person sets (TASK-951) and fixed text, so no text an agent can
+// change reaches it. The schedule's time zone picks only which calendar day is
+// today.
 // ---------------------------------------------------------------------------
 
 /** The W1 provider that gives a task check-in its brief. Optional: a failure drops only its block. */
@@ -84,18 +86,60 @@ const BRIEF_REPORT = [
 ];
 
 /**
+ * TASK-951. Spells a finish date and the day it's counted from as "Saturday,
+ * 14 November 2026". The locale is fixed, never the host's, so a host's default
+ * can't change the words or their order; and the zone is UTC, the one each
+ * date's midnight is written in below, so no time zone moves the day.
+ */
+const BRIEF_DATE = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+const BRIEF_FINISH_BY_FITS = 'If the steps left won’t fit before then, report "off-track" and say why in your update.';
+/** A calendar date, `YYYY-MM-DD`, in words. */
+const spellDate = (date: string): string => BRIEF_DATE.format(new Date(`${date}T00:00:00Z`));
+const days = (n: number): string => (n === 1 ? '1 day' : `${n} days`);
+
+/**
+ * TASK-951. A "get-done" task's finish date in its brief: fixed sentences
+ * around two dates, the person's and `today`, and the whole days between them.
+ * Before the day it says how many are left and asks for "off-track" when the
+ * steps left won't fit; on the day, the same, with "today"; after it, how long
+ * ago, and "off-track" unless the task is done. ax never works out whether the
+ * steps fit: the agent does. Null, so no paragraph, when either isn't a real
+ * date: `rowToRoutine` has already read the stored date through the contract's
+ * rule, and this keeps one that got past it from making `Intl` throw while the
+ * brief is built.
+ */
+function finishByParagraph(finishBy: string, today: string): string | null {
+  const n = calendarDaysBetween(today, finishBy);
+  if (!Number.isInteger(n)) return null;
+  const by = spellDate(finishBy);
+  if (n > 0) return `The person wants this finished by ${by}. That’s ${days(n)} from today (${spellDate(today)}). ${BRIEF_FINISH_BY_FITS}`;
+  if (n === 0) return `The person wants this finished today (${by}). ${BRIEF_FINISH_BY_FITS}`;
+  return `The person wanted this finished by ${by}, ${days(-n)} ago. Report "off-track" unless it’s done, and say in your update what’s left.`;
+}
+
+/**
  * A task's brief. It takes only fields `touchesTaskBrief` protects, which change
  * only with the person's yes, even under Always Allow (TASK-906 decisions row
- * 18): never `description`, the schedule or anything else an agent can change.
- * `validateDefinition` has already run on every read of a task row
- * (`StoredRoutineSchema`), so the name is one line and none of the fields hold
- * invisible characters. The person's text is quoted line by line, so nothing
- * typed into it reads as a heading or as our own text. `kind` picks the fixed
- * lines: a "get-done" task gets three, on its steps and on who marks it done
- * (TASK-948), and a line on the person's words that names their steps' label
- * (TASK-949), but never the steps themselves. Reads nothing but its argument.
+ * 18), and a "get-done" task's finish date, which no tool can reach: only a
+ * person sets it, through `routines:set-finish-by` (TASK-951), so it may sit
+ * beside them. Never `description` or anything else an agent can change.
+ * `today` is the run's accept date in the task's time zone (`taskTimeZone`),
+ * `YYYY-MM-DD`. An agent that edits the schedule under Always Allow can move
+ * that day, and so the count, by up to two days, but no text from the schedule
+ * reaches the brief. `validateDefinition` has already run on every read of a
+ * task row (`StoredRoutineSchema`), so the name is one line and none of the
+ * fields hold invisible characters. The person's text is quoted line by line,
+ * so nothing typed into it reads as a heading or as our own text. `kind` picks
+ * the fixed lines: a "get-done" task gets three, on its steps and on who marks
+ * it done (TASK-948), and a line on the person's words that names their steps'
+ * label (TASK-949), but never the steps themselves; with a finish date it also
+ * gets one paragraph on the days left, right after its going-well-when (TASK-951).
+ * Reads nothing but its arguments.
  */
-export function renderTaskBrief(row: { name: string; promptBody: string; goodWhen: string | null; kind: RoutineKind }): string {
+export function renderTaskBrief(
+  row: { name: string; promptBody: string; goodWhen: string | null; kind: RoutineKind; finishBy: string | null },
+  today: string,
+): string {
   const parts = [
     `## Your task: ${row.name}`,
     BRIEF_INTRO,
@@ -105,6 +149,9 @@ export function renderTaskBrief(row: { name: string; promptBody: string; goodWhe
   // nothing under the heading.
   if (row.goodWhen !== null) parts.push(`Going well when, in the person’s words:\n${quoteLines(row.goodWhen)}`);
   const getDone = row.kind === 'get-done';
+  // `typeof`, not `!== null`: a caller from before the field, whose row has no finishBy at all, gets no paragraph.
+  const finishBy = getDone && typeof row.finishBy === 'string' ? finishByParagraph(row.finishBy, today) : null;
+  if (finishBy !== null) parts.push(finishBy);
   parts.push([...BRIEF_HOW, getDone ? PERSON_WORDS_GET_DONE : PERSON_WORDS, ...(getDone ? BRIEF_GET_DONE : []), ...BRIEF_REPORT].join('\n'));
   return parts.join('\n\n');
 }
@@ -155,13 +202,16 @@ function checkInOf(pending: PendingFires, ctx: AgentContext): PendingFire | unde
  * `system-prompt:augment:optional:routines`: a task check-in's brief, and `{}`
  * for anything else. The brief is built from the row the run was accepted
  * with, the same snapshot its check-in message came from, so an edit made
- * while the run starts reaches the next check-in, not this one. A brief over
- * the orchestrator's cap is not sent: the run is marked so its veto says why.
+ * while the run starts reaches the next check-in, not this one. A finish
+ * date's days count from the day of that accept too, on the task's own
+ * calendar, never from the clock when the brief is built (TASK-951). A brief
+ * over the orchestrator's cap is not sent: the run is marked so its veto says
+ * why.
  */
 export function checkInBrief(pending: PendingFires, ctx: AgentContext): SystemPromptAugmentOutput {
   const entry = checkInOf(pending, ctx);
   if (entry === undefined) return {};
-  const brief = renderTaskBrief(entry.row);
+  const brief = renderTaskBrief(entry.row, calendarDateIn(entry.acceptedAt, taskTimeZone(entry.row)));
   if (!briefFits(brief)) {
     entry.brief = 'too-long';
     ctx.logger.warn('routines_brief_too_long', {

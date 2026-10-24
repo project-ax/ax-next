@@ -169,7 +169,7 @@ function storedRow(definition: object): StoredRoutine {
 function entry(row: StoredRoutine, conversationId = 'conv-1'): PendingFire {
   return {
     row, dispatchId: `d-${conversationId}`, conversationId, source: 'manual', renderedPrompt: null, agentName: null,
-    skips: [], brief: 'waiting', onTurnEnd: async () => {},
+    skips: [], brief: 'waiting', acceptedAt: new Date('2026-11-05T15:00:00Z'), onTurnEnd: async () => {},
   };
 }
 /** A context and the log lines it collected. */
@@ -331,5 +331,70 @@ describe('no brief, no check-in (TASK-908)', () => {
     expect(BRIEF_DIDNT_LOAD).toBe('This task’s instructions didn’t load, so the check-in didn’t run.');
     expect(BRIEF_TOO_LONG).toBe('This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.');
     expect(BRIEF_UNCONFIRMED).toBe('We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.');
+  });
+});
+
+// TASK-951: a "get-done" task's finish date, which only a person sets, reaches its check-in's brief as one
+// paragraph of fixed sentences around two dates, counted from the day the run was accepted, on the task's own
+// calendar. The copy is exact.
+const GET_DONE = { ...SUPPORT_QUEUE, kind: 'get-done' as const };
+const paragraphs = (brief: string): string[] => brief.split('\n\n');
+/** The finish date's paragraph in a get-done brief with `finishBy` 2026-11-14, counted from `today`. */
+const finishByParagraph = (today: string): string | undefined =>
+  paragraphs(renderTaskBrief({ ...GET_DONE, finishBy: '2026-11-14' }, today)).find(part => part.startsWith('The person want'));
+
+describe("a get-done task's finish date in its brief (TASK-951)", () => {
+  it("a get-done task's brief says how many days are left, right after its going-well-when (TASK-951)", () => {
+    const parts = paragraphs(renderTaskBrief({ ...GET_DONE, finishBy: '2026-11-14' }, '2026-11-05'));
+    const goingWell = parts.findIndex(part => part.startsWith('Going well when, in the person’s words:'));
+    expect(goingWell).toBeGreaterThan(-1);
+    expect(parts[goingWell + 1]).toBe('The person wants this finished by Saturday, 14 November 2026. That’s 9 days from today (Thursday, 5 November 2026). If the steps left won’t fit before then, report "off-track" and say why in your update.');
+    expect(parts[goingWell + 2]?.startsWith('How this check-in works:')).toBe(true);
+  });
+
+  it('says 1 day, and "today" on the day itself', () => {
+    expect(finishByParagraph('2026-11-13')).toContain('That’s 1 day from today (Friday, 13 November 2026).');
+    expect(finishByParagraph('2026-11-14')).toBe('The person wants this finished today (Saturday, 14 November 2026). If the steps left won’t fit before then, report "off-track" and say why in your update.');
+  });
+
+  it('after the date, asks for off-track unless it’s done', () => {
+    expect(finishByParagraph('2026-11-17')).toBe('The person wanted this finished by Saturday, 14 November 2026, 3 days ago. Report "off-track" unless it’s done, and say in your update what’s left.');
+    expect(finishByParagraph('2026-11-15')).toContain(', 1 day ago.');
+  });
+
+  it('adds nothing without a date, or for a stay-on-top task', () => {
+    const none = renderTaskBrief({ ...GET_DONE, finishBy: null }, '2026-11-05');
+    // A caller from before the field, with no finishBy key at all, gets the same brief.
+    expect(none).toBe(renderTaskBrief({ ...GET_DONE }, '2026-11-05'));
+    expect(none).not.toContain('The person want');
+    expect(renderTaskBrief({ ...SUPPORT_QUEUE, finishBy: '2026-11-14' }, '2026-11-05')).toBe(renderTaskBrief(SUPPORT_QUEUE, '2026-11-05'));
+  });
+
+  it('a date no calendar has adds nothing, and building the brief doesn’t throw', () => {
+    // rowToRoutine already reads a stored date through the contract's rule; this keeps the brief whole all the same.
+    const none = renderTaskBrief({ ...GET_DONE, finishBy: null }, '2026-11-05');
+    for (const finishBy of ['2026-02-30', '2026-02-32', '2026-13-45']) {
+      expect(renderTaskBrief({ ...GET_DONE, finishBy }, '2026-11-05')).toBe(none);
+    }
+  });
+
+  // Each accept time is 18:00 the evening before in Los Angeles, so UTC's calendar would count one day fewer.
+  const losAngeles = (): StoredRoutine => ({
+    ...storedRow({ ...TASK, kind: 'get-done', trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' } }),
+    finishBy: '2026-11-14',
+  });
+  it.each([
+    ['2026-11-05T02:00:00Z', 'That’s 10 days from today (Wednesday, 4 November 2026).'], // UTC would say 9
+    ['2026-11-15T02:00:00Z', 'The person wants this finished today (Saturday, 14 November 2026).'], // UTC would say 1 day ago
+    ['2026-11-18T02:00:00Z', 'The person wanted this finished by Saturday, 14 November 2026, 3 days ago.'], // UTC would say 4
+  ])('counts from the accept day in the task’s own time zone, not UTC’s: %s', (acceptedAt, expected) => {
+    const pending: PendingFires = new Map([['rA', { ...entry(losAngeles()), acceptedAt: new Date(acceptedAt) }]]);
+    expect(checkInBrief(pending, runCtx()).brief).toContain(expected);
+  });
+
+  it('a task with an interval and no active hours counts on UTC’s calendar', () => {
+    const row: StoredRoutine = { ...storedRow({ ...TASK, kind: 'get-done', trigger: { kind: 'interval', every: '1h' } }), finishBy: '2026-11-14' };
+    const pending: PendingFires = new Map([['rA', { ...entry(row), acceptedAt: new Date('2026-11-05T02:00:00Z') }]]);
+    expect(checkInBrief(pending, runCtx()).brief).toContain('That’s 9 days from today (Thursday, 5 November 2026).');
   });
 });
