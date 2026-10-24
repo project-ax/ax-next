@@ -14,11 +14,23 @@ import type { TaskDetailReport, TaskReading, TaskUpdate } from './workspace-type
 /** The most readings a task's trend draws: the page reads its newest 50 check-ins (TASK_UPDATES_LIMIT). */
 export const READING_TREND_MAX = 12;
 
-/** A reading's number for a person: up to two decimals in their own locale, never "-0". `locale` is for tests. */
+/**
+ * A reading's number for a person, in their own locale: up to two decimals from
+ * one up, three significant digits below one (so 0.0031 doesn't read as "0"),
+ * and scientific below 0.0001 (so 1e-300 isn't 300 zeros). Never "-0": -0 is
+ * folded to 0 here rather than with `signDisplay: 'negative'`, which older
+ * browsers refuse with a RangeError. `locale` is for tests.
+ */
 export function formatReading(value: number, locale?: string): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2, signDisplay: 'negative' }).format(
-    value,
-  );
+  const v = value === 0 ? 0 : value;
+  const size = Math.abs(v);
+  const options: Intl.NumberFormatOptions =
+    size === 0 || size >= 1
+      ? { maximumFractionDigits: 2 }
+      : size < 1e-4
+        ? { notation: 'scientific', maximumSignificantDigits: 3 }
+        : { maximumSignificantDigits: 3 };
+  return new Intl.NumberFormat(locale, options).format(v);
 }
 
 function sameReading(a: TaskReading | null, b: TaskReading | null): boolean {

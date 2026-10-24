@@ -49,8 +49,21 @@ describe('formatReading', () => {
 
   it('never shows "-0", and keeps the sign of a real negative', () => {
     expect(formatReading(-0, 'en-US')).toBe('0');
-    expect(formatReading(-0.004, 'en-US')).toBe('0');
+    expect(formatReading(0, 'en-US')).toBe('0');
     expect(formatReading(-2.5, 'en-US')).toBe('-2.5');
+  });
+
+  // A small reading keeps its digits: rounding 0.0031 to "0" would show a flat
+  // "Earlier: 0 · 0" beside a sparkline that swings, and lose the agent's number.
+  it('keeps three significant digits below one, and goes scientific when tiny', () => {
+    expect([0.0031, -0.004, 0.123456, 0.0001, 1e-300, -1e-5].map((v) => formatReading(v, 'en-US'))).toEqual([
+      '0.0031',
+      '-0.004',
+      '0.123',
+      '0.0001',
+      '1E-300',
+      '-1E-5',
+    ]);
   });
 });
 
