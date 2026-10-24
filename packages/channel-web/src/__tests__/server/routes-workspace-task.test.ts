@@ -127,6 +127,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     lastRunAt: null,
     task: null,
     noRecentUpdate: null,
+    finishBy: null,
     ...over,
   };
 }

@@ -33,13 +33,14 @@ Smaller corrections, no behaviour change:
 - **The brief spells dates with an explicit locale and UTC.** It uses `new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })` on `${date}T00:00:00Z`, so it reads "Saturday, 14 November 2026". `calendarDateIn` reads parts with the fixed locale `'en-US'`. Never pass `undefined` on the host: the host's default locale must not change the digits or the order.
 - **The browser formats in the reader's language, still in UTC.** `finishByDate` is `Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })`. Following the house pattern (`shortDay`, `formatReading`), it takes an optional `locale` for tests. Lib tests pin `'en-US'` ("Sat, Nov 14"). Component tests derive the expected words from the lib function rather than pinning a locale (memory `patterns/2026-09-20-TASK-435.md`).
 - **Running one file:** `pnpm --filter @ax/<pkg> exec vitest run <path>`. Never `test -- <file>`, and never a filter after the script name. Check the file count in the summary.
-- **Postgres-backed suites (only `@ax/routines` here).** `@ax/routines-admin-routes` starts no container. Check Docker with `DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock timeout 15 docker info`, and export that `DOCKER_HOST` for the run. If it hangs, don't restart OrbStack (the kind cluster and sibling builders share it). Instead, after `/opt/homebrew/opt/postgresql@17/bin/pg_isready -h 127.0.0.1 -p 55439` answers, run `pnpm --filter @ax/routines exec vitest run --config /private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/386b12a8-02d6-45fd-a50d-1e78eb04cac6/scratchpad/TASK-951/pg/vitest.routines.mjs [<path>]`. This worktree's shim already exists, with a measured baseline of 44 files and 567 tests. Add `--no-file-parallelism` if a lock-wait test flakes. The shim runs Postgres 17, not 16, so CI's run is the gate: name every suite that ran only on the shim in the handoff (memory `patterns/2026-10-23-TASK-930.md`).
+- **Postgres-backed suites: all of `@ax/routines`, and `@ax/routines-admin-routes`' `src/__tests__/human-rest-integration.test.ts`.** The latter boots `createRoutineHarness`, which starts a container; that package's `routes.test.ts` doesn't. Check Docker with `DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock timeout 15 docker info`, and export that `DOCKER_HOST` for the run. If it hangs, don't restart OrbStack (the kind cluster and sibling builders share it). Instead, after `/opt/homebrew/opt/postgresql@17/bin/pg_isready -h 127.0.0.1 -p 55439` answers, run `pnpm --filter @ax/routines exec vitest run --config /private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/386b12a8-02d6-45fd-a50d-1e78eb04cac6/scratchpad/TASK-951/pg/vitest.routines.mjs [<path>]`. This worktree's shim already exists, with a measured baseline of 44 files and 567 tests. Add `--no-file-parallelism` if a lock-wait test flakes. The shim runs Postgres 17, not 16, so CI's run is the gate: name every suite that ran only on the shim in the handoff (memory `patterns/2026-10-23-TASK-930.md`). For `@ax/routines-admin-routes` with Docker down, run `pnpm --filter @ax/routines-admin-routes exec vitest run src/__tests__/routes.test.ts`. Or copy the shim config with `root` set to that package (its mock covers the same `packages/test-harness/dist/index.js`), and name `human-rest-integration.test.ts` in the handoff.
 - **channel-web Docker-backed files.** Six channel-web files start containers: `acceptance-e2e`, `connections-mirror`, `routes-attachments`, `routes-chat`, `routes-workspace-approval-actor` and `stream-e2e`, all under `src/__tests__/server/`. They fail at preflight without Docker. When Docker is down, run the rest with one `--exclude '**/<name>.test.ts'` per file, and name those six in the handoff. None of them touches this card's code.
 - **channel-web type-checks its tests** (`include: ["src", "mock"]`); `@ax/routines` and `@ax/routines-contract` don't (`exclude: ["src/__tests__/**"]`). After Tasks 2, 3, 5 and 6, run `pnpm --filter @ax/channel-web exec tsc --build`. Add `finishBy: null` (or the right value) to every fixture it names. For the routines packages, the fixture lists below are the whole job, because no compiler finds them.
 - **Lib imports.** channel-web `src/lib/*.ts` modules the server imports use relative `./x.js`, never `@/lib/...` (memory `patterns/2026-10-20-TASK-906.md`). `task-finish-by.ts` is client-only. The server's helpers come from `@ax/routines-contract`.
 - **Nothing new to install.** No new dependency, no shadcn component (the page uses the installed `Input` with `type="date"`) and no new tool, IPC action or `TOOL_FIELDS` entry. Invoke the `shadcn` and `ux-design` skills in Task 6.
 - **Lint.** A task's test file carries only the names that task's tests use, or its commit fails `pnpm lint` (memory `mistakes/2026-10-24-TASK-948.md`).
 - **One task at a time, in this worktree.** channel-web's `tsc --build` compiles routines and the contract, so two builds at once collide.
+- **vitest loads other workspace packages from their built `dist/`.** `@ax/routines`, `@ax/routines-admin-routes` and channel-web resolve `@ax/routines-contract` through its package exports. After changing a package's source, rebuild it before running any other package's suite: `pnpm --filter @ax/routines-contract build` after Tasks 1 and 3, and `pnpm --filter @ax/routines build` after Tasks 2 and 4, or just `pnpm build`. Otherwise the dependent suite runs against the old schemas. After Task 3, for example, the old strict view schemas refuse `finishBy`, and every view-returning call fails `invalid-return` (the bus checks each service's `returns`, `packages/core/src/hook-bus.ts:417-425`), a mostly red run with a misleading cause.
 - **Commit this plan and its decisions shard first, before Task 1.** `pnpm test:scripts` checks every rooted path a memory shard cites. Write builder memory rows to shards (`scripts/memory-write-target.sh --shard <kind> TASK-951`), never a root archive.
 - **The Bash tool runs zsh, where `path` is tied to `PATH`.** CLAUDE.md's `path=$(scripts/memory-write-target.sh …)` idiom empties the search path, after which `dirname`, `mkdir` and friends are "command not found". Use another name, such as `shard=$(…)`.
 - **The escape trap.** Write test inputs with invisible or unusual characters (Task 1's fullwidth digits) as backslash-u escape text. The Write/Edit tools have turned such escapes into raw characters five times, this plan included (memory `mistakes/2026-10-24-TASK-948.md`). After writing a file with one, grep for the escape. Re-escape with a script that builds the backslash from `chr(92)`.
@@ -190,7 +191,7 @@ Run them in this order, one at a time.
     - there is no "not in the past" rule, because read paths revalidate and must not depend on the clock (TASK-906);
     - one calendar is shared by the brief, the Tasks row and the page.
   - **In `services.ts`,** the two schemas get this doc, verbatim in substance: "`routines:set-finish-by` (TASK-951): a person sets or removes a "get-done" task's finish date, on its task page. Only the routine's owner may, and only on a get-done task. It never changes the routine's revision. Neither a tool nor an IPC action, so no model can set it. Null removes it."
-- [ ] **Step 4: Run, and expect PASS**, with the whole contract suite green (`pnpm --filter @ax/routines-contract test`).
+- [ ] **Step 4: Run, and expect PASS**, with the whole contract suite green (`pnpm --filter @ax/routines-contract test`). Then run `pnpm --filter @ax/routines-contract build`, so Task 2's routines suite sees the new exports.
 - [ ] **Step 5: Commit** `[TASK-951] Contract: a task's finish date, its calendar, and routines:set-finish-by's schemas`.
 
 ### Task 2: Store: version 12, the stored date, `setFinishBy` [tier: sensitive]
@@ -213,7 +214,7 @@ Run them in this order, one at a time.
 - Modify tests:
   - `packages/routines/src/__tests__/migrations.test.ts`: every `versions()` list becomes `[2, …, 12]` (17 places), plus two new cases;
   - routines fixtures that build a `StoredRoutine` by hand: add `finishBy: null` at `brief.test.ts:151`, `fire.test.ts:15`, `next-check.test.ts:16` and `return-schemas.test.ts:11`;
-  - channel-web fixtures typed `StoredRoutine`: add `finishBy: null` in `src/__tests__/routine-manager-producer.test.tsx:17`, in `src/__tests__/server/routes-workspace-tasks.test.ts` (`stored()` :82 and `TEAM_ROWS` :248), and in the `stored()` helpers of `src/__tests__/server/routes-workspace-task.test.ts` (:110) and `src/__tests__/server/routes-workspace-checkin.test.ts` (:90). `tsc --build` names any others.
+  - channel-web fixtures typed `StoredRoutine`: add `finishBy: null` in `src/__tests__/routine-manager-producer.test.tsx:17`, in `src/__tests__/server/routes-workspace-tasks.test.ts` (`stored()` :82; `TEAM_ROWS` :248 is built with it, so it needs nothing), and in the `stored()` helpers of `src/__tests__/server/routes-workspace-task.test.ts` (:110) and `src/__tests__/server/routes-workspace-checkin.test.ts` (:90). `tsc --build` names any others.
 
 **Interfaces:**
 - Consumes: `RoutineFinishBySchema` (Task 1).
@@ -280,7 +281,7 @@ Run them in this order, one at a time.
   - **`withoutTaskState`** also leaves `finishBy` out. The `receiptCopy` doc changes "All three keys" to four, saying the date is left out not because it's agent text (a person sets it) but for the same rollback reason.
   - **The `reconcileOwners` interface doc** adds: "A get-done task's finish date stays: unlike a change of kind, a change of owner doesn't touch it (TASK-951)." Fix the sentence "as a change of kind does" accordingly.
   - **The `StoredRoutineSchema` comment** says: types only (`rowToRoutine` already read the column through the rule), receipts leave the key out, and the default fills it.
-- [ ] **Step 5: Run, and expect PASS.** Then run the whole routines suite (expect 45 files: the 44 of the baseline plus this one) and `pnpm --filter @ax/channel-web exec tsc --build` (fix the `StoredRoutine` fixtures it names).
+- [ ] **Step 5: Run, and expect PASS.** Then run the whole routines suite (expect 45 files: the 44 of the baseline plus this one) and `pnpm --filter @ax/channel-web exec tsc --build` (fix the `StoredRoutine` fixtures it names). Finish with `pnpm --filter @ax/routines build`.
 - [ ] **Step 6: Commit** `[TASK-951] Routines store: a get-done task's finish date (schema version 12), set only through setFinishBy`.
 
 ### Task 3: Services, views and tool words [tier: sensitive]
@@ -359,10 +360,10 @@ Run them in this order, one at a time.
     - The comment block says that, plus "under the routine's row lock", "neither a tool nor an IPC action", and that the log line carries ids and a flag only.
   - **Descriptions:** insert the sentence just before "A task’s noRecentUpdate counts…" in both `routine_list` and `routine_get`.
   - **The fixture sweep** per Files.
-- [ ] **Step 5: Run, and expect PASS.** Check:
+- [ ] **Step 5: Run, and expect PASS.** First run `pnpm --filter @ax/routines-contract build`: the routines suite and the admin routes load the contract from `dist/`, and the old build's strict view schemas refuse `finishBy`. Then check:
   - `pnpm --filter @ax/routines-contract test`;
   - the routines suite (expect 46 files);
-  - `pnpm --filter @ax/routines-admin-routes test`;
+  - `pnpm --filter @ax/routines-admin-routes test` (with Docker down, only `routes.test.ts` or the shim; see Global Constraints);
   - `pnpm --filter @ax/channel-web exec tsc --build`;
   - `pnpm build`.
 - [ ] **Step 6: Commit** `[TASK-951] routines:set-finish-by: the owner sets a get-done task's finish date; every view shows it`.
@@ -437,7 +438,7 @@ Run them in this order, one at a time.
     - The module header's "so nothing an agent can change reaches it" becomes: built from what the person wrote, a date only the person sets, and fixed text, so no text an agent can change reaches it; the schedule's time zone picks only which calendar day is today.
     - The `renderTaskBrief` doc says "never `description`, the schedule or anything else an agent can change". It becomes: it also takes a get-done task's finish date, which no tool can reach (only a person sets it, through `routines:set-finish-by`), so it may sit beside the person's approved fields (TASK-906 decisions row 18). `today` is the run's accept date in the task's time zone (`taskTimeZone`). An agent that edits the schedule under Always Allow can move that day, and so the count, by up to two days, but no text from the schedule reaches the brief. Never `description` or anything else an agent can change.
   - **`fire.ts`** sets `acceptedAt: accepted.acceptedAt` on the pending entry.
-- [ ] **Step 6: Run, and expect PASS**, with the whole routines suite green (still 46 files).
+- [ ] **Step 6: Run, and expect PASS**, with the whole routines suite green (still 46 files). Then run `pnpm --filter @ax/routines build`.
 - [ ] **Step 7: Commit** `[TASK-951] The check-in brief counts the days to a get-done task's finish date, from the day the run was accepted`.
 
 ### Task 5: channel-web server: the date on the wire and `PUT …/finish-by` [tier: sensitive]
@@ -494,7 +495,7 @@ Run them in this order, one at a time.
 
 - [ ] **Step 1: Write the failing route tests.**
   - **Shared setup in `routes-workspace-task.test.ts`:**
-    - `setup()` gains `now?: () => Date`, passed to `makeWorkspaceHandlers`, and world fields `finishByFailure: Error | null`.
+    - `setup()` gains `now?: () => Date`, passed to `makeWorkspaceHandlers` as `...(now === undefined ? {} : { now })`, and the world field `finishByFailure: Error | null`. `WorkspaceHandlerDeps.now` is optional, and channel-web's tsc checks test files with `exactOptionalPropertyTypes`, so passing `now: undefined` fails the build.
     - A `routines:set-finish-by` stub (unless absent) that:
       - records `{ userId, agentId, input }` and pushes to `order`;
       - runs `parseRoutineInput(RoutineSetFinishByInputSchema, raw)` first, as the service does;
@@ -521,7 +522,8 @@ Run them in this order, one at a time.
   - **In `routes-workspace-tasks.test.ts`:** `it("each get-done row carries its finish date and the days left in its own task's time zone (TASK-951)")`.
     - Two get-done rows with `'2026-11-14'` at `now = 2026-11-05T02:00:00Z`: one with a cron in `America/Los_Angeles` gives `daysLeft: 10`, and one with an interval and no active hours (UTC) gives 9.
     - A stay-on-top row gives `finishBy: null`.
-    - Inject `now` through that file's `makeWorkspaceHandlers` call (:226).
+    - Inject `now` through that file's `makeWorkspaceHandlers` call (:226), spread in only when set, as above.
+    - That file's untyped `expect(t1).toEqual({…})` at :294-310 gains `finishBy: null`. tsc can't see it, and once the route sends `finishBy: null` a missing key no longer matches.
   - **In `routes-workspace-registration.test.ts`:** `expect(routes).toContain('PUT /api/workspace/tasks/:agentId/:routineId/finish-by')`.
   - **In `plugin.test.ts`:** the `optionalCalls` pin gains the entry, exactly, after `routines:recent-replies`.
 - [ ] **Step 2: Run, and expect failures**: `pnpm --filter @ax/channel-web exec vitest run src/__tests__/server/routes-workspace-task.test.ts src/__tests__/server/routes-workspace-tasks.test.ts src/__tests__/server/routes-workspace-registration.test.ts src/__tests__/server/plugin.test.ts`.
@@ -598,13 +600,15 @@ Invoke the `shadcn` skill (`-c packages/channel-web`) and the `ux-design` skill 
     - the detail must carry `finishBy`: absent is a `WorkspaceShapeError`; `null` and `{ date: '2026-11-14', daysLeft: -3 }` read; `{ date: '2026-02-30', daysLeft: 1 }` and `{ date: '2026-11-14', daysLeft: 1.5 }` are refused.
     - `setTaskFinishBy('a 1', 'r/1', '2026-11-14')` sends `PUT /api/workspace/tasks/a%201/r%2F1/finish-by` with the JSON body `{ finishBy: '2026-11-14' }` and the write headers, and returns the checked answer.
     - An answer without `finishBy` is a `WorkspaceShapeError`, and a 404 is a `WorkspaceApiError` with status 404.
-  - **`workspace-api-tasks.test.ts`:** a row without `finishBy` (an older host) reads as `finishBy: null`, and a malformed one fails the read.
+  - **`workspace-api-tasks.test.ts`:**
+    - First add `finishBy: null` to `ROW` (:22-38). It is untyped and goes through `respondWith(body: unknown)`, so tsc can't see it. Once `withRowDefaults` fills `finishBy: null`, the exact-match cases at :54, 67, 77, 97, 110, 118, 141, 149, 164 and 193 fail without it.
+    - Then: a row without `finishBy` (an older host, `ROW` with the key deleted from a copy) reads as `finishBy: null`, and a malformed one fails the read.
   - **`workspace-task.test.ts`:** `it("applyAnswer shows a write's answer at once, and a read that was already on its way can't put the old value back")`, using the file's `deferred()`.
     - Load a detail with `finishBy: null`, then start a quiet re-read (`refreshQuietly`) whose answer is deferred.
     - `applyAnswer(d => ({ ...d, finishBy: SAVED }))` shows `SAVED` at once.
     - Resolve the quiet read with `finishBy: null`: the state still shows `SAVED`. Resolve the newer read with `SAVED`, and it shows `SAVED` with `refreshing: false`.
     - Second case: the newer read fails. `SAVED` stays, with `refreshFailed: true`.
-- [ ] **Step 3: Write the failing component tests** in `TaskFinishDate.test.tsx`. Mock `workspaceApi.setTaskFinishBy`. Use `vi.useFakeTimers({ toFake: ['Date'] })` at local `new Date(2026, 10, 5, 12)` and `fireEvent`, since `user-event` isn't installed. jsdom matches browsers on date inputs (measured): a value no calendar has (`'2026-02-30'`) or that isn't a date reads back as `''`, while a past date is kept. So the field never holds an impossible date. "Pick a real date." reaches the component only through the server's 400, which the status case below drives. `finishByPickIssue`'s own schema branch is covered by the lib test.
+- [ ] **Step 3: Write the failing component tests** in `TaskFinishDate.test.tsx`. Mock `workspaceApi.setTaskFinishBy`. Use `vi.useFakeTimers({ toFake: ['Date'] })` at local `new Date(2026, 10, 5, 12)` and `fireEvent`, since `user-event` isn't installed. Render `TaskFinishDate` inside a small test wrapper that keeps `finishBy` in `useState` and passes `onSaved` through to its setter, as `TaskPage` does through `applyAnswer`. Without it, the focus assertions after Save and after Remove never see the new button. jsdom matches browsers on date inputs (measured): a value no calendar has (`'2026-02-30'`) or that isn't a date reads back as `''`, while a past date is kept. So the field never holds an impossible date. "Pick a real date." reaches the component only through the server's 400, which the status case below drives. `finishByPickIssue`'s own schema branch is covered by the lib test.
   - **`it('shows the date and the days left, with Change described by that line')`.** The line `finishByLine(FB)` (derived, no pinned locale) is visible, and the `Change` button's accessible description includes it.
   - **`it('offers Add a finish date when there is none, and no Remove date in its field')`.**
   - **`it('adds a date: the field opens focused, refuses nothing it shouldn’t, saves once, and hands focus back')`.**
@@ -659,7 +663,7 @@ Invoke the `shadcn` skill (`-c packages/channel-web`) and the `ux-design` skill 
     > PR 3 (TASK-951): Finish by is a date only a person sets, on a "Get something done" task's page. The row, the page and each check-in's brief count the days to it the same way, in the task's own time zone, and the brief asks the agent to report Off track when the steps left won't fit.
   - **§13, "New hooks:".** Add `` `routines:set-finish-by` (TASK-951, owner-only, neither a tool nor an IPC action) `` after `` `routines:recent-replies` ``.
   - **§15, a new last row.** `| 2026-10-24 | Decided | A "Get something done" task can have an optional Finish by date. Only a person sets it, on its task page; no agent or tool can. It's a date in the task's own time zone (its schedule's, else its active hours', else UTC), shown on the Tasks row and the task page as days left. Its check-ins' brief asks the agent to report Off track when the steps left won't fit, and ax never computes that. A change of kind clears it, a change of owner keeps it, and Duplicate doesn't copy it (TASK-951). |`
-- [ ] **Step 2: Grep for loose ends.** `grep -n "set-finish-by\|Finish by" docs/plans/2026-10-20-agent-tasks-design.md` lists the six places. `pnpm test:scripts` passes.
+- [ ] **Step 2: Grep for loose ends.** `grep -n "set-finish-by\|Finish by" docs/plans/2026-10-20-agent-tasks-design.md` lists nine lines: the two already there (:712, :882) and the seven this task adds. `pnpm test:scripts` passes.
 - [ ] **Step 3: Commit** `[TASK-951] Design doc: Finish by is a person-only date on a get-done task`.
 
 ## Left to later (not in this plan)

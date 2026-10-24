@@ -1,7 +1,7 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
   RoutineCheckInViewSchema, type RoutineCheckInView
@@ -68,6 +68,18 @@ export interface RoutinesStore {
    * notes again (`recordReport`). Touches nothing else in the row.
    */
   clearAgentNotes(input: RoutineKey & { actorUserId: string; now: Date }): Promise<'cleared' | 'not-found' | 'forbidden'>;
+  /**
+   * TASK-951. A person sets a "get-done" task's finish date, or removes it with
+   * null. Owner only, decided under the agent fence and the routine's row lock,
+   * so a change of kind that commits first makes it `not-found`: a task that
+   * isn't get-done, a missing routine and a retired agent all are. It writes
+   * `finish_by` alone, so the revision, the spec hash and `updated_at` stay, and
+   * keeps no receipt: the same date set twice is the same write. The caller
+   * checks the date (`RoutineSetFinishByInputSchema`); the column's CHECK
+   * refuses anything not written `YYYY-MM-DD`, and every read takes a value the
+   * contract's rule refuses as none.
+   */
+  setFinishBy(input: RoutineKey & Actor & { finishBy: string | null }): Promise<{ finishBy: string | null } | 'not-found' | 'forbidden'>;
   /**
    * TASK-931. A person's reply on a task. Owner only, decided under the agent
    * fence and the routine's row lock, so a reply can't land on a routine being
@@ -165,13 +177,15 @@ export interface RoutinesStore {
   refreshStale(input: { now: Date }): Promise<void>;
   /**
    * TASK-397. Moves every routine of each of these user-owned agents to the
-   * agent's owner, at a new revision. TASK-936: in the same statement it starts
-   * each one over, as a change of kind does (`NO_TASK_STATE`), whatever its
-   * kind, because a task's state is its owner's: the report, its ask, the agent
-   * notes and the missed check-ins came from runs as the earlier owner, with
-   * what only they can reach. One statement, so no read finds the new owner
-   * beside the old state. `enabled`, the schedule and `agent_notes_cleared_at`
-   * stay, so a task ax paused for misses stays paused, now as a plain pause.
+   * agent's owner, at a new revision. TASK-936: in the same statement it clears
+   * each one's task state (`NO_TASK_STATE`, which a change of kind clears too),
+   * whatever its kind, because a task's state is its owner's: the report, its
+   * ask, the agent notes and the missed check-ins came from runs as the earlier
+   * owner, with what only they can reach. One statement, so no read finds the
+   * new owner beside the old state. `enabled`, the schedule and
+   * `agent_notes_cleared_at` stay, so a task ax paused for misses stays paused,
+   * now as a plain pause. A get-done task's finish date stays: unlike a change
+   * of kind, a change of owner doesn't touch it (TASK-951).
    * The last run's status, error and warning are cleared as well (they
    * describe a run only the earlier owner can see, and name what only they
    * could reach); its time stays. A change of kind keeps them.
@@ -318,6 +332,10 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * or of owner starts it over: `task_steps` goes back to `[]`, written as the
  * JSON text the column parses. Steps the agent added can carry what only the
  * earlier owner could reach.
+ *
+ * TASK-951: a get-done task's finish date isn't here. A change of kind clears
+ * it beside these (`NO_FINISH_BY`); a change of owner, which writes these too,
+ * keeps it.
  */
 const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
@@ -326,6 +344,13 @@ const NO_TASK_STATE = {
   task_steps: '[]',
   ...NO_MISSES,
 } as const;
+/**
+ * TASK-951. A change of kind clears a task's finish date, as it starts the task
+ * over (TASK-907). A change of owner doesn't: the date is about the work, not
+ * text from the earlier owner's runs, so it's not in `NO_TASK_STATE`, which
+ * `reconcileOwners` also writes.
+ */
+const NO_FINISH_BY = { finish_by: null } as const;
 /**
  * TASK-930. The hash `updateAuthored` stores for this row paused by a person: of
  * its definition with `enabled` false. `finishDispatch` runs in plugin init
@@ -455,6 +480,18 @@ async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectab
     .limit(atMost).execute();
   return fires.length;
 }
+/**
+ * TASK-951. A stored finish date, read through the contract's whole rule
+ * (TASK-913). The column's CHECK holds the format only, so a day no calendar has
+ * (`2026-02-30`, `2026-13-45`: a hand edit) or one outside the rule's years (a
+ * later version's) reads as none. Taken as it is, V8 would roll the first over
+ * into March, and `Intl.DateTimeFormat` would throw on the second wherever the
+ * date is spelled. One odd row can't fail a read either: claimDue maps every
+ * due row through here.
+ */
+function storedFinishBy(value: string | null): string | null {
+  return RoutineFinishBySchema.safeParse(value).success ? value : null;
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -462,7 +499,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
-    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps),
+    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps), finishBy: storedFinishBy(row.finish_by),
   });
 }
 /**
@@ -517,13 +554,18 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * too. They're the task's, not the request's, and move on without it.
  * TASK-948: so do a get-done task's steps, beside the report and the misses:
  * agent- or person-written text the task row already holds, once.
- * All three keys are left out, not stored as null or `[]`, so code from before
+ * TASK-951: so does a get-done task's finish date, not because it's agent text
+ * (a person sets it) but for the reason that follows.
+ * All four keys are left out, not stored as null or `[]`, so code from before
  * each field (whose strict schema has no such key) still reads the receipt
  * after a rollback; the schema's defaults fill them in on read. So an exact
- * replay answers with `task: null`, `noRecentUpdate: null` and `steps: []`: a
- * replay answers from its receipt, never from a fresh read. The live answer is
- * the effect's own, state and all, so `acceptDispatch`'s `accepted.row` still
- * holds the task's state, misses and steps as it read them under the row lock.
+ * replay answers with `task: null`, `noRecentUpdate: null`, `steps: []` and
+ * `finishBy: null`: a replay answers from its receipt, never from a fresh read.
+ * The live answer is the effect's own, state and all, so `acceptDispatch`'s
+ * `accepted.row` still holds the task's state, misses, steps and finish date as
+ * it read them under the row lock. A replayed accept starts no run (the tick
+ * and the webhook mint a request per dispatch, and every caller skips
+ * `replayed`), so no run reads a receipt's row.
  * TASK-949: `set-steps`' result is its count alone (`{ skipped }`), stored as
  * it is. Its steps leave `setSteps` beside the receipt, never through it, and a
  * replay reads them again under the routine's row lock.
@@ -536,7 +578,7 @@ function receiptCopy(operation: string, result: unknown): unknown {
   }
   return result;
 }
-function withoutTaskState({ task: _task, noRecentUpdate: _misses, steps: _steps, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate' | 'steps'> { return routine; }
+function withoutTaskState({ task: _task, noRecentUpdate: _misses, steps: _steps, finishBy: _finishBy, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate' | 'steps' | 'finishBy'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
@@ -689,7 +731,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
-          ...(next.kind === current.kind ? {} : NO_TASK_STATE),
+          ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY }),
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
           // shortening instructions that were too long leaves the task paused, and counted.
           ...(!current.enabled && next.enabled ? NO_MISSES : {}),
@@ -955,6 +997,24 @@ export function createRoutinesStore(db: DB): RoutinesStore {
              WHERE agent_id = ${input.agentId} AND routine_id = ${input.routineId} AND completed_at IS NULL))`,
         }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         return 'cleared';
+      });
+    },
+    async setFinishBy(input) {
+      return db.transaction().execute(async (trx): Promise<{ finishBy: string | null } | 'not-found' | 'forbidden'> => {
+        // clearAgentNotes' order: the agent fence, then the routine's row. acceptDispatch and recordReport
+        // take the two in that order too, so this adds no deadlock.
+        if (!await lockLiveAgent(trx, input.agentId)) return 'not-found';
+        const row = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id'])
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        // An explicit allowlist: only a get-done task has a finish date, so a kind this code doesn't know gets none.
+        // Read under the row lock, so a change of kind that commits while this waits is seen here.
+        if (!row || row.kind !== 'get-done') return 'not-found';
+        if (row.owner_user_id !== input.actorUserId) return 'forbidden';
+        // The date alone: no revision, spec_hash or updated_at, so an edit, Check now or Pause held against the
+        // current revision still lands. No receipt either: the same date set twice is the same write.
+        await trx.updateTable('routines_v1_definitions').set({ finish_by: input.finishBy })
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        return { finishBy: input.finishBy };
       });
     },
     async addReply(input) {
@@ -1354,7 +1414,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const agentIds = input.agents.map((a) => a.agentId);
       const ownerIds = input.agents.map((a) => a.ownerUserId);
       // TASK-936: the task state goes in the statement that moves the routine, from the one list a
-      // change of kind clears too. Each column name is one of NO_TASK_STATE's own keys, never input,
+      // change of kind clears too. A get-done task's finish date isn't in it, so it stays (TASK-951,
+      // NO_FINISH_BY). Each column name is one of NO_TASK_STATE's own keys, never input,
       // and each value is bound. The last run's status, error and warning go too: they describe a run
       // only the earlier owner can now see, the error and warning name connectors only they could
       // reach, and a run of the new owner's that fails early carries the routine's last warning into

@@ -48,6 +48,13 @@ export type StoredRoutine = RoutineDefinition & {
    * after a change of kind or of owner.
    */
   steps: StoredStep[];
+  /**
+   * TASK-951. A "get-done" task's finish date, `YYYY-MM-DD`, set only by a
+   * person (`setFinishBy`); null when none, for any other kind, and after a
+   * change of kind. A change of owner keeps it. A stored value the contract's
+   * rule refuses reads as null.
+   */
+  finishBy: string | null;
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
