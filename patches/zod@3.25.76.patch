@@ -159,10 +159,10 @@ index 40b11c0f01b2af54e0ed48e198607bd8836d9a63..5d1d7d218940179d011526e62cada091
          function finalizeSet(elements) {
              const parsedSet = new Set();
 diff --git a/v4/core/schemas.cjs b/v4/core/schemas.cjs
-index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f9ecc79fc 100644
+index 7c77d2b5af031e086d535f4b2e1898cec17eda29..4073d5483bc520afd70de479e1c55e47b4becfb5 100644
 --- a/v4/core/schemas.cjs
 +++ b/v4/core/schemas.cjs
-@@ -35,6 +35,11 @@ const parse_js_1 = require("./parse.cjs");
+@@ -35,6 +35,19 @@ const parse_js_1 = require("./parse.cjs");
  const regexes = __importStar(require("./regexes.cjs"));
  const util = __importStar(require("./util.cjs"));
  const versions_js_1 = require("./versions.cjs");
@@ -171,10 +171,18 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +// this many, so a huge failing input cannot allocate an issue per element. The
 +// first failing element always reports, so the parse still fails normally.
 +const MAX_ISSUES = 100;
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): when the cap drops a hard failure (one that
++// stops parsing, such as a wrong type), the collection must still count as aborted.
++// Otherwise a later .refine(), .transform() or .pipe() would read input that failed
++// validation. Mark the last kept issue as non-continuable, as zod 4.6.6's capSize does.
++function keepAborted(final, aborting) {
++    if (aborting)
++        final.issues[final.issues.length - 1].continue = false;
++}
  exports.$ZodType = core.$constructor("$ZodType", (inst, def) => {
      var _a;
      inst ?? (inst = {});
-@@ -645,7 +650,7 @@ exports.$ZodDate = core.$constructor("$ZodDate", (inst, def) => {
+@@ -645,9 +658,12 @@ exports.$ZodDate = core.$constructor("$ZodDate", (inst, def) => {
      };
  });
  function handleArrayResult(result, final, index) {
@@ -182,8 +190,13 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(index, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[index] = result.value;
-@@ -686,7 +691,7 @@ exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
+ }
+ exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
+@@ -686,9 +702,12 @@ exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
  });
  function handleObjectResult(result, final, key) {
      // if(isOptional)
@@ -191,8 +204,13 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(key, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[key] = result.value;
-@@ -1172,7 +1177,7 @@ exports.$ZodTuple = core.$constructor("$ZodTuple", (inst, def) => {
+ }
+ function handleOptionalObjectResult(result, final, key, input) {
+@@ -1172,9 +1191,12 @@ exports.$ZodTuple = core.$constructor("$ZodTuple", (inst, def) => {
      };
  });
  function handleTupleResult(result, final, index) {
@@ -200,8 +218,13 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(index, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[index] = result.value;
-@@ -1239,28 +1244,30 @@ exports.$ZodRecord = core.$constructor("$ZodRecord", (inst, def) => {
+ }
+ exports.$ZodRecord = core.$constructor("$ZodRecord", (inst, def) => {
+@@ -1239,30 +1261,41 @@ exports.$ZodRecord = core.$constructor("$ZodRecord", (inst, def) => {
                      throw new Error("Async schemas not supported in object keys currently");
                  }
                  if (keyResult.issues.length) {
@@ -223,6 +246,9 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +                            inst,
 +                        });
 +                    }
++                    else {
++                        keepAborted(payload, true);
++                    }
                      payload.value[keyResult.value] = keyResult.value;
                      continue;
                  }
@@ -233,6 +259,9 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +                        if (result.issues.length && payload.issues.length < MAX_ISSUES) {
                              payload.issues.push(...util.prefixIssues(key, result.issues));
                          }
++                        else if (result.issues.length) {
++                            keepAborted(payload, util.aborted(result));
++                        }
                          payload.value[keyResult.value] = result.value;
                      }));
                  }
@@ -241,8 +270,13 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +                    if (result.issues.length && payload.issues.length < MAX_ISSUES) {
                          payload.issues.push(...util.prefixIssues(key, result.issues));
                      }
++                    else if (result.issues.length) {
++                        keepAborted(payload, util.aborted(result));
++                    }
                      payload.value[keyResult.value] = result.value;
-@@ -1306,7 +1313,8 @@ exports.$ZodMap = core.$constructor("$ZodMap", (inst, def) => {
+                 }
+             }
+@@ -1306,7 +1339,8 @@ exports.$ZodMap = core.$constructor("$ZodMap", (inst, def) => {
      };
  });
  function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
@@ -252,16 +286,29 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
          if (util.propertyKeyTypes.has(typeof key)) {
              final.issues.push(...util.prefixIssues(key, keyResult.issues));
          }
-@@ -1320,7 +1328,7 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+@@ -1320,7 +1354,10 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
              });
          }
      }
 -    if (valueResult.issues.length) {
++    else if (keyResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(keyResult));
++    }
 +    if (valueResult.issues.length && room) {
          if (util.propertyKeyTypes.has(typeof key)) {
              final.issues.push(...util.prefixIssues(key, valueResult.issues));
          }
-@@ -1366,7 +1374,7 @@ exports.$ZodSet = core.$constructor("$ZodSet", (inst, def) => {
+@@ -1335,6 +1372,9 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
++    else if (valueResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(valueResult));
++    }
+     final.value.set(keyResult.value, valueResult.value);
+ }
+ exports.$ZodSet = core.$constructor("$ZodSet", (inst, def) => {
+@@ -1366,9 +1406,12 @@ exports.$ZodSet = core.$constructor("$ZodSet", (inst, def) => {
      };
  });
  function handleSetResult(result, final) {
@@ -269,12 +316,17 @@ index 7c77d2b5af031e086d535f4b2e1898cec17eda29..23d5b1329272044810292461390b5f8f
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...result.issues);
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value.add(result.value);
+ }
+ exports.$ZodEnum = core.$constructor("$ZodEnum", (inst, def) => {
 diff --git a/v4/core/schemas.js b/v4/core/schemas.js
-index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f8447a4fbbb 100644
+index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3a828756f5de537f265f9ab335ffd2467b3df903 100644
 --- a/v4/core/schemas.js
 +++ b/v4/core/schemas.js
-@@ -5,6 +5,11 @@ import { safeParse, safeParseAsync } from "./parse.js";
+@@ -5,6 +5,19 @@ import { safeParse, safeParseAsync } from "./parse.js";
  import * as regexes from "./regexes.js";
  import * as util from "./util.js";
  import { version } from "./versions.js";
@@ -283,10 +335,18 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +// this many, so a huge failing input cannot allocate an issue per element. The
 +// first failing element always reports, so the parse still fails normally.
 +const MAX_ISSUES = 100;
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): when the cap drops a hard failure (one that
++// stops parsing, such as a wrong type), the collection must still count as aborted.
++// Otherwise a later .refine(), .transform() or .pipe() would read input that failed
++// validation. Mark the last kept issue as non-continuable, as zod 4.6.6's capSize does.
++function keepAborted(final, aborting) {
++    if (aborting)
++        final.issues[final.issues.length - 1].continue = false;
++}
  export const $ZodType = /*@__PURE__*/ core.$constructor("$ZodType", (inst, def) => {
      var _a;
      inst ?? (inst = {});
-@@ -614,7 +619,7 @@ export const $ZodDate = /*@__PURE__*/ core.$constructor("$ZodDate", (inst, def)
+@@ -614,9 +627,12 @@ export const $ZodDate = /*@__PURE__*/ core.$constructor("$ZodDate", (inst, def)
      };
  });
  function handleArrayResult(result, final, index) {
@@ -294,8 +354,13 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(index, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[index] = result.value;
-@@ -655,7 +660,7 @@ export const $ZodArray = /*@__PURE__*/ core.$constructor("$ZodArray", (inst, def
+ }
+ export const $ZodArray = /*@__PURE__*/ core.$constructor("$ZodArray", (inst, def) => {
+@@ -655,9 +671,12 @@ export const $ZodArray = /*@__PURE__*/ core.$constructor("$ZodArray", (inst, def
  });
  function handleObjectResult(result, final, key) {
      // if(isOptional)
@@ -303,8 +368,13 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(key, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[key] = result.value;
-@@ -1141,7 +1146,7 @@ export const $ZodTuple = /*@__PURE__*/ core.$constructor("$ZodTuple", (inst, def
+ }
+ function handleOptionalObjectResult(result, final, key, input) {
+@@ -1141,9 +1160,12 @@ export const $ZodTuple = /*@__PURE__*/ core.$constructor("$ZodTuple", (inst, def
      };
  });
  function handleTupleResult(result, final, index) {
@@ -312,8 +382,13 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...util.prefixIssues(index, result.issues));
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value[index] = result.value;
-@@ -1208,28 +1213,30 @@ export const $ZodRecord = /*@__PURE__*/ core.$constructor("$ZodRecord", (inst, d
+ }
+ export const $ZodRecord = /*@__PURE__*/ core.$constructor("$ZodRecord", (inst, def) => {
+@@ -1208,30 +1230,41 @@ export const $ZodRecord = /*@__PURE__*/ core.$constructor("$ZodRecord", (inst, d
                      throw new Error("Async schemas not supported in object keys currently");
                  }
                  if (keyResult.issues.length) {
@@ -335,6 +410,9 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +                            inst,
 +                        });
 +                    }
++                    else {
++                        keepAborted(payload, true);
++                    }
                      payload.value[keyResult.value] = keyResult.value;
                      continue;
                  }
@@ -345,6 +423,9 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +                        if (result.issues.length && payload.issues.length < MAX_ISSUES) {
                              payload.issues.push(...util.prefixIssues(key, result.issues));
                          }
++                        else if (result.issues.length) {
++                            keepAborted(payload, util.aborted(result));
++                        }
                          payload.value[keyResult.value] = result.value;
                      }));
                  }
@@ -353,8 +434,13 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +                    if (result.issues.length && payload.issues.length < MAX_ISSUES) {
                          payload.issues.push(...util.prefixIssues(key, result.issues));
                      }
++                    else if (result.issues.length) {
++                        keepAborted(payload, util.aborted(result));
++                    }
                      payload.value[keyResult.value] = result.value;
-@@ -1275,7 +1282,8 @@ export const $ZodMap = /*@__PURE__*/ core.$constructor("$ZodMap", (inst, def) =>
+                 }
+             }
+@@ -1275,7 +1308,8 @@ export const $ZodMap = /*@__PURE__*/ core.$constructor("$ZodMap", (inst, def) =>
      };
  });
  function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
@@ -364,16 +450,29 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
          if (util.propertyKeyTypes.has(typeof key)) {
              final.issues.push(...util.prefixIssues(key, keyResult.issues));
          }
-@@ -1289,7 +1297,7 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+@@ -1289,7 +1323,10 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
              });
          }
      }
 -    if (valueResult.issues.length) {
++    else if (keyResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(keyResult));
++    }
 +    if (valueResult.issues.length && room) {
          if (util.propertyKeyTypes.has(typeof key)) {
              final.issues.push(...util.prefixIssues(key, valueResult.issues));
          }
-@@ -1335,7 +1343,7 @@ export const $ZodSet = /*@__PURE__*/ core.$constructor("$ZodSet", (inst, def) =>
+@@ -1304,6 +1341,9 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
++    else if (valueResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(valueResult));
++    }
+     final.value.set(keyResult.value, valueResult.value);
+ }
+ export const $ZodSet = /*@__PURE__*/ core.$constructor("$ZodSet", (inst, def) => {
+@@ -1335,9 +1375,12 @@ export const $ZodSet = /*@__PURE__*/ core.$constructor("$ZodSet", (inst, def) =>
      };
  });
  function handleSetResult(result, final) {
@@ -381,4 +480,9 @@ index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3b1b7f452baf653a39116f99dd355f84
 +    if (result.issues.length && final.issues.length < MAX_ISSUES) {
          final.issues.push(...result.issues);
      }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
      final.value.add(result.value);
+ }
+ export const $ZodEnum = /*@__PURE__*/ core.$constructor("$ZodEnum", (inst, def) => {
