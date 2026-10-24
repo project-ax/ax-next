@@ -480,7 +480,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
           conversationId: 'c1',
           triggerSource: 'tick',
           status: 'ok',
-          report: { status: 'on-track', update: 'Queue is empty.', ask: 'HISTORY-ASK' },
+          report: { status: 'on-track', update: 'Queue is empty.', ask: 'HISTORY-ASK', reading: null },
         }),
       ],
     });
@@ -695,7 +695,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
             agentId: 'team',
             routineId: 'tB',
             conversationId: 'c-bob',
-            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null },
+            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null, reading: null },
           }),
         ],
         conversations: {
@@ -825,7 +825,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
         }),
         fire({
           conversationId: 'c1',
-          report: { status: 'off-track', update: 'first\nsecond', ask: null },
+          report: { status: 'off-track', update: 'first\nsecond', ask: null, reading: null },
         }),
       ],
       conversations: {

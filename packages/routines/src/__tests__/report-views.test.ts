@@ -67,8 +67,8 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const bus = services();
     const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
     expect(created.task).toBeNull();
-    await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
-    const task = { ...needsYou, reportedAt: now.toISOString(), agentNotes: NOTES };
+    await checkIn(created, 'check-in', { report: needsYou, notes: NOTES, reading: OPEN_5 });
+    const task = { ...needsYou, reading: OPEN_5, reportedAt: now.toISOString(), agentNotes: NOTES };
     expect((await get(bus, created.routineId)).task).toEqual(task);
     expect((await list(bus)).map(view => view.task)).toEqual([task]);
     // create and update share the view. An edit shows the state and never mints it.
@@ -77,8 +77,9 @@ describe("a task's latest report on the views (TASK-907)", () => {
     expect(edited.task).toEqual(task);
     // A later check-in moves the task on. Replaying the edit answers from its
     // receipt, which keeps no task state: the edit's answer, with task null.
+    // TASK-952: a report that sent no reading shows none, unlike notes it left out.
     await checkIn(edited, 'after-edit', { at: later, report: onTrack });
-    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: NOTES });
+    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reading: null, reportedAt: later.toISOString(), agentNotes: NOTES });
     expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
     // The next check-in's dispatch holds the state as acceptDispatch read it,
     // notes included: TASK-908's check-in message takes them from there.
@@ -92,7 +93,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
     const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
     const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
-    expect(edited.task).toEqual({ ...needsYou, reportedAt: now.toISOString(), agentNotes: NOTES });
+    expect(edited.task).toEqual({ ...needsYou, reading: null, reportedAt: now.toISOString(), agentNotes: NOTES });
     // The next check-in's live accept still hands over the state as it read it under the row lock (TASK-908).
     const dispatch = { agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now } as const;
     const next = await f.store.acceptDispatch(dispatch);
@@ -132,19 +133,47 @@ describe("a task's latest report on the views (TASK-907)", () => {
   it("routines:recent-fires and routines:recent-fires-for-agent return each run's report", async () => {
     const bus = services();
     const row = await f.store.createAuthored(taskInput('history'));
-    await finish((await checkIn(row, 'reported', { report: needsYou, notes: NOTES })).dispatchId);
-    await finish((await checkIn(row, 'quiet', { at: new Date(now.getTime() + 1000) })).dispatchId);
+    await finish((await checkIn(row, 'reported', { report: needsYou, notes: NOTES, reading: OPEN_5 })).dispatchId);
+    await finish((await checkIn(row, 'unread', { at: new Date(now.getTime() + 1000), report: onTrack })).dispatchId);
+    await finish((await checkIn(row, 'quiet', { at: new Date(now.getTime() + 2000) })).dispatchId);
     const reported = {
       agentId: 'a', routineId: row.routineId, firedAt: now.toISOString(), triggerSource: 'manual', conversationId: 'c',
-      status: 'ok', error: null, renderedPrompt: 'ran', warning: null, report: needsYou,
+      status: 'ok', error: null, renderedPrompt: 'ran', warning: null, report: { ...needsYou, reading: OPEN_5 },
     };
     const forRoutine = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });
     const forAgent = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', owner, { agentId: 'a' });
     for (const { fires } of [forRoutine, forAgent]) {
       // Newest first. The run that didn't report has none, and a run's report never carries the task's notes.
-      expect(fires.map(fire => fire.report)).toEqual([null, needsYou]);
-      expect(fires[1]).toEqual(reported);
+      // TASK-952: each run keeps the reading it sent, and one that sent none shows null.
+      expect(fires.map(fire => fire.report)).toEqual([null, { ...onTrack, reading: null }, { ...needsYou, reading: OPEN_5 }]);
+      expect(fires[2]).toEqual(reported);
     }
+  });
+
+  it('a teammate sees no reading on the task or any run (TASK-952)', async () => {
+    const bus = services();
+    const teammate = makeAgentContext({ userId: 'teammate', agentId: 'a', sessionId: 's' });
+    const row = await f.store.createAuthored(taskInput('shared'));
+    await finish((await checkIn(row, 'reported', { report: needsYou, reading: OPEN_5 })).dispatchId);
+    const key = { agentId: 'a', routineId: row.routineId };
+    async function reads(person: typeof owner) {
+      return {
+        get: await bus.call<unknown, RoutineView>('routines:get', person, key),
+        list: (await bus.call<unknown, { routines: RoutineView[] }>('routines:list', person, { agentId: 'a' })).routines,
+        fires: (await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', person, key)).fires,
+        agentFires: (await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', person, { agentId: 'a' })).fires,
+      };
+    }
+    // Who can see the routine sees the routine and its run, without the task's state or the run's report.
+    const seen = await reads(teammate);
+    expect(seen.get).toMatchObject({ routineId: row.routineId, task: null });
+    expect(seen.list.map(view => [view.routineId, view.task])).toEqual([[row.routineId, null]]);
+    for (const fires of [seen.fires, seen.agentFires]) expect(fires.map(fire => fire.report)).toEqual([null]);
+    expect(JSON.stringify(seen)).not.toContain(OPEN_5.label);
+    // The owner's same four reads carry it.
+    const mine = await reads(owner);
+    for (const view of [mine.get, ...mine.list]) expect(view.task?.reading).toEqual(OPEN_5);
+    for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report?.reading)).toEqual([OPEN_5]);
   });
 
   it('a task turned back into a repeat routine drops its state, and comes back a task with none', async () => {
@@ -172,7 +201,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const next = await checkIn(again, 'next', { at: later });
     expect(next.row.task).toBeNull();
     expect(await f.store.recordReport({ agentId: 'a', dispatchId: next.dispatchId, conversationId: 'c-next', actorUserId: 'owner', report: onTrack, now: later })).toBe('recorded');
-    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reportedAt: later.toISOString(), agentNotes: null });
+    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reading: null, reportedAt: later.toISOString(), agentNotes: null });
   });
 
   it('a routine turned into a task brings no state with it, even state it held as a repeat routine', async () => {
@@ -284,9 +313,9 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await finish((await checkIn(row, 'long-run', { report: long, notes: 'n'.repeat(9000) })).dispatchId);
     const task = { ...long, agentNotes: 'n'.repeat(9000) };
     expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now, reading: null });
-    expect((await get(bus, row.routineId)).task).toEqual({ ...task, reportedAt: now.toISOString() });
+    expect((await get(bus, row.routineId)).task).toEqual({ ...task, reading: null, reportedAt: now.toISOString() });
     const { fires } = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });
-    expect(fires.map(fire => fire.report)).toEqual([long]);
+    expect(fires.map(fire => fire.report)).toEqual([{ ...long, reading: null }]);
     expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now, reading: null } })]);
   });
 });

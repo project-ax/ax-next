@@ -565,13 +565,24 @@ export const RoutineReplyTextSchema = z.string()
   });
 
 /**
+ * TASK-952. A reading as a read shows it: the number the agent sent and its
+ * label. Types only: stored values aren't re-checked, so a later change to the
+ * writer's rule can't make a stored reading unreadable (TASK-913).
+ */
+export const RoutineReadingViewSchema = z.object({ value: z.number(), label: z.string() }).strict();
+export type RoutineReadingView = z.output<typeof RoutineReadingViewSchema>;
+
+/**
  * A task's latest report and the notes it keeps between check-ins, as a read
  * shows them. The agent sends its notes as the report's `notes`; a read names
- * them `agentNotes`, so whoever reads them knows who wrote them. Stored text
- * isn't re-capped (TASK-913).
+ * them `agentNotes`, so whoever reads them knows who wrote them. TASK-952:
+ * `reading` is the reading that report sent, or null. It's required, so a view
+ * from a producer that doesn't know it is refused rather than read as "no
+ * reading". Stored text isn't re-capped (TASK-913).
  */
 export const RoutineTaskViewSchema = z.object({
   status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+  reading: RoutineReadingViewSchema.nullable(),
   reportedAt: RoutineInstantSchema, agentNotes: z.string().nullable(),
 }).strict();
 export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;

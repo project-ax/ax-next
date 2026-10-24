@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as C from '@ax/routines-contract';
 import { routinePermissions, routineView, ROUTINE_SERVICES } from '../services.js';
-import type { StoredRoutine } from '../types.js';
+import type { StoredReading, StoredRoutine } from '../types.js';
+/** TASK-952. A task report's reading, as the store hands it over. */
+const OPEN_3: StoredReading = { value: 3, label: 'Open tickets' };
 const row: StoredRoutine = {
   ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
   agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
@@ -27,16 +29,23 @@ describe('canonical routine return schemas', () => {
       }),
       task: {
         status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-        agentNotes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'),
+        agentNotes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'), reading: OPEN_3,
       },
     };
     const projected = routineView(task, 'owner', true);
     expect(projected.task).toEqual({
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-      reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
+      reading: OPEN_3, reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
-    // Anyone but its owner sees the routine without its task state.
+    // The list tools' view is the same report without its agent notes: the reading stays (TASK-952).
+    const { agentNotes: _agentNotes, ...listed } = projected.task!;
+    expect(C.RoutineListToolOutputSchema.parse({ routines: [{ ...projected, task: listed }] })).toEqual({ routines: [{ ...projected, task: listed }] });
+    expect(C.RoutineUpdateToolOutputSchema.parse({ ...projected, task: listed }).task?.reading).toEqual(OPEN_3);
+    // Field by field, never a spread: a key the store's reading picked up never reaches the view.
+    const stray = { ...task, task: { ...task.task!, reading: { ...OPEN_3, unit: 'tickets' } as StoredReading } };
+    expect(routineView(stray, 'owner', true).task?.reading).toStrictEqual(OPEN_3);
+    // Anyone but its owner sees the routine without its task state, its reading included.
     const teammate = routineView(task, 'teammate', true);
     expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), task: null });
     expect(C.RoutineViewSchema.parse(teammate)).toEqual(teammate);
@@ -44,6 +53,7 @@ describe('canonical routine return schemas', () => {
     const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
     expect(repeat.task).toBeNull();
     expect(C.RoutineViewSchema.parse(repeat)).toEqual(repeat);
+    for (const view of [teammate, repeat]) expect(JSON.stringify(view)).not.toContain(OPEN_3.label);
   });
   describe("a task's misses (TASK-930)", () => {
     const task: StoredRoutine = {

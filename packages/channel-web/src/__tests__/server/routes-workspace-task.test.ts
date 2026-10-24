@@ -398,6 +398,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
             status: 'needs-you',
             update: 'Two tickets have waited over an hour.',
             ask: 'HISTORY-ASK Want me to draft replies?',
+            reading: null,
           },
         }),
         fire({
@@ -532,7 +533,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
           fire({
             agentId: 'team',
             routineId: 'tB',
-            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null },
+            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null, reading: null },
           }),
         ],
       });
@@ -668,10 +669,10 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         }),
       ],
       fires: [
-        fire({ report: { status: 'off-track', update: 'third\nfourth', ask: null } }),
+        fire({ report: { status: 'off-track', update: 'third\nfourth', ask: null, reading: null } }),
         fire({
           firedAt: '2026-10-22T08:57:00.000Z',
-          report: { status: 'off-track', update: 'z'.repeat(600), ask: null },
+          report: { status: 'off-track', update: 'z'.repeat(600), ask: null, reading: null },
         }),
       ],
     });

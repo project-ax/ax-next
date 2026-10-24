@@ -309,7 +309,7 @@ describe('clearing a task’s notes (TASK-910)', () => {
       expect(await report(ctx, { ...RUN_2, notes: INJECTED })).toStrictEqual({ recorded: true });
     });
     // Its report landed; its notes didn't.
-    expect((await get(task)).task).toEqual({ ...RUN_2, agentNotes: null, reportedAt: expect.any(String) });
+    expect((await get(task)).task).toEqual({ ...RUN_2, reading: null, agentNotes: null, reportedAt: expect.any(String) });
     const [second, first] = await runs(task, 2);
     const { message } = await h.checkIn(task, 'run-3', async () => {});
     expect(message).toBe(renderCheckInMessage({ source: 'manual', agentNotes: null, replies: [], missesInARow: 0, reports: [

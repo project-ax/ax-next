@@ -2,7 +2,7 @@ import { SafeToolError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
-import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
+import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
@@ -53,12 +53,17 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * `report` only: a fire's `renderedPrompt` is not gated here (a task run's
  * check-in message never lands there: fire.ts stores `renderedPrompt: null` for task
  * runs, TASK-908). A repeat routine shows none either: changing a kind clears it, and
- * this hides any a row holds anyway.
+ * this hides any a row holds anyway. TASK-952: a report's reading is part of `task`
+ * and of `report`, so it follows the same rule.
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
-  const { status, update, ask, reportedAt, agentNotes } = row.task;
-  return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
+  const { status, update, ask, reading, reportedAt, agentNotes } = row.task;
+  return { status, update, ask, reading: readingView(reading), reportedAt: reportedAt.toISOString(), agentNotes };
+}
+/** TASK-952. A report's reading as a view shows it: field by field, never a spread, so nothing the store reads reaches the view unnamed. */
+function readingView(reading: StoredReading | null): C.RoutineReadingView | null {
+  return reading === null ? null : { value: reading.value, label: reading.label };
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under
@@ -104,7 +109,7 @@ function fireViews(userId: string, fires: FireRow[]): C.RoutineFireView[] {
     // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
     // Field by field, never a spread, so nothing the store reads reaches the view unnamed.
     report: routineOwnerUserId !== null && routineOwnerUserId === userId && report !== null
-      ? { status: report.status, update: report.update, ask: report.ask } : null,
+      ? { status: report.status, update: report.update, ask: report.ask, reading: readingView(report.reading) } : null,
   }));
 }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {

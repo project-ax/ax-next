@@ -417,7 +417,7 @@ describe('task check-in report canary (TASK-907)', () => {
     expect(answer).toStrictEqual({ recorded: true });
     // No decision of any kind: the report is the run's own output, not something to ask the person about.
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
     expect((await history(task))[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
@@ -534,7 +534,7 @@ describe('PR 1 backend canary (TASK-908)', () => {
     // As the owner: the task shows the report, and its run shows it too, with no prompt kept.
     const listed = (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId })).routines;
     expect(listed.find(row => row.routineId === task.routineId)?.task).toEqual({
-      status: 'on-track', update: 'Queue is empty.', ask: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
+      status: 'on-track', update: 'Queue is empty.', ask: null, reading: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
     });
     const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
     expect(fires[0]).toMatchObject({ status: 'ok', renderedPrompt: null, report: { status: 'on-track', update: 'Queue is empty.', ask: null } });
@@ -777,7 +777,7 @@ describe('owner change canary (TASK-936)', () => {
     expect(first.message).not.toContain('QX7731');
     await expect.poll(async () => (await history()).byRoutine.length).toBe(1);
     const seen = await history();
-    expect(seen.byRoutine[0]?.report).toEqual(MINE);
+    expect(seen.byRoutine[0]?.report).toEqual({ ...MINE, reading: null });
     expect(seen.forAgent).toHaveLength(1);
     expect(JSON.stringify(seen)).not.toContain('QX7731');
 
