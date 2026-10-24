@@ -44,6 +44,7 @@ import {
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
   RoutineStatusSchema,
+  type RoutineStepOp,
 } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { toTaskKind } from './task-kinds';
@@ -105,6 +106,7 @@ CounterRow,
   TaskCheckin,
   TaskDetail,
   TaskReplyResponse,
+  TaskStepsResponse,
   TaskRow,
   TaskRowReport,
   TasksResponse,
@@ -655,6 +657,17 @@ function isTaskStep(v: unknown): boolean {
   );
 }
 
+/** A steps change's answer (TASK-949): the steps after it, and a whole count of the ops it skipped. */
+function isTaskStepsResponse(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    !Array.isArray(v) &&
+    Array.isArray(v.steps) &&
+    v.steps.every(isTaskStep) &&
+    isCount(v.skipped)
+  );
+}
+
 /**
  * A task page's body, every field `TaskDetail` declares. The page reads them
  * during render (`permissions.fire`, `brief.promptBody`, each update's report),
@@ -1199,6 +1212,25 @@ export const workspaceApi = {
       body,
       (v) => isRecord(v) && !Array.isArray(v) && ROUTINE_REPLY_CHECK_INS.some((c) => c === v.checkIn),
     );
+  },
+
+  /**
+   * Change a get-done task's steps (TASK-949). The answer is the steps as they
+   * are after the change, and the page swaps them in, so one that doesn't read
+   * as steps is a `WorkspaceShapeError`, not a guess. A refusal or failure is
+   * a `WorkspaceApiError` carrying only the status.
+   */
+  setTaskSteps: async (
+    agentId: string,
+    routineId: string,
+    input: { requestId: string; ops: RoutineStepOp[] },
+  ) => {
+    const path = `${taskPath(agentId, routineId)}/steps`;
+    const body = await req<unknown>(path, {
+      method: 'POST',
+      body: { requestId: input.requestId, ops: input.ops },
+    });
+    return checkedRead<TaskStepsResponse>(path, body, isTaskStepsResponse);
   },
 
   approveDecision: async (id: string, approvalScope?: 'once' | 'agent-routines') =>

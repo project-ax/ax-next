@@ -335,3 +335,51 @@ describe('workspaceApi.sendTaskReply (TASK-931)', () => {
     expect((err as WorkspaceApiError).status).toBe(503);
   });
 });
+
+describe('workspaceApi.setTaskSteps (TASK-949)', () => {
+  it('posts the request id and the changes to the task’s steps, with the write headers', async () => {
+    const fetchSpy = respondWith({ steps: [STEP], skipped: 0 });
+    await workspaceApi.setTaskSteps('a1', 't1', { requestId: 'req-1', ops: [{ op: 'tick', id: 's1' }] });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a1/t1/steps');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({
+      requestId: 'req-1',
+      ops: [{ op: 'tick', id: 's1' }],
+    });
+  });
+
+  it('answers the steps and the count', async () => {
+    respondWith({ steps: [STEP], skipped: 2 });
+    await expect(
+      workspaceApi.setTaskSteps('a1', 't1', { requestId: 'req-1', ops: [{ op: 'tick', id: 's1' }] }),
+    ).resolves.toEqual({ steps: [STEP], skipped: 2 });
+  });
+
+  it.each<[string, unknown]>([
+    ['a step with no text or flags', { steps: [{ id: 's1' }], skipped: 0 }],
+    ['a negative count', { steps: [], skipped: -1 }],
+    ['a fractional count', { steps: [], skipped: 1.5 }],
+    ['no count', { steps: [] }],
+    ['no steps', { skipped: 0 }],
+    ['a list in place of the object', []],
+    ['no object at all', null],
+  ])('a 200 it can’t read is a WorkspaceShapeError: %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(
+      workspaceApi.setTaskSteps('a1', 't1', { requestId: 'r', ops: [{ op: 'tick', id: 's1' }] }),
+    ).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+
+  it('a refusal carries its status', async () => {
+    failWith(404);
+    const err = await workspaceApi
+      .setTaskSteps('a1', 't1', { requestId: 'r', ops: [{ op: 'tick', id: 's1' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(404);
+  });
+});

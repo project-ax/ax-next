@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError } from '../workspace-api';
-import type { TaskDetail } from '../workspace-types';
+import type { TaskDetail, TaskStep } from '../workspace-types';
 import { useTask } from '../workspace-task';
 
 vi.mock('../workspace-api', async () => {
@@ -334,5 +334,87 @@ describe('useTask (TASK-910)', () => {
     await act(async () => d1.reject(new WorkspaceApiError(PATH, 404)));
     // A stale failure must not replace, or mark, the newer good answer.
     expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
+  });
+});
+
+describe('useTask replaceSteps (TASK-949)', () => {
+  const stepsOf = (...ids: string[]): TaskStep[] =>
+    ids.map((id) => ({ id, text: `Step ${id}`, done: false, byAgent: false }));
+
+  async function ready(first: TaskDetail) {
+    taskMock.mockResolvedValueOnce(first);
+    const hook = renderHook(() => useTask('a1', 't1'));
+    await waitFor(() => expect(hook.result.current.state.kind).toBe('ready'));
+    return hook;
+  }
+
+  it('swaps a ready task’s steps and keeps the rest, updates included', async () => {
+    const first = detail('Sweep', { steps: stepsOf('a') });
+    const { result } = await ready(first);
+    const next = stepsOf('b', 'c');
+    act(() => result.current.replaceSteps(next));
+    expect(result.current.state).toEqual({
+      kind: 'ready',
+      detail: { ...first, steps: next },
+      refreshing: false,
+      refreshFailed: false,
+    });
+    const s = result.current.state;
+    expect(s.kind === 'ready' && s.detail.updates).toBe(first.updates);
+    expect(taskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a read that started before replaceSteps keeps the replaced steps, and shows the rest of its answer', async () => {
+    const { result } = await ready(detail('Sweep', { steps: stepsOf('a') }));
+    const read = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(read.promise);
+    act(() => result.current.refreshQuietly());
+    const mine = stepsOf('b');
+    act(() => result.current.replaceSteps(mine));
+    // The extra quiet read is still out, so what shows is the stale read's answer alone.
+    taskMock.mockReturnValueOnce(deferred<TaskDetail>().promise);
+    await act(async () => read.resolve(detail('Renamed', { steps: stepsOf('a') })));
+    expect(result.current.state).toMatchObject({
+      kind: 'ready',
+      detail: { name: 'Renamed', steps: mine },
+    });
+  });
+
+  it('a read whose steps it kept asks for one more quiet read, and that read’s steps show', async () => {
+    const { result } = await ready(detail('Sweep', { steps: stepsOf('a') }));
+    const read = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(read.promise);
+    act(() => result.current.refreshQuietly());
+    act(() => result.current.replaceSteps(stepsOf('b')));
+    const again = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(again.promise);
+    await act(async () => read.resolve(detail('Sweep', { steps: stepsOf('a') })));
+    expect(taskMock).toHaveBeenCalledTimes(3);
+    const newest = stepsOf('c');
+    await act(async () => again.resolve(detail('Sweep', { steps: newest })));
+    expect(result.current.state).toMatchObject({ kind: 'ready', detail: { steps: newest } });
+    expect(taskMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a read that started after replaceSteps shows its own steps, and asks for no other', async () => {
+    const { result } = await ready(detail('Sweep', { steps: stepsOf('a') }));
+    act(() => result.current.replaceSteps(stepsOf('b')));
+    const own = stepsOf('c');
+    taskMock.mockResolvedValueOnce(detail('Sweep', { steps: own }));
+    await act(async () => result.current.refreshQuietly());
+    expect(result.current.state).toMatchObject({ kind: 'ready', detail: { steps: own } });
+    expect(taskMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('replaceSteps before the task loads does nothing', async () => {
+    const d = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(d.promise);
+    const { result } = renderHook(() => useTask('a1', 't1'));
+    act(() => result.current.replaceSteps(stepsOf('b')));
+    expect(result.current.state).toEqual({ kind: 'loading' });
+    const own = stepsOf('a');
+    await act(async () => d.resolve(detail('Sweep', { steps: own })));
+    expect(result.current.state).toMatchObject({ kind: 'ready', detail: { steps: own } });
+    expect(taskMock).toHaveBeenCalledTimes(1);
   });
 });
