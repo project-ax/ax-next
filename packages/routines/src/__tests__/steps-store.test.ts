@@ -16,9 +16,19 @@ const GET_DONE = RoutineDefinitionSchema.parse({
 });
 const taskInput = (requestId: string) => ({ ...createInput(requestId), definition: GET_DONE });
 const step = (id: string, text: string, over: Partial<StoredStep> = {}): StoredStep => ({ id, text, done: false, addedBy: 'agent', ...over });
-/** `task_steps` written by hand, as a rollback, a hand edit or a later version would leave it. */
-const setSteps = (routineId: string, value: unknown) =>
-  sql`UPDATE routines_v1_definitions SET task_steps = ${JSON.stringify(value)}::jsonb WHERE routine_id = ${routineId}`.execute(f.db);
+/** `task_steps` written by hand, as a rollback, a hand edit or a later version would leave it, through `db` (or a transaction). */
+const setSteps = (routineId: string, value: unknown, db = f.db) =>
+  sql`UPDATE routines_v1_definitions SET task_steps = ${JSON.stringify(value)}::jsonb WHERE routine_id = ${routineId}`.execute(db);
+/** Resolves once some session waits on a lock that backend `pid` holds; fails after five seconds. */
+async function waitsOn(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const { rows } = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))`.execute(f.db);
+    if (rows[0]!.n > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Nothing waited on backend ${pid}.`);
+}
 const stepsColumn = async (routineId: string) =>
   (await sql<{ task_steps: unknown }>`SELECT task_steps FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0]?.task_steps;
 const due = (row: { nextRunAt: Date | null }) =>
@@ -150,6 +160,27 @@ describe("a report's step changes (TASK-948)", () => {
     expect(await record(newer, onTrack)).toBe('recorded');
     expect(await record(older, needsYou, [{ op: 'tick', id: 's000001' }])).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
     expect(await f.store.findOne(task)).toMatchObject({ task: { status: 'on-track' }, steps: [step('s000001', 'Export every article', { done: true })] });
+  });
+
+  it('a report that waits on the task’s row lock adds to the steps written while it waited', async () => {
+    // Overlapping reports compose only because each reads the checklist under the row lock: in READ COMMITTED, one
+    // that waits there reads the list the other committed. Read before the lock, it would write over that list.
+    const task = await f.store.createAuthored(taskInput('task'));
+    const run = await bound(task, 'run', minute(1));
+    const written = step('s000001', 'Export every article');
+    const { waiting } = await f.db.transaction().execute(async trx => {
+      // Another report's hold on the task's row, as recordReport takes it, by the backend that holds it.
+      const { rows } = await sql<{ pid: number }>`SELECT pg_backend_pid() AS pid FROM routines_v1_definitions WHERE agent_id = ${task.agentId} AND routine_id = ${task.routineId} FOR UPDATE`.execute(trx);
+      const waiting = record(run, onTrack, [{ op: 'add', text: 'Upload them' }]);
+      await waitsOn(rows[0]!.pid);
+      // Only now, with this report waiting, does the other write its step. It lands when the hold ends.
+      await setSteps(task.routineId, [written], trx);
+      return { waiting };
+    });
+    expect(await waiting).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
+    expect((await f.store.findOne(task))?.steps).toEqual([
+      written, { id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'Upload them', done: false, addedBy: 'agent' },
+    ]);
   });
 
   it('a check-in whose task stopped being get-done skips every change, and its report still lands', async () => {
