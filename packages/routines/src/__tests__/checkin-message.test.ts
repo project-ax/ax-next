@@ -277,8 +277,9 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
     const parts = paragraphs(renderCheckInMessage({ ...SCHEDULED, missesInARow: 1, steps }));
     expect(parts[0]).toBe('Scheduled check-in.');
     expect(parts[1]).toBe('Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.');
+    // Design §7: the agent's own steps are framed as its plan, not the person's instructions.
     expect(parts[2]).toBe([
-      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. A step the person wrote is in their words:',
+      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:',
       '- [x] saaaaaa (you added this):',
       '  > Export every article from the old help center',
       '- [ ] sbbbbbb (the person wrote this):',

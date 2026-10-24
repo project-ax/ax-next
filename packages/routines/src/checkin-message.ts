@@ -103,13 +103,15 @@ function repliesParagraph(replies: CheckInMessageInput['replies'], newestReport:
 
 /**
  * TASK-948. A "get-done" task's checklist, a paragraph of its own: how many of
- * its steps are done and what the agent may do with them, then each step in
- * order under its mark, its id and who wrote it, with its text quoted line by
- * line. The id is the one the agent's changes name; it prints as is, since
- * `storedSteps` reads only ids of `[A-Za-z0-9_-]`. Only a step whose `addedBy`
- * says the person wrote it is labelled theirs; anything else reads as the
- * agent's own. With no steps yet, the host asks for a draft. Null for any other
- * kind of task.
+ * its steps are done, what the agent may do with them, and that the ones it
+ * added are its own plan, not the person's instructions (design §7; the brief
+ * says so too), then each step in order under its mark, its id and who wrote
+ * it, with its text quoted line by line. The label on the agent's own, "you
+ * added this", is the one the brief names. The id is the one the agent's
+ * changes name; it prints as is, since `storedSteps` reads only ids of
+ * `[A-Za-z0-9_-]`. Only a step whose `addedBy` says the person wrote it is
+ * labelled theirs; anything else reads as the agent's own. With no steps yet,
+ * the host asks for a draft. Null for any other kind of task.
  */
 function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
   if (steps === null) return null;
@@ -117,7 +119,7 @@ function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
     return 'This task has no steps yet. Before you start, draft the steps you’ll work through. Send them as add changes in your routine_report’s steps field, with done true for any you finish in this check-in.';
   }
   const done = steps.filter(step => step.done).length;
-  return [`The task’s steps, ${done} of ${steps.length} done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. A step the person wrote is in their words:`,
+  return [`The task’s steps, ${done} of ${steps.length} done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:`,
     ...steps.map(step => {
       const author = step.addedBy === 'person' ? 'the person wrote this' : 'you added this';
       return `- [${step.done ? 'x' : ' '}] ${step.id} (${author}):\n${quoteLines(cut(step.text, ROUTINE_STEP_TEXT_MAX_CHARS), '  ')}`;
@@ -136,7 +138,8 @@ function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
  * A "get-done" task's steps (TASK-948) are agent- or person-written: screened
  * by `RoutineStepTextSchema` before they were stored, and each quoted line by
  * line and labelled by who wrote it, from the host-set `addedBy`, so text the
- * agent wrote reads as its own and can't pose as the person's.
+ * agent wrote reads as its own and can't pose as the person's, and the
+ * agent's own are framed as its plan, not instructions from the person.
  * None of them goes into `brief`, which holds only the task's own fields, as
  * the person approved them (TASK-906 decisions row 18). Replies reach a model
  * nowhere else.
