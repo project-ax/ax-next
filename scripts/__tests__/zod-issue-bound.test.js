@@ -134,6 +134,47 @@ for (const [consumer, { version, flavors }] of loaded) {
           expect(optionIssues).toHaveLength(CAP);
         });
 
+        it('never runs a transform on input whose hard failure came after the cap', async () => {
+          // CAP soft failures (a .min() check, which lets parsing continue), then one
+          // element of the wrong type. The cap drops that element's issue, but the
+          // collection must still count as aborted, or the transform below would read
+          // a number as a string. Unpatched, and in upstream capSize, it never runs.
+          const soft = (i) => `a${i}`;
+          const el = z.string().min(5);
+          const arr = [...Array.from({ length: CAP }, (_, i) => soft(i)), 0];
+          const obj = Object.fromEntries(arr.map((value, i) => [`k${i}`, value]));
+          const mustNotRun = () => {
+            throw new Error('transform ran on input that failed validation');
+          };
+          const tuple = engine === 'v3' ? z.tuple([el]).rest(el) : z.tuple([el], el);
+          const entries = Array.from({ length: CAP }, (_, i) => [`k${i}`, soft(i)]);
+          const cases = [
+            ['array', z.array(el), arr],
+            ['tuple rest', tuple, arr],
+            ['record value', z.record(z.string(), el), obj],
+            ['record key', z.record(z.string().regex(/^k/), el), { ...obj, x: 'abcdefgh' }],
+            ['object catchall', z.object({}).catchall(el), obj],
+            ['set', z.set(el), new Set(arr)],
+            ['map value', z.map(z.string(), el), new Map([...entries, ['kx', 0]])],
+            ['map key', z.map(el, z.string()), new Map([...entries.map(([k, v]) => [v, k]), [0, 'x']])],
+            ['map value under a non-property key', z.map(z.any(), el), new Map([...entries, [{}, soft(0)]])],
+          ];
+          for (const [name, schema, input] of cases) {
+            const r = schema.transform(mustNotRun).safeParse(input);
+            expect(r.success, name).toBe(false);
+          }
+          // Every element passes an async step first, so the hard failure settles
+          // after the soft ones and actually reaches a full list.
+          const elAsync = z.any().refine(async () => true).pipe(el);
+          for (const [name, schema, input] of [
+            ['async array', z.array(elAsync), arr],
+            ['async record value', z.record(z.string(), elAsync), obj],
+          ]) {
+            const r = await schema.transform(mustNotRun).safeParseAsync(input);
+            expect(r.success, name).toBe(false);
+          }
+        });
+
         it('keeps the error message small (ipc-core echoes it into its 400 body)', () => {
           expect(z.array(z.string()).safeParse(BAD).error.message.length).toBeLessThan(32 * 1024);
         });
