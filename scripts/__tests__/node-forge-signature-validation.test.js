@@ -55,8 +55,10 @@ it('limits the advisory exception to the pinned, patched node-forge release', ()
   expect(proxy.dependencies['node-forge']).toBe('1.4.0');
   expect(manifest.pnpm.patchedDependencies['node-forge@1.4.0']).toBe('patches/node-forge@1.4.0.patch');
   // The braces exception (GHSA-vfj7-8cjw-p6xm, TASK-750) has its own guard in
-  // braces-dev-only-audit-exception.test.js, and the zod one (GHSA-mrhx-c7xc-m3w5)
-  // in zod-audit-exception.test.js. Any further entry needs one too.
+  // braces-dev-only-audit-exception.test.js. The zod one (GHSA-mrhx-c7xc-m3w5) is
+  // covered by a local patch, patches/zod@3.25.76.patch (TASK-938), guarded by
+  // zod-issue-bound.test.js and zod-audit-exception.test.js. Any further entry
+  // needs a guard too.
   expect(manifest.pnpm.auditConfig).toEqual({
     ignoreGhsas: ['GHSA-86w9-cpqp-85rv', 'GHSA-vfj7-8cjw-p6xm', 'GHSA-mrhx-c7xc-m3w5'],
   });
