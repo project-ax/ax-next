@@ -67,7 +67,7 @@ describe("clearing a task's agent notes (TASK-910)", () => {
     });
     // The run keeps its own report, for its history row.
     expect(await f.store.finishDispatch({ dispatchId: r1.dispatchId, outcome })).toBe(true);
-    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([needsYou]);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([{ ...needsYou, reading: null }]);
   });
 
   it('a check-in accepted after the clear keeps notes again', async () => {

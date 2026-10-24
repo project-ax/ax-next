@@ -2,21 +2,23 @@
  * `/workspace/tasks/<agentId>/<routineId>` — one "Stay on top of something"
  * task's own page (TASK-910).
  *
- * It reads like a thread (design §3.3): the latest update at the top, the brief
- * under it, then every check-in and the person's replies, then the reply box
- * (TASK-931; the latest update's ask has a Reply button that focuses it). The
- * header holds the page's two actions,
+ * It reads like a thread (design §3.3): the latest update at the top, the
+ * agent's reading under it when the latest report sent one (TASK-952), the
+ * brief under that, then every check-in and the person's replies, then the
+ * reply box (TASK-931; the latest update's ask has a Reply button that focuses
+ * it). The header holds the page's two actions,
  * Check now and Pause, or Resume while it's paused. The page reads its own task
  * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
  * task's ids, since a refresh keeps what's on screen.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
- * ask, and the agent's notes were written by a model, and an update can quote a
- * ticket or an email; the brief was written by a person. The server fenced and
- * capped every one before it left (`server/routes-workspace.ts`). Here they are
- * only ever React text children: never `dangerouslySetInnerHTML`, never the
- * markdown renderer, and no attribute is built from them. `**bold**` and
- * `<img>` show as those characters.
+ * ask, its reading's label and the agent's notes were written by a model, and
+ * an update can quote a ticket or an email; the brief was written by a person.
+ * The server fenced and capped every one before it left
+ * (`server/routes-workspace.ts`). Here they are only ever React text children:
+ * never `dangerouslySetInnerHTML`, never the markdown renderer, and no
+ * attribute is built from them. `**bold**` and `<img>` show as those
+ * characters.
  *
  * THE ACTIONS go through the routines admin routes (`routineApi`), so the
  * routines services decide who may do what; the page only explains a button it
@@ -96,6 +98,7 @@ import { checkInWhen } from '@/lib/workspace-time';
 import type { TaskDetail, TaskReplyCheckIn } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { TaskNotes } from './TaskNotes';
+import { TaskReadingBlock } from './TaskReadingBlock';
 import { TaskReplyBox } from './TaskReplyBox';
 import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -549,6 +552,8 @@ function TaskBody({
         onNavigate={onNavigate}
         onReply={() => replyRef.current?.focus()}
       />
+      {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
+      <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
         <h2 id={briefId} className="sr-only">
           About this task

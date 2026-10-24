@@ -47,7 +47,7 @@ function report(
   reportedAt = '2026-10-22T10:00:00.000Z',
   ask: string | null = null,
 ): TaskRowReport {
-  return { status, update: 'Queue is empty.', ask, reportedAt };
+  return { status, update: 'Queue is empty.', ask, reading: null, reportedAt };
 }
 
 describe('taskGroup', () => {

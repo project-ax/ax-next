@@ -23,7 +23,7 @@ function update(firedAt: string, over: Partial<TaskUpdate> = {}): TaskUpdate {
     firedAt,
     status: 'ok',
     error: null,
-    report: { status: 'on-track', update: 'All quiet.' },
+    report: { status: 'on-track', update: 'All quiet.', reading: null },
     conversationId: null,
     ...over,
   };

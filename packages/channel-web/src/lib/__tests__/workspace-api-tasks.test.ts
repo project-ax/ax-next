@@ -29,6 +29,7 @@ const ROW = {
     status: 'on-track',
     update: 'Filed 12 receipts',
     ask: null,
+    reading: null,
     reportedAt: '2026-10-22T08:00:00.000Z',
   },
   noRecentUpdate: null,
@@ -98,6 +99,37 @@ describe('workspaceApi.tasks (TASK-909)', () => {
       ],
       unavailableAgents: [],
     });
+  });
+
+  it('accepts a report whose reading is null, or a number with its label (TASK-952)', async () => {
+    for (const reading of [null, { label: 'Open tickets', value: 3 }, { label: 'Balance', value: -2.5 }, { label: 'Top', value: 1e12 }, { label: 'Bottom', value: -1e12 }]) {
+      const body = { tasks: [{ ...ROW, task: { ...ROW.task, reading } }], unavailableAgents: [] };
+      respondWith(body);
+      await expect(workspaceApi.tasks()).resolves.toEqual(body);
+    }
+  });
+
+  it('reads a report with no reading key as reading: null (a host from before TASK-952)', async () => {
+    // An SPA synced onto an older host (`make dev-fast`) must still load Tasks.
+    const { reading: _gone, ...withoutReading } = ROW.task;
+    respondWith({ tasks: [{ ...ROW, task: withoutReading }], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).resolves.toEqual({
+      tasks: [{ ...ROW, task: { ...withoutReading, reading: null } }],
+      unavailableAgents: [],
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['a label that isn’t text', { label: 3, value: 3 }],
+    ['a value that isn’t a number', { label: 'Open tickets', value: '3' }],
+    ['no value', { label: 'Open tickets' }],
+    ['a value that isn’t finite', { label: 'Open tickets', value: Number.POSITIVE_INFINITY }],
+    ['a value past the bound', { label: 'Open tickets', value: 1e13 }],
+    ['a value past the bound, negative', { label: 'Open tickets', value: -1e13 }],
+  ])('refuses a report whose reading has %s (TASK-952)', async (_label, reading) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith({ tasks: [{ ...ROW, task: { ...ROW.task, reading } }], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
   });
 
   it('reads a row with missed check-ins, for every reason the contract names', async () => {

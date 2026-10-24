@@ -19,7 +19,9 @@ const TOOL_FIELDS = ['input','name','description','promptBody','enabled','trigge
   'activeHours','activeHours.start','activeHours.end','activeHours.tz',
   'silenceToken','silenceMaxChars','conversation','routineId','expectedRevision','requestId',
   // A task check-in's report (TASK-907): routine_report's own input fields.
-  'status','update','ask','notes'] as const;
+  'status','update','ask','notes',
+  // TASK-952: its reading, and the reading's own fields: validationError names the first issue's whole path.
+  'reading','reading.value','reading.label'] as const;
 export type SafeToolCode = keyof typeof TOOL_MESSAGES;
 export type SafeToolField = typeof TOOL_FIELDS[number];
 

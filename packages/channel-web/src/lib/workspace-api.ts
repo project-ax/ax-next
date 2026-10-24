@@ -39,6 +39,7 @@
  */
 import {
   CHECK_IN_MISSES,
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPLY_CHECK_INS,
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
@@ -453,10 +454,27 @@ function isString(v: unknown): v is string {
 }
 
 /**
- * `task` is null until the first report; a report is drawn from all four
- * fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
+ * The agent's reading (TASK-952): a label and a finite number within
+ * ±ROUTINE_READING_MAX_ABS. Finite matters even off the wire: JSON can spell
+ * a number too big for a double, and it parses as Infinity.
+ */
+function isTaskReading(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.label) &&
+    typeof v.value === 'number' &&
+    Number.isFinite(v.value) &&
+    Math.abs(v.value) <= ROUTINE_READING_MAX_ABS
+  );
+}
+
+/**
+ * `task` is null until the first report; a report is drawn from every one of
+ * its fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
  * host from before TASK-933 (an SPA synced onto an older host by `make
  * dev-fast`), and reads as null (`withAsk`) rather than failing the Tasks page.
+ * The reading (TASK-952) follows the same rule: null or a reading when present,
+ * and an absent one, from a host before TASK-952, reads as null (`withReading`).
  */
 function isTaskReport(v: unknown): boolean {
   return (
@@ -464,6 +482,7 @@ function isTaskReport(v: unknown): boolean {
     ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
     (v.update === null || isString(v.update)) &&
     (!('ask' in v) || v.ask === null || isString(v.ask)) &&
+    (!('reading' in v) || v.reading === null || isTaskReading(v.reading)) &&
     isString(v.reportedAt)
   );
 }
@@ -472,6 +491,12 @@ function isTaskReport(v: unknown): boolean {
 function withAsk(row: TaskRow): TaskRow {
   if (row.task === null || 'ask' in row.task) return row;
   return { ...row, task: { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null } };
+}
+
+/** A checked row with its report's absent reading read as null (a host from before TASK-952). */
+function withReading(row: TaskRow): TaskRow {
+  if (row.task === null || 'reading' in row.task) return row;
+  return { ...row, task: { ...(row.task as Omit<TaskRowReport, 'reading'>), reading: null } };
 }
 
 /** A task's missed check-ins (TASK-930): a count of at least one, a closed reason, an instant, a flag. */
@@ -523,6 +548,7 @@ function isStringOrNull(v: unknown): v is string | null {
  * agent's notes. The ask must be PRESENT here (text or null): the list route's
  * absent-ask allowance is for an older host, and `task()` doesn't normalise,
  * so an absent ask would reach the page as `undefined` and draw as an ask.
+ * The reading must be present too (TASK-952), for the same reason.
  */
 function isTaskDetailReport(v: unknown): boolean {
   return (
@@ -530,16 +556,24 @@ function isTaskDetailReport(v: unknown): boolean {
     isTaskReport(v) &&
     'ask' in v &&
     isStringOrNull(v.ask) &&
-    isStringOrNull(v.agentNotes)
+    isStringOrNull(v.agentNotes) &&
+    'reading' in v &&
+    (v.reading === null || isTaskReading(v.reading))
   );
 }
 
-/** What the agent reported at one check-in in Updates. */
+/**
+ * What the agent reported at one check-in in Updates. Its reading must be
+ * present, null or a reading (TASK-952): `task()` and `taskCheckin()` don't
+ * normalise, as `isTaskDetailReport` says.
+ */
 function isTaskUpdateReport(v: unknown): boolean {
   return (
     isRecord(v) &&
     ROUTINE_REPORT_STATUSES.some((s) => s === v.status) &&
-    isStringOrNull(v.update)
+    isStringOrNull(v.update) &&
+    'reading' in v &&
+    (v.reading === null || isTaskReading(v.reading))
   );
 }
 
@@ -1046,7 +1080,7 @@ export const workspaceApi = {
   tasks: async () => {
     const body = await req<unknown>('/tasks');
     const page = checkedRead<TasksResponse>('/tasks', body, isTasksResponse);
-    return { ...page, tasks: page.tasks.map(withAsk) };
+    return { ...page, tasks: page.tasks.map((row) => withReading(withAsk(row))) };
   },
 
   /**

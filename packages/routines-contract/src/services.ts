@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
-  RoutinePatchSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
+  RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
   RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
 } from './definition.js';
 
@@ -36,20 +36,27 @@ export const RoutineSecretOutputSchema = z.object({ saved: z.literal(true) }).st
 const limit = z.number().int().min(1).max(ROUTINE_HISTORY_MAX_LIMIT).optional();
 export const RoutineRecentFiresInputSchema = RoutineKeySchema.extend({ limit }).strict();
 export const RoutineRecentFiresForAgentInputSchema = RoutineListInputSchema.extend({ limit, before: RoutineInstantSchema.optional() }).strict();
-/** One run's report, on its history row (TASK-907). The notes stay on the task. Stored text isn't re-capped (TASK-913). */
+/**
+ * One run's report, on its history row (TASK-907). The notes stay on the task.
+ * TASK-952: `reading` is the reading the run sent with it, or null, and is
+ * required like the task's. Stored text isn't re-capped (TASK-913).
+ */
 export const RoutineFireReportViewSchema = z.object({
   status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+  reading: RoutineReadingViewSchema.nullable(),
 }).strict();
 /**
  * `routines:report` (TASK-907), the one writer of a task's state. The tool fills
  * `agentId` and `dispatchId` from the host-set session, never from the model.
  * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
  * A run accepted at or before the person last cleared the notes can't change them (TASK-910).
+ * Absent or null `reading`: none this time (TASK-952).
  */
 export const RoutineReportInputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
   status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
   ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
+  reading: RoutineReportFieldShape.reading.optional(),
 }).strict();
 export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true) }).strict();
 /**

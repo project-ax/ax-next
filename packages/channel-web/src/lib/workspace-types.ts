@@ -1336,6 +1336,18 @@ export type AgentToolVerdictSaved =
       unconfirmed: true;
     };
 
+/**
+ * TASK-952. One number the agent read at a check-in, with its label: the
+ * agent's reading, never a measure the host computed or checked. The server
+ * fenced `label` to one line of at most ROUTINE_READING_LABEL_MAX_CHARS (40)
+ * code points; a reading whose label fenced to nothing, or whose value wasn't
+ * a finite number, didn't cross.
+ */
+export interface TaskReading {
+  label: string;
+  value: number;
+}
+
 /** A task's latest report, as the Tasks page and Today show it (TASK-909, TASK-933). The agent wrote `update` and `ask`; the server fenced each to one line of at most 500 code points, or null when nothing legible survived. */
 export interface TaskRowReport {
   status: RoutineReportStatus;
@@ -1346,6 +1358,8 @@ export interface TaskRowReport {
    * ROUTINE_REPORT_ASK_MAX_CHARS (500) code points, null when nothing legible survived.
    */
   ask: string | null;
+  /** The reading this report sent, or null (TASK-952). */
+  reading: TaskReading | null;
   reportedAt: string;
 }
 
@@ -1385,15 +1399,18 @@ export interface TasksResponse {
 }
 
 /**
- * A task's latest report, for its own page (TASK-910). `update`, `ask` and
- * `agentNotes` are text the agent wrote; the server fenced them before they
- * left it, and the page draws them as plain text.
+ * A task's latest report, for its own page (TASK-910). `update`, `ask`,
+ * `agentNotes` and the reading's label (TASK-952) are text the agent wrote;
+ * the server fenced them before they left it, and the page draws them as
+ * plain text.
  */
 export interface TaskDetailReport {
   status: RoutineReportStatus;
   update: string | null;
   ask: string | null;
   agentNotes: string | null;
+  /** The reading this report sent, or null (TASK-952). */
+  reading: TaskReading | null;
   reportedAt: string;
 }
 
@@ -1404,8 +1421,12 @@ export interface TaskUpdate {
   status: 'ok' | 'silenced' | 'error';
   /** The recorded reason, one fenced line, only when status is 'error'. */
   error: string | null;
-  /** What the agent reported at that check-in; `update` is agent-written and fenced. */
-  report: { status: RoutineReportStatus; update: string | null } | null;
+  /**
+   * What the agent reported at that check-in: `update` and the reading's label
+   * (TASK-952) are agent-written and fenced. `reading` is the one that check-in
+   * sent, or null.
+   */
+  report: { status: RoutineReportStatus; update: string | null; reading: TaskReading | null } | null;
   /** The check-in's own conversation, for See what it did (TASK-911). Null when the run recorded none. */
   conversationId: string | null;
 }

@@ -40,6 +40,7 @@ describe("a task check-in's brief (TASK-908)", () => {
       '  - update: one line in plain words about how it’s going.',
       '  - ask: what you need from the person, only when you’re blocked on them. Otherwise null.',
       '  - notes: what you want to remember at your next check-in.',
+      '  - reading (optional): one number you read this time, with a short label, like "Open tickets". The person sees it as your reading. Use the same label each time.',
     ].join('\n'));
   });
 

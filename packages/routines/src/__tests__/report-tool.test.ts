@@ -28,6 +28,8 @@ const TASK = {
 const REPEAT = { name: 'Daily', promptBody: 'Check outstanding work.', trigger: { kind: 'interval', every: '1h' } };
 const NEEDS_YOU = { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?' } as const;
 const NOTES = 'Order 1234 waits on a refund.';
+/** TASK-952. A report's reading, as the agent sends it. */
+const OPEN_3 = { value: 3, label: 'Open tickets' } as const;
 const NOT_IN_CHECK_IN = 'This works only during a task check-in. Field: input';
 const INVALID = (field: string) => `Routine input is invalid. Check the indicated field. Field: ${field}`;
 const UNAVAILABLE = 'Routine management is temporarily unavailable. Field: input';
@@ -83,16 +85,19 @@ async function checkIn(view: RoutineView, requestId: string, body: (ctx: AgentCo
   if (failure !== null) throw failure.error;
 }
 
-/** Every row holding any part of a report: a run's own copy, a task's state and notes, a history row's. */
+/** Every row holding any part of a report: a run's own copy, a task's state and notes, a history row's, and each one's reading (TASK-952). */
 async function written() {
   const ids = async (query: RawBuilder<{ id: string }>) => (await query.execute(h.db)).rows.map(row => row.id);
   return {
-    dispatches: await ids(sql<{ id: string }>`SELECT dispatch_id AS id FROM routines_v1_dispatches WHERE report IS NOT NULL`),
+    dispatches: await ids(sql<{ id: string }>`SELECT dispatch_id AS id FROM routines_v1_dispatches
+      WHERE report IS NOT NULL OR report_reading_value IS NOT NULL OR report_reading_label IS NOT NULL`),
     tasks: await ids(sql<{ id: string }>`SELECT routine_id AS id FROM routines_v1_definitions
       WHERE task_status IS NOT NULL OR task_update IS NOT NULL OR task_ask IS NOT NULL OR task_reported_at IS NOT NULL
-        OR task_report_accepted_at IS NOT NULL OR agent_notes IS NOT NULL`),
+        OR task_report_accepted_at IS NOT NULL OR agent_notes IS NOT NULL
+        OR task_reading_value IS NOT NULL OR task_reading_label IS NOT NULL OR task_reading_reported_at IS NOT NULL`),
     fires: await ids(sql<{ id: string }>`SELECT id::text AS id FROM routines_v1_fires
-      WHERE report_status IS NOT NULL OR report_update IS NOT NULL OR report_ask IS NOT NULL`),
+      WHERE report_status IS NOT NULL OR report_update IS NOT NULL OR report_ask IS NOT NULL
+        OR report_reading_value IS NOT NULL OR report_reading_label IS NOT NULL`),
   };
 }
 const NOTHING = { dispatches: [], tasks: [], fires: [] };
@@ -119,7 +124,7 @@ describe('routine_report (TASK-907)', () => {
     // agents and decisions nothing, and calls the one writer of a task's state.
     expect(hooks).toEqual(['tool:execute:routine_report', 'routines:report']);
     const { task: state } = await get(task);
-    expect(state).toEqual({ ...NEEDS_YOU, agentNotes: NOTES, reportedAt: expect.any(String) });
+    expect(state).toEqual({ ...NEEDS_YOU, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) });
     expect(new Date(state!.reportedAt).toISOString()).toBe(state!.reportedAt);
     const fires = await history(task);
     expect(fires).toHaveLength(1);
@@ -129,11 +134,12 @@ describe('routine_report (TASK-907)', () => {
   it('routine_list shows a task’s report without its notes, and routine_get shows both', async () => {
     await start();
     const task = await create(TASK, 'task');
-    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES, reading: OPEN_3 })); });
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
     const execute = <T,>(name: string, input: Record<string, unknown>) =>
       h.bus.call<ToolCall, T>(`tool:execute:${name}`, chat, { id: name, name, input });
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    // TASK-952: both tools show the report's reading. Only the agent notes stay out of the list.
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, reportedAt: expect.any(String) };
     const list = await execute<RoutineListToolOutput>('routine_list', {});
     const listed = list.routines.find(row => row.routineId === task.routineId);
     expect(listed?.task).toEqual(shown);
@@ -158,7 +164,7 @@ describe('routine_report (TASK-907)', () => {
     const held = decisions.find(decision => decision.call.input.requestId === 'edit')!;
     await h.bus.call('decisions:approve', chat, { decisionId: held.id, userId: chat.userId, approvalScope: 'once' });
     h.advance(11_000);
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: null, reportedAt: expect.any(String) };
     const answer = await h.bus.call<ToolCall, RoutineListToolOutput['routines'][number]>('tool:execute:routine_update', chat, edit);
     expect(answer).toMatchObject({ description: 'Edited.', task: shown });
     for (const key of ['agentNotes', 'notes']) expect(key in answer.task!, key).toBe(false);
@@ -212,7 +218,7 @@ describe('routine_report (TASK-907)', () => {
     // The owner makes a task on the team agent, so it's theirs; the team's other people share the agent.
     const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
-    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES })); });
+    await checkIn(task, 'run', async ctx => { await report(runner(ctx), reportCall({ ...NEEDS_YOU, notes: NOTES, reading: OPEN_3 })); });
     // TASK-930. Its missed check-ins are its state too: two since that report, set by hand as finishDispatch leaves them.
     const missedAt = new Date('2026-10-23T10:00:00.000Z');
     await h.db.updateTable('routines_v1_definitions').set({ task_misses_in_a_row: 2, task_miss_reason: 'no-report', task_miss_at: missedAt })
@@ -236,7 +242,7 @@ describe('routine_report (TASK-907)', () => {
         getTool: await execute<RoutineView>(chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } }),
       };
     }
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, reportedAt: expect.any(String) };
     for (const person of [h.teamMember, h.teamAdmin]) {
       const seen = await reads(person);
       // The routine itself stays visible to them; only its task state, and each run's report, is the owner's.
@@ -244,7 +250,8 @@ describe('routine_report (TASK-907)', () => {
       for (const view of [seen.list, seen.listTool, seen.getTool]) expect(view?.task, person.userId).toBeNull();
       for (const view of [seen.list, seen.get, seen.listTool, seen.getTool]) expect(view?.noRecentUpdate, person.userId).toBeNull();
       for (const fires of [seen.fires, seen.agentFires]) expect(fires.map(fire => fire.report), person.userId).toEqual([null]);
-      for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask]) expect(JSON.stringify(seen), person.userId).not.toContain(text);
+      // TASK-952: the reading's label is the report's text too.
+      for (const text of [NOTES, NEEDS_YOU.update, NEEDS_YOU.ask, OPEN_3.label]) expect(JSON.stringify(seen), person.userId).not.toContain(text);
     }
     // A team admin may stop someone else's task. The edit's answer shows none of its state either.
     const admin = chatOf(h.teamAdmin);
@@ -255,7 +262,7 @@ describe('routine_report (TASK-907)', () => {
     h.advance(11_000);
     const stopped = await execute<RoutineListToolOutput['routines'][number]>(admin, stop);
     expect(stopped).toMatchObject({ enabled: false, task: null, noRecentUpdate: null });
-    expect(JSON.stringify(stopped)).not.toContain(NEEDS_YOU.update);
+    for (const text of [NEEDS_YOU.update, OPEN_3.label]) expect(JSON.stringify(stopped)).not.toContain(text);
     // The owner sees all of it: the services carry the agent notes, routine_list leaves them out.
     const mine = await reads(h.owner);
     for (const view of [mine.list, mine.get, mine.getTool]) expect(view?.task).toEqual({ ...shown, agentNotes: NOTES });
@@ -263,7 +270,7 @@ describe('routine_report (TASK-907)', () => {
     // A person's stop isn't ax's pause, so the misses don't say autoPaused.
     const misses = { inARow: 2, reason: 'no-report', at: missedAt.toISOString(), autoPaused: false };
     for (const view of [mine.list, mine.get, mine.listTool, mine.getTool]) expect(view?.noRecentUpdate).toEqual(misses);
-    for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([NEEDS_YOU]);
+    for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([{ ...NEEDS_YOU, reading: OPEN_3 }]);
   });
 
   it("a deleted team task's runs keep their reports hidden from everyone, its owner included", async () => {
@@ -277,7 +284,7 @@ describe('routine_report (TASK-907)', () => {
       forAgent: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', person, { agentId: h.teamAgentId })).fires,
     });
     // While the task exists, its owner sees the run's report.
-    expect((await fires(h.owner)).byRoutine.map(fire => fire.report)).toEqual([NEEDS_YOU]);
+    expect((await fires(h.owner)).byRoutine.map(fire => fire.report)).toEqual([{ ...NEEDS_YOU, reading: null }]);
     // Deleting removes the definition row and nothing else: the run's rows stay. With no
     // definition there is no owner to match, so nobody sees the report, the former owner included.
     await createRoutinesStore(h.db).deleteAuthored({ ...key, expectedRevision: (await get(task)).revision, actorUserId: h.owner.userId, requestId: 'delete', now: new Date() });
@@ -400,7 +407,7 @@ describe('routine_report (TASK-907)', () => {
     await checkIn(repeat, 'repeat-run', async ctx => { await refused("a repeat routine's check-in", runner(ctx), 'wrong-kind'); });
   });
 
-  it('routine_report takes only its four fields, and a refusal names the field', async () => {
+  it('routine_report takes only its fields, and a refusal names the field', async () => {
     await start();
     const task = await create(TASK, 'task');
     const valid = { status: 'on-track', update: 'Queue is empty.', ask: null };
@@ -414,6 +421,15 @@ describe('routine_report (TASK-907)', () => {
       ['a blank ask', { ...valid, ask: ' ' }, 'ask'],
       ['notes of 2,001 characters', { ...valid, notes: 'n'.repeat(2001) }, 'notes'],
       ['notes with a tag character', { ...valid, notes: 'Keep going.\u{E0049}' }, 'notes'],
+      // TASK-952: a reading's refusal names the part that's wrong. Invisible inputs are built from code points.
+      ['a reading that isn’t a finite number', { ...valid, reading: { value: Number.POSITIVE_INFINITY, label: 'Open tickets' } }, 'reading.value'],
+      ['a reading past 1e12', { ...valid, reading: { value: 1e13, label: 'Open tickets' } }, 'reading.value'],
+      ['a reading with a blank label', { ...valid, reading: { value: 3, label: ' ' } }, 'reading.label'],
+      ['a reading label of 41 characters', { ...valid, reading: { value: 3, label: 'x'.repeat(41) } }, 'reading.label'],
+      ['a reading label on two lines', { ...valid, reading: { value: 3, label: `Open${String.fromCharCode(0x0A)}tickets` } }, 'reading.label'],
+      ['a reading label with a tag character', { ...valid, reading: { value: 3, label: `Open tickets${String.fromCodePoint(0xE0049)}` } }, 'reading.label'],
+      ['a reading with another key', { ...valid, reading: { value: 3, label: 'Open tickets', unit: 'tickets' } }, 'reading'],
+      ['a reading written as a sentence', { ...valid, reading: 'Open tickets: 3' }, 'reading'],
     ];
     await checkIn(task, 'run', async ctx => {
       for (const [label, input, field] of invalid) {
@@ -426,7 +442,7 @@ describe('routine_report (TASK-907)', () => {
       expect(await report(runner(ctx), reportCall({ ...valid, update: 'a'.repeat(500), notes: 'n'.repeat(2000) }))).toStrictEqual({ recorded: true });
     });
     expect((await get(task)).task).toMatchObject({ status: 'on-track', update: 'a'.repeat(500), ask: null, agentNotes: 'n'.repeat(2000) });
-    expect((await history(task)).map(fire => fire.report)).toEqual([{ status: 'on-track', update: 'a'.repeat(500), ask: null }]);
+    expect((await history(task)).map(fire => fire.report)).toEqual([{ status: 'on-track', update: 'a'.repeat(500), ask: null, reading: null }]);
   });
 
   it('notes are kept, cleared and replaced across reports in one check-in', async () => {
@@ -449,7 +465,7 @@ describe('routine_report (TASK-907)', () => {
     const last = { status: 'needs-you', update: 'A refund waits on you.', ask: 'Can I refund order 1234?' };
     expect((await get(task)).task).toMatchObject({ ...last, agentNotes: 'B' });
     // The run's history row carries its last report.
-    expect((await history(task)).map(fire => fire.report)).toEqual([last]);
+    expect((await history(task)).map(fire => fire.report)).toEqual([{ ...last, reading: null }]);
   });
 
   it('a database failure is "unavailable", and quotes nothing the agent sent', async () => {

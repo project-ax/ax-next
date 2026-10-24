@@ -22,7 +22,7 @@ function report(
   status: TaskRowReport['status'],
   reportedAt = '2026-10-23T10:00:00.000Z',
 ): TaskRowReport {
-  return { status, update: 'Queue is empty.', ask: 'Want me to draft a reply?', reportedAt };
+  return { status, update: 'Queue is empty.', ask: 'Want me to draft a reply?', reading: null, reportedAt };
 }
 
 function under(routineId: string, taskName = 'Zero open tickets'): Decision['checkIn'] {

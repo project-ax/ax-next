@@ -111,6 +111,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     ask: 'Want me to draft a reply?',
     agentNotes: 'Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
+    reading: null,
     ...over,
   };
 }
@@ -479,7 +480,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
           conversationId: 'c1',
           triggerSource: 'tick',
           status: 'ok',
-          report: { status: 'on-track', update: 'Queue is empty.', ask: 'HISTORY-ASK' },
+          report: { status: 'on-track', update: 'Queue is empty.', ask: 'HISTORY-ASK', reading: null },
         }),
       ],
     });
@@ -492,7 +493,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
         firedAt: '2026-10-22T09:57:00.000Z',
         status: 'ok',
         error: null,
-        report: { status: 'on-track', update: 'Queue is empty.' },
+        report: { status: 'on-track', update: 'Queue is empty.', reading: null },
         conversationId: 'c1',
       },
       triggerSource: 'tick',
@@ -694,7 +695,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
             agentId: 'team',
             routineId: 'tB',
             conversationId: 'c-bob',
-            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null },
+            report: { status: 'off-track', update: 'BOB-UPDATE', ask: null, reading: null },
           }),
         ],
         conversations: {
@@ -824,7 +825,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
         }),
         fire({
           conversationId: 'c1',
-          report: { status: 'off-track', update: 'first\nsecond', ask: null },
+          report: { status: 'off-track', update: 'first\nsecond', ask: null, reading: null },
         }),
       ],
       conversations: {
@@ -834,11 +835,34 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
     });
     const reported = bodyOf(await checkin());
     expect(reported.checkIn.conversationId).toBe('c1');
-    expect(reported.checkIn.report).toEqual({ status: 'off-track', update: 'first second' });
+    expect(reported.checkIn.report).toEqual({ status: 'off-track', update: 'first second', reading: null });
     const failed = bodyOf(await checkin({ agentId: 'a1', routineId: 't1', conversationId: 'c2' }));
     expect(failed.checkIn.conversationId).toBe('c2');
     expect(failed.checkIn.status).toBe('error');
     expect(failed.checkIn.error).toBe('line one line two');
+  });
+
+  it('carries the reading its report sent, fenced as its Updates entry fences it (TASK-952)', async () => {
+    const { checkin } = setup({
+      fires: [
+        fire({
+          conversationId: 'c1',
+          report: {
+            status: 'on-track',
+            update: 'Queue is empty.',
+            ask: null,
+            reading: { value: 4, label: `Open${String.fromCharCode(0x0a)}tickets` },
+          },
+        }),
+      ],
+    });
+    const captured = await checkin();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).checkIn.report).toStrictEqual({
+      status: 'on-track',
+      update: 'Queue is empty.',
+      reading: { label: 'Open tickets', value: 4 },
+    });
   });
 
   it.each(['tick', 'manual', 'webhook'] as const)('says what started it: %s', async (source) => {

@@ -1095,6 +1095,7 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
       status: 'needs-you',
       update: 'Two tickets are still open.',
       ask: 'Want me to draft a reply to #4410?',
+      reading: null,
       reportedAt: '2026-10-23T10:00:00.000Z',
     },
     noRecentUpdate: null,

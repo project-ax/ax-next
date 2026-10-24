@@ -470,6 +470,16 @@ export type RoutineReportStatus = z.output<typeof RoutineReportStatusSchema>;
 export const ROUTINE_REPORT_UPDATE_MAX_CHARS = 500;
 export const ROUTINE_REPORT_ASK_MAX_CHARS = 500;
 export const ROUTINE_AGENT_NOTES_MAX_CHARS = 2000;
+/**
+ * TASK-952: a report's optional reading is one number the agent read at this
+ * check-in, with a short label it chose ("Open tickets: 3"). It's shown as the
+ * agent's reading, never as a measure ax computed or checked. The label follows
+ * the report's text rule, one line like an update. The value is a finite number
+ * within ±`ROUTINE_READING_MAX_ABS`. Like the rest of a report, it's checked at
+ * the writer's input only (TASK-913).
+ */
+export const ROUTINE_READING_LABEL_MAX_CHARS = 40;
+export const ROUTINE_READING_MAX_ABS = 1e12;
 
 /** Half of a character. With the `u` flag a pair reads as one code point, so only a surrogate with no partner matches. */
 const LONE_SURROGATE = /\p{Surrogate}/u;
@@ -491,16 +501,26 @@ function reportText(rule: { max: number; blank: string; oneLine: boolean }): z.Z
   });
 }
 
+/** A report's reading (TASK-952): exactly `{ value, label }`. A refusal's path names the part that's wrong. */
+export const RoutineReadingSchema = z.object({
+  value: z.number().finite().min(-ROUTINE_READING_MAX_ABS).max(ROUTINE_READING_MAX_ABS),
+  label: reportText({ max: ROUTINE_READING_LABEL_MAX_CHARS, blank: 'Name what you read, for example "Open tickets".', oneLine: true }),
+}).strict();
+export type RoutineReading = z.output<typeof RoutineReadingSchema>;
+
 /**
  * A report's fields as the agent writes them. `ask` and `notes` are nullable and
  * required here, and each schema that uses them picks its own default: the tool
  * fills a missing `ask` with null, and leaving `notes` out keeps the saved ones.
+ * `reading` is nullable and required here too; the tool and the service take it
+ * optional, and absent or null both mean no reading this time.
  */
 export const RoutineReportFieldShape = {
   status: RoutineReportStatusSchema,
   update: reportText({ max: ROUTINE_REPORT_UPDATE_MAX_CHARS, blank: 'Say how the task is going.', oneLine: true }),
   ask: reportText({ max: ROUTINE_REPORT_ASK_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
   notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
+  reading: RoutineReadingSchema.nullable(),
 };
 
 /*
@@ -545,13 +565,24 @@ export const RoutineReplyTextSchema = z.string()
   });
 
 /**
+ * TASK-952. A reading as a read shows it: the number the agent sent and its
+ * label. Types only: stored values aren't re-checked, so a later change to the
+ * writer's rule can't make a stored reading unreadable (TASK-913).
+ */
+export const RoutineReadingViewSchema = z.object({ value: z.number(), label: z.string() }).strict();
+export type RoutineReadingView = z.output<typeof RoutineReadingViewSchema>;
+
+/**
  * A task's latest report and the notes it keeps between check-ins, as a read
  * shows them. The agent sends its notes as the report's `notes`; a read names
- * them `agentNotes`, so whoever reads them knows who wrote them. Stored text
- * isn't re-capped (TASK-913).
+ * them `agentNotes`, so whoever reads them knows who wrote them. TASK-952:
+ * `reading` is the reading that report sent, or null. It's required, so a view
+ * from a producer that doesn't know it is refused rather than read as "no
+ * reading". Stored text isn't re-capped (TASK-913).
  */
 export const RoutineTaskViewSchema = z.object({
   status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
+  reading: RoutineReadingViewSchema.nullable(),
   reportedAt: RoutineInstantSchema, agentNotes: z.string().nullable(),
 }).strict();
 export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;

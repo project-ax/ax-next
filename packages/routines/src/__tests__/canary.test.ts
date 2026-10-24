@@ -417,7 +417,7 @@ describe('task check-in report canary (TASK-907)', () => {
     expect(answer).toStrictEqual({ recorded: true });
     // No decision of any kind: the report is the run's own output, not something to ask the person about.
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, agentNotes: NOTES, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
     expect((await history(task))[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
@@ -534,7 +534,7 @@ describe('PR 1 backend canary (TASK-908)', () => {
     // As the owner: the task shows the report, and its run shows it too, with no prompt kept.
     const listed = (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId })).routines;
     expect(listed.find(row => row.routineId === task.routineId)?.task).toEqual({
-      status: 'on-track', update: 'Queue is empty.', ask: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
+      status: 'on-track', update: 'Queue is empty.', ask: null, reading: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
     });
     const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
     expect(fires[0]).toMatchObject({ status: 'ok', renderedPrompt: null, report: { status: 'on-track', update: 'Queue is empty.', ask: null } });
@@ -777,7 +777,7 @@ describe('owner change canary (TASK-936)', () => {
     expect(first.message).not.toContain('QX7731');
     await expect.poll(async () => (await history()).byRoutine.length).toBe(1);
     const seen = await history();
-    expect(seen.byRoutine[0]?.report).toEqual(MINE);
+    expect(seen.byRoutine[0]?.report).toEqual({ ...MINE, reading: null });
     expect(seen.forAgent).toHaveLength(1);
     expect(JSON.stringify(seen)).not.toContain('QX7731');
 
@@ -789,5 +789,33 @@ describe('owner change canary (TASK-936)', () => {
     await expect.poll(async () => (await sql<{ run_as_user_id: string | null }>`
       SELECT run_as_user_id FROM routines_v1_fires WHERE routine_id = ${task.routineId} ORDER BY fired_at, id`.execute(h.db)).rows
       .map(row => row.run_as_user_id)).toEqual(['owner', 'new-owner', 'new-owner']);
+  });
+});
+
+// TASK-952: a report's reading, end to end through the real routines, agents, tool-policy and decisions
+// plugins and Postgres. Each check-in reads its number through routine_report; the next check-in's message
+// carries it on its report's line, the history keeps each run's own, and the task shows the latest.
+describe('reading canary (TASK-952)', () => {
+  it('two check-ins read Open tickets 5 then 3: the second’s message carries the first, history has both newest first, and the task shows the latest', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const get = () => h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: h.agentId, routineId: task.routineId });
+    const input = (value: number) => ({ status: 'on-track', update: `${value} tickets open.`, ask: null, reading: { value, label: 'Open tickets' } });
+    await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: input(5) })).toStrictEqual({ recorded: true });
+    });
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    const second = await ch.checkIn(await get(), 'run-2', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: input(3) })).toStrictEqual({ recorded: true });
+    });
+    expect(second.message).toContain(', on-track, Open tickets: 5:\n  > 5 tickets open.');
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(2);
+    const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
+    expect(fires.map(fire => fire.report?.reading ?? null)).toEqual([{ value: 3, label: 'Open tickets' }, { value: 5, label: 'Open tickets' }]);
+    expect((await get()).task?.reading).toEqual({ value: 3, label: 'Open tickets' });
   });
 });

@@ -341,7 +341,7 @@ without a summary. That isn't worth fixing on a page that is going away.
    allowed that tool (Always Allow), so the brief tells the agent to treat
    every outward action as final (TASK-908).
 4. **It reports** with one `routine_report` call: status, a one-line update,
-   what it needs, steps, and notes for next time.
+   what it needs, steps, notes for next time and, if it counted something, one reading (TASK-952).
 5. **People see it.** The Tasks list and the task's Updates thread show the
    report, and anything that needs a person lands on Today.
 
@@ -465,8 +465,8 @@ the model that people call routines "tasks".
 | Piece | Change |
 |---|---|
 | Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. |
-| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does). |
-| Run history | Each run keeps its report (status and update). That is the task's Updates thread. (TASK-936: and who it ran as, schema version 9; Updates and the check-in message read only the runs that ran as the task's current owner). |
+| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). |
+| Run history | Each run keeps its report (status and update). That is the task's Updates thread. (TASK-936: and who it ran as, schema version 9; Updates and the check-in message read only the runs that ran as the task's current owner) (TASK-952: and its reading, schema version 10). |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. (TASK-931: `routines_v1_replies`, schema version 8, with each reply's request id so a retry is stored once; the task page shows the last 50.) |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
@@ -714,6 +714,8 @@ ordinary task.
 | The same plan every week | Duplicate task; a procedure that repeats becomes a skill the agent drafts from | PR 3 |
 | Approvals pile up | Group a task's approvals on Today | PR 2 |
 
+PR 3 (TASK-952): A reading is one number a check-in may add to its report, with a label the agent chooses ("Open tickets: 3"), on any task. Each run keeps its own, and the task shows its latest report's. The task page shows "{agent}’s reading": the label and the latest value, a small line of the earlier values that share that label (up to 12, from the page's last 50 check-ins), and the same values in words. Each Updates entry adds its reading, and the Tasks row shows the latest unless the task has missed check-ins. It is always the agent's reading, never a measure ax computed or checked: no axes, targets, percentages or forecasts. Each check-in's message lists its recent reports' readings, so the agent can keep its label the same. A change of kind or owner clears the latest, as it clears the rest of the task's state.
+
 Family use also needs things outside tasks. Sign-in is limited to the
 workspace's allowed domains, and kids raise questions about who gets an agent,
 what parents can see and per-person spending limits.
@@ -929,7 +931,8 @@ view-only sharing of a task and an "Also ask" list.
    Today is enough for now** (§15). Email each new ask comes later, not in PR 2.
 5. ~~Should "Stay on top" tasks show a number trend?~~ **Decided: yes** (§15),
    in PR 3: an optional number in each report, labelled as the agent's reading,
-   never a computed measure.
+   never a computed measure. Both task kinds, "Stay on top" and "Get something
+   done", get it (confirmed 2026-10-24, TASK-952).
 6. ~~Give each task its own webhook address token?~~ **Decided: yes** (§15),
    in PR 5.
 7. ~~Can team members start tasks on a team agent, running as themselves?~~
@@ -988,3 +991,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-23 | Decided | An approval's task label is looked up only while the approval is open. Once it's answered, Today keeps the label it had, so the receipt stays under its task (TASK-933). |
 | 2026-10-23 | Decided | A change of owner starts a task over in the statement that moves it, as a change of kind does (report, ask, agent notes and missed check-ins); it also clears the last run's status, error and warning, which a change of kind keeps. A task paused for misses stays paused, as a plain pause (TASK-936). |
 | 2026-10-23 | Decided | Each run records who it ran as (schema version 9). A routine's history and a check-in's earlier reports hold only the runs that ran as its current owner, so an earlier owner's check-ins reach neither the new owner's page nor their check-ins. They read again only if the task moves back, as replies do. Runs recorded before version 9 count as their routine's owner's at the upgrade (TASK-936). |
+| 2026-10-24 | Decided | A check-in of either task kind may add one reading to its report: a number and a short label the agent chooses. The trend uses the readings that share the latest label. Every surface calls it the agent's reading, never a computed measure. It's task state, so a change of kind or owner clears the latest, while past runs keep theirs (TASK-952). |

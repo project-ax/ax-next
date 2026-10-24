@@ -147,6 +147,8 @@ import {
   ROUTINE_DEFINITION_MAX_BYTES,
   ROUTINE_HISTORY_MAX_LIMIT,
   ROUTINE_NAME_MAX_CHARS,
+  ROUTINE_READING_LABEL_MAX_CHARS,
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
@@ -211,6 +213,7 @@ import type {
   TaskCheckin,
   TaskDetail,
   TaskNoRecentUpdate,
+  TaskReading,
   TaskReply,
   TaskReplyResponse,
   TaskRow,
@@ -3406,15 +3409,17 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * along that no surface draws: the agent's notes never leave the server. The
  * ask crosses for every one of the owner's own tasks, whatever its status,
  * because Today draws a Needs you report's ask (TASK-933). `routines:list`
- * shows a report (and so its ask) only to the task's owner.
+ * shows a report (and so its ask and its reading) only to the task's owner.
  *
- * The name, the update and the ask are agent-written and fenced HERE, at the
- * boundary, to one line. The update and the ask are capped at the report
- * writer's own limits, because stored text isn't re-checked against the
- * writer's rules (TASK-913) and the view schema has no cap. `agentName` is the
- * roster's string as-is, the same one `/state` sends. `noRecentUpdate` is
- * host-written (a count, a closed reason, an instant, a flag;
- * `toTaskNoRecentUpdate`) and holds no agent-written text.
+ * The name, the update, the ask and the reading's label are agent-written and
+ * fenced HERE, at the boundary, to one line. The update, the ask and the label
+ * are capped at the report writer's own limits, because stored text isn't
+ * re-checked against the writer's rules (TASK-913) and the view schema has no
+ * cap. The reading (TASK-952) is the agent's, never a measure the host
+ * computed or checked, and `toTaskReading` decides what of it crosses.
+ * `agentName` is the roster's string as-is, the same one `/state` sends.
+ * `noRecentUpdate` is host-written (a count, a closed reason, an instant, a
+ * flag; `toTaskNoRecentUpdate`) and holds no agent-written text.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3435,6 +3440,7 @@ function toTaskRows(
               status: view.task.status,
               update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
               ask: fenceLine(view.task.ask, ROUTINE_REPORT_ASK_MAX_CHARS),
+              reading: toTaskReading(view.task.reading),
               reportedAt: view.task.reportedAt,
             },
       noRecentUpdate: toTaskNoRecentUpdate(view),
@@ -3462,6 +3468,25 @@ function toTaskNoRecentUpdate(view: Pick<RoutineView, 'noRecentUpdate'>): TaskNo
     at,
     autoPaused: autoPaused === true,
   };
+}
+
+/**
+ * A view's reading → the wire's (TASK-952). Built field by field, and lenient
+ * about a view the schema didn't parse (TASK-913), as `toTaskNoRecentUpdate`
+ * is. The value crosses only as a finite number within
+ * ±ROUTINE_READING_MAX_ABS: the view schema checks only that it is a number,
+ * which an infinity is. The label crosses only fenced to
+ * one line of at most ROUTINE_READING_LABEL_MAX_CHARS code points. A reading
+ * missing either, or whose label has nothing legible left, crosses as none:
+ * the label is what tells a person what was counted. Agent-written, so the
+ * page draws it as plain text, as the agent's reading.
+ */
+function toTaskReading(reading: unknown): TaskReading | null {
+  if (reading === null || typeof reading !== 'object') return null;
+  const { value, label } = reading as Record<string, unknown>;
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > ROUTINE_READING_MAX_ABS) return null;
+  const fenced = fenceLine(typeof label === 'string' ? label : null, ROUTINE_READING_LABEL_MAX_CHARS);
+  return fenced === null ? null : { label: fenced, value };
 }
 
 /** How many check-ins a task page's Updates thread shows, newest first (TASK-910). */
@@ -3550,20 +3575,23 @@ function readTaskReplyBody(parsed: unknown): { text: string; requestId: string }
  * that the page doesn't draw (TASK-909 decisions row 5's rule): no
  * `manageSecret`, and of each check-in no `triggerSource`, `ask`,
  * `renderedPrompt` or `warning` (TASK-910 decisions row 10); its
- * `conversationId` crosses for See what it did (TASK-911).
+ * `conversationId` crosses for See what it did (TASK-911), and its report's
+ * reading (TASK-952).
  *
- * Everything the agent wrote is fenced HERE, at the boundary: the update and
- * the ask to one line at the report writer's own caps, because stored text
- * isn't re-checked against the writer's rules (TASK-913) and the view schema
- * has no cap; the notes as a block that keeps their lines and spells hidden
- * characters out rather than dropping them (`TASK_NOTES_MAX_CHARS`); a failed
- * check-in's recorded reason to one line, and no reason at all for a check-in
- * that finished. The brief is the person's own text, fenced with the approval
- * card's caps (TASK-906): the view schema refuses an invalid brief, and a
- * valid one never reaches them, so it shows whole. The schedule phrase
- * carries the trigger's own time zone, so it is fenced too. `agentName` is
- * the roster's string as-is, the same one `/state` sends. `noRecentUpdate` is
- * host-written (`toTaskNoRecentUpdate`) and holds no agent-written text.
+ * Everything the agent wrote is fenced HERE, at the boundary: the update, the
+ * ask and each reading's label (TASK-952, `toTaskReading`, which also lets a
+ * reading's value cross only as a finite number) to one line at the report
+ * writer's own caps, because stored text isn't re-checked against the
+ * writer's rules (TASK-913) and the view schema has no cap; the notes as a
+ * block that keeps their lines and spells hidden characters out rather than
+ * dropping them (`TASK_NOTES_MAX_CHARS`); a failed check-in's recorded reason
+ * to one line, and no reason at all for a check-in that finished. The brief
+ * is the person's own text, fenced with the approval card's caps (TASK-906):
+ * the view schema refuses an invalid brief, and a valid one never reaches
+ * them, so it shows whole. The schedule phrase carries the trigger's own time
+ * zone, so it is fenced too. `agentName` is the roster's string as-is, the
+ * same one `/state` sends. `noRecentUpdate` is host-written
+ * (`toTaskNoRecentUpdate`) and holds no agent-written text.
  *
  * The person's replies (TASK-931) are their own text, but stored text isn't
  * re-checked against the rule it was written under (TASK-913), so each is
@@ -3610,6 +3638,7 @@ function toTaskDetail(
             agentNotes:
               fenceBlock(view.task.agentNotes, TASK_NOTES_MAX_CHARS, TASK_NOTES_MAX_LINES)
                 ?.text ?? null,
+            reading: toTaskReading(view.task.reading),
             reportedAt: view.task.reportedAt,
           },
     noRecentUpdate: toTaskNoRecentUpdate(view),
@@ -3632,7 +3661,11 @@ function toTaskReply(reply: TaskReplyView, userId: string): TaskReply {
   };
 }
 
-/** One check-in → one entry in a task's Updates thread (TASK-910). */
+/**
+ * One check-in → one entry in a task's Updates thread (TASK-910). Its report's
+ * update is fenced as the task's is, and its reading crosses as
+ * `toTaskReading` decides (TASK-952).
+ */
 function toTaskUpdate(fire: TaskFireView): TaskUpdate {
   return {
     firedAt: fire.firedAt,
@@ -3644,6 +3677,7 @@ function toTaskUpdate(fire: TaskFireView): TaskUpdate {
         : {
             status: fire.report.status,
             update: fenceLine(fire.report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
+            reading: toTaskReading(fire.report.reading),
           },
     // An opaque id the host minted, never text an agent wrote (TASK-911).
     conversationId: fire.conversationId,

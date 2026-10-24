@@ -37,7 +37,8 @@ describe('safe routine tool failures', () => {
     expect(safeToolMessage('not-in-check-in', 'input')).toBe('This works only during a task check-in. Field: input');
   });
   it('names a task report’s own fields (TASK-907)', () => {
-    for (const field of ['status', 'update', 'ask', 'notes'] as const) {
+    // TASK-952: its reading too, and the reading's own fields, since a refusal names the issue's whole path.
+    for (const field of ['status', 'update', 'ask', 'notes', 'reading', 'reading.value', 'reading.label'] as const) {
       const error = new SafeToolError('validation', field);
       expect(error.field).toBe(field);
       expect(error.message).toBe(`Routine input is invalid. Check the indicated field. Field: ${field}`);

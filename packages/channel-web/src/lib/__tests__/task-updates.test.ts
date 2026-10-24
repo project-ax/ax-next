@@ -20,7 +20,7 @@ function u(
     firedAt: `2026-10-22T10:${String(60 - n).padStart(2, '0')}:00.000Z`,
     status: 'ok',
     error: null,
-    report: report === null ? null : { status: report, update: `update ${n}` },
+    report: report === null ? null : { status: report, update: `update ${n}`, reading: null },
     conversationId: null,
     ...over,
   };
@@ -93,7 +93,7 @@ function at(mm: number, report: RoutineReportStatus | null = 'on-track'): TaskUp
     firedAt: `2026-10-22T10:${String(mm).padStart(2, '0')}:00.000Z`,
     status: 'ok',
     error: null,
-    report: report === null ? null : { status: report, update: `at ${mm}` },
+    report: report === null ? null : { status: report, update: `at ${mm}`, reading: null },
     conversationId: null,
   };
 }
@@ -177,13 +177,13 @@ describe('foldTimeline with replies (TASK-931)', () => {
 
 describe('updateText (TASK-911)', () => {
   it('says the update, or why there is none', () => {
-    expect(updateText({ status: 'ok', report: { status: 'on-track', update: 'Queue is empty.' } })).toBe(
+    expect(updateText({ status: 'ok', report: { status: 'on-track', update: 'Queue is empty.', reading: null } })).toBe(
       'Queue is empty.',
     );
-    expect(updateText({ status: 'ok', report: { status: 'needs-you', update: null } })).toBe(
+    expect(updateText({ status: 'ok', report: { status: 'needs-you', update: null, reading: null } })).toBe(
       'It left an update we can’t show.',
     );
-    expect(updateText({ status: 'ok', report: { status: 'needs-you', update: '' } })).toBe(
+    expect(updateText({ status: 'ok', report: { status: 'needs-you', update: '', reading: null } })).toBe(
       'It left an update we can’t show.',
     );
     expect(updateText({ status: 'error', report: null })).toBe('This check-in didn’t finish.');
@@ -192,14 +192,14 @@ describe('updateText (TASK-911)', () => {
 });
 
 describe('latestUpdateCheckIn (TASK-911)', () => {
-  const SAID = { status: 'on-track', update: 'Queue is empty.' } as const;
+  const SAID = { status: 'on-track', update: 'Queue is empty.', reading: null } as const;
   const task = { status: 'on-track', update: 'Queue is empty.' } as const;
 
   it('the latest update came from the newest check-in that left one', () => {
     const updates: TaskUpdate[] = [
       u(null, { status: 'error', conversationId: 'c3' }),
       u('on-track', { report: SAID, conversationId: 'c2' }),
-      u('on-track', { report: { status: 'on-track', update: 'Older.' }, conversationId: 'c1' }),
+      u('on-track', { report: { status: 'on-track', update: 'Older.', reading: null }, conversationId: 'c1' }),
     ];
     // This is also the answer while a check-in that repeated those exact words
     // is still running: the data can't tell the two apart, and decisions row
@@ -223,7 +223,7 @@ describe('latestUpdateCheckIn (TASK-911)', () => {
     // the link would open that conversation's newest run, not this one.
     const updates = [
       u('on-track', { report: SAID, conversationId: 'shared' }),
-      u('on-track', { report: { status: 'on-track', update: 'Older.' }, conversationId: 'shared' }),
+      u('on-track', { report: { status: 'on-track', update: 'Older.', reading: null }, conversationId: 'shared' }),
     ];
     expect(latestUpdateCheckIn(task, updates)).toBeNull();
   });
@@ -269,7 +269,7 @@ describe('missCheckIn', () => {
 
   it('is null when that entry reported', () => {
     expect(
-      missCheckIn({ at: AT }, [missed({ report: { status: 'on-track', update: 'fine' } })]),
+      missCheckIn({ at: AT }, [missed({ report: { status: 'on-track', update: 'fine', reading: null } })]),
     ).toBeNull();
   });
 

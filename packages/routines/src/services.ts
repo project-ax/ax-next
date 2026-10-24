@@ -2,7 +2,7 @@ import { SafeToolError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
-import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredRoutine } from './types.js';
+import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
@@ -53,12 +53,17 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * `report` only: a fire's `renderedPrompt` is not gated here (a task run's
  * check-in message never lands there: fire.ts stores `renderedPrompt: null` for task
  * runs, TASK-908). A repeat routine shows none either: changing a kind clears it, and
- * this hides any a row holds anyway.
+ * this hides any a row holds anyway. TASK-952: a report's reading is part of `task`
+ * and of `report`, so it follows the same rule.
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
-  const { status, update, ask, reportedAt, agentNotes } = row.task;
-  return { status, update, ask, reportedAt: reportedAt.toISOString(), agentNotes };
+  const { status, update, ask, reading, reportedAt, agentNotes } = row.task;
+  return { status, update, ask, reading: readingView(reading), reportedAt: reportedAt.toISOString(), agentNotes };
+}
+/** TASK-952. A report's reading as a view shows it: field by field, never a spread, so nothing the store reads reaches the view unnamed. */
+function readingView(reading: StoredReading | null): C.RoutineReadingView | null {
+  return reading === null ? null : { value: reading.value, label: reading.label };
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under
@@ -102,7 +107,9 @@ function fireViews(userId: string, fires: FireRow[]): C.RoutineFireView[] {
     ...fire, firedAt: firedAt.toISOString(),
     // Fails closed: a report shows only when the run's routine has an owner and it is this person.
     // A deleted routine has no row, so it has no owner, and its runs' reports show to no one.
-    report: routineOwnerUserId !== null && routineOwnerUserId === userId ? report : null,
+    // Field by field, never a spread, so nothing the store reads reaches the view unnamed.
+    report: routineOwnerUserId !== null && routineOwnerUserId === userId && report !== null
+      ? { status: report.status, update: report.update, ask: report.ask, reading: readingView(report.reading) } : null,
   }));
 }
 export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
@@ -266,12 +273,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // answers the closed "unavailable", a 503, which the runner's IPC client retries up to its 5xx
   // cap: a retry runs the whole report again, and a report that lands just replaces the run's report.
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
-    const { agentId, dispatchId, notes, ...report } = input;
+    const { agentId, dispatchId, notes, reading, ...report } = input;
     const conversationId = ctx.conversationId;
     if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
     if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
     if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
-    const outcome = await store.recordReport({ agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), now: now() });
+    // TASK-952: a reading left out or sent as null is none this time.
+    const outcome = await store.recordReport({
+      agentId, dispatchId, conversationId, actorUserId: ctx.userId, report, ...(notes === undefined ? {} : { notes }), reading: reading ?? null, now: now(),
+    });
     if (outcome !== 'recorded') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
     return { recorded: true as const };
   });

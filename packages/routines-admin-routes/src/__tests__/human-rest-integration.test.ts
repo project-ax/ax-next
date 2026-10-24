@@ -311,6 +311,8 @@ describe('human REST through registered DB services and real agent ACL', () => {
       ask: 'Can refunds over $50 go out without you?',
     } as const;
     const notes = 'Order 1234 waits on a refund.';
+    // TASK-952: a report's reading is its task's state too.
+    const reading = { value: 3, label: 'Open tickets' } as const;
     // One check-in of the owner's task reports, the way routines:report records it.
     const store = createRoutinesStore(h.db);
     const run = await store.acceptDispatch({
@@ -335,6 +337,7 @@ describe('human REST through registered DB services and real agent ACL', () => {
         actorUserId: 'owner',
         report,
         notes,
+        reading,
         now: new Date(),
       }),
     ).toBe('recorded');
@@ -376,7 +379,7 @@ describe('human REST through registered DB services and real agent ACL', () => {
       ),
     ).toEqual([null]);
     const served = JSON.stringify([listed.body, got.body, fires.body]);
-    for (const text of [notes, report.update, report.ask])
+    for (const text of [notes, report.update, report.ask, reading.label])
       expect(served).not.toContain(text);
     // The owner's own reads have all of it.
     expect(
@@ -384,6 +387,7 @@ describe('human REST through registered DB services and real agent ACL', () => {
         .task,
     ).toEqual({
       ...report,
+      reading,
       agentNotes: notes,
       reportedAt: expect.any(String),
     });
@@ -395,7 +399,7 @@ describe('human REST through registered DB services and real agent ACL', () => {
           params,
         )
       ).fires.map((fire) => fire.report),
-    ).toEqual([report]);
+    ).toEqual([{ ...report, reading }]);
   });
   it('does not disclose a team receiver token to a member who can view the agent', async () => {
     h = await createRoutineHarness({ authenticatedUserId: 'member' });

@@ -21,7 +21,7 @@ function update(over: Partial<TaskUpdate> = {}): TaskUpdate {
     firedAt: '2026-10-22T14:00:00.000Z',
     status: 'ok',
     error: null,
-    report: { status: 'on-track', update: 'Nothing new.' },
+    report: { status: 'on-track', update: 'Nothing new.', reading: null },
     conversationId: null,
     ...over,
   };
@@ -30,7 +30,7 @@ function update(over: Partial<TaskUpdate> = {}): TaskUpdate {
 /** Distinct times, newest first, so every entry has its own stamp. */
 function onTrack(n: number): TaskUpdate {
   const at = new Date(NOW.getTime() - n * 3_600_000).toISOString();
-  return update({ firedAt: at, report: { status: 'on-track', update: `Update ${n}` } });
+  return update({ firedAt: at, report: { status: 'on-track', update: `Update ${n}`, reading: null } });
 }
 
 function renderThread(updates: TaskUpdate[], replies: TaskReply[] = []) {
@@ -53,11 +53,11 @@ describe('TaskUpdates (TASK-910)', () => {
     renderThread([
       update({
         firedAt: '2026-10-22T14:00:00.000Z',
-        report: { status: 'needs-you', update: 'Three invoices are overdue.' },
+        report: { status: 'needs-you', update: 'Three invoices are overdue.', reading: null },
       }),
       update({
         firedAt: '2026-10-21T14:00:00.000Z',
-        report: { status: 'off-track', update: 'The queue is backing up.' },
+        report: { status: 'off-track', update: 'The queue is backing up.', reading: null },
       }),
     ]);
     const section = screen.getByRole('region', { name: 'Updates' });
@@ -80,7 +80,7 @@ describe('TaskUpdates (TASK-910)', () => {
       update({ report: null }),
       update({
         firedAt: '2026-10-22T13:00:00.000Z',
-        report: { status: 'needs-you', update: null },
+        report: { status: 'needs-you', update: null, reading: null },
       }),
     ]);
     const items = screen.getAllByRole('listitem');
@@ -98,7 +98,7 @@ describe('TaskUpdates (TASK-910)', () => {
         firedAt: '2026-10-22T12:00:00.000Z',
         status: 'error',
         error: 'It ran out of time.',
-        report: { status: 'off-track', update: 'Got partway through the inbox.' },
+        report: { status: 'off-track', update: 'Got partway through the inbox.', reading: null },
       }),
     ]);
     const items = screen.getAllByRole('listitem');
@@ -156,7 +156,7 @@ describe('TaskUpdates (TASK-910)', () => {
     const text =
       '**bold** <b>b</b> <img src="x"> [link](https://x.test) <a href="https://x.test">a</a>';
     const { container } = renderThread([
-      update({ report: { status: 'needs-you', update: text } }),
+      update({ report: { status: 'needs-you', update: text, reading: null } }),
       update({
         firedAt: '2026-10-22T13:00:00.000Z',
         status: 'error',
@@ -210,8 +210,8 @@ describe('TaskUpdates (TASK-910)', () => {
     // runs all recorded the same id, and no one check-in owns that transcript.
     renderThread([
       { ...onTrack(1), conversationId: 'c1' },
-      update({ firedAt: onTrack(2).firedAt, report: { status: 'needs-you', update: 'Shared 2' }, conversationId: 'shared' }),
-      update({ firedAt: onTrack(3).firedAt, report: { status: 'off-track', update: 'Shared 3' }, conversationId: 'shared' }),
+      update({ firedAt: onTrack(2).firedAt, report: { status: 'needs-you', update: 'Shared 2', reading: null }, conversationId: 'shared' }),
+      update({ firedAt: onTrack(3).firedAt, report: { status: 'off-track', update: 'Shared 3', reading: null }, conversationId: 'shared' }),
     ]);
     const links = screen.getAllByRole('link');
     expect(links).toHaveLength(1);
@@ -289,6 +289,39 @@ describe('TaskUpdates (TASK-910)', () => {
         screen.getByRole('button', { name: '2 earlier check-ins, all on track' }),
       ).toBeInTheDocument();
       expect(screen.getByText('Refunds under $100 are fine.', { exact: false })).toBeInTheDocument();
+    });
+  });
+
+  describe('the agent’s reading (TASK-952)', () => {
+    it('an entry ends with the reading its check-in sent, muted', () => {
+      renderThread([
+        update({
+          report: {
+            status: 'on-track',
+            update: 'Answered two.',
+            reading: { label: 'Open tickets', value: 3 },
+          },
+        }),
+      ]);
+      const line = screen.getByText('Answered two.');
+      expect(line.textContent).toBe('Answered two. · Open tickets: 3');
+      expect(within(line).getByText('· Open tickets: 3')).toHaveClass('text-muted-foreground');
+    });
+
+    it('an entry without a reading adds nothing', () => {
+      renderThread([
+        update({ report: { status: 'on-track', update: 'Answered two.', reading: null } }),
+      ]);
+      expect(screen.getByRole('listitem').textContent).not.toContain(' · ');
+    });
+
+    it('draws the reading’s label as plain text', () => {
+      const label = '<img src=x onerror=alert(1)>';
+      const { container } = renderThread([
+        update({ report: { status: 'on-track', update: 'Answered two.', reading: { label, value: 3 } } }),
+      ]);
+      expect(screen.getByText('Answered two.').textContent).toBe(`Answered two. · ${label}: 3`);
+      expect(container.querySelector('img')).toBeNull();
     });
   });
 });

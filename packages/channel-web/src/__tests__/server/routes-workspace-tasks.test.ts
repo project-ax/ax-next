@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
+  ROUTINE_READING_MAX_ABS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   RoutineListOutputSchema,
@@ -105,6 +106,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     ask: 'ASK-TEXT want me to draft a reply?',
     agentNotes: 'NOTES-TEXT Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
+    reading: null,
     ...over,
   };
 }
@@ -271,7 +273,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(body.unavailableAgents).toEqual([]);
   });
 
-  it("answers a task that has not reported with task: null, and a report with status, update, ask and reportedAt, never the agent's notes (TASK-933)", async () => {
+  it("answers a task that has not reported with task: null, and a report with status, update, ask, reading and reportedAt, never the agent's notes (TASK-933, TASK-952)", async () => {
     const { get } = setup({
       rows: [
         stored({ agentId: 'a1', routineId: 't1', task: report('needs-you') }),
@@ -294,6 +296,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         status: 'needs-you',
         update: 'Queue is empty.',
         ask: 'ASK-TEXT want me to draft a reply?',
+        reading: null,
         reportedAt: '2026-10-22T09:58:00.000Z',
       },
       noRecentUpdate: null,
@@ -816,6 +819,116 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         at: '2026-10-22T11:00:00.000Z',
         autoPaused: false,
       });
+    });
+  });
+
+  describe("the agent's reading (TASK-952)", () => {
+    /** Task t<n> on a1, whose latest report sent this reading. */
+    const withReading = (n: number, value: number, label: string) =>
+      stored({
+        agentId: 'a1',
+        routineId: `t${n}`,
+        task: report('on-track', { reading: { value, label } }),
+      });
+    const readingOf = (captured: CapturedRes, routineId: string) =>
+      bodyOf(captured).tasks.find((t) => t.routineId === routineId)?.task?.reading;
+
+    it('carries the reading, its label fenced to one line of 40 characters', async () => {
+      // Stored rows aren't re-checked against the writer's rules (TASK-913), and
+      // the view schema checks only types, so the route is where the label is fenced.
+      const { get } = setup({
+        rows: [
+          withReading(1, 3, 'Open tickets'),
+          withReading(2, 12, 'x'.repeat(50)),
+          withReading(3, 0, `Open${String.fromCharCode(0x0a)}tickets`),
+          withReading(4, -2.5, `Open${String.fromCodePoint(0x202e)}tickets`),
+          withReading(5, 7, '<img src=x onerror=alert(1)>'),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(readingOf(captured, 't1')).toStrictEqual({ label: 'Open tickets', value: 3 });
+      expect(readingOf(captured, 't2')).toStrictEqual({ label: `${'x'.repeat(39)}…`, value: 12 });
+      expect(readingOf(captured, 't3')).toStrictEqual({ label: 'Open tickets', value: 0 });
+      expect(readingOf(captured, 't4')).toStrictEqual({ label: 'Open tickets', value: -2.5 });
+      // Markup is only text: it crosses as written, and the page draws it as text.
+      expect(readingOf(captured, 't5')).toStrictEqual({
+        label: '<img src=x onerror=alert(1)>',
+        value: 7,
+      });
+    });
+
+    it('sends a reading whose label has nothing legible as no reading, and keeps the report', async () => {
+      // The label is what says what was counted, so a reading without one can't cross.
+      const { get } = setup({
+        rows: [withReading(1, 3, String.fromCodePoint(0x200b).repeat(3))],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      const task = bodyOf(captured).tasks[0]?.task;
+      expect(task?.update).toBe('Queue is empty.');
+      expect(task?.reading).toBeNull();
+    });
+
+    it.each<[string, unknown]>([
+      ['NaN', Number.NaN],
+      ['an infinity', Number.POSITIVE_INFINITY],
+      ['a number written as text', '3'],
+      ['past the bound', ROUTINE_READING_MAX_ABS * 10],
+      ['past the bound, negative', -ROUTINE_READING_MAX_ABS * 10],
+    ])('drops a reading whose value is %s, and keeps the report', async (_what, value) => {
+      // A view the schema didn't parse reaches the route as it is (TASK-913's shape).
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            task: report('on-track', { reading: { value: value as number, label: 'Open tickets' } }),
+          }),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      const task = bodyOf(captured).tasks[0]?.task;
+      expect(task?.update).toBe('Queue is empty.');
+      expect(task?.reading).toBeNull();
+    });
+
+    it('lets a value at exactly the bound cross, either way', async () => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          withReading(1, ROUTINE_READING_MAX_ABS, 'Revenue'),
+          withReading(2, -ROUTINE_READING_MAX_ABS, 'Balance'),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      expect(readingOf(captured, 't1')).toStrictEqual({ label: 'Revenue', value: ROUTINE_READING_MAX_ABS });
+      expect(readingOf(captured, 't2')).toStrictEqual({ label: 'Balance', value: -ROUTINE_READING_MAX_ABS });
+    });
+
+    it.each<[string, unknown]>([
+      ['missing', undefined],
+      ['a number', 7],
+      ['null', null],
+    ])('drops a reading whose label is %s, and keeps the report', async (_what, label) => {
+      const { get } = setup({
+        unvalidated: true,
+        rows: [
+          stored({
+            agentId: 'a1',
+            routineId: 't1',
+            task: report('on-track', { reading: { value: 3, label: label as string } }),
+          }),
+        ],
+      });
+      const captured = await get();
+      expect(captured.statusCode).toBe(200);
+      const task = bodyOf(captured).tasks[0]?.task;
+      expect(task?.update).toBe('Queue is empty.');
+      expect(task?.reading).toBeNull();
     });
   });
 });
