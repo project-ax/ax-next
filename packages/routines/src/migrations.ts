@@ -39,7 +39,8 @@ export interface RoutinesDefinitionsRow {
   /**
    * Version 4 (TASK-907). A task's latest report, written only by `recordReport`,
    * and the notes it keeps between check-ins. NULL until the first report, and
-   * NULL again after an edit that changes the routine's kind (`updateAuthored`).
+   * NULL again after an edit that changes the routine's kind (`updateAuthored`)
+   * or a change of owner (`reconcileOwners`, TASK-936).
    * `agent_notes` alone is NULL again after the person clears them
    * (`routines:clear-notes`, TASK-910).
    * `task_report_accepted_at` is the reporting run's acceptance time: the run
@@ -62,10 +63,11 @@ export interface RoutinesDefinitionsRow {
    * Version 7 (TASK-930). A task's check-ins in a row that ended without a
    * report, the last one's reason and start (its run's `accepted_at`), and when
    * the host paused the task for them. 0 and NULL when there are none. Written
-   * only by `finishDispatch` and `updateAuthored` (a person's Resume, a kind
-   * change); nothing an agent sends reaches them. The reason reads back as a
-   * plain string: `rowToRoutine` reads one no code knows as `failed`, so a later
-   * version's reason still reads after a rollback (TASK-913).
+   * only by `finishDispatch`, `updateAuthored` (a person's Resume, a kind
+   * change) and `reconcileOwners` (a change of owner, TASK-936), the last two
+   * only clearing them; nothing an agent sends reaches them. The reason reads
+   * back as a plain string: `rowToRoutine` reads one no code knows as `failed`,
+   * so a later version's reason still reads after a rollback (TASK-913).
    */
   task_misses_in_a_row: ColumnType<number, number | undefined, number>;
   task_miss_reason: ColumnType<string | null, CheckInMiss | null | undefined, CheckInMiss | null>;
@@ -298,8 +300,9 @@ async function addRepliesTable(db: Kysely<RoutinesDatabase>): Promise<void> {
 /** Version 7 (TASK-930): a task's check-ins in a row that ended without a report,
  * the last one's reason and start, and when the host paused the task for them.
  * Written only by `finishDispatch` (a miss adds one, a report clears them, the
- * fifth in a row pauses the task) and `updateAuthored` (a person's Resume or a
- * kind change clears them). Additive, with no backfill: existing rows read 0 and
+ * fifth in a row pauses the task), `updateAuthored` (a person's Resume or a
+ * kind change clears them) and `reconcileOwners` (a change of owner clears
+ * them, TASK-936). Additive, with no backfill: existing rows read 0 and
  * NULL (no misses), and code from before this version ignores the columns. Every
  * statement only adds what is missing, so a re-run keeps the columns' values.
  * The reason's CHECK lists the codes as they are at this version (a migration

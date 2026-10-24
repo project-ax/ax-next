@@ -38,8 +38,9 @@ export interface RoutinesStore {
    * agent is retired. Every run of every routine ends here, so TASK-930 counts a
    * task's missed check-ins here too, and pauses the task at the fifth in a row
    * (`missesAfterRun`). Runs that overlap count in the order they started, as
-   * `recordReport` keeps reports, whatever order they finish in. It and
-   * `updateAuthored` are the count's only writers.
+   * `recordReport` keeps reports, whatever order they finish in. It writes the
+   * count; `updateAuthored` (a person's Resume, a kind change) and
+   * `reconcileOwners` (a change of owner, TASK-936) only start it over.
    */
   finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
@@ -47,9 +48,11 @@ export interface RoutinesStore {
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
   /**
-   * TASK-907. The one writer of a task's state. `'recorded'`, or why nothing was
-   * written: the run must be an open check-in, bound to the report's
-   * conversation, of a stay-on-top task its actor owns, on a live agent.
+   * TASK-907. The one writer of a task's report: `updateAuthored` (a kind
+   * change) and `reconcileOwners` (a change of owner, TASK-936) only clear it.
+   * `'recorded'`, or why nothing was written: the run must be an open check-in,
+   * bound to the report's conversation, of a stay-on-top task its actor owns,
+   * on a live agent.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | ReportRefusal>;
   /**
@@ -122,8 +125,15 @@ export interface RoutinesStore {
   refreshStale(input: { now: Date }): Promise<void>;
   /**
    * TASK-397. Moves every routine of each of these user-owned agents to the
-   * agent's owner, at a new revision. Replies stay where they are: a read
-   * returns only the replies the current owner wrote (`recentReplies`, TASK-931).
+   * agent's owner, at a new revision. TASK-936: in the same statement it starts
+   * each one over, as a change of kind does (`NO_TASK_STATE`), whatever its
+   * kind, because a task's state is its owner's: the report, its ask, the agent
+   * notes and the missed check-ins came from runs as the earlier owner, with
+   * what only they can reach. One statement, so no read finds the new owner
+   * beside the old state. `enabled`, the schedule and `agent_notes_cleared_at`
+   * stay, so a task ax paused for misses stays paused, now as a plain pause.
+   * Replies stay where they are: a read returns only the replies the current
+   * owner wrote (`recentReplies`, TASK-931).
    */
   reconcileOwners(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }> }): Promise<number>;
   setAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string; ownerUserId: string; enabled: boolean }): Promise<void>;
@@ -225,6 +235,14 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * TASK-930: its missed check-ins start over with the rest (`NO_MISSES`), a pause
  * for them included. `enabled` isn't touched, so a task ax paused stays paused
  * through a kind change; only a Resume runs it again.
+ *
+ * TASK-936: a change of owner sets these too, in the statement that moves the
+ * routine (`reconcileOwners`), whatever its kind, because a task's state is its
+ * owner's. There too `enabled` isn't touched, so a task ax paused stays paused,
+ * now as a plain pause. Unlike a kind round trip, a run still open from before
+ * the move can't report into the new owner's task: it runs as the earlier
+ * owner, and `recordReport` refuses a report whose actor doesn't own the
+ * routine.
  */
 const NO_MISSES = { task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null } as const;
 const NO_TASK_STATE = {
@@ -249,9 +267,10 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * leaves them as they are: for a repeat routine, and while the task is paused for
  * them (`task_auto_paused_at` set and not enabled), so a run that started before
  * the pause (a Check now beside the fifth check-in) can't count past it, or clear
- * it by reporting. Only a person's Resume or a kind change ends that
- * (`updateAuthored`). Keyed on `enabled` too: a row resumed without a reset (code
- * from before version 7, after a rollback) counts again, and can pause again.
+ * it by reporting. Only a person's Resume or a kind change (`updateAuthored`),
+ * or a change of owner (`reconcileOwners`, TASK-936), ends that. Keyed on
+ * `enabled` too: a row resumed without a reset (code from before version 7,
+ * after a rollback) counts again, and can pause again.
  *
  * Runs that overlap (a Check now beside a scheduled check-in) answer in the
  * order they started, whatever order they finish in, as `recordReport` keeps
@@ -1123,11 +1142,15 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       if (input.agents.length === 0) return 0;
       const agentIds = input.agents.map((a) => a.agentId);
       const ownerIds = input.agents.map((a) => a.ownerUserId);
+      // TASK-936: the task state goes in the statement that moves the routine, from the one list a
+      // change of kind clears too. Each column name is one of NO_TASK_STATE's own keys, never input,
+      // and each value is bound.
       const res = await sql`
         UPDATE routines_v1_definitions r
            SET owner_user_id = a.owner_user_id,
                revision = 'rev_' || replace(gen_random_uuid()::text, '-', ''),
-               updated_at = now()
+               updated_at = now(),
+               ${sql.join(Object.entries(NO_TASK_STATE).map(([column, value]) => sql`${sql.ref(column)} = ${value}`))}
           FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
             AS a(agent_id, owner_user_id)
          WHERE r.agent_id = a.agent_id

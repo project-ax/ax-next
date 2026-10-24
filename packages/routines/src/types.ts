@@ -21,12 +21,16 @@ export type StoredRoutine = RoutineDefinition & {
   definitionId: string | null; definitionUpdatedAt: Date | null;
   nextRunAt: Date | null; lastRunAt: Date | null;
   lastStatus: FireStatus | null; lastError: string | null; lastWarning: string | null;
-  /** TASK-907. Null until the first report, and again after an edit that changes the routine's kind. */
+  /**
+   * TASK-907. Null until the first report, and again after an edit that changes
+   * the routine's kind or a change of owner (`reconcileOwners`, TASK-936).
+   */
   task: StoredTaskState | null;
   /**
    * TASK-930. Null when there are none: the latest check-in reported, or none
-   * has finished, and again after a person's Resume or a kind change. Written
-   * only by `finishDispatch` and `updateAuthored`.
+   * has finished, and again after a person's Resume, a kind change or a change
+   * of owner. Written only by `finishDispatch`, `updateAuthored` and
+   * `reconcileOwners` (TASK-936); the last two only clear them.
    */
   noRecentUpdate: StoredNoRecentUpdate | null;
 };

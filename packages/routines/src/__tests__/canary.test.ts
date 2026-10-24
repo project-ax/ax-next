@@ -702,3 +702,46 @@ describe('replies canary (TASK-931)', () => {
       .toEqual([{ author_user_id: h.owner.userId, body: EARLIER }]);
   });
 });
+
+// TASK-936: an agent's change of owner, end to end through the real routines, agents, tool-policy and
+// decisions plugins and Postgres. The new owner's task starts over: none of the earlier owner's task
+// state reaches their task page or a check-in run as them.
+describe('owner change canary (TASK-936)', () => {
+  const EARLIER = { status: 'needs-you', update: 'Refund QX7731 waits on Acme.', ask: 'May I refund QX7731?', notes: 'Acme’s contact is jo@acme.example.' } as const;
+
+  it('after the agent moves to a new owner, their task shows none of the earlier owner’s state, and their next check-in starts with no notes and no misses', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const get = (as: AgentContext) => h.bus.call<unknown, RoutineView>('routines:get', as, { agentId: h.agentId, routineId: task.routineId });
+    // The earlier owner's check-in reports, with notes; their next one leaves no report.
+    await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: EARLIER })).toStrictEqual({ recorded: true });
+    });
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    await ch.checkIn(task, 'run-2', async () => {});
+    await expect.poll(async () => (await get(h.owner)).noRecentUpdate?.inARow).toBe(1);
+    expect((await get(h.owner)).task).toMatchObject({ status: 'needs-you', agentNotes: EARLIER.notes });
+
+    // The agent gets a new owner. @ax/agents has no hook that does that, so its row changes here; the rest is
+    // production's path: the new owner opens the task, and resolveRoutineAccess moves its routines to them.
+    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
+    const moved = await get(newOwner);
+    expect(moved).toMatchObject({ task: null, noRecentUpdate: null, permissions: { fire: true } });
+    const listed = (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', newOwner, { agentId: h.agentId })).routines
+      .find(row => row.routineId === task.routineId);
+    expect(listed).toMatchObject({ task: null, noRecentUpdate: null });
+    for (const text of ['QX7731', 'jo@acme']) expect(JSON.stringify({ moved, listed })).not.toContain(text);
+
+    // Their next check-in, run as them, starts over: no notes and no misses line.
+    const next = await ch.checkIn(moved, 'run-3', async () => {}, { asOwner: newOwner });
+    expect(next.ctx.userId).toBe('new-owner');
+    expect(next.message).toContain('You have no saved notes yet.');
+    expect(next.message).not.toContain('ended without a report');
+    expect(next.message).not.toContain('jo@acme');
+  });
+});
