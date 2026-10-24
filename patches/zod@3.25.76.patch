@@ -1,0 +1,488 @@
+diff --git a/v3/helpers/parseUtil.cjs b/v3/helpers/parseUtil.cjs
+index 36cf2d83395453921f034956b9e2b8c66aba92c4..772e50e127afbf99bebfc19567af9095cce86092 100644
+--- a/v3/helpers/parseUtil.cjs
++++ b/v3/helpers/parseUtil.cjs
+@@ -37,7 +37,14 @@ const makeIssue = (params) => {
+ };
+ exports.makeIssue = makeIssue;
+ exports.EMPTY_PATH = [];
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): a parse collects at most this many issues
++// in one issues list, so a huge failing array, record or catchall cannot allocate
++// an issue per element. The first issue always lands, so a failed parse is still
++// a normal ZodError. Keep in step with MAX_ISSUES in ../types.cjs.
++const MAX_ISSUES = 100;
+ function addIssueToContext(ctx, issueData) {
++    if (ctx.common.issues.length >= MAX_ISSUES)
++        return;
+     const overrideMap = (0, errors_js_1.getErrorMap)();
+     const issue = (0, exports.makeIssue)({
+         issueData: issueData,
+diff --git a/v3/helpers/parseUtil.js b/v3/helpers/parseUtil.js
+index 91b2afb81b4358fb84d637bc963a868517c6a516..17ea4e51e6fcb0c8620fc5c295ec2b54f47e5e71 100644
+--- a/v3/helpers/parseUtil.js
++++ b/v3/helpers/parseUtil.js
+@@ -29,7 +29,14 @@ export const makeIssue = (params) => {
+     };
+ };
+ export const EMPTY_PATH = [];
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): a parse collects at most this many issues
++// in one issues list, so a huge failing array, record or catchall cannot allocate
++// an issue per element. The first issue always lands, so a failed parse is still
++// a normal ZodError. Keep in step with MAX_ISSUES in ../types.js.
++const MAX_ISSUES = 100;
+ export function addIssueToContext(ctx, issueData) {
++    if (ctx.common.issues.length >= MAX_ISSUES)
++        return;
+     const overrideMap = getErrorMap();
+     const issue = makeIssue({
+         issueData: issueData,
+diff --git a/v3/types.cjs b/v3/types.cjs
+index 11ed4dfc4745f9af1f1501874576b78b77d294ef..71ea916e34871c518b58a516d2b2c04cabe79538 100644
+--- a/v3/types.cjs
++++ b/v3/types.cjs
+@@ -9,6 +9,9 @@ const errors_js_1 = require("./errors.cjs");
+ const errorUtil_js_1 = require("./helpers/errorUtil.cjs");
+ const parseUtil_js_1 = require("./helpers/parseUtil.cjs");
+ const util_js_1 = require("./helpers/util.cjs");
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): the issues-per-list cap that
++// addIssueToContext enforces in ./helpers/parseUtil.cjs. Keep the two in step.
++const MAX_ISSUES = 100;
+ class ParseInputLazyPath {
+     constructor(parent, value, path, key) {
+         this._cachedPath = [];
+@@ -1819,6 +1822,13 @@ class ZodArray extends ZodType {
+                 status.dirty();
+             }
+         }
++        // ax-next patch (GHSA-mrhx-c7xc-m3w5, mirrors zod 4.6.6 commit a0ebf970):
++        // an array longer than its .max() or .length() has already failed, so
++        // report only the size issue and do not parse its elements.
++        if ((def.exactLength !== null && ctx.data.length > def.exactLength.value) ||
++            (def.maxLength !== null && ctx.data.length > def.maxLength.value)) {
++            return parseUtil_js_1.INVALID;
++        }
+         if (ctx.common.async) {
+             return Promise.all([...ctx.data].map((item, i) => {
+                 return def.type._parseAsync(new ParseInputLazyPath(ctx, item, ctx.path, i));
+@@ -2301,7 +2311,8 @@ class ZodUnion extends ZodType {
+             for (const result of results) {
+                 if (result.result.status === "dirty") {
+                     // add issues from dirty option
+-                    ctx.common.issues.push(...result.ctx.common.issues);
++                    // ax-next patch (GHSA-mrhx-c7xc-m3w5): copy no more than the cap allows.
++                    ctx.common.issues.push(...result.ctx.common.issues.slice(0, Math.max(0, MAX_ISSUES - ctx.common.issues.length)));
+                     return result.result;
+                 }
+             }
+@@ -2361,7 +2372,8 @@ class ZodUnion extends ZodType {
+                 }
+             }
+             if (dirty) {
+-                ctx.common.issues.push(...dirty.ctx.common.issues);
++                // ax-next patch (GHSA-mrhx-c7xc-m3w5): copy no more than the cap allows.
++                ctx.common.issues.push(...dirty.ctx.common.issues.slice(0, Math.max(0, MAX_ISSUES - ctx.common.issues.length)));
+                 return dirty.result;
+             }
+             const unionErrors = issues.map((issues) => new ZodError_js_1.ZodError(issues));
+@@ -2846,6 +2858,12 @@ class ZodSet extends ZodType {
+                 status.dirty();
+             }
+         }
++        // ax-next patch (GHSA-mrhx-c7xc-m3w5, mirrors zod 4.6.6 commit a0ebf970):
++        // a set larger than its .max() or .size() has already failed, so report
++        // only the size issue and do not parse its elements.
++        if (def.maxSize !== null && ctx.data.size > def.maxSize.value) {
++            return parseUtil_js_1.INVALID;
++        }
+         const valueType = this._def.valueType;
+         function finalizeSet(elements) {
+             const parsedSet = new Set();
+diff --git a/v3/types.js b/v3/types.js
+index 40b11c0f01b2af54e0ed48e198607bd8836d9a63..5d1d7d218940179d011526e62cada091ab8e379f 100644
+--- a/v3/types.js
++++ b/v3/types.js
+@@ -3,6 +3,9 @@ import { defaultErrorMap, getErrorMap } from "./errors.js";
+ import { errorUtil } from "./helpers/errorUtil.js";
+ import { DIRTY, INVALID, OK, ParseStatus, addIssueToContext, isAborted, isAsync, isDirty, isValid, makeIssue, } from "./helpers/parseUtil.js";
+ import { util, ZodParsedType, getParsedType } from "./helpers/util.js";
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): the issues-per-list cap that
++// addIssueToContext enforces in ./helpers/parseUtil.js. Keep the two in step.
++const MAX_ISSUES = 100;
+ class ParseInputLazyPath {
+     constructor(parent, value, path, key) {
+         this._cachedPath = [];
+@@ -1798,6 +1801,13 @@ export class ZodArray extends ZodType {
+                 status.dirty();
+             }
+         }
++        // ax-next patch (GHSA-mrhx-c7xc-m3w5, mirrors zod 4.6.6 commit a0ebf970):
++        // an array longer than its .max() or .length() has already failed, so
++        // report only the size issue and do not parse its elements.
++        if ((def.exactLength !== null && ctx.data.length > def.exactLength.value) ||
++            (def.maxLength !== null && ctx.data.length > def.maxLength.value)) {
++            return INVALID;
++        }
+         if (ctx.common.async) {
+             return Promise.all([...ctx.data].map((item, i) => {
+                 return def.type._parseAsync(new ParseInputLazyPath(ctx, item, ctx.path, i));
+@@ -2278,7 +2288,8 @@ export class ZodUnion extends ZodType {
+             for (const result of results) {
+                 if (result.result.status === "dirty") {
+                     // add issues from dirty option
+-                    ctx.common.issues.push(...result.ctx.common.issues);
++                    // ax-next patch (GHSA-mrhx-c7xc-m3w5): copy no more than the cap allows.
++                    ctx.common.issues.push(...result.ctx.common.issues.slice(0, Math.max(0, MAX_ISSUES - ctx.common.issues.length)));
+                     return result.result;
+                 }
+             }
+@@ -2338,7 +2349,8 @@ export class ZodUnion extends ZodType {
+                 }
+             }
+             if (dirty) {
+-                ctx.common.issues.push(...dirty.ctx.common.issues);
++                // ax-next patch (GHSA-mrhx-c7xc-m3w5): copy no more than the cap allows.
++                ctx.common.issues.push(...dirty.ctx.common.issues.slice(0, Math.max(0, MAX_ISSUES - ctx.common.issues.length)));
+                 return dirty.result;
+             }
+             const unionErrors = issues.map((issues) => new ZodError(issues));
+@@ -2817,6 +2829,12 @@ export class ZodSet extends ZodType {
+                 status.dirty();
+             }
+         }
++        // ax-next patch (GHSA-mrhx-c7xc-m3w5, mirrors zod 4.6.6 commit a0ebf970):
++        // a set larger than its .max() or .size() has already failed, so report
++        // only the size issue and do not parse its elements.
++        if (def.maxSize !== null && ctx.data.size > def.maxSize.value) {
++            return INVALID;
++        }
+         const valueType = this._def.valueType;
+         function finalizeSet(elements) {
+             const parsedSet = new Set();
+diff --git a/v4/core/schemas.cjs b/v4/core/schemas.cjs
+index 7c77d2b5af031e086d535f4b2e1898cec17eda29..4073d5483bc520afd70de479e1c55e47b4becfb5 100644
+--- a/v4/core/schemas.cjs
++++ b/v4/core/schemas.cjs
+@@ -35,6 +35,19 @@ const parse_js_1 = require("./parse.cjs");
+ const regexes = __importStar(require("./regexes.cjs"));
+ const util = __importStar(require("./util.cjs"));
+ const versions_js_1 = require("./versions.cjs");
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): a collection (array, tuple rest, record,
++// object catchall, map, set) stops taking its elements' issues once it holds
++// this many, so a huge failing input cannot allocate an issue per element. The
++// first failing element always reports, so the parse still fails normally.
++const MAX_ISSUES = 100;
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): when the cap drops a hard failure (one that
++// stops parsing, such as a wrong type), the collection must still count as aborted.
++// Otherwise a later .refine(), .transform() or .pipe() would read input that failed
++// validation. Mark the last kept issue as non-continuable, as zod 4.6.6's capSize does.
++function keepAborted(final, aborting) {
++    if (aborting)
++        final.issues[final.issues.length - 1].continue = false;
++}
+ exports.$ZodType = core.$constructor("$ZodType", (inst, def) => {
+     var _a;
+     inst ?? (inst = {});
+@@ -645,9 +658,12 @@ exports.$ZodDate = core.$constructor("$ZodDate", (inst, def) => {
+     };
+ });
+ function handleArrayResult(result, final, index) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(index, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[index] = result.value;
+ }
+ exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
+@@ -686,9 +702,12 @@ exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
+ });
+ function handleObjectResult(result, final, key) {
+     // if(isOptional)
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(key, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[key] = result.value;
+ }
+ function handleOptionalObjectResult(result, final, key, input) {
+@@ -1172,9 +1191,12 @@ exports.$ZodTuple = core.$constructor("$ZodTuple", (inst, def) => {
+     };
+ });
+ function handleTupleResult(result, final, index) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(index, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[index] = result.value;
+ }
+ exports.$ZodRecord = core.$constructor("$ZodRecord", (inst, def) => {
+@@ -1239,30 +1261,41 @@ exports.$ZodRecord = core.$constructor("$ZodRecord", (inst, def) => {
+                     throw new Error("Async schemas not supported in object keys currently");
+                 }
+                 if (keyResult.issues.length) {
+-                    payload.issues.push({
+-                        origin: "record",
+-                        code: "invalid_key",
+-                        issues: keyResult.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())),
+-                        input: key,
+-                        path: [key],
+-                        inst,
+-                    });
++                    if (payload.issues.length < MAX_ISSUES) {
++                        payload.issues.push({
++                            origin: "record",
++                            code: "invalid_key",
++                            issues: keyResult.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())),
++                            input: key,
++                            path: [key],
++                            inst,
++                        });
++                    }
++                    else {
++                        keepAborted(payload, true);
++                    }
+                     payload.value[keyResult.value] = keyResult.value;
+                     continue;
+                 }
+                 const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+                 if (result instanceof Promise) {
+                     proms.push(result.then((result) => {
+-                        if (result.issues.length) {
++                        if (result.issues.length && payload.issues.length < MAX_ISSUES) {
+                             payload.issues.push(...util.prefixIssues(key, result.issues));
+                         }
++                        else if (result.issues.length) {
++                            keepAborted(payload, util.aborted(result));
++                        }
+                         payload.value[keyResult.value] = result.value;
+                     }));
+                 }
+                 else {
+-                    if (result.issues.length) {
++                    if (result.issues.length && payload.issues.length < MAX_ISSUES) {
+                         payload.issues.push(...util.prefixIssues(key, result.issues));
+                     }
++                    else if (result.issues.length) {
++                        keepAborted(payload, util.aborted(result));
++                    }
+                     payload.value[keyResult.value] = result.value;
+                 }
+             }
+@@ -1306,7 +1339,8 @@ exports.$ZodMap = core.$constructor("$ZodMap", (inst, def) => {
+     };
+ });
+ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+-    if (keyResult.issues.length) {
++    const room = final.issues.length < MAX_ISSUES;
++    if (keyResult.issues.length && room) {
+         if (util.propertyKeyTypes.has(typeof key)) {
+             final.issues.push(...util.prefixIssues(key, keyResult.issues));
+         }
+@@ -1320,7 +1354,10 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
+-    if (valueResult.issues.length) {
++    else if (keyResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(keyResult));
++    }
++    if (valueResult.issues.length && room) {
+         if (util.propertyKeyTypes.has(typeof key)) {
+             final.issues.push(...util.prefixIssues(key, valueResult.issues));
+         }
+@@ -1335,6 +1372,9 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
++    else if (valueResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(valueResult));
++    }
+     final.value.set(keyResult.value, valueResult.value);
+ }
+ exports.$ZodSet = core.$constructor("$ZodSet", (inst, def) => {
+@@ -1366,9 +1406,12 @@ exports.$ZodSet = core.$constructor("$ZodSet", (inst, def) => {
+     };
+ });
+ function handleSetResult(result, final) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...result.issues);
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value.add(result.value);
+ }
+ exports.$ZodEnum = core.$constructor("$ZodEnum", (inst, def) => {
+diff --git a/v4/core/schemas.js b/v4/core/schemas.js
+index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..3a828756f5de537f265f9ab335ffd2467b3df903 100644
+--- a/v4/core/schemas.js
++++ b/v4/core/schemas.js
+@@ -5,6 +5,19 @@ import { safeParse, safeParseAsync } from "./parse.js";
+ import * as regexes from "./regexes.js";
+ import * as util from "./util.js";
+ import { version } from "./versions.js";
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): a collection (array, tuple rest, record,
++// object catchall, map, set) stops taking its elements' issues once it holds
++// this many, so a huge failing input cannot allocate an issue per element. The
++// first failing element always reports, so the parse still fails normally.
++const MAX_ISSUES = 100;
++// ax-next patch (GHSA-mrhx-c7xc-m3w5): when the cap drops a hard failure (one that
++// stops parsing, such as a wrong type), the collection must still count as aborted.
++// Otherwise a later .refine(), .transform() or .pipe() would read input that failed
++// validation. Mark the last kept issue as non-continuable, as zod 4.6.6's capSize does.
++function keepAborted(final, aborting) {
++    if (aborting)
++        final.issues[final.issues.length - 1].continue = false;
++}
+ export const $ZodType = /*@__PURE__*/ core.$constructor("$ZodType", (inst, def) => {
+     var _a;
+     inst ?? (inst = {});
+@@ -614,9 +627,12 @@ export const $ZodDate = /*@__PURE__*/ core.$constructor("$ZodDate", (inst, def)
+     };
+ });
+ function handleArrayResult(result, final, index) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(index, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[index] = result.value;
+ }
+ export const $ZodArray = /*@__PURE__*/ core.$constructor("$ZodArray", (inst, def) => {
+@@ -655,9 +671,12 @@ export const $ZodArray = /*@__PURE__*/ core.$constructor("$ZodArray", (inst, def
+ });
+ function handleObjectResult(result, final, key) {
+     // if(isOptional)
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(key, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[key] = result.value;
+ }
+ function handleOptionalObjectResult(result, final, key, input) {
+@@ -1141,9 +1160,12 @@ export const $ZodTuple = /*@__PURE__*/ core.$constructor("$ZodTuple", (inst, def
+     };
+ });
+ function handleTupleResult(result, final, index) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...util.prefixIssues(index, result.issues));
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value[index] = result.value;
+ }
+ export const $ZodRecord = /*@__PURE__*/ core.$constructor("$ZodRecord", (inst, def) => {
+@@ -1208,30 +1230,41 @@ export const $ZodRecord = /*@__PURE__*/ core.$constructor("$ZodRecord", (inst, d
+                     throw new Error("Async schemas not supported in object keys currently");
+                 }
+                 if (keyResult.issues.length) {
+-                    payload.issues.push({
+-                        origin: "record",
+-                        code: "invalid_key",
+-                        issues: keyResult.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())),
+-                        input: key,
+-                        path: [key],
+-                        inst,
+-                    });
++                    if (payload.issues.length < MAX_ISSUES) {
++                        payload.issues.push({
++                            origin: "record",
++                            code: "invalid_key",
++                            issues: keyResult.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())),
++                            input: key,
++                            path: [key],
++                            inst,
++                        });
++                    }
++                    else {
++                        keepAborted(payload, true);
++                    }
+                     payload.value[keyResult.value] = keyResult.value;
+                     continue;
+                 }
+                 const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+                 if (result instanceof Promise) {
+                     proms.push(result.then((result) => {
+-                        if (result.issues.length) {
++                        if (result.issues.length && payload.issues.length < MAX_ISSUES) {
+                             payload.issues.push(...util.prefixIssues(key, result.issues));
+                         }
++                        else if (result.issues.length) {
++                            keepAborted(payload, util.aborted(result));
++                        }
+                         payload.value[keyResult.value] = result.value;
+                     }));
+                 }
+                 else {
+-                    if (result.issues.length) {
++                    if (result.issues.length && payload.issues.length < MAX_ISSUES) {
+                         payload.issues.push(...util.prefixIssues(key, result.issues));
+                     }
++                    else if (result.issues.length) {
++                        keepAborted(payload, util.aborted(result));
++                    }
+                     payload.value[keyResult.value] = result.value;
+                 }
+             }
+@@ -1275,7 +1308,8 @@ export const $ZodMap = /*@__PURE__*/ core.$constructor("$ZodMap", (inst, def) =>
+     };
+ });
+ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+-    if (keyResult.issues.length) {
++    const room = final.issues.length < MAX_ISSUES;
++    if (keyResult.issues.length && room) {
+         if (util.propertyKeyTypes.has(typeof key)) {
+             final.issues.push(...util.prefixIssues(key, keyResult.issues));
+         }
+@@ -1289,7 +1323,10 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
+-    if (valueResult.issues.length) {
++    else if (keyResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(keyResult));
++    }
++    if (valueResult.issues.length && room) {
+         if (util.propertyKeyTypes.has(typeof key)) {
+             final.issues.push(...util.prefixIssues(key, valueResult.issues));
+         }
+@@ -1304,6 +1341,9 @@ function handleMapResult(keyResult, valueResult, final, key, input, inst, ctx) {
+             });
+         }
+     }
++    else if (valueResult.issues.length) {
++        keepAborted(final, !util.propertyKeyTypes.has(typeof key) || util.aborted(valueResult));
++    }
+     final.value.set(keyResult.value, valueResult.value);
+ }
+ export const $ZodSet = /*@__PURE__*/ core.$constructor("$ZodSet", (inst, def) => {
+@@ -1335,9 +1375,12 @@ export const $ZodSet = /*@__PURE__*/ core.$constructor("$ZodSet", (inst, def) =>
+     };
+ });
+ function handleSetResult(result, final) {
+-    if (result.issues.length) {
++    if (result.issues.length && final.issues.length < MAX_ISSUES) {
+         final.issues.push(...result.issues);
+     }
++    else if (result.issues.length) {
++        keepAborted(final, util.aborted(result));
++    }
+     final.value.add(result.value);
+ }
+ export const $ZodEnum = /*@__PURE__*/ core.$constructor("$ZodEnum", (inst, def) => {
