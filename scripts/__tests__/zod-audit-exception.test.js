@@ -36,7 +36,9 @@ function installedZods() {
   const zods = [];
   const walk = (deps) => {
     for (const [name, info] of Object.entries(deps ?? {})) {
-      const key = `${name}@${info?.version}`;
+      // Dedupe by install path, not name@version: one version can resolve to
+      // several directories (peer variants), and each one has to be walked.
+      const key = info?.path ?? `${name}@${info?.version}`;
       if (name === 'zod') zods.push({ version: info.version, path: info.path });
       if (seen.has(key)) continue;
       seen.add(key);

@@ -21,7 +21,10 @@ CommonJS (`.cjs`) builds.
 - **The zod 4 core under `zod/v4`** (`v4/core/schemas`), which
   `@modelcontextprotocol/sdk` uses to parse what remote MCP and OAuth servers
   send. Arrays, tuple rests, records, object catchalls, maps and sets stop
-  taking their elements' issues once they hold 100.
+  taking their elements' issues once they hold 100. When the cap drops a hard
+  failure (a wrong type, not a soft check like `.min()`), the collection still
+  counts as aborted, so no later `.refine()`, `.transform()` or `.pipe()` reads
+  input that failed validation. Upstream's `capSize` does the same.
 
 The first issue always lands, so a failed parse is still a normal `ZodError`
 and `safeParse` still returns `success: false`. Valid input parses exactly as
@@ -65,3 +68,14 @@ Not covered here:
 - zod 4.6.7 keeps upstream behaviour. It comes in through `ai`, `@ai-sdk/*`,
   better-auth and the AI-SDK runner's MCP SDK.
 - `@anthropic-ai/claude-agent-sdk` bundles its own zod in `sdk.mjs`.
+- The cap is per issue list, not per parse. A plain `z.union` gives each option
+  its own list and keeps every option's list when they all fail, so unions
+  nested inside collections multiply the bound: about 30,000 issues at two
+  levels with 100 elements each, and roughly 3 million at three levels. Nothing
+  we parse today nests that way (no `z.lazy`, and our untrusted schemas use
+  discriminated unions, which share one list). Don't build deep plain-union
+  nesting on untrusted input.
+- `dem-memory/` is a standalone research project outside the pnpm workspace.
+  It installs its own unpatched zod 3.25.76 from its own `package-lock.json`.
+  Neither guard can see it, no workspace package depends on it, and it isn't
+  in any image.
