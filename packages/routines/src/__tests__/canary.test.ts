@@ -744,4 +744,50 @@ describe('owner change canary (TASK-936)', () => {
     expect(next.message).not.toContain('ended without a report');
     expect(next.message).not.toContain('jo@acme');
   });
+
+  it('after the agent moves to a new owner, their Updates thread lists none of the earlier owner’s check-ins, and their check-ins read only their own reports', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse(TASK_DEFINITION),
+    });
+    const MINE = { status: 'on-track', update: 'Queue is empty.', ask: null } as const;
+    await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: EARLIER })).toStrictEqual({ recorded: true });
+    });
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
+    const get = () => h.bus.call<unknown, RoutineView>('routines:get', newOwner, { agentId: h.agentId, routineId: task.routineId });
+    // What the task page reads, as the transcript route reads it (its newest 200 check-ins), and the agent's feed.
+    const history = async () => ({
+      byRoutine: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', newOwner, { agentId: h.agentId, routineId: task.routineId, limit: 200 })).fires,
+      forAgent: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', newOwner, { agentId: h.agentId })).fires
+        .filter(fire => fire.routineId === task.routineId),
+    });
+    const moved = await get();
+    expect(await history()).toEqual({ byRoutine: [], forAgent: [] });
+
+    // Their first check-in carries none of the earlier owner's reports, and reports itself.
+    const first = await ch.checkIn(moved, 'run-2', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: MINE })).toStrictEqual({ recorded: true });
+    }, { asOwner: newOwner });
+    expect(first.message).toContain('No earlier reports yet.');
+    expect(first.message).not.toContain('QX7731');
+    await expect.poll(async () => (await history()).byRoutine.length).toBe(1);
+    const seen = await history();
+    expect(seen.byRoutine[0]?.report).toEqual(MINE);
+    expect(seen.forAgent).toHaveLength(1);
+    expect(JSON.stringify(seen)).not.toContain('QX7731');
+
+    // Their next check-in reads their own report, and still none of the earlier owner's.
+    const second = await ch.checkIn(await get(), 'run-3', async () => {}, { asOwner: newOwner });
+    expect(second.message).toContain('Queue is empty.');
+    expect(second.message).not.toContain('QX7731');
+    // The earlier owner's check-in is still stored, under who it ran as.
+    await expect.poll(async () => (await sql<{ run_as_user_id: string | null }>`
+      SELECT run_as_user_id FROM routines_v1_fires WHERE routine_id = ${task.routineId} ORDER BY fired_at, id`.execute(h.db)).rows
+      .map(row => row.run_as_user_id)).toEqual(['owner', 'new-owner', 'new-owner']);
+  });
 });

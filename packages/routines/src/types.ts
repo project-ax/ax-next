@@ -40,6 +40,13 @@ export interface FireRow {
   status: FireStatus; error: string | null; renderedPrompt: string | null; warning: string | null;
   /** TASK-907. Null when the run made no report. */
   report: DispatchReport | null;
+  /**
+   * TASK-936. The routine's owner as the history read found it, in the same
+   * statement. That read lists a live routine's runs only when they ran as its
+   * owner, so this is also who the run ran as. Null when the routine is gone.
+   * Who may see the run's report (`fireViews`); it never reaches a view.
+   */
+  routineOwnerUserId: string | null;
 }
 export interface RoutinesConfig {
   tickIntervalMs?: number; claimBatchSize?: number;
