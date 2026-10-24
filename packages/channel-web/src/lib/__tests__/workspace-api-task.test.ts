@@ -130,6 +130,17 @@ describe('workspaceApi.task (TASK-910)', () => {
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
   });
 
+  it('reads a kind it doesn’t know as stay-on-top, as the server does, with its steps kept as a stay-on-top task’s are (TASK-948)', async () => {
+    // A tab left open across a deploy that adds a kind still opens the task, under a kind it has words for.
+    // The page draws steps for get-done only.
+    for (const kind of ['track-number', 'repeat']) {
+      for (const steps of [[], [STEP]]) {
+        respondWith({ ...DETAIL, kind, steps });
+        await expect(workspaceApi.task('a1', 't1')).resolves.toStrictEqual({ ...DETAIL, kind: 'stay-on-top', steps });
+      }
+    }
+  });
+
   it('reads missed check-ins, for every reason the contract names', async () => {
     for (const reason of CHECK_IN_MISSES) {
       const body: TaskDetail = { ...DETAIL, noRecentUpdate: { ...MISS, reason, autoPaused: true } };
@@ -167,11 +178,13 @@ describe('workspaceApi.task (TASK-910)', () => {
   it.each<[string, unknown]>([
     ['no agent name', { ...DETAIL, agentName: undefined }],
     ['a name that isn’t text', { ...DETAIL, name: 7 }],
-    // TASK-948: `task()` doesn't fill in a kind or steps, so both must be there.
+    // TASK-948: `task()` doesn't fill in a kind or steps, so both must be there: a kind as text.
     ['no kind', { ...DETAIL, kind: undefined }],
-    ['a repeat routine’s kind', { ...DETAIL, kind: 'repeat' }],
+    ['a kind that isn’t text', { ...DETAIL, kind: 7 }],
+    ['a null kind', { ...DETAIL, kind: null }],
     ['no steps', { ...DETAIL, steps: undefined }],
     ['steps that aren’t a list', { ...DETAIL, steps: {} }],
+    ['a kind it doesn’t know, with steps that aren’t a list', { ...DETAIL, kind: 'track-number', steps: {} }],
     ['a null step', { ...DETAIL, steps: [null] }],
     ['a step without byAgent', { ...DETAIL, steps: [{ id: 's1', text: 'Export every article', done: true }] }],
     ['a step whose text is a number', { ...DETAIL, steps: [{ ...STEP, text: 4 }] }],

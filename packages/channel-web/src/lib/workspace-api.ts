@@ -44,9 +44,9 @@ import {
   ROUTINE_REPORT_STATUSES,
   RoutineFireViewSchema,
   RoutineStatusSchema,
-  TASK_KINDS,
 } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
+import { toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
 import { readStorageFull } from './storage-full';
@@ -495,12 +495,15 @@ function isTaskReport(v: unknown): boolean {
  * steps: a dev-fast SPA (`make dev-fast`) synced onto it must still load the
  * Tasks page, Today and the badge, which all read this. An absent ask reads
  * as null, an absent kind as `'stay-on-top'` (every task then was one) and
- * absent steps as null.
+ * absent steps as null. A kind this page doesn't know reads as `'stay-on-top'`
+ * too, as the server reads one (`toTaskKind`): a tab left open across a deploy
+ * that adds a kind must still load them. Its steps stay as they came, as on any
+ * stay-on-top row, and the Tasks row draws counts for get-done only.
  */
 function withRowDefaults(row: TaskRow): TaskRow {
   return {
     ...row,
-    kind: 'kind' in row ? row.kind : 'stay-on-top',
+    kind: toTaskKind(row.kind),
     steps: 'steps' in row ? row.steps : null,
     task:
       row.task === null || 'ask' in row.task
@@ -540,8 +543,9 @@ function isTaskNoRecentUpdate(v: unknown): boolean {
 
 /**
  * One Tasks row. A kind or steps the row does carry is checked (TASK-948): a
- * kind the contract doesn't call a task's is refused, not read as one. Left
- * out, they are an older host's (`withRowDefaults`).
+ * kind must be text, and steps null or counts. A kind this page doesn't know
+ * reads as stay-on-top (`withRowDefaults`) rather than failing the whole list.
+ * Left out, they are an older host's (`withRowDefaults`).
  */
 function isTaskRow(v: unknown): boolean {
   return (
@@ -551,7 +555,7 @@ function isTaskRow(v: unknown): boolean {
     isString(v.routineId) &&
     isString(v.name) &&
     typeof v.enabled === 'boolean' &&
-    (!('kind' in v) || TASK_KINDS.some((kind) => kind === v.kind)) &&
+    (!('kind' in v) || isString(v.kind)) &&
     (!('steps' in v) || v.steps === null || isTaskStepCounts(v.steps)) &&
     (v.task === null || isTaskReport(v.task)) &&
     (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate))
@@ -655,15 +659,16 @@ function isTaskStep(v: unknown): boolean {
  * A task page's body, every field `TaskDetail` declares. The page reads them
  * during render (`permissions.fire`, `brief.promptBody`, each update's report),
  * so one missing object would crash it instead of saying "couldn't load".
- * The kind and the steps (TASK-948) must be there too: `task()` doesn't fill
- * them in, as it doesn't fill in the ask (`isTaskDetailReport`).
+ * The kind (as text) and the steps (TASK-948) must be there too: `task()`
+ * doesn't fill them in, as it doesn't fill in the ask (`isTaskDetailReport`).
+ * A kind this page doesn't know is read, not refused (`task()`).
  */
 function isTaskDetail(b: unknown): boolean {
   return (
     isRecord(b) &&
     isString(b.agentName) &&
     isString(b.name) &&
-    TASK_KINDS.some((kind) => kind === b.kind) &&
+    isString(b.kind) &&
     typeof b.enabled === 'boolean' &&
     isString(b.revision) &&
     isTaskPermissions(b.permissions) &&
@@ -1135,12 +1140,16 @@ export const workspaceApi = {
   /**
    * One task's own page (TASK-910). The server answers 404 for a task that
    * isn't there and for one that isn't the caller's, alike, so a stranger
-   * can't learn that an id exists.
+   * can't learn that an id exists. A kind this page doesn't know reads as
+   * stay-on-top (TASK-948), as the server reads one (`toTaskKind`), so a tab
+   * left open across a deploy that adds a kind still opens the task under a
+   * kind it has words for. Its steps are drawn for get-done only.
    */
   task: async (agentId: string, routineId: string) => {
     const path = taskPath(agentId, routineId);
     const body = await req<unknown>(path);
-    return checkedRead<TaskDetail>(path, body, isTaskDetail);
+    const detail = checkedRead<TaskDetail>(path, body, isTaskDetail);
+    return { ...detail, kind: toTaskKind(detail.kind) };
   },
 
   /**

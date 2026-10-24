@@ -155,9 +155,24 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     });
   });
 
+  it('reads a kind it doesn’t know as stay-on-top, as the server does, with its steps read as a stay-on-top row’s (TASK-948)', async () => {
+    // A tab left open across a deploy that adds a kind must still load Tasks, Today and the badge. Steps
+    // stay as they came, as on any stay-on-top row: the Tasks row draws counts for get-done only.
+    for (const kind of ['track-number', 'repeat']) {
+      for (const steps of [null, { done: 1, total: 3 }]) {
+        respondWith({ tasks: [{ ...ROW, kind, steps }], unavailableAgents: [] });
+        await expect(workspaceApi.tasks()).resolves.toStrictEqual({
+          tasks: [{ ...ROW, kind: 'stay-on-top', steps }],
+          unavailableAgents: [],
+        });
+      }
+    }
+  });
+
   it.each<[string, unknown]>([
-    ['a repeat routine’s kind', { ...ROW, kind: 'repeat' }],
-    ['a kind it doesn’t know', { ...ROW, kind: 'nope' }],
+    ['a kind that isn’t text', { ...ROW, kind: 7 }],
+    ['a null kind', { ...ROW, kind: null }],
+    ['a kind it doesn’t know, with steps as a list', { ...ROW, kind: 'track-number', steps: [] }],
     ['steps as a list', { ...ROW, kind: 'get-done', steps: [] }],
     ['more steps done than there are', { ...ROW, kind: 'get-done', steps: { done: 3, total: 2 } }],
     ['a fractional count of steps', { ...ROW, kind: 'get-done', steps: { done: 1.5, total: 2 } }],
