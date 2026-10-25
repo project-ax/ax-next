@@ -360,6 +360,7 @@ function TaskItem({
         ? row.agentName
         : `${row.agentName} · checked ${ago}`;
   // A get-done task with a finish date says how long is left after that (TASK-951).
+  // TASK-950 adds Done: whichever of TASK-950 / TASK-951 merges second hides this on a Done task.
   const secondLine =
     row.kind === 'get-done' && row.finishBy !== null
       ? `${progress} · ${finishByCount(row.finishBy.daysLeft)}`

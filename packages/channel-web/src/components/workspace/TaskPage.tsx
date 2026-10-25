@@ -545,6 +545,7 @@ function TaskBody({
       )}
       <div className="flex flex-col">
         <p className="break-words text-[13px] text-muted-foreground">{meta}</p>
+        {/* TASK-950 adds Done: whichever of TASK-950 / TASK-951 merges second hides this on a Done task. */}
         {detail.kind === 'get-done' && (
           <TaskFinishDate
             agentId={agentId}
