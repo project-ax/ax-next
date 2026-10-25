@@ -47,4 +47,47 @@ describe('renderMcpResult', () => {
   it('ignores junk content entries instead of throwing', () => {
     expect(renderMcpResult({ content: [null, 7, 'str', { type: 'text', text: 'ok' }] })).toBe('ok');
   });
+
+  // TASK-944: tools/call results are no longer checked against the SDK's
+  // content schema, so any field can hold any JSON value. An object whose
+  // toString is not callable makes String() and template strings throw.
+  it('renders hostile part shapes without throwing', () => {
+    expect(
+      renderMcpResult({
+        content: [
+          { type: { toString: 1 } },
+          { type: 'resource', resource: { uri: { toString: 1 } } },
+          { type: 'resource_link', uri: 7 },
+          { type: 'image', mimeType: { toString: 1 } },
+          { type: 'text', text: 'ok' },
+        ],
+      }),
+    ).toBe('[resource omitted]\n[resource omitted]\n[image omitted]\nok');
+  });
+
+  it('stops reading parts once the output is past the cap', () => {
+    // So an answer of a million small junk parts costs what 100 KB of them do.
+    let read = 0;
+    const later = {
+      get type() {
+        read += 1;
+        return 'text';
+      },
+      text: 'never shown',
+    };
+    const out = renderMcpResult({
+      content: [{ type: 'text', text: 'x'.repeat(MAX_MCP_OUTPUT_BYTES + 1) }, later, later],
+    });
+    expect(read).toBe(0);
+    expect(out).toBe(`${'x'.repeat(MAX_MCP_OUTPUT_BYTES)}\n\n[output truncated at 100 KB]`);
+  });
+
+  it('prints structuredContent only when it is a JSON object it can print', () => {
+    expect(renderMcpResult({ content: 'text', structuredContent: 'text' })).toBe('');
+    expect(renderMcpResult({ structuredContent: [1, 2] })).toBe('');
+    expect(renderMcpResult({ structuredContent: null })).toBe('');
+    // JSON.parse takes this; JSON.stringify runs out of stack on it.
+    const deep: unknown = JSON.parse(`${'{"a":'.repeat(100_000)}1${'}'.repeat(100_000)}`);
+    expect(renderMcpResult({ structuredContent: deep })).toBe('[structured content omitted]');
+  });
 });

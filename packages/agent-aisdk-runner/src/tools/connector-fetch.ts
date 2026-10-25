@@ -33,8 +33,11 @@ import { capResponseBody, type ResponseTooLargeError } from '@ax/core/response-c
 /**
  * Cap on one `tools/call` answer. A real result can carry a multi-MB
  * screenshot plus text, though the model sees at most 100 KB of text and
- * images become placeholders (`renderMcpResult`). This bounds the bytes only;
- * what the SDK's zod builds from the bytes under the cap is a separate bound.
+ * images become placeholders (`renderMcpResult`). This bounds the bytes only.
+ * What parsing them costs is bounded separately: `tools/call` results are
+ * checked with the SDK's loose `ResultSchema` (TOOL_RESULT_SCHEMA in
+ * connector-tools.ts), under which 8 MiB of junk peaks at about +40 MB
+ * (MEASURED).
  */
 export const MAX_TOOL_RESULT_BYTES = 8 * 1024 * 1024;
 

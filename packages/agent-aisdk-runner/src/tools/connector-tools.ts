@@ -51,7 +51,8 @@
 // and each connect runs in its own response scope, whose report aborts that
 // operation. Without that, the SDK leaves an event-stream answer pending until
 // the request times out (300 s for a call). An over-cap answer is never
-// parsed.
+// parsed. A `tools/call` answer under the cap is parsed loosely
+// (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it costs.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
@@ -61,6 +62,7 @@ import {
   StreamableHTTPError,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { ResultSchema, type CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { HoldLatch, ProjectedMcpServer, ToolPolicy } from '@ax/agent-runner-core';
 import type { ResponseTooLargeError } from '@ax/core/response-cap';
 import {
@@ -102,6 +104,22 @@ export const MAX_ERROR_CHARS = 4096;
 /** Cap on an untrusted string quoted in a log line (it is also JSON-escaped). */
 const MAX_LOGGED_CHARS = 200;
 
+/**
+ * What a `tools/call` result is checked against (TASK-944): the SDK's loose
+ * `ResultSchema` (an object, with `_meta` checked), not `CallToolResultSchema`.
+ * The zod in this SDK copy is 4.6.7, which keeps one issue per bad element
+ * with no cap (the repo's zod patch covers only the 3.25.76 tree). MEASURED:
+ * 400 KB of junk content elements keep 306 MB of issues, and a junk answer
+ * just under MAX_TOOL_RESULT_BYTES (8 MiB) is a heap OOM in the runner's
+ * 1 GiB. Under ResultSchema the same 8 MiB peaks at about +40 MB.
+ * `renderMcpResult` checks every field's type itself, so the content schema
+ * bought nothing the runner needs. `callTool` still runs the task-required
+ * guard before the request, and the tool's output-schema check after it.
+ * The cast is for `callTool`'s signature only: what comes back is `unknown`
+ * to the code below.
+ */
+const TOOL_RESULT_SCHEMA = ResultSchema as unknown as typeof CallToolResultSchema;
+
 export interface ConnectConnectorToolsOptions {
   /** From `loadProjectedMcpServers`, keyed by host-minted toolNamespace. */
   servers: Record<string, ProjectedMcpServer>;
@@ -139,7 +157,21 @@ interface ListedTool {
   inputSchema: Record<string, unknown>;
 }
 
+/**
+ * An error's text for a log line or a failed call. A zod error (v3 or v4:
+ * anything with an `issues` array) is reported by its issue count and its
+ * `message` is never read: zod builds `message` from every issue on first
+ * read (MEASURED: a 177 MB string for a 2 MiB junk `tools/list` page), and
+ * issues can quote server-chosen keys.
+ */
 function errText(err: unknown): string {
+  if (typeof err === 'object' && err !== null) {
+    const issues = (err as { issues?: unknown }).issues;
+    if (Array.isArray(issues)) {
+      const n = issues.length;
+      return `the server's answer was not valid MCP (${n} ${n === 1 ? 'problem' : 'problems'})`;
+    }
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -397,7 +429,7 @@ export async function connectConnectorTools(
           };
           const call = (client: Client): Promise<unknown> =>
             withResponseScope(scope, () =>
-              client.callTool({ name: toolName, arguments: input }, undefined, {
+              client.callTool({ name: toolName, arguments: input }, TOOL_RESULT_SCHEMA, {
                 signal,
                 timeout: callTimeoutMs,
                 resetTimeoutOnProgress: true,

@@ -874,4 +874,44 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     expect(Object.keys(ct.tools)).toHaveLength(30);
   });
+
+  /** A server whose answer to `method` is `result`, as one JSON body. */
+  function junkServer(method: string, result: unknown) {
+    return testServer([{ name: 'junk' }], {
+      raw: {
+        method,
+        headers: { 'content-type': 'application/json' },
+        chunks: (id) => [JSON.stringify({ jsonrpc: '2.0', id, result })],
+      },
+    });
+  }
+
+  // Under the SDK's content schema these are 20,000 zod issues, and the
+  // runner's zod 4.6.7 has no cap on them. The byte cap alone can't help: an
+  // answer under 8 MiB can hold hundreds of thousands of junk elements.
+  it('a tools/call result is not checked against the SDK content schema', async () => {
+    const s = await junkServer('tools/call', { content: Array(20_000).fill(0) });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__junk`, {})).resolves.toBe('');
+  });
+
+  it("a tools/call result that is not valid MCP fails with a count, never zod's text", async () => {
+    // `_meta` must be an object. The transport's JSON-RPC envelope check
+    // (whose `result` is ResultSchema) refuses this before callTool sees it.
+    const s = await junkServer('tools/call', { _meta: 0, content: [] });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const { err } = await failedCall(ct, `mcp__${NS}__junk`);
+    expect(err.message).toBe("connector tool 'junk' failed: the server's answer was not valid MCP (1 problem)");
+  });
+
+  it("a tools/list that fails validation logs a count, never zod's text", async () => {
+    const s = await junkServer('tools/list', { tools: Array(20_000).fill(0) });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.tools).toEqual({});
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toEqual([
+      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (20000 problems)"`,
+    ]);
+    expect(mine[0]).not.toContain('invalid_type');
+  });
 });
