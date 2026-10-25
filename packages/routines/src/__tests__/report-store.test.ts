@@ -336,6 +336,14 @@ describe("a check-in's report and the task's state", () => {
     });
   });
 
+  it('a run cut off mid-turn (its conversation bound) reads back as interrupted (TASK-937)', async () => {
+    const row = await f.store.createAuthored(taskInput('bound-cut-off'));
+    const run = await bound(row, 'bound-cut-off-fire', 'c1');
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    expect(await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: run.dispatchId })).toMatchObject({
+      status: 'error', error: RUN_INTERRUPTED, conversationId: null, miss: 'interrupted' });
+  });
+
   it("a run that failed with the sweep's text on a conversation of its own reads back with no miss (TASK-937)", async () => {
     // fire.ts's agent:invoke rejection records the invoke's error on the run's conversation; the sweep never names one.
     const row = await f.store.createAuthored(taskInput('lookalike'));

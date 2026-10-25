@@ -325,6 +325,8 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     const first = await s.reply(input);
     expect(first).toStrictEqual({ replyId: STARTED_ID, checkIn: 'started' });
     expect(s.dispatched).toHaveLength(1);
+    // fire.ts binds the run to its conversation before the agent runs, so a cut-off one has one.
+    await f.store.bindDispatchConversation({ dispatchId: s.dispatched[0]!.dispatchId, conversationId: 'c1' });
     return { task, s, input, first, dispatchId: s.dispatched[0]!.dispatchId };
   };
 
@@ -363,7 +365,12 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     // Each retry's read of the new key waits until both have read it empty, so both go on to the accept.
     let emptyReads = 0;
     let bothRead!: () => void;
-    const both = new Promise<void>(resolve => { bothRead = resolve; });
+    const bothReadEmpty = new Promise<void>(resolve => { bothRead = resolve; });
+    // A serialized pair never gets a second empty read: fail here, named, not at the 60 s test timeout.
+    let giveUp!: ReturnType<typeof setTimeout>;
+    const noBarrier = new Promise<never>((_, reject) => { giveUp = setTimeout(() => reject(new Error('the second retry never read the new key: the two retries were serialized')), 5_000); });
+    const both = Promise.race([bothReadEmpty, noBarrier]);
+    both.catch(() => undefined);
     const s = services({ store: {
       async acceptedDispatchId(input) {
         const found = await real.acceptedDispatchId(input);
@@ -377,7 +384,7 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     const input = replyTo(task, 'q1', 'Are the refunds still stuck?');
     expect((await s.reply(input)).checkIn).toBe('started');
     expect(await f.store.interruptAbandonedDispatches()).toBe(1);
-    const answers = await Promise.all([s.reply(input), s.reply(input)]);
+    const answers = await Promise.all([s.reply(input), s.reply(input)]).finally(() => clearTimeout(giveUp));
     expect(emptyReads).toBe(2);
     expect(answers.map(a => a.checkIn).sort()).toEqual(['replayed', 'started']);
     expect(s.dispatched).toHaveLength(2);
@@ -389,10 +396,21 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     await f.store.updateAuthored({
       ...keyOf(task), expectedRevision: task.revision, actorUserId: 'owner', requestId: 'edit', patch: { goodWhen: 'Nothing waits a day.' }, now, stopOnly: false,
     });
-    // The walk reads no check-in (as if the first try's accept committed just after), so the retry accepts
-    // under `reply:<id>` at the new revision, and the receipt taken at the old one conflicts with it.
-    const s = services({ store: { acceptedDispatchId: async () => null } });
+    // The stub forces the accept-side branch. In production that is a stale try meeting a check-in
+    // another try accepted at a newer revision: its receipt under `reply:<id>` conflicts with this accept.
+    const real = f.store;
+    const accepts: unknown[] = [];
+    const s = services({ store: {
+      acceptedDispatchId: async () => null,
+      acceptDispatch: async accept => {
+        try { return await real.acceptDispatch(accept); } catch (err) { accepts.push(err); throw err; }
+      },
+    } });
     expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
+    // The accept itself hit the conflict, so a change that makes it replay can't pass this unseen.
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toBeInstanceOf(SafeToolError);
+    expect(accepts[0]).toMatchObject({ toolCode: 'request-conflict' });
     expect(s.dispatched).toEqual([]);
     expect(await dispatchReceipts()).toEqual([{ owner_user_id: 'owner', request_id: `reply:${first.replyId}` }]);
   });

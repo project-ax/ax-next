@@ -1011,6 +1011,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // through the same rule as every read.
         const reading = stored.report === null ? null : readingOf(dispatch.report_reading_value, dispatch.report_reading_label);
         const finishedAt = new Date();
+        // TASK-937: the sweep's null conversation (not the dispatch's bound one) is what getDispatchOutcome's `cutOff` relies on.
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
