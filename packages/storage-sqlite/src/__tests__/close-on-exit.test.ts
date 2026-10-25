@@ -46,7 +46,11 @@ describe('close-on-exit net', () => {
   // out at the 5s default; the five after it took milliseconds, and across fifteen other CI
   // runs the whole file took 0.1-0.5s. What only the FIRST open pays: better-sqlite3 loads
   // its native addon on the first `new Database()`, not on import (~170ms on a laptop with
-  // a cold disk cache, ~1ms warm), and this worker's first file write under tmpdir. Pay
+  // a cold disk cache, ~1ms warm; on Linux, where CI runs, that first open also builds a
+  // synchronous `process.report.getReport()` to detect musl), and this worker's first file
+  // write under tmpdir. All of it blocks the event loop, which fits the 5664ms-vs-5000ms
+  // shape: vitest fails a test that finishes past its deadline even if the timer never got
+  // to fire. Pay
   // those once here, doing what the first test does, in a hook with a budget sized for a
   // busy runner, so each test's own 5s covers only the behaviour it checks.
   beforeAll(async () => {
