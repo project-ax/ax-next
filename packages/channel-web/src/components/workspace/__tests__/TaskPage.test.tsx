@@ -1005,6 +1005,28 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check now' })).toBeEnabled());
     expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();
   });
+
+  it('shows the saved date before the re-read settles, and keeps it when the re-read fails (the page applies the answer)', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done' }));
+    await renderReady();
+    finishByMock.mockResolvedValueOnce({ finishBy: FB });
+    // The re-read the save starts hangs until the test says so.
+    const reread = deferred<TaskDetail>();
+    taskMock.mockReturnValueOnce(reread.promise);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a finish date' }));
+    fireEvent.change(screen.getByLabelText('Finish by'), { target: { value: '2026-11-14' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    // On screen from the PUT's own answer, with the re-read still in flight.
+    expect(await screen.findByText(finishByLine(FB))).toBeInTheDocument();
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    // The re-read fails; the date the host just confirmed stays.
+    await act(async () => {
+      reread.reject(new WorkspaceApiError(TASK_PATH, 503));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();
+  });
 });
 
 describe('TaskPage: a missed check-in (TASK-930)', () => {
