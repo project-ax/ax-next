@@ -45,7 +45,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { ROUTINE_FINISH_BY_LATEST } from '@ax/routines-contract';
-import { HTTP_SESSION_ENDED, HttpError, logRequestFailure } from '@/lib/http';
+import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
 import { browserToday, finishByLine, finishByPickIssue } from '@/lib/task-finish-by';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { TaskFinishBy } from '@/lib/workspace-types';
@@ -53,17 +53,6 @@ import type { TaskFinishBy } from '@/lib/workspace-types';
 const UNCONFIRMED = 'We couldn’t save that date. Try again.';
 const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
 const NOT_A_REAL_DATE = 'Pick a real date.';
-
-/**
- * Statuses below 500 that still leave it unknown whether the date was saved:
- * a timeout or a rate limit can come from anything in front of the host.
- */
-const UNCONFIRMED_4XX: ReadonlySet<number> = new Set([408, 429]);
-
-/** A refusal (1xx-4xx, but 408 and 429) is an answer; anything else leaves it unknown whether the date was saved. */
-function confirmed(e: unknown): e is HttpError {
-  return e instanceof HttpError && e.status >= 1 && e.status < 500 && !UNCONFIRMED_4XX.has(e.status);
-}
 
 interface Failure {
   line: string;
@@ -74,7 +63,9 @@ interface Failure {
 }
 
 function failureOf(e: unknown): Failure {
-  if (!confirmed(e)) return { line: UNCONFIRMED, rule: false, dead: false };
+  // `isConfirmedRefusal`: a refusal (1xx-4xx, but 408 and 429) is an answer; anything else leaves it unknown
+  // whether the date was saved, and a date set twice is the same date, so pressing again is safe.
+  if (!isConfirmedRefusal(e)) return { line: UNCONFIRMED, rule: false, dead: false };
   if (e.status === 401) return { line: HTTP_SESSION_ENDED, rule: false, dead: true };
   if (e.status === 403 || e.status === 404) return { line: NOT_FOUND, rule: false, dead: true };
   if (e.status === 400) return { line: NOT_A_REAL_DATE, rule: true, dead: false };
