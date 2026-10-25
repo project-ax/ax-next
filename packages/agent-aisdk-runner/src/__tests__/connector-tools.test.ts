@@ -964,23 +964,40 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     await expect(exec(ct, `mcp__${NS}__junk`, {})).resolves.toBe('');
   });
 
-  it("a tools/call result that is not valid MCP fails with a count, never zod's text", async () => {
+  it("a tools/call result that is not valid MCP fails with a count and the first problem, never zod's text", async () => {
     // `_meta` must be an object. The transport's JSON-RPC envelope check
     // (whose `result` is ResultSchema) refuses this before callTool sees it.
     const s = await junkServer('tools/call', { _meta: 0, content: [] });
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     const { err } = await failedCall(ct, `mcp__${NS}__junk`);
-    expect(err.message).toBe("connector tool 'junk' failed: the server's answer was not valid MCP (1 problem)");
+    expect(err.message).toBe(
+      "connector tool 'junk' failed: the server's answer was not valid MCP (1 problem: invalid_union)",
+    );
   });
 
-  it("a tools/list that fails validation logs a count, never zod's text", async () => {
+  it("a tools/list that fails validation logs a count and the first problem, never zod's text", async () => {
     const s = await junkServer('tools/list', { tools: Array(20_000).fill(0) });
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     expect(ct.tools).toEqual({});
     const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
     expect(mine).toEqual([
-      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (20000 problems)"`,
+      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (20000 problems; first: invalid_type at tools.0)"`,
     ]);
-    expect(mine[0]).not.toContain('invalid_type');
+    // Nothing of zod's own text: its message is a JSON array of issues, each with an "expected".
+    expect(mine[0]).not.toContain('expected');
+    expect(mine[0]).not.toContain('[');
+  });
+
+  it('shows at most four path segments, so a server-chosen key deeper down is not echoed', async () => {
+    // The path is tools.0.inputSchema.properties.<key>: the key is the fifth segment.
+    const key = 'k'.repeat(100);
+    const s = await junkServer('tools/list', {
+      tools: [{ name: 'junk', inputSchema: { type: 'object', properties: { [key]: 5 } } }],
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatch(/\(1 problem: [a-z_]+ at tools\.0\.inputSchema\.properties\.…\)"$/);
+    expect(mine[0]).not.toContain('kkkk');
   });
 });

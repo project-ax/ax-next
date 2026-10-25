@@ -160,19 +160,52 @@ interface ListedTool {
   inputSchema: Record<string, unknown>;
 }
 
+/** How much of a zod issue's path `errText` shows: segments, and characters per segment. */
+const MAX_ISSUE_PATH_SEGMENTS = 4;
+const MAX_ISSUE_SEGMENT_CHARS = 32;
+
+/**
+ * `invalid_type at tools.0.name` for one zod issue, or undefined when it has
+ * no string `code`. Path segments can be server-chosen keys, so only strings
+ * and numbers are shown, each clipped; anything else is `?` (never `String()`
+ * on an object, which could run a server-shaped `toString`).
+ */
+function issueText(issue: unknown): string | undefined {
+  if (typeof issue !== 'object' || issue === null) return undefined;
+  const { code, path } = issue as { code?: unknown; path?: unknown };
+  if (typeof code !== 'string') return undefined;
+  const head = code.slice(0, MAX_ISSUE_SEGMENT_CHARS);
+  if (!Array.isArray(path) || path.length === 0) return head;
+  const segs = path.slice(0, MAX_ISSUE_PATH_SEGMENTS).map((seg: unknown) =>
+    typeof seg === 'string'
+      ? seg.slice(0, MAX_ISSUE_SEGMENT_CHARS)
+      : typeof seg === 'number'
+        ? String(seg)
+        : '?',
+  );
+  return `${head} at ${segs.join('.')}${path.length > MAX_ISSUE_PATH_SEGMENTS ? '.…' : ''}`;
+}
+
 /**
  * An error's text for a log line or a failed call. A zod error (v3 or v4:
  * anything with an `issues` array) is reported by its issue count and its
- * `message` is never read: zod builds `message` from every issue on first
- * read (MEASURED: a 177 MB string for a 2 MiB junk `tools/list` page), and
- * issues can quote server-chosen keys.
+ * first issue's code and path, and its `message` is never read: zod builds
+ * `message` from every issue on first read (MEASURED: a 177 MB string for a
+ * 2 MiB junk `tools/list` page), and issues can quote server-chosen keys.
  */
 function errText(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
     const issues = (err as { issues?: unknown }).issues;
     if (Array.isArray(issues)) {
       const n = issues.length;
-      return `the server's answer was not valid MCP (${n} ${n === 1 ? 'problem' : 'problems'})`;
+      const first = n > 0 ? issueText(issues[0]) : undefined;
+      const detail =
+        first === undefined
+          ? `${n} ${n === 1 ? 'problem' : 'problems'}`
+          : n === 1
+            ? `1 problem: ${first}`
+            : `${n} problems; first: ${first}`;
+      return `the server's answer was not valid MCP (${detail})`;
     }
   }
   return err instanceof Error ? err.message : String(err);
