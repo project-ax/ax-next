@@ -274,6 +274,30 @@ export function formatAttachmentInline(
   return `${formatAttachmentMention(fields)}\n\n${content}`;
 }
 
+/**
+ * The most content blocks one `event.turn-end`, or one `AgentMessage`, may
+ * carry on the IPC wire (TASK-945). Runner data is untrusted. An array over
+ * its `.max()` is refused right after its size issue, before any element is
+ * parsed.
+ *
+ * Sized so real traffic never reaches it: a refused turn-end loses that
+ * turn's whole display frame. One turn-end carries a whole multi-step turn:
+ * every assistant block, or every tool result plus one chip per file the
+ * turn created (up to 10,000). The aisdk runner stops at 100 steps; the
+ * claude-sdk runner emits one block per SDK block and is bounded by time.
+ *
+ * The same limit applies to `session.next-message`, whose messages the host
+ * re-checks before sending (a failure there is a 500; after three retries
+ * the runner's message pull throws and the runner exits). Nothing queues
+ * that many: chat caps a user message at 20 blocks
+ * (`PostMessageRequest`), and the orchestrator queues it as-is. A producer
+ * that could approach this limit must refuse at the queue, not on the wire.
+ *
+ * Not applied to `tool_result.content`: this schema also re-parses stored
+ * transcripts, and the conversations read path drops a turn that fails it.
+ */
+export const CONTENT_BLOCKS_MAX = 50_000;
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,

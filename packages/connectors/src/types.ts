@@ -124,13 +124,16 @@ export type CapabilitySlot =
  * connector store NEVER trusts the JSONB column blindly — it parses on write
  * AND on read (the same don't-trust-the-DB posture as @ax/conversations'
  * ContentBlock column). Re-declaring the schema here keeps it a TYPE-only
- * dependency on @ax/skills-parser (no runtime cross-plugin import).
+ * dependency on @ax/skills-parser (no runtime cross-plugin import). The write
+ * funnels parse with {@link CapabilitiesWriteSchema} instead: the same shape,
+ * with every list bounded by {@link CAPABILITY_WRITE_LIMITS}.
  *
  * Cast to `ZodType<Capabilities>` (not `satisfies`): zod's `.optional()` infers
  * `field?: T | undefined`, which `exactOptionalPropertyTypes: true` won't prove
  * directly assignable to the interface's `field?: T`. The structure matches;
- * `capabilities-schema.test.ts` is the drift guard that re-validates a real
- * spec round-trips. (Same pattern as @ax/skills' return schemas.)
+ * `oauth-slot.test.ts` round-trips real specs through it, and
+ * `capability-limits.test.ts` pins the read/write pair. (Same pattern as
+ * @ax/skills' return schemas.)
  */
 // Each connector owns its own key(s): there is NO share-by-service `account`
 // tag. A slot's vault ref is keyed by the connector id (see credential-plan.ts).
@@ -148,40 +151,88 @@ const ApiKeySlotSchema = z.object({
   server: z.string().optional(),
 });
 
-// OAuth slot: `server` names the mcpServers[] entry whose `url` is the OAuth
-// resource. Pinned client fields are optional (DCR is the default path). No
-// backend vocabulary leaks — `.strict()` rejects smuggled transport/command/url.
-const OAuthSlotSchema = z
-  .object({
-    slot: z.string(),
-    kind: z.literal('oauth'),
-    server: z.string(),
-    scopes: z.array(z.string()).optional(),
-    clientId: z.string().optional(),
-    clientRegistration: z.enum(['auto', 'cimd', 'dcr', 'custom']).optional(),
-    clientSecretRef: z.string().optional(),
-    authServerUrl: z.string().url().optional(),
-    tokenUrl: z.string().url().optional(),
-  })
-  .strict();
+/**
+ * TASK-945: the most entries each capability list may carry on WRITE
+ * (`connectors:upsert`, `connectors:install-authored`). Never applied on
+ * read: CapabilitiesSchema also parses every stored row, and a row that fails
+ * it can't be opened, edited or deleted (the TASK-712 rule).
+ *
+ * 64 hosts, 32 credential slots and 8 MCP servers are the sandbox wire's own
+ * per-entry limits (@ax/sandbox-protocol InstalledSkillSchema). A connector
+ * becomes one entry, so a bigger list could never reach a sandbox. An MCP
+ * server's own hosts and slots use the same numbers. Packages (per npm/pypi
+ * list) and OAuth scopes (per slot) have no downstream limit; real connectors
+ * carry 1-5 packages and request up to about 50 scopes.
+ */
+export const CAPABILITY_WRITE_LIMITS = {
+  allowedHosts: 64,
+  credentials: 32,
+  mcpServers: 8,
+  packages: 64,
+  scopes: 128,
+} as const;
 
-const CapabilitySlotSchema = z.discriminatedUnion('kind', [
-  ApiKeySlotSchema,
-  OAuthSlotSchema,
-]);
+/** `z.array(item)`, bounded by `max` when a write limit applies. */
+function list<T extends z.ZodTypeAny>(item: T, max: number | undefined): z.ZodArray<T> {
+  return max === undefined ? z.array(item) : z.array(item).max(max);
+}
 
-const McpServerSpecSchema = z.object({
-  name: z.string(),
-  transport: z.literal('http'),
-  url: z.string().optional(),
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-});
+/**
+ * One shape, two schemas: {@link CapabilitiesSchema} (no limits) and
+ * {@link CapabilitiesWriteSchema} ({@link CAPABILITY_WRITE_LIMITS}). One
+ * factory builds both, so their shapes can't drift apart. Each list goes
+ * through `list()`; `services` keeps its own limits in both. An array over
+ * its `.max()` is refused right after its size issue, before any element is
+ * parsed.
+ */
+function makeCapabilitiesSchema(
+  limits: Partial<typeof CAPABILITY_WRITE_LIMITS>,
+): ZodType<Capabilities> {
+  // OAuth slot: `server` names the mcpServers[] entry whose `url` is the OAuth
+  // resource. Pinned client fields are optional (DCR is the default path). No
+  // backend vocabulary leaks — `.strict()` rejects smuggled transport/command/url.
+  const OAuthSlotSchema = z
+    .object({
+      slot: z.string(),
+      kind: z.literal('oauth'),
+      server: z.string(),
+      scopes: list(z.string(), limits.scopes).optional(),
+      clientId: z.string().optional(),
+      clientRegistration: z.enum(['auto', 'cimd', 'dcr', 'custom']).optional(),
+      clientSecretRef: z.string().optional(),
+      authServerUrl: z.string().url().optional(),
+      tokenUrl: z.string().url().optional(),
+    })
+    .strict();
 
-const PackagesSpecSchema = z.object({
-  npm: z.array(z.string()),
-  pypi: z.array(z.string()),
-});
+  const CapabilitySlotSchema = z.discriminatedUnion('kind', [
+    ApiKeySlotSchema,
+    OAuthSlotSchema,
+  ]);
+
+  const McpServerSpecSchema = z.object({
+    name: z.string(),
+    transport: z.literal('http'),
+    url: z.string().optional(),
+    allowedHosts: list(z.string(), limits.allowedHosts),
+    credentials: list(CapabilitySlotSchema, limits.credentials),
+  });
+
+  const PackagesSpecSchema = z.object({
+    npm: list(z.string(), limits.packages),
+    pypi: list(z.string(), limits.packages),
+  });
+
+  return z.object({
+    allowedHosts: list(z.string(), limits.allowedHosts),
+    credentials: list(CapabilitySlotSchema, limits.credentials),
+    mcpServers: list(McpServerSpecSchema, limits.mcpServers),
+    packages: PackagesSpecSchema,
+    // Optional on ingress (legacy rows + existing callers omit it); the schema
+    // defaults it to `[]` so a parsed Capabilities always carries `services`.
+    services: z.array(ServiceDescriptorSchema).max(8).default([]),
+  }) as unknown as ZodType<Capabilities>;
+}
 
 // TASK-150 — the neutral dev-service descriptor. Canonical shape lives in
 // @ax/skills-parser (`ServiceDescriptorSchema`); re-declared LOCALLY here so the
@@ -218,15 +269,10 @@ const ServiceDescriptorSchema = z
   })
   .strict();
 
-export const CapabilitiesSchema = z.object({
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-  mcpServers: z.array(McpServerSpecSchema),
-  packages: PackagesSpecSchema,
-  // Optional on ingress (legacy rows + existing callers omit it); the schema
-  // defaults it to `[]` so a parsed Capabilities always carries `services`.
-  services: z.array(ServiceDescriptorSchema).max(8).default([]),
-}) as unknown as ZodType<Capabilities>;
+/** Reads and return schemas: never bounded, so every stored row parses. */
+export const CapabilitiesSchema = makeCapabilitiesSchema({});
+/** The write funnels only: the same shape, every untrusted list bounded. */
+export const CapabilitiesWriteSchema = makeCapabilitiesSchema(CAPABILITY_WRITE_LIMITS);
 
 // ---------------------------------------------------------------------------
 // Domain types — exposed on hook payloads.

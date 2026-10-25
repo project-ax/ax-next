@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, HOLD_NOTE_MAX, type WorkspaceVersion } from '@ax/core';
-import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
+import { CONTENT_BLOCKS_MAX, ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
 import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
@@ -26,7 +26,7 @@ export const AgentMessageSchema = z.object({
   // not emit this yet (Phase 3); shipping the schema first lets the
   // runner translation pass be testable. Backward-compat: omitting the
   // field reproduces the prior string-only shape exactly.
-  contentBlocks: z.array(ContentBlockSchema).optional(),
+  contentBlocks: z.array(ContentBlockSchema).max(CONTENT_BLOCKS_MAX).optional(),
   /**
    * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id, used
    * by the runner to bind the user message to the same turn the host
@@ -1050,6 +1050,21 @@ export type SessionGetDisplayHistoryResponse = z.infer<
 // validated, scanned, and gated — never executed or shell-interpolated.
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-list limits on the `capabilityProposal` hint (TASK-945). The host has
+ * ignored the hint since TASK-100 and the runner sends empty lists, so these
+ * only refuse garbage. They match @ax/connectors' write limits for the same
+ * Capabilities shape: 64 hosts, 32 credential slots and 8 MCP servers (the
+ * sandbox wire's per-skill limits), and 64 packages per npm/pypi list. An MCP
+ * server's own hosts and slots use the same numbers.
+ */
+export const SKILL_PROPOSE_CAPABILITY_LIMITS = {
+  allowedHosts: 64,
+  credentials: 32,
+  mcpServers: 8,
+  packages: 64,
+} as const;
+
 // Mirror of skills-parser CapabilitySlot — re-declared at the wire boundary
 // (I2: ipc-protocol must not import @ax/skills-parser, the host kernel layer).
 // Kept structurally in sync; if skills-parser's shape drifts, reconcile here.
@@ -1063,14 +1078,17 @@ const SkillProposeMcpSchema = z.object({
   name: z.string(),
   transport: z.literal('http'),
   url: z.string().optional(),
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(SkillProposeSlotSchema),
+  allowedHosts: z.array(z.string()).max(SKILL_PROPOSE_CAPABILITY_LIMITS.allowedHosts),
+  credentials: z.array(SkillProposeSlotSchema).max(SKILL_PROPOSE_CAPABILITY_LIMITS.credentials),
 });
 const SkillProposeCapabilitiesSchema = z.object({
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(SkillProposeSlotSchema),
-  mcpServers: z.array(SkillProposeMcpSchema),
-  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
+  allowedHosts: z.array(z.string()).max(SKILL_PROPOSE_CAPABILITY_LIMITS.allowedHosts),
+  credentials: z.array(SkillProposeSlotSchema).max(SKILL_PROPOSE_CAPABILITY_LIMITS.credentials),
+  mcpServers: z.array(SkillProposeMcpSchema).max(SKILL_PROPOSE_CAPABILITY_LIMITS.mcpServers),
+  packages: z.object({
+    npm: z.array(z.string()).max(SKILL_PROPOSE_CAPABILITY_LIMITS.packages),
+    pypi: z.array(z.string()).max(SKILL_PROPOSE_CAPABILITY_LIMITS.packages),
+  }),
 });
 
 export const SkillProposeRequestSchema = z
@@ -1085,8 +1103,9 @@ export const SkillProposeRequestSchema = z
     files: z
       .array(z.object({ path: z.string().max(256), contents: z.string() }))
       .max(16),
-    // The agent's capability PROPOSAL (parsed from the frontmatter). The gate
-    // classifies on this (∅ + authored + clean scan → active; any cap → pending).
+    // A DEPRECATED, ignored hint (TASK-100): a skill declares no capabilities,
+    // the runner sends empty lists, and the host gate keys only on origin and
+    // the safety scan. Kept on the wire for schema stability, and bounded.
     capabilityProposal: SkillProposeCapabilitiesSchema,
     // FIXED to 'authored' — the runner only proposes bundles it composed.
     origin: z.literal('authored'),
