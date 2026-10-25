@@ -69,8 +69,11 @@ The patch adds no install script, no dependency and no network access.
 Remove the patch once no package uses zod 3 and nothing resolves `zod/v4` from
 it. Remove its `patchedDependencies` entry, the audit exception and the
 exception-specific assertions with it. Moving to zod 4 alone does not bring the
-cap with it, so keep explicit `.max()` limits on untrusted arrays, or carry an
-equivalent patch.
+cap with it. The explicit `.max()` limits on our untrusted lists (TASK-945)
+replace the cap only for the lists they sit on. A list nested inside another
+list's elements, like `tool_result.content` inside a turn's content blocks, is
+then bounded only by the 4 MiB frame. Bound those another way before removing
+the patch, or carry an equivalent one.
 
 Not covered here:
 
@@ -79,11 +82,16 @@ Not covered here:
 - `@anthropic-ai/claude-agent-sdk` bundles its own zod in `sdk.mjs`.
 - The cap is per issue list, not per parse. A plain `z.union` gives each option
   its own list and keeps every option's list when they all fail, so unions
-  nested inside collections multiply the bound: about 30,000 issues at two
-  levels with 100 elements each, and roughly 3 million at three levels. Nothing
-  we parse today nests that way (no `z.lazy`, and our untrusted schemas use
-  discriminated unions, which share one list). Don't build deep plain-union
-  nesting on untrusted input.
+  nested inside collections multiply the bound. One level of that reaches
+  untrusted input: `tool_result.content` (a string or an array) inside every
+  content-block list (`event.turn-end`, `event.chat-end`,
+  `POST /api/chat/messages`). At that one level we measured 10,200 retained
+  issues and a 3.2 MB `error.message` for a 25 KB turn-end (ipc-core echoes
+  that message to the runner that sent it), and about 0.5 s of CPU for a
+  4 MiB frame whose junk is spread over 16,000 blocks. A second level
+  multiplies it again: about 1,000,000 issues and a 370 MB message from 2 MB
+  of input, with 100 elements per list. Don't add a second level of
+  plain-union nesting on untrusted input.
 - `dem-memory/` is a standalone research project outside the pnpm workspace.
   It installs its own unpatched zod 3.25.76 from its own `package-lock.json`.
   Neither guard can see it, no workspace package depends on it, and it isn't
