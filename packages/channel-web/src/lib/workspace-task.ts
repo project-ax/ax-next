@@ -37,6 +37,10 @@
  * stops), it asks for one more quiet read. A read that started after the swap
  * reads the change too, and shows its own steps.
  *
+ * A WRITE'S ANSWER (`applyAnswer`, TASK-951) goes on screen at once and then
+ * triggers an ordinary re-read; the numbering above keeps an older read from
+ * overwriting it.
+ *
  * It holds one task. Mount it once per task (key the page by its ids): since a
  * refresh keeps what's on screen, state carried over from another task would
  * show that task's page while this one loads.
@@ -84,6 +88,14 @@ export function useTask(
    * so it does nothing. Reads already in flight keep these steps (see above).
    */
   replaceSteps: (steps: TaskStep[]) => void;
+  /**
+   * Shows a write's answer on the task at once (a saved finish date, TASK-951),
+   * then reads the task again, as `refresh` does. That read takes the next
+   * number, so a read already on its way, which was asked before the write,
+   * is dropped when it lands and can't put the old value back: only the
+   * newest read's answer is kept.
+   */
+  applyAnswer: (update: (detail: TaskDetail) => TaskDetail) => void;
 } {
   const [state, setState] = useState<TaskState>({ kind: 'loading' });
   // What is on screen, for the callbacks that must know whether a task is there.
@@ -177,5 +189,13 @@ export function useTask(
     setState((s) => (s.kind === 'ready' ? { ...s, detail: { ...s.detail, steps } } : s));
   }, []);
 
-  return { state, refresh, refreshQuietly, replaceSteps };
+  const applyAnswer = useCallback(
+    (update: (detail: TaskDetail) => TaskDetail) => {
+      setState((s) => (s.kind === 'ready' ? { ...s, detail: update(s.detail), refreshing: true } : s));
+      load(false);
+    },
+    [load],
+  );
+
+  return { state, refresh, refreshQuietly, replaceSteps, applyAnswer };
 }

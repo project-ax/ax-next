@@ -1,0 +1,240 @@
+/**
+ * TaskFinishDate: a get-done task's "Finish by" line and its date field, on the
+ * task's own page (TASK-951).
+ *
+ * Driven through the real component with only `setTaskFinishBy` mocked, so each
+ * case is what the person would see. The copy is asserted verbatim because it
+ * is decided (TASK-951 plan, Task 6), and its apostrophes are U+2019. The
+ * component sits in a small wrapper that keeps `finishBy` in state, as TaskPage
+ * does through `applyAnswer`; without it, the focus after Save and after
+ * Remove date would never find the button that replaces the field.
+ *
+ * jsdom reads a date input as browsers do: a value no calendar has reads back
+ * as '', and a past date is kept. So "Pick a real date." reaches the component
+ * only through the host's 400, which the status cases drive.
+ */
+import { useState } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { HTTP_SESSION_ENDED } from '@/lib/http';
+import { finishByLine } from '@/lib/task-finish-by';
+import { WorkspaceApiError, workspaceApi } from '@/lib/workspace-api';
+import type { TaskFinishBy } from '@/lib/workspace-types';
+import { TaskFinishDate } from '../TaskFinishDate';
+
+vi.mock('@/lib/workspace-api', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
+  return { ...actual, workspaceApi: { setTaskFinishBy: vi.fn() } };
+});
+
+const setMock = vi.mocked(workspaceApi.setTaskFinishBy);
+
+const FB: TaskFinishBy = { date: '2026-11-14', daysLeft: 9 };
+const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
+const UNCONFIRMED = 'We couldn’t save that date. Try again.';
+
+function Harness({
+  initial,
+  onSaved,
+}: {
+  initial: TaskFinishBy | null;
+  onSaved: (finishBy: TaskFinishBy | null) => void;
+}) {
+  const [finishBy, setFinishBy] = useState(initial);
+  return (
+    <>
+      <button type="button">Elsewhere</button>
+      <TaskFinishDate
+        agentId="a1"
+        routineId="t1"
+        agentName="Caveman"
+        finishBy={finishBy}
+        onSaved={(next) => {
+          setFinishBy(next);
+          onSaved(next);
+        }}
+      />
+    </>
+  );
+}
+
+function renderField(initial: TaskFinishBy | null) {
+  const onSaved = vi.fn();
+  render(<Harness initial={initial} onSaved={onSaved} />);
+  return { onSaved };
+}
+
+const field = () => screen.getByLabelText('Finish by') as HTMLInputElement;
+const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+const pick = (value: string) => fireEvent.change(field(), { target: { value } });
+
+beforeEach(() => {
+  setMock.mockReset();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(2026, 10, 5, 12));
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('TaskFinishDate — what it shows', () => {
+  it('shows the date and the days left, with Change described by that line', () => {
+    renderField(FB);
+    const line = finishByLine(FB);
+    expect(screen.getByText(line)).toBeTruthy();
+    const described = button('Change').getAttribute('aria-describedby');
+    expect(described).not.toBeNull();
+    expect(document.getElementById(described!)?.textContent).toContain(line);
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+  });
+
+  it('offers Add a finish date when there is none, and no Remove date in its field', () => {
+    renderField(null);
+    expect(screen.queryByText(/Finish by/)).toBeNull();
+    fireEvent.click(button('Add a finish date'));
+    expect(screen.queryByRole('button', { name: 'Remove date' })).toBeNull();
+    expect(button('Save')).toBeTruthy();
+    expect(button('Cancel')).toBeTruthy();
+  });
+});
+
+describe('TaskFinishDate — setting and removing', () => {
+  it('adds a date: the field opens focused, saves once, and hands focus back', async () => {
+    setMock.mockResolvedValueOnce({ finishBy: FB });
+    const { onSaved } = renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    expect(document.activeElement).toBe(field());
+    expect(field().type).toBe('date');
+    expect(field().min).toBe('2026-11-05');
+    expect(
+      screen.getByText('Caveman will tell you if the steps left won’t fit.').id,
+    ).not.toBe('');
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(FB));
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14');
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(document.activeElement).toBe(button('Change'));
+  });
+
+  it('changes and removes a date', async () => {
+    setMock.mockResolvedValueOnce({ finishBy: null });
+    const { onSaved } = renderField(FB);
+    fireEvent.click(button('Change'));
+    expect(field().value).toBe('2026-11-14');
+    fireEvent.click(button('Remove date'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(null));
+    expect(setMock).toHaveBeenCalledWith('a1', 't1', null);
+    expect(document.activeElement).toBe(button('Add a finish date'));
+  });
+
+  it('shows Save working while it sends, and sends nothing twice', async () => {
+    let resolve!: (v: { finishBy: TaskFinishBy | null }) => void;
+    setMock.mockReturnValueOnce(new Promise((res) => (resolve = res)));
+    renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
+    expect(button('Save').disabled).toBe(true);
+    expect(button('Cancel').disabled).toBe(true);
+    fireEvent.click(button('Save'));
+    await act(async () => resolve({ finishBy: FB }));
+    expect(setMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each<[string, string]>([
+    ['a day that has gone', '2026-11-04'],
+    ['nothing at all', ''],
+  ])('refuses %s with no request', (_label, value) => {
+    renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick(value);
+    fireEvent.click(button('Save'));
+    expect(screen.getByText('Pick today or a later date.')).toBeTruthy();
+    expect(field().getAttribute('aria-invalid')).toBe('true');
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('Cancel and Escape close the field with no request, and focus goes back', () => {
+    renderField(FB);
+    fireEvent.click(button('Change'));
+    pick('2026-11-20');
+    fireEvent.click(button('Cancel'));
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(document.activeElement).toBe(button('Change'));
+    expect(screen.getByText(finishByLine(FB))).toBeTruthy();
+
+    fireEvent.click(button('Change'));
+    expect(field().value).toBe('2026-11-14');
+    fireEvent.keyDown(field(), { key: 'Escape' });
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(document.activeElement).toBe(button('Change'));
+    expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('TaskFinishDate — when the host says no', () => {
+  it.each<[number, string, boolean]>([
+    [404, NOT_FOUND, true],
+    [403, NOT_FOUND, true],
+    [400, 'Pick a real date.', false],
+    [401, HTTP_SESSION_ENDED, true],
+    [500, UNCONFIRMED, false],
+    [429, UNCONFIRMED, false],
+    [409, UNCONFIRMED, false],
+  ])('a %i says %s', async (status, line, dead) => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
+    renderField(FB);
+    fireEvent.click(button('Change'));
+    pick('2026-11-20');
+    fireEvent.click(button('Save'));
+    await screen.findByText(line);
+    expect(setMock).toHaveBeenCalledTimes(1);
+    // Pressing again can't fix a task that is gone or a session that ended.
+    expect(button('Save').disabled).toBe(dead);
+    expect(button('Remove date').disabled).toBe(dead);
+    expect(button('Cancel').disabled).toBe(false);
+    expect(field().getAttribute('aria-invalid')).toBe(status === 400 ? 'true' : null);
+  });
+
+  it('a save nobody could confirm says so, and pressing Save again sends the same date', async () => {
+    setMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    setMock.mockResolvedValueOnce({ finishBy: FB });
+    const { onSaved } = renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
+    await screen.findByText(UNCONFIRMED);
+    expect(onSaved).not.toHaveBeenCalled();
+    fireEvent.click(button('Save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(FB));
+    expect(setMock).toHaveBeenCalledTimes(2);
+    expect(setMock.mock.calls.map((c) => c[2])).toEqual(['2026-11-14', '2026-11-14']);
+  });
+
+  it('keeps a task that is gone as gone when the field is closed and opened again', async () => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 404));
+    renderField(FB);
+    fireEvent.click(button('Change'));
+    fireEvent.click(button('Save'));
+    await screen.findByText(NOT_FOUND);
+    fireEvent.click(button('Cancel'));
+    fireEvent.click(button('Change'));
+    expect(screen.getByText(NOT_FOUND)).toBeTruthy();
+    expect(button('Save').disabled).toBe(true);
+  });
+
+  it('clears an old refusal when the person picks another date', async () => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 400));
+    renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
+    await screen.findByText('Pick a real date.');
+    pick('2026-11-15');
+    expect(screen.queryByText('Pick a real date.')).toBeNull();
+  });
+});

@@ -18,6 +18,7 @@ import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
+import { finishByLine } from '@/lib/task-finish-by';
 import { localTime } from '@/lib/workspace-time';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate } from '@/lib/workspace-types';
 import { TaskPage } from '../TaskPage';
@@ -26,7 +27,13 @@ vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
     ...actual,
-    workspaceApi: { task: vi.fn(), clearTaskNotes: vi.fn(), sendTaskReply: vi.fn(), setTaskSteps: vi.fn() },
+    workspaceApi: {
+      task: vi.fn(),
+      clearTaskNotes: vi.fn(),
+      sendTaskReply: vi.fn(),
+      setTaskSteps: vi.fn(),
+      setTaskFinishBy: vi.fn(),
+    },
   };
 });
 
@@ -39,6 +46,7 @@ const taskMock = vi.mocked(workspaceApi.task);
 const clearMock = vi.mocked(workspaceApi.clearTaskNotes);
 const replyMock = vi.mocked(workspaceApi.sendTaskReply);
 const stepsMock = vi.mocked(workspaceApi.setTaskSteps);
+const finishByMock = vi.mocked(workspaceApi.setTaskFinishBy);
 const fireNowMock = vi.mocked(routineApi.fireNow);
 const updateMock = vi.mocked(routineApi.update);
 
@@ -166,6 +174,7 @@ beforeEach(() => {
   clearMock.mockReset();
   replyMock.mockReset();
   stepsMock.mockReset();
+  finishByMock.mockReset();
   fireNowMock.mockReset();
   updateMock.mockReset();
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -951,6 +960,50 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
     });
     expect(screen.getByRole('checkbox', { name: 'Check the redirects' })).toBeChecked();
     expect(taskMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
+  const FB = { date: '2026-11-14', daysLeft: 23 };
+
+  it('a get-done task shows its finish date under the meta line; a stay-on-top task shows no finish date at all', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', finishBy: FB }));
+    const view = await renderReady();
+    const meta = screen.getByText(/^Quill · Get something done/);
+    const line = screen.getByText(finishByLine(FB));
+    expect(meta.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+    view.unmount();
+
+    // A stay-on-top task that carries a date (it can't, but the page must not trust that) shows none.
+    taskMock.mockResolvedValue(detail({ kind: 'stay-on-top', finishBy: FB }));
+    await renderReady();
+    expect(screen.queryByText(/Finish by/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a finish date' })).toBeNull();
+  });
+
+  it('a get-done task with no date offers Add a finish date', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done' }));
+    await renderReady();
+    expect(screen.getByRole('button', { name: 'Add a finish date' })).toBeInTheDocument();
+  });
+
+  it('a saved date shows at once, and the page reads the task again', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done' }));
+    await renderReady();
+    expect(taskMock).toHaveBeenCalledTimes(1);
+    finishByMock.mockResolvedValueOnce({ finishBy: FB });
+    // The re-read the save starts answers too, with the date the host now has.
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', finishBy: FB }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add a finish date' }));
+    fireEvent.change(screen.getByLabelText('Finish by'), { target: { value: '2026-11-14' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(finishByLine(FB))).toBeInTheDocument();
+    expect(finishByMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Check now' })).toBeEnabled());
+    expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();
   });
 });
 

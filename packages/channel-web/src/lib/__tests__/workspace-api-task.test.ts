@@ -161,6 +161,29 @@ describe('workspaceApi.task (TASK-910)', () => {
     await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(body);
   });
 
+  it('reads a finish date, or none, and a count past the date (TASK-951)', async () => {
+    for (const finishBy of [null, { date: '2026-11-14', daysLeft: -3 }]) {
+      respondWith({ ...DETAIL, kind: 'get-done', finishBy });
+      await expect(workspaceApi.task('a1', 't1')).resolves.toMatchObject({ finishBy });
+    }
+  });
+
+  it('refuses a body without finishBy, and a finish date no calendar has or a count that isn’t whole (TASK-951)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { finishBy: _left, ...withoutFinishBy } = DETAIL;
+    respondWith(withoutFinishBy);
+    await expect(workspaceApi.task('a1', 't1')).rejects.toBeInstanceOf(WorkspaceShapeError);
+    for (const finishBy of [
+      { date: '2026-02-30', daysLeft: 1 },
+      { date: '2026-11-14', daysLeft: 1.5 },
+      { date: '2026-11-14' },
+      { date: 20261114, daysLeft: 1 },
+    ]) {
+      respondWith({ ...DETAIL, finishBy });
+      await expect(workspaceApi.task('a1', 't1')).rejects.toBeInstanceOf(WorkspaceShapeError);
+    }
+  });
+
   it('refuses an update with a status it doesn’t know', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ ...DETAIL, updates: [{ ...UPDATE, status: 'skipped' }] });
@@ -380,6 +403,47 @@ describe('workspaceApi.setTaskSteps (TASK-949)', () => {
     const err = await workspaceApi
       .setTaskSteps('a1', 't1', { requestId: 'r', ops: [{ op: 'tick', id: 's1' }] })
       .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(404);
+  });
+});
+
+describe('workspaceApi.setTaskFinishBy (TASK-951)', () => {
+  it('sends the date with PUT, the CSRF header and only the date, to the task’s own address', async () => {
+    const answer = { finishBy: { date: '2026-11-14', daysLeft: 9 } };
+    const fetchSpy = respondWith(answer);
+    await expect(workspaceApi.setTaskFinishBy('a 1', 'r/1', '2026-11-14')).resolves.toEqual(answer);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a%201/r%2F1/finish-by');
+    expect((init as RequestInit).method).toBe('PUT');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ finishBy: '2026-11-14' });
+  });
+
+  it('sends null to remove the date, and reads the null answer', async () => {
+    const fetchSpy = respondWith({ finishBy: null });
+    await expect(workspaceApi.setTaskFinishBy('a1', 't1', null)).resolves.toEqual({ finishBy: null });
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ finishBy: null });
+  });
+
+  // "Saved" is a claim, so it rests on the server saying what it saved.
+  it.each<[string, unknown]>([
+    ['no finishBy', {}],
+    ['a date no calendar has', { finishBy: { date: '2026-02-30', daysLeft: 1 } }],
+    ['no object at all', null],
+  ])('refuses an answer with %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14')).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('carries the status of a failed save', async () => {
+    failWith(404);
+    const err = await workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(404);
   });

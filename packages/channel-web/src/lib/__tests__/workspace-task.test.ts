@@ -336,6 +336,63 @@ describe('useTask (TASK-910)', () => {
     // A stale failure must not replace, or mark, the newer good answer.
     expect(result.current.state).toMatchObject({ kind: 'ready', refreshFailed: false });
   });
+
+  describe('applyAnswer (TASK-951)', () => {
+    const SAVED = { date: '2026-11-14', daysLeft: 9 };
+
+    async function withQuietReadOnItsWay() {
+      taskMock.mockResolvedValueOnce(detail('Sweep', { kind: 'get-done' }));
+      const hook = renderHook(() => useTask('a1', 't1'));
+      await waitFor(() => expect(hook.result.current.state.kind).toBe('ready'));
+      const quiet = deferred<TaskDetail>();
+      const newer = deferred<TaskDetail>();
+      taskMock.mockReturnValueOnce(quiet.promise).mockReturnValueOnce(newer.promise);
+      act(() => hook.result.current.refreshQuietly());
+      act(() => hook.result.current.applyAnswer((d) => ({ ...d, finishBy: SAVED })));
+      return { ...hook, quiet, newer };
+    }
+
+    it("shows a write's answer at once, and a read that was already on its way can't put the old value back", async () => {
+      const { result, quiet, newer } = await withQuietReadOnItsWay();
+      expect(result.current.state).toMatchObject({
+        kind: 'ready',
+        detail: { finishBy: SAVED },
+        refreshing: true,
+      });
+      // The read that was asked before the write answers with the old value: dropped.
+      await act(async () => quiet.resolve(detail('Sweep', { kind: 'get-done', finishBy: null })));
+      expect(result.current.state).toMatchObject({ detail: { finishBy: SAVED } });
+      // The newer read's answer is the one that stays.
+      await act(async () => newer.resolve(detail('Sweep', { kind: 'get-done', finishBy: SAVED })));
+      expect(result.current.state).toMatchObject({
+        kind: 'ready',
+        detail: { finishBy: SAVED },
+        refreshing: false,
+        refreshFailed: false,
+      });
+    });
+
+    it('keeps the saved date, marked, when the newer read fails', async () => {
+      const { result, quiet, newer } = await withQuietReadOnItsWay();
+      await act(async () => quiet.resolve(detail('Sweep', { kind: 'get-done', finishBy: null })));
+      await act(async () => newer.reject(new WorkspaceApiError(PATH, 503)));
+      expect(result.current.state).toMatchObject({
+        kind: 'ready',
+        detail: { finishBy: SAVED },
+        refreshing: false,
+        refreshFailed: true,
+      });
+    });
+
+    it('does nothing to a page that is not showing a task', async () => {
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 404));
+      const { result } = renderHook(() => useTask('a1', 't1'));
+      await waitFor(() => expect(result.current.state).toEqual({ kind: 'failed', error: 'gone' }));
+      taskMock.mockRejectedValueOnce(new WorkspaceApiError(PATH, 404));
+      act(() => result.current.applyAnswer((d) => ({ ...d, finishBy: SAVED })));
+      expect(result.current.state).toEqual({ kind: 'failed', error: 'gone' });
+    });
+  });
 });
 
 describe('useTask replaceSteps (TASK-949)', () => {

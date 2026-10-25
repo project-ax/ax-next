@@ -22,6 +22,12 @@
  * no attribute is built from them. `**bold**` and `<img>` show as those
  * characters.
  *
+ * A GET-DONE TASK'S FINISH DATE (TASK-951) shows right under the meta line,
+ * with its own field to set, change or remove it (`TaskFinishDate`). The host
+ * counts the days left in the task's own time zone; a saved date shows at
+ * once and the page then reads the task again (`useTask`'s `applyAnswer`). A
+ * stay-on-top task shows none, whatever it carries.
+ *
  * THE ACTIONS go through the routines admin routes (`routineApi`), so the
  * routines services decide who may do what; the page only explains a button it
  * has to disable (decisions row 16). Resume needs `edit`, because only a
@@ -102,8 +108,9 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import { checkInWhen } from '@/lib/workspace-time';
-import type { TaskDetail, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
+import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
+import { TaskFinishDate } from './TaskFinishDate';
 import { TaskNotes } from './TaskNotes';
 import { TaskReadingBlock } from './TaskReadingBlock';
 import { TaskReplyBox } from './TaskReplyBox';
@@ -297,7 +304,7 @@ export function TaskPage({
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const { state, refresh, refreshQuietly, replaceSteps } = useTask(agentId, routineId);
+  const { state, refresh, refreshQuietly, replaceSteps, applyAnswer } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
   const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
   const { acting, notice, press } = useTaskActions(agentId, routineId, detail, refresh, poll);
@@ -321,6 +328,10 @@ export function TaskPage({
     if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply');
     refresh();
   };
+
+  // A saved finish date shows at once; the page then reads the task again (TASK-951).
+  const onFinishBySaved = (finishBy: TaskFinishBy | null) =>
+    applyAnswer((d) => ({ ...d, finishBy }));
 
   return (
     <>
@@ -376,6 +387,7 @@ export function TaskPage({
               onRefresh={refresh}
               onReplySent={onReplySent}
               onStepsChanged={replaceSteps}
+              onFinishBySaved={onFinishBySaved}
               onNavigate={onNavigate}
             />
           )}
@@ -478,6 +490,7 @@ function TaskBody({
   onRefresh,
   onReplySent,
   onStepsChanged,
+  onFinishBySaved,
   onNavigate,
 }: {
   agentId: string;
@@ -493,6 +506,7 @@ function TaskBody({
   onReplySent: (checkIn: TaskReplyCheckIn) => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
   onStepsChanged: (steps: TaskStep[]) => void;
+  onFinishBySaved: (finishBy: TaskFinishBy | null) => void;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
@@ -531,6 +545,15 @@ function TaskBody({
       )}
       <div className="flex flex-col">
         <p className="break-words text-[13px] text-muted-foreground">{meta}</p>
+        {detail.kind === 'get-done' && (
+          <TaskFinishDate
+            agentId={agentId}
+            routineId={routineId}
+            agentName={agentName}
+            finishBy={detail.finishBy}
+            onSaved={onFinishBySaved}
+          />
+        )}
         {note !== null && (
           <p
             ref={noteRef}
