@@ -535,14 +535,25 @@ async function missesAfterRun(
   if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled) || doneOf(row) !== null) return null;
   // recordReport's order: a run started after this one has already answered.
   const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
+  const reportAt = row.task_report_accepted_at;
   if (run.reported) {
     if (!newerMiss) return { columns: NO_MISSES, paused: false };
-    // The misses before this report end; the ones after it, the newer miss's own included, stay.
-    const kept = await unansweredAfter(trx, row, run.acceptedAt, Math.max(0, row.task_misses_in_a_row));
+    // The misses before this report end, and so do the ones before a newer report whose run is still open:
+    // it has answered them, though its run hasn't trimmed them yet (TASK-935). One whose run has finished
+    // trimmed them then; trimming from it again would drop a miss that started in its instant and finished
+    // after it. The ones after both stay, the newer miss's own included unless that open report answered it.
+    const from = reportAt !== null && reportAt > run.acceptedAt && await reportStillOpen(trx, row, reportAt) ? reportAt : run.acceptedAt;
+    const kept = await unansweredAfter(trx, row, from, Math.max(0, row.task_misses_in_a_row));
     return { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
   }
-  const reportAt = row.task_report_accepted_at;
-  if (reportAt !== null && reportAt > run.acceptedAt) return null;
+  if (reportAt !== null && reportAt > run.acceptedAt) {
+    // A run started after this one has reported, so this one doesn't count. While that run is still open, its
+    // report has answered the misses before it too: trim to the ones after it, never up (TASK-935). A count
+    // below one (a hand edit) has nothing to trim, and LIMIT can't go negative at boot.
+    if (row.task_misses_in_a_row < 1 || !await reportStillOpen(trx, row, reportAt)) return null;
+    const kept = await unansweredAfter(trx, row, reportAt, row.task_misses_in_a_row);
+    return kept === row.task_misses_in_a_row ? null : { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
+  }
   // A count below zero (a hand edit) starts again at one.
   const upTo = Math.max(0, row.task_misses_in_a_row) + 1;
   // A saved report whose run is still open has answered the misses that started before it, though
