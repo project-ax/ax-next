@@ -56,6 +56,7 @@ function row(name: string, over: Partial<TaskRow> = {}): TaskRow {
     enabled: true,
     kind: 'stay-on-top',
     steps: null,
+    finishBy: null,
     task: null,
     noRecentUpdate: null,
     ...over,
@@ -541,6 +542,44 @@ describe('TasksPage (TASK-909)', () => {
     );
     renderPage();
     expect(await screen.findByText('Caveman · checked 4 min ago')).toBeInTheDocument();
+  });
+
+  it('a get-done row says how long is left after its steps (TASK-951)', async () => {
+    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const checked = report('on-track', { reportedAt: new Date(NOW.getTime() - 4 * 60_000).toISOString() });
+    const steps = { done: 2, total: 5 };
+    tasksMock.mockResolvedValue(
+      page([
+        row('Nine', { kind: 'get-done', steps, finishBy: { date: '2026-10-31', daysLeft: 9 } }),
+        row('Today', { kind: 'get-done', steps, finishBy: { date: '2026-10-22', daysLeft: 0 } }),
+        row('Late', { kind: 'get-done', steps, finishBy: { date: '2026-10-19', daysLeft: -3 } }),
+        row('No steps, never reported', {
+          kind: 'get-done',
+          steps: { done: 0, total: 0 },
+          finishBy: { date: '2026-10-31', daysLeft: 9 },
+        }),
+        row('No steps, reported', {
+          kind: 'get-done',
+          steps: { done: 0, total: 0 },
+          task: checked,
+          finishBy: { date: '2026-10-31', daysLeft: 9 },
+        }),
+        row('Undated', { kind: 'get-done', steps, finishBy: null }),
+        // A stay-on-top row has no finish date; if one arrives, the row says nothing of it.
+        row('Stay on top', { kind: 'stay-on-top', finishBy: { date: '2026-10-31', daysLeft: 9 } }),
+      ]),
+    );
+    renderPage();
+    expect(await screen.findAllByText('Caveman · 2 of 5 steps · 9 days left')).toHaveLength(1);
+    expect(screen.getByText('Caveman · 2 of 5 steps · Due today')).toBeInTheDocument();
+    expect(screen.getByText('Caveman · 2 of 5 steps · 3 days past its finish date')).toBeInTheDocument();
+    expect(screen.getByText('Caveman · 9 days left')).toBeInTheDocument();
+    expect(screen.getByText('Caveman · checked 4 min ago · 9 days left')).toBeInTheDocument();
+    expect(screen.getByText('Caveman · 2 of 5 steps')).toBeInTheDocument();
+    // The stay-on-top row reads as it always did: just the agent's name.
+    expect(screen.getByText('Caveman')).toBeInTheDocument();
   });
 });
 

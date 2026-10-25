@@ -1093,6 +1093,7 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
     enabled: true,
     kind: 'stay-on-top',
     steps: null,
+    finishBy: null,
     task: {
       status: 'needs-you',
       update: 'Two tickets are still open.',

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
-import { HookBus, PluginError, type AgentContext } from '@ax/core';
+import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
+import { checkInBrief } from '../brief.js';
 import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
@@ -12,7 +13,7 @@ import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
-function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [] }; }
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null }; }
 async function setup(options: {
   resolveError?: PluginError;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
@@ -21,8 +22,13 @@ async function setup(options: {
   bind?: () => Promise<void>;
   reports?: () => Promise<Array<{ firedAt: Date; report: FireReport }>>;
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
+  /** TASK-951. The finish date the owner sets on the task before its run is accepted. */
+  finishBy?: string;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
+  if (options.finishBy !== undefined) {
+    expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy })).toEqual({ finishBy: options.finishBy });
+  }
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
   const bus = new HookBus();
   const pending: PendingFires = new Map();
@@ -96,7 +102,7 @@ describe('accepted DB fire dispatch', () => {
   });
   it('purges only exact agents:resolve not-found, including pending correlations and HMAC cleanup', async () => {
     const h = await setup({ definition: { trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'sig' } } }, resolveError: new PluginError({ code: 'not-found', plugin: 'agents', hookName: 'agents:resolve', message: 'gone' }) });
-    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], brief: 'waiting', onTurnEnd: async () => { } });
+    h.pending.set('other', { row: h.row, dispatchId: 'other', conversationId: 'c', source: 'manual', renderedPrompt: 'p', agentName: null, skips: [], brief: 'waiting', acceptedAt: now, onTurnEnd: async () => { } });
     expect((await h.fire(h.accepted)).agentGone).toBe(true);
     expect(h.pending.size).toBe(0);
     expect(await f.store.findOne(h.row)).toBeNull();
@@ -242,11 +248,28 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     expect(diagnostic.messages).toHaveLength(1);
   });
 });
+// TASK-951: a check-in's brief counts a finish date's days from the day its run was accepted, on the task's own
+// calendar: the accepted row is the snapshot the brief is built from, so its day is the one the count starts on.
+describe("a check-in's accept time (TASK-951)", () => {
+  it("a check-in's brief counts from the day it was accepted, in the task's time zone, not the clock when the brief is built (TASK-951)", async () => {
+    const h = await setup({
+      definition: { kind: 'get-done', goodWhen: 'Done when it is done.', trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' } },
+      finishBy: '2031-01-10',
+    });
+    await h.fire(h.accepted);
+    // The fixture's `now`, 2031-01-01T00:00Z, is 16:00 on 31 December 2030 in Los Angeles. The wall clock is years
+    // earlier, so a brief that counted from `new Date()` would say something else.
+    expect(h.accepted.acceptedAt).toEqual(now);
+    expect(h.pending.get(h.accepted.reqId)?.acceptedAt).toEqual(h.accepted.acceptedAt);
+    const ctx = makeAgentContext({ reqId: h.accepted.reqId, sessionId: 's', agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine' });
+    expect(checkInBrief(h.pending, ctx).brief).toContain('That’s 10 days from today (Tuesday, 31 December 2030).');
+  });
+});
 describe('connector skips per fire (slice 6)', () => {
   function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {
     return {
       row: sampleRow(), dispatchId: 'dispatch', conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
-      agentName: 'Bob', skips: [], brief: 'waiting', onTurnEnd: async () => { },
+      agentName: 'Bob', skips: [], brief: 'waiting', acceptedAt: now, onTurnEnd: async () => { },
       ...over,
     };
   }

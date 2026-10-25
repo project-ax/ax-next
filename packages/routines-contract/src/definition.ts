@@ -704,6 +704,17 @@ const RoutineViewShape = {
    * descriptions say what it means and that only a person resumes a paused task.
    */
   noRecentUpdate: RoutineNoRecentUpdateViewSchema.nullable(),
+  /**
+   * TASK-951. A "get-done" task's finish date, `YYYY-MM-DD`, or null: null for
+   * any other kind and for a task with none. Only a person sets it, through
+   * `routines:set-finish-by`; no tool can. Unlike `task` it isn't owner-gated:
+   * it is about the work, holds no agent text, and whoever can see the routine
+   * sees it. A read takes it as a type, not the rule (TASK-913). Receipts keep
+   * none, so an exact replay's answer has none. Required, so a view from a
+   * producer that doesn't know it is refused rather than read as "no date".
+   * The same in every view, the tools' included.
+   */
+  finishBy: z.string().nullable(),
 };
 function validateView(view: Record<string, unknown>, ctx: z.RefinementCtx): void {
   const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key]]));

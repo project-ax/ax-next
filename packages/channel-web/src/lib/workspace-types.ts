@@ -1395,6 +1395,23 @@ export interface TaskStepCounts {
   total: number;
 }
 
+/**
+ * TASK-951. A "get-done" task's finish date and the whole days left to it. `date` is the
+ * person's `YYYY-MM-DD`; `daysLeft` is counted on the host in the TASK's own time zone
+ * (its schedule's, else its active hours', else UTC), not the reader's, so the page, the
+ * row and the check-in's brief agree: 0 on the day, negative after. A count, not a
+ * display string; the page words it.
+ */
+export interface TaskFinishBy {
+  date: string;
+  daysLeft: number;
+}
+
+/** `PUT /api/workspace/tasks/:agentId/:routineId/finish-by`'s answer (TASK-951). */
+export interface TaskFinishByResponse {
+  finishBy: TaskFinishBy | null;
+}
+
 /** One row of `GET /api/workspace/tasks`: a task the caller owns, on an agent they can see. `task` is null until its first report. */
 export interface TaskRow {
   agentId: string;
@@ -1406,6 +1423,8 @@ export interface TaskRow {
   kind: TaskKind;
   /** TASK-948. Null unless the task is `'get-done'`; zero of zero for one with no steps yet. */
   steps: TaskStepCounts | null;
+  /** TASK-951. Null unless the task is "get-done" and has a finish date. */
+  finishBy: TaskFinishBy | null;
   task: TaskRowReport | null;
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
@@ -1525,6 +1544,8 @@ export interface TaskDetail {
   task: TaskDetailReport | null;
   /** A "get-done" task's checklist, in order (TASK-948); empty for any other kind. */
   steps: TaskStep[];
+  /** TASK-951. Null unless the task is "get-done" and has a finish date. */
+  finishBy: TaskFinishBy | null;
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
   /** Newest first, at most 50. */

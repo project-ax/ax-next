@@ -27,6 +27,7 @@ const ROW = {
   enabled: true,
   kind: 'stay-on-top',
   steps: null,
+  finishBy: null,
   task: {
     status: 'on-track',
     update: 'Filed 12 receipts',
@@ -56,6 +57,27 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(url).toBe('/api/workspace/tasks');
     expect((init as RequestInit).method).toBe('GET');
+  });
+
+  it('reads a finish date on a row, and an older host’s row without one as none (TASK-951)', async () => {
+    const dated = { ...ROW, kind: 'get-done', finishBy: { date: '2026-11-14', daysLeft: 9 } };
+    const { finishBy: _left, ...older } = ROW;
+    respondWith({ tasks: [dated, { ...older, routineId: 'r-2' }], unavailableAgents: [] });
+    const page = await workspaceApi.tasks();
+    expect(page.tasks[0]!.finishBy).toEqual({ date: '2026-11-14', daysLeft: 9 });
+    expect(page.tasks[1]!.finishBy).toBeNull();
+  });
+
+  it('refuses a row whose finish date is malformed (TASK-951)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const finishBy of [
+      { date: '2026-02-30', daysLeft: 1 },
+      { date: '2026-11-14', daysLeft: 1.5 },
+      'soon',
+    ]) {
+      respondWith({ tasks: [{ ...ROW, finishBy }], unavailableAgents: [] });
+      await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
+    }
   });
 
   it('accepts a report whose update is null', async () => {

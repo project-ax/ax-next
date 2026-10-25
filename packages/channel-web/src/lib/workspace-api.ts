@@ -42,6 +42,7 @@ import {
   ROUTINE_READING_MAX_ABS,
   ROUTINE_REPLY_CHECK_INS,
   ROUTINE_REPORT_STATUSES,
+  RoutineFinishBySchema,
   RoutineFireViewSchema,
   RoutineStatusSchema,
   type RoutineStepOp,
@@ -105,6 +106,7 @@ CounterRow,
   UserFileEntry,
   TaskCheckin,
   TaskDetail,
+  TaskFinishByResponse,
   TaskReplyResponse,
   TaskStepsResponse,
   TaskRow,
@@ -472,6 +474,21 @@ function isTaskReading(v: unknown): boolean {
 }
 
 /**
+ * A get-done task's finish date as the host sends it (TASK-951): a date the
+ * contract's own rule accepts and a whole count of days. A date no calendar
+ * has would make `Intl` throw while the page renders, so it is refused here.
+ */
+function isTaskFinishBy(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.date) &&
+    RoutineFinishBySchema.safeParse(v.date).success &&
+    typeof v.daysLeft === 'number' &&
+    Number.isInteger(v.daysLeft)
+  );
+}
+
+/**
  * `task` is null until the first report; a report is drawn from every one of
  * its fields. The ask (TASK-933) is text or null when present. An ABSENT ask is a
  * host from before TASK-933 (an SPA synced onto an older host by `make
@@ -507,6 +524,8 @@ function withRowDefaults(row: TaskRow): TaskRow {
     ...row,
     kind: toTaskKind(row.kind),
     steps: 'steps' in row ? row.steps : null,
+    // A host from before TASK-951 sends no finish date.
+    finishBy: 'finishBy' in row ? row.finishBy : null,
     task:
       row.task === null || 'ask' in row.task
         ? row.task
@@ -559,6 +578,7 @@ function isTaskRow(v: unknown): boolean {
     typeof v.enabled === 'boolean' &&
     (!('kind' in v) || isString(v.kind)) &&
     (!('steps' in v) || v.steps === null || isTaskStepCounts(v.steps)) &&
+    (!('finishBy' in v) || v.finishBy === null || isTaskFinishBy(v.finishBy)) &&
     (v.task === null || isTaskReport(v.task)) &&
     (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate))
   );
@@ -691,6 +711,8 @@ function isTaskDetail(b: unknown): boolean {
     (b.task === null || isTaskDetailReport(b.task)) &&
     Array.isArray(b.steps) &&
     b.steps.every(isTaskStep) &&
+    'finishBy' in b &&
+    (b.finishBy === null || isTaskFinishBy(b.finishBy)) &&
     (b.noRecentUpdate === null || isTaskNoRecentUpdate(b.noRecentUpdate)) &&
     Array.isArray(b.updates) &&
     b.updates.every(isTaskUpdate) &&
@@ -1231,6 +1253,24 @@ export const workspaceApi = {
       body: { requestId: input.requestId, ops: input.ops },
     });
     return checkedRead<TaskStepsResponse>(path, body, isTaskStepsResponse);
+  },
+
+  /**
+   * Set a get-done task's finish date, or remove it with null (TASK-951). The
+   * answer carries the date as the host counts it (`daysLeft`), and the page
+   * shows that, so an answer that doesn't say is a `WorkspaceShapeError`.
+   * Setting the same date twice is the same write, so a retry is safe. A
+   * refusal or failure is a `WorkspaceApiError` carrying only the status.
+   */
+  setTaskFinishBy: async (agentId: string, routineId: string, finishBy: string | null) => {
+    const path = `${taskPath(agentId, routineId)}/finish-by`;
+    const body = await req<unknown>(path, { method: 'PUT', body: { finishBy } });
+    return checkedRead<TaskFinishByResponse>(
+      path,
+      body,
+      (v) =>
+        isRecord(v) && !Array.isArray(v) && 'finishBy' in v && (v.finishBy === null || isTaskFinishBy(v.finishBy)),
+    );
   },
 
   approveDecision: async (id: string, approvalScope?: 'once' | 'agent-routines') =>

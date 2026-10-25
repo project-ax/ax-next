@@ -103,6 +103,14 @@ export interface RoutinesDefinitionsRow {
    * (`storedSteps`), so one odd value can't stop a read or the tick.
    */
   task_steps: ColumnType<unknown, string | undefined, string>;
+  /**
+   * Version 12 (TASK-951). A "get-done" task's finish date, `YYYY-MM-DD` as
+   * TEXT, set only by a person (`setFinishBy`); NULL when it has none. Cleared
+   * by a change of kind (`updateAuthored`, `NO_FINISH_BY`) and kept by a change
+   * of owner (`reconcileOwners`). Its CHECK holds only the format, so a read
+   * takes it through the contract's whole rule (`storedFinishBy`, store.ts).
+   */
+  finish_by: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -280,7 +288,47 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addGetDoneSteps(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (11)`.execute(trx);
     }
+    if (!await done(12)) {
+      await addFinishByColumn(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (12)`.execute(trx);
+    }
   });
+}
+
+/** Version 12 (TASK-951): a "get-done" task's finish date, which only a person
+ * sets (`setFinishBy`, store.ts). TEXT holding `YYYY-MM-DD`, not `date`:
+ * pg-types 2.2.0 parses a `date` (OID 1082) into a JS `Date` at the host's local
+ * midnight, which moves the day in some host time zones, and nothing here sets a
+ * type parser. The named CHECK holds the format only; the rule's range and
+ * real-date checks stay at the writer (`RoutineFinishBySchema`), so a later rule
+ * can't make stored rows unreadable (TASK-913), and a read takes whatever the
+ * rule refuses as no date (`storedFinishBy`, store.ts). It is written with
+ * `[0-9]`, never a backslash-d: Kysely's `sql` tag sends the template's cooked
+ * text, where that escape arrives as a plain `d`, and the CHECK would then
+ * refuse every real date. NULL means none and passes it. Additive, with no
+ * backfill: existing rows read NULL, and a re-run keeps the column's values and
+ * its one CHECK. Rollback-safe: code from before this version never names the
+ * column, and receipts leave the date out (`receiptCopy`, store.ts). One edge:
+ * that code's `updateAuthored` doesn't clear the date on a change of kind, so a
+ * task taken get-done, stay-on-top, then get-done again under it shows its old
+ * date again after rolling forward.
+ */
+async function addFinishByColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS finish_by TEXT`.execute(db);
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_definitions_finish_by_chk'
+           AND conrelid = 'routines_v1_definitions'::regclass
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          ADD CONSTRAINT routines_v1_definitions_finish_by_chk
+          CHECK (finish_by IS NULL OR finish_by ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+      END IF;
+    END $$;
+  `.execute(db);
 }
 
 /** Version 11 (TASK-948): the "get-done" kind and its checklist. The kind

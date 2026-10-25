@@ -41,6 +41,7 @@ import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
 import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
+import { finishByCount } from '@/lib/task-finish-by';
 import { formatReading } from '@/lib/task-reading';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
@@ -315,6 +316,8 @@ function TaskList({
  * One task: its name, whose it is and when it last checked in, then the
  * agent's latest update, or, when its last check-ins left none, why (TASK-930),
  * and the agent's reading from that update's report (TASK-952).
+ * A get-done task's finish date, when it has one, ends the second line
+ * ("2 of 5 steps · 9 days left", TASK-951).
  * "checked" still dates the last real report. A never-reported task shows its agent's name alone:
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
@@ -350,12 +353,18 @@ function TaskItem({
   // A get-done task with steps says how far along it is where a stay-on-top
   // one says when it last checked in (TASK-948). One with none yet reads as any
   // other, so a row never claims "0 of 0 steps".
-  const secondLine =
+  const progress =
     row.kind === 'get-done' && row.steps !== null && row.steps.total > 0
       ? `${row.agentName} · ${row.steps.done} of ${row.steps.total} steps`
       : ago === null
         ? row.agentName
         : `${row.agentName} · checked ${ago}`;
+  // A get-done task with a finish date says how long is left after that (TASK-951).
+  // TASK-950 adds Done: whichever of TASK-950 / TASK-951 merges second hides this on a Done task.
+  const secondLine =
+    row.kind === 'get-done' && row.finishBy !== null
+      ? `${progress} · ${finishByCount(row.finishBy.daysLeft)}`
+      : progress;
   return (
     <a
       {...routeLinkProps(

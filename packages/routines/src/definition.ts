@@ -76,6 +76,10 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   // key out (store.ts, receiptCopy), as did any written before this field, and the default fills
   // it in.
   steps: z.array(z.object({ id: z.string(), text: z.string(), done: z.boolean(), addedBy: RoutineStepAuthorSchema }).strict()).default([]),
+  // TASK-951. A type only: rowToRoutine has already read the column through the contract's rule
+  // (store.ts, storedFinishBy), so no stored row is refused here. Receipts leave the key out
+  // (store.ts, receiptCopy), as did any written before this field, and the default fills it in.
+  finishBy: z.string().nullable().default(null),
 }).strict().superRefine((row, ctx) => {
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));
   if (!checked.success) for (const issue of checked.error.issues) ctx.addIssue(issue);

@@ -29,7 +29,7 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; Mark done (TASK-950) comes next.
+- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); Mark done (TASK-950) comes next.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -253,6 +253,8 @@ design's judge model and its counted or estimated measures.
 > PR 3 (TASK-948): A "Get something done" task's agent drafts its steps at its first check-in, through routine_report, so the approval card is unchanged. It can tick or untick any step and add steps (up to 50, one line of up to 200 characters each), which the page labels "added by {agent}"; it can reword or remove only the steps it added. The task page shows the steps read-only for now, under the agent's reading when its latest report sent one (TASK-952) and above the brief, and the Tasks row says "2 of 5 steps". A change of kind or of owner starts the checklist over. A person editing steps is TASK-949; "I think it's done" and Mark done are TASK-950.
 > PR 3 (TASK-949): The task's owner edits the steps on its page, with no approval and no new revision: they tick or untick any step, add one (labelled theirs), and reword or delete any step, the agent's included, from its ⋯ menu (Delete asks nothing: a step is one line). Proposed (to confirm with Vinay): rewording a step the agent added makes it the person's, so the agent reads it as their words and can no longer reword or remove it. Each press is one change, the same kind the agent sends, and a retry never applies twice. Reordering, undo and steps on Today come later.
 
+> PR 3 (TASK-951): A "Get something done" task can have a Finish by date that only a person sets, on its task page, under its kind and schedule ("Add a finish date", then "Change"; in the open field, "Save", "Remove date" or "Cancel"). It's a date, not a time, read in the task's own time zone (its schedule's, else its active hours', else UTC). The page says "Finish by Sat, Nov 14 · 9 days left", "Due today" or "3 days past its finish date", and the Tasks row adds the count after its steps. Each check-in's brief says how many days are left and asks the agent to report Off track when the steps left won't fit; ax never works that out itself. No agent or tool can set it. A change of kind clears it, a change of owner keeps it, and Duplicate (TASK-953) leaves it behind.
+
 ### 3.5 Today
 
 Today stays the one inbox. Anything a task needs from a person joins the
@@ -467,13 +469,13 @@ the model that people call routines "tasks".
 
 | Piece | Change |
 |---|---|
-| Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. (As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 11, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.) |
+| Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. (As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 11, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.) (TASK-951: a "get-done" task's Finish by date is a column of its own beside the definition, schema version 12; only a person sets it, and it's in no tool's input.) |
 | Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). (TASK-948: steps are one JSON list on the routine, edited by id by the agent's report and (TASK-949) by the person on the task page through `routines:set-steps`, both under the routine's row lock, and cleared with the rest of the state on a change of kind or owner.) |
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. (TASK-936: and who it ran as, schema version 9; Updates and the check-in message read only the runs that ran as the task's current owner) (TASK-952: and its reading, schema version 10). |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. (TASK-931: `routines_v1_replies`, schema version 8, with each reply's request id so a retry is stored once; the task page shows the last 50.) |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
 | Agent tool | `routine_report`, executed on the host. Every chat lists it, but it records a report only inside a task check-in and refuses anywhere else (§4.3). |
-| Hooks | `routines:report`, `routines:clear-notes`, `routines:tasks-for-conversations` (a read for labels: which conversations are the caller's own task check-ins, TASK-932), `routines:reply`, `routines:recent-replies` (the owner's replies, for the task page), `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
+| Hooks | `routines:report`, `routines:clear-notes`, `routines:tasks-for-conversations` (a read for labels: which conversations are the caller's own task check-ins, TASK-932), `routines:reply`, `routines:recent-replies` (the owner's replies, for the task page), `routines:set-finish-by` (a person sets or removes a "get-done" task's finish date, TASK-951), `routines:set-steps`, `routines:complete`, `routines:reopen`. `list` and `get` return the task state. |
 | Prompt | One optional W1 provider (§4.2). |
 | channel-web | Tasks page, task page, New task dialog, the Today group, and a read-only view of one check-in's transcript. The Activity page, the agent's Activity tab and the `/api/workspace/activity` route are removed (§3.7). |
 
@@ -721,6 +723,8 @@ ordinary task.
 
 PR 3 (TASK-952): A reading is one number a check-in may add to its report, with a label the agent chooses ("Open tickets: 3"), on any task. Each run keeps its own, and the task shows its latest report's. The task page shows "{agent}’s reading": the label and the latest value, a small line of the earlier values that share that label (up to 12, from the page's last 50 check-ins), and the same values in words. Each Updates entry adds its reading, and the Tasks row shows the latest unless the task has missed check-ins. It is always the agent's reading, never a measure ax computed or checked: no axes, targets, percentages or forecasts. Each check-in's message lists its recent reports' readings, so the agent can keep its label the same. A change of kind or owner clears the latest, as it clears the rest of the task's state.
 
+PR 3 (TASK-951): Finish by is a date only a person sets, on a "Get something done" task's page. The row, the page and each check-in's brief count the days to it the same way, in the task's own time zone, and the brief asks the agent to report Off track when the steps left won't fit.
+
 Family use also needs things outside tasks. Sign-in is limited to the
 workspace's allowed domains, and kids raise questions about who gets an agent,
 what parents can see and per-person spending limits.
@@ -906,7 +910,7 @@ view-only sharing of a task and an "Also ask" list.
 - **New hooks:** `routines:report`, `routines:clear-notes` (TASK-910),
   `routines:tasks-for-conversations` (TASK-932, owner-only, absent for
   anything that isn't the caller's own check-in),
-  `routines:reply`, `routines:recent-replies`, `routines:set-steps`,
+  `routines:reply`, `routines:recent-replies`, `routines:set-finish-by` (TASK-951, owner-only, neither a tool nor an IPC action), `routines:set-steps`,
   `routines:complete`, `routines:reopen`; task state on `routines:list` and `routines:get`, and `noRecentUpdate` (TASK-930); the
   `system-prompt:augment:optional:routines` provider; the
   veto-capable `chat:system-prompt-landed { reqId: string; providers: string[] }`
@@ -1002,3 +1006,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-24 | Decided | A change of kind or of owner starts a task's checklist over, and `routine_list` and `routine_update` leave steps out (`routine_get` has them) (TASK-948). |
 | 2026-10-24 | Decided | A task's owner edits its steps on the task page, with no approval and no new revision, one change per press through routines:set-steps: the same changes the agent sends, applied by id under the row lock. They can reword or delete any step, the agent's included; a step they add is theirs, which the agent can tick but not reword or remove. Both writers keep entries they can't read, and receipts keep a count, never step text (TASK-949). |
 | 2026-10-24 | Proposed (to confirm with Vinay) | A person's reword that changes a step's text makes the step theirs (`addedBy: 'person'`), the agent's steps included, so the agent reads it as their words and can then only tick it. Before saving, the editor says so (TASK-949). |
+| 2026-10-24 | Decided | A "Get something done" task can have an optional Finish by date. Only a person sets it, on its task page; no agent or tool can. It's a date in the task's own time zone (its schedule's, else its active hours', else UTC), shown on the Tasks row and the task page as days left. Its check-ins' brief asks the agent to report Off track when the steps left won't fit, and ax never computes that. A change of kind clears it, a change of owner keeps it, and Duplicate doesn't copy it (TASK-951). |

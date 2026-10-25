@@ -131,7 +131,8 @@ const UNCONFIRMED_4XX: ReadonlySet<number> = new Set([408, 429]);
  * that sends a request id keeps it for the retry, and the host recognises the
  * retry instead of doing it twice. After an answered refusal a retry is a new
  * attempt with a new id. One rule for every such write (TASK-931's reply box,
- * TASK-949's task steps), so the two can't drift.
+ * TASK-949's task steps, TASK-951's finish date, which sends no id because the
+ * same date set twice is the same write), so they can't drift.
  */
 export function isConfirmedRefusal(e: unknown): e is HttpError {
   return e instanceof HttpError && e.status >= 1 && e.status < 500 && !UNCONFIRMED_4XX.has(e.status);

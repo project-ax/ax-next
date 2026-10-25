@@ -12,7 +12,7 @@ export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
-  'reply', 'recent-replies', 'set-steps',
+  'reply', 'recent-replies', 'set-steps', 'set-finish-by',
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
@@ -40,7 +40,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
-    noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId) };
+    noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -55,7 +55,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * there: fire.ts stores `renderedPrompt: null` for task runs, TASK-908). A repeat
  * routine shows none either: changing a kind clears it, and this hides any a row
  * holds anyway. TASK-952: a report's reading is part of `task` and of `report`,
- * so it follows the same rule.
+ * so it follows the same rule. TASK-951: a "get-done" task's finish date isn't
+ * task state, so this rule doesn't cover it (`finishByView`).
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
@@ -76,6 +77,19 @@ function readingView(reading: StoredReading | null): C.RoutineReadingView | null
 function stepsView(row: StoredRoutine, userId: string): C.RoutineStepView[] {
   if (row.ownerUserId !== userId || row.kind !== 'get-done') return [];
   return row.steps.map(({ id, text, done, addedBy }) => ({ id, text, done, addedBy }));
+}
+/**
+ * TASK-951. A "get-done" task's finish date, or null. `=== 'get-done'`, an
+ * explicit allowlist, as for `stepsView`: no other kind has one, so a row of
+ * another kind that holds a date (a hand edit, or a change of kind made by code
+ * from before schema version 12, which didn't clear it) shows none, and so does
+ * a kind this code doesn't know. Not under `taskView`'s rule: a person set the
+ * date, it holds no agent text, and it is about the work rather than what only
+ * the owner can reach, so whoever can see the routine sees it (TASK-951
+ * decisions row 19). The store has already read it through the contract's rule.
+ */
+function finishByView(row: StoredRoutine): string | null {
+  return row.kind === 'get-done' ? row.finishBy : null;
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under
@@ -319,6 +333,23 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
     ctx.logger.info('routines_notes_cleared', { agentId: input.agentId, routineId: input.routineId });
     return { cleared: true as const };
+  });
+  // TASK-951. The person sets or removes a "get-done" task's finish date on its task page. Only the
+  // task's owner may, whether or not they still manage the agent's tasks: the date changes only how
+  // the agent words its status at its check-ins, so it adds no reach. So there's no `allowed` check,
+  // but agents:resolve still runs first and refuses an agent the caller can't reach. The input
+  // schema checked the date before anything ran. The store then decides the owner and the kind
+  // under the agent fence and the routine's row lock, so a task that stopped being get-done before
+  // the write (a change of kind committed first) is not-found, and it never moves the revision: an
+  // edit, Check now or Pause held against the current one still lands. Neither a tool nor an IPC
+  // action, so no model can set it. The log line carries ids and a flag only, never the date.
+  register('set-finish-by', C.RoutineSetFinishByInputSchema, C.RoutineSetFinishByOutputSchema, async (ctx, input) => {
+    await access(ctx, input.agentId);
+    const outcome = await store.setFinishBy({ agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, finishBy: input.finishBy });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    ctx.logger.info('routines_finish_by_set', { agentId: input.agentId, routineId: input.routineId, cleared: outcome.finishBy === null });
+    return { finishBy: outcome.finishBy };
   });
   // TASK-932. Which of these conversations are check-ins of the caller's own tasks, so Today can name the
   // task an approval was held in. A label, never an authorization: approve and dismiss go through

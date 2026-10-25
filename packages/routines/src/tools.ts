@@ -205,7 +205,9 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
  * projection is explicit and the strict output schemas then enforce it, so an
  * agentNotes or steps key can't ride along. Who sees a task's state at all is
  * the services' rule (`routineView`): anyone but the owner gets `task: null`
- * and no steps before it gets here.
+ * and no steps before it gets here. TASK-951: a "get-done" task's finish date
+ * stays in both answers. It's one short date a person set, not agent text, and
+ * it tells the agent how much time is left when it says how a task is going.
  */
 function listToolView({ task, steps: _steps, ...routine }: C.RoutineView) {
   if (task === null) return { ...routine, task };

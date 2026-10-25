@@ -27,6 +27,7 @@ function row(routineId: string, name: string): TaskRow {
     enabled: true,
     kind: 'stay-on-top',
     steps: null,
+    finishBy: null,
     task: null,
     noRecentUpdate: null,
   };
