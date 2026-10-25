@@ -498,15 +498,16 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * A run without a report doesn't count once a run that started after it has
  * reported (`task_report_accepted_at`), finished or not. If that report's run
  * is still open, the count drops to the misses that started after it, if
- * that's fewer (`unansweredAfter`). A count below one (a hand edit) is left as
- * it is. A run without a report that started at or after an open report counts
+ * that's fewer (`unansweredAfter`). A count of zero has nothing to drop, and
+ * one below zero (a hand edit) is left as it is. A run without a report that started at or after an open report counts
  * on from the misses after that report, capped at the count plus one, so a
  * Resume's fresh start holds. It doesn't count itself when it started in the
  * same instant as that report, whose run finishes after it. With no misses
  * after that report, it clears them.
  *
- * A run that reported behind a newer miss (`task_miss_at`) leaves that miss,
- * with its reason and start. It ends the misses before it, and the ones before
+ * A run that reported behind a newer miss (`task_miss_at`) leaves that miss's
+ * reason and start, unless a newer open report answered it too (below). It
+ * ends the misses before it, and the ones before
  * a newer report whose run is still open: the count drops to the runs that
  * started after the later of the two and finished without a report, if that's
  * fewer. Trimmed from its own start, the newer miss's own run is one of them,
@@ -522,7 +523,8 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  *
  * So, apart from the cases above that leave them as they are, every finish
  * leaves the count at exactly the misses that started after the latest saved
- * report. Between finishes it can lag. A report is saved before its run
+ * report, runs that started in the same instant going in the order they
+ * finish, an open one last. Between finishes it can lag. A report is saved before its run
  * finishes, so the misses before it stay counted until the next finish. A
  * person can see that, but nothing pauses on it: a pause is decided only when
  * a miss is counted, and the count is exact then. The count can run long when
@@ -532,10 +534,12 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * It runs short in one case: a hand edit or a rollback leaves a stored report
  * that its run's finish reads as none (one this version can't read, such as a
  * later version's, or a JSON null). The runs that finished while that report's
- * run was open took it as answering the misses before it, because
- * `reportStillOpen` asks only that a report is stored. Then its own run counts
- * as a miss. So the count comes out short by every miss that report was taken
- * to answer, and a pause can be missed.
+ * run was open, older or newer than it, took it as answering the misses before
+ * it, because `reportStillOpen` asks only that a report is stored. Then its
+ * own run counts as a miss, unless a newer
+ * report has been saved since, which answers those misses anyway. So the count
+ * comes out short by every miss that report was taken to answer, and a pause
+ * can be missed.
  *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
