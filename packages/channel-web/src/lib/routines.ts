@@ -1,4 +1,4 @@
-import { httpFetch } from './http';
+import { httpFetch, REQUEST_TIMEOUT_MS, RequestTimeoutError, withRequestTimeout } from './http';
 import type {
   RoutineDefinition,
   RoutinePatch,
@@ -120,21 +120,31 @@ async function request<T>(
   method = 'GET',
   body?: unknown,
 ): Promise<T> {
-  let res: Response;
   try {
-    res = await httpFetch(path, {
-      method,
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'ax-admin',
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    // The deadline covers the whole request, the body read included (TASK-937).
+    return await withRequestTimeout(path, REQUEST_TIMEOUT_MS, async (signal) => {
+      let res: Response;
+      try {
+        res = await httpFetch(path, {
+          method,
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ax-admin',
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal,
+        });
+      } catch {
+        throw new RoutineApiError(0);
+      }
+      return readRoutineResponse<T>(res);
     });
-  } catch {
-    throw new RoutineApiError(0);
+  } catch (e) {
+    // No answer in time reads as a fetch that threw: no answer at all.
+    if (e instanceof RequestTimeoutError) throw new RoutineApiError(0);
+    throw e;
   }
-  return readRoutineResponse<T>(res);
 }
 const collection = (agentId: string) =>
   `/settings/routines/${encodeURIComponent(agentId)}`;

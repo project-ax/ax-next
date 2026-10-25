@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { REQUEST_TIMEOUT_MS } from '../lib/http';
 import { routineApi, RoutineApiError } from '../lib/routines';
 const definition = RoutineDefinitionSchema.parse({
   name: 'Daily',
@@ -143,5 +144,35 @@ describe('structured routine client', () => {
       '/settings/routines/a/consent',
       '/settings/routines/a/receiver',
     ]);
+  });
+});
+describe('a routine request that never answers (TASK-937)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('fails at the deadline as RoutineApiError(0), its fetch aborted', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() => new Promise<Response>(() => {}));
+    const result = routineApi.fireNow({
+      agentId: 'a',
+      routineId: 'r',
+      expectedRevision: 'rev',
+      requestId: 'press-1',
+    });
+    const settled = vi.fn();
+    result.then(settled, settled);
+    const assertion = expect(result).rejects.toMatchObject({
+      name: 'RoutineApiError',
+      status: 0,
+    });
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(settled).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    await expect(result).rejects.toBeInstanceOf(RoutineApiError);
+    expect((fetch.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
   });
 });

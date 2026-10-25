@@ -28,6 +28,11 @@
  * nothing: it would overtake the refresh (whose answer would then be dropped
  * as the older one) and, failing, leave the page as it was before the press.
  *
+ * AN ORDINARY REFRESH CAN'T HANG (TASK-937): every request to a task's address
+ * gives up at `REQUEST_TIMEOUT_MS`, so `refreshing` and the quiet re-reads'
+ * wait end with it, and a re-read that hangs fails before the next one
+ * replaces it, so it counts toward the three.
+ *
  * A CHANGE'S ANSWER (`replaceSteps`, TASK-949) swaps the task's steps with no
  * re-read, since the answer is the steps as they now are. A read that started
  * before that swap may carry older steps (the poll's last read, say, which began

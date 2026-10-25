@@ -50,7 +50,7 @@ import {
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
 import { toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
-import { HttpError, httpErrorMessage, httpFetch } from './http';
+import { HttpError, httpErrorMessage, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
 import { readStorageFull } from './storage-full';
 import { STORAGE_FULL_RULES } from './storage-copy';
 /*
@@ -778,6 +778,16 @@ function taskCheckinPath(agentId: string, routineId: string, conversationId: str
   return `${taskPath(agentId, routineId)}/checkins/${encodeURIComponent(conversationId)}`;
 }
 
+/**
+ * `req` for a request to one task's own address (TASK-937): it gives up after
+ * `REQUEST_TIMEOUT_MS`, so a host that stops answering ends as an ordinary
+ * failure and the task page gets its buttons and its re-reads back. The Tasks
+ * list and every other route keep `req`.
+ */
+function taskReq<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  return req<T>(path, { ...init, timeoutMs: REQUEST_TIMEOUT_MS });
+}
+
 
 export interface FactRecallQuery {
   query?: string;
@@ -839,7 +849,7 @@ function isFactMemoryPage(b: unknown): b is FactMemoryPage {
 async function req<T>(
   path: string,
   init?: {
-    method: string;
+    method?: string;
     body?: unknown;
     /**
      * Opt in to reading a 413 `storage-full` refusal (TASK-719), naming the
@@ -848,23 +858,35 @@ async function req<T>(
      * `WorkspaceApiError`, exactly as before, and its body is never read.
      */
     storageFull?: string;
+    /**
+     * Opt in to a deadline (TASK-937): the whole request (the fetch, the
+     * `storageFull` read, the body) gives up after this many ms with a
+     * `RequestTimeoutError`. Without it there is none, as before.
+     */
+    timeoutMs?: number;
   },
 ): Promise<T> {
-  const res = await httpFetch(`/api/workspace${path}`, {
-    method: init?.method ?? 'GET',
-    ...(init?.method !== undefined && init.method !== 'GET'
-      ? { headers: writeHeaders }
-      : {}),
-    ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-  });
-  if (!res.ok) {
-    if (init?.storageFull !== undefined) {
-      const full = await readStorageFull(`/api/workspace${path}`, res, init.storageFull);
-      if (full !== null) throw full;
+  const send = async (signal?: AbortSignal): Promise<T> => {
+    const res = await httpFetch(`/api/workspace${path}`, {
+      method: init?.method ?? 'GET',
+      ...(init?.method !== undefined && init.method !== 'GET'
+        ? { headers: writeHeaders }
+        : {}),
+      ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (!res.ok) {
+      if (init?.storageFull !== undefined) {
+        const full = await readStorageFull(`/api/workspace${path}`, res, init.storageFull);
+        if (full !== null) throw full;
+      }
+      throw new WorkspaceApiError(path, res.status);
     }
-    throw new WorkspaceApiError(path, res.status);
-  }
-  return (await res.json()) as T;
+    return (await res.json()) as T;
+  };
+  return init?.timeoutMs === undefined
+    ? send()
+    : withRequestTimeout(`/api/workspace${path}`, init.timeoutMs, send);
 }
 
 /** Slice 3 — one key an Add saves on the agent: the slot's name and the key itself. */
@@ -1209,7 +1231,7 @@ export const workspaceApi = {
    */
   task: async (agentId: string, routineId: string) => {
     const path = taskPath(agentId, routineId);
-    const body = await req<unknown>(path);
+    const body = await taskReq<unknown>(path);
     const detail = checkedRead<TaskDetail>(path, body, isTaskDetail);
     return { ...detail, kind: toTaskKind(detail.kind) };
   },
@@ -1220,7 +1242,7 @@ export const workspaceApi = {
    */
   taskCheckin: async (agentId: string, routineId: string, conversationId: string) => {
     const path = taskCheckinPath(agentId, routineId, conversationId);
-    const body = await req<unknown>(path);
+    const body = await taskReq<unknown>(path);
     return checkedRead<TaskCheckin>(path, body, isTaskCheckin);
   },
 
@@ -1232,7 +1254,7 @@ export const workspaceApi = {
    */
   clearTaskNotes: async (agentId: string, routineId: string) => {
     const path = `${taskPath(agentId, routineId)}/notes`;
-    const body = await req<unknown>(path, { method: 'DELETE' });
+    const body = await taskReq<unknown>(path, { method: 'DELETE' });
     return checkedRead<{ cleared: true }>(
       path,
       body,
@@ -1252,7 +1274,7 @@ export const workspaceApi = {
     input: { text: string; requestId: string },
   ) => {
     const path = `${taskPath(agentId, routineId)}/replies`;
-    const body = await req<unknown>(path, {
+    const body = await taskReq<unknown>(path, {
       method: 'POST',
       body: { text: input.text, requestId: input.requestId },
     });
@@ -1274,7 +1296,7 @@ export const workspaceApi = {
     input: { requestId: string },
   ) => {
     const path = `${taskPath(agentId, routineId)}/complete`;
-    const body = await req<unknown>(path, {
+    const body = await taskReq<unknown>(path, {
       method: 'POST',
       body: { requestId: input.requestId },
     });
@@ -1299,7 +1321,7 @@ export const workspaceApi = {
     input: { text: string; requestId: string },
   ) => {
     const path = `${taskPath(agentId, routineId)}/reopen`;
-    const body = await req<unknown>(path, {
+    const body = await taskReq<unknown>(path, {
       method: 'POST',
       body: { text: input.text, requestId: input.requestId },
     });
@@ -1318,7 +1340,7 @@ export const workspaceApi = {
     input: { requestId: string; ops: RoutineStepOp[] },
   ) => {
     const path = `${taskPath(agentId, routineId)}/steps`;
-    const body = await req<unknown>(path, {
+    const body = await taskReq<unknown>(path, {
       method: 'POST',
       body: { requestId: input.requestId, ops: input.ops },
     });
@@ -1334,7 +1356,7 @@ export const workspaceApi = {
    */
   setTaskFinishBy: async (agentId: string, routineId: string, finishBy: string | null) => {
     const path = `${taskPath(agentId, routineId)}/finish-by`;
-    const body = await req<unknown>(path, { method: 'PUT', body: { finishBy } });
+    const body = await taskReq<unknown>(path, { method: 'PUT', body: { finishBy } });
     return checkedRead<TaskFinishByResponse>(
       path,
       body,
@@ -1353,7 +1375,7 @@ export const workspaceApi = {
    */
   duplicateTask: async (agentId: string, routineId: string, input: { requestId: string }) => {
     const path = `${taskPath(agentId, routineId)}/duplicate`;
-    const body = await req<unknown>(path, { method: 'POST', body: { requestId: input.requestId } });
+    const body = await taskReq<unknown>(path, { method: 'POST', body: { requestId: input.requestId } });
     return checkedRead<TaskDuplicateResponse>(
       path,
       body,
