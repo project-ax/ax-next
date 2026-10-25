@@ -3645,7 +3645,10 @@ function toTaskFinishBy(
   if (!RoutineFinishBySchema.safeParse(date).success) return null;
   const tz = taskTimeZone(view);
   if (!RoutineTimezoneSchema.safeParse(tz).success) return null;
-  return { date, daysLeft: calendarDaysUntil(date, now, tz) };
+  const daysLeft = calendarDaysUntil(date, now, tz);
+  // A NaN would cross as null and make the client reject the whole Tasks list.
+  if (!Number.isInteger(daysLeft)) return null;
+  return { date, daysLeft };
 }
 
 /**
