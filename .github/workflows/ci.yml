@@ -176,14 +176,28 @@ jobs:
       # deleting the coverage again.
       - name: Install zsh (the shell the skill blocks actually run under)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
-      # Tests: affected packages + dependents on PRs (fast feedback); full suite on
-      # push to main (cross-package backstop — a shared-table break only shows on the
-      # full run; auto-merge relies on this main gate, see auto-ship merge queue).
+      # Tests: affected packages + dependents on PRs (fast feedback), or the full
+      # suite on a PR that changes dependency resolution (the step says why);
+      # full suite on push to main (cross-package backstop — a shared-table break
+      # only shows on the full run; auto-merge relies on this main gate, see
+      # auto-ship merge queue).
       - name: Test (affected packages + dependents)
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # One diff, read by both checks below. It's captured in an `if`
+          # because a `run:` with no `shell:` gets `bash -e` WITHOUT pipefail:
+          # `git diff … | grep` would turn a failed diff into "nothing
+          # changed", and here "nothing changed" means "skip the tests". A diff
+          # we can't read runs the full suite instead. The checks read it
+          # through here-strings, not pipes, so `grep -q` can't race a writer
+          # if pipefail is ever turned on.
+          full=
+          if ! changed=$(git diff --name-only "$BASE_SHA"...HEAD); then
+            echo "::warning::could not diff against the PR base ($BASE_SHA), so running the full suite rather than guessing."
+            full=yes
+          fi
           # The @ax/agent-claude-sdk-runner MCP-validator drift guard (ARCH-11)
           # asserts the runner's hand-rolled validateMcpEntry against the SAME
           # golden-vectors fixture that @ax/sandbox-protocol's McpServerSchema is
@@ -196,13 +210,37 @@ jobs:
           # sandbox-protocol changes so a drift-introducing fixture/schema edit
           # fails the PR, not main.
           extra=()
-          if git diff --name-only "$BASE_SHA"...HEAD | grep -Eq '^packages/sandbox-protocol/'; then
+          if grep -Eq '^packages/sandbox-protocol/' <<<"$changed"; then
             extra=(--filter @ax/agent-claude-sdk-runner)
             echo "sandbox-protocol changed — also running @ax/agent-claude-sdk-runner (ARCH-11 cross-boundary drift guard)."
           fi
-          # '!{.}' excludes the workspace ROOT project — its `test` script is the full
-          # recursive `pnpm -r run test`, which any root-level file change would otherwise trigger.
-          if pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
+          # Dependency changes reach every package, but `...[$BASE_SHA]` can't
+          # see them. pnpm maps each changed file to the project that contains
+          # it, and these files all live in the workspace ROOT, which '!{.}'
+          # below excludes. So a PR touching only them selected nothing: #1029
+          # (TASK-938) patched zod for every package and CI printed "No affected
+          # workspace packages". The whole root package.json counts, because
+          # its `pnpm` block (overrides, patchedDependencies,
+          # onlyBuiltDependencies, auditConfig) and `packageManager` (the pnpm
+          # version CI installs) both live there. A scripts-only edit costing
+          # one full run is cheaper than parsing JSON here.
+          # scripts/__tests__/ci-dependency-changes-run-full-suite.test.js runs
+          # this block in throwaway repos and pins every rule above.
+          deps='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json)$|^patches/'
+          if grep -Eq "$deps" <<<"$changed"; then
+            full=yes
+            echo "Dependency resolution changed, so running the FULL suite on this PR:"
+            grep -E "$deps" <<<"$changed"
+          fi
+          # `pnpm -r run` leaves the workspace root out on its own (unlike
+          # `pnpm -r list`), so the root's own recursive `test` script can't
+          # re-enter here. On the affected path, '!{.}' excludes the root
+          # explicitly — its `test` script is the full recursive
+          # `pnpm -r run test`, which any root-level file change would
+          # otherwise trigger.
+          if [ -n "$full" ]; then
+            pnpm -r run test
+          elif pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
             pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' run test
           else
             echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
