@@ -430,6 +430,12 @@ describe('a report\u2019s text can\u2019t draw on what\u2019s around it (TASK-95
     }
   });
 
+  it('the tool tells the agent both rules, since a refusal names only the field', () => {
+    expect(RoutineToolDescriptions.routine_report).toContain(
+      'No field may contain invisible characters, a combining mark at the start of a line or after a space, or more than 8 combining marks on one character.',
+    );
+  });
+
   it('gives one reason: the earlier rules speak first, and a mark with nothing to draw on before a stack', () => {
     expect(messagesOf(report('update', 'a\n\u0301'))).toEqual([ONE_LINE]);
     expect(messagesOf(report('notes', ' \u0301\u200B'))).toEqual([HIDDEN]);
