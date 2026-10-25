@@ -133,6 +133,34 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     expect(JSON.stringify(await rowOf(routineId))).not.toContain('QX7731');
   });
 
+  it('copies a Done task as a fresh one: paused, not Done, with no claim and no completion, and its steps take changes (TASK-950)', async () => {
+    const task = await createTask('task');
+    await writeSteps(task.routineId, [step('s000001', 'Export every article', true, 'agent'), step('s000002', 'Check the redirects', false, 'person')]);
+    expect(await f.store.completeTask({ ...task, actorUserId: 'owner', requestId: 'done', mayEdit: true, now: minute(1) })).toEqual({ done: true });
+    // Mark done takes the claim back, so a real row never holds both: the claim and its report are written by hand,
+    // so the copy is made from a row carrying every one of TASK-950's columns at once.
+    await sql`UPDATE routines_v1_definitions SET task_status = 'needs-you', task_update = 'Every article is on the new site.',
+      task_reported_at = ${minute(2)}, task_done_claimed_at = ${minute(2)} WHERE routine_id = ${task.routineId}`.execute(f.db);
+    expect(await f.store.findOne(task)).toMatchObject({ enabled: false, done: { byUserId: 'owner' }, task: { doneClaimed: true } });
+    expect(await rowOf(task.routineId)).toMatchObject({ task_completed_by_user_id: 'owner', task_done_claimed_at: minute(2) });
+    const { routineId } = await copied(task, 'd1');
+    const copy = await rowOf(routineId);
+    expect(copy).toMatchObject({ enabled: false, task_done_claimed_at: null, task_completed_at: null, task_completed_by_user_id: null });
+    // Negative space: every column but the ones a copy sets is as a task that was never run, reported on or
+    // marked done has it, so no column a later version adds can ride across unnoticed.
+    const fresh = (await rowOf((await createTask('fresh')).routineId))!;
+    const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'created_at', 'updated_at', 'task_steps']);
+    for (const [column, value] of Object.entries(copy!)) {
+      if (!SET_BY_THE_COPY.has(column)) expect(value, column).toEqual(fresh[column]);
+    }
+    expect(await f.store.findOne({ agentId: 'a', routineId })).toMatchObject({ enabled: false, done: null, task: null });
+    // Not Done, so its steps take a person's changes, as the source's no longer do.
+    const ticked = await f.store.setSteps({ agentId: 'a', routineId, actorUserId: 'owner', requestId: 's1', ops: [{ op: 'tick', id: (await f.store.findOne({ agentId: 'a', routineId }))!.steps[1]!.id }] });
+    expect(ticked).toMatchObject({ steps: [{ done: false }, { text: 'Check the redirects', done: true }], replayed: false });
+    // The source is as it was: still Done, still claimed.
+    expect(await f.store.findOne(task)).toMatchObject({ done: { byUserId: 'owner' }, task: { doneClaimed: true } });
+  });
+
   it('the same request again answers the same copy and makes one row; another request makes another copy', async () => {
     const task = await createTask('task');
     const other = await createTask('other');
