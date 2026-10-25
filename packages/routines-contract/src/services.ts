@@ -3,7 +3,8 @@ import {
   IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
-  RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineViewSchema,
+  RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineStepViewSchema,
+  RoutineViewSchema,
 } from './definition.js';
 
 export const ROUTINE_SECRET_MAX_BYTES = 64 * 1024;
@@ -46,7 +47,7 @@ export const RoutineFireReportViewSchema = z.object({
   reading: RoutineReadingViewSchema.nullable(),
 }).strict();
 /**
- * `routines:report` (TASK-907), the one writer of a task's state. The tool fills
+ * `routines:report` (TASK-907), the one writer of a task's report. The tool fills
  * `agentId` and `dispatchId` from the host-set session, never from the model.
  * `ask` is required. Leaving `notes` out keeps the saved notes; null clears them.
  * A run accepted at or before the person last cleared the notes can't change them (TASK-910).
@@ -126,6 +127,24 @@ export const RoutineReplyViewSchema = z.object({
   replyId: RoutineOpaqueStringSchema, authorUserId: z.string().min(1), text: z.string(), sentAt: RoutineInstantSchema,
 }).strict();
 export const RoutineRecentRepliesOutputSchema = z.object({ replies: z.array(RoutineReplyViewSchema) }).strict();
+/**
+ * `routines:set-steps` (TASK-949): a task's owner changes its steps on its
+ * task page: adds one, ticks or unticks one, rewords or removes one. Only the
+ * routine's owner may, whether or not they still manage the agent's tasks, and
+ * only on a "get-done" task. `ops` are the changes the agent's report sends,
+ * applied in order, by id: a person may reword or remove any step, the agent's
+ * included, and their `add`, like a step whose words they change, is
+ * `addedBy: 'person'`. A change to a step that's gone, an `add` past 50 and an
+ * `add` whose text is already listed are skipped and counted (`skipped`);
+ * `steps` is the list after them. The same `requestId` again changes nothing
+ * and answers with the steps as they are now and the first try's count; with
+ * other changes, or on another task, it is refused (`request-conflict`). It
+ * never changes the routine's revision. Each text is checked by
+ * `RoutineStepTextSchema`, whose messages the person reads. Neither a tool nor
+ * an IPC action, so no model can call it.
+ */
+export const RoutineSetStepsInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, ops: RoutineReportStepsSchema }).strict();
+export const RoutineSetStepsOutputSchema = z.object({ steps: z.array(RoutineStepViewSchema), skipped: z.number().int().min(0) }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -225,3 +244,5 @@ export type RoutineReplyOutput = z.output<typeof RoutineReplyOutputSchema>;
 export type RoutineRecentRepliesInput = z.output<typeof RoutineRecentRepliesInputSchema>;
 export type RoutineRecentRepliesOutput = z.output<typeof RoutineRecentRepliesOutputSchema>;
 export type RoutineReplyView = z.output<typeof RoutineReplyViewSchema>;
+export type RoutineSetStepsInput = z.output<typeof RoutineSetStepsInputSchema>;
+export type RoutineSetStepsOutput = z.output<typeof RoutineSetStepsOutputSchema>;

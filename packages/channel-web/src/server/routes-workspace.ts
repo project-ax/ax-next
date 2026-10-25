@@ -9,6 +9,7 @@
  * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
  * DELETE /api/workspace/tasks/:agentId/:routineId/notes — clear the agent's notes on that task (TASK-910)
  * POST /api/workspace/tasks/:agentId/:routineId/replies — reply to the agent about that task (TASK-931)
+ * POST /api/workspace/tasks/:agentId/:routineId/steps — add, tick, reword or delete a step on that task (TASK-949)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
@@ -59,23 +60,27 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's four routes, `/tasks/:agentId/:routineId`, its
- *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911) and
- *     its `/replies` (TASK-931), which reach the agent's tasks rather than
- *     its files. The order on each is: `authOr401` → empty-id 400 →
- *     `resolveAgentOr404` → (path validation) → read. Nothing reads before
- *     the resolve. The task page then shows only the caller's own task
- *     (`isOwnTask`), and reads no run history and no reply before deciding
- *     that. A check-in's transcript (TASK-911) must also be one of that
- *     task's newest 200 check-ins before its conversation is read, and
- *     `conversations:get` checks again that it is the caller's own.
- *     `/notes` and `/replies` are writes that read nothing at all: before the
- *     resolve they check only the request (`/replies` its body's shape too)
- *     and that their hook is there, and their services decide ownership
- *     under the routine's row lock. A reply's text is the person's own, and
- *     the contract's reply rule screens it (blank, too long, invisible or
- *     broken characters) before anything is written; it reaches a model only
- *     quoted in a check-in's message.
+ *     the task page's five routes, `/tasks/:agentId/:routineId`, its
+ *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
+ *     `/replies` (TASK-931) and its `/steps` (TASK-949), which reach the
+ *     agent's tasks rather than its files. The order on each is:
+ *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
+ *     → read. Nothing reads before the resolve. The task page then shows
+ *     only the caller's own task (`isOwnTask`), and reads no run history and
+ *     no reply before deciding that. A check-in's transcript (TASK-911) must
+ *     also be one of that task's newest 200 check-ins before its
+ *     conversation is read, and `conversations:get` checks again that it is
+ *     the caller's own. `/notes`, `/replies` and `/steps` are writes that
+ *     read nothing at all: before the resolve they check only the request
+ *     (`/replies` and `/steps` their body's shape too) and that their hook is
+ *     there, and their services decide ownership under the routine's row
+ *     lock. A reply's text is the person's own, and the contract's reply rule
+ *     screens it (blank, too long, invisible or broken characters) before
+ *     anything is written; it reaches a model only quoted in a check-in's
+ *     message. So is a step's text sent to `/steps`: the contract's step rule
+ *     screens it the same way (one line too), and a step whose words it
+ *     writes is quoted in a check-in's message labelled as the person's, from
+ *     the host-set author no change can set.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -221,6 +226,7 @@ import type {
   TasksResponse,
   TaskStep,
   TaskStepCounts,
+  TaskStepsResponse,
   TaskUpdate,
   ThreadAttachment,
   ThreadMessage,
@@ -818,6 +824,24 @@ interface TaskReplyInput extends TaskKeyInput {
   text: string;
 }
 type TaskReplyOutput = Pick<RoutineReplyOutput, 'checkIn'>;
+
+/**
+ * `routines:set-steps` (TASK-949), as the task page uses it. `ops` crosses as
+ * the body sent it: the contract checks every change, its text included,
+ * before anything is written. The bus has already parsed the answer through
+ * the service's `returns` (`RoutineSetStepsOutputSchema`), so `skipped` is
+ * read, not checked again. The steps are still read as leniently as a view's
+ * (`readStepList`) and built field by field (`toTaskStep`), so the answer
+ * draws every step exactly as the task page's own read does.
+ */
+interface TaskStepsInput extends TaskKeyInput {
+  requestId: string;
+  ops: unknown[];
+}
+interface TaskStepsOutput {
+  steps: unknown;
+  skipped: number;
+}
 
 /**
  * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
@@ -3514,7 +3538,7 @@ function toTaskReading(reading: unknown): TaskReading | null {
   return fenced === null ? null : { label: fenced, value };
 }
 
-/** A step as `readSteps` keeps it: every field there, and `addedBy` any string. */
+/** A step as `readStepList` keeps it: every field there, and `addedBy` any string. */
 interface ReadStep {
   id: string;
   text: string;
@@ -3523,16 +3547,25 @@ interface ReadStep {
 }
 
 /**
- * A view's checklist (TASK-948): none unless the task is `get-done` and its
- * steps are a list. Lenient about a view the schema didn't parse (TASK-913),
- * as `toTaskNoRecentUpdate` is: an entry without a non-empty string id, a
- * string text, a boolean `done` and a string author is left out, never a
- * thrown request. The Tasks row's counts and the task page's steps both read
- * through here, so the two always agree.
+ * A view's checklist (TASK-948): none unless the task is `get-done`, then its
+ * steps as `readStepList` reads them. The Tasks row's counts and the task
+ * page's steps both read through here, so the two always agree.
  */
 function readSteps(view: Pick<RoutineView, 'kind' | 'steps'>): ReadStep[] {
-  const steps: unknown = view.steps;
-  if (view.kind !== 'get-done' || !Array.isArray(steps)) return [];
+  return view.kind === 'get-done' ? readStepList(view.steps) : [];
+}
+
+/**
+ * A list of steps, read leniently: none unless it is a list. Lenient about a
+ * view or an answer the schema didn't parse (TASK-913), as
+ * `toTaskNoRecentUpdate` is: an entry without a non-empty string id, a string
+ * text, a boolean `done` and a string author is left out, never a thrown
+ * request. A view's steps (`readSteps`) and a step change's answer (TASK-949)
+ * both read through here, so a change draws its steps exactly as the page's
+ * own read does.
+ */
+function readStepList(steps: unknown): ReadStep[] {
+  if (!Array.isArray(steps)) return [];
   return steps.flatMap((entry: unknown): ReadStep[] => {
     if (entry === null || typeof entry !== 'object') return [];
     const { id, text, done, addedBy } = entry as Record<string, unknown>;
@@ -3556,10 +3589,12 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
  * One step → the task page's (TASK-948), field by field. The text is agent- or
  * person-written, and stored text isn't re-checked against the writer's rules
  * (TASK-913), so it is fenced HERE to one line (`TASK_STEP_TEXT_MAX_CHARS`).
- * The id crosses as-is: an opaque host id, for the next card's edits, never
- * drawn. `byAgent` comes from the host-set author, and anything but a person
- * reads as the agent's: the label is how a person spots text that isn't
- * theirs, so it fails toward "the agent wrote this".
+ * The id crosses as-is: an opaque host id, never drawn, which the page's step
+ * changes name (TASK-949). `byAgent` comes from the host-set author, and
+ * anything but a person reads as the agent's: the label is how a person spots
+ * text that isn't theirs, so it fails toward "the agent wrote this". The task
+ * page's read and a step change's answer (TASK-949) both build each step
+ * here.
  */
 function toTaskStep(step: ReadStep): TaskStep {
   return {
@@ -3658,6 +3693,21 @@ function readTaskReplyBody(parsed: unknown): { text: string; requestId: string }
   if (typeof text !== 'string') return null;
   if (typeof requestId !== 'string' || requestId.length === 0) return null;
   return { text, requestId };
+}
+
+/**
+ * A step change's body (TASK-949): an object holding a non-empty string
+ * `requestId` and a list `ops`, or null. Only its shape is checked here. What
+ * each change may be, and what its text may hold, is the contract's
+ * (`RoutineSetStepsInputSchema`), which `routines:set-steps` applies before it
+ * writes anything; anything else in the body is left behind.
+ */
+function readTaskStepsBody(parsed: unknown): { requestId: string; ops: unknown[] } | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const { requestId, ops } = parsed as Record<string, unknown>;
+  if (typeof requestId !== 'string' || requestId.length === 0) return null;
+  if (!Array.isArray(ops)) return null;
+  return { requestId, ops };
 }
 
 /**
@@ -7558,6 +7608,85 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * POST /api/workspace/tasks/:agentId/:routineId/steps — a task's owner
+     * changes its steps (TASK-949): adds one, ticks or unticks one, rewords or
+     * deletes one, the agent's included. No approval, and no new revision.
+     *
+     * The reply route's order: `authOr401` → ids (400) → the body: JSON (400
+     * `invalid-json`) holding a non-empty string `requestId` and an `ops`
+     * list (400 `invalid-body`) → without `routines:set-steps`, 503 →
+     * `resolveAgentOr404` → `routines:set-steps` as the caller, its input
+     * built field by field, so nothing else in the body rides along and the
+     * address, not the body, names the task. It reads nothing first: the
+     * service decides who may (the task's owner) under the routine's row
+     * lock, and the contract screens every change, its text included (blank,
+     * too long, more than one line, invisible or broken characters), before
+     * anything is written.
+     *
+     * A `validation` refusal is the change as sent, nearly always one the
+     * contract refuses (an id no routine can have is the other case), and
+     * answers 400 `steps-invalid`. It is checked before `isTaskRefusal`,
+     * which counts `validation` as a read's 404. `not-found` (no such task,
+     * or one that isn't "get-done") and `forbidden` (someone else's) are the
+     * page's own 404. Anything else fails the request, `request-conflict`
+     * included: only a request id reused for a different change raises it,
+     * and the page never sends one. The answer is the steps as they are now,
+     * each built as the task page's read builds it (`readStepList`,
+     * `toTaskStep`), and how many changes were skipped. CSRF is
+     * @ax/http-server's global guard, met by `workspace-api`'s write headers,
+     * as for Clear notes.
+     */
+    async taskSteps(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readTaskStepsBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+      if (!bus.hasService('routines:set-steps')) {
+        res.status(503).json({ error: 'task-steps-unavailable' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, key.agentId, userId, res);
+      if (agent === null) return;
+      let out: TaskStepsOutput;
+      try {
+        out = await bus.call<TaskStepsInput, TaskStepsOutput>(
+          'routines:set-steps',
+          agentWorkspaceCtx(key.agentId, userId),
+          {
+            agentId: key.agentId,
+            routineId: key.routineId,
+            requestId: body.requestId,
+            ops: body.ops,
+          },
+        );
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'steps-invalid' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({
+        steps: readStepList(out.steps).map(toTaskStep),
+        skipped: out.skipped,
+      } satisfies TaskStepsResponse);
+    },
+
+    /**
      * GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId —
      * one check-in's transcript, read-only, for its task's owner only
      * (TASK-911, decisions rows 2, 3, 5, 6 and 9).
@@ -9927,6 +10056,13 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/tasks/:agentId/:routineId/replies',
       handler: handlers.taskReply as unknown as RouteHandler,
+    },
+    {
+      // TASK-949 — the task's owner changes its steps. The service decides
+      // who may, under the routine's row lock.
+      method: 'POST',
+      path: '/api/workspace/tasks/:agentId/:routineId/steps',
+      handler: handlers.taskSteps as unknown as RouteHandler,
     },
     {
       // TASK-911 — one check-in's transcript, for the task's owner. The only

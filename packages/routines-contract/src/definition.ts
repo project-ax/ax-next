@@ -580,8 +580,9 @@ export const RoutineReplyTextSchema = z.string()
  * A task's steps (TASK-948): a "get-done" task's checklist, at most
  * `ROUTINE_STEPS_MAX` of them. The agent drafts them at its first check-in,
  * then adds, ticks and unticks them through its report, and it can reword or
- * remove only the steps it added. A step an agent wrote comes back in every
- * later check-in message and shows on the task page, so the rules hold at the
+ * remove only the steps it added. The task's owner can add, tick, reword or
+ * remove any of them on its task page (TASK-949). A step comes back in every
+ * later check-in message and shows on the task page, so the rules hold at each
  * writer's input. A step's text:
  *   - fits `ROUTINE_STEP_TEXT_MAX_CHARS`, counted in UTF-16 units like the rest
  *     of the contract;
@@ -593,11 +594,12 @@ export const RoutineReplyTextSchema = z.string()
  *   - refuses a lone surrogate (half of a character), which a JSON body can
  *     carry: Postgres refuses one in a JSONB value and quotes the value it
  *     refused in its error.
- * Like a reply's, these messages reach a person (TASK-949's box shows them),
- * so each says what to fix; the agent gets only the field's name, through
- * core's fixed template. Stored text isn't re-checked (TASK-913), so a view
- * takes any string. A step's id is made by the host and opaque to everyone
- * else, and no change can say who added a step: the host sets that.
+ * Like a reply's, these messages reach a person (the task page's step editor
+ * shows them, TASK-949), so each says what to fix; the agent gets only the
+ * field's name, through core's fixed template. Stored text isn't re-checked
+ * (TASK-913), so a view takes any string. A step's id is made by the host and
+ * opaque to everyone else, and no change can say who added a step: the host
+ * sets that.
  */
 export const ROUTINE_STEPS_MAX = 50;
 export const ROUTINE_STEP_TEXT_MAX_CHARS = 200;
@@ -633,10 +635,12 @@ export const RoutineStepViewSchema = z.object({
 }).strict();
 export type RoutineStepView = z.output<typeof RoutineStepViewSchema>;
 /**
- * One change to a task's steps, as the agent sends it in a report. Each is
- * strict, so none can name a new step's id or say who added a step. `done` on
- * an add is for a step finished in the same check-in: the host makes a new
- * step's id, so the report can't tick it by id.
+ * One change to a task's steps, as the agent sends it in a report, or a person
+ * sends it from the task page (`routines:set-steps`, TASK-949). Each is
+ * strict, so none can name a new step's id or say who added a step: the host
+ * sets that from who sent the change. `done` on an add is for a step finished
+ * in the same check-in: the host makes a new step's id, so the report can't
+ * tick it by id.
  */
 export const RoutineStepOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), text: RoutineStepTextSchema, done: z.boolean().optional() }).strict(),
@@ -646,7 +650,11 @@ export const RoutineStepOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('remove'), id: RoutineStepIdSchema }).strict(),
 ]);
 export type RoutineStepOp = z.output<typeof RoutineStepOpSchema>;
-/** A report's changes to its task's steps, applied in order. Optional on both report inputs, and never empty when sent. */
+/**
+ * A list of changes to a task's steps, applied in order: a report's, and a
+ * person's (`routines:set-steps`, TASK-949). One rule for both: never empty
+ * when sent, and at most `ROUTINE_STEPS_MAX`. Optional on both report inputs.
+ */
 export const RoutineReportStepsSchema = z.array(RoutineStepOpSchema).min(1).max(ROUTINE_STEPS_MAX);
 /** What a report that sent changes hears back: how many applied and how many were skipped. Counts only, never a step's text. */
 export const RoutineReportStepsOutcomeSchema = z.object({ applied: z.number().int().min(0), skipped: z.number().int().min(0) }).strict();

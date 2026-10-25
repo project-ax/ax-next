@@ -118,6 +118,26 @@ export function isSessionEnded(e: unknown): boolean {
 }
 
 /**
+ * Statuses below 500 that still leave it unknown whether a write happened: a
+ * timeout or a rate limit can come from anything in front of the host, and
+ * neither says the request was wrong.
+ */
+const UNCONFIRMED_4XX: ReadonlySet<number> = new Set([408, 429]);
+
+/**
+ * Whether a failed write was ANSWERED: a refusal from 1xx to 4xx, but 408 and
+ * 429. Anything else (no answer at all, a 5xx, a 408 or 429, an answer we
+ * couldn't read) leaves it unknown whether the write happened, so a caller
+ * that sends a request id keeps it for the retry, and the host recognises the
+ * retry instead of doing it twice. After an answered refusal a retry is a new
+ * attempt with a new id. One rule for every such write (TASK-931's reply box,
+ * TASK-949's task steps), so the two can't drift.
+ */
+export function isConfirmedRefusal(e: unknown): e is HttpError {
+  return e instanceof HttpError && e.status >= 1 && e.status < 500 && !UNCONFIRMED_4XX.has(e.status);
+}
+
+/**
  * `fetch`, plus the 401 latch, plus `credentials: 'include'` (every route here
  * is cookie-authenticated; forgetting it is how a request becomes a 401 that
  * is our own fault).

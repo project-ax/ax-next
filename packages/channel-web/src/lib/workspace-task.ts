@@ -28,6 +28,15 @@
  * nothing: it would overtake the refresh (whose answer would then be dropped
  * as the older one) and, failing, leave the page as it was before the press.
  *
+ * A CHANGE'S ANSWER (`replaceSteps`, TASK-949) swaps the task's steps with no
+ * re-read, since the answer is the steps as they now are. A read that started
+ * before that swap may carry older steps (the poll's last read, say, which began
+ * before the press), so when it lands it keeps the page's steps and shows the
+ * rest of its answer; and since what it dropped may also have held something
+ * newer (an agent's tick from the check-in it delivered, after which the poll
+ * stops), it asks for one more quiet read. A read that started after the swap
+ * reads the change too, and shows its own steps.
+ *
  * It holds one task. Mount it once per task (key the page by its ids): since a
  * refresh keeps what's on screen, state carried over from another task would
  * show that task's page while this one loads.
@@ -36,7 +45,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { logRequestFailure } from './http';
 import { toReadOutcome } from './read-register';
 import { workspaceApi } from './workspace-api';
-import type { TaskDetail } from './workspace-types';
+import type { TaskDetail, TaskStep } from './workspace-types';
 
 /** Failed quiet re-reads in a row before the page says it couldn't refresh. */
 export const QUIET_FAILURES_TO_SAY_SO = 3;
@@ -69,8 +78,19 @@ export function useTask(
    * task gone or the session ended still replaces it, like any read.
    */
   refreshQuietly: () => void;
+  /**
+   * Swap a ready task's steps for a change's answer (TASK-949), keeping the
+   * rest of the task. Before the task has loaded there is nothing to swap into,
+   * so it does nothing. Reads already in flight keep these steps (see above).
+   */
+  replaceSteps: (steps: TaskStep[]) => void;
 } {
   const [state, setState] = useState<TaskState>({ kind: 'loading' });
+  // What is on screen, for the callbacks that must know whether a task is there.
+  const shown = useRef(state);
+  useEffect(() => {
+    shown.current = state;
+  }, [state]);
   // Each fetch takes the next number; an answer for any number but the newest
   // is dropped, so a slow first answer cannot overwrite a faster refresh's.
   const latest = useRef(0);
@@ -78,6 +98,13 @@ export function useTask(
   const quietFailures = useRef(0);
   // The ordinary read in flight, if any (its number): a quiet read waits it out.
   const loudInFlight = useRef<number | null>(null);
+  // The newest read's number when the page last swapped in a change's steps. A
+  // read numbered at or below it started before the change's answer, so its
+  // steps may be older than the page's: it keeps the page's steps and shows the
+  // rest of its answer. A read started after it reads the change too.
+  const stepsReplacedAt = useRef<number | null>(null);
+  // `refreshQuietly`, for `load` to call (it is defined after `load`).
+  const quietly = useRef<() => void>(() => {});
 
   const load = useCallback(
     (quiet: boolean) => {
@@ -91,7 +118,19 @@ export function useTask(
           settled();
           if (latest.current !== mine) return;
           quietFailures.current = 0;
-          setState({ kind: 'ready', detail, refreshing: false, refreshFailed: false });
+          const stale = stepsReplacedAt.current !== null && mine <= stepsReplacedAt.current;
+          setState((s) => ({
+            kind: 'ready',
+            refreshing: false,
+            refreshFailed: false,
+            detail: stale && s.kind === 'ready' ? { ...detail, steps: s.detail.steps } : detail,
+          }));
+          // The steps it dropped may hold something newer than the page's. One
+          // more quiet read, started now, shows the list as it is. Through
+          // `refreshQuietly`, so it keeps its rule: none overtakes an ordinary
+          // refresh in flight (which, if it began before the swap, asks for its
+          // own when it lands). This one began after the swap, so it is not stale.
+          if (stale) quietly.current();
         },
         (e: unknown) => {
           settled();
@@ -128,6 +167,15 @@ export function useTask(
     if (loudInFlight.current !== null) return;
     load(true);
   }, [load]);
+  useEffect(() => {
+    quietly.current = refreshQuietly;
+  }, [refreshQuietly]);
 
-  return { state, refresh, refreshQuietly };
+  const replaceSteps = useCallback((steps: TaskStep[]) => {
+    if (shown.current.kind !== 'ready') return;
+    stepsReplacedAt.current = latest.current;
+    setState((s) => (s.kind === 'ready' ? { ...s, detail: { ...s.detail, steps } } : s));
+  }, []);
+
+  return { state, refresh, refreshQuietly, replaceSteps };
 }

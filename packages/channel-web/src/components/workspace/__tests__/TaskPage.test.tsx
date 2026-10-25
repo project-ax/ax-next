@@ -26,7 +26,7 @@ vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
     ...actual,
-    workspaceApi: { task: vi.fn(), clearTaskNotes: vi.fn(), sendTaskReply: vi.fn() },
+    workspaceApi: { task: vi.fn(), clearTaskNotes: vi.fn(), sendTaskReply: vi.fn(), setTaskSteps: vi.fn() },
   };
 });
 
@@ -38,6 +38,7 @@ vi.mock('@/lib/routines', async () => {
 const taskMock = vi.mocked(workspaceApi.task);
 const clearMock = vi.mocked(workspaceApi.clearTaskNotes);
 const replyMock = vi.mocked(workspaceApi.sendTaskReply);
+const stepsMock = vi.mocked(workspaceApi.setTaskSteps);
 const fireNowMock = vi.mocked(routineApi.fireNow);
 const updateMock = vi.mocked(routineApi.update);
 
@@ -163,6 +164,7 @@ beforeEach(() => {
   taskMock.mockReset();
   clearMock.mockReset();
   replyMock.mockReset();
+  stepsMock.mockReset();
   fireNowMock.mockReset();
   updateMock.mockReset();
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -932,6 +934,22 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
     await renderReady();
     expect(screen.getByText('Quill · Get something done')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument();
+  });
+
+  it('a tick on a get-done page shows the answer’s steps without reading the task again (TASK-949)', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
+    stepsMock.mockResolvedValue({ steps: STEPS.map((step) => ({ ...step, done: true })), skipped: 0 });
+    await renderReady();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Check the redirects' }));
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'Steps · 2 of 2 done' }),
+    ).toBeInTheDocument();
+    expect(stepsMock).toHaveBeenCalledWith('a1', 't1', {
+      requestId: expect.any(String),
+      ops: [{ op: 'tick', id: 's2' }],
+    });
+    expect(screen.getByRole('checkbox', { name: 'Check the redirects' })).toBeChecked();
+    expect(taskMock).toHaveBeenCalledTimes(1);
   });
 });
 

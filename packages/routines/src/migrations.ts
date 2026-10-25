@@ -94,11 +94,13 @@ export interface RoutinesDefinitionsRow {
   task_reading_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   /**
    * Version 11 (TASK-948). A "get-done" task's checklist: a JSON list of
-   * `{ id, text, done, addedBy }`, `[]` until its agent drafts it. Written only
-   * by `recordReport`, as `JSON.stringify(...)` (a later card's person edits will
-   * write it too), and set back to `[]` by a change of kind (`updateAuthored`)
-   * or of owner (`reconcileOwners`, TASK-936), through `NO_TASK_STATE`. Read
-   * leniently (`storedSteps`), so one odd value can't stop a read or the tick.
+   * `{ id, text, done, addedBy }`, `[]` until its agent drafts it or its owner
+   * adds a step. Written by `recordReport` (the agent's changes) and `setSteps`
+   * (the person's, TASK-949), both as `JSON.stringify(...)` of what
+   * `changeStoredSteps` hands them, which keeps the entries this version can't
+   * read; set back to `[]` by a change of kind (`updateAuthored`) or of owner
+   * (`reconcileOwners`, TASK-936), through `NO_TASK_STATE`. Read leniently
+   * (`storedSteps`), so one odd value can't stop a read or the tick.
    */
   task_steps: ColumnType<unknown, string | undefined, string>;
 }

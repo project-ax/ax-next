@@ -1,61 +1,690 @@
 /**
  * A "Get something done" task's steps (TASK-948): the checklist its agent
- * drafts at its first check-in and then ticks, shown on the task's page under
- * the latest update, read-only.
+ * drafts at its first check-in, shown on the task's page under the latest
+ * update. Its owner changes it here (TASK-949): they tick or untick any step,
+ * add one, and reword or delete any step, the agent's included, from the
+ * step's options menu. No approval, and no new revision.
  *
- * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. A step was written by a model (or, from
- * the next card on, by the person) and the server fenced it to one line before
- * it left (`server/routes-workspace.ts`). Here it is only ever a React text
- * child: never `dangerouslySetInnerHTML`, never the markdown renderer, and no
- * attribute is built from it. `**bold**` and `<img>` show as those characters.
- * It is drawn at full contrast, because a person audits it.
+ * WHO MAY. The page is its owner's only: the route answers 404 alike for a
+ * task that isn't there and one that isn't yours, and `routines:set-steps`
+ * checks the owner again under the routine's row lock. A refusal reads "We
+ * couldn't find this task any more."
  *
- * READ-ONLY IN THIS CARD. Ticking, adding and rewording a step by hand is the
- * next card (TASK-949), so the boxes here are pictures of state, not controls:
- * the state is said to a screen reader in words (`Done: ` / `Not done: `).
+ * ONE CHANGE PER PRESS, ONE AT A TIME. A tick, an untick, an Add, a Save or a
+ * Delete sends one change, the same kind the agent's report sends
+ * (`RoutineStepOpSchema`). Its answer is the steps as they are now, which the
+ * page swaps in without reading the task again (`onChanged`); one that skipped
+ * the change says the list was reloaded, and why when the answer shows it (an
+ * add whose step is now listed, or one at the cap). A box isn't
+ * ticked ahead of the answer. While a change is out every control waits, the
+ * open input goes read-only (so focus stays in it), and Escape does nothing,
+ * so the editor whose change is out is still there for its answer. Delete asks
+ * nothing: a step is one line, and it can be added back.
+ *
+ * BEFORE A CHANGE GOES. An Add or a Save runs the contract's own text rule
+ * (`RoutineStepTextSchema`) on the text as typed, so the person reads what to
+ * fix, and where, rather than a bare 400; an Add whose text is already listed
+ * says so rather than being skipped. Then the text goes as the page will show
+ * it, whitespace runs folded and trimmed (the route's fence), so what's stored
+ * is what the person saw, and the host's duplicate check, which compares
+ * stored text, sees what the page does. A Save that only changes spaces sends
+ * nothing: a reword makes a step the agent added the person's (its editor
+ * says so), and a change nobody can see mustn't.
+ *
+ * THE REQUEST ID (`TaskReplyBox`'s rule, `isConfirmedRefusal`). A change that
+ * nobody can confirm (no answer, a 5xx, a 408 or 429, an answer we couldn't
+ * read) may or may not have applied. The same change again carries the same
+ * id, so the host answers with the steps as they are instead of applying it
+ * twice. Any other change gets a new id, and an answer or an answered refusal
+ * ends the id.
+ *
+ * WHERE FOCUS GOES, once the answer is on screen, and only from `<body>` or
+ * inside this section (someone who moved on stays where they went): after a
+ * tick, that step's box; after Save or Cancel, that step's options button;
+ * after an Add, the add input, which stays open for the next step; after the
+ * add editor's Cancel, Add a step (or, while that's disabled at the cap, the
+ * last step's box); after a Delete, or any change whose step is no longer
+ * listed, the box of the step now in its place, else of the one before it,
+ * else Add a step. A failed Delete goes back to its options button, and a
+ * failed Add or Save to its input, so pressing again retries.
+ *
+ * AGENT- OR PERSON-WRITTEN TEXT IS DRAWN AS TEXT. A step was written by a
+ * model or by the person, and the server fenced it to one line before it left
+ * (`server/routes-workspace.ts`). Here it is only ever a React text child, or
+ * an input's value while it's reworded: never `dangerouslySetInnerHTML`, never
+ * the markdown renderer, and no attribute is built from it. `**bold**` and
+ * `<img>` show as those characters. It is drawn at full contrast, because a
+ * person audits it. Each box is named by its step's text and described by
+ * "added by {agent}", and each options button points at the text it opens
+ * (`aria-describedby`), so fifty of them still say which is which.
  */
-import { useId } from 'react';
-import { Square, SquareCheck } from 'lucide-react';
+import { useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { MoreHorizontal, Plus } from 'lucide-react';
+import {
+  ROUTINE_STEP_TEXT_MAX_CHARS,
+  ROUTINE_STEPS_MAX,
+  RoutineStepTextSchema,
+  type RoutineStepOp,
+} from '@ax/routines-contract';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Spinner } from '@/components/ui/spinner';
+import { HTTP_SESSION_ENDED, isConfirmedRefusal, isSessionEnded, logRequestFailure } from '@/lib/http';
+import type { AlertRegister } from '@/lib/read-register';
 import { cn } from '@/lib/utils';
-import type { TaskStep } from '@/lib/workspace-types';
+import { workspaceApi } from '@/lib/workspace-api';
+import type { TaskStep, TaskStepsResponse } from '@/lib/workspace-types';
 
 /** What a step the server couldn't read says instead of its text. */
 export const STEP_CANT_SHOW = 'We can’t show this step’s text.';
 
-export function TaskSteps({ steps, agentName }: { steps: TaskStep[]; agentName: string }) {
-  const headingId = useId();
+const UNCONFIRMED = 'We couldn’t confirm that change. Try again, and it won’t happen twice.';
+const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
+const AS_WRITTEN = 'We couldn’t save that step as written. Change it and try again.';
+const SKIPPED = 'That step was changed or removed meanwhile, so we’ve loaded the latest.';
+const DUPLICATE = 'That step is already on the list.';
+const ALREADY_LISTED = 'That step is already on the list, so we’ve loaded the latest.';
+const AT_CAP = `A task can have up to ${ROUTINE_STEPS_MAX} steps.`;
+/** A skipped add at the cap: the list filled meanwhile. The open add editor's note already states the cap. */
+const CAP_REACHED = `The list reached ${ROUTINE_STEPS_MAX} steps meanwhile, so we’ve loaded the latest.`;
+
+/** A failed change, worded from its status, never from the server's message. */
+function failureLine(e: unknown): string {
+  if (!isConfirmedRefusal(e)) return UNCONFIRMED;
+  if (e.status === 401) return HTTP_SESSION_ENDED;
+  if (e.status === 403 || e.status === 404) return NOT_FOUND;
+  return AS_WRITTEN;
+}
+
+/** A step's text as the page shows it: whitespace runs folded to one space, then trimmed (the route's fence). */
+function asShown(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Why the host skipped a change, read from its answer. The host skips an add
+ * whose text is already listed, or one past the cap (the agent's add rules),
+ * and any change whose step has gone meanwhile.
+ */
+function skippedLine(op: RoutineStepOp, steps: TaskStep[]): string {
+  if (op.op !== 'add') return SKIPPED;
+  const text = asShown(op.text);
+  if (steps.some((step) => step.text !== null && asShown(step.text) === text)) return ALREADY_LISTED;
+  if (steps.length >= ROUTINE_STEPS_MAX) return CAP_REACHED;
+  return SKIPPED;
+}
+
+/** The first thing the contract's text rule finds wrong, in the person's words, or null. */
+function textProblem(text: string): string | null {
+  const rule = RoutineStepTextSchema.safeParse(text);
+  return rule.success ? null : (rule.error.issues[0]?.message ?? AS_WRITTEN);
+}
+
+/** What an editor says under its input: a rule its text breaks (`invalid`), or why its change failed. */
+type EditorFailure = { line: string; invalid: boolean };
+
+/** The one open editor: a step being reworded, or a new one. */
+type Editor =
+  | { kind: 'edit'; id: string; text: string; failure: EditorFailure | null }
+  | { kind: 'add'; text: string; failure: EditorFailure | null };
+
+/** Where focus goes once a change's answer, or a closed editor, is on screen (see WHERE FOCUS GOES). */
+type FocusTarget =
+  | { to: 'box' | 'options'; id: string; index: number }
+  | { to: 'in-place-of'; index: number }
+  | { to: 'editor' }
+  | { to: 'add' };
+
+/** Where a change came from, which is where its failure is said. */
+type Place = 'editor' | 'list';
+
+/** A ref that files a step's element under its id while it's mounted. */
+function fileUnder(map: Map<string, HTMLButtonElement>, id: string) {
+  return (el: HTMLButtonElement | null) => {
+    if (el === null) map.delete(id);
+    else map.set(id, el);
+  };
+}
+
+export function TaskSteps({
+  agentId,
+  routineId,
+  steps,
+  agentName,
+  onChanged,
+}: {
+  agentId: string;
+  routineId: string;
+  steps: TaskStep[];
+  agentName: string;
+  /** Each answer's steps, which the page shows in place of its own. */
+  onChanged: (steps: TaskStep[]) => void;
+}) {
+  const ids = useId();
+  const headingId = `${ids}-heading`;
+  const capId = `${ids}-cap`;
+  const [editor, setEditor] = useState<Editor | null>(null);
+  // The change out, if any, by where it came from: only its own editor's button spins.
+  const [busy, setBusy] = useState<Place | null>(null);
+  const [skipped, setSkipped] = useState<string | null>(null);
+  const [listFailure, setListFailure] = useState<{ line: string; register: AlertRegister } | null>(null);
+  const pending = useRef<{ key: string; requestId: string } | null>(null);
+  const inFlight = useRef(false);
+  const focusNext = useRef<FocusTarget | null>(null);
+  const section = useRef<HTMLElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const boxes = useRef(new Map<string, HTMLButtonElement>());
+  const optionButtons = useRef(new Map<string, HTMLButtonElement>());
+
+  // The step being reworded left the list (a re-read, or another change's
+  // answer), so its editor closes. Adjusted while rendering (React's "storing
+  // information from previous renders"), as `TaskNotes` does. Focus isn't
+  // moved for it: the person may be mid-word, and a box under their next
+  // space would tick.
+  if (editor?.kind === 'edit' && !steps.some((step) => step.id === editor.id)) setEditor(null);
+
   const done = steps.filter((step) => step.done).length;
+  const atCap = steps.length >= ROUTINE_STEPS_MAX;
+
+  // Add a step, or the last step's box while Add a step is disabled at the cap, or the add input while it's open.
+  const addOrLast = (): HTMLElement | null => {
+    const add = addButton.current;
+    if (add !== null && !add.disabled) return add;
+    const last = steps.at(-1);
+    return (last === undefined ? undefined : boxes.current.get(last.id)) ?? input.current;
+  };
+  // The box of the step now at `index`, else of the one before it, else Add a step.
+  const inPlaceOf = (index: number): HTMLElement | null => {
+    const step = steps[Math.min(index, steps.length - 1)];
+    return (step === undefined ? undefined : boxes.current.get(step.id)) ?? addOrLast();
+  };
+  const focusFor = (target: FocusTarget): HTMLElement | null => {
+    switch (target.to) {
+      case 'box':
+        return boxes.current.get(target.id) ?? inPlaceOf(target.index);
+      case 'options':
+        return optionButtons.current.get(target.id) ?? inPlaceOf(target.index);
+      case 'in-place-of':
+        return inPlaceOf(target.index);
+      case 'editor':
+        return input.current;
+      case 'add':
+        return addOrLast();
+    }
+  };
+
+  // After every commit: once nothing is out, focus goes where the last press
+  // asked. A layout effect, so it lands in the same commit that enables the
+  // controls again, and a keystroke right then isn't lost on `<body>`.
+  useLayoutEffect(() => {
+    const target = focusNext.current;
+    if (target === null || busy !== null) return;
+    focusNext.current = null;
+    const at = document.activeElement;
+    if (at !== null && at !== document.body && !section.current?.contains(at)) return;
+    const el = focusFor(target);
+    if (el !== null && el !== at) el.focus();
+  });
+
+  const change = async (
+    op: RoutineStepOp,
+    place: Place,
+    focus: { answered: FocusTarget; failed: FocusTarget },
+    answered?: (answer: TaskStepsResponse) => void,
+  ) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(place);
+    setSkipped(null);
+    setListFailure(null);
+    setEditor((open) => (open === null ? open : { ...open, failure: null }));
+    const key = JSON.stringify(op);
+    const ticket =
+      pending.current?.key === key ? pending.current : { key, requestId: crypto.randomUUID() };
+    pending.current = ticket;
+    try {
+      const answer = await workspaceApi.setTaskSteps(agentId, routineId, {
+        requestId: ticket.requestId,
+        ops: [op],
+      });
+      pending.current = null;
+      onChanged(answer.steps);
+      setSkipped(answer.skipped > 0 ? skippedLine(op, answer.steps) : null);
+      answered?.(answer);
+      focusNext.current = focus.answered;
+    } catch (e) {
+      logRequestFailure(e, 'task-steps');
+      if (isConfirmedRefusal(e)) pending.current = null;
+      const line = failureLine(e);
+      if (place === 'editor') {
+        setEditor((open) => (open === null ? open : { ...open, failure: { line, invalid: false } }));
+      } else {
+        // An ended session isn't a malfunction (`lib/read-register.ts`).
+        setListFailure({ line, register: isSessionEnded(e) ? 'default' : 'destructive' });
+      }
+      focusNext.current = focus.failed;
+    } finally {
+      inFlight.current = false;
+      setBusy(null);
+    }
+  };
+
+  const tick = (step: TaskStep, index: number, checked: boolean) => {
+    const back: FocusTarget = { to: 'box', id: step.id, index };
+    void change({ op: checked ? 'tick' : 'untick', id: step.id }, 'list', { answered: back, failed: back });
+  };
+
+  const remove = (step: TaskStep, index: number) => {
+    void change({ op: 'remove', id: step.id }, 'list', {
+      answered: { to: 'in-place-of', index },
+      failed: { to: 'options', id: step.id, index },
+    });
+  };
+
+  const openEditor = (next: Editor) => {
+    if (inFlight.current) return;
+    setEditor(next);
+    focusNext.current = { to: 'editor' };
+  };
+
+  const closeEditor = () => {
+    if (editor === null || inFlight.current) return;
+    const { id } = editor.kind === 'edit' ? editor : { id: null };
+    focusNext.current =
+      id === null
+        ? { to: 'add' }
+        : { to: 'options', id, index: steps.findIndex((step) => step.id === id) };
+    setEditor(null);
+  };
+
+  const typed = (text: string) =>
+    setEditor((open) => (open === null ? open : { ...open, text, failure: null }));
+
+  const refuse = (line: string) => {
+    setEditor((open) => (open === null ? open : { ...open, failure: { line, invalid: true } }));
+    focusNext.current = { to: 'editor' };
+  };
+
+  const save = () => {
+    if (editor?.kind !== 'edit' || inFlight.current) return;
+    const index = steps.findIndex((step) => step.id === editor.id);
+    const step = steps[index];
+    if (step === undefined) return;
+    if (asShown(editor.text) === asShown(step.text ?? '')) {
+      closeEditor();
+      return;
+    }
+    const problem = textProblem(editor.text);
+    if (problem !== null) {
+      refuse(problem);
+      return;
+    }
+    void change(
+      { op: 'edit', id: step.id, text: asShown(editor.text) },
+      'editor',
+      { answered: { to: 'options', id: step.id, index }, failed: { to: 'editor' } },
+      () => setEditor(null),
+    );
+  };
+
+  const add = () => {
+    if (editor?.kind !== 'add' || atCap || inFlight.current) return;
+    const { text } = editor;
+    const problem = textProblem(text);
+    if (problem !== null) {
+      refuse(problem);
+      return;
+    }
+    if (steps.some((step) => step.text !== null && asShown(step.text) === asShown(text))) {
+      refuse(DUPLICATE);
+      return;
+    }
+    void change(
+      { op: 'add', text: asShown(text) },
+      'editor',
+      { answered: { to: 'editor' }, failed: { to: 'editor' } },
+      // Applied, it empties for the next step; skipped, it keeps its text beside the skipped line.
+      (answer) => {
+        if (answer.skipped === 0) setEditor((open) => (open?.kind === 'add' ? { ...open, text: '' } : open));
+      },
+    );
+  };
+
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
+    <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2.5">
       <h2 id={headingId} className="text-[12.5px] font-medium">
         {steps.length === 0 ? 'Steps' : `Steps · ${done} of ${steps.length} done`}
       </h2>
       {steps.length === 0 ? (
         <p className="text-[13px] text-muted-foreground">
-          {`No steps yet. ${agentName} drafts them at its next check-in.`}
+          {`No steps yet. Add one, or ${agentName} drafts them at its next check-in.`}
         </p>
       ) : (
-        <ul className="flex flex-col gap-2">
-          {steps.map((step) => (
-            <li key={step.id} className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed">
-              {step.done ? (
-                <SquareCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              ) : (
-                <Square aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              )}
-              <span className="sr-only">{step.done ? 'Done: ' : 'Not done: '}</span>
-              <span className="flex min-w-0 flex-col">
-                <span className={cn('break-words', step.text === null && 'text-muted-foreground')}>
-                  {step.text ?? STEP_CANT_SHOW}
-                </span>
-                {step.byAgent && (
-                  <span className="break-words text-[12px] text-muted-foreground">{`added by ${agentName}`}</span>
+        <ul className="flex flex-col gap-1">
+          {steps.map((step, index) => {
+            const editing = editor?.kind === 'edit' && editor.id === step.id ? editor : null;
+            return (
+              <StepRow
+                key={step.id}
+                step={step}
+                agentName={agentName}
+                busy={busy !== null}
+                editing={editing !== null}
+                boxRef={fileUnder(boxes.current, step.id)}
+                optionsRef={fileUnder(optionButtons.current, step.id)}
+                onTick={(checked) => tick(step, index, checked)}
+                onEdit={() => openEditor({ kind: 'edit', id: step.id, text: step.text ?? '', failure: null })}
+                onDelete={() => remove(step, index)}
+              >
+                {editing !== null && (
+                  <StepEditor
+                    label="Edit step"
+                    submit="Save"
+                    text={editing.text}
+                    failure={editing.failure}
+                    note={step.byAgent ? `Once you save it, ${agentName} reads this as your words.` : null}
+                    busy={busy !== null}
+                    sending={busy === 'editor'}
+                    canSubmit
+                    inputRef={input}
+                    onText={typed}
+                    onSubmit={save}
+                    onCancel={closeEditor}
+                  />
                 )}
-              </span>
-            </li>
-          ))}
+              </StepRow>
+            );
+          })}
         </ul>
       )}
+      {listFailure !== null && (
+        <Alert variant={listFailure.register}>
+          <AlertDescription>{listFailure.line}</AlertDescription>
+        </Alert>
+      )}
+      {editor?.kind === 'add' ? (
+        <StepEditor
+          label="New step"
+          submit="Add"
+          text={editor.text}
+          failure={editor.failure}
+          note={atCap ? AT_CAP : null}
+          busy={busy !== null}
+          sending={busy === 'editor'}
+          canSubmit={!atCap}
+          inputRef={input}
+          onText={typed}
+          onSubmit={add}
+          onCancel={closeEditor}
+        />
+      ) : (
+        <div className="flex flex-col items-start gap-1">
+          <Button
+            ref={addButton}
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-ml-3"
+            disabled={busy !== null || atCap}
+            aria-describedby={atCap ? capId : undefined}
+            onClick={() => openEditor({ kind: 'add', text: '', failure: null })}
+          >
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            Add a step
+          </Button>
+          {atCap && (
+            <p id={capId} className="text-[12px] text-muted-foreground">
+              {AT_CAP}
+            </p>
+          )}
+        </div>
+      )}
+      {/*
+        Mounted with the section, not with its sentence: a region created and
+        filled together is the announcement screen readers drop (TASK-651).
+      */}
+      <p role="status" className="text-[12.5px] text-muted-foreground empty:-mt-2.5">
+        {skipped ?? ''}
+      </p>
     </section>
+  );
+}
+
+/** One step: its box, its text and who added it (or its editor), and its options. */
+function StepRow({
+  step,
+  agentName,
+  busy,
+  editing,
+  boxRef,
+  optionsRef,
+  onTick,
+  onEdit,
+  onDelete,
+  children,
+}: {
+  step: TaskStep;
+  agentName: string;
+  busy: boolean;
+  editing: boolean;
+  boxRef: (el: HTMLButtonElement | null) => void;
+  optionsRef: (el: HTMLButtonElement | null) => void;
+  onTick: (checked: boolean) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** The step's editor, while it's open. */
+  children?: ReactNode;
+}) {
+  const ids = useId();
+  const textId = `${ids}-text`;
+  const byId = `${ids}-by`;
+  return (
+    <li className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed">
+      <Checkbox
+        ref={boxRef}
+        className="mt-2"
+        checked={step.done}
+        disabled={busy}
+        aria-labelledby={textId}
+        aria-describedby={step.byAgent ? byId : undefined}
+        onCheckedChange={(checked) => {
+          // Radix can also report 'indeterminate', which no step is.
+          if (typeof checked === 'boolean') onTick(checked);
+        }}
+      />
+      <div className="flex min-w-0 flex-1 flex-col py-1.5">
+        {/* While the step is reworded its text stays, unseen, so its box keeps its name. */}
+        <span
+          id={textId}
+          className={cn('break-words', step.text === null && 'text-muted-foreground', editing && 'sr-only')}
+        >
+          {step.text ?? STEP_CANT_SHOW}
+        </span>
+        {step.byAgent && (
+          <span
+            id={byId}
+            className={cn('break-words text-[12px] text-muted-foreground', editing && 'sr-only')}
+          >
+            {`added by ${agentName}`}
+          </span>
+        )}
+        {children}
+      </div>
+      {!editing && (
+        <StepOptions textId={textId} busy={busy} buttonRef={optionsRef} onEdit={onEdit} onDelete={onDelete} />
+      )}
+    </li>
+  );
+}
+
+/**
+ * A step's options menu: Edit and Delete, on every step. Not modal, because
+ * Delete takes its own row away (`AgentConnectors`' rule: a modal menu would
+ * leave `<body>` unclickable). The choice runs once the menu has closed and
+ * handed focus back to its button (`FactsMemory`'s `MemoryActions`), so
+ * Edit's input and Delete's answer each take focus from a button still there.
+ */
+function StepOptions({
+  textId,
+  busy,
+  buttonRef,
+  onEdit,
+  onDelete,
+}: {
+  textId: string;
+  busy: boolean;
+  buttonRef: (el: HTMLButtonElement | null) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const chosen = useRef<(() => void) | null>(null);
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          ref={(el) => {
+            trigger.current = el;
+            buttonRef(el);
+          }}
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0"
+          disabled={busy}
+          aria-label="Step options"
+          aria-describedby={textId}
+        >
+          <MoreHorizontal aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(event) => {
+          const action = chosen.current;
+          chosen.current = null;
+          if (action === null) return;
+          event.preventDefault();
+          trigger.current?.focus();
+          setTimeout(action, 0);
+        }}
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            onSelect={() => {
+              chosen.current = onEdit;
+            }}
+          >
+            Edit
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              chosen.current = onDelete;
+            }}
+          >
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * One line of text to save, for a step being reworded or a new one: the
+ * contract's cap on its input, its note and its failure under it, then its two
+ * buttons. Enter saves (it's a form) and Escape cancels, but neither while a
+ * change is out: the input goes read-only, so focus stays in it.
+ */
+function StepEditor({
+  label,
+  submit,
+  text,
+  failure,
+  note,
+  busy,
+  sending,
+  canSubmit,
+  inputRef,
+  onText,
+  onSubmit,
+  onCancel,
+}: {
+  label: string;
+  submit: string;
+  text: string;
+  failure: EditorFailure | null;
+  note: string | null;
+  busy: boolean;
+  /** The change out is this editor's own, so its button spins. */
+  sending: boolean;
+  canSubmit: boolean;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onText: (text: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  const ids = useId();
+  const inputId = `${ids}-input`;
+  const noteId = `${ids}-note`;
+  const errorId = `${ids}-error`;
+  const describedBy = [note === null ? null : noteId, failure === null ? null : errorId]
+    .filter((id) => id !== null)
+    .join(' ');
+  const invalid = failure?.invalid === true ? true : undefined;
+  return (
+    <form
+      className="w-full"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit();
+      }}
+    >
+      <FieldGroup className="gap-2">
+        <Field data-invalid={invalid} className="gap-1.5">
+          <FieldLabel htmlFor={inputId} className="sr-only">
+            {label}
+          </FieldLabel>
+          <Input
+            id={inputId}
+            ref={inputRef}
+            value={text}
+            maxLength={ROUTINE_STEP_TEXT_MAX_CHARS}
+            readOnly={busy}
+            aria-invalid={invalid}
+            aria-describedby={describedBy === '' ? undefined : describedBy}
+            onChange={(e) => onText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape' || e.nativeEvent.isComposing) return;
+              e.preventDefault();
+              // `onCancel` does nothing while a change is out.
+              onCancel();
+            }}
+          />
+          {note !== null && <FieldDescription id={noteId}>{note}</FieldDescription>}
+          {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
+        </Field>
+        <Field orientation="horizontal" className="gap-2">
+          <Button type="submit" size="sm" variant="secondary" disabled={busy || !canSubmit}>
+            {sending && <Spinner data-icon="inline-start" aria-hidden="true" />}
+            {submit}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
+            Cancel
+          </Button>
+        </Field>
+      </FieldGroup>
+    </form>
   );
 }

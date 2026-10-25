@@ -8,7 +8,7 @@ import { registerRoutineServices } from '../services.js';
 import type { RoutinesStore } from '../store.js';
 import { expectOneRefusal, logged } from './support/report-log.js';
 
-// TASK-907: `routines:report`, the one writer of a task's state. The bus is
+// TASK-907: `routines:report`, the one writer of a task's report. The bus is
 // bare on purpose: the hook calls no other service (no agents:resolve, no
 // agents:can-manage-routines), so calling one would fail these tests with
 // no-service.

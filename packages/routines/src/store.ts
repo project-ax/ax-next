@@ -3,14 +3,14 @@ import { SafeToolError } from '@ax/core';
 import {
   applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
-  type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition,
+  type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReportRefusal, StoredReply } from './types.js';
+import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
-import { applyStepOps, storedSteps } from './steps.js';
+import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -47,17 +47,19 @@ export interface RoutinesStore {
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
   findOpenDispatchByConversation(input: { agentId: string; conversationId: string }): Promise<OpenCheckInLookup>;
   /**
-   * TASK-907. The one writer of a task's report, and (TASK-948) of a get-done
-   * task's checklist: `updateAuthored` (a kind change) and `reconcileOwners` (a
-   * change of owner, TASK-936) only clear them. Nothing is written, and the
-   * answer says why, unless the run is an open check-in, bound to the report's
-   * conversation, of a task (`TASK_KINDS`) its actor owns, on a live agent.
-   * TASK-952: the report's reading, or its absence, lands with it, on the run
-   * and under the same guard on the task. A report's step changes apply in
-   * order, by id, under the routine's row lock, whatever order overlapping runs
-   * report in (`applyStepOps`); a task that is no longer get-done skips them
-   * all. The answer is `'recorded'` when the report sent no step changes, and
-   * counts those that applied and those skipped when it did.
+   * TASK-907. The one writer of a task's report, and one of the two writers of
+   * a get-done task's checklist (TASK-949: `setSteps` is the other; both keep
+   * entries this version can't read): `updateAuthored` (a kind change) and
+   * `reconcileOwners` (a change of owner, TASK-936) only clear them. Nothing is
+   * written, and the answer says why, unless the run is an open check-in, bound
+   * to the report's conversation, of a task (`TASK_KINDS`) its actor owns, on a
+   * live agent. TASK-952: the report's reading, or its absence, lands with it,
+   * on the run and under the same guard on the task. A report's step changes
+   * apply as the agent's, in order, by id, under the routine's row lock,
+   * whatever order overlapping runs report in (`changeStoredSteps`); a task
+   * that is no longer get-done skips them all. The answer is `'recorded'` when
+   * the report sent no step changes, and counts those that applied and those
+   * skipped when it did.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | RecordedSteps | ReportRefusal>;
   /**
@@ -89,6 +91,25 @@ export interface RoutinesStore {
    * 1-50. The text is person-written.
    */
   recentReplies(input: RoutineKey & Actor & { limit: number }): Promise<StoredReply[]>;
+  /**
+   * TASK-949. A person's changes to a get-done task's steps, from its task page.
+   * Owner only, decided under the agent fence and the routine's row lock, which
+   * `recordReport` takes too, so a change and a report that overlap both land:
+   * whichever waits re-reads the steps the other wrote. A missing routine, and
+   * one that isn't get-done, is `not-found`; someone else's is `forbidden`. The
+   * changes apply as the person's, in order, by id (`changeStoredSteps`): they
+   * may tick, reword or remove any step, and their add, like a step whose words
+   * they change, is theirs. A change that can't apply is skipped and counted;
+   * `steps` is the list after them all. The same `requestId` again, from the
+   * same person with the same changes, changes nothing: it answers the first
+   * try's count with the steps as they are now, the owner checked again under
+   * the lock. The receipt keeps that count and never a step's text. The same
+   * `requestId` with other changes, or on another routine, throws
+   * `request-conflict`, and a retired agent throws `not-found`
+   * (`receiptTransaction`). Never moves the routine's revision, spec hash or
+   * updated time: the steps are task state.
+   */
+  setSteps(input: RoutineKey & Actor & { requestId: string; ops: readonly RoutineStepOp[] }): Promise<SetStepsResult>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   /**
@@ -485,6 +506,7 @@ function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'create' || operation === 'update') return parseStoredRoutine(value);
   if (operation === 'delete') return RoutineDeleteOutputSchema.parse(value);
   if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
+  if (operation === 'set-steps') return StepsReceiptSchema.parse(value);
   throw new Error('Unknown routine receipt operation');
 }
 /**
@@ -502,6 +524,9 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * replay answers from its receipt, never from a fresh read. The live answer is
  * the effect's own, state and all, so `acceptDispatch`'s `accepted.row` still
  * holds the task's state, misses and steps as it read them under the row lock.
+ * TASK-949: `set-steps`' result is its count alone (`{ skipped }`), stored as
+ * it is. Its steps leave `setSteps` beside the receipt, never through it, and a
+ * replay reads them again under the routine's row lock.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
   if (operation === 'create' || operation === 'update') return withoutTaskState(result as StoredRoutine);
@@ -533,7 +558,18 @@ async function lockDefaultControls(db: DB, write = false): Promise<void> {
   if (write) await sql`SELECT pg_advisory_xact_lock(18427133)`.execute(db);
   else await sql`SELECT pg_advisory_xact_lock_shared(18427133)`.execute(db);
 }
-async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>, onReplay?: () => void): Promise<T> {
+/**
+ * Runs `effect` once per request: the agent fence, then the request's row,
+ * locked, then the effect, whose result settles the receipt (`receiptCopy`).
+ * The same request again answers from the receipt; other input under the same
+ * id is a `request-conflict`. `onReplay` runs on that replay, in the
+ * transaction, after the request row's lock: `setSteps` (TASK-949) reads the
+ * steps again under the routine's row lock there, so a replay answers them as
+ * they are now. A throw from the effect rolls the request's row back with
+ * everything else, so a refusal keeps no receipt; one from `onReplay` leaves
+ * the receipt as it was.
+ */
+async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Transaction<RoutinesDatabase>) => Promise<T>, onReplay?: (trx: Transaction<RoutinesDatabase>) => Promise<void>): Promise<T> {
   try {
     return await db.transaction().execute(async trx => {
       if (!await lockLiveAgent(trx, key.agentId)) throw new SafeToolError('not-found', 'routineId');
@@ -544,7 +580,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
       }).onConflict(oc => oc.doNothing()).execute();
       const receipt = await receiptQuery(trx, key).forUpdate().executeTakeFirstOrThrow();
       if (receipt.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
-      if (receipt.result !== null) { onReplay?.(); return parseReceipt(key.operation, receipt.result) as T; }
+      if (receipt.result !== null) { await onReplay?.(trx); return parseReceipt(key.operation, receipt.result) as T; }
       const result = await effect(trx);
       // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
       if (result === null) { await trx.deleteFrom('routines_v1_requests').where('agent_id', '=', key.agentId).where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId).execute(); return result; }
@@ -570,14 +606,31 @@ function storedReport(value: unknown): { report: DispatchReport | null; unreadab
   const parsed = DispatchReportSchema.safeParse(value);
   return parsed.success ? { report: parsed.data, unreadable: false } : { report: null, unreadable: true };
 }
+/** A refused write's SQLSTATE, or null when its error carries none: the one field of it a scrubbed error keeps. */
+function sqlState(error: unknown): string | null {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
+}
 /**
  * A refused write can quote what it was sent (Postgres puts it in the error's
  * `where` or `detail`), and a report's text is the agent's. Keep only the run's
  * id and the SQLSTATE, and drop the original error.
  */
 function reportWriteError(dispatchId: string, error: unknown): Error {
-  const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
+  const code = sqlState(error);
   return new Error(`Could not save the report for dispatch ${dispatchId}${code === null ? '' : ` (SQLSTATE ${code})`}.`);
+}
+/** TASK-949. `reportWriteError`'s rule for a person's step changes, whose text is theirs: only the routine's id and the SQLSTATE. */
+function stepsWriteError(routineId: string, error: unknown): Error {
+  const code = sqlState(error);
+  return new Error(`Could not save the steps for routine ${routineId}${code === null ? '' : ` (SQLSTATE ${code})`}.`);
+}
+/**
+ * TASK-949. Why `setSteps` changed nothing. Thrown inside its receipt's
+ * transaction, never returned from it, so the request's row rolls back with it:
+ * `receiptTransaction` stores whatever its effect returns as a settled receipt.
+ */
+class StepsRefused extends Error {
+  constructor(readonly reason: 'not-found' | 'forbidden') { super(reason); }
 }
 function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string): OperationKey {
   return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hash };
@@ -691,7 +744,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           run_as_user_id: raw.owner_user_id,
         }).execute();
         return result;
-      }, () => { replayed = true; });
+      }, async () => { replayed = true; });
       return accepted === null ? null : { accepted, replayed };
     },
     async interruptAbandonedDispatches() {
@@ -841,13 +894,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // they cleared, so it can't write any back. The rest of its report lands as usual.
         const clearedAt = definition.agent_notes_cleared_at;
         const writesNotes = input.notes !== undefined && (clearedAt === null || clearedAt.getTime() < dispatch.accepted_at.getTime());
-        // TASK-948: the report's step changes, applied to the checklist as read under the row lock, so
-        // reports that overlap compose: one waiting on the lock re-reads the list the other just wrote.
-        // A task that is no longer get-done (a kind change landed after the tool checked the kind)
+        // TASK-948: the report's step changes, applied as the agent to the checklist as read under the row
+        // lock, so reports that overlap compose: one waiting on the lock re-reads the list the other just
+        // wrote. A task that is no longer get-done (a kind change landed after the tool checked the kind)
         // skips them all, writes no checklist, and its report still lands.
         const changes = input.steps === undefined ? null
-          : definition.kind === 'get-done' ? applyStepOps(storedSteps(definition.task_steps), input.steps)
-          : { steps: [], applied: 0, skipped: input.steps.length };
+          : definition.kind === 'get-done' ? changeStoredSteps(definition.task_steps, input.steps, 'agent')
+          : { steps: [], applied: 0, skipped: input.steps.length, write: null };
         try {
           // A later report in the same check-in replaces this one, reading and all. The JSON keeps
           // its three keys: the reading has columns of its own (card decision 4).
@@ -869,9 +922,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
           // A step change is an edit by id, not a snapshot like the status, so there's no accepted-at
           // clause: an older overlapping run's ticks still land. Like the state, the checklist never
-          // moves revision, spec_hash or updated_at.
-          if (changes !== null && changes.applied > 0) {
-            await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.steps) })
+          // moves revision, spec_hash or updated_at. TASK-949: the write keeps the stored entries this
+          // version can't read (changeStoredSteps).
+          if (changes !== null && changes.write !== null) {
+            await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.write) })
               .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
           }
         } catch (error) {
@@ -926,6 +980,49 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           .where('author_user_id', '=', input.actorUserId).where('request_id', '=', input.requestId).executeTakeFirstOrThrow();
         return { outcome: 'replayed', replyId: first.reply_id, row };
       });
+    },
+    async setSteps(input) {
+      // Inside receiptTransaction, so after the agent fence and the request's row: acceptDispatch's and
+      // updateAuthored's order. recordReport takes the fence, the run's row, then this row, and nothing locks a
+      // request row after a routine's, so this adds no deadlock.
+      const locked = async (trx: Transaction<RoutinesDatabase>) => {
+        const row = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'task_steps'])
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        // An explicit allowlist (TASK-948): only a get-done task has steps.
+        if (!row || row.kind !== 'get-done') throw new StepsRefused('not-found');
+        if (row.owner_user_id !== input.actorUserId) throw new StepsRefused('forbidden');
+        return row;
+      };
+      // The steps leave through here, never through the receipt, and so does whether this was a replay.
+      let steps: StoredStep[] = [];
+      let replayed = false;
+      try {
+        const key = operationKey(input, 'set-steps', inputHash({ agentId: input.agentId, routineId: input.routineId, ops: input.ops }));
+        const { skipped } = await receiptTransaction(db, key, async trx => {
+          const changes = changeStoredSteps((await locked(trx)).task_steps, input.ops, 'person');
+          if (changes.write !== null) {
+            try {
+              // A report's rule (recordReport): no revision, spec_hash or updated_at, since the steps are task
+              // state, so a change can't turn the page's next Check now into a revision conflict.
+              await trx.updateTable('routines_v1_definitions').set({ task_steps: JSON.stringify(changes.write) })
+                .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+            } catch (error) {
+              throw stepsWriteError(input.routineId, error);
+            }
+          }
+          steps = changes.steps;
+          // All the receipt keeps (receiptCopy, parseReceipt).
+          return { skipped: changes.skipped };
+        }, async trx => {
+          // A replay: the owner checked again, and the steps as they are now, beside the first try's count.
+          steps = storedSteps((await locked(trx)).task_steps);
+          replayed = true;
+        });
+        return { steps, skipped, replayed };
+      } catch (error) {
+        if (error instanceof StepsRefused) return error.reason;
+        throw error;
+      }
     },
     async advance(input) {
       await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt })

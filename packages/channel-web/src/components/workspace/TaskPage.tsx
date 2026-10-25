@@ -1,6 +1,7 @@
 /**
  * `/workspace/tasks/<agentId>/<routineId>` — one task's own page, of either
- * kind (TASK-910; "Get something done" with its steps, TASK-948).
+ * kind (TASK-910; "Get something done" with its steps, TASK-948, which its
+ * owner edits there, TASK-949).
  *
  * It reads like a thread (design §3.3): the latest update at the top, the
  * agent's reading under it when the latest report sent one (TASK-952), a
@@ -12,9 +13,10 @@
  * task's ids, since a refresh keeps what's on screen.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
- * ask, its reading's label, the agent's notes and a get-done task's steps were
- * written by a model, and an update can quote a ticket or an email; the brief
- * was written by a person. The server fenced and capped every one before it
+ * ask, its reading's label and the agent's notes were written by a model, and
+ * so were a get-done task's steps, but for those the person added or reworded
+ * (TASK-949); an update can quote a ticket or an email; the brief was written
+ * by a person. The server fenced and capped every one before it
  * left (`server/routes-workspace.ts`). Here they are only ever React text
  * children: never `dangerouslySetInnerHTML`, never the markdown renderer, and
  * no attribute is built from them. `**bold**` and `<img>` show as those
@@ -27,6 +29,10 @@
  * a time, and each reads the task again afterwards, so the next one carries the
  * revision it just read. A failure is worded per `RoutineApiError.code`, never
  * with its `message`, which speaks of routines.
+ *
+ * A STEP CHANGE (TASK-949) is `TaskSteps`' own, and moves no revision. Its
+ * answer is the steps as they now are, which the page swaps in with no re-read
+ * (`useTask().replaceSteps`), so a tick leaves the rest of the page as it was.
  *
  * A PRESS WHOSE ANSWER NEVER CAME keeps its request (`FireNowControl`'s rule):
  * pressing the same action again sends the very same request, so the server
@@ -96,7 +102,7 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import { checkInWhen } from '@/lib/workspace-time';
-import type { TaskDetail, TaskReplyCheckIn } from '@/lib/workspace-types';
+import type { TaskDetail, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { TaskNotes } from './TaskNotes';
 import { TaskReadingBlock } from './TaskReadingBlock';
@@ -291,7 +297,7 @@ export function TaskPage({
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const { state, refresh, refreshQuietly } = useTask(agentId, routineId);
+  const { state, refresh, refreshQuietly, replaceSteps } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
   const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
   const { acting, notice, press } = useTaskActions(agentId, routineId, detail, refresh, poll);
@@ -369,6 +375,7 @@ export function TaskPage({
               noteRef={noteRef}
               onRefresh={refresh}
               onReplySent={onReplySent}
+              onStepsChanged={replaceSteps}
               onNavigate={onNavigate}
             />
           )}
@@ -470,6 +477,7 @@ function TaskBody({
   noteRef,
   onRefresh,
   onReplySent,
+  onStepsChanged,
   onNavigate,
 }: {
   agentId: string;
@@ -483,6 +491,8 @@ function TaskBody({
   noteRef: RefObject<HTMLParagraphElement | null>;
   onRefresh: () => void;
   onReplySent: (checkIn: TaskReplyCheckIn) => void;
+  /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
+  onStepsChanged: (steps: TaskStep[]) => void;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
@@ -554,7 +564,15 @@ function TaskBody({
       />
       {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
       <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
-      {detail.kind === 'get-done' && <TaskSteps steps={detail.steps} agentName={agentName} />}
+      {detail.kind === 'get-done' && (
+        <TaskSteps
+          agentId={agentId}
+          routineId={routineId}
+          steps={detail.steps}
+          agentName={agentName}
+          onChanged={onStepsChanged}
+        />
+      )}
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
         <h2 id={briefId} className="sr-only">
           About this task
