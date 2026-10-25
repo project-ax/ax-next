@@ -272,7 +272,7 @@ Plugins receive config when `createPlugin(config)` runs. No runtime-config hook.
 
 ### A plugin's `init()` runs after the producers it declares
 
-Core inits plugins one at a time, in dependency order, and each plugin registers its hooks *inside* its own `init()`. So a plugin's `init()` runs after the `init()` of every plugin that registers a hook in its `calls` (or a present `optionalCalls` producer), and it can call those hooks from `init()`. A hook it did not declare may not be registered yet. Work from outside the process reaches the kernel only after every `init()`: `@ax/http-server` binds its port in `startAdmission()`, and stops accepting in `stopAdmission()` before any plugin's `shutdown()` (TASK-942). No DI container needed — the hook bus IS the inter-plugin API.
+Core inits plugins one at a time, in dependency order, and each plugin registers its hooks *inside* its own `init()`. So a plugin's `init()` runs after the `init()` of every plugin that registers a hook in its `calls` (or a present `optionalCalls` producer), and it can call those hooks from `init()`. A hook it did not declare may not be registered yet. Requests on the public HTTP listener reach the kernel only after every `init()`: `@ax/http-server` binds its port in `startAdmission()`, and stops accepting in `stopAdmission()` before any plugin's `shutdown()` (TASK-942). Other listeners, e.g. `@ax/ipc-http`, still bind inside `init()`. No DI container needed — the hook bus IS the inter-plugin API.
 
 ### Cycle detection is at boot
 
