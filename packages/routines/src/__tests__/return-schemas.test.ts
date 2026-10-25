@@ -219,8 +219,8 @@ describe('canonical routine return schemas', () => {
       }
     });
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and step changes, a task's finish date, and finishing or reopening a task", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(24);
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and step changes, a task's finish date, finishing or reopening a task, and a person's copy of a task", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(25);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
@@ -231,6 +231,7 @@ describe('canonical routine return schemas', () => {
     expect(ROUTINE_SERVICES).toContain('routines:set-finish-by');
     expect(ROUTINE_SERVICES).toContain('routines:complete');
     expect(ROUTINE_SERVICES).toContain('routines:reopen');
+    expect(ROUTINE_SERVICES).toContain('routines:duplicate');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
     expect(C.RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
@@ -240,6 +241,11 @@ describe('canonical routine return schemas', () => {
     expect(C.RoutineSetStepsOutputSchema.parse(answer)).toStrictEqual(answer);
     // Never a change's text beside the list.
     expect(() => C.RoutineSetStepsOutputSchema.parse({ ...answer, text: 'Ask Dana to review billing' })).toThrow();
+  });
+  it('answers a copy with its id alone (TASK-953)', () => {
+    expect(C.RoutineDuplicateOutputSchema.parse({ routineId: 'rtn_1' })).toStrictEqual({ routineId: 'rtn_1' });
+    // Never the copy's name, or anything else of it, beside its id.
+    expect(() => C.RoutineDuplicateOutputSchema.parse({ routineId: 'rtn_1', name: 'Copy of Notify' })).toThrow();
   });
   it("answers a reply with its id and what its check-in did, and reads a reply back without its task's owner (TASK-931)", () => {
     expect(C.RoutineReplyOutputSchema.parse({ replyId: 'reply_1', checkIn: 'started' })).toStrictEqual({ replyId: 'reply_1', checkIn: 'started' });

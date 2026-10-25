@@ -12,7 +12,7 @@ export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
-  'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen',
+  'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen', 'duplicate',
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
@@ -501,5 +501,25 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
     ctx.logger.info('routines_steps_set', { agentId: input.agentId, routineId: input.routineId, ops: input.ops.length, skipped: outcome.skipped, replayed: outcome.replayed });
     return { steps: outcome.steps.map(({ id, text, done, addedBy }) => ({ id, text, done, addedBy })), skipped: outcome.skipped };
+  });
+  // TASK-953. A person copies their own task on its task page. Who may is routines:create's rule (someone who may
+  // manage the agent's tasks; the copy is the agent's owner's on a personal agent, else the caller's), plus `edit` on
+  // the source, so only its owner copies it, and never a default. Both are checked before the store is asked, and the
+  // store decides the owner again under the agent fence and the source's row lock, whatever this read saw. Neither a
+  // tool nor an IPC action, so no model can call it. No approval: the person is the copy's author, pressing Duplicate
+  // themselves, and the copy stays paused until a person resumes it. The answer is the copy's id, field by field, and
+  // the log line carries ids and whether the store answered from the receipt (`replayed`, as routines_steps_set does;
+  // it stays out of the answer), never the task's name or steps.
+  register('duplicate', C.RoutineDuplicateInputSchema, C.RoutineDuplicateOutputSchema, async (ctx, input) => {
+    const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
+    requireAllowed(routinePermissions(await rowFor({ agentId: input.agentId, routineId: input.routineId }), ctx.userId, a.allowed).edit);
+    const outcome = await store.duplicateAuthored({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId,
+      ownerUserId: a.agent.ownerType === 'user' ? a.agent.ownerId : ctx.userId, requestId: input.requestId, now: now(),
+    });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    ctx.logger.info('routines_task_duplicated', { agentId: input.agentId, routineId: input.routineId, copyId: outcome.routineId, replayed: outcome.replayed });
+    return { routineId: outcome.routineId };
   });
 }
