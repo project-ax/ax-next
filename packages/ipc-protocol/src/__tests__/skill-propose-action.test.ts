@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  SKILL_PROPOSE_CAPABILITY_LIMITS,
   SkillProposeRequestSchema,
   SkillProposeResponseSchema,
   IPC_TIMEOUTS_MS,
@@ -125,5 +126,95 @@ describe('TASK-74 skill.propose IPC schemas', () => {
 
   it('IPC_TIMEOUTS_MS registers skill.propose', () => {
     expect(IPC_TIMEOUTS_MS['skill.propose']).toBe(30_000);
+  });
+});
+
+describe('capabilityProposal list limits (TASK-945)', () => {
+  // Junk elements (`0`) would each fail on their own, so a result holding ONLY
+  // the size issue shows the list was refused before any element was parsed.
+  function expectOnlySizeIssue(
+    r: { success: boolean; error?: { issues: unknown[] } },
+    path: (string | number)[],
+    maximum: number,
+  ): void {
+    expect(r.success).toBe(false);
+    expect(r.error?.issues).toEqual([expect.objectContaining({ code: 'too_big', type: 'array', path, maximum })]);
+  }
+
+  const L = SKILL_PROPOSE_CAPABILITY_LIMITS;
+  const mcp = { name: 'srv', transport: 'http', url: 'https://mcp.example.com', allowedHosts: [], credentials: [] };
+  const slot = { slot: 'API_KEY', kind: 'api-key' };
+
+  type Case = [
+    label: string,
+    path: (string | number)[],
+    limit: number,
+    valid: unknown,
+    build: (items: unknown[]) => unknown,
+  ];
+  const CASES: Case[] = [
+    [
+      'allowedHosts',
+      ['capabilityProposal', 'allowedHosts'],
+      L.allowedHosts,
+      'api.example.com',
+      (items) => ({ ...emptyCaps, allowedHosts: items }),
+    ],
+    [
+      'credentials',
+      ['capabilityProposal', 'credentials'],
+      L.credentials,
+      slot,
+      (items) => ({ ...emptyCaps, credentials: items }),
+    ],
+    [
+      'mcpServers',
+      ['capabilityProposal', 'mcpServers'],
+      L.mcpServers,
+      mcp,
+      (items) => ({ ...emptyCaps, mcpServers: items }),
+    ],
+    [
+      "an MCP server's allowedHosts",
+      ['capabilityProposal', 'mcpServers', 0, 'allowedHosts'],
+      L.allowedHosts,
+      'mcp.example.com',
+      (items) => ({ ...emptyCaps, mcpServers: [{ ...mcp, allowedHosts: items }] }),
+    ],
+    [
+      "an MCP server's credentials",
+      ['capabilityProposal', 'mcpServers', 0, 'credentials'],
+      L.credentials,
+      slot,
+      (items) => ({ ...emptyCaps, mcpServers: [{ ...mcp, credentials: items }] }),
+    ],
+    [
+      'packages.npm',
+      ['capabilityProposal', 'packages', 'npm'],
+      L.packages,
+      'left-pad',
+      (items) => ({ ...emptyCaps, packages: { npm: items, pypi: [] } }),
+    ],
+    [
+      'packages.pypi',
+      ['capabilityProposal', 'packages', 'pypi'],
+      L.packages,
+      'requests',
+      (items) => ({ ...emptyCaps, packages: { npm: [], pypi: items } }),
+    ],
+  ];
+
+  it.each(CASES)('%s: takes the limit', (_label, _path, limit, valid, build) => {
+    const items = Array.from({ length: limit }, () => valid);
+    const r = SkillProposeRequestSchema.safeParse({ ...validReq, capabilityProposal: build(items) });
+    expect(r.success).toBe(true);
+  });
+
+  // The request object is `.strict()`; the result must still hold exactly one
+  // issue.
+  it.each(CASES)('%s: one over fails with only the size issue', (_label, path, limit, _valid, build) => {
+    const junk = Array.from({ length: limit + 1 }, () => 0);
+    const r = SkillProposeRequestSchema.safeParse({ ...validReq, capabilityProposal: build(junk) });
+    expectOnlySizeIssue(r, path, limit);
   });
 });
