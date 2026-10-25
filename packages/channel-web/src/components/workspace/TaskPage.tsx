@@ -59,9 +59,10 @@
  * once, with the way to change it. The shell tells the page it was just
  * opened by Duplicate (`justCopied`, shell memory, never the URL, so a reload
  * or Back and Forward say nothing); the page keeps that as a one-way latch the
- * first read showing the copy running clears, so Resume uses the line up and
- * a later Pause doesn't bring it back. Only a person who may edit sees it,
- * since it says "press Resume".
+ * first read showing the copy running or Done clears, so Resume (or Mark done,
+ * which leaves no Resume to press) uses the line up and a later Pause or
+ * Reopen doesn't bring it back. Only a person who may edit sees it, since it
+ * says "press Resume".
  *
  * A STEP CHANGE (TASK-949) is `TaskSteps`' own, and moves no revision. Its
  * answer is the steps as they now are, which the page swaps in with no re-read
@@ -454,13 +455,14 @@ export function TaskPage({
   );
   const busy = acting !== null || (state.kind === 'ready' && state.refreshing);
 
-  // One-way: the first read that shows the copy running uses the line up, so
-  // a later Pause doesn't bring it back (see THE PAUSED-COPY LINE).
+  // One-way: the first read that shows the copy running, or Done, uses the
+  // line up, so a later Pause or Reopen doesn't bring it back (see THE
+  // PAUSED-COPY LINE).
   const [copyLine, setCopyLine] = useState(justCopied);
-  const running = detail?.enabled === true;
+  const lineUsedUp = detail !== null && (detail.enabled || detail.doneAt !== null);
   useEffect(() => {
-    if (running) setCopyLine(false);
-  }, [running]);
+    if (lineUsedUp) setCopyLine(false);
+  }, [lineUsedUp]);
 
   const noteId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);

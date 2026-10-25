@@ -2520,6 +2520,16 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     { what: 'it isn’t a fresh copy', justCopied: false, over: { enabled: false, nextCheckAt: null } },
     { what: 'the copy is already running', justCopied: true, over: {} },
     {
+      what: 'the copy is Done (marked done while paused, so Resume is gone)',
+      justCopied: true,
+      over: {
+        kind: 'get-done' as const,
+        enabled: false,
+        nextCheckAt: null,
+        doneAt: new Date(2026, 9, 22, 11, 30).toISOString(),
+      },
+    },
+    {
       what: 'the person can’t edit',
       justCopied: true,
       over: {
