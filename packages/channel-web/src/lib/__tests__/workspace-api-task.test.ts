@@ -643,7 +643,7 @@ describe('a request to a task that never answers (TASK-937)', () => {
     expect((fetchSpy.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
   });
 
-  it('the tasks list keeps its own deadline, not this one', async () => {
+  it('the tasks list gets no request deadline (its 15 s race lives in useTasks)', async () => {
     const fetchSpy = hangForever();
     const result = workspaceApi.tasks();
     const settled = vi.fn();
