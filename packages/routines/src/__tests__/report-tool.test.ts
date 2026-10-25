@@ -229,8 +229,9 @@ describe('routine_report (TASK-907)', () => {
     const execute = <T,>(ctx: AgentContext, call: ToolCall) => h.bus.call<ToolCall, T>(`tool:execute:${call.name}`, ctx, call);
     const mineOf = <V extends { routineId: string }>(views: V[]) => views.find(view => view.routineId === task.routineId);
     /**
-     * Every read a person has of the task: the services, which the Settings routes (and the Tasks page)
-     * serve as they are, and the tools in that person's own chat with the agent.
+     * Every read a person has of the task: the services (the Tasks page shows their text through fenced
+     * routes; the Settings routes leave a task's state out, TASK-957), and the tools in that person's own
+     * chat with the agent.
      */
     async function reads(person: AgentContext) {
       const chat = chatOf(person);

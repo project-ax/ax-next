@@ -8,6 +8,7 @@ import {
 import {
   RoutineDefinitionSchema,
   RoutineUpdateInputSchema,
+  RoutineViewSchema,
 } from '@ax/routines-contract';
 import {
   createRoutinesAdminHandlers,
@@ -80,8 +81,16 @@ function response() {
   };
 }
 function setup(
-  opts: { failure?: Error; admin?: boolean; resolveFailure?: boolean } = {},
+  opts: {
+    failure?: Error;
+    admin?: boolean;
+    resolveFailure?: boolean;
+    /** What the routines services answer instead: one routine view (list, get, create, update) and the runs. */
+    answers?: { view?: unknown; fires?: unknown[] };
+  } = {},
 ) {
+  const view = opts.answers?.view ?? routine;
+  const fires = opts.answers?.fires ?? [];
   const bus = new HookBus();
   const calls: Array<{ hook: string; ctx: AgentContext; input: unknown }> = [];
   bus.registerService('auth:require-user', 'test', async () => ({
@@ -98,13 +107,13 @@ function setup(
     return { agent: { ownerId: 'team' } };
   });
   for (const [hook, result] of Object.entries({
-    'routines:list': { routines: [routine] },
-    'routines:get': routine,
-    'routines:create': routine,
-    'routines:update': routine,
+    'routines:list': { routines: [view] },
+    'routines:get': view,
+    'routines:create': view,
+    'routines:update': view,
     'routines:delete': { deleted: true, cleanupPending: false },
     'routines:fire-now': { status: 'ok' },
-    'routines:recent-fires': { fires: [] },
+    'routines:recent-fires': { fires },
     'tool-policy:get-routine-consent': { enabled: false, revision: 'c1' },
     'tool-policy:revoke-routine-consent': { enabled: false, revision: 'c2' },
     'agents:ensure-webhook-token': { token: 'authorized-token' },
@@ -323,5 +332,108 @@ describe('structured human routine REST adapters', () => {
     );
     expect(r.status).toBe(404);
     expect(calls.some((c) => c.hook === 'routines:upsert-default')).toBe(false);
+  });
+});
+describe('the Settings routes answer no task state (TASK-957)', () => {
+  // A task's state as text: what its agent writes (the report, notes and reading label, the steps, each
+  // run's report), and a step a person added, which sits in the same checklist.
+  const AGENT_TEXT = {
+    update: 'Agent update 5d1c', ask: 'Agent ask 5d1c', notes: 'Agent notes 5d1c', label: 'Agent label 5d1c',
+    agentStep: 'Agent step 5d1c', personStep: 'Person step 5d1c',
+    runUpdate: 'Run update 5d1c', runAsk: 'Run ask 5d1c', runLabel: 'Run label 5d1c',
+  };
+  /** A Done get-done task as the services answer its owner: every field set. */
+  const taskView = {
+    ...RoutineDefinitionSchema.parse({
+      name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', enabled: false,
+      trigger: { kind: 'interval', every: '1h' }, kind: 'get-done', goodWhen: 'Every article is on the new site.',
+    }),
+    agentId: 'a', routineId: 'rtn_a', revision: 'rev1', origin: 'authored', defaultRoutineId: null,
+    nextRunAt: null, lastRunAt: '2026-10-25T09:00:00.000Z', lastStatus: 'ok', lastError: null, lastWarning: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: true },
+    task: {
+      status: 'needs-you', update: AGENT_TEXT.update, ask: AGENT_TEXT.ask, reading: { value: 3, label: AGENT_TEXT.label },
+      doneClaimed: false, reportedAt: '2026-10-25T09:05:00.000Z', agentNotes: AGENT_TEXT.notes,
+    },
+    noRecentUpdate: { inARow: 2, reason: 'no-report', at: '2026-10-25T09:30:00.000Z', autoPaused: false },
+    steps: [
+      { id: 's000001', text: AGENT_TEXT.agentStep, done: true, addedBy: 'agent' },
+      { id: 's000002', text: AGENT_TEXT.personStep, done: false, addedBy: 'person' },
+    ],
+    finishBy: '2026-11-01', done: { at: '2026-10-25T09:40:00.000Z' },
+  };
+  const runView = {
+    agentId: 'a', routineId: 'rtn_a', firedAt: '2026-10-25T09:00:00.000Z', triggerSource: 'tick', conversationId: 'conv_1',
+    status: 'ok', error: null, renderedPrompt: null, warning: null,
+    report: { status: 'on-track', update: AGENT_TEXT.runUpdate, ask: AGENT_TEXT.runAsk, reading: { value: 2, label: AGENT_TEXT.runLabel } },
+  };
+  /**
+   * Every field a Settings routine view carries, reviewed. A new field fails here on purpose: if an agent
+   * writes any of it, settingsView leaves it out; if only the host or a person writes it, add it here.
+   */
+  const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'description', 'done', 'enabled',
+    'finishBy', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning', 'name', 'nextRunAt',
+    'noRecentUpdate', 'origin', 'permissions', 'promptBody', 'revision', 'routineId', 'silenceMaxChars',
+    'silenceToken', 'steps', 'task', 'trigger'];
+  /** Every field a Settings run carries, reviewed the same way. */
+  const RUN_KEYS = ['agentId', 'conversationId', 'error', 'firedAt', 'renderedPrompt', 'report', 'routineId',
+    'status', 'triggerSource', 'warning'];
+  /** One request per Settings route, each one its handler accepts. */
+  const requests = {
+    list: req(),
+    get: req(),
+    create: req({ requestId: 'create', definition }),
+    update: req({ requestId: 'edit', expectedRevision: 'rev1', patch: { name: 'Renamed' } }),
+    destroy: req({ requestId: 'delete', expectedRevision: 'rev1' }),
+    fire: req({ requestId: 'fire', expectedRevision: 'rev1' }),
+    fires: req(),
+    consent: req(),
+    revokeConsent: req({}),
+    receiver: req(),
+  };
+  /** The routines services answer as they do the task's owner: the task's state and the runs' reports. */
+  const asOwner = () => setup({ answers: { view: taskView, fires: [runView] } });
+  async function serve(
+    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>,
+    request: RouteRequest,
+  ) {
+    const r = response();
+    await handler(request, r.res);
+    return r;
+  }
+  it('no route answers any text an agent wrote, to the task’s owner included', async () => {
+    const { h } = asOwner();
+    // Every handler, so a new route can't skip this test.
+    expect(Object.keys(requests).sort()).toEqual(Object.keys(h).sort());
+    for (const [name, request] of Object.entries(requests)) {
+      const r = await serve(h[name as keyof typeof h], request);
+      expect(r.status, name).toBeGreaterThanOrEqual(200);
+      expect(r.status, name).toBeLessThan(300);
+      const served = JSON.stringify(r.body);
+      for (const text of Object.values(AGENT_TEXT))
+        expect(served, `${name} answers ${text}`).not.toContain(text);
+    }
+  });
+  it('a routine view keeps the routine and what the host wrote, with task null and steps empty', async () => {
+    const { h } = asOwner();
+    const views = {
+      list: ((await serve(h.list, requests.list)).body as { routines: unknown[] }).routines[0],
+      get: ((await serve(h.get, requests.get)).body as { routine: unknown }).routine,
+      create: ((await serve(h.create, requests.create)).body as { routine: unknown }).routine,
+      update: ((await serve(h.update, requests.update)).body as { routine: unknown }).routine,
+    };
+    for (const [name, view] of Object.entries(views)) {
+      expect(view, name).toStrictEqual({ ...taskView, task: null, steps: [] });
+      expect(Object.keys(view as object).sort(), name).toEqual([...VIEW_KEYS].sort());
+      // The SPA types this answer as a RoutineView.
+      expect(RoutineViewSchema.safeParse(view).success, name).toBe(true);
+    }
+  });
+  it('a run keeps everything but its report', async () => {
+    const { h } = asOwner();
+    const { body } = await serve(h.fires, requests.fires);
+    expect(body).toStrictEqual({ fires: [{ ...runView, report: null }] });
+    const [run] = (body as { fires: object[] }).fires;
+    expect(Object.keys(run ?? {}).sort()).toEqual([...RUN_KEYS].sort());
   });
 });

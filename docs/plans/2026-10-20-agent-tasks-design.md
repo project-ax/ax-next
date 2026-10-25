@@ -672,7 +672,9 @@ suggest a short body for known apps.
   task it's reporting on.
 - **No brief, no check-in** (§4.2).
 - **Reports, steps and notes are untrusted model output.** They are
-  length-capped and rendered as plain text. Notes and agent-added steps return
+  length-capped and rendered as plain text. The task page gets them through
+  channel-web's workspace routes, which fence each line; the Settings routes
+  leave them out of every answer (TASK-957). Notes and agent-added steps return
   in the next check-in, framed as the agent's own notes. An instruction injected
   through a ticket could persist that way, so notes are visible and clearable
   on the task page and outward actions stay held. Clearing holds against a
