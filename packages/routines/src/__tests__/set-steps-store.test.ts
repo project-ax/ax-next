@@ -120,7 +120,7 @@ describe("a person's step changes (store, TASK-949)", () => {
     expect(await change(task, 'before', [{ op: 'tick', id: 's000001' }])).toEqual({ steps: ticked, skipped: 0, replayed: false });
     expect(await f.store.completeTask({
       agentId: task.agentId, routineId: task.routineId, actorUserId: 'owner', requestId: 'done', mayEdit: true, now: minute(1),
-    })).toEqual({ done: true });
+    })).toEqual({ outcome: 'completed' });
     // The record is the owner's too, and still not theirs to change: forbidden, and nothing is written or kept.
     expect(await change(task, 'after', [{ op: 'untick', id: 's000001' }])).toBe('forbidden');
     // The same request again is refused as well, rather than answered from its receipt.

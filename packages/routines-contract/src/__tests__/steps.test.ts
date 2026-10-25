@@ -11,11 +11,18 @@ const issues = (value: unknown) => {
   return result.success ? [] : result.error.issues.map(issue => issue.message);
 };
 const report = { status: 'on-track', update: 'Moving.' } as const;
+const BASELESS = 'A step can’t have an accent or other combining mark at the start or after a space.';
+const STACK = 'A step can’t stack more than 8 accents or other combining marks on one character.';
 
 describe('a step’s text (TASK-948)', () => {
   it('takes one line of 1 to 200 characters, whole emoji included', () => {
     expect(ROUTINE_STEP_TEXT_MAX_CHARS).toBe(200);
     for (const text of ['Export every article', 'a'.repeat(200), `Ship it ${String.fromCodePoint(0x1f680)}`, 'Tab\tinside']) expect(issues(text), text).toEqual([]);
+  });
+  it('takes marks on a letter, up to 8 (TASK-957)', () => {
+    for (const text of ['Ti\u1EBFng Vi\u1EC7t'.normalize('NFD'), `Export e${'\u0301'.repeat(8)}very article`, '\u0939\u093F\u0928\u094D\u0926\u0940']) {
+      expect(issues(text), text).toEqual([]);
+    }
   });
   it.each([
     ['empty', '', 'Write the step first.'],
@@ -25,6 +32,12 @@ describe('a step’s text (TASK-948)', () => {
     ['a carriage return', 'two\rlines', 'A step is one line.'],
     ['an invisible character after an emoji', `${String.fromCodePoint(0x1f600)}a\u200Bb`, 'A step can’t contain invisible characters (U+200B at character 3).'],
     ['a lone surrogate', 'ok\uD800', 'A step can’t contain broken characters.'],
+    // TASK-957: the brief's and the report's two mark rules. A step shows on the task page and comes back in every check-in.
+    ['a mark at the very start', '\u0301Export every article', BASELESS],
+    ['a mark after a space', 'Export \u0301every article', BASELESS],
+    ['nothing but marks', '\u0301\u0300', BASELESS],
+    ['nine marks on one letter', `Export e${'\u0301'.repeat(9)}very article`, STACK],
+    ['nine mixed marks on one letter', `Export e${'\u0301\u0300\u0336'.repeat(3)}very article`, STACK],
   ])('refuses %s with one reason', (_label, value, message) => {
     expect(issues(value)).toEqual([message]);
   });
@@ -51,6 +64,8 @@ describe('a step change (TASK-948)', () => {
     ['an id past 32', { op: 'tick', id: 'x'.repeat(33) }],
     ['a two-line add', { op: 'add', text: 'two\nlines' }],
     ['a hidden-character edit', { op: 'edit', id: 's1', text: 'a\u200Bb' }],
+    ['an add led by a mark (TASK-957)', { op: 'add', text: '\u0301Export' }],
+    ['an edit with nine marks on one letter (TASK-957)', { op: 'edit', id: 's1', text: `e${'\u0301'.repeat(9)}` }],
   ])('refuses %s', (_label, op) => {
     expect(RoutineStepOpSchema.safeParse(op).success).toBe(false);
   });

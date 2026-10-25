@@ -49,7 +49,10 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * sharing a task is a later feature (design §14, question 8). Whoever can see the
  * routine still sees the routine. Decided here, where every view is made (list,
  * get, create, update, their replays, the tools' recovery), so no caller (a tool,
- * the Settings routes, the Tasks page) needs a rule of its own for these. It covers
+ * the Settings routes, the Tasks page) needs an owner rule of its own for these.
+ * The Settings routes go further: they leave `task`, `steps` and a run's `report`
+ * out for everyone, the owner included, since Settings never draws them
+ * (TASK-957). The owner rule covers
  * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`), a
  * "get-done" task's steps (TASK-948: `stepsView`), when a get-done task was marked
  * done (TASK-950: `doneView`) and `report` only: a fire's
@@ -433,15 +436,17 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // left it. The store decides owner and kind again under the routine's row lock and throws its
   // refusals, which pass through as they are. It starts nothing, so it runs outside admitDispatch. The
   // same requestId again answers from its receipt and writes nothing. Neither a tool nor an IPC
-  // action: only a person marks a task done. The log line carries ids only.
+  // action: only a person marks a task done. The log line carries ids only, and only a press that moved
+  // the task to Done writes it: a replay and a press on a task already Done change nothing, so they log
+  // nothing (TASK-957).
   register('complete', C.RoutineCompleteInputSchema, C.RoutineCompleteOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
     const row = await rowFor(input);
-    await store.completeTask({
+    const { outcome } = await store.completeTask({
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId,
       mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
     });
-    ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
+    if (outcome === 'completed') ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
     return { done: true as const };
   });
   // TASK-950. Not yet, and Reopen on a Done task: the task's owner tells their agent what's left. It is

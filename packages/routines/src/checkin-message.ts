@@ -142,12 +142,14 @@ function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
 
 /**
  * A task check-in's message. The notes and reports in it are agent-written:
- * TASK-907's writer capped and screened them (no invisible characters, an
- * update on one line), and they're quoted line by line and labelled here as
- * the agent's own earlier text, information and not instructions from the
- * person. The replies in it are person-written (TASK-931): the task's current
- * owner's own words on its page, screened by `RoutineReplyTextSchema` before
- * they were stored, and quoted line by line and labelled here as the person's.
+ * TASK-907's writer capped and screened them (no invisible or broken
+ * characters, no combining mark with nothing to draw on or stacked more than 8
+ * high, an update on one line), and they're quoted line by line and labelled
+ * here as the agent's own earlier text, information and not instructions from
+ * the person. The replies in it are person-written (TASK-931): the task's
+ * current owner's own words on its page, screened by `RoutineReplyTextSchema`
+ * before they were stored, and quoted line by line and labelled here as the
+ * person's.
  * A "get-done" task's steps (TASK-948) are agent- or person-written: screened
  * by `RoutineStepTextSchema` before they were stored, and each quoted line by
  * line and labelled by who wrote it, from the host-set `addedBy`, so text the

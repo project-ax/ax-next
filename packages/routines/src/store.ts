@@ -2,12 +2,12 @@ import { sql, type Kysely, type Selectable, type Transaction, type Updateable } 
 import { SafeToolError } from '@ax/core';
 import {
   applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineCompleteOutputSchema, RoutineDeleteOutputSchema, RoutineDuplicateOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
-  type CheckInMiss, type RoutineCompleteOutput, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
+  type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
+import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
@@ -113,16 +113,17 @@ export interface RoutinesStore {
    * definition's hash, no next run, `updated_at`) and, in the same statement,
    * records the completion (`doneOf`), takes back the agent's claim and starts
    * the missed check-ins over. The steps, the report and the notes stay. A task
-   * already Done answers done and writes nothing. The refusals are thrown
-   * inside the receipt's transaction, never returned: `receiptTransaction`
-   * keeps whatever the effect returns as the request's receipt, so a returned
-   * refusal would answer a retry made once the person may again. The receipt
-   * is the answer, `{ done: true }`, and the same `requestId` again answers
-   * from it and writes nothing, even after a Reopen ran the task again: a press
-   * retried after its answer was lost can't finish a task the person has since
-   * reopened.
+   * already Done writes nothing and answers `already-done`. The refusals are
+   * thrown inside the receipt's transaction, never returned:
+   * `receiptTransaction` keeps whatever the effect returns as the request's
+   * receipt, so a returned refusal would answer a retry made once the person
+   * may again. The receipt is `{ done: true }`, which is what `routines:complete`
+   * answers; the same `requestId` again is answered from it, writes nothing and
+   * answers `replayed`, even after a Reopen ran the task again: a press retried
+   * after its answer was lost can't finish a task the person has since reopened.
+   * The answer says which of the three it was (TASK-957), for the log line.
    */
-  completeTask(input: RoutineKey & Actor & { requestId: string; mayEdit: boolean; now: Date }): Promise<RoutineCompleteOutput>;
+  completeTask(input: RoutineKey & Actor & { requestId: string; mayEdit: boolean; now: Date }): Promise<CompleteTaskResult>;
   /**
    * TASK-950. Not yet, and Reopen on a Done task: a person's reply on a
    * get-done task, stored as `addReply` stores one, in its lock order (the
@@ -607,6 +608,20 @@ async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectab
 function storedFinishBy(value: string | null): string | null {
   return RoutineFinishBySchema.safeParse(value).success ? value : null;
 }
+/**
+ * TASK-957. A row's steps as every read sees them (`storedSteps`), and one
+ * stderr line, ids only, when the stored value isn't a list. No writer stores
+ * one (`NO_TASK_STATE` and `changeStoredSteps` write lists), so it's a hand edit
+ * or a later version's format; it would otherwise read as no steps with nothing
+ * said, while every step change to it is skipped. Never the value: it can hold
+ * the agent's text. Every read says it again, until someone repairs the row.
+ */
+function rowSteps(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'routine_id' | 'task_steps'>): StoredStep[] {
+  if (!Array.isArray(row.task_steps)) {
+    process.stderr.write(`[ax/routines] steps of routine ${row.agent_id}/${row.routine_id} aren't stored as a list, so they read as none\n`);
+  }
+  return storedSteps(row.task_steps);
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -614,7 +629,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
-    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps), finishBy: storedFinishBy(row.finish_by), done: doneOf(row),
+    noRecentUpdate: noRecentUpdate(row), steps: rowSteps(row), finishBy: storedFinishBy(row.finish_by), done: doneOf(row),
   });
 }
 /**
@@ -1188,22 +1203,27 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     },
     async completeTask(input) {
       // The receipt's transaction takes the agent fence, then the receipt's row; the routine's row comes
-      // last, as for every edit. Every refusal is thrown, so the receipt's row rolls back with it.
-      return receiptTransaction(db, operationKey(input, 'complete', completeRequestHash(input)), async trx => {
+      // last, as for every edit. Every refusal is thrown, so the receipt's row rolls back with it. The outcome
+      // leaves through a closure, never through the receipt (which stays `{ done: true }`): the receipt answering
+      // means the effect didn't run, which is what `replayed` says.
+      let outcome: CompleteTaskResult['outcome'] = 'replayed';
+      await receiptTransaction(db, operationKey(input, 'complete', completeRequestHash(input)), async trx => {
         const raw = await trx.selectFrom('routines_v1_definitions').selectAll()
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
         if (!raw || raw.kind !== 'get-done') throw new SafeToolError('not-found', 'routineId');
         if (raw.owner_user_id !== input.actorUserId || !input.mayEdit) throw new SafeToolError('forbidden', 'input');
         // Done already: the first Mark done's time and revision stand.
-        if (doneOf(raw) !== null) return { done: true as const };
+        if (doneOf(raw) !== null) { outcome = 'already-done'; return { done: true as const }; }
         // A person's pause (what updateAuthored writes for `enabled: false`), and the completion with it. The
         // report, its notes and the steps stay where they are.
         await trx.updateTable('routines_v1_definitions').set({
           enabled: false, revision: opaqueId('rev'), spec_hash: pausedSpecHash(raw).hash, next_run_at: null, updated_at: input.now,
           task_done_claimed_at: null, task_completed_at: input.now, task_completed_by_user_id: input.actorUserId, ...NO_MISSES,
         }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        outcome = 'completed';
         return { done: true as const };
       });
+      return { outcome };
     },
     async reopenTask(input) {
       return db.transaction().execute(async (trx): Promise<ReopenTaskResult> => {

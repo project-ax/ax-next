@@ -286,10 +286,11 @@ describe('human REST through registered DB services and real agent ACL', () => {
     );
     expect(invalid.status).toBe(400);
   });
-  it("serves a team task's state and its runs' reports only to the task's owner", async () => {
-    // TASK-907: the routes serve the routines services' answers as they are, so
-    // the services decide. The member's browser gets the routine, not its state.
-    h = await createRoutineHarness({ authenticatedUserId: 'member' });
+  it("serves a task's state and its runs' reports to no one, its owner included (TASK-957)", async () => {
+    // TASK-957: Settings never draws a task's state, so its routes leave it out
+    // for everyone, the owner included. The services still decide who else may
+    // read it (TASK-907), and the owner's own reads below have all of it.
+    h = await createRoutineHarness({ authenticatedUserId: 'owner' });
     const task = await h.bus.call<unknown, RoutineView>(
       'routines:create',
       h.owner,
@@ -300,8 +301,8 @@ describe('human REST through registered DB services and real agent ACL', () => {
           name: 'Support queue',
           promptBody: 'Keep the support queue empty.',
           trigger: { kind: 'interval', every: '15m' },
-          kind: 'stay-on-top',
-          goodWhen: 'No ticket waits longer than an hour.',
+          kind: 'get-done',
+          goodWhen: 'Every article is on the new site.',
         }),
       },
     );
@@ -313,6 +314,8 @@ describe('human REST through registered DB services and real agent ACL', () => {
     const notes = 'Order 1234 waits on a refund.';
     // TASK-952: a report's reading is its task's state too.
     const reading = { value: 3, label: 'Open tickets' } as const;
+    // TASK-948: so is a get-done task's checklist, which a report adds to.
+    const STEP = 'Ask Dana to review billing.';
     // One check-in of the owner's task reports, the way routines:report records it.
     const store = createRoutinesStore(h.db);
     const run = await store.acceptDispatch({
@@ -338,9 +341,10 @@ describe('human REST through registered DB services and real agent ACL', () => {
         report,
         notes,
         reading,
+        steps: [{ op: 'add', text: STEP }],
         now: new Date(),
       }),
-    ).toBe('recorded');
+    ).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
     expect(
       await store.finishDispatch({
         dispatchId,
@@ -366,32 +370,40 @@ describe('human REST through registered DB services and real agent ACL', () => {
       (listed.body as { routines: RoutineView[] }).routines.map((view) => [
         view.routineId,
         view.task,
+        view.steps,
       ]),
-    ).toEqual([[task.routineId, null]]);
-    expect((got.body as { routine: RoutineView }).routine).toMatchObject({
+    ).toEqual([[task.routineId, null, []]]);
+    const gotView = (got.body as { routine: RoutineView }).routine;
+    expect(gotView).toMatchObject({
       routineId: task.routineId,
-      kind: 'stay-on-top',
+      kind: 'get-done',
       task: null,
     });
+    expect(gotView.steps).toEqual([]);
     expect(
       (fires.body as { fires: RoutineFireView[] }).fires.map(
         (fire) => fire.report,
       ),
     ).toEqual([null]);
     const served = JSON.stringify([listed.body, got.body, fires.body]);
-    for (const text of [notes, report.update, report.ask, reading.label])
-      expect(served).not.toContain(text);
+    for (const text of [notes, report.update, report.ask, reading.label, STEP])
+      expect(served, text).not.toContain(text);
     // The owner's own reads have all of it.
-    expect(
-      (await h.bus.call<unknown, RoutineView>('routines:get', h.owner, params))
-        .task,
-    ).toEqual({
+    const own = await h.bus.call<unknown, RoutineView>(
+      'routines:get',
+      h.owner,
+      params,
+    );
+    expect(own.task).toEqual({
       ...report,
       reading,
       doneClaimed: false,
       agentNotes: notes,
       reportedAt: expect.any(String),
     });
+    expect(own.steps).toEqual([
+      { id: expect.any(String), text: STEP, done: false, addedBy: 'agent' },
+    ]);
     expect(
       (
         await h.bus.call<unknown, { fires: RoutineFireView[] }>(

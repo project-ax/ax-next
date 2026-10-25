@@ -672,14 +672,19 @@ suggest a short body for known apps.
   task it's reporting on.
 - **No brief, no check-in** (§4.2).
 - **Reports, steps and notes are untrusted model output.** They are
-  length-capped and rendered as plain text. Notes and agent-added steps return
+  length-capped and rendered as plain text. The task page gets them through
+  channel-web's workspace routes, which fence each line; the Settings routes
+  leave them out of every answer (TASK-957). Before a report's text is stored,
+  it is refused with invisible or broken characters, a combining mark with
+  nothing to draw on, or more than 8 marks on one character (TASK-907,
+  TASK-957). Notes and agent-added steps return
   in the next check-in, framed as the agent's own notes. An instruction injected
   through a ticket could persist that way, so notes are visible and clearable
   on the task page and outward actions stay held. Clearing holds against a
   check-in already running: one that started before the clear still reports,
   but can’t put notes back (TASK-910). Updates from other apps are fenced as
   outside content in the message and never reach the system prompt.
-  Steps (TASK-948) are one line of up to 200 characters, at most 50 per task, refused with invisible or broken characters before they're stored, and labelled in the check-in message by who wrote them, a label the agent can't set. The message and the brief both say the agent's own steps are its plan, not the person's instructions: it follows one only when it serves what the person asked for, and removes one that asks for something they didn't, saying so in its update.
+  Steps (TASK-948) are one line of up to 200 characters, at most 50 per task, refused with invisible or broken characters, a combining mark with nothing to draw on, or more than 8 marks on one character before they're stored (TASK-957), and labelled in the check-in message by who wrote them, a label the agent can't set. The message and the brief both say the agent's own steps are its plan, not the person's instructions: it follows one only when it serves what the person asked for, and removes one that asks for something they didn't, saying so in its update.
   A person can reword or delete any step on the task page (TASK-949), so an agent step injected through a ticket can be cleared. A step the person added (or reworded) is labelled theirs in the check-in message, and the brief says so; the agent can tick it but can’t reword or remove it. Deleting a step is not a block-list: a check-in already running can add the same text back, and so can any later check-in that re-reads the same source (the ticket the step came from, say), since nothing remembers the delete. The step comes back labelled the agent's, and deleting it again clears it. Duplicating a task (TASK-953) carries its steps into the copy, unticked and still labelled by who wrote them, so an injected step stays visible and deletable there too, and the copy stays paused until a person resumes it.
 - **A reply is the owner's own words.** Owner-only, read only while its author owns the task, screened before it's stored, and it reaches a model only in a check-in's message, quoted and labelled, never in the brief, never in run history anyone else reads, never in memory. Each reply starts at most one check-in, under the usual limits (TASK-931).
 - **A task's state is its owner's.** If the task moves to a new owner, it starts over: its report, notes and missed check-ins go, and so do the last run's status, error and warning. A run's report reaches only the person the run ran as, while they own the task. After a move, the earlier owner's runs list for no one, on the new owner's page or in their check-ins, until the task moves back. On a team agent every member still sees a task's runs, without their reports. Once a task is deleted, its runs list again, without reports (TASK-936).

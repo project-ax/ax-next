@@ -11,6 +11,11 @@ import type {
   RoutineFireNowOutput,
   RoutineDeleteOutput,
 } from '@ax/routines-contract';
+/**
+ * A Settings answer carries no task state (TASK-957): a routine's `task` is
+ * always null, its `steps` always empty, and a run's `report` always null. A
+ * task's page reads them, fenced, through `workspaceApi`.
+ */
 export type Routine = RoutineView;
 export type Fire = RoutineFireView;
 export type TriggerSpec = RoutineDefinition['trigger'];

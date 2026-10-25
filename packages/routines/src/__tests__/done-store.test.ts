@@ -331,7 +331,7 @@ describe('Mark done (store, TASK-950)', () => {
     await setMisses(task.routineId, 2);
     const before = (await f.store.findOne(task))!;
     expect(before).toMatchObject({ enabled: true, steps: STEPS, task: { doneClaimed: true, agentNotes: 'Redirects are next.' }, noRecentUpdate: { inARow: 2 } });
-    expect(await complete(task, 'mark-done')).toEqual({ done: true });
+    expect(await complete(task, 'mark-done')).toEqual({ outcome: 'completed' });
     const after = (await f.store.findOne(task))!;
     // Off, at a new revision, with no next run, its misses started over and the claim taken back. The rest stays.
     expect(after).toEqual({
@@ -354,17 +354,20 @@ describe('Mark done (store, TASK-950)', () => {
 
   it('a second Mark done writes nothing, and a retry after a Reopen replays without finishing it again', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
-    expect(await complete(task, 'A')).toEqual({ done: true });
+    expect(await complete(task, 'A')).toEqual({ outcome: 'completed' });
     const marked = (await storedRow(task.routineId))!;
     // Another press, later: the task is Done already, so the first press's time and revision stand.
-    expect(await complete(task, 'B', { now: minute(52) })).toEqual({ done: true });
+    expect(await complete(task, 'B', { now: minute(52) })).toEqual({ outcome: 'already-done' });
+    expect(await storedRow(task.routineId)).toEqual(marked);
+    // The first press again, while the task is still Done: its receipt answers (TASK-957).
+    expect(await complete(task, 'A', { now: minute(53) })).toEqual({ outcome: 'replayed' });
     expect(await storedRow(task.routineId)).toEqual(marked);
     // The person reopens it, so it runs again.
     expect(await reopened(task, 'C', 'Not yet.')).toMatchObject({ outcome: 'added', wasDone: true, row: { enabled: true, done: null } });
     const running = (await storedRow(task.routineId))!;
     expect(running.revision).not.toBe(marked.revision);
     // The browser retries the first press, its answer lost: the receipt answers, and the task keeps running.
-    expect(await complete(task, 'A', { now: minute(60) })).toEqual({ done: true });
+    expect(await complete(task, 'A', { now: minute(60) })).toEqual({ outcome: 'replayed' });
     expect(await storedRow(task.routineId)).toEqual(running);
     expect(await f.store.findOne(task)).toMatchObject({ enabled: true, revision: running.revision, done: null });
     // A request id is one press on one task: the same one on another task is refused, never replayed onto it.
@@ -420,6 +423,14 @@ describe('Mark done (store, TASK-950)', () => {
     expect(await completeReceipts()).toBe(0);
   });
 
+  it('two presses at once on a running task: one moves it to Done, the other finds it Done (TASK-957)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const outcomes = await Promise.all([complete(task, 'A'), complete(task, 'B')]);
+    expect(outcomes.map(o => o.outcome).sort()).toEqual(['already-done', 'completed']);
+    expect(await completeReceipts()).toBe(2);
+    expect((await f.store.findOne(task))?.done).not.toBeNull();
+  });
+
   it('a Mark done waiting on the row lock while the task is edited pauses the edited definition', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     // An edit's own transaction, held open after its write: the routine's row lock, then the new description.
@@ -436,7 +447,7 @@ describe('Mark done (store, TASK-950)', () => {
       editing.release();
       await editing.done;
     }
-    expect(await racing).toEqual({ done: true });
+    expect(await racing).toEqual({ outcome: 'completed' });
     expect(await storedRow(task.routineId)).toMatchObject({ description: 'Moving the docs.', enabled: false });
     // The hash a person's pause of the edited definition stores, not the one from before the edit.
     const edited = await f.store.createAuthored(taskInput('edited'));

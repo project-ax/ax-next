@@ -88,6 +88,24 @@ function scoped(
     }
   };
 }
+/**
+ * TASK-957. Settings shows a routine, never a task's state. A task's report
+ * (its update, ask, reading and notes), its steps and each run's report are
+ * the agent's text (a step can be a person's too, in the same list). The task
+ * page reads them through channel-web's workspace routes, which fence and cap
+ * every line, and Settings draws none of them. So every Settings answer leaves
+ * them out, with the values the services already give anyone but the task's
+ * owner: `task` null, `steps` empty, a run's `report` null. Each answer still
+ * parses as the contract's view, which is what the SPA types it as. What the
+ * host writes (missed check-ins, when the task was marked done) and the
+ * person's finish date stay.
+ */
+function settingsView(view: C.RoutineView): C.RoutineView {
+  return { ...view, task: null, steps: [] };
+}
+function settingsFire(fire: C.RoutineFireView): C.RoutineFireView {
+  return { ...fire, report: null };
+}
 export function createRoutinesAdminHandlers(deps: AdminDeps) {
   const call = async <T>(
     hook: string,
@@ -101,21 +119,18 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
     list: scoped(deps, async (req, res, ctx) => {
       const input = key(req, res, false);
       if (input)
-        res
-          .status(200)
-          .json(
-            await call('routines:list', ctx, input, C.RoutineListOutputSchema),
-          );
+        res.status(200).json({
+          routines: (
+            await call('routines:list', ctx, input, C.RoutineListOutputSchema)
+          ).routines.map(settingsView),
+        });
     }),
     get: scoped(deps, async (req, res, ctx) => {
       const input = item(req, res);
       if (input)
         res.status(200).json({
-          routine: await call(
-            'routines:get',
-            ctx,
-            input,
-            C.RoutineGetOutputSchema,
+          routine: settingsView(
+            await call('routines:get', ctx, input, C.RoutineGetOutputSchema),
           ),
         });
     }),
@@ -127,11 +142,13 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
       );
       if (input)
         res.status(201).json({
-          routine: await call(
-            'routines:create',
-            ctx,
-            { ...input, agentId: ctx.agentId },
-            C.RoutineCreateOutputSchema,
+          routine: settingsView(
+            await call(
+              'routines:create',
+              ctx,
+              { ...input, agentId: ctx.agentId },
+              C.RoutineCreateOutputSchema,
+            ),
           ),
         });
     }),
@@ -145,11 +162,13 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
       const k = item(req, res);
       if (k)
         res.status(200).json({
-          routine: await call(
-            'routines:update',
-            ctx,
-            { ...input, ...k },
-            C.RoutineUpdateOutputSchema,
+          routine: settingsView(
+            await call(
+              'routines:update',
+              ctx,
+              { ...input, ...k },
+              C.RoutineUpdateOutputSchema,
+            ),
           ),
         });
     }),
@@ -207,16 +226,16 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
         });
         return;
       }
-      res
-        .status(200)
-        .json(
+      res.status(200).json({
+        fires: (
           await call(
             'routines:recent-fires',
             ctx,
             parsed.data,
             C.RoutineRecentFiresOutputSchema,
-          ),
-        );
+          )
+        ).fires.map(settingsFire),
+      });
     }),
     consent: scoped(deps, async (_req, res, ctx) =>
       res

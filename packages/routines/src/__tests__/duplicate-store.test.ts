@@ -136,7 +136,7 @@ describe("a person's copy of their task (store, TASK-953)", () => {
   it('copies a Done task as a fresh one: paused, not Done, with no claim and no completion, and its steps take changes (TASK-950)', async () => {
     const task = await createTask('task');
     await writeSteps(task.routineId, [step('s000001', 'Export every article', true, 'agent'), step('s000002', 'Check the redirects', false, 'person')]);
-    expect(await f.store.completeTask({ ...task, actorUserId: 'owner', requestId: 'done', mayEdit: true, now: minute(1) })).toEqual({ done: true });
+    expect(await f.store.completeTask({ ...task, actorUserId: 'owner', requestId: 'done', mayEdit: true, now: minute(1) })).toEqual({ outcome: 'completed' });
     // Mark done takes the claim back, so a real row never holds both: the claim and its report are written by hand,
     // so the copy is made from a row carrying every one of TASK-950's columns at once.
     await sql`UPDATE routines_v1_definitions SET task_status = 'needs-you', task_update = 'Every article is on the new site.',
