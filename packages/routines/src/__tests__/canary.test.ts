@@ -1141,6 +1141,9 @@ describe('duplicate canary (TASK-953)', () => {
     expect((first.brief as { brief?: string }).brief).toContain('- This task finishes.');
     expect((first.brief as { brief?: string }).brief).not.toContain('this finished');
     await expect.poll(async () => (await store.recentFires({ agentId: task.agentId, routineId: copyId })).length).toBe(1);
+    // Its own report shows on it, and the source's notes don't, now that it has state of its own: a report that sends
+    // no notes keeps whatever notes the row already holds.
+    expect((await get(copyId)).task).toMatchObject({ status: 'on-track', update: 'Picked up the copy.', agentNotes: null });
 
     // The source is as it was: its first step still done, and its notes and finish date still its own.
     expect(await get(task.routineId)).toMatchObject({ steps: source.steps, finishBy: '2026-11-14', task: { agentNotes: 'The billing images move first.' } });
