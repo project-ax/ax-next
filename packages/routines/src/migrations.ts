@@ -112,6 +112,16 @@ export interface RoutinesDefinitionsRow {
    */
   finish_by: ColumnType<string | null, string | null | undefined, string | null>;
   /**
+   * Version 14 (TASK-955). The time zone a "get-done" task's finish date was
+   * set from, as the person's browser reported it, stored as sent. Written only
+   * by `setFinishBy`, beside the date; NULL when the browser sent none and
+   * whenever there is no date. Cleared with the date by a change of kind
+   * (`NO_FINISH_BY`) and kept with it by a change of owner. Read through the
+   * contract's zone rule (`storedFinishByTimeZone`, store.ts), and only beside a
+   * date that reads.
+   */
+  finish_by_time_zone: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
    * Version 13 (TASK-950). A "get-done" task's claim that it's done: the
    * `task_reported_at` of the report that made it, written by `recordReport`
    * beside that report (NULL when it made none), and cleared by `completeTask`,
@@ -315,6 +325,10 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addDoneColumns(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (13)`.execute(trx);
     }
+    if (!await done(14)) {
+      await addFinishByTimeZoneColumn(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (14)`.execute(trx);
+    }
   });
 }
 
@@ -352,6 +366,24 @@ async function addFinishByColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
       END IF;
     END $$;
   `.execute(db);
+}
+
+/** Version 14 (TASK-955): the time zone a "get-done" task's finish date was set
+ * from, which the person's browser sends with the date (`setFinishBy`,
+ * store.ts). TEXT and nullable, with no default and no CHECK of either kind.
+ * No format CHECK: SQL can't say "a zone `Intl` knows", so the writer and every
+ * read apply the contract's rule instead (`RoutineTimezoneSchema`; a read takes
+ * a zone it refuses as none, `storedFinishByTimeZone`). No coupling CHECK with
+ * `finish_by` (a zone only beside a date) either: code from before this version
+ * clears the date alone, and its Remove date and its change of kind must still
+ * succeed after a rollback. No backfill: existing dates read NULL, so a task with
+ * no zone of its own keeps counting its date on UTC's calendar until the date is
+ * saved again. A re-run keeps every value. Rollback-safe: code from before this
+ * version never names the column, a date it sets keeps whatever zone the row
+ * held, and a zone it leaves without a date is ignored on read.
+ */
+async function addFinishByTimeZoneColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS finish_by_time_zone TEXT`.execute(db);
 }
 
 /** Version 13 (TASK-950): a "get-done" task's claim that it's done, and its
