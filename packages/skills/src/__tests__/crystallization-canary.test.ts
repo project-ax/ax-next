@@ -60,6 +60,7 @@
  * → skill.propose IPC → skills:propose), exercised here through the real plugin.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import pg from 'pg';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -182,10 +183,33 @@ async function fireReflection(fire: Awaited<ReturnType<typeof makeFireBus>>): Pr
     definition: { name: 'skill-reflection', promptBody: SKILL_REFLECTION_PROMPT, trigger: { kind: 'interval', every: '24h' }, conversation: 'per-fire', silenceToken: 'REFLECTION_DONE', silenceMaxChars: 4000 },
   });
   await fire.bus.call('routines:fire-now', fire.owner, { agentId: fire.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'fire-reflection' });
+  // The fire's row is written after fire-now answers, by the detached turn (the stub's invoke, then
+  // routines' turn-end subscriber), so this waits on real database work: vitest's default one second
+  // ran out on a loaded CI runner with nothing wrong. Still answers the moment the row is there.
   await vi.waitFor(async () => {
     const result = await fire.bus.call<unknown, { fires: Array<{ status: string }> }>('routines:recent-fires', fire.owner, { agentId: fire.agentId, routineId: row.routineId });
     expect(result.fires[0]?.status).toBe('silenced');
-  });
+  }, { timeout: FIRE_RECORDED_TIMEOUT_MS });
+}
+
+/** How long fireReflection waits for the fire's row: well under the 60 s testTimeout, far over a slow runner's few seconds. */
+const FIRE_RECORDED_TIMEOUT_MS = 15_000;
+
+/**
+ * Holds every statement any pg client in this test process sends for `ms` before it goes out,
+ * the way a loaded CI runner does. Returns the function that puts `query` back.
+ */
+function slowDatabase(ms: number): () => void {
+  const proto = pg.Client.prototype as unknown as { query: (...args: unknown[]) => unknown };
+  const original = proto.query;
+  proto.query = function slowQuery(this: unknown, ...args: unknown[]): unknown {
+    if (typeof args[args.length - 1] === 'function') {
+      setTimeout(() => original.apply(this, args), ms);
+      return undefined;
+    }
+    return new Promise(resolve => setTimeout(resolve, ms)).then(() => original.apply(this, args));
+  };
+  return () => { proto.query = original; };
 }
 
 beforeAll(async () => {
@@ -358,6 +382,18 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     expect(userCtx.source).toBeUndefined();
     observerGuard(userCtx);
     expect(observerExtraction).toHaveBeenCalledTimes(1);
+  });
+
+  // fireReflection's wait, on a database as slow as a loaded CI runner's: with vitest's default
+  // one-second waitFor this failed every run, as the first test did on main's CI after TASK-948.
+  it('a reflection fire on a slow database is still seen being recorded as silenced', async () => {
+    const fire = await makeFireBus(async () => ({ kind: 'complete', messages: [] }));
+    const restore = slowDatabase(200);
+    try {
+      await fireReflection(fire);
+    } finally {
+      restore();
+    }
   });
 
   it('recurrence prompt-guard: SKILL_REFLECTION_PROMPT carries the gating clauses', () => {
