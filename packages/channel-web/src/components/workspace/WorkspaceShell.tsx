@@ -241,9 +241,19 @@ function Inner({
    * initializer reads the URL once — `parseWorkspaceRoute` never throws, so a
    * mangled link degrades to Today instead of blanking the shell.
    */
-  const [route, setRoute] = useState<WorkspaceRoute>(() =>
+  const [route, setRouteState] = useState<WorkspaceRoute>(() =>
     parseWorkspaceRoute(window.location.pathname),
   );
+  /**
+   * Where the person is right now, for an answer that lands after they may
+   * have moved on (Duplicate's, TASK-953). Written beside every route change,
+   * not after the commit, so an answer can't read the route they just left.
+   */
+  const routeNow = useRef(route);
+  const setRoute = useCallback((next: WorkspaceRoute) => {
+    routeNow.current = next;
+    setRouteState(next);
+  }, []);
 
   /**
    * Move, and leave an address behind. Pushes only when the URL would
@@ -256,7 +266,7 @@ function Inner({
     if (path !== window.location.pathname) {
       window.history.pushState(null, '', path);
     }
-  }, []);
+  }, [setRoute]);
 
   /**
    * The task Duplicate just made, by TaskPage's own key (TASK-953): its page
@@ -287,7 +297,7 @@ function Inner({
     const onPop = () => setRoute(parseWorkspaceRoute(window.location.pathname));
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, []);
+  }, [setRoute]);
 
   /**
    * Canonicalize whatever we were opened with, once.
@@ -1029,6 +1039,16 @@ function Inner({
               onNavigate={navigate}
               justCopied={freshCopy === JSON.stringify([route.agentId, route.routineId])}
               onDuplicated={(copyId) => {
+                // Someone who left while the copy was being made stays where
+                // they went: the copy is in Tasks, and no line waits for it.
+                const now = routeNow.current;
+                if (
+                  now.kind !== 'task' ||
+                  now.agentId !== route.agentId ||
+                  now.routineId !== route.routineId
+                ) {
+                  return;
+                }
                 // Both setters run in this one callback, so React batches them
                 // and the effect above never sees the flag beside the source's route.
                 setFreshCopy(JSON.stringify([route.agentId, copyId]));

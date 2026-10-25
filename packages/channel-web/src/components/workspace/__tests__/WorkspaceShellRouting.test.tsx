@@ -1044,4 +1044,29 @@ describe('Duplicate opens a paused copy (TASK-953)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' });
     expect(screen.queryByText(COPY_LINE)).toBeNull();
   });
+
+  it('someone who left while the copy was being made stays where they went', async () => {
+    answerByTask();
+    let resolve!: (copy: { routineId: string }) => void;
+    duplicateMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { level: 1, name: 'Zero open support tickets' })).toBeNull(),
+    );
+
+    await act(async () => resolve({ routineId: 't2' }));
+    expect(window.location.pathname).toBe('/workspace');
+    expect(screen.queryByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' })).toBeNull();
+  });
 });
