@@ -85,7 +85,9 @@ describe('copiedSteps (TASK-953)', () => {
     expect(copy.map(entry => entry.text)).toEqual(source.slice(0, 50).map(entry => entry.text));
   });
 
-  it('builds each copied step field by field, so nothing else on a stored step comes along', () => {
+  // What this proves is the outcome, not the mechanism: the read (storedSteps) already drops a key it doesn't
+  // know, so this passes however copiedSteps builds each step.
+  it('a key a stored step carries that this version doesn’t know never reaches the copy', () => {
     const { newId } = recorder('c1');
     expect(copiedSteps([{ ...step('s000001', 'Export every article', true, 'agent'), note: 'From a later version' }], newId))
       .toStrictEqual([{ id: 'c1', text: 'Export every article', done: false, addedBy: 'agent' }]);
