@@ -548,6 +548,7 @@ function taskRow(over: Partial<TaskRow> = {}): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
     ...over,
   };
 }
@@ -561,6 +562,7 @@ function report(
     update: 'Two tickets are still open.',
     ask: null,
     reading: null,
+    doneClaimed: false,
     reportedAt: '2026-10-23T10:00:00.000Z',
     ...over,
   };
@@ -622,6 +624,25 @@ describe('what tasks need from you (TASK-933)', () => {
     expect(within(block).getByText('Close ticket #4410?')).toBeInTheDocument();
     expect(within(block).queryByText('Send the reply to Dana?')).toBeNull();
     expect(screen.getByText('Send the reply to Dana?')).toBeInTheDocument();
+  });
+
+  it('a task that thinks it’s done is one block with Mark done and Not yet, inside the consent region (TASK-950)', () => {
+    const { container } = renderToday({
+      tasks: [
+        taskRow({
+          kind: 'get-done',
+          task: report('needs-you', { update: 'Every ticket is closed.', doneClaimed: true }),
+        }),
+      ],
+    });
+    const block = taskBlock();
+    expect(within(block).getByText('Quill thinks this is done.')).toBeInTheDocument();
+    expect(within(block).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
+    expect(within(block).getByRole('button', { name: 'Not yet' })).toBeInTheDocument();
+    const region = container.querySelector('[data-consent-region]');
+    expect(region).not.toBeNull();
+    expect(region).toContainElement(block);
+    expect(screen.getByText('One thing is waiting on you.')).toBeInTheDocument();
   });
 
   it('counts each task that needs you and each approval once', () => {

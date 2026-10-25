@@ -41,6 +41,7 @@ function report(
     update: 'Nothing new since this morning.',
     ask: null,
     reading: null,
+    doneClaimed: false,
     reportedAt: '2026-10-22T10:00:00.000Z',
     ...over,
   };
@@ -59,6 +60,7 @@ function row(name: string, over: Partial<TaskRow> = {}): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
     ...over,
   };
 }
@@ -662,5 +664,202 @@ describe('TasksPage: the agent’s reading (TASK-952)', () => {
     expect(line.textContent).toBe(`Caveman’s reading · ${label}: 3`);
     expect(container.querySelector('ul img')).toBeNull();
     expect(container.querySelectorAll('ul a')).toHaveLength(1);
+  });
+});
+
+describe('TasksPage: Done tasks (TASK-950)', () => {
+  const NOW_MS = Date.parse('2026-10-24T12:00:00Z');
+  const ago = (ms: number) => new Date(NOW_MS - ms).toISOString();
+  const HOUR = 3_600_000;
+  const DAY = 86_400_000;
+
+  // Only the clock is faked: the page's reads and `findBy*` still run on real timers.
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW_MS, toFake: ['Date'] });
+  });
+
+  /** A finished get-done task: off, completed at `doneAt`, its last report the claim. */
+  function done(name: string, doneAt: string, over: Partial<TaskRow> = {}): TaskRow {
+    return row(name, {
+      enabled: false,
+      kind: 'get-done',
+      doneAt,
+      task: report('needs-you', { update: `${name} is finished.`, doneClaimed: true }),
+      ...over,
+    });
+  }
+
+  const after = (a: Node, b: Node) =>
+    a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+
+  it('Current shows the groups, then Done this week, then paused', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Support queue', { task: report('on-track') }),
+        done('Tidy the garage', ago(2 * HOUR)),
+        row('Old inbox', { enabled: false }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Tidy the garage');
+    expect(groupHeadings()).toEqual(['On track · 1', 'Done this week · 1']);
+
+    const onTrack = screen.getByRole('region', { name: 'On track · 1' });
+    const doneWeek = screen.getByRole('region', { name: 'Done this week · 1' });
+    const paused = screen.getByRole('button', { name: 'Show 1 paused task' });
+    expect(after(onTrack, doneWeek)).toBeTruthy();
+    expect(after(doneWeek, paused)).toBeTruthy();
+
+    // A done row names when it finished, and still shows the agent's last update.
+    expect(
+      within(doneWeek).getByText(/^Caveman · Done (at |yesterday at |tomorrow at |on )/),
+    ).toBeInTheDocument();
+    expect(within(doneWeek).getByText('Tidy the garage is finished.')).toBeInTheDocument();
+  });
+
+  it('a done row with a finish date counts no days left, under Current and under Done (TASK-951)', async () => {
+    tasksMock.mockResolvedValue(
+      page([done('Tidy the garage', ago(2 * HOUR), { finishBy: { date: '2026-10-31', daysLeft: 7 } })]),
+    );
+    renderPage();
+    const doneWeek = await screen.findByRole('region', { name: 'Done this week · 1' });
+    expect(
+      within(doneWeek).getByText(/^Caveman · Done (at |yesterday at |tomorrow at |on )/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/days? left|Due today|past its finish date/)).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+    expect(screen.getByRole('region', { name: 'Done · 1' })).toBeInTheDocument();
+    expect(screen.queryByText(/days? left|Due today|past its finish date/)).toBeNull();
+  });
+
+  it('a done row says only "Done" when its time cannot be read', async () => {
+    tasksMock.mockResolvedValue(page([done('Tidy the garage', 'not a time')]));
+    renderPage();
+    await screen.findByRole('radiogroup', { name: 'Which tasks to show' });
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+    expect(screen.getByText('Caveman · Done')).toBeInTheDocument();
+  });
+
+  it('the toggle shows only when a task is done, and counts them', async () => {
+    tasksMock.mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })]));
+    const first = renderPage();
+    await screen.findByText('Support queue');
+    expect(screen.queryByRole('radiogroup', { name: 'Which tasks to show' })).not.toBeInTheDocument();
+    first.unmount();
+
+    tasksMock.mockResolvedValueOnce(
+      page([done('One', ago(HOUR)), done('Two', ago(9 * DAY)), row('Support queue')]),
+    );
+    renderPage();
+    await screen.findByText('Support queue');
+    const group = screen.getByRole('radiogroup', { name: 'Which tasks to show' });
+    expect(within(group).getByRole('radio', { name: /^Current/ })).toBeChecked();
+    expect(within(group).getByRole('radio', { name: /^Done/ })).toHaveTextContent('2');
+  });
+
+  it('Done lists every done task, newest first, and nothing else', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        done('Oldest', ago(20 * DAY)),
+        done('Newest', ago(HOUR)),
+        done('Middle', ago(3 * DAY)),
+        row('Support queue', { task: report('needs-you') }),
+        row('Old inbox', { enabled: false }),
+      ]),
+    );
+    renderPage();
+    await screen.findByText('Newest');
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+
+    expect(groupHeadings()).toEqual(['Done · 3']);
+    const section = screen.getByRole('region', { name: 'Done · 3' });
+    expect(
+      within(section)
+        .getAllByRole('listitem')
+        .map((li) => within(li).getByText(/^(Oldest|Newest|Middle)$/).textContent),
+    ).toEqual(['Newest', 'Middle', 'Oldest']);
+    expect(screen.queryByText('Support queue')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /paused task/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('radio', { name: /^Current/ }));
+    expect(groupHeadings()).toEqual(['Needs you · 1', 'Done this week · 2']);
+    expect(screen.queryByText('Oldest')).not.toBeInTheDocument();
+  });
+
+  it('a task done 8 days ago is only under Done', async () => {
+    tasksMock.mockResolvedValue(
+      page([done('Last week', ago(8 * DAY)), row('Support queue', { task: report('on-track') })]),
+    );
+    renderPage();
+    await screen.findByText('Support queue');
+    expect(screen.queryByText('Last week')).not.toBeInTheDocument();
+    expect(groupHeadings()).toEqual(['On track · 1']);
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+    expect(screen.getByText('Last week')).toBeInTheDocument();
+  });
+
+  it('Current says where finished tasks went when it has nothing else', async () => {
+    const line = 'No tasks need looking after right now. Finished ones are under Done.';
+    tasksMock.mockResolvedValueOnce(page([done('Last week', ago(8 * DAY))]));
+    const first = renderPage();
+    await screen.findByRole('radiogroup', { name: 'Which tasks to show' });
+    expect(screen.getByText(line)).toBeInTheDocument();
+    // It is not the "no tasks yet" teaching: there are tasks.
+    expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
+    first.unmount();
+
+    // A paused task, or a recent done one, is something to look at.
+    tasksMock.mockResolvedValueOnce(
+      page([done('Last week', ago(8 * DAY)), row('Old inbox', { enabled: false })]),
+    );
+    const second = renderPage();
+    await screen.findByRole('button', { name: 'Show 1 paused task' });
+    expect(screen.queryByText(line)).not.toBeInTheDocument();
+    second.unmount();
+
+    tasksMock.mockResolvedValueOnce(page([done('This week', ago(HOUR))]));
+    renderPage();
+    await screen.findByText('This week');
+    expect(screen.queryByText(line)).not.toBeInTheDocument();
+  });
+
+  it('keeps the load alerts in both views', async () => {
+    tasksMock.mockResolvedValue(page([done('Tidy the garage', ago(HOUR))], [JUNIPER]));
+    renderPage();
+    const note = 'We couldn’t load tasks from Juniper just now, so some may be missing.';
+    expect(await screen.findByText(note)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+    expect(screen.getByText(note)).toBeInTheDocument();
+  });
+
+  it('the choice survives a re-read, and falls back to Current when the last done task is reopened', () => {
+    const ready = (tasks: TaskRow[]): TasksState => ({
+      kind: 'ready',
+      tasks,
+      unavailableAgents: [],
+      refreshing: false,
+      refreshFailed: false,
+    });
+    const supportQueue = () => row('Support queue', { task: report('on-track') });
+    const pageFor = (tasks: TaskRow[]) => (
+      <TasksPage state={ready(tasks)} retry={vi.fn()} onNavigate={vi.fn()} />
+    );
+    const view = render(pageFor([done('Old one', ago(9 * DAY)), supportQueue()]));
+    fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));
+    expect(groupHeadings()).toEqual(['Done · 1']);
+
+    // A re-read that still has done tasks stays on Done.
+    view.rerender(pageFor([done('Old one', ago(9 * DAY)), done('New one', ago(HOUR)), supportQueue()]));
+    expect(groupHeadings()).toEqual(['Done · 2']);
+
+    // The last done task is reopened: no toggle, and Current.
+    view.rerender(pageFor([row('Old one', { task: report('on-track') }), supportQueue()]));
+    expect(groupHeadings()).toEqual(['On track · 2']);
+    expect(screen.queryByRole('radiogroup', { name: 'Which tasks to show' })).not.toBeInTheDocument();
+
+    // The next task marked done brings the toggle back on Current: the page doesn't jump to Done.
+    view.rerender(pageFor([done('Support queue', ago(HOUR)), row('Old one', { task: report('on-track') })]));
+    expect(screen.getByRole('radio', { name: 'Current' })).toBeChecked();
+    expect(groupHeadings()).not.toContain('Done · 1');
   });
 });

@@ -97,7 +97,7 @@ export function stateWord(state: AgentRunState | 'held'): string {
  * all. Each state now has its own outline too, readable in greyscale:
  *
  *   working ● circle · waiting/held ◆ diamond · resting ○ hollow ring · stopped ■ square
- *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, no-recent-update ○, and paused ▬ dash.
+ *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, no-recent-update ○, paused ▬ dash, and done ✓ (a check, TASK-950).
  *
  * Deliberately a separate record, NOT more `state === … && '…'` arms inside
  * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
@@ -113,6 +113,12 @@ const RING = 'box-border size-[7px] rounded-full border-[1.5px] border-state-qui
 const SQUARE = 'h-[7px] w-[7px] rounded-[1px]';
 /** `resting`'s shape before Design 5 (#829) made it a ring; only a paused task draws it now. */
 const DASH = 'h-[3px] w-[8px] rounded-full';
+/**
+ * A tick: two borders of a tilted box, drawn in the primary colour. Every other
+ * task mark is a blob, so a finished one gets the one mark that isn't
+ * (TASK-950 decisions row 18).
+ */
+const CHECK = 'box-border h-[7px] w-[4px] -translate-y-px rotate-45 border-b-[1.5px] border-r-[1.5px]';
 
 /**
  * What a `StateDot` can draw: an agent's state, a decision held for you, or a
@@ -134,6 +140,7 @@ export const STATE_SHAPE: Record<DotState, string> = {
   'no-update': RING,
   'no-recent-update': RING,
   paused: DASH,
+  done: CHECK,
 };
 
 /**
@@ -180,6 +187,7 @@ export function StateDot({
         state === 'no-update' && 'border-state-quiet',
         state === 'no-recent-update' && 'border-state-quiet',
         state === 'paused' && 'bg-state-quiet',
+        state === 'done' && 'border-primary',
         className,
       )}
     />

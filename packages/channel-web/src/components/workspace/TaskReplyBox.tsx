@@ -2,6 +2,16 @@
  * TaskReplyBox: where a task's owner writes to their agent about that task
  * (TASK-931).
  *
+ * THREE MODES (TASK-950). `reply` is the plain reply (`routines:reply`).
+ * `not-yet` is the answer to "I think it's done" and `reopen` is the person
+ * reopening a Done task; both go to `routines:reopen`, a reply that also takes
+ * back the agent's claim or runs a Done task again. The two differ only in
+ * their helper line: a Done task and a paused one are both off, but only the
+ * paused one is "resumed" by a reply. For the same reason a sent Reopen's line
+ * reads the task as running: the Reopen switched it on. Every mode mints its request id the way
+ * a reply does, and a press must never reuse one an earlier reply stored: that
+ * answers "replayed" and reopens nothing.
+ *
  * STANDALONE ON PURPOSE. It takes the task's address, the agent's name and two
  * flags, and nothing from the page's data, so TASK-933 can put the same box on
  * Today. Today has to decide `canStart` itself: a `TaskRow` carries no
@@ -48,32 +58,57 @@ import type { TaskReplyCheckIn } from '@/lib/workspace-types';
 const UNCONFIRMED =
   'We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.';
 const NOT_FOUND = 'We couldn’t find this task any more. It may have been deleted.';
+const CANT_REOPEN = 'You can’t reopen this task, because you no longer manage this agent’s tasks.';
 const AS_WRITTEN = 'We couldn’t send that reply as written. Change it and try again.';
 
+/** Which words and endpoint the box uses; see THREE MODES above. */
+export type TaskReplyMode = 'reply' | 'not-yet' | 'reopen';
+
 /** A refusal (1xx-4xx, but 408 and 429) is an answer (`isConfirmedRefusal`); anything else leaves it unknown whether the reply was stored. */
-function failureLine(e: unknown): string {
+function failureLine(e: unknown, mode: TaskReplyMode): string {
   if (!isConfirmedRefusal(e)) return UNCONFIRMED;
   if (e.status === 401) return HTTP_SESSION_ENDED;
-  if (e.status === 403 || e.status === 404) return NOT_FOUND;
+  if (e.status === 403) return mode === 'reply' ? NOT_FOUND : CANT_REOPEN;
+  if (e.status === 404) return NOT_FOUND;
   return AS_WRITTEN;
 }
 
-function helperLine(agentName: string, enabled: boolean, canStart: boolean): string {
+function helperLine(
+  agentName: string,
+  enabled: boolean,
+  canStart: boolean,
+  mode: TaskReplyMode,
+): string {
+  if (mode === 'reopen') {
+    return `Sending this reopens the task, and ${agentName} starts checking in again.`;
+  }
   if (!enabled) {
     return canStart
       ? `It’s paused, so ${agentName} will read this once you resume it.`
       : `It’s paused, so ${agentName} will read this once it’s resumed.`;
+  }
+  if (mode === 'not-yet') {
+    return canStart
+      ? `${agentName} reads this, and sending it starts a check-in now.`
+      : `${agentName} reads this at its next check-in.`;
   }
   return canStart
     ? `${agentName} reads your replies every time it checks in. Sending one starts a check-in now.`
     : `${agentName} reads your replies every time it checks in.`;
 }
 
-function sentLine(agentName: string, checkIn: TaskReplyCheckIn, enabled: boolean): string {
+function sentLine(
+  agentName: string,
+  checkIn: TaskReplyCheckIn,
+  enabled: boolean,
+  mode: TaskReplyMode,
+): string {
   switch (checkIn) {
     case 'started':
     case 'replayed':
-      return `Sent. ${agentName} started checking in.`;
+      return mode === 'reply'
+        ? `Sent. ${agentName} started checking in.`
+        : `Sent. ${agentName} is checking in now.`;
     case 'paused':
       return `Sent. ${agentName} will read it when you resume the task.`;
     case 'not-allowed':
@@ -90,6 +125,7 @@ export function TaskReplyBox({
   agentName,
   enabled,
   canStart,
+  mode = 'reply',
   onSent,
   inputRef,
 }: {
@@ -100,6 +136,8 @@ export function TaskReplyBox({
   enabled: boolean;
   /** The task's `permissions.fire`: whether a reply can start a check-in (for its owner, also whether they can resume it). */
   canStart: boolean;
+  /** `reply` unless this is a Not yet or a Reopen; see THREE MODES above. */
+  mode?: TaskReplyMode;
   onSent: (checkIn: TaskReplyCheckIn) => void;
   inputRef?: Ref<HTMLTextAreaElement>;
 }) {
@@ -145,18 +183,21 @@ export function TaskReplyBox({
         : { text, requestId: crypto.randomUUID() };
     pending.current = op;
     try {
-      const answer = await workspaceApi.sendTaskReply(agentId, routineId, {
+      const endpoint = mode === 'reply' ? workspaceApi.sendTaskReply : workspaceApi.reopenTask;
+      const answer = await endpoint(agentId, routineId, {
         text: op.text,
         requestId: op.requestId,
       });
       pending.current = null;
       setText('');
-      setSent({ checkIn: answer.checkIn, enabled });
+      // A sent Reopen has switched the task on, whatever `enabled` said of the Done task:
+      // `not-allowed` then still has a next check-in, and `paused` means paused again since.
+      setSent({ checkIn: answer.checkIn, enabled: enabled || mode === 'reopen' });
       onSent(answer.checkIn);
     } catch (e) {
-      logRequestFailure(e, 'task-reply');
+      logRequestFailure(e, mode === 'reply' ? 'task-reply' : 'task-reopen');
       if (isConfirmedRefusal(e)) pending.current = null;
-      setFailure({ line: failureLine(e), rule: false });
+      setFailure({ line: failureLine(e, mode), rule: false });
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -182,7 +223,11 @@ export function TaskReplyBox({
     >
       <FieldGroup>
         <Field data-invalid={failure?.rule === true ? true : undefined}>
-          <FieldLabel htmlFor={`${ids}-text`}>{`Reply to ${agentName} about this task`}</FieldLabel>
+          <FieldLabel htmlFor={`${ids}-text`}>
+            {mode === 'reply'
+              ? `Reply to ${agentName} about this task`
+              : `What’s left for ${agentName} to do?`}
+          </FieldLabel>
           <Textarea
             id={`${ids}-text`}
             ref={setTextarea}
@@ -198,7 +243,7 @@ export function TaskReplyBox({
             }}
             onKeyDown={onKeyDown}
           />
-          <FieldDescription id={helperId}>{helperLine(agentName, enabled, canStart)}</FieldDescription>
+          <FieldDescription id={helperId}>{helperLine(agentName, enabled, canStart, mode)}</FieldDescription>
           {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
         </Field>
         <div className="flex flex-wrap items-center gap-3">
@@ -212,7 +257,7 @@ export function TaskReplyBox({
             Send
           </Button>
           <p role="status" className="text-sm text-muted-foreground">
-            {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled)}
+            {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled, mode)}
           </p>
         </div>
       </FieldGroup>

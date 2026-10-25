@@ -8,7 +8,9 @@
  * WHO MAY. The page is its owner's only: the route answers 404 alike for a
  * task that isn't there and one that isn't yours, and `routines:set-steps`
  * checks the owner again under the routine's row lock. A refusal reads "We
- * couldn't find this task any more."
+ * couldn't find this task any more." It asks the page to read the task again
+ * (`onRefused`), since a task marked done since the page read it is refused
+ * the same way (TASK-950): the re-read shows which it was.
  *
  * ONE CHANGE PER PRESS, ONE AT A TIME. A tick, an untick, an Add, a Save or a
  * Delete sends one change, the same kind the agent's report sends
@@ -48,6 +50,14 @@
  * else Add a step. A failed Delete goes back to its options button, and a
  * failed Add or Save to its input, so pressing again retries.
  *
+ * A DONE TASK'S STEPS ARE A RECORD (TASK-950). Once a person marks the task
+ * done, `readOnly` shows its steps as they were left, ticked or not, with
+ * nothing to change: each box is a picture of its state, said to a screen
+ * reader in words (`Done: ` / `Not done: `), and there are no options and no
+ * Add a step. An editor left open closes, and a change's failure or skipped
+ * line goes. Reopening the task brings the controls back. `footer` is drawn
+ * last, under the steps and their controls: the page's Mark done.
+ *
  * AGENT- OR PERSON-WRITTEN TEXT IS DRAWN AS TEXT. A step was written by a
  * model or by the person, and the server fenced it to one line before it left
  * (`server/routes-workspace.ts`). Here it is only ever a React text child, or
@@ -59,7 +69,7 @@
  * (`aria-describedby`), so fifty of them still say which is which.
  */
 import { useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { MoreHorizontal, Plus } from 'lucide-react';
+import { MoreHorizontal, Plus, Square, SquareCheck } from 'lucide-react';
 import {
   ROUTINE_STEP_TEXT_MAX_CHARS,
   ROUTINE_STEPS_MAX,
@@ -162,6 +172,9 @@ export function TaskSteps({
   steps,
   agentName,
   onChanged,
+  onRefused,
+  readOnly = false,
+  footer,
 }: {
   agentId: string;
   routineId: string;
@@ -169,6 +182,12 @@ export function TaskSteps({
   agentName: string;
   /** Each answer's steps, which the page shows in place of its own. */
   onChanged: (steps: TaskStep[]) => void;
+  /** A change was refused as not there or not theirs (403 or 404): the page reads the task again (TASK-950). */
+  onRefused?: () => void;
+  /** A Done task's steps (TASK-950): shown as they are, with nothing to change. */
+  readOnly?: boolean;
+  /** Drawn last, under the steps and their controls (TASK-950: the page's Mark done). */
+  footer?: ReactNode;
 }) {
   const ids = useId();
   const headingId = `${ids}-heading`;
@@ -193,6 +212,13 @@ export function TaskSteps({
   // moved for it: the person may be mid-word, and a box under their next
   // space would tick.
   if (editor?.kind === 'edit' && !steps.some((step) => step.id === editor.id)) setEditor(null);
+  // A Done task's steps change no more (TASK-950): an open editor closes, and a change's failure or
+  // skipped line goes, so the record never shows a change it can't take. Adjusted while rendering, too.
+  if (readOnly && (editor !== null || listFailure !== null || skipped !== null)) {
+    setEditor(null);
+    setListFailure(null);
+    setSkipped(null);
+  }
 
   const done = steps.filter((step) => step.done).length;
   const atCap = steps.length >= ROUTINE_STEPS_MAX;
@@ -266,6 +292,9 @@ export function TaskSteps({
     } catch (e) {
       logRequestFailure(e, 'task-steps');
       if (isConfirmedRefusal(e)) pending.current = null;
+      // Not there or not theirs, maybe since the page read it: marked done (TASK-950), or deleted. The page reads it
+      // again and shows which; a Done task's steps then show as its record, and this line goes with the controls.
+      if (isConfirmedRefusal(e) && (e.status === 403 || e.status === 404)) onRefused?.();
       const line = failureLine(e);
       if (place === 'editor') {
         setEditor((open) => (open === null ? open : { ...open, failure: { line, invalid: false } }));
@@ -368,11 +397,12 @@ export function TaskSteps({
       </h2>
       {steps.length === 0 ? (
         <p className="text-[13px] text-muted-foreground">
-          {`No steps yet. Add one, or ${agentName} drafts them at its next check-in.`}
+          {readOnly ? 'No steps.' : `No steps yet. Add one, or ${agentName} drafts them at its next check-in.`}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
           {steps.map((step, index) => {
+            if (readOnly) return <DoneStep key={step.id} step={step} agentName={agentName} />;
             const editing = editor?.kind === 'edit' && editor.id === step.id ? editor : null;
             return (
               <StepRow
@@ -413,7 +443,7 @@ export function TaskSteps({
           <AlertDescription>{listFailure.line}</AlertDescription>
         </Alert>
       )}
-      {editor?.kind === 'add' ? (
+      {readOnly ? null : editor?.kind === 'add' ? (
         <StepEditor
           label="New step"
           submit="Add"
@@ -457,7 +487,30 @@ export function TaskSteps({
       <p role="status" className="text-[12.5px] text-muted-foreground empty:-mt-2.5">
         {skipped ?? ''}
       </p>
+      {footer}
     </section>
+  );
+}
+
+/**
+ * One step of a Done task (TASK-950): its state as a picture, said in words,
+ * then its text and who added it. Laid out as `StepRow` is, without a control.
+ */
+function DoneStep({ step, agentName }: { step: TaskStep; agentName: string }) {
+  const Box = step.done ? SquareCheck : Square;
+  return (
+    <li className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed">
+      <Box aria-hidden="true" className="mt-2 size-4 shrink-0 text-muted-foreground" />
+      <span className="flex min-w-0 flex-1 flex-col py-1.5">
+        <span className={cn('break-words', step.text === null && 'text-muted-foreground')}>
+          <span className="sr-only">{step.done ? 'Done: ' : 'Not done: '}</span>
+          {step.text ?? STEP_CANT_SHOW}
+        </span>
+        {step.byAgent && (
+          <span className="break-words text-[12px] text-muted-foreground">{`added by ${agentName}`}</span>
+        )}
+      </span>
+    </li>
   );
 }
 

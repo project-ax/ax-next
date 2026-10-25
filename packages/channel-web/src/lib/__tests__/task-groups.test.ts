@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_TASK_GROUPS,
+  TASK_DONE_RECENT_MS,
   TASK_GROUP_LABELS,
-  groupTasks,
+  groupTasks as groupTasksAt,
   missGroup,
   taskGroup,
   todayTaskReason,
@@ -18,16 +19,23 @@ describe('shared status words', () => {
       'on-track': 'On track',
       'no-update': 'No update yet',
       paused: 'Paused',
+      done: 'Done',
     });
   });
 
   it('groups a task page’s detail like a Tasks row', () => {
-    expect(taskGroup({ enabled: false, task: { status: 'needs-you' }, noRecentUpdate: null })).toBe('paused');
-    expect(taskGroup({ enabled: true, task: null, noRecentUpdate: null })).toBe('no-update');
-    expect(taskGroup({ enabled: true, task: { status: 'off-track' }, noRecentUpdate: null })).toBe('off-track');
+    expect(taskGroup({ enabled: false, doneAt: null, task: { status: 'needs-you' }, noRecentUpdate: null })).toBe('paused');
+    expect(taskGroup({ enabled: true, doneAt: null, task: null, noRecentUpdate: null })).toBe('no-update');
+    expect(taskGroup({ enabled: true, doneAt: null, task: { status: 'off-track' }, noRecentUpdate: null })).toBe('off-track');
   });
 });
 import type { TaskRow, TaskRowReport } from '../workspace-types.js';
+
+const NOW = new Date('2026-10-24T12:00:00Z');
+/** Most cases don't care about Done, so they group against a fixed clock. */
+function groupTasks(rows: readonly TaskRow[]) {
+  return groupTasksAt(rows, NOW);
+}
 
 function row(over: Partial<TaskRow> = {}): TaskRow {
   return {
@@ -41,6 +49,7 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
     ...over,
   };
 }
@@ -50,7 +59,7 @@ function report(
   reportedAt = '2026-10-22T10:00:00.000Z',
   ask: string | null = null,
 ): TaskRowReport {
-  return { status, update: 'Queue is empty.', ask, reading: null, reportedAt };
+  return { status, update: 'Queue is empty.', ask, reading: null, doneClaimed: false, reportedAt };
 }
 
 describe('taskGroup', () => {
@@ -201,6 +210,71 @@ describe('groupTasks', () => {
   });
 });
 
+describe('Done (TASK-950)', () => {
+  const doneAgo = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+  const done = (routineId: string, doneAt: string | null, over: Partial<TaskRow> = {}) =>
+    row({ routineId, enabled: false, doneAt, ...over });
+
+  it('is the first thing a done row is, whatever its report and misses say', () => {
+    const r = done('d', doneAgo(1000), { task: report('needs-you'), noRecentUpdate: miss(3) });
+    expect(taskGroup(r)).toBe('done');
+  });
+
+  it('leaves a disabled row without doneAt paused', () => {
+    expect(taskGroup(row({ enabled: false }))).toBe('paused');
+  });
+
+  it('keeps a done row out of the groups and out of paused', () => {
+    const { groups, paused, doneRecently, doneAll } = groupTasksAt(
+      [done('d', doneAgo(1000), { task: report('needs-you') }), row({ routineId: 'p', enabled: false })],
+      NOW,
+    );
+    expect(groups).toEqual([]);
+    expect(paused.map((r) => r.routineId)).toEqual(['p']);
+    expect(doneRecently.map((r) => r.routineId)).toEqual(['d']);
+    expect(doneAll.map((r) => r.routineId)).toEqual(['d']);
+  });
+
+  it('counts a task done exactly 7 days ago as recent, and 1 ms more as not', () => {
+    expect(TASK_DONE_RECENT_MS).toBe(7 * 86_400_000);
+    const { doneRecently, doneAll } = groupTasksAt(
+      [
+        done('edge', doneAgo(TASK_DONE_RECENT_MS)),
+        done('past', doneAgo(TASK_DONE_RECENT_MS + 1)),
+      ],
+      NOW,
+    );
+    expect(doneRecently.map((r) => r.routineId)).toEqual(['edge']);
+    expect(doneAll.map((r) => r.routineId).sort()).toEqual(['edge', 'past']);
+  });
+
+  it('counts a future doneAt as recent and an unreadable one only under all', () => {
+    const { doneRecently, doneAll } = groupTasksAt(
+      [
+        done('future', new Date(NOW.getTime() + 60_000).toISOString()),
+        done('garbled', 'not a time'),
+      ],
+      NOW,
+    );
+    expect(doneRecently.map((r) => r.routineId)).toEqual(['future']);
+    expect(doneAll.map((r) => r.routineId).sort()).toEqual(['future', 'garbled']);
+  });
+
+  it('lists the newest doneAt first, ties in the usual order, in both lists', () => {
+    const { doneRecently, doneAll } = groupTasksAt(
+      [
+        done('old', doneAgo(3 * 86_400_000)),
+        done('b', doneAgo(1000), { name: 'b' }),
+        done('new', doneAgo(500)),
+        done('a', doneAgo(1000), { name: 'a' }),
+      ],
+      NOW,
+    );
+    expect(doneRecently.map((r) => r.routineId)).toEqual(['new', 'a', 'b', 'old']);
+    expect(doneAll.map((r) => r.routineId)).toEqual(['new', 'a', 'b', 'old']);
+  });
+});
+
 describe('todayTasks (TASK-933)', () => {
   it('puts a task whose agent asked for a person on Today', () => {
     const asked = report('needs-you', undefined, 'Want me to draft a reply to #4410?');
@@ -218,6 +292,22 @@ describe('todayTasks (TASK-933)', () => {
     expect(todayTaskReason(row({ task: report('needs-you'), noRecentUpdate: miss(4) }))).toBe(
       'escalated',
     );
+  });
+
+  it('puts a task that thinks it’s done on Today as done-claimed (TASK-950)', () => {
+    const claimed = { ...report('needs-you'), doneClaimed: true };
+    expect(todayTaskReason(row({ task: claimed }))).toBe('done-claimed');
+    // A claim is still a pending ask: one or two misses don't demote it.
+    expect(todayTaskReason(row({ task: claimed, noRecentUpdate: miss(2) }))).toBe('done-claimed');
+    // Three misses still say escalated.
+    expect(todayTaskReason(row({ task: claimed, noRecentUpdate: miss(3) }))).toBe('escalated');
+    // An unclaimed needs-you report is still an ask.
+    expect(todayTaskReason(row({ task: report('needs-you') }))).toBe('asks');
+    // Done, and paused by a person, never show, claim or no claim.
+    expect(
+      todayTaskReason(row({ enabled: false, doneAt: '2026-10-24T10:00:00.000Z', task: claimed })),
+    ).toBeNull();
+    expect(todayTaskReason(row({ enabled: false, task: claimed }))).toBeNull();
   });
 
   it('keeps an auto-paused task on Today until a person resumes it', () => {

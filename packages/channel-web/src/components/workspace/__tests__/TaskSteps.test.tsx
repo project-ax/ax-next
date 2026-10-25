@@ -781,3 +781,85 @@ describe('TaskSteps: when a change fails (TASK-949)', () => {
     expect(screen.getByRole('alert').className).toContain('text-destructive');
   });
 });
+
+describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
+  const footer = <button type="button">Mark done</button>;
+  const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+
+  function done(readOnly: boolean, steps: TaskStep[] = PLAN) {
+    return (
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={steps} onChanged={vi.fn()} readOnly={readOnly} />
+    );
+  }
+
+  it('draws its footer last: under the steps and Add a step, and under the empty line', () => {
+    const { unmount } = render(
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={PLAN} onChanged={vi.fn()} footer={footer} />,
+    );
+    const mark = screen.getByRole('button', { name: 'Mark done' });
+    expect(after(screen.getByRole('list'), mark)).toBeTruthy();
+    expect(after(addStep(), mark)).toBeTruthy();
+    unmount();
+    render(<TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={[]} onChanged={vi.fn()} footer={footer} />);
+    const empty = screen.getByText('No steps yet. Add one, or Quill drafts them at its next check-in.');
+    expect(after(empty, screen.getByRole('button', { name: 'Mark done' }))).toBeTruthy();
+  });
+
+  it('shows a Done task’s steps as they were left, ticked or not, with nothing to change', () => {
+    render(done(true));
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 3 done' })).toBeInTheDocument();
+    // Each box is a picture of its state, said in words, then the text and who added it.
+    expect(within(screen.getByRole('list')).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'Done: Export every articleadded by Quill',
+      'Not done: Check the redirects',
+      'Not done: Tell the teamadded by Quill',
+    ]);
+    expect(screen.queryAllByRole('checkbox')).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Step options' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a step' })).toBeNull();
+  });
+
+  it('says a Done task had no steps, and offers none to add', () => {
+    render(done(true, []));
+    expect(screen.getByText('No steps.')).toBeInTheDocument();
+    expect(screen.queryByText(/Add one/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a step' })).toBeNull();
+  });
+
+  it('closes an editor left open once the task is Done, and it stays closed after a Reopen', () => {
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    view.rerender(done(false));
+    expect(screen.queryByRole('textbox', { name: 'New step' })).toBeNull();
+    expect(addStep()).toBeEnabled();
+  });
+
+  // Refused as not there or not theirs, the task may have been marked done (or deleted) since the page read it.
+  it.each<[number, boolean]>([
+    [404, true],
+    [403, true],
+    [400, false],
+    [503, false],
+  ])('a change answered %i asks the page to read the task again: %s', async (status, again) => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', status));
+    const onRefused = vi.fn();
+    render(
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={PLAN} onChanged={vi.fn()} onRefused={onRefused} />,
+    );
+    fireEvent.click(box('Check the redirects'));
+    await screen.findByRole('alert');
+    expect(onRefused).toHaveBeenCalledTimes(again ? 1 : 0);
+  });
+
+  it('drops a failed change’s line once the task is Done', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 503));
+    const view = render(done(false));
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(UNCONFIRMED);
+    view.rerender(done(true));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

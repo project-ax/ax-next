@@ -25,6 +25,7 @@ function report(reading: TaskReading | null): TaskDetailReport {
     ask: null,
     agentNotes: null,
     reading,
+    doneClaimed: false,
     reportedAt: '2026-10-24T10:00:00.000Z',
   };
 }
