@@ -638,7 +638,7 @@ describe('a request to a task that never answers (TASK-937)', () => {
     ['completeTask', () => workspaceApi.completeTask('a1', 't1', { requestId: 'r1' })],
     ['reopenTask', () => workspaceApi.reopenTask('a1', 't1', { text: 'Again', requestId: 'r1' })],
     ['setTaskSteps', () => workspaceApi.setTaskSteps('a1', 't1', { requestId: 'r1', ops: [] })],
-    ['setTaskFinishBy', () => workspaceApi.setTaskFinishBy('a1', 't1', null)],
+    ['setTaskFinishBy', () => workspaceApi.setTaskFinishBy('a1', 't1', null, null)],
     ['duplicateTask', () => workspaceApi.duplicateTask('a1', 't1', { requestId: 'r1' })],
   ];
 
