@@ -523,9 +523,11 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  *
  * So, apart from the cases above that leave them as they are, every finish
  * leaves the count at exactly the misses that started after the latest saved
- * report, runs that started in the same instant going in the order they
- * finish, an open one last. Between finishes it can lag. A report is saved before its run
- * finishes, so the misses before it stay counted until the next finish. A
+ * report or the count's last start-over (a person's Resume, a kind change, a
+ * change of owner), whichever is later, runs that started in the same instant
+ * going in the order they finish, an open one last. Between finishes it can
+ * lag. A report is saved before its run finishes, so the misses before it stay
+ * counted until the next finish. A
  * person can see that, but nothing pauses on it: a pause is decided only when
  * a miss is counted, and the count is exact then. The count can run long when
  * a Resume or a kind change starts it over while runs overlap, since a fire
@@ -533,13 +535,13 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  *
  * It runs short in one case: a hand edit or a rollback leaves a stored report
  * that its run's finish reads as none (one this version can't read, such as a
- * later version's, or a JSON null). The runs that finished while that report's
- * run was open, older or newer than it, took it as answering the misses before
- * it, because `reportStillOpen` asks only that a report is stored. Then its
- * own run counts as a miss, unless a newer
- * report has been saved since, which answers those misses anyway. So the count
- * comes out short by every miss that report was taken to answer, and a pause
- * can be missed.
+ * later version's, or a JSON null). The runs, older or newer than it, that
+ * finished after it was saved, while its run was open and it was still the
+ * latest report, took it as answering the misses before it, because
+ * `reportStillOpen` asks only that a report is stored. Then its own run counts
+ * as a miss, unless a newer report has been saved since, which answers those
+ * misses anyway. So the count comes out short by every miss that report was
+ * taken to answer, and a pause can be missed.
  *
  * A run that reported clears them. Any other run missed, whatever its status:
  * one more in a row, with its start (the fire row's time) and its reason, the one
@@ -575,7 +577,7 @@ async function missesAfterRun(
   if (reportAt !== null && reportAt > run.acceptedAt) {
     // A run started after this one has reported, so this one doesn't count. While that run is still open, its
     // report has answered the misses before it too: trim to the ones after it, never up (TASK-935). A count
-    // below one (a hand edit) has nothing to trim, and LIMIT can't go negative at boot.
+    // of zero has nothing to trim, and one below zero (a hand edit) is left alone: LIMIT can't go negative at boot.
     if (row.task_misses_in_a_row < 1 || !await reportStillOpen(trx, row, reportAt)) return null;
     const kept = await unansweredAfter(trx, row, reportAt, row.task_misses_in_a_row);
     return kept === row.task_misses_in_a_row ? null : { columns: kept === 0 ? NO_MISSES : { task_misses_in_a_row: kept }, paused: false };
