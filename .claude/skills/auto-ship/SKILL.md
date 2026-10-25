@@ -875,8 +875,8 @@ fails loudly, not silently.
   `FactsMemory.test.tsx` (TASK-845) — are a different problem, and this gate doesn't
   claim to fix them.
 - **Tests the PR's CI doesn't run.** PR CI is affected packages plus dependents (a PR
-  that changes a repo-wide input — the lockfile, `patches/`, the root `package.json`,
-  `tsconfig.base.json`, ci.yml — runs the full suite instead, since TASK-943). An
+  that changes a repo-wide input, e.g. the lockfile or `patches/`, runs the full suite
+  instead, since TASK-943; ci.yml's PR test step holds the list). An
   interaction that shows up only in an unaffected package still reaches `main`, and the
   backstop is still what catches it. This gate makes the PR's own CI current. It does
   not make it the full suite.
