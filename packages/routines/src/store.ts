@@ -527,11 +527,12 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * change of owner), whichever is later, runs that started in the same instant
  * going in the order they finish, an open one last. Between finishes it can
  * lag. A report is saved before its run finishes, so the misses before it stay
- * counted until the next finish. A
- * person can see that, but nothing pauses on it: a pause is decided only when
- * a miss is counted, and the count is exact then. The count can run long when
- * a Resume or a kind change starts it over while runs overlap, since a fire
- * row doesn't say which side of it its run finished on.
+ * counted until the next finish. A person can see that, but nothing pauses on
+ * it: a pause is decided only when a miss is counted, and the count is exact
+ * then. The count can run long when a start-over lands while a run that still
+ * counts is open (a Resume, a kind change, or a change of owner back to the
+ * one an open run ran as), since a fire row doesn't say which side of it its
+ * run finished on.
  *
  * It runs short in one case: a hand edit or a rollback leaves a stored report
  * that its run's finish reads as none (one this version can't read, such as a
