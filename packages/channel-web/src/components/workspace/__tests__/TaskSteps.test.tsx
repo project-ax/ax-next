@@ -877,6 +877,9 @@ describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
     expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
     view.rerender(done(false));
     expect(screen.getByRole('status').textContent).toBe('');
+    // The Reopen dropped what was left: marking it done again, with nothing changed since, says nothing.
+    view.rerender(done(true));
+    expect(screen.getByRole('status').textContent).toBe('');
   });
 
   it('says a refused Add wasn’t saved once the task is Done', async () => {
