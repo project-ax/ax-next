@@ -38,6 +38,7 @@ import {
 } from '@ax/core';
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS,
+  ROUTINE_OPAQUE_STRING_MAX_CHARS,
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
@@ -1749,7 +1750,9 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/steps (TASK-949)', () =>
     ['a task that isn’t get-done, or isn’t there', new SafeToolError('not-found', 'routineId')],
     ['someone else’s task', new SafeToolError('forbidden', 'input')],
     // TASK-950: the service's refusal of a Done task's steps, the same `forbidden`, so it reads as the page's own
-    // 404 and the page reads the task again (TaskSteps' onRefused).
+    // 404 and the page reads the task again (TaskSteps' onRefused). A mapping pin only: this row is the one above,
+    // and passes whichever refusal the service throws. That a Done task's steps ARE refused `forbidden` is the
+    // store's and the service's to prove (set-steps-store.test.ts, the routines services tests).
     ['a Done task’s steps', new SafeToolError('forbidden', 'input')],
     ['an agent it can no longer reach', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
   ])('404s %s as task-not-found', async (_what, failure) => {
@@ -2185,6 +2188,16 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/complete (TASK-950)', ()
     expect(captured.body).toEqual({ error: 'invalid-body' });
     expect(resolveCalls).toEqual([]);
     expect(completeCalls).toEqual([]);
+  });
+
+  // The body reader takes any non-empty text; the contract's own rule (its length cap) is the service's. A
+  // `validation` refusal is the body as sent, so it answers 400 like the other task routes, not a read's 404.
+  it('400s a request id the service refuses as invalid-body, after asking', async () => {
+    const { complete, completeCalls } = setup({ rows: [claimed()] });
+    const captured = await complete(KEY, { requestId: 'r'.repeat(ROUTINE_OPAQUE_STRING_MAX_CHARS + 1) });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(completeCalls).toHaveLength(1);
   });
 
   it('401s without a session, and asks no one', async () => {

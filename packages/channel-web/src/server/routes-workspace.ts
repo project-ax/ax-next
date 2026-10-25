@@ -7790,10 +7790,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * contract refuses (an id no routine can have is the other case), and
      * answers 400 `steps-invalid`. It is checked before `isTaskRefusal`,
      * which counts `validation` as a read's 404. `not-found` (no such task,
-     * or one that isn't "get-done") and `forbidden` (someone else's) are the
-     * page's own 404. Anything else fails the request, `request-conflict`
-     * included: only a request id reused for a different change raises it,
-     * and the page never sends one. The answer is the steps as they are now,
+     * or one that isn't "get-done") and `forbidden` (someone else's task,
+     * or a Done task's steps, TASK-950) are the page's own 404. Anything else
+     * fails the request, `request-conflict` included: only a request id
+     * reused for a different change raises it, and the page never sends one. The answer is the steps as they are now,
      * each built as the task page's read builds it (`readStepList`,
      * `toTaskStep`), and how many changes were skipped. CSRF is
      * @ax/http-server's global guard, met by `workspace-api`'s write headers,
@@ -7946,7 +7946,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * someone else's task and an id nobody has alike, gets the read's 404 and
      * never a 403, so nobody learns that a task exists. The service decides
      * again under the routine's row lock: its `forbidden` (`edit` taken away
-     * since the read, say) is the same 403, and any other refusal is the
+     * since the read, say) is the same 403. Its `validation` is the body as
+     * sent (a request id the contract refuses, too long, say: the body read
+     * above takes any non-empty text), so it answers 400 `invalid-body`, as
+     * the other task routes answer theirs, checked before `isTaskRefusal`,
+     * which counts `validation` as a read's 404. Any other refusal is the
      * page's 404. Anything else fails the request, `unavailable` included, so
      * the page never says a task is done on a press nothing confirmed. The
      * same `requestId` again answers done without finishing the task twice
@@ -7991,6 +7995,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           requestId: body.requestId,
         });
       } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'invalid-body' });
+          return;
+        }
         if (err instanceof SafeToolError && err.toolCode === 'forbidden') {
           res.status(403).json({ error: 'task-done-not-allowed' });
           return;

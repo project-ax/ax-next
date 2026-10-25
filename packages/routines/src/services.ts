@@ -487,6 +487,8 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // (stepsView), and changing them adds no reach, since the next check-in still runs under the agent's own approval
   // rules. agents:resolve runs first, and the input schema has checked every change's text before anything ran; the
   // store decides ownership under the routine's row lock, and a retry under the same requestId changes nothing.
+  // `forbidden` is someone else's task, or a Done task's steps (TASK-950: a Done task's steps are its record, so
+  // the store refuses every change to them under the same lock, a replay included).
   // Neither a tool nor an IPC action, so no model can call it. Each step goes out field by field, and the log line
   // carries ids, counts and whether the store answered from the receipt (`replayed`, as routines_reply_added does;
   // it stays out of the answer), never a step's text.

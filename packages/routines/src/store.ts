@@ -84,6 +84,11 @@ export interface RoutinesStore {
    * checks the date (`RoutineSetFinishByInputSchema`); the column's CHECK
    * refuses anything not written `YYYY-MM-DD`, and every read takes a value the
    * contract's rule refuses as none.
+   *
+   * It takes a date on a Done task (TASK-950), on purpose, unlike `setSteps`,
+   * which refuses a Done task's steps: no page offers the date there, and a
+   * reopened task shows it again. See TASK-950's decisions ("A Done task shows
+   * no Finish by"). Don't "fix" the difference without a card.
    */
   setFinishBy(input: RoutineKey & Actor & { finishBy: string | null }): Promise<{ finishBy: string | null } | 'not-found' | 'forbidden'>;
   /**
