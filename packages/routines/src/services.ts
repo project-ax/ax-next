@@ -436,15 +436,17 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // left it. The store decides owner and kind again under the routine's row lock and throws its
   // refusals, which pass through as they are. It starts nothing, so it runs outside admitDispatch. The
   // same requestId again answers from its receipt and writes nothing. Neither a tool nor an IPC
-  // action: only a person marks a task done. The log line carries ids only.
+  // action: only a person marks a task done. The log line carries ids only, and only a press that moved
+  // the task to Done writes it: a replay and a press on a task already Done change nothing, so they log
+  // nothing (TASK-957).
   register('complete', C.RoutineCompleteInputSchema, C.RoutineCompleteOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
     const row = await rowFor(input);
-    await store.completeTask({
+    const { outcome } = await store.completeTask({
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId,
       mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
     });
-    ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
+    if (outcome === 'completed') ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
     return { done: true as const };
   });
   // TASK-950. Not yet, and Reopen on a Done task: the task's owner tells their agent what's left. It is

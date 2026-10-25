@@ -92,7 +92,7 @@ describe('routines:set-steps (TASK-949)', () => {
     await s.setSteps(changeOf(task, 'q1', [ADD]));
     expect(await f.store.completeTask({
       agentId: task.agentId, routineId: task.routineId, actorUserId: 'owner', requestId: 'done', mayEdit: true, now,
-    })).toEqual({ done: true });
+    })).toEqual({ outcome: 'completed' });
     const [added] = (await stepsOf(task))!;
     await expect(s.setSteps(changeOf(task, 'q2', [{ op: 'tick', id: added!.id }])))
       .rejects.toMatchObject({ toolCode: 'forbidden' });

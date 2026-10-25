@@ -120,6 +120,14 @@ export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; r
  */
 export type ReopenTaskResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine; wasDone: boolean } | 'not-found' | 'forbidden';
 /**
+ * TASK-957. What `completeTask` did with a person's Mark done, for the log line
+ * only (the answer is always `{ done: true }`). `completed`: this press moved
+ * the task to Done. `already-done`: the task was Done already and nothing was
+ * written. `replayed`: the store answered from the press's receipt (the same
+ * request again) and wrote nothing, even if the task has been reopened since.
+ */
+export type CompleteTaskResult = { outcome: 'completed' | 'already-done' | 'replayed' };
+/**
  * TASK-949. What `setSteps` did with a person's changes to a get-done task's
  * steps: the steps after them, as read under the routine's row lock, and how
  * many of the changes were skipped. A replay answers the first try's count

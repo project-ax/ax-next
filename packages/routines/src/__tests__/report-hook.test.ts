@@ -295,7 +295,7 @@ describe("routines:report and a get-done task's claim (TASK-950)", () => {
     const row = await f.store.createAuthored(getDoneInput('task'));
     const run = await bound(row, 'run');
     // A person marks it done while the check-in still runs.
-    expect(await f.store.completeTask({ agentId: 'a', routineId: row.routineId, actorUserId: 'owner', requestId: 'press', mayEdit: true, now })).toStrictEqual({ done: true });
+    expect(await f.store.completeTask({ agentId: 'a', routineId: row.routineId, actorUserId: 'owner', requestId: 'press', mayEdit: true, now })).toStrictEqual({ outcome: 'completed' });
     const before = await snapshot();
     const log = logged(run.ctx);
     await expect(report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES, done: true }, log.ctx))

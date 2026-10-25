@@ -132,9 +132,34 @@ describe('routines:complete (TASK-950)', () => {
     expect(done).toMatchObject({ enabled: false, nextRunAt: null });
     expect(done.done).toStrictEqual({ at: now.toISOString() });
     // Once: the same press again answers from its receipt and writes nothing.
-    expect(await s.complete(press(task, 'p1'))).toStrictEqual({ done: true });
+    expect(await s.complete(press(task, 'p1'), log.ctx)).toStrictEqual({ done: true });
     expect(await s.get(task)).toEqual(done);
     expect(await completeReceipts()).toBe(1);
+    expect(entriesOf(log.lines, 'routines_task_completed')).toHaveLength(1);
+  });
+
+  it('says a task was completed only for a press that moved it to Done (TASK-957)', async () => {
+    const task = await createTask();
+    const s = services();
+    const log = logged(s.as('owner'));
+    const completed = () => entriesOf(log.lines, 'routines_task_completed');
+    expect(await s.complete(press(task, 'p1'), log.ctx)).toStrictEqual({ done: true });
+    expect(completed()).toHaveLength(1);
+    // The same press again (its receipt answers) and another press on a task already Done: both answer done, neither logs.
+    expect(await s.complete(press(task, 'p1'), log.ctx)).toStrictEqual({ done: true });
+    expect(await s.complete(press(task, 'p2'), log.ctx)).toStrictEqual({ done: true });
+    expect(completed()).toHaveLength(1);
+    // Reopened, the task runs again; the first press, retried, only replays: no write, no line.
+    await s.reopen(answer(task, 'r1', 'Not yet: redirect the old links too.'), log.ctx);
+    expect(await s.complete(press(task, 'p1'), log.ctx)).toStrictEqual({ done: true });
+    expect(await s.get(task)).toMatchObject({ enabled: true, done: null });
+    expect(completed()).toHaveLength(1);
+    // A new press moves it to Done again, and says so.
+    expect(await s.complete(press(task, 'p3'), log.ctx)).toStrictEqual({ done: true });
+    expect(completed()).toEqual([
+      expect.objectContaining({ level: 'info', agentId: 'a', routineId: task.routineId }),
+      expect.objectContaining({ level: 'info', agentId: 'a', routineId: task.routineId }),
+    ]);
   });
 
   it.each([
