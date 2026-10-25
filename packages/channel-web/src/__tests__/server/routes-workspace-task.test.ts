@@ -1697,8 +1697,8 @@ describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', ()
 
   it('answers the date the service saved even when the view read before it was not get-done', async () => {
     // The service saves only on a get-done task, under its row lock, so its success proves the
-    // kind. The view read first may be a moment stale (the kind can't change, but a view that
-    // didn't parse can carry any), so the answer must not be gated on it.
+    // kind. The view read first can be older than that lock, and the kind can change in between,
+    // so the answer must not be gated on it.
     const { finishBy } = setup({
       rows: [laTask({ kind: 'stay-on-top', finishBy: null })],
       now: LA_EVENING,
