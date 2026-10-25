@@ -13,7 +13,7 @@ function stored(nextRunAt: string | null, activeHours: C.ActiveHours | null = NI
     ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' }, activeHours }),
     agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
     definitionId: null, definitionUpdatedAt: null, nextRunAt: nextRunAt === null ? null : new Date(nextRunAt), lastRunAt: null,
-    lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null,
+    lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null,
   };
 }
 const nextRunAt = (row: StoredRoutine) => routineView(row, 'owner', true).nextRunAt;

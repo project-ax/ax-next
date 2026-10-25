@@ -112,6 +112,31 @@ describe("a person's step changes (store, TASK-949)", () => {
     expect(await receipts()).toEqual([]);
   });
 
+  it('a Done task’s steps change no more, a retry of a change made before it was done included, until it is reopened (TASK-950)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await writeSteps(task.routineId, [step('s000001', 'Export every article')]);
+    const ticked = [step('s000001', 'Export every article', { done: true })];
+    // A change made while the task ran, kept under its receipt.
+    expect(await change(task, 'before', [{ op: 'tick', id: 's000001' }])).toEqual({ steps: ticked, skipped: 0, replayed: false });
+    expect(await f.store.completeTask({
+      agentId: task.agentId, routineId: task.routineId, actorUserId: 'owner', requestId: 'done', mayEdit: true, now: minute(1),
+    })).toEqual({ done: true });
+    // The record is the owner's too, and still not theirs to change: forbidden, and nothing is written or kept.
+    expect(await change(task, 'after', [{ op: 'untick', id: 's000001' }])).toBe('forbidden');
+    // The same request again is refused as well, rather than answered from its receipt.
+    expect(await change(task, 'before', [{ op: 'tick', id: 's000001' }])).toBe('forbidden');
+    expect(await stepsColumn(task.routineId)).toEqual(ticked);
+    expect((await receipts()).map(r => r.request_id)).toEqual(['before']);
+    // Reopened, it runs again, and its steps take changes again.
+    expect(await f.store.reopenTask({
+      agentId: task.agentId, routineId: task.routineId, actorUserId: 'owner', requestId: 'reopen', text: 'One redirect is still broken.',
+      mayEdit: true, now: minute(2),
+    })).toMatchObject({ outcome: 'added', wasDone: true });
+    expect(await change(task, 'again', [{ op: 'untick', id: 's000001' }])).toEqual({
+      steps: [step('s000001', 'Export every article')], skipped: 0, replayed: false,
+    });
+  });
+
   it('a stay-on-top task, a repeat routine and a missing one are not-found, and nothing is written or kept', async () => {
     const stay = await f.store.createAuthored({ ...createInput('stay'), definition: RoutineDefinitionSchema.parse({
       name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },

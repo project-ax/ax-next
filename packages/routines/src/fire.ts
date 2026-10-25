@@ -268,17 +268,19 @@ export function createFireRoutine(deps: FireDeps) {
     if (isTaskRun(row)) {
       // TASK-908: a task run starts with its check-in message (why it runs,
       // the agent's notes and its latest reports, the person's latest
-      // replies, TASK-931, and a get-done task's steps, TASK-948), never its
-      // instructions, which reach it as its brief instead. The notes and the
-      // steps come from the accepted row, the snapshot the brief is built
-      // from. Reports and replies are read alike, for the person the
-      // run acts as, the accepted row's owner: the store answers only with
-      // this task's runs that ran as them (TASK-936) and the replies they
-      // wrote, and only while the task is still theirs, so an earlier owner's
-      // reports and words never steer it, and one that moved since the accept
-      // gets none. A failed read is recorded like any other setup failure, and
-      // the agent never starts. A task's trigger is never a webhook
-      // (validateDefinition), so it has no payload.
+      // replies, TASK-931, a get-done task's steps, TASK-948, and whether its
+      // latest report claimed it's done, TASK-950), never its instructions,
+      // which reach it as its brief instead. The notes, the steps and the
+      // claim come from the accepted row, the snapshot the brief is built
+      // from; only a get-done task's claim counts, as in its view. Reports
+      // and replies are read alike, for the person the run acts as, the
+      // accepted row's owner: the store answers only with this task's runs
+      // that ran as them (TASK-936) and the replies they wrote, and only
+      // while the task is still theirs, so an earlier owner's reports and
+      // words never steer it, and one that moved since the accept gets none.
+      // A failed read is recorded like any other setup failure, and the agent
+      // never starts. A task's trigger is never a webhook (validateDefinition),
+      // so it has no payload.
       let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
       let replies: Awaited<ReturnType<RoutinesStore['recentReplies']>>;
       try {
@@ -287,7 +289,7 @@ export function createFireRoutine(deps: FireDeps) {
       } catch (err) { return fail(err); }
       prompt = renderCheckInMessage({
         source, agentNotes: row.task?.agentNotes ?? null, reports, replies, missesInARow: row.noRecentUpdate?.inARow ?? 0,
-        steps: row.kind === 'get-done' ? row.steps : null,
+        steps: row.kind === 'get-done' ? row.steps : null, doneClaimed: row.kind === 'get-done' && row.task?.doneClaimed === true,
       });
     } else {
       // Phase D: render whenever payload is provided, regardless of source.

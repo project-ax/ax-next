@@ -36,7 +36,7 @@ const routine = {
   task: null,
   noRecentUpdate: null,
   steps: [],
-  finishBy: null,
+  finishBy: null, done: null,
 };
 function req(
   body?: unknown,

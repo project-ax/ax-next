@@ -439,7 +439,7 @@ describe('task check-in report canary (TASK-907)', () => {
     expect(answer).toStrictEqual({ recorded: true });
     // No decision of any kind: the report is the run's own output, not something to ask the person about.
     expect((await everyDecision()).filter(decision => decision.call.name === 'routine_report')).toEqual([]);
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: null, doneClaimed: false, agentNotes: NOTES, reportedAt: expect.any(String) };
     expect((await get(task)).task).toEqual(shown);
     expect((await list()).find(row => row.routineId === task.routineId)?.task).toEqual(shown);
     expect((await history(task))[0]).toMatchObject({ status: 'ok', report: NEEDS_YOU });
@@ -556,7 +556,7 @@ describe('PR 1 backend canary (TASK-908)', () => {
     // As the owner: the task shows the report, and its run shows it too, with no prompt kept.
     const listed = (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId })).routines;
     expect(listed.find(row => row.routineId === task.routineId)?.task).toEqual({
-      status: 'on-track', update: 'Queue is empty.', ask: null, reading: null, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
+      status: 'on-track', update: 'Queue is empty.', ask: null, reading: null, doneClaimed: false, agentNotes: 'Nothing pending.', reportedAt: expect.any(String),
     });
     const { fires } = await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', h.owner, { agentId: h.agentId, routineId: task.routineId });
     expect(fires[0]).toMatchObject({ status: 'ok', renderedPrompt: null, report: { status: 'on-track', update: 'Queue is empty.', ask: null } });
@@ -898,6 +898,69 @@ describe('get-done canary (TASK-948)', () => {
       { id: uploaded!.id, text: 'Upload them to the new site', done: false, addedBy: 'agent' },
     ]);
     expect(await get(h.teamMember)).toMatchObject({ routineId: task.routineId, kind: 'get-done', steps: [] });
+  });
+});
+
+// TASK-950: a "Get something done" task finishes, end to end through the real routines, agents, tool-policy and
+// decisions plugins and Postgres: a check-in says it's done, the next one is told so and says it again, the person
+// marks it done, nothing runs after, and Reopen with a reply starts a check-in that reads it.
+describe('done canary (TASK-950)', () => {
+  it('a check-in says the task is done; the person marks it done, it stops, and Reopen with a reply starts it again', async () => {
+    const ch = await createCheckInHarness();
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse({ ...TASK_DEFINITION, kind: 'get-done' }),
+    });
+    const get = () => h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: h.agentId, routineId: task.routineId });
+    const markDone = () => h.bus.call('routines:complete', h.owner, { agentId: h.agentId, routineId: task.routineId, requestId: 'mark-done' });
+    const claim: ToolCall = { id: 'report', name: 'routine_report', input: { status: 'needs-you', update: 'Every article is on the new site.', done: true } };
+    const CLAIMED = 'In your last report you said you think this task is done. The person hasn’t marked it done yet. Check whether it still is, and report again.';
+    const REPLY = 'The old help center links don’t redirect yet. Set those up first.';
+
+    // Run 1 says it thinks the task is done. Nothing holds the report, and the task reads claimed, not done.
+    const first = await ch.checkIn(task, 'run-1', async ctx => {
+      const early = await h.bus.fire('tool:pre-call', routineRunner(ctx), claim);
+      expect(early.rejected).toBe(false);
+      expect(isHold(early)).toBe(false);
+      expect(await h.bus.call('tool:execute:routine_report', routineRunner(ctx), claim)).toStrictEqual({ recorded: true });
+    });
+    expect(first.message).not.toContain(CLAIMED);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    const claimed = await get();
+    expect(claimed).toMatchObject({ enabled: true, done: null, task: { status: 'needs-you', update: 'Every article is on the new site.', doneClaimed: true } });
+
+    // Run 2 is told so, and says it again.
+    const second = await ch.checkIn(claimed, 'run-2', async ctx => {
+      expect(await h.bus.call('tool:execute:routine_report', routineRunner(ctx), claim)).toStrictEqual({ recorded: true });
+    });
+    expect(second.message).toContain(CLAIMED);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(2);
+    expect((await get()).task?.doneClaimed).toBe(true);
+
+    // The person marks it done: it stops checking in and keeps its report, the claim answered, and nothing runs after.
+    expect(await markDone()).toStrictEqual({ done: true });
+    const done = await get();
+    expect(done).toMatchObject({
+      enabled: false, nextRunAt: null, done: { at: expect.any(String) }, noRecentUpdate: null,
+      task: { status: 'needs-you', update: 'Every article is on the new site.', doneClaimed: false },
+    });
+    expect(new Date(done.done!.at).toISOString()).toBe(done.done!.at);
+    await expect(h.bus.call('routines:fire-now', h.owner, {
+      agentId: h.agentId, routineId: task.routineId, expectedRevision: done.revision, requestId: 'after-done' }))
+      .rejects.toMatchObject({ toolCode: 'disabled' });
+    expect(h.invokeCalls).toHaveLength(2);
+    // The same press again answers done and changes nothing.
+    expect(await markDone()).toStrictEqual({ done: true });
+    expect((await get()).revision).toBe(done.revision);
+
+    // Reopen with a reply: a check-in starts at once, and its message carries the reply as new and no claim line.
+    const reopened = await ch.reopenCheckIn(done, 'reopen-1', REPLY, async () => {});
+    expect(reopened.answer).toStrictEqual({ replyId: expect.stringMatching(/^reply_/), checkIn: 'started' });
+    expect(reopened.message).toContain(`(new since your last report):\n  > ${REPLY}`);
+    expect(reopened.message).not.toContain(CLAIMED);
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(3);
+    expect(await get()).toMatchObject({ enabled: true, done: null, nextRunAt: expect.any(String) });
   });
 });
 

@@ -388,6 +388,7 @@ describe('human REST through registered DB services and real agent ACL', () => {
     ).toEqual({
       ...report,
       reading,
+      doneClaimed: false,
       agentNotes: notes,
       reportedAt: expect.any(String),
     });

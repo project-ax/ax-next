@@ -28,6 +28,10 @@ const taskInput = (requestId: string) => ({ ...createInput(requestId), definitio
   name: 'Support queue', promptBody: 'Keep the support queue empty.', trigger: { kind: 'interval', every: '15m' },
   kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
 }) });
+const getDoneInput = (requestId: string) => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
+  name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+  kind: 'get-done', goodWhen: 'Every article is on the new site.',
+}) });
 
 function services(store: RoutinesStore = f.store): HookBus {
   const bus = new HookBus();
@@ -59,7 +63,7 @@ describe('routines:report (TASK-907)', () => {
     const run = await bound(row, 'run');
     expect(await report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES }, run.ctx)).toStrictEqual({ recorded: true });
     // The task's state, stamped by the hook's own clock.
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt, reading: null });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt, reading: null, doneClaimed: false });
     // The run's report reaches its history row when the turn ends. The notes stay on the task.
     expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome })).toBe(true);
     expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([{ ...needsYou, reading: null }]);
@@ -221,10 +225,6 @@ describe('routines:report (TASK-907)', () => {
 });
 
 describe("routines:report and a get-done task's steps (TASK-948)", () => {
-  const getDoneInput = (requestId: string) => ({ ...createInput(requestId), definition: RoutineDefinitionSchema.parse({
-    name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
-    kind: 'get-done', goodWhen: 'Every article is on the new site.',
-  }) });
   const moving = { status: 'on-track', update: 'Moving the articles.', ask: null } as const;
   /** Every key the counts' log line may carry: the logger's own, ids and the two counts, never a step's text. */
   const STEPS_LOG_KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'dispatchId', 'applied', 'skipped'];
@@ -266,5 +266,41 @@ describe("routines:report and a get-done task's steps (TASK-948)", () => {
       .toStrictEqual({ recorded: true, steps: { applied: 0, skipped: 1 } });
     expect((await f.store.findOne(row))?.task).toMatchObject({ status: 'needs-you', update: needsYou.update });
     expect(await stepsColumn(row.routineId)).toEqual([]);
+  });
+});
+
+describe("routines:report and a get-done task's claim (TASK-950)", () => {
+  it('a claim lands on the task beside its report; done false or left out makes none', async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(getDoneInput('task'));
+    const run = await bound(row, 'run');
+    const base = { agentId: 'a', dispatchId: run.dispatchId, ...needsYou };
+    const claimed = async () => (await f.store.findOne(row))?.task?.doneClaimed;
+    expect(await report(bus, { ...base, done: true }, run.ctx)).toStrictEqual({ recorded: true });
+    expect(await claimed()).toBe(true);
+    await report(bus, { ...base, done: false }, run.ctx);
+    expect(await claimed()).toBe(false);
+    await report(bus, { ...base, done: true }, run.ctx);
+    await report(bus, base, run.ctx);
+    expect(await claimed()).toBe(false);
+    // The run's own report keeps its three fields: the claim lives on the task alone.
+    await report(bus, { ...base, done: true }, run.ctx);
+    expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome })).toBe(true);
+    expect((await f.store.recentFires(row)).map(fire => fire.report)).toEqual([{ ...needsYou, reading: null }]);
+    expect(await claimed()).toBe(true);
+  });
+
+  it('a report on a Done task is refused, and the operator line says done', async () => {
+    const bus = services();
+    const row = await f.store.createAuthored(getDoneInput('task'));
+    const run = await bound(row, 'run');
+    // A person marks it done while the check-in still runs.
+    expect(await f.store.completeTask({ agentId: 'a', routineId: row.routineId, actorUserId: 'owner', requestId: 'press', mayEdit: true, now })).toStrictEqual({ done: true });
+    const before = await snapshot();
+    const log = logged(run.ctx);
+    await expect(report(bus, { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES, done: true }, log.ctx))
+      .rejects.toMatchObject({ toolCode: 'not-in-check-in', field: 'input' });
+    expectOneRefusal(log.lines, { stage: 'hook', reason: 'done' }, REPORT_TEXT, 'a Done task');
+    expect(await snapshot()).toEqual(before);
   });
 });

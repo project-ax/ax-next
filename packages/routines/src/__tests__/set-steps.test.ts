@@ -86,6 +86,19 @@ describe('routines:set-steps (TASK-949)', () => {
     expect(await stepsOf(task)).toEqual([]);
   });
 
+  it('a Done task’s steps are refused as forbidden, and stay as they were (TASK-950)', async () => {
+    const task = await createTask();
+    const s = services();
+    await s.setSteps(changeOf(task, 'q1', [ADD]));
+    expect(await f.store.completeTask({
+      agentId: task.agentId, routineId: task.routineId, actorUserId: 'owner', requestId: 'done', mayEdit: true, now,
+    })).toEqual({ done: true });
+    const [added] = (await stepsOf(task))!;
+    await expect(s.setSteps(changeOf(task, 'q2', [{ op: 'tick', id: added!.id }])))
+      .rejects.toMatchObject({ toolCode: 'forbidden' });
+    expect(await stepsOf(task)).toEqual([added]);
+  });
+
   it('a stay-on-top task, a repeat routine and a missing one are not-found', async () => {
     const stayOnTop = await createTask('stay', STAY_ON_TOP);
     const repeat = await f.store.createAuthored(createInput('repeat'));

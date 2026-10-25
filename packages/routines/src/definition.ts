@@ -63,6 +63,9 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
     agentNotes: z.string().nullable(), reportedAt: z.coerce.date(),
     // TASK-952. Types only, like the rest (TASK-913).
     reading: z.object({ value: z.number(), label: z.string() }).strict().nullable().default(null),
+    // TASK-950. Types only, like the rest: rowToRoutine has already read the claim beside its own
+    // report (store.ts, taskState). Defaulted like `reading`, so a task without the key reads unclaimed.
+    doneClaimed: z.boolean().default(false),
   }).strict().nullable().default(null),
   // TASK-930. Types and the reason enum only, as for `task`: rowToRoutine has already read the
   // columns leniently (store.ts, noRecentUpdate), so no stored row is refused here. Receipts
@@ -80,6 +83,10 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   // (store.ts, storedFinishBy), so no stored row is refused here. Receipts leave the key out
   // (store.ts, receiptCopy), as did any written before this field, and the default fills it in.
   finishBy: z.string().nullable().default(null),
+  // TASK-950. Types only, as for `task`: rowToRoutine has already read the columns through
+  // `doneOf` (store.ts), so no stored row is refused here. Receipts leave the key out (store.ts,
+  // receiptCopy), as did any written before this field, and the default fills it in.
+  done: z.object({ at: z.coerce.date(), byUserId: z.string() }).strict().nullable().default(null),
 }).strict().superRefine((row, ctx) => {
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));
   if (!checked.success) for (const issue of checked.error.issues) ctx.addIssue(issue);
@@ -97,6 +104,10 @@ export function updateRequestHash(input: import('@ax/routines-contract').Routine
 }
 export function deleteRequestHash(input: import('@ax/routines-contract').RoutineDeleteInput): string {
   return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision });
+}
+/** TASK-950. Mark done names only the task: a person finishes it as it is now, so no revision. */
+export function completeRequestHash(input: import('@ax/routines-contract').RoutineKey): string {
+  return inputHash({ agentId: input.agentId, routineId: input.routineId });
 }
 export function dispatchRequestHash(input: import('@ax/routines-contract').RoutineFireNowInput & { source: import('./types.js').FireSource }): string {
   return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, source: input.source });

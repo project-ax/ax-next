@@ -12,9 +12,13 @@ export type StoredReading = { value: number; label: string };
  * TASK-907. A task's latest report and the notes it keeps between check-ins
  * (`agentNotes`, the `agent_notes` column; the report's input calls them
  * `notes`). Agent-written text. TASK-952: `reading` is the reading that report
- * sent, or null when it sent none.
+ * sent, or null when it sent none. TASK-950: `doneClaimed`, whether that report
+ * said a "get-done" task is finished (`taskState` reads the claim only beside
+ * the report that made it).
  */
-export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date; reading: StoredReading | null };
+export type StoredTaskState = { status: RoutineReportStatus; update: string; ask: string | null; agentNotes: string | null; reportedAt: Date; reading: StoredReading | null; doneClaimed: boolean };
+/** TASK-950. A get-done task a person marked done: when, and who (always its owner, `doneOf`). */
+export type StoredDone = { at: Date; byUserId: string };
 /**
  * TASK-930. A task's check-ins in a row that ended without a report: how many,
  * the last one's reason and start, and when the host paused the task for them
@@ -55,6 +59,13 @@ export type StoredRoutine = RoutineDefinition & {
    * rule refuses reads as null.
    */
   finishBy: string | null;
+  /**
+   * TASK-950. When a person marked a "get-done" task done, and who: null unless
+   * it is Done (`doneOf`: off, get-done, and completed by its owner), so null
+   * again once it runs (a Reopen, a Resume) or its kind or owner changes.
+   * Host-written. Receipts keep none, so an exact replay answers null.
+   */
+  done: StoredDone | null;
 };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
@@ -102,6 +113,13 @@ export type StoredReply = { replyId: string; authorUserId: string; text: string;
  */
 export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine } | 'not-found' | 'forbidden';
 /**
+ * TASK-950. What `reopenTask` did, in `AddReplyResult`'s terms. `wasDone`: the
+ * task was Done as read under its row lock. `row` is the routine as it now is:
+ * reopened, or with its claim taken back, after a new reply; as read under the
+ * lock after a retry, which writes nothing else.
+ */
+export type ReopenTaskResult = { outcome: 'added' | 'replayed'; replyId: string; row: StoredRoutine; wasDone: boolean } | 'not-found' | 'forbidden';
+/**
  * TASK-949. What `setSteps` did with a person's changes to a get-done task's
  * steps: the steps after them, as read under the routine's row lock, and how
  * many of the changes were skipped. A replay answers the first try's count
@@ -125,9 +143,10 @@ export type OpenCheckInLookup = { run: OpenCheckIn } | { run: null; reason: 'no-
 /**
  * TASK-907. Why `recordReport` wrote nothing, decided under the run's locks:
  * fixed words an operator's log can carry. `kind`: the routine isn't a task
- * kind (`TASK_KINDS`, TASK-948).
+ * kind (`TASK_KINDS`, TASK-948). `done`: a person marked the task done
+ * (`doneOf`, TASK-950), so a check-in still running then can't write onto it.
  */
-export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'routine-gone' | 'kind' | 'owner';
+export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'routine-gone' | 'kind' | 'owner' | 'done';
 /**
  * TASK-907. `conversationId` is the conversation the report came from (host-set
  * context); the run must be bound to it. `notes` left out keeps the task's
@@ -137,10 +156,13 @@ export type ReportRefusal = 'agent-retired' | 'run-closed' | 'not-bound' | 'rout
  * TASK-948: `steps`, the report's changes to a get-done task's checklist,
  * applied in order as the agent's (`changeStoredSteps`, TASK-949); left out,
  * the checklist is left alone.
+ * TASK-950: `done` true, the report claims the task is finished. The claim is
+ * written for a get-done task only, beside the report; left out or false, the
+ * report makes none, so the task's latest report claims nothing, as `reading`.
  */
 export type RecordReportInput = {
   agentId: string; dispatchId: string; conversationId: string; actorUserId: string;
-  report: DispatchReport; notes?: string | null; reading?: StoredReading | null; steps?: readonly RoutineStepOp[]; now: Date;
+  report: DispatchReport; notes?: string | null; reading?: StoredReading | null; steps?: readonly RoutineStepOp[]; done?: boolean; now: Date;
 };
 /**
  * TASK-948. A report that sent step changes landed: how many of them applied

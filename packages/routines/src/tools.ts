@@ -56,10 +56,11 @@ function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeTo
  * locks before it writes. The one refusal tells the agent only that this isn't
  * a check-in; an info line tells the operator why (`reportRefused`). TASK-948:
  * `steps` on a check-in of a task with no checklist is a wrong call, refused
- * as a validation error naming the field.
+ * as a validation error naming the field. TASK-950: so is `done` true on a
+ * check-in of a task that isn't get-done.
  */
 async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'ctx' | 'call'>): Promise<Prepared> {
-  const { notes, steps, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
+  const { notes, steps, done, ...report } = parseRoutineInput(C.RoutineReportToolInputSchema, call.input);
   const conversationId = ctx.conversationId;
   if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
   if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
@@ -83,10 +84,17 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
   // can send the report again without them. (The race, a kind change landing after this read, is the
   // store's: under its row lock it skips every step change for a task that is no longer get-done.)
   if (steps !== undefined && run.kind !== 'get-done') throw new SafeToolError('validation', 'steps');
+  // TASK-950. The same for a claim that the task is done: only a get-done task finishes, so the agent hears
+  // which field to drop before anything is written. (The race is the store's again: under its row lock it
+  // writes no claim for a task that is no longer get-done, and the report still lands.)
+  if (done === true && run.kind !== 'get-done') throw new SafeToolError('validation', 'done');
   // Parsed, an explicit `notes: undefined` is still a key. It means "left out", which keeps the saved notes.
   return {
     hook: 'routines:report', run: ids,
-    input: { agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }), ...(steps === undefined ? {} : { steps }) },
+    input: {
+      agentId: ctx.agentId, dispatchId: run.dispatchId, ...report, ...(notes === undefined ? {} : { notes }),
+      ...(steps === undefined ? {} : { steps }), ...(done === undefined ? {} : { done }),
+    },
   };
 }
 
