@@ -2,9 +2,9 @@
 // by default (fresh Server + transport per request); `sessionful` keeps real
 // MCP sessions so a test can make the server forget them. Configurable so a
 // test can capture request headers, page `tools/list`, force an HTTP status,
-// or hand back `isError` results.
+// hand back `isError` results, or answer one method with raw bytes (`raw`).
 import { randomUUID } from 'node:crypto';
-import { createServer, type IncomingHttpHeaders } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type ServerResponse } from 'node:http';
 import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -41,7 +41,17 @@ export interface McpTestServer {
    * own answer for an unknown session: HTTP 404, JSON-RPC -32001.
    */
   forgetSessions(): Promise<void>;
+  /** Bytes handed to `res.write` for `raw` answers so far, across all of them. */
+  rawBytesWritten(): number;
   close(): Promise<void>;
+}
+
+/** The `raw` option: one JSON-RPC method answered with these exact bytes. */
+export interface RawAnswer {
+  method: string;
+  headers: Record<string, string>;
+  /** The body, piece by piece, for the request with this JSON-RPC id. */
+  chunks: (id: unknown) => Iterable<string | Buffer>;
 }
 
 export async function startMcpTestServer(opts: {
@@ -66,9 +76,44 @@ export async function startMcpTestServer(opts: {
   intercept?: (method: string | undefined) => Promise<{ status: number; body: string } | void> | { status: number; body: string } | void;
   /** Keep real MCP sessions (server-minted `mcp-session-id`) instead of answering statelessly. */
   sessionful?: boolean;
+  /**
+   * Answer POSTs for ONE JSON-RPC method with status 200, these headers and
+   * these chunks, instead of speaking MCP. Every other method is answered
+   * normally. Written with backpressure, and it stops when the client hangs
+   * up, so a test can offer far more bytes than a client should read.
+   */
+  raw?: RawAnswer;
 }): Promise<McpTestServer> {
   const seenHeaders: IncomingHttpHeaders[] = [];
   const seenMethods: string[] = [];
+  let rawBytes = 0;
+
+  const writeRaw = async (res: ServerResponse, raw: RawAnswer, id: unknown): Promise<void> => {
+    let gone = false;
+    res.once('close', () => {
+      gone = true;
+    });
+    // A write that races the client hanging up errors the response; that is
+    // expected here, and an unheard 'error' would crash the test process.
+    res.on('error', () => {});
+    res.writeHead(200, raw.headers);
+    for (const chunk of raw.chunks(id)) {
+      if (gone || res.destroyed) return;
+      rawBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+      if (!res.write(chunk) && !gone) {
+        await new Promise<void>((resolve) => {
+          const done = (): void => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+          };
+          res.on('drain', done);
+          res.on('close', done);
+        });
+      }
+    }
+    if (!gone && !res.destroyed) res.end();
+  };
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: Server }>();
   const listed = opts.tools.map((t) => ({
     name: t.name,
@@ -123,6 +168,11 @@ export async function startMcpTestServer(opts: {
           res.writeHead(me.status, { 'content-type': 'text/plain' }).end(me.body);
           return;
         }
+        const raw = opts.raw;
+        if (req.method === 'POST' && raw !== undefined && method === raw.method) {
+          await writeRaw(res, raw, (body as { id?: unknown } | undefined)?.id);
+          return;
+        }
         if (opts.sessionful === true) {
           const sid = req.headers['mcp-session-id'];
           const live = typeof sid === 'string' ? sessions.get(sid) : undefined;
@@ -172,6 +222,7 @@ export async function startMcpTestServer(opts: {
       sessions.clear();
       await Promise.allSettled(live.flatMap((l) => [l.transport.close(), l.server.close()]));
     },
+    rawBytesWritten: () => rawBytes,
     close: () =>
       new Promise<void>((resolve) => {
         sessions.clear();
