@@ -61,9 +61,10 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's five routes, `/tasks/:agentId/:routineId`, its
+ *     the task page's six routes, `/tasks/:agentId/:routineId`, its
  *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
- *     `/replies` (TASK-931) and its `/steps` (TASK-949), which reach the
+ *     `/replies` (TASK-931), its `/steps` (TASK-949) and its `/finish-by`
+ *     (TASK-951), which reach the
  *     agent's tasks rather than its files. The order on each is:
  *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
  *     → read. Nothing reads before the resolve. The task page then shows
@@ -81,7 +82,12 @@
  *     message. So is a step's text sent to `/steps`: the contract's step rule
  *     screens it the same way (one line too), and a step whose words it
  *     writes is quoted in a check-in's message labelled as the person's, from
- *     the host-set author no change can set.
+ *     the host-set author no change can set. `/finish-by` is a write that
+ *     does read first: after the resolve it reads the task (`ownTaskOr404`)
+ *     for its time zone. Its service then decides the owner and the kind
+ *     under the routine's row lock, the contract's date rule screens the
+ *     date before anything is written, and the date reaches a model only as
+ *     fixed sentences in a get-done check-in's brief.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
