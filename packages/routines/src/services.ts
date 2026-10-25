@@ -16,6 +16,12 @@ export const ROUTINE_SERVICES = [
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
+/**
+ * TASK-937. How many check-ins a host restart may cut off for one reply before a retry stops
+ * starting more (`replyCheckIn`). The walk is finite anyway; this keeps a crash loop from
+ * starting runs that die.
+ */
+export const REPLY_CHECK_IN_RESTARTS = 3;
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -185,24 +191,40 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
    * new. The order is the point: `not-allowed` comes before `paused`, so "when you resume the
    * task" is only said to someone who may resume it (for a task's owner, `fire` is
    * agents:can-manage-routines' answer). The check-in is keyed on the reply, not on the caller's
-   * requestId, so one reply starts at most one check-in and never shares a receipt with a Check now
-   * press. A replayed reply runs this again: a retry after the reply was stored but before its
-   * check-in was accepted starts that check-in, and a retry after it was accepted replays the
-   * receipt. That convergence covers failures before the accept commits, not after: a host restart
-   * between the accept and the run's setup records that run as interrupted, a retry answers
-   * `replayed`, and nothing reads the reply until the next check-in (as for Check now). The reply
-   * stays stored. `started` means accepted, not finished: `send`'s answer isn't read, and a
-   * check-in that fails during setup is a recorded failed run.
+   * requestId, so it never shares a receipt with a Check now press.
+   * TASK-937. A replayed reply runs this again and walks the check-ins it started. A retry after
+   * the reply was stored but before its check-in was accepted starts that check-in. A retry after
+   * it was accepted finds it (its receipt, whatever the routine's revision was then) and answers
+   * `replayed` while it runs or once it ended on its own: finished, failed (its failure is under
+   * Updates, and Check now tries again) or reported. If a host restart cut it off before it
+   * reported (the sweep's `RUN_INTERRUPTED`), the retry starts one more, keyed on the reply and the
+   * check-in it replaces (`reply:<replyId>:after:<dispatchId>`), so retries at once start one
+   * between them, up to `REPLY_CHECK_IN_RESTARTS` per reply. Check now's own retry doesn't do this.
+   * The reply stays stored. `started` means accepted, not finished: `send`'s answer isn't read, and
+   * a check-in that fails during setup is a recorded failed run.
    */
   async function replyCheckIn(ctx: AgentContext, allowed: boolean, row: StoredRoutine, replyId: string, send: (accepted: AcceptedDispatch) => Promise<unknown>): Promise<C.RoutineReplyCheckIn> {
     if (!routinePermissions(row, ctx.userId, allowed).fire) return 'not-allowed';
     if (!row.enabled) return 'paused';
+    let requestId = `reply:${replyId}`;
+    for (let restarts = 0; ; restarts++) {
+      const earlier = await store.acceptedDispatchId({ agentId: row.agentId, actorUserId: ctx.userId, requestId });
+      if (earlier === null) return acceptReplyCheckIn(ctx, allowed, row, requestId, send);
+      if (restarts === REPLY_CHECK_IN_RESTARTS) return 'replayed';
+      const outcome = await store.getDispatchOutcome({ agentId: row.agentId, dispatchId: earlier });
+      if (outcome?.miss !== 'interrupted') return 'replayed';
+      requestId = `reply:${replyId}:after:${earlier}`;
+    }
+  }
+  /** `replyCheckIn`'s accept, under the one of the reply's keys that holds no check-in yet. */
+  async function acceptReplyCheckIn(ctx: AgentContext, allowed: boolean, row: StoredRoutine, requestId: string, send: (accepted: AcceptedDispatch) => Promise<unknown>): Promise<C.RoutineReplyCheckIn> {
     const key = { agentId: row.agentId, routineId: row.routineId };
     let result: Awaited<ReturnType<RoutinesStore['acceptDispatch']>>;
     try {
-      result = await store.acceptDispatch({ ...key, expectedRevision: row.revision, actorUserId: ctx.userId, source: 'manual', requestId: `reply:${replyId}`, now: now() });
+      result = await store.acceptDispatch({ ...key, expectedRevision: row.revision, actorUserId: ctx.userId, source: 'manual', requestId, now: now() });
     } catch (err) {
-      // The receipt's hash covers the revision: this reply's check-in was accepted before, at an earlier one.
+      // The receipt's hash covers the revision: another try accepted this key's check-in after the walk read
+      // none, at another revision.
       if (err instanceof SafeToolError && err.toolCode === 'request-conflict') return 'replayed';
       throw err;
     }
@@ -413,9 +435,10 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // may, on a team agent too: the store decides that under the agent fence and the routine's row
   // lock, after agents:resolve has refused anyone who can't reach the agent. The text was checked by
   // the input schema before anything ran. The reply is stored first; a check-in starts only when
-  // the task runs and the caller may start its check-ins (replyCheckIn), keyed on the reply, so a
-  // retry can't start two. The whole hook runs inside admitDispatch, like fire-now, so a shutting-down
-  // host refuses it before anything is written. Neither a tool nor an IPC action: a reply reaches a
+  // the task runs and the caller may start its check-ins (replyCheckIn), keyed on the reply, so
+  // retries start one between them, and one more only after a host restart cut it off. The whole
+  // hook runs inside admitDispatch, like fire-now, so a shutting-down host refuses it before
+  // anything is written. Neither a tool nor an IPC action: a reply reaches a
   // model only in a check-in message. The log lines carry ids and closed words, never the text: one
   // per reply, and a warn when a stored reply's check-in step throws.
   register('reply', C.RoutineReplyInputSchema, C.RoutineReplyOutputSchema, (ctx, input) => admitDispatch(async () => {

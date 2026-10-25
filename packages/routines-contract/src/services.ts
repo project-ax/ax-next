@@ -109,17 +109,21 @@ export const RoutineTasksForConversationsOutputSchema = z.object({ checkIns: z.a
  * task. Only the routine's owner may. The reply is stored first, and `checkIn`
  * says what happened next:
  *   - `started`: a check-in was accepted. Not finished: its update arrives like
- *     any other check-in's;
- *   - `replayed`: an earlier try with this `requestId` already started it
- *     (accepted it: if the host restarted before that check-in ran, it is
- *     recorded as interrupted, and the reply waits for the next check-in);
+ *     any other check-in's. Also a retry's answer when it starts one more
+ *     because a host restart cut the earlier check-in off before it reported
+ *     (TASK-937);
+ *   - `replayed`: an earlier try with this `requestId` already started a
+ *     check-in that is still running or ended on its own (its update, or why
+ *     it failed, is under Updates), or this reply's check-in has already been
+ *     restarted three times;
  *   - `not-allowed`: the caller may no longer start the task's check-ins, so
  *     none starts;
  *   - `paused`: none starts until a person resumes the task. Only said to a
  *     caller who may start one, so never to someone who can't resume it.
- * The same `requestId` again stores nothing new and never starts a second
- * check-in. Neither a tool nor an IPC action: a reply reaches a model only in a
- * check-in message.
+ * The same `requestId` again stores nothing new, and starts a second check-in
+ * only after a host restart cut the first one off before it reported; retries
+ * at the same moment still start one between them. Neither a tool nor an IPC
+ * action: a reply reaches a model only in a check-in message.
  */
 export const ROUTINE_REPLY_CHECK_INS = ['started', 'paused', 'not-allowed', 'replayed'] as const;
 export const RoutineReplyCheckInSchema = z.enum(ROUTINE_REPLY_CHECK_INS);

@@ -1,19 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
 import { HookBus, makeAgentContext, PluginError, SafeToolError, type AgentContext } from '@ax/core';
-import { RoutineDefinitionSchema, type RoutineRecentRepliesOutput, type RoutineReplyOutput } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, type RoutineRecentRepliesOutput, type RoutineReplyOutput } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
 import { logged } from './support/report-log.js';
-import { registerRoutineServices } from '../services.js';
+import { registerRoutineServices, REPLY_CHECK_IN_RESTARTS } from '../services.js';
 import type { RoutinesStore } from '../store.js';
 import type { AcceptedDispatch, StoredRoutine } from '../types.js';
 
 // TASK-931: `routines:reply` and `routines:recent-replies`, over routines' real
 // store and Postgres. Only a task's owner may reply. The reply is stored first.
 // Then, when the task runs and the caller may start its check-ins, it starts one,
-// keyed on the reply: a retry can't start a second, and a retry after a partial
-// failure starts the one the first try never did. Only the owner reads them back,
-// and only the ones they wrote: an earlier owner's stay unread.
+// keyed on the reply: a retry starts no second one while the first runs or once it
+// ended on its own, and a retry after a partial failure starts the one the first
+// try never did. TASK-937: a retry after a host restart cut the check-in off
+// before it reported starts one more. Only the owner reads them back, and only
+// the ones they wrote: an earlier owner's stay unread.
 const f = fixture();
 
 const TASK = RoutineDefinitionSchema.parse({
@@ -311,6 +313,98 @@ describe('routines:reply (TASK-931)', () => {
     const log = logged(s.as('teammate'));
     await expect(s.reply(replyTo(task, 'q1', 'Hello.'), log.ctx)).rejects.toMatchObject({ toolCode: 'forbidden' });
     expect(log.lines.join('\n')).not.toContain('routines_reply_check_in_failed');
+  });
+});
+
+describe('routines:reply after a host restart cut its check-in off (TASK-937)', () => {
+  /** A running task, the hooks over it, and a reply whose first try started its check-in, still open. */
+  const firstTry = async () => {
+    const task = await createTask();
+    const s = services();
+    const input = replyTo(task, 'q1', 'Are the refunds still stuck?');
+    const first = await s.reply(input);
+    expect(first).toStrictEqual({ replyId: STARTED_ID, checkIn: 'started' });
+    expect(s.dispatched).toHaveLength(1);
+    return { task, s, input, first, dispatchId: s.dispatched[0]!.dispatchId };
+  };
+
+  it('a retry starts one more check-in, keyed on the reply and the one cut off, and a retry after that replays it', async () => {
+    const { task, s, input, first, dispatchId: cutOff } = await firstTry();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    const retry = logged(s.as('owner'));
+    expect(await s.reply(input, retry.ctx)).toStrictEqual({ replyId: first.replyId, checkIn: 'started' });
+    expect(s.dispatched).toHaveLength(2);
+    expect(s.dispatched[1]).toMatchObject({ source: 'manual', row: expect.objectContaining({ routineId: task.routineId, revision: task.revision }) });
+    expect(await dispatchReceipts()).toEqual([
+      { owner_user_id: 'owner', request_id: `reply:${first.replyId}` },
+      { owner_user_id: 'owner', request_id: `reply:${first.replyId}:after:${cutOff}` },
+    ]);
+    // The reply replayed; its check-in started.
+    expect(retry.lines.map(line => JSON.parse(line) as Record<string, unknown>))
+      .toContainEqual(expect.objectContaining({ msg: 'routines_reply_added', checkIn: 'started', replayed: true }));
+    // The new one is still running, so the next retry replays it.
+    expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
+    expect(s.dispatched).toHaveLength(2);
+    expect(await storedReplies()).toHaveLength(1);
+  });
+
+  it('two retries at once start one check-in between them', async () => {
+    const { s, input } = await firstTry();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    const answers = await Promise.all([s.reply(input), s.reply(input)]);
+    expect(answers.map(a => a.checkIn).sort()).toEqual(['replayed', 'started']);
+    expect(s.dispatched).toHaveLength(2);
+    expect(await dispatchReceipts()).toHaveLength(2);
+  });
+
+  const endedOnItsOwn: Array<[label: string, end: (dispatchId: string) => Promise<void>]> = [
+    ['finished', async dispatchId => {
+      expect(await f.store.finishDispatch({ dispatchId, outcome: { status: 'ok', conversationId: null, error: null, renderedPrompt: null, warning: null } })).toBe(true);
+    }],
+    ['failed on its own', async dispatchId => {
+      expect(await f.store.finishDispatch({ dispatchId, outcome: {
+        status: 'error', conversationId: null, error: 'The check-in ran out of time.', renderedPrompt: null, warning: null, miss: 'failed',
+      } })).toBe(true);
+    }],
+    ['reported, then cut off', async dispatchId => {
+      await f.store.bindDispatchConversation({ dispatchId, conversationId: 'c1' });
+      expect(await f.store.recordReport({
+        agentId: 'a', dispatchId, conversationId: 'c1', actorUserId: 'owner', report: { status: 'on-track', update: 'Read your reply.', ask: null }, now,
+      })).toBe('recorded');
+      expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    }],
+  ];
+  it.each(endedOnItsOwn)('a check-in that %s: a retry replays it and starts none', async (_label, end) => {
+    const { s, input, first, dispatchId } = await firstTry();
+    await end(dispatchId);
+    expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
+    expect(s.dispatched).toHaveLength(1);
+    expect(await dispatchReceipts()).toHaveLength(1);
+  });
+
+  it('a cut-off check-in starts one more even after the task changed since', async () => {
+    const { task, s, input, first } = await firstTry();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    const edited = await f.store.updateAuthored({
+      ...keyOf(task), expectedRevision: task.revision, actorUserId: 'owner', requestId: 'edit', patch: { goodWhen: 'Nothing waits a day.' }, now, stopOnly: false,
+    });
+    expect(edited.revision).not.toBe(task.revision);
+    expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'started' });
+    expect(s.dispatched).toHaveLength(2);
+    expect(s.dispatched[1]!.row.revision).toBe(edited.revision);
+  });
+
+  it('stops after REPLY_CHECK_IN_RESTARTS restarts: the retry after that replays', async () => {
+    // Every cut-off check-in is a missed one. Below the auto-pause, so the last answer is the bound's, not a pause's.
+    expect(REPLY_CHECK_IN_RESTARTS + 1).toBeLessThan(TASK_AUTO_PAUSE_AFTER_MISSES);
+    const { s, input, first } = await firstTry();
+    for (let restart = 1; restart <= REPLY_CHECK_IN_RESTARTS; restart++) {
+      expect(await f.store.interruptAbandonedDispatches(), `restart ${restart}`).toBe(1);
+      expect(await s.reply(input), `restart ${restart}`).toStrictEqual({ replyId: first.replyId, checkIn: 'started' });
+    }
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
+    expect(s.dispatched).toHaveLength(REPLY_CHECK_IN_RESTARTS + 1);
   });
 });
 
