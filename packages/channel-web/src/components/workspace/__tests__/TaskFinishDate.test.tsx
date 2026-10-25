@@ -231,6 +231,22 @@ describe('TaskFinishDate — when the host says no', () => {
     expect(screen.queryByLabelText('Finish by')).toBeNull();
     expect(screen.getByText(line)).toBeTruthy();
     expect(button('Change').disabled).toBe(true);
+    // A disabled button can't take focus, so the message does.
+    expect(document.activeElement).toBe(screen.getByText(line));
+  });
+
+  it.each<[number, string]>([
+    [404, NOT_FOUND],
+    [401, HTTP_SESSION_ENDED],
+  ])('puts focus on the %i refusal when Escape closes the field', async (status, line) => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
+    renderField(FB);
+    fireEvent.click(button('Change'));
+    fireEvent.click(button('Save'));
+    await screen.findByText(line);
+    fireEvent.keyDown(field(), { key: 'Escape' });
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByText(line));
   });
 
   it('keeps a gone task gone when the date was never set: Add a finish date goes disabled too', async () => {

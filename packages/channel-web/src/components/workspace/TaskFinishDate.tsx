@@ -27,7 +27,9 @@
  *
  * WHERE FOCUS GOES. Opening the field focuses it. Saving, removing and
  * cancelling hand focus back to the button that replaces it (Change, or Add a
- * finish date once the date is gone), unless the person moved on meanwhile. A
+ * finish date once the date is gone), unless the person moved on meanwhile.
+ * When that button is disabled because the refusal can't be retried, focus goes
+ * to the refusal's message instead (a disabled button can't take it). A
  * press that fails leaves the field open and focuses it again, since the
  * pressed button went disabled while it sent and dropped focus on `<body>`.
  */
@@ -108,16 +110,20 @@ export function TaskFinishDate({
   const form = useRef<HTMLFormElement | null>(null);
   const input = useRef<HTMLInputElement | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
+  // The closed view's kept refusal, there only while the task is gone or the session ended.
+  const stuckMessage = useRef<HTMLDivElement | null>(null);
   const focusTrigger = useRef(false);
 
   // Opening focuses the field; closing hands focus to the button that replaces it. A save closes
-  // the field and hands the page its answer in one batch, so the new button is there by now.
+  // the field and hands the page its answer in one batch, so the new button is there by now. When
+  // that button went disabled (a refusal that can't be retried), a disabled button can't take
+  // focus, so the message under it does.
   useEffect(() => {
     if (editing) {
       input.current?.focus();
     } else if (focusTrigger.current) {
       focusTrigger.current = false;
-      trigger.current?.focus();
+      (stuckMessage.current ?? trigger.current)?.focus();
     }
   }, [editing]);
 
@@ -200,7 +206,12 @@ export function TaskFinishDate({
           {finishBy === null ? 'Add a finish date' : 'Change'}
         </Button>
         {stuck !== null && (
-          <FieldError id={errorId} className="basis-full text-[13px]">
+          <FieldError
+            id={errorId}
+            ref={stuckMessage}
+            tabIndex={-1}
+            className="basis-full text-[13px]"
+          >
             {stuck.line}
           </FieldError>
         )}
