@@ -219,9 +219,9 @@ interface AgentInvokeInput {
 // The route never trusts a client `authored` flag; the grant self-detects
 // authored-ness (D-B7) and returns not-authored for catalog skills.
 //
-// FIX 1 (TOCTOU guard): `shown?` mirrors what the client card displayed;
-// the orchestrator uses it to intersect the re-resolved proposalDelta so
-// only caps the user actually saw get approved.
+// `shown?` mirrors what the client card displayed. It is forwarded unread:
+// since TASK-100 a skill declares no capabilities, so the grant only flips
+// the authored draft to active and has nothing to intersect.
 interface ApplyAuthoredGrantInput {
   /** Optional (TASK-83): the early-approve path from My Skills has no conversation. */
   conversationId?: string;
@@ -585,9 +585,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 5) Mint reqId (J9 — server-side only). The schema doesn't carry a
-      // reqId field on the request body; even if a client tried to inject
-      // one, zod's strict shape would refuse it (and we'd ignore it here
-      // regardless because we never read from the body to source reqId).
+      // reqId field on the request body, and `PostMessageRequest` is not
+      // `.strict()`, so zod drops an injected one before we see it (we never
+      // read reqId from the body regardless).
       const reqId = makeReqId();
 
       // 6) Dispatch agent:invoke async. The orchestrator decides whether to
@@ -810,7 +810,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // 2) Parse + validate the body. (http-server caps the body at 1 MiB
       // before we run.) Only `{ conversationId, skillId, shown? }` — the
       // agentId is resolved from the conversation, never accepted from the
-      // client. `shown` is optional; present on authored-skill cards (FIX 1).
+      // client. `shown` is optional and forwarded unread (see ApplyAuthoredGrantInput).
       // Use PermissionDecisionRequest (the zod schema's inferred type) so the
       // optional `shown` field's type lines up with exactOptionalPropertyTypes.
       let body: PermissionDecisionRequest;
@@ -885,8 +885,8 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         // authored draft applies here; a catalog skill returns not-authored and
         // we fall through to the existing catalog grant.
         //
-        // FIX 1 (TOCTOU guard): forward `shown` (optional) so the orchestrator
-        // can intersect the re-resolved proposalDelta with what the user saw.
+        // Forward `shown` (optional) for wire compatibility; the grant does
+        // not read it (see ApplyAuthoredGrantInput).
         if (bus.hasService('agent:apply-authored-capability-grant')) {
           const a = await bus.call<ApplyAuthoredGrantInput, ApplyAuthoredGrantOutput>(
             'agent:apply-authored-capability-grant',
@@ -951,7 +951,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
      * (D-B7) — a catalog skill returns not-authored (409, not a silent attach),
      * because early-approval is only for the agent's own pending drafts. No
      * secret crosses this wire: the key was already POSTed to the credential
-     * store by the panel. `shown` is the same TOCTOU guard as the card.
+     * store by the panel. `shown` is forwarded unread, as on the card route.
      */
     async postApproveAuthoredSkill(
       req: RouteRequest,

@@ -8,10 +8,12 @@ import type { HandlerErr } from './types.js';
 // ---------------------------------------------------------------------------
 // POST /event.chat-end
 //
-// Fire-and-forget. The `chat:end` hook is what @ax/audit-log listens to for
-// durable persistence of chat outcomes — any change to the payload shape here
-// breaks audit-log silently. The wire shape is `{ outcome: AgentOutcome }`
-// and the hook fires with the same key name, matching chat-loop.ts.
+// Fire-and-forget. `chat:end` subscribers read this payload: the orchestrator
+// hands `outcome` to a waiting `agent:invoke`, memory extracts facts from
+// `outcome.messages`, and usage-limits reads `outcome.kind`. Nothing persists
+// `outcome.messages` (audit-log subscribes only to `event.http-egress`). The
+// wire shape is `{ outcome: AgentOutcome }` and the hook fires with the same
+// key name, matching chat-loop.ts.
 //
 // TASK-731 added an OPTIONAL `saveRefused` (a refused final/idle save). It is
 // persisted by `persistEventChatEnd` before the fire; subscribers that only

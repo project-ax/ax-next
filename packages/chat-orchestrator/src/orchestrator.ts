@@ -290,17 +290,10 @@ export interface AgentInterruptOutput {
 // copy (no cross-plugin import, I2). `applied:false, reason:'not-authored'`
 // signals the channel-web route to fall back to the catalog grant path.
 //
-// FIX 1 (TOCTOU guard): `shown?` carries what the card displayed at render
-// time. When present, the grant intersects the re-resolved current
-// proposalDelta with `shown` before writing approval rows — so an agent that
-// widens its draft between card render and user click can never sneak in caps
-// the user never saw. Anything in the current delta but NOT in `shown` is
-// silently skipped (it remains unapproved; the next spawn re-evaluates the
-// now-smaller delta and fires its own card for the remainder). The server
-// stays authoritative: a cap is approved IFF it is in the current proposal
-// (re-resolved server-side) AND in `shown`. The client `shown` can only
-// NARROW, never expand — anything not in the current proposal is rejected
-// regardless.
+// `shown?` is what the card displayed. Since TASK-100 a skill declares no
+// capabilities, so this grant only flips the authored draft to active and
+// never reads `shown`. The field stays on the input so the channel-web routes
+// keep their wire shape.
 export interface ApplyAuthoredCapabilityGrantInput {
   /**
    * The conversation whose warm session this grant retires (so the next turn
@@ -315,7 +308,7 @@ export interface ApplyAuthoredCapabilityGrantInput {
   userId: string;
   agentId: string;
   skillId: string;
-  /** What the card displayed — absent ⟹ approve the full current delta (back-compat). */
+  /** What the card displayed. Unread: see the note above. */
   shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
 }
 export type ApplyAuthoredCapabilityGrantOutput =
