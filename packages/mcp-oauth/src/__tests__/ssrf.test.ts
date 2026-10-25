@@ -245,13 +245,15 @@ describe('safeFetch response size cap', () => {
     expect(stats.cancelled).toBe(true);
   });
 
-  it('refuses a declared Content-Length over 64 KiB before reading', async () => {
+  it('fails a body that declares more than 64 KiB on its first read, without reading it', async () => {
     const { stream, stats } = counted(4 * CAP, 4096);
     const res = new Response(stream, { headers: { 'content-length': String(CAP + 1) } });
-    await expect(safeFetch(url, allow, undefined, resolver, answer(res)))
-      .rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
-    await nextTask();
+    // safeFetch itself resolves: a caller that checks only the status or the
+    // headers (the SDK moving past a 404, our resource probe) must not fail.
+    const capped = await safeFetch(url, allow, undefined, resolver, answer(res));
+    await expect(capped.text()).rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
     expect(stats.pulled).toBe(0);
+    await nextTask();
     // The body it never reads is released, not left holding the connection.
     expect(stats.cancelled).toBe(true);
   });

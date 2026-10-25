@@ -16,11 +16,20 @@
  * Content-Encoding. A small, absent or lying Content-Length cannot get a big
  * body past the count, and neither can gzip (MEASURED over real HTTP: a body
  * whose Content-Length said 16,329 bytes was 16 MiB once decoded). A declared
- * length over the limit is refused before reading, but that only saves the
- * read; the count is the guard.
+ * length over the limit is let go without reading a byte, but that only saves
+ * the read; the count is the guard.
+ *
+ * When a body fails for its size: only on a read. A body whose Content-Length
+ * is over the limit is cancelled at once, but its error waits for the first
+ * read. A caller that checks only the status or the headers, then cancels or
+ * drops the body, must not fail: the MCP SDK's OAuth discovery cancels a 4xx
+ * from one well-known URL and tries the next, and mcp-oauth's resource probe
+ * reads only the headers of the server's 401. An error thrown from fetch
+ * would instead end the sign-in over an error page nobody reads.
  *
  * Over the limit the reader gets `ResponseTooLargeError`, a plain Error and
- * never a TypeError: the MCP SDK's OAuth discovery takes a TypeError from
+ * never a TypeError, which callers take for a network failure: fetch reports
+ * one that way, and the MCP SDK's OAuth discovery takes a TypeError thrown by
  * fetch for a browser CORS failure and moves on to the next URL. The message
  * names only the limit: no URL, no header, no body bytes.
  *
@@ -72,8 +81,10 @@ export class ResponseTooLargeError extends Error {
 
 export interface CapResponseBodyOptions {
   /**
-   * Called once, synchronously, when the limit is passed, before the error
-   * reaches the body's reader. A throw from it is swallowed.
+   * Called once, synchronously, when a read finds the body over the limit,
+   * before the error reaches the reader. For a declared Content-Length over
+   * the limit that is the first read, so a body nobody reads is never
+   * reported. A throw from it is swallowed.
    */
   onOversize?: (err: ResponseTooLargeError) => void;
 }
@@ -89,13 +100,24 @@ function report(onOversize: CapResponseBodyOptions['onOversize'], err: ResponseT
 }
 
 /**
- * Return `res` with its body cut off at `limit` bytes. Reading past the limit
- * rejects with `ResponseTooLargeError` and cancels the source. A declared
- * Content-Length over the limit throws here, before anything is read. A
- * response with no body comes back as it is.
+ * Return `res` with its body cut off at `limit` bytes.
  *
- * `limit` must be a non-negative safe integer. Anything else (NaN, a fraction,
- * Infinity) would quietly disable the comparison, so it throws a RangeError.
+ * Reading past the limit rejects with `ResponseTooLargeError` and cancels the
+ * source. A declared Content-Length over the limit cancels the source at once,
+ * before a byte is read, and the first read rejects. That error is lazy on
+ * purpose: a caller that only checks the status or headers, then cancels or
+ * drops the body, does not fail (see "When a body fails for its size" above).
+ * A response with no body comes back as it is, whatever its Content-Length
+ * says.
+ *
+ * Given a response from fetch, it throws in two cases, each a RangeError and
+ * never a TypeError. `limit` must be a non-negative safe integer: anything
+ * else (NaN, a fraction, Infinity) would quietly disable the comparison. And a
+ * status that `new Response` refuses fails here, with the source cancelled,
+ * rather than come back uncapped. (`new Response` also refuses a body with a
+ * 204, 205 or 304, with a TypeError, but fetch hands back no body for those,
+ * or for a HEAD request, even when the server sends one: MEASURED on node
+ * 24.19.0's fetch and undici 6.29.1.)
  */
 export function capResponseBody(
   res: Response,
@@ -107,20 +129,50 @@ export function capResponseBody(
       `capResponseBody: the limit must be a non-negative safe integer, not ${String(limit)}`,
     );
   }
+  // Before Content-Length: an answer with no body (to a HEAD request, say)
+  // can declare any length, and there is nothing to read.
+  if (res.body === null) return res;
+  const source = res.body;
+
+  // fetch passes a status of 600-999 through with its body, and `new
+  // Response` refuses anything outside 200-599 with a RangeError. Such an
+  // answer fails here, before its body is touched, and the body is let go so
+  // it does not hold the connection open. It never comes back uncapped.
+  if (res.status < 200 || res.status > 599) {
+    const err = new RangeError(
+      `capResponseBody: a Response cannot carry a status of ${String(res.status)}`,
+    );
+    void source.cancel(err).catch(() => {});
+    throw err;
+  }
+  const init = {
+    status: res.status,
+    statusText: REASON_PHRASE.test(res.statusText) ? res.statusText : '',
+    headers: res.headers,
+  };
   const { onOversize } = opts;
 
   const declared = Number(res.headers.get('content-length') ?? Number.NaN);
   if (Number.isFinite(declared) && declared > limit) {
+    // Over the limit by its own account, so it will never be read: let it go
+    // now. The error waits for a read, and is reported then.
     const err = new ResponseTooLargeError(limit);
-    report(onOversize, err);
-    void res.body?.cancel(err).catch(() => {});
-    throw err;
+    void source.cancel(err).catch(() => {});
+    const refused = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          report(onOversize, err);
+          controller.error(err);
+        },
+      },
+      // No pull until a read asks for one.
+      { highWaterMark: 0 },
+    );
+    return new Response(refused, init);
   }
 
-  if (res.body === null) return res;
-
   let seen = 0;
-  const counted = res.body.pipeThrough(
+  const counted = source.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         seen += chunk.byteLength;
@@ -135,11 +187,5 @@ export function capResponseBody(
       },
     }),
   );
-  // fetch passes a status of 600-999 through, and `new Response` refuses it
-  // with a RangeError. That answer fails; it is never returned uncapped.
-  return new Response(counted, {
-    status: res.status,
-    statusText: REASON_PHRASE.test(res.statusText) ? res.statusText : '',
-    headers: res.headers,
-  });
+  return new Response(counted, init);
 }

@@ -138,11 +138,14 @@ export const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024;
  * `MAX_OAUTH_RESPONSE_BYTES` (64 KiB) while it streams. The bytes are counted
  * as the body yields them, after fetch has undone any gzip, so a small,
  * missing or lying Content-Length cannot get a bigger body past. A declared
- * Content-Length over the limit makes `safeFetch` itself reject, before
- * anything is read. Over the limit the reader gets `ResponseTooLargeError`, a
- * plain Error and deliberately not a `TypeError`: the SDK's discovery takes a
- * `TypeError` from fetch for a browser CORS failure and moves on, which would
- * report an oversize document as missing metadata. The returned Response is a
+ * Content-Length over the limit lets the body go unread, and its first read
+ * fails; `safeFetch` itself still resolves. That way the SDK's discovery can
+ * cancel a large 404 page and try the next well-known URL, and `discover`'s
+ * resource probe can take the challenge from a large 401's headers. Over the
+ * limit the reader gets `ResponseTooLargeError`, a plain Error and
+ * deliberately not a `TypeError`: fetch reports a network failure as a
+ * `TypeError`, and the SDK's discovery takes one thrown by fetch for a
+ * browser CORS failure and moves on. The returned Response is a
  * new one with an empty `url`; the SDK reads `url` only to resolve a
  * redirect's Location, and a 3xx comes back from here only without one.
  * Intermediate redirect hops are never read, so they are not wrapped.

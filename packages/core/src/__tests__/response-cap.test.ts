@@ -82,11 +82,55 @@ describe('capResponseBody', () => {
     await expect(capResponseBody(res, LIMIT).text()).rejects.toBeInstanceOf(ResponseTooLargeError);
   });
 
-  it('refuses a declared Content-Length over the cap before reading a byte', async () => {
+  it('fails a body that declares more than the cap on its first read, without pulling a byte', async () => {
     const { stream, stats } = counted(16 * LIMIT, CHUNK);
     const res = new Response(stream, { headers: { 'content-length': String(LIMIT + 1) } });
-    expect(() => capResponseBody(res, LIMIT)).toThrow(ResponseTooLargeError);
+    const order: string[] = [];
+    const onOversize = vi.fn<(err: ResponseTooLargeError) => void>(() => {
+      order.push('callback');
+    });
+    // Wrapping does not throw: the error waits for a read.
+    const wrapped = capResponseBody(res, LIMIT, { onOversize });
     await nextTask();
+    expect(onOversize).not.toHaveBeenCalled();
+    // The source is let go at once, unread, since nothing will ever read it.
+    expect(stats.pulled).toBe(0);
+    expect(stats.cancelled).toBe(true);
+    expect(stats.reason).toBeInstanceOf(ResponseTooLargeError);
+
+    const rejection = await wrapped.text().then(
+      () => undefined,
+      (err: unknown) => {
+        order.push('reader');
+        return err;
+      },
+    );
+    expect(rejection).toBeInstanceOf(ResponseTooLargeError);
+    expect(rejection).toMatchObject({ name: 'ResponseTooLargeError', limit: LIMIT });
+    expect(onOversize).toHaveBeenCalledTimes(1);
+    expect(onOversize.mock.calls[0]?.[0]).toBe(rejection);
+    expect(order).toEqual(['callback', 'reader']);
+    expect(stats.pulled).toBe(0);
+  });
+
+  // What the MCP SDK's OAuth discovery does with a 404 before it tries the
+  // next well-known URL, and what mcp-oauth's resource probe does with a 401.
+  it('a body that declares more than the cap and is only cancelled, never read, neither reports nor throws', async () => {
+    const { stream, stats } = counted(16 * LIMIT, CHUNK);
+    const res = new Response(stream, {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'content-length': String(LIMIT + 1), 'content-type': 'text/html' },
+    });
+    const onOversize = vi.fn<(err: ResponseTooLargeError) => void>();
+    const wrapped = capResponseBody(res, LIMIT, { onOversize });
+    expect(wrapped.status).toBe(404);
+    expect(wrapped.ok).toBe(false);
+    expect(wrapped.statusText).toBe('Not Found');
+    expect(wrapped.headers.get('content-type')).toBe('text/html');
+    await expect(wrapped.body!.cancel()).resolves.toBeUndefined();
+    await nextTask();
+    expect(onOversize).not.toHaveBeenCalled();
     expect(stats.pulled).toBe(0);
     expect(stats.cancelled).toBe(true);
   });
@@ -111,18 +155,33 @@ describe('capResponseBody', () => {
     expect(streamed).toHaveBeenCalledTimes(1);
     expect(streamed.mock.calls[0]?.[0]).toBe(rejection);
 
-    const declared = vi.fn<(err: ResponseTooLargeError) => void>();
+    // A declared length over the cap: nothing until a read, then once, however
+    // often the reader asks again.
+    const declaredOrder: string[] = [];
+    const declared = vi.fn<(err: ResponseTooLargeError) => void>(() => {
+      declaredOrder.push('callback');
+    });
     const big = counted(16 * LIMIT, CHUNK);
     const res = new Response(big.stream, { headers: { 'content-length': String(LIMIT + 1) } });
-    let thrown: unknown;
-    try {
-      capResponseBody(res, LIMIT, { onOversize: declared });
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown).toBeInstanceOf(ResponseTooLargeError);
+    const reader = capResponseBody(res, LIMIT, { onOversize: declared }).body!.getReader();
+    await nextTask();
+    expect(declared).not.toHaveBeenCalled();
+    const first = await reader.read().then(
+      () => undefined,
+      (err: unknown) => {
+        declaredOrder.push('reader');
+        return err;
+      },
+    );
+    const second = await reader.read().then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(first).toBeInstanceOf(ResponseTooLargeError);
+    expect(second).toBe(first);
+    expect(declaredOrder).toEqual(['callback', 'reader']);
     expect(declared).toHaveBeenCalledTimes(1);
-    expect(declared.mock.calls[0]?.[0]).toBe(thrown);
+    expect(declared.mock.calls[0]?.[0]).toBe(first);
   });
 
   it('a throwing onOversize does not hide the cap', async () => {
@@ -136,11 +195,19 @@ describe('capResponseBody', () => {
 
     const big = counted(16 * LIMIT, CHUNK);
     const res = new Response(big.stream, { headers: { 'content-length': String(LIMIT + 1) } });
-    expect(() => capResponseBody(res, LIMIT, { onOversize })).toThrow(ResponseTooLargeError);
+    await expect(capResponseBody(res, LIMIT, { onOversize }).text()).rejects.toBeInstanceOf(
+      ResponseTooLargeError,
+    );
   });
 
   it('returns a bodiless response as it is', () => {
     const r = new Response(null, { status: 204 });
+    expect(capResponseBody(r, LIMIT)).toBe(r);
+  });
+
+  it('returns a bodiless response as it is, whatever length it declares', () => {
+    // An answer to a HEAD request declares the length of a body it does not send.
+    const r = new Response(null, { status: 200, headers: { 'content-length': String(LIMIT + 1) } });
     expect(capResponseBody(r, LIMIT)).toBe(r);
   });
 
@@ -204,6 +271,20 @@ describe('capResponseBody', () => {
     const res = new Response(stream);
     Object.defineProperty(res, 'status', { value: 999 });
     expect(() => capResponseBody(res, LIMIT)).toThrow(RangeError);
+  });
+
+  // ...and lets that answer's body go, unread, so it does not hold the
+  // connection: with or without a declared length over the cap.
+  it('lets the body go when the status cannot be carried', async () => {
+    for (const headers of [{}, { 'content-length': String(LIMIT + 1) }]) {
+      const { stream, stats } = counted(16 * LIMIT, CHUNK);
+      const res = new Response(stream, { headers });
+      Object.defineProperty(res, 'status', { value: 999 });
+      expect(() => capResponseBody(res, LIMIT)).toThrow(RangeError);
+      await nextTask();
+      expect(stats.pulled).toBe(0);
+      expect(stats.cancelled).toBe(true);
+    }
   });
 });
 
