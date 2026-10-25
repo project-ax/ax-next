@@ -100,18 +100,32 @@ export type PostMessageResponse = z.infer<typeof PostMessageResponse>;
 // warm-session retire. `skillId` capped at 128 (catalog ids are short).
 // ---------------------------------------------------------------------------
 
-// FIX 1 (TOCTOU guard): `shown` carries what the card displayed when it
-// rendered. The orchestrator's authored grant intersects the re-resolved
-// current proposalDelta with `shown` so an agent that widens its draft
-// mid-flight can never sneak in capabilities the user didn't see.
-// `shown` is OPTIONAL for back-compat — old clients and the catalog (host)
-// grant ignore it. The server stays authoritative: a cap is approved IFF it
-// is in the current proposalDelta AND in `shown`.
+// `shown` carries what the card displayed. No server code reads it: since
+// TASK-100 a skill declares no capabilities, so the authored grant only flips
+// the draft to active, and the routes pass `shown` to it unread. It stays on
+// the wire because the card still sends it and PermissionDecisionRequest is
+// `.strict()`. Each list is bounded, so an oversized body fails on its size
+// alone.
+
+/**
+ * The most entries each `shown` list may carry (TASK-945). Only GrantRow
+ * sends `shown` today, and it echoes the card's lists. The card is the
+ * de-duplicated union of the skill's connectors, at most 64 of them (the
+ * skill manifest's limit). A connector is written with at most 64 hosts, 32
+ * slots and 64 packages per list (CAPABILITY_WRITE_LIMITS in @ax/connectors),
+ * so a card holds at most 64 × 64 = 4,096 per list.
+ *
+ * A connector stored before those write limits can hold more. A card built
+ * from one can go over this, and its approval is then refused until that
+ * connector is trimmed, which its next save requires anyway.
+ */
+export const SHOWN_LIST_MAX = 4_096;
+
 const ShownCapsSchema = z.object({
-  hosts: z.array(z.string()),
-  slots: z.array(z.string()),
-  npm: z.array(z.string()),
-  pypi: z.array(z.string()),
+  hosts: z.array(z.string()).max(SHOWN_LIST_MAX),
+  slots: z.array(z.string()).max(SHOWN_LIST_MAX),
+  npm: z.array(z.string()).max(SHOWN_LIST_MAX),
+  pypi: z.array(z.string()).max(SHOWN_LIST_MAX),
 });
 
 // The decision names a skill. Slice 2c removed the in-chat connector card (an
@@ -124,7 +138,7 @@ export const PermissionDecisionRequest = z
   .object({
     conversationId: z.string().min(1),
     skillId: z.string().min(1).max(128),
-    /** What the card displayed — authored grant intersects this with the current proposal. */
+    /** What the card displayed. Forwarded unread (see ShownCapsSchema). */
     shown: ShownCapsSchema.optional(),
   })
   .strict();
@@ -140,18 +154,17 @@ export type PermissionDecisionRequest = z.infer<
 // the client supplies the `agentId` directly (it owns the listing); the server
 // ACL-checks that the actor can reach that agent (agents:resolve) and then fires
 // the SAME authored grant the in-chat card uses, just with no conversationId —
-// it writes the approval rows + flips the skill active, and the user's next turn
-// cold-spawns with the skill already approved.
+// it flips the skill active, and the user's next turn cold-spawns with the
+// skill already approved.
 //
 // NO secret on this wire: the key the user typed was already POSTed straight to
 // the host credential store by the panel (mirroring the card's TASK-35 path).
-// `shown` is the SAME TOCTOU guard as permission-decision — the server only
-// approves caps that are BOTH in the current proposal AND in `shown`.
+// `shown` is the same optional, unread field as on permission-decision.
 // ---------------------------------------------------------------------------
 export const ApproveAuthoredSkillRequest = z.object({
   agentId: z.string().min(1).max(128),
   skillId: z.string().min(1).max(128),
-  /** What the panel displayed — the grant intersects this with the current proposal. */
+  /** What the panel displayed. Forwarded unread (see ShownCapsSchema). */
   shown: ShownCapsSchema.optional(),
 });
 export type ApproveAuthoredSkillRequest = z.infer<
