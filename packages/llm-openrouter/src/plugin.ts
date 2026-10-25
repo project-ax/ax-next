@@ -15,6 +15,7 @@ import {
   type Plugin,
   type ProviderEndpoint,
 } from '@ax/core';
+import { capResponseBody } from '@ax/core/response-cap';
 import { z, type ZodType } from 'zod';
 import { DEFAULT_MODEL, toChatCompletionsRequest, fromChatCompletionsBody } from './translate.js';
 
@@ -128,6 +129,26 @@ const VALIDATION_TIMEOUT_MS = 10_000;
 // double the bill. Same set and same reasoning as @ax/llm-anthropic.
 const TRANSIENT_STATUSES = new Set<number>([429, 500, 502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 1000;
+
+/**
+ * The most of a completion body we read: 4 MiB, counted as the bytes arrive
+ * (TASK-944). Host callers ask for at most 4,096 output tokens today, about
+ * 50 KB with reasoning. 4 MiB covers the largest single completion any model
+ * can return (about 128K output tokens, doubled by `reasoning` and
+ * `reasoning_details`) with headroom. What fits under it is parsed by the
+ * host's patched zod 3.25.76, which bounds its issue list. A bigger body fails
+ * the call with "the response was larger than 4 MiB, so we stopped reading
+ * it". It carries no HTTP status, so it is not retried.
+ */
+export const COMPLETION_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The most of an error body we read: 64 KiB (TASK-944). We use only its
+ * `error.message`, cut to 200 characters, so a bigger body holds nothing we
+ * would keep. Past the cap we report the status line instead, as we do for a
+ * body that is not JSON.
+ */
+export const ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 /**
  * Stall threshold for the LLM call, overriding the bus's 15s default. Twin of
@@ -454,7 +475,11 @@ async function postCompletion(
     if (!res.ok) {
       throw new OpenRouterHttpError(res.status, await describeFailure(res));
     }
-    return fromChatCompletionsBody(await res.json(), PLUGIN_NAME, 'llm:call:openrouter');
+    return fromChatCompletionsBody(
+      await capResponseBody(res, COMPLETION_MAX_BYTES).json(),
+      PLUGIN_NAME,
+      'llm:call:openrouter',
+    );
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -465,15 +490,16 @@ async function postCompletion(
  * OpenRouter's documented `{"error":{"message":...}}` field and cap it, rather
  * than splicing a whole provider-controlled body into a message that ends up
  * in logs. A bad model id is by far the most common 400 here, and its message
- * says so — worth the 200 characters.
+ * says so — worth the 200 characters. We read at most ERROR_BODY_MAX_BYTES of
+ * the body to find it.
  */
 async function describeFailure(res: Response): Promise<string> {
   try {
-    const body: unknown = await res.json();
+    const body: unknown = await capResponseBody(res, ERROR_BODY_MAX_BYTES).json();
     const message = (body as { error?: { message?: unknown } } | null)?.error?.message;
     if (typeof message === 'string' && message.length > 0) return message.slice(0, 200);
   } catch {
-    // Not JSON, or the stream died. The status alone is enough.
+    // Not JSON, too big, or the stream died. The status alone is enough.
   }
   return res.statusText;
 }

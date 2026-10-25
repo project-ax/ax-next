@@ -39,6 +39,23 @@
 // reconnect or retry is an ordinary failed tool call; the next call tries
 // again. The tool catalogue is NOT re-listed — it is fixed for the session.
 // 401/auth failures are deliberately not handled here.
+//
+// Response size (TASK-944): every answer is read through `capConnectorFetch`
+// (connector-fetch.ts), which stops reading once the bytes that arrived pass
+// a cap: 8 MiB for a `tools/call` answer (a real result can carry a multi-MB
+// screenshot) and 2 MiB for everything else (initialize, each `tools/list`
+// page, the server's event stream), matching the host inventory's cap per
+// page. The count is of bytes as they arrive, after any gzip is undone, so a
+// missing or lying Content-Length cannot get a big answer past it. An
+// over-cap answer fails its call, or drops its connector, at once: each call
+// and each connect runs in its own response scope, whose report aborts that
+// operation. Without that, the SDK leaves an event-stream answer pending until
+// the request times out (300 s for a call). The server's long-lived event
+// stream reads under its connect's scope: 2 MiB for the stream's whole life,
+// and the first cut after the connect is one log line (later ones on that
+// connection are not logged), not a dropped connector. An over-cap answer is
+// never parsed. A `tools/call` answer under the cap is parsed loosely
+// (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it costs.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
@@ -48,7 +65,16 @@ import {
   StreamableHTTPError,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { ResultSchema, type CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { HoldLatch, ProjectedMcpServer, ToolPolicy } from '@ax/agent-runner-core';
+import type { ResponseTooLargeError } from '@ax/core/response-cap';
+import {
+  capConnectorFetch,
+  MAX_CONNECTOR_RESPONSE_BYTES,
+  MAX_TOOL_RESULT_BYTES,
+  withResponseScope,
+  type ResponseScope,
+} from './connector-fetch.js';
 import { renderMcpResult } from './mcp-result.js';
 import { wrapWithPolicy } from './policy-wrap.js';
 
@@ -80,6 +106,22 @@ export const MODEL_TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 export const MAX_ERROR_CHARS = 4096;
 /** Cap on an untrusted string quoted in a log line (it is also JSON-escaped). */
 const MAX_LOGGED_CHARS = 200;
+
+/**
+ * What a `tools/call` result is checked against (TASK-944): the SDK's loose
+ * `ResultSchema` (an object, with `_meta` checked), not `CallToolResultSchema`.
+ * The zod in this SDK copy is 4.6.7, which keeps one issue per bad element
+ * with no cap (the repo's zod patch covers only the 3.25.76 tree). MEASURED:
+ * 400 KB of junk content elements keep 306 MB of issues, and a junk answer
+ * just under MAX_TOOL_RESULT_BYTES (8 MiB) is a heap OOM in the runner's
+ * 1 GiB. Under ResultSchema the same 8 MiB peaks at about +40 MB.
+ * `renderMcpResult` checks every field's type itself, so the content schema
+ * bought nothing the runner needs. `callTool` still runs the task-required
+ * guard before the request, and the tool's output-schema check after it.
+ * The cast is for `callTool`'s signature only: what comes back is `unknown`
+ * to the code below.
+ */
+const TOOL_RESULT_SCHEMA = ResultSchema as unknown as typeof CallToolResultSchema;
 
 export interface ConnectConnectorToolsOptions {
   /** From `loadProjectedMcpServers`, keyed by host-minted toolNamespace. */
@@ -118,7 +160,54 @@ interface ListedTool {
   inputSchema: Record<string, unknown>;
 }
 
+/** How much of a zod issue's path `errText` shows: segments, and characters per segment. */
+const MAX_ISSUE_PATH_SEGMENTS = 4;
+const MAX_ISSUE_SEGMENT_CHARS = 32;
+
+/**
+ * `invalid_type at tools.0.name` for one zod issue, or undefined when it has
+ * no string `code`. Path segments can be server-chosen keys, so only strings
+ * and numbers are shown, each clipped; anything else is `?` (never `String()`
+ * on an object, which could run a server-shaped `toString`).
+ */
+function issueText(issue: unknown): string | undefined {
+  if (typeof issue !== 'object' || issue === null) return undefined;
+  const { code, path } = issue as { code?: unknown; path?: unknown };
+  if (typeof code !== 'string') return undefined;
+  const head = code.slice(0, MAX_ISSUE_SEGMENT_CHARS);
+  if (!Array.isArray(path) || path.length === 0) return head;
+  const segs = path.slice(0, MAX_ISSUE_PATH_SEGMENTS).map((seg: unknown) =>
+    typeof seg === 'string'
+      ? seg.slice(0, MAX_ISSUE_SEGMENT_CHARS)
+      : typeof seg === 'number'
+        ? String(seg)
+        : '?',
+  );
+  return `${head} at ${segs.join('.')}${path.length > MAX_ISSUE_PATH_SEGMENTS ? '.…' : ''}`;
+}
+
+/**
+ * An error's text for a log line or a failed call. A zod error (v3 or v4:
+ * anything with an `issues` array) is reported by its issue count and its
+ * first issue's code and path, and its `message` is never read: zod builds
+ * `message` from every issue on first read (MEASURED: a 177 MB string for a
+ * 2 MiB junk `tools/list` page), and issues can quote server-chosen keys.
+ */
 function errText(err: unknown): string {
+  if (typeof err === 'object' && err !== null) {
+    const issues = (err as { issues?: unknown }).issues;
+    if (Array.isArray(issues)) {
+      const n = issues.length;
+      const first = n > 0 ? issueText(issues[0]) : undefined;
+      const detail =
+        first === undefined
+          ? `${n} ${n === 1 ? 'problem' : 'problems'}`
+          : n === 1
+            ? `1 problem: ${first}`
+            : `${n} problems; first: ${first}`;
+      return `the server's answer was not valid MCP (${detail})`;
+    }
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -154,13 +243,58 @@ interface Connection {
   retired: boolean;
 }
 
-function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch | undefined): Connection {
+/** `fetchImpl` is the capped fetch (`capConnectorFetch`): every answer on this connection passes through it. */
+function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch): Connection {
   const client = new Client({ name: 'ax-aisdk-runner', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
-    ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
+    fetch: fetchImpl,
     ...(server.headers !== undefined ? { requestInit: { headers: server.headers } } : {}),
   });
   return { client, transport, inflight: 0, retired: false };
+}
+
+/**
+ * The response scope for one connect (TASK-944): answers capped at
+ * MAX_CONNECTOR_RESPONSE_BYTES, and an over-cap answer aborts the connect
+ * through `ac` at once. `settle()` turns the abort off.
+ *
+ * The server's long-lived event stream (the client's GET) opens during the
+ * connect and inherits this scope, so its cap is a budget for the stream's
+ * whole life, not for each message on it. A cut there after the connect
+ * finished must not abort it (the SDK would send cancellations for requests
+ * answered long ago), and the SDK has no `onerror` here to report it, so it
+ * gets a log line instead. The connector keeps its tools. The SDK may open
+ * the stream again, with a fresh budget, and it schedules that reopen inside
+ * the stream's own async context, so every reopened stream shares this
+ * scope. A server can make it reopen at once (`retry: 0`): MEASURED by a
+ * reviewer, 589 lines in 2 s. So only the first cut is logged, once per
+ * connection.
+ */
+function connectScope(
+  ac: AbortController,
+  ns: string,
+  log: (line: string) => void,
+): ResponseScope & { settle(): void } {
+  let settled = false;
+  let reported = false;
+  return {
+    maxBytes: MAX_CONNECTOR_RESPONSE_BYTES,
+    onOversize(err) {
+      if (!settled) {
+        ac.abort(err);
+        return;
+      }
+      if (reported) return;
+      reported = true;
+      log(
+        `${ns}: the server's event stream sent more than ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)} MiB, ` +
+          'so we stopped reading it; its tools are still offered; later cuts on this connection are not logged',
+      );
+    },
+    settle() {
+      settled = true;
+    },
+  };
 }
 
 /**
@@ -174,9 +308,11 @@ function isSessionLost(err: unknown, conn: Connection): boolean {
 
 /** A fresh connection (initialize handshake only), bounded like the boot connect. */
 async function reconnect(
+  ns: string,
   server: ProjectedMcpServer,
-  fetchImpl: typeof fetch | undefined,
+  fetchImpl: typeof fetch,
   timeoutMs: number,
+  log: (line: string) => void,
 ): Promise<Connection> {
   const conn = newConnection(server, fetchImpl);
   const ac = new AbortController();
@@ -184,9 +320,12 @@ async function reconnect(
     () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
     timeoutMs,
   );
+  const scope = connectScope(ac, ns, log);
   try {
     await raceAbort(
-      conn.client.connect(conn.transport as Transport, { signal: ac.signal, timeout: timeoutMs }),
+      withResponseScope(scope, () =>
+        conn.client.connect(conn.transport as Transport, { signal: ac.signal, timeout: timeoutMs }),
+      ),
       ac.signal,
     );
     return conn;
@@ -194,14 +333,17 @@ async function reconnect(
     await conn.client.close().catch(() => {});
     throw err;
   } finally {
+    scope.settle();
     clearTimeout(timer);
   }
 }
 
 async function connectAndList(
+  ns: string,
   server: ProjectedMcpServer,
-  fetchImpl: typeof fetch | undefined,
+  fetchImpl: typeof fetch,
   timeoutMs: number,
+  log: (line: string) => void,
 ): Promise<{ conn: Connection; tools: ListedTool[]; truncated: boolean; morePages: boolean }> {
   const conn = newConnection(server, fetchImpl);
   const { client, transport } = conn;
@@ -210,8 +352,9 @@ async function connectAndList(
     () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
     timeoutMs,
   );
+  const scope = connectScope(ac, ns, log);
   try {
-    const work = (async () => {
+    const work = withResponseScope(scope, async () => {
       const reqOpts = { signal: ac.signal, timeout: timeoutMs };
       // The SDK types this transport's `sessionId` accessor as `string |
       // undefined`, which `exactOptionalPropertyTypes` rejects against the
@@ -229,7 +372,7 @@ async function connectAndList(
       // over the per-connector cap, which has its own log line).
       const morePages = cursor !== undefined && tools.length <= MAX_TOOLS_PER_CONNECTOR;
       return { tools, morePages };
-    })();
+    });
     const { tools, morePages } = await raceAbort(work, ac.signal);
     const truncated = tools.length > MAX_TOOLS_PER_CONNECTOR;
     return { conn, tools: tools.slice(0, MAX_TOOLS_PER_CONNECTOR), truncated, morePages };
@@ -237,6 +380,7 @@ async function connectAndList(
     await client.close().catch(() => {});
     throw err;
   } finally {
+    scope.settle();
     clearTimeout(timer);
   }
 }
@@ -248,6 +392,8 @@ export async function connectConnectorTools(
   const timeoutMs = opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const callTimeoutMs = opts.callTimeoutMs ?? CALL_TIMEOUT_MS;
   const denied = new Set(opts.disallowed);
+  // Every connection, boot or reconnect, reads its answers through this.
+  const capped = capConnectorFetch(opts.fetch);
   const tools: Record<string, Tool> = {};
   const loadedBundles = new Set<string>();
   /** Every connection this module still has to close: current ones, and retired ones still draining. */
@@ -278,7 +424,7 @@ export async function connectConnectorTools(
         pending = (async () => {
           let fresh: Connection;
           try {
-            fresh = await reconnect(server, opts.fetch, timeoutMs);
+            fresh = await reconnect(ns, server, capped, timeoutMs, log);
           } catch (err) {
             log(`${ns}: the server dropped the MCP session and it could not reconnect: ${quoteUntrusted(errText(err))}`);
             throw err;
@@ -321,17 +467,42 @@ export async function connectConnectorTools(
           onToolFailure: opts.onToolFailure,
         },
         async (input, ctx) => {
+          // This call's own abort, for an answer over MAX_TOOL_RESULT_BYTES
+          // (TASK-944). Stop still arrives through ctx.abortSignal.
+          const callAc = new AbortController();
+          const signal =
+            ctx.abortSignal !== undefined
+              ? AbortSignal.any([ctx.abortSignal, callAc.signal])
+              : callAc.signal;
+          // A holder, not a `let`: TS narrows a variable that only a closure
+          // assigns to `never` in the catch below.
+          const state: { tooLarge: ResponseTooLargeError | undefined; settled: boolean } = {
+            tooLarge: undefined,
+            settled: false,
+          };
+          const scope: ResponseScope = {
+            maxBytes: MAX_TOOL_RESULT_BYTES,
+            onOversize: (err) => {
+              // After the call settled (a server that kept streaming past
+              // its result), there is nothing left to abort.
+              if (state.settled || state.tooLarge !== undefined) return;
+              state.tooLarge = err;
+              callAc.abort(err);
+            },
+          };
           const call = (client: Client): Promise<unknown> =>
-            client.callTool({ name: toolName, arguments: input }, undefined, {
-              ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
-              timeout: callTimeoutMs,
-              resetTimeoutOnProgress: true,
-              maxTotalTimeout: MAX_CALL_TOTAL_MS,
-              // The SDK only sends a progressToken — and only resets the
-              // timeout on progress — when a handler is registered. Without
-              // this no-op, `resetTimeoutOnProgress` is inert.
-              onprogress: () => {},
-            });
+            withResponseScope(scope, () =>
+              client.callTool({ name: toolName, arguments: input }, TOOL_RESULT_SCHEMA, {
+                signal,
+                timeout: callTimeoutMs,
+                resetTimeoutOnProgress: true,
+                maxTotalTimeout: MAX_CALL_TOTAL_MS,
+                // The SDK only sends a progressToken — and only resets the
+                // timeout on progress — when a handler is registered. Without
+                // this no-op, `resetTimeoutOnProgress` is inert.
+                onprogress: () => {},
+              }),
+            );
           const callOn = async (conn: Connection): Promise<unknown> => {
             conn.inflight++;
             try {
@@ -347,9 +518,11 @@ export async function connectConnectorTools(
             try {
               res = await callOn(conn);
             } catch (err) {
-              if (ctx.abortSignal?.aborted === true || !isSessionLost(err, conn)) throw err;
+              // Stopped, or cut for size: this call is over, so no retry.
+              if (signal.aborted || !isSessionLost(err, conn)) throw err;
               // The reconnect is shared, so it is not aborted by THIS call's
-              // Stop — but this call stops waiting for it at once.
+              // Stop — but this call stops waiting for it at once. It runs
+              // in its own response scope, not this call's.
               const renewed = session.renew(conn);
               const fresh = await (ctx.abortSignal !== undefined ? raceAbort(renewed, ctx.abortSignal) : renewed);
               res = await callOn(fresh);
@@ -357,16 +530,26 @@ export async function connectConnectorTools(
           } catch (err) {
             // Stop: rethrow untouched so the abort is recognised as one.
             if (ctx.abortSignal?.aborted === true) throw err;
+            // Cut for size: the SDK wraps the abort reason in its own
+            // timeout error, so say what happened in our own words.
+            if (state.tooLarge !== undefined) {
+              throw new Error(`connector tool '${toolName}' failed: ${state.tooLarge.message}`);
+            }
             // Otherwise the SDK's message may carry a whole upstream HTTP
             // body (measured: 1 MB). Bound it before it leaves this process.
             throw new Error(`connector tool '${toolName}' failed: ${clip(errText(err), MAX_ERROR_CHARS)}`);
+          } finally {
+            state.settled = true;
           }
           const text = renderMcpResult(res as { content?: unknown; structuredContent?: unknown });
           // Parity with host-tools / the claude-sdk runner: a tool that
           // reported its own failure is a FAILED tool call (is_error on the
           // persisted result), not a success whose text complains. ai@7 turns
-          // the throw into a tool-error and the turn continues.
-          if ((res as { isError?: unknown }).isError === true) throw new Error(text);
+          // the throw into a tool-error and the turn continues. Truthy, as
+          // the SDK reads it: the loose parse lets a non-boolean through, and
+          // `isError: 1` is still the tool saying it failed. (Boolean() on an
+          // object calls nothing the server could shape.)
+          if (Boolean((res as { isError?: unknown }).isError)) throw new Error(text);
           return text;
         },
       ),
@@ -377,7 +560,7 @@ export async function connectConnectorTools(
     Object.entries(opts.servers).map(async ([ns, server]) => ({
       ns,
       server,
-      ...(await connectAndList(server, opts.fetch, timeoutMs)),
+      ...(await connectAndList(ns, server, capped, timeoutMs, log)),
     })),
   );
 

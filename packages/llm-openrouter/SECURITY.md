@@ -41,6 +41,8 @@ So the posture is: **don't attribute trust we don't have.**
 
 The response is untrusted in the other direction too. OpenRouter proxies dozens of upstreams, so what comes back is genuinely heterogeneous — we shape-check it with zod rather than indexing into `any` and hoping. `finish_reason` is mapped through an own-property lookup, so a vendor that invents a value called `constructor` this week gets `unknown`, not a function.
 
+We also stop reading at 4 MiB for a completion and 64 KiB for an error body, counted as the bytes arrive, so a runaway or hostile response can't make the host hold it. The count is taken after fetch undoes any compression, so a small, missing or wrong `Content-Length`, or a gzip body that inflates, doesn't get past it. An oversized completion fails the call with a plain "the response was larger than 4 MiB" error and isn't retried; an oversized error body falls back to the HTTP status line.
+
 ## What we deliberately don't do
 
 A few things we could implement here, but won't, because they belong elsewhere:

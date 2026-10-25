@@ -1,5 +1,8 @@
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { fetch as undiciFetch } from 'undici';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import {
   connectConnectorTools,
@@ -709,5 +712,322 @@ describe('connectConnectorTools — server drops the MCP session (TASK-839)', ()
     await vi.waitFor(() => {
       for (const c of tracked.connected) expect(tracked.closed.has(c)).toBe(true);
     });
+  });
+});
+
+describe('connectConnectorTools — response size cap (TASK-944)', () => {
+  // Literals only. This file must not import connector-fetch.ts, so the rest
+  // of it still loads before that module exists, and a size taken from a
+  // still-undefined constant would make a body that never ends.
+  const BIG = 64 * 1024 * 1024;
+  const piece = Buffer.alloc(64 * 1024, 0x61);
+  /** One SSE comment line of 64 KiB: the client's parser drops it, so only the byte cap ever stops a stream of them. */
+  const commentLine = Buffer.concat([Buffer.from(': '), piece, Buffer.from('\n')]);
+  /** Comment lines without end. The server stops only when the client hangs up. */
+  function* endlessComments(): Generator<Buffer> {
+    for (;;) yield commentLine;
+  }
+  /**
+   * Long enough for a `notifications/cancelled` the client sent to reach the
+   * server. A cancellation is a fire-and-forget POST, so a test can only wait
+   * and then look for its absence.
+   */
+  const settleMs = () => new Promise((r) => setTimeout(r, 250));
+  const CALL_TOO_LARGE =
+    "connector tool 'big' failed: the response was larger than 8 MiB, so we stopped reading it";
+
+  /** A `tools/call` result for `id` whose one text part is BIG bytes of 'a', in 64 KiB pieces. */
+  function* bigCallResult(id: unknown, framing: 'sse' | 'json'): Generator<string | Buffer> {
+    const head = `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"content":[{"type":"text","text":"`;
+    yield framing === 'sse' ? `event: message\ndata: ${head}` : head;
+    for (let i = 0; i < BIG / piece.length; i++) yield piece;
+    yield framing === 'sse' ? '"}]}}\n\n' : '"}]}}';
+  }
+
+  /** The error a call failed with, and how long it took to fail. */
+  async function failedCall(ct: ConnectorTools, name: string): Promise<{ err: Error; ms: number }> {
+    const started = Date.now();
+    const err = await exec(ct, name, {}).then(
+      () => {
+        throw new Error('expected the call to fail');
+      },
+      (e: unknown) => e as Error,
+    );
+    return { err, ms: Date.now() - started };
+  }
+
+  // The 25 s call timeout and the 10 s bound below are what tell "failed at
+  // once" apart from "waited out the call timeout". Keep both.
+  it('an over-cap tools/call answer framed as an event stream fails at once with a plain error', async () => {
+    const s = await testServer([{ name: 'big' }], {
+      raw: {
+        method: 'tools/call',
+        headers: { 'content-type': 'text/event-stream' },
+        chunks: (id) => bigCallResult(id, 'sse'),
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { callTimeoutMs: 25_000 });
+    const { err, ms } = await failedCall(ct, `mcp__${NS}__big`);
+    expect(err.message).toBe(CALL_TOO_LARGE);
+    expect(ms).toBeLessThan(10_000);
+    // The server stopped well short of the 64 MiB it meant to send.
+    expect(s.rawBytesWritten()).toBeLessThan(40 * 1024 * 1024);
+  });
+
+  it('an over-cap tools/call answer framed as JSON with no Content-Length fails the same way', async () => {
+    const s = await testServer([{ name: 'big' }], {
+      raw: {
+        method: 'tools/call',
+        headers: { 'content-type': 'application/json' },
+        chunks: (id) => bigCallResult(id, 'json'),
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { callTimeoutMs: 25_000 });
+    const { err, ms } = await failedCall(ct, `mcp__${NS}__big`);
+    expect(err.message).toBe(CALL_TOO_LARGE);
+    expect(ms).toBeLessThan(10_000);
+  });
+
+  it('an over-cap tools/call answer sent as gzip with a small Content-Length fails the same way', async () => {
+    // The SDK numbers a client's requests from 0 (initialize, tools/list, then
+    // this call). The body carries that id, so without the cap the call would
+    // resolve; the last assertion catches a change in that numbering.
+    const CALL_ID = 2;
+    const gz = gzipSync(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: CALL_ID,
+        result: { content: [{ type: 'text', text: 'a'.repeat(16 * 1024 * 1024) }] },
+      }),
+    );
+    // Content-Length is the compressed size: it gives nothing away.
+    expect(gz.length).toBeLessThan(64 * 1024);
+    const ids: unknown[] = [];
+    const s = await testServer([{ name: 'big' }], {
+      raw: {
+        method: 'tools/call',
+        headers: {
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+          'content-length': String(gz.length),
+        },
+        chunks: (id) => {
+          ids.push(id);
+          return [gz];
+        },
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { callTimeoutMs: 25_000 });
+    const { err, ms } = await failedCall(ct, `mcp__${NS}__big`);
+    expect(err.message).toBe(CALL_TOO_LARGE);
+    expect(ms).toBeLessThan(10_000);
+    expect(ids).toEqual([CALL_ID]);
+  });
+
+  it('the production-shaped fetch (undici 6) is capped the same way', async () => {
+    const s = await testServer([{ name: 'big' }], {
+      raw: {
+        method: 'tools/call',
+        headers: { 'content-type': 'text/event-stream' },
+        chunks: (id) => bigCallResult(id, 'sse'),
+      },
+    });
+    // undici 6's own fetch, the one createProxyFetch builds on, not Node's bundled copy.
+    const ct = await connect(
+      { [NS]: { url: s.url, bundle: 'b' } },
+      { fetch: undiciFetch as unknown as typeof fetch, callTimeoutMs: 25_000 },
+    );
+    const { err, ms } = await failedCall(ct, `mcp__${NS}__big`);
+    expect(err.message).toBe(CALL_TOO_LARGE);
+    expect(ms).toBeLessThan(10_000);
+    expect(s.rawBytesWritten()).toBeLessThan(40 * 1024 * 1024);
+  });
+
+  // The result arrives first, so the call resolves; the 8 MiB cut that comes
+  // later must not reach the finished call. If it did, the SDK would send
+  // `notifications/cancelled` for a request the server already answered.
+  it('a tools/call answer that streams on past 8 MiB after its result resolves the call and cancels nothing', async () => {
+    function* resultThenJunk(id: unknown): Generator<string | Buffer> {
+      yield `event: message\ndata: {"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"content":[{"type":"text","text":"ok"}]}}\n\n`;
+      yield* endlessComments();
+    }
+    const s = await testServer([{ name: 'big' }], {
+      raw: { method: 'tools/call', headers: { 'content-type': 'text/event-stream' }, chunks: resultThenJunk },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__big`, {})).resolves.toBe('ok');
+    // The answer never ends on its own, so it finished only because the cap cut it.
+    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(1), { timeout: 10_000 });
+    await settleMs();
+    expect(s.seenMethods).toContain('tools/call');
+    expect(s.seenMethods).not.toContain('notifications/cancelled');
+  });
+
+  // The server's event stream (the client's GET) opens during the connect and
+  // reads under the connect's 2 MiB. A cut there after the connect finished
+  // must not abort the finished connect.
+  it("the server's event stream passing 2 MiB after connect keeps the connector, cancels nothing and logs once", async () => {
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    cleanups.push(async () => openGate());
+    async function* junkAfterConnect(): AsyncGenerator<string | Buffer> {
+      await gate;
+      // `retry: 0` makes the client reopen the stream at once after the cut.
+      yield 'retry: 0\n\n';
+      yield* endlessComments();
+    }
+    const s = await testServer(
+      [{ name: 'echo', handler: () => ({ content: [{ type: 'text', text: 'pong' }] }) }],
+      {
+        rawGet: {
+          headers: { 'content-type': 'text/event-stream' },
+          // The first GET and the client's reopened one; the next gets 405 and the client stops.
+          chunks: (n) => (n <= 1 ? junkAfterConnect() : undefined),
+        },
+      },
+    );
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.loadedBundles).toEqual(new Set(['b']));
+    openGate();
+    // The streams never end on their own, so both finished only because the cap cut them.
+    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(2), { timeout: 10_000 });
+    await expect(exec(ct, `mcp__${NS}__echo`, {})).resolves.toBe('pong');
+    await settleMs();
+    expect(s.seenMethods).not.toContain('notifications/cancelled');
+    // The cut is not silent, and not a flood: the reopened stream shares the
+    // connect's scope, so its cut is not logged again.
+    expect(ct.logs.filter((l) => l.startsWith(`${NS}: `))).toEqual([
+      `${NS}: the server's event stream sent more than 2 MiB, so we stopped reading it; its tools are still offered; later cuts on this connection are not logged`,
+    ]);
+  });
+
+  it('an answer just under 8 MiB still works', async () => {
+    const s = await testServer([
+      {
+        name: 'big',
+        handler: () => ({ content: [{ type: 'text', text: 'a'.repeat(8 * 1024 * 1024 - 64 * 1024) }] }),
+      },
+    ]);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const out = await exec(ct, `mcp__${NS}__big`, {});
+    expect(typeof out).toBe('string');
+    expect((out as string).endsWith('[output truncated at 100 KB]')).toBe(true);
+  });
+
+  it('a tools/list page over 2 MiB drops the connector at once, with one plain log line', async () => {
+    // A valid tools/list result with one tool whose description is 8 MiB of
+    // 'a': without the cap, the connector would load.
+    function* bigList(id: unknown): Generator<string | Buffer> {
+      yield `event: message\ndata: {"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"tools":[{"name":"big","inputSchema":{"type":"object"},"description":"`;
+      for (let i = 0; i < (8 * 1024 * 1024) / piece.length; i++) yield piece;
+      yield '"}]}}\n\n';
+    }
+    const s = await testServer([{ name: 'big' }], {
+      raw: { method: 'tools/list', headers: { 'content-type': 'text/event-stream' }, chunks: bigList },
+    });
+    const started = Date.now();
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 25_000 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // Names, not the tool objects: a failure here must not print 8 MiB.
+    expect(Object.keys(ct.tools)).toEqual([]);
+    expect(ct.loadedBundles.size).toBe(0);
+    expect(ct.logs.filter((l) => l.startsWith(`${NS}: `))).toEqual([
+      `${NS}: could not load this connector's tools: "the response was larger than 2 MiB, so we stopped reading it"`,
+    ]);
+  });
+
+  it('a tools/list page just under 2 MiB loads', async () => {
+    const tools = Array.from({ length: 30 }, (_, i) => ({
+      name: `t${i}`,
+      description: 'a'.repeat(64 * 1024 - 2048),
+    }));
+    const s = await testServer(tools);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(Object.keys(ct.tools)).toHaveLength(30);
+  });
+
+  /** A server whose answer to `method` is `result`, as one JSON body. */
+  function junkServer(method: string, result: unknown) {
+    return testServer([{ name: 'junk' }], {
+      raw: {
+        method,
+        headers: { 'content-type': 'application/json' },
+        chunks: (id) => [JSON.stringify({ jsonrpc: '2.0', id, result })],
+      },
+    });
+  }
+
+  // Under the SDK's content schema these are 20,000 zod issues, and the
+  // runner's zod 4.6.7 has no cap on them. The byte cap alone can't help: an
+  // answer under 8 MiB can hold hundreds of thousands of junk elements.
+  it('a tools/call result is not checked against the SDK content schema', async () => {
+    const s = await junkServer('tools/call', { content: Array(20_000).fill(0) });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__junk`, {})).resolves.toBe('');
+  });
+
+  it("a tools/call result that is not valid MCP fails with a count and the first problem, never zod's text", async () => {
+    // `_meta` must be an object. The transport's JSON-RPC envelope check
+    // (whose `result` is ResultSchema) refuses this before callTool sees it.
+    const s = await junkServer('tools/call', { _meta: 0, content: [] });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const { err } = await failedCall(ct, `mcp__${NS}__junk`);
+    expect(err.message).toBe(
+      "connector tool 'junk' failed: the server's answer was not valid MCP (1 problem: invalid_union)",
+    );
+  });
+
+  it("a tools/list that fails validation logs a count and the first problem, never zod's text", async () => {
+    const s = await junkServer('tools/list', { tools: Array(20_000).fill(0) });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.tools).toEqual({});
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toEqual([
+      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (20000 problems; first: invalid_type at tools.0)"`,
+    ]);
+    // Nothing of zod's own text: its message is a JSON array of issues, each with an "expected".
+    expect(mine[0]).not.toContain('expected');
+    expect(mine[0]).not.toContain('[');
+  });
+
+  // The loose parse no longer checks that `isError` is a boolean, so a truthy
+  // non-boolean must still count as the tool's own failure, as it does for
+  // the SDK.
+  it('a truthy isError that is not a boolean still fails the call with the tool text', async () => {
+    const s = await junkServer('tools/call', { content: [{ type: 'text', text: 'boom' }], isError: 1 });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__junk`, {})).rejects.toThrow(/^boom$/);
+  });
+
+  it('clips each path segment to 32 characters, so a server-chosen key shows only its start', async () => {
+    // initialize puts a server-chosen key at the third segment:
+    // capabilities.experimental.<key>, whose value must be an object.
+    const s = await junkServer('initialize', {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: { tools: {}, experimental: { ['k'.repeat(100)]: 5 } },
+      serverInfo: { name: 'junk', version: '0.0.0' },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatch(
+      new RegExp(`\\(1 problem: [a-z_]+ at capabilities\\.experimental\\.${'k'.repeat(32)}\\)"$`),
+    );
+    expect(mine[0]).not.toContain('k'.repeat(33));
+  });
+
+  it('shows at most four path segments, so a server-chosen key deeper down is not echoed', async () => {
+    // The path is tools.0.inputSchema.properties.<key>: the key is the fifth segment.
+    const key = 'k'.repeat(100);
+    const s = await junkServer('tools/list', {
+      tools: [{ name: 'junk', inputSchema: { type: 'object', properties: { [key]: 5 } } }],
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatch(/\(1 problem: [a-z_]+ at tools\.0\.inputSchema\.properties\.…\)"$/);
+    expect(mine[0]).not.toContain('kkkk');
   });
 });

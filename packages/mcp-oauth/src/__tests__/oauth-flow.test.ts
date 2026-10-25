@@ -526,3 +526,215 @@ describe('redeemCode', () => {
     ).rejects.toBeInstanceOf(BlockedUrlError);
   });
 });
+
+/** `total` bytes in `chunk`-byte pieces; records how far a reader pulled. */
+function counted(total: number, chunk: number) {
+  // A NaN total (an import still undefined during a red run) would never end.
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(chunk) || chunk <= 0) {
+    throw new Error(`counted: bad sizes ${String(total)}/${String(chunk)}`);
+  }
+  const stats = { pulled: 0, cancelled: false, reason: undefined as unknown };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (stats.pulled * chunk >= total) return controller.close();
+        stats.pulled += 1;
+        controller.enqueue(new Uint8Array(chunk).fill(0x61));
+      },
+      cancel(reason) {
+        stats.cancelled = true;
+        stats.reason = reason;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, stats };
+}
+
+/** A cancel reaches the source a few microtasks after the reader's rejection or `cancel()`. */
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// TASK-944. safeFetch cuts every response off at 64 KiB while it streams.
+// These run the real SDK helpers, so they also show the cap's error reaches
+// the caller: the SDK's discovery takes a TypeError from fetch for a browser
+// CORS failure and moves on to the next URL, and a non-OK token answer has its
+// body read by the SDK's parseErrorResponse.
+describe('response size cap through the MCP SDK', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // A literal, never the constant under test.
+  const CAP = 64 * 1024;
+  const redeemOpts = {
+    metadata: meta,
+    client: { clientId: 'cid', clientSecret: undefined },
+    code: 'authcode',
+    codeVerifier: 'verifier',
+    redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+    resource: 'https://mcp.example.com',
+    allowedHosts: allow,
+    resolver,
+  };
+
+  it('an over-cap protected-resource document fails discovery as ResponseTooLargeError, not as missing metadata', async () => {
+    const resourceUrl = 'https://mcp.example.com/mcp';
+    // A valid document, padded with JSON whitespace to one byte over the cap.
+    const body = JSON.stringify({ resource: resourceUrl, authorization_servers: [meta.issuer] })
+      .padEnd(CAP + 1, ' ');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url === resourceUrl) return new Response(null, { status: 401 });
+      if (url.includes('/.well-known/oauth-protected-resource')) {
+        return new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'content-length': String(CAP + 1) },
+        });
+      }
+      return new Response(null, { status: 404 });
+    }));
+    await expect(discover({ resourceUrl, allowedHosts: new Set(['mcp.example.com']), resolver }))
+      .rejects.toMatchObject({ name: 'ResponseTooLargeError' });
+  });
+
+  it('an over-cap protected-resource document with no Content-Length fails discovery the same way', async () => {
+    const resourceUrl = 'https://mcp.example.com/mcp';
+    const { stream, stats } = counted(4 * CAP, 4096);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url === resourceUrl) return new Response(null, { status: 401 });
+      if (url.includes('/.well-known/oauth-protected-resource')) {
+        return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(discover({ resourceUrl, allowedHosts: new Set(['mcp.example.com']), resolver }))
+      .rejects.toMatchObject({ name: 'ResponseTooLargeError' });
+    // Discovery ends at the document it could not read; it does not try the root URL.
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      resourceUrl,
+      'https://mcp.example.com/.well-known/oauth-protected-resource/mcp',
+    ]);
+    expect(stats.pulled).toBeLessThanOrEqual(CAP / 4096 + 2);
+    await nextTask();
+    expect(stats.cancelled).toBe(true);
+  });
+
+  // The SDK's authorization-server discovery tries
+  // .well-known/oauth-authorization-server first, then
+  // .well-known/openid-configuration, and moves past any 4xx after cancelling
+  // its body. A big 404 page there must not end the sign-in.
+  it('authorization-server discovery moves past a 404 that declares a big body and uses the next URL', async () => {
+    const page = counted(100 * 1024, 4096);
+    const oidc = {
+      ...meta,
+      jwks_uri: 'https://auth.example.com/jwks',
+      subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['RS256'],
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url === 'https://auth.example.com/.well-known/oauth-authorization-server') {
+        return new Response(page.stream, {
+          status: 404,
+          headers: { 'content-type': 'text/html', 'content-length': String(100 * 1024) },
+        });
+      }
+      if (url === 'https://auth.example.com/.well-known/openid-configuration') {
+        return new Response(JSON.stringify(oidc), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await discover({
+      resourceUrl: 'https://mcp.example.com/mcp',
+      pinnedAuthServerUrl: meta.issuer,
+      allowedHosts: new Set(['mcp.example.com', 'auth.example.com']),
+      resolver,
+    });
+    expect(result.authServerUrl).toBe(meta.issuer);
+    expect(result.metadata.token_endpoint).toBe(meta.token_endpoint);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://auth.example.com/.well-known/oauth-authorization-server',
+      'https://auth.example.com/.well-known/openid-configuration',
+    ]);
+    // The 404 page was never read, and was let go.
+    expect(page.stats.pulled).toBe(0);
+    await nextTask();
+    expect(page.stats.cancelled).toBe(true);
+  });
+
+  // discover() probes the resource for its WWW-Authenticate challenge and
+  // reads only the headers of the answer.
+  it('the resource probe takes the challenge from a 401 that declares a big body, and discovery goes on', async () => {
+    const resourceUrl = 'https://mcp.example.com/mcp';
+    const metadataUrl = 'https://mcp.example.com/oauth/resource';
+    const page = counted(100 * 1024, 4096);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input.toString();
+      if (url === resourceUrl) {
+        return new Response(page.stream, {
+          status: 401,
+          headers: {
+            'content-type': 'text/html',
+            'content-length': String(100 * 1024),
+            'www-authenticate': `Bearer resource_metadata="${metadataUrl}", scope="read"`,
+          },
+        });
+      }
+      if (url === metadataUrl) {
+        return new Response(JSON.stringify({ resource: resourceUrl, authorization_servers: [meta.issuer] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === 'https://auth.example.com/.well-known/oauth-authorization-server') {
+        return new Response(JSON.stringify(meta), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await discover({
+      resourceUrl,
+      allowedHosts: new Set(['mcp.example.com', 'auth.example.com']),
+      resolver,
+    });
+    // The scope comes from the challenge header, so the headers survived the cap.
+    expect(result).toEqual({ authServerUrl: meta.issuer, metadata: meta, scope: 'read' });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      resourceUrl,
+      metadataUrl,
+      'https://auth.example.com/.well-known/oauth-authorization-server',
+    ]);
+    expect(page.stats.pulled).toBe(0);
+    await nextTask();
+    expect(page.stats.cancelled).toBe(true);
+  });
+
+  it('an over-cap token response fails redeemCode', async () => {
+    const { stream, stats } = counted(4 * CAP, 4096);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })));
+    await expect(redeemCode(redeemOpts)).rejects.toMatchObject({ name: 'ResponseTooLargeError' });
+    expect(stats.pulled).toBeLessThanOrEqual(CAP / 4096 + 2);
+  });
+
+  it('an over-cap token error body fails redeemCode', async () => {
+    const { stream, stats } = counted(4 * CAP, 4096);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, {
+      status: 400, headers: { 'content-type': 'application/json' },
+    })));
+    await expect(redeemCode(redeemOpts)).rejects.toMatchObject({ name: 'ResponseTooLargeError' });
+    expect(stats.pulled).toBeLessThanOrEqual(CAP / 4096 + 2);
+  });
+
+  it('a token response one byte under 64 KiB still redeems', async () => {
+    const n = CAP - 1 - JSON.stringify({ access_token: '', token_type: 'Bearer' }).length;
+    const body = JSON.stringify({ access_token: 'a'.repeat(n), token_type: 'Bearer' });
+    expect(Buffer.byteLength(body)).toBe(CAP - 1);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })));
+    const tokens = await redeemCode(redeemOpts);
+    expect(tokens.access_token.length).toBe(n);
+  });
+});
