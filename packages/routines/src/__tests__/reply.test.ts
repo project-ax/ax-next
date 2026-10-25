@@ -325,7 +325,7 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     const first = await s.reply(input);
     expect(first).toStrictEqual({ replyId: STARTED_ID, checkIn: 'started' });
     expect(s.dispatched).toHaveLength(1);
-    // fire.ts binds the run to its conversation before the agent runs, so a cut-off one has one.
+    // fire.ts binds the run to its conversation before the agent runs, so a run cut off mid-turn has one.
     await f.store.bindDispatchConversation({ dispatchId: s.dispatched[0]!.dispatchId, conversationId: 'c1' });
     return { task, s, input, first, dispatchId: s.dispatched[0]!.dispatchId };
   };
@@ -367,15 +367,18 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     let bothRead!: () => void;
     const bothReadEmpty = new Promise<void>(resolve => { bothRead = resolve; });
     // A serialized pair never gets a second empty read: fail here, named, not at the 60 s test timeout.
-    let giveUp!: ReturnType<typeof setTimeout>;
-    const noBarrier = new Promise<never>((_, reject) => { giveUp = setTimeout(() => reject(new Error('the second retry never read the new key: the two retries were serialized')), 5_000); });
+    // The clock starts at the first empty read, so a slow setup can't spend it.
+    let giveUp: ReturnType<typeof setTimeout> | undefined;
+    let serialized!: (err: Error) => void;
+    const noBarrier = new Promise<never>((_, reject) => { serialized = reject; });
     const both = Promise.race([bothReadEmpty, noBarrier]);
     both.catch(() => undefined);
     const s = services({ store: {
       async acceptedDispatchId(input) {
         const found = await real.acceptedDispatchId(input);
         if (found === null && input.requestId.includes(':after:')) {
-          if (++emptyReads === 2) bothRead();
+          if (++emptyReads === 1) giveUp = setTimeout(() => serialized(new Error('the second retry never read the new key: the two retries were serialized')), 5_000);
+          if (emptyReads === 2) bothRead();
           await both;
         }
         return found;
@@ -425,7 +428,7 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
       } })).toBe(true);
     }],
     ['reported, then cut off', async dispatchId => {
-      await f.store.bindDispatchConversation({ dispatchId, conversationId: 'c1' });
+      // firstTry already bound the run to 'c1'.
       expect(await f.store.recordReport({
         agentId: 'a', dispatchId, conversationId: 'c1', actorUserId: 'owner', report: { status: 'on-track', update: 'Read your reply.', ask: null }, now,
       })).toBe('recorded');
