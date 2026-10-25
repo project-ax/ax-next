@@ -270,9 +270,9 @@ Plugins receive config when `createPlugin(config)` runs. No runtime-config hook.
 - Config changes require a restart (hot-reload is explicitly out of scope).
 - Each plugin's config schema is local — no central config file that knows about every plugin.
 
-### Every plugin's `init()` runs after all service hooks register
+### A plugin's `init()` runs after the producers it declares
 
-Core guarantees: every `registers` entry is wired before any `init()` fires. Plugins can call each other's service hooks from `init()` safely. No DI container needed — the hook bus IS the inter-plugin API.
+Core inits plugins one at a time, in dependency order, and each plugin registers its hooks *inside* its own `init()`. So a plugin's `init()` runs after the `init()` of every plugin that registers a hook in its `calls` (or a present `optionalCalls` producer), and it can call those hooks from `init()`. A hook it did not declare may not be registered yet. Work from outside the process reaches the kernel only after every `init()`: `@ax/http-server` binds its port in `startAdmission()`, and stops accepting in `stopAdmission()` before any plugin's `shutdown()` (TASK-942). No DI container needed — the hook bus IS the inter-plugin API.
 
 ### Cycle detection is at boot
 
