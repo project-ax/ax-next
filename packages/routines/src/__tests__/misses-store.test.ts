@@ -543,6 +543,19 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect(await missColumns(edited.routineId)).toEqual(below);
   });
 
+  it('an older check-in that finishes without a report clears a single miss a newer report, its run still open, has answered', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const older = await checkIn(row, 'older', { at: minute(1) });
+    await missed(row, 1, 2);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: minute(2), autoPausedAt: null });
+    const open = await checkIn(row, 'open', { at: minute(3), report: onTrack });
+    await finish(older.dispatchId);
+    // In the order they started: the older check-in, a miss, a report. Nothing left in a row.
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    await finish(open.dispatchId);
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+  });
+
   it('an older check-in that finishes with a report after a newer one missed still ends the misses before it', async () => {
     const lines = pauseLines();
     const row = await f.store.createAuthored(taskInput('task'));
