@@ -107,6 +107,7 @@ CounterRow,
   TaskCheckin,
   TaskCompleteResponse,
   TaskDetail,
+  TaskDuplicateResponse,
   TaskFinishByResponse,
   TaskReplyResponse,
   TaskStepsResponse,
@@ -1339,6 +1340,24 @@ export const workspaceApi = {
       body,
       (v) =>
         isRecord(v) && !Array.isArray(v) && 'finishBy' in v && (v.finishBy === null || isTaskFinishBy(v.finishBy)),
+    );
+  },
+
+  /**
+   * Copy a task into a paused one of the person's own (TASK-953). The request
+   * id is the press's: asking again with the same id answers the same copy, so
+   * a press whose answer never came is safe to retry. The answer is the copy's
+   * id and the page opens it, so one that doesn't say is a
+   * `WorkspaceShapeError`, not a guess. A refusal or failure is a
+   * `WorkspaceApiError` carrying only the status.
+   */
+  duplicateTask: async (agentId: string, routineId: string, input: { requestId: string }) => {
+    const path = `${taskPath(agentId, routineId)}/duplicate`;
+    const body = await req<unknown>(path, { method: 'POST', body: { requestId: input.requestId } });
+    return checkedRead<TaskDuplicateResponse>(
+      path,
+      body,
+      (v) => isRecord(v) && !Array.isArray(v) && typeof v.routineId === 'string' && v.routineId !== '',
     );
   },
 

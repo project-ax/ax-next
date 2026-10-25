@@ -36,6 +36,7 @@ vi.mock('@/lib/workspace-api', async () => {
       setTaskFinishBy: vi.fn(),
       completeTask: vi.fn(),
       reopenTask: vi.fn(),
+      duplicateTask: vi.fn(),
     },
   };
 });
@@ -52,6 +53,7 @@ const stepsMock = vi.mocked(workspaceApi.setTaskSteps);
 const finishByMock = vi.mocked(workspaceApi.setTaskFinishBy);
 const completeMock = vi.mocked(workspaceApi.completeTask);
 const reopenMock = vi.mocked(workspaceApi.reopenTask);
+const duplicateMock = vi.mocked(workspaceApi.duplicateTask);
 const fireNowMock = vi.mocked(routineApi.fireNow);
 const updateMock = vi.mocked(routineApi.update);
 
@@ -64,9 +66,10 @@ const ROUTINE = {} as Routine;
 
 const CHECKING_IN = 'Checking in now…';
 const PAUSED_NOTE = 'Paused. It won’t check in until you resume it.';
-const PAUSED_NO_EDIT_NOTE = 'Paused. Only someone who manages this agent’s tasks can resume it.';
+const PAUSED_NO_EDIT_NOTE =
+  'Paused. Only someone who manages this agent’s tasks can resume or copy it.';
 const NO_MANAGE_NOTE =
-  'You can’t start or pause this task’s check-ins, because you no longer manage this agent’s tasks.';
+  'You can’t start or pause this task’s check-ins, or copy the task, because you no longer manage this agent’s tasks.';
 
 function report(over: Partial<TaskDetailReport> = {}): TaskDetailReport {
   return {
@@ -125,22 +128,25 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderPage() {
+function renderPage(over: { justCopied?: boolean } = {}) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
+  const onDuplicated = vi.fn<(routineId: string) => void>();
   const view = render(
     <TaskPage
       agentId="a1"
       routineId="t1"
       leading={<button type="button">Open navigation</button>}
       onNavigate={onNavigate}
+      onDuplicated={onDuplicated}
+      justCopied={over.justCopied ?? false}
     />,
   );
-  return { ...view, onNavigate };
+  return { ...view, onNavigate, onDuplicated };
 }
 
 /** Render, and wait for the task to be on screen. */
-async function renderReady() {
-  const view = renderPage();
+async function renderReady(over: { justCopied?: boolean } = {}) {
+  const view = renderPage(over);
   await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
   return view;
 }
@@ -184,6 +190,7 @@ beforeEach(() => {
   finishByMock.mockReset();
   completeMock.mockReset();
   reopenMock.mockReset();
+  duplicateMock.mockReset();
   fireNowMock.mockReset();
   updateMock.mockReset();
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -591,13 +598,13 @@ describe('TaskPage (TASK-910)', () => {
       what: 'a running task',
       over: { enabled: true },
       note: NO_MANAGE_NOTE,
-      buttons: ['Check now', 'Pause'],
+      buttons: ['Check now', 'Pause', 'More actions'],
     },
     {
       what: 'a paused task',
       over: { enabled: false, nextCheckAt: null },
       note: PAUSED_NO_EDIT_NOTE,
-      buttons: ['Check now', 'Resume'],
+      buttons: ['Check now', 'Resume', 'More actions'],
     },
   ])(
     'someone who no longer manages the agent’s tasks sees why nothing can be started or resumed: $what',
@@ -1265,7 +1272,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     await renderReady();
-    const note = `${AUTO_PAUSED} Only someone who manages this agent’s tasks can resume it.`;
+    const note = `${AUTO_PAUSED} Only someone who manages this agent’s tasks can resume or copy it.`;
     expect(screen.getByText(note)).toBeInTheDocument();
     const resume = screen.getByRole('button', { name: 'Resume' });
     expect(resume).toBeDisabled();
@@ -2314,5 +2321,171 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(reopen).toBeDisabled();
     const note = screen.getByText('Done. Only someone who manages this agent’s tasks can reopen it.');
     expect(reopen).toHaveAttribute('aria-describedby', note.id);
+  });
+});
+
+describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
+  const NOT_CONFIRMED = 'We couldn’t confirm the copy was made. Try again, and it won’t be made twice.';
+  const COPY_NOT_ALLOWED = 'You can’t copy this task, because you no longer manage this agent’s tasks.';
+  const COPY_LINE = 'This is a paused copy. Change what you need, then press Resume.';
+  const GONE = 'We couldn’t find this task. It may have been deleted, or it belongs to someone else.';
+  const JUST_NOW = 'We couldn’t copy this task just now. Try again.';
+
+  const more = () => screen.getByRole('button', { name: 'More actions' });
+
+  /** Opens ⋯ from the keyboard (TaskSteps' way) and chooses Duplicate. */
+  async function chooseDuplicate() {
+    const trigger = more();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+  }
+
+  it('⋯ › Duplicate copies the task with a request id, and hands the copy’s id to the shell without reading the task again', async () => {
+    taskMock.mockResolvedValue(detail());
+    duplicateMock.mockResolvedValue({ routineId: 'rtn_copy' });
+    const { onDuplicated } = await renderReady();
+    const reads = taskMock.mock.calls.length;
+    await chooseDuplicate();
+    await waitFor(() => expect(onDuplicated).toHaveBeenCalledWith('rtn_copy'));
+    expect(duplicateMock).toHaveBeenCalledTimes(1);
+    expect(duplicateMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
+    expect(taskMock).toHaveBeenCalledTimes(reads);
+  });
+
+  it('a press whose answer never came keeps its request id, and the retry sends the same one', async () => {
+    taskMock.mockResolvedValue(detail());
+    duplicateMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+      .mockResolvedValueOnce({ routineId: 'rtn_copy' });
+    const { onDuplicated } = await renderReady();
+    await chooseDuplicate();
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_CONFIRMED);
+    await waitFor(() => expect(more()).toBeEnabled());
+
+    await chooseDuplicate();
+    await waitFor(() => expect(onDuplicated).toHaveBeenCalledWith('rtn_copy'));
+    expect(duplicateMock).toHaveBeenCalledTimes(2);
+    expect(duplicateMock.mock.calls[1]![2].requestId).toBe(duplicateMock.mock.calls[0]![2].requestId);
+  });
+
+  it('an answered refusal ends the request, so the next press sends a new id', async () => {
+    taskMock.mockResolvedValue(detail());
+    duplicateMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 403))
+      .mockResolvedValueOnce({ routineId: 'rtn_copy' });
+    await renderReady();
+    await chooseDuplicate();
+    expect(await screen.findByRole('alert')).toHaveTextContent(COPY_NOT_ALLOWED);
+    await waitFor(() => expect(more()).toBeEnabled());
+
+    await chooseDuplicate();
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(2));
+    expect(duplicateMock.mock.calls[1]![2].requestId).not.toBe(
+      duplicateMock.mock.calls[0]![2].requestId,
+    );
+  });
+
+  it.each([
+    { status: 400, text: 'We couldn’t copy this task as it is. Change it in Quill’s settings first.', destructive: true },
+    { status: 404, text: GONE, destructive: true },
+    { status: 401, text: HTTP_SESSION_ENDED, destructive: false },
+    { status: 409, text: JUST_NOW, destructive: true },
+  ])('a refused copy says why: $status', async ({ status, text, destructive }) => {
+    taskMock.mockResolvedValue(detail());
+    duplicateMock.mockRejectedValue(new WorkspaceApiError('/x', status));
+    await renderReady();
+    await chooseDuplicate();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(text);
+    expect(alert.className.includes('destructive')).toBe(destructive);
+  });
+
+  it('after a failed Duplicate, focus goes back to the ⋯', async () => {
+    const answer = deferred<{ routineId: string }>();
+    taskMock.mockResolvedValue(detail());
+    duplicateMock.mockReturnValueOnce(answer.promise);
+    await renderReady();
+    await chooseDuplicate();
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(1));
+    dropFocusOnBody();
+
+    await act(async () => answer.reject(new WorkspaceApiError('/x', 403)));
+    await screen.findByRole('alert');
+    await waitFor(() => expect(more()).toBeEnabled());
+    await waitFor(() => expect(document.activeElement).toBe(more()));
+  });
+
+  it('without edit but able to start check-ins, only the ⋯ is off, and the note says why', async () => {
+    taskMock.mockResolvedValue(detail({ permissions: { fire: true, stop: true, edit: false } }));
+    await renderReady();
+    expect(more()).toBeDisabled();
+    expect(more()).toHaveAccessibleDescription(COPY_NOT_ALLOWED);
+    for (const name of ['Check now', 'Pause']) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toBeEnabled();
+      expect(button).not.toHaveAttribute('aria-describedby');
+    }
+  });
+
+  it.each([
+    { what: 'a paused task', over: { enabled: false, nextCheckAt: null } },
+    { what: 'a get-done task', over: { kind: 'get-done' as const } },
+  ])('Duplicate is offered on $what', async ({ over }) => {
+    taskMock.mockResolvedValue(detail(over));
+    await renderReady();
+    expect(more()).toBeEnabled();
+    const trigger = more();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(await screen.findByRole('menuitem', { name: 'Duplicate' })).toBeInTheDocument();
+  });
+
+  it('the copy’s page says once that it’s a paused copy, with the link to its agent’s settings', async () => {
+    taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
+    const { onNavigate } = await renderReady({ justCopied: true });
+    expect(screen.getByText(COPY_LINE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'Change it in Quill’s settings' }));
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'agent-settings', id: 'a1', section: 'routines' });
+  });
+
+  it.each([
+    { what: 'it isn’t a fresh copy', justCopied: false, over: { enabled: false, nextCheckAt: null } },
+    { what: 'the copy is already running', justCopied: true, over: {} },
+    {
+      what: 'the person can’t edit',
+      justCopied: true,
+      over: {
+        enabled: false,
+        nextCheckAt: null,
+        permissions: { fire: true, stop: true, edit: false },
+      },
+    },
+  ])('no paused-copy line when $what', async ({ justCopied, over }) => {
+    taskMock.mockResolvedValue(detail(over));
+    await renderReady({ justCopied });
+    expect(screen.queryByText(COPY_LINE)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Change it in Quill’s settings' })).toBeNull();
+  });
+
+  it('Resume uses the line up: it doesn’t come back when the copy is paused again', async () => {
+    const paused = detail({ enabled: false, nextCheckAt: null });
+    taskMock
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(detail({ revision: 'rev-2' }))
+      .mockResolvedValue(detail({ enabled: false, nextCheckAt: null, revision: 'rev-3' }));
+    updateMock.mockResolvedValue(ROUTINE);
+    await renderReady({ justCopied: true });
+    expect(screen.getByText(COPY_LINE)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    const pause = await screen.findByRole('button', { name: 'Pause' });
+    await settled(pause, 2);
+    expect(screen.queryByText(COPY_LINE)).toBeNull();
+
+    fireEvent.click(pause);
+    const resume = await screen.findByRole('button', { name: 'Resume' });
+    await settled(resume, 3);
+    expect(screen.queryByText(COPY_LINE)).toBeNull();
   });
 });

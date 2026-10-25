@@ -259,6 +259,21 @@ function Inner({
   }, []);
 
   /**
+   * The task Duplicate just made, by TaskPage's own key (TASK-953): its page
+   * says once that it is a paused copy. Memory only, never the URL, so a
+   * reload, a shared link and Back and Forward never repeat the line. Cleared
+   * as soon as the route is anywhere but that task, so a later visit shows
+   * nothing either.
+   */
+  const [freshCopy, setFreshCopy] = useState<string | null>(null);
+  useEffect(() => {
+    if (freshCopy === null) return;
+    const here =
+      route.kind === 'task' ? JSON.stringify([route.agentId, route.routineId]) : null;
+    if (here !== freshCopy) setFreshCopy(null);
+  }, [route, freshCopy]);
+
+  /**
    * Back / forward. The URL is the source of truth on the way in, exactly as
    * it is at mount.
    *
@@ -1012,6 +1027,13 @@ function Inner({
               routineId={route.routineId}
               leading={navTrigger}
               onNavigate={navigate}
+              justCopied={freshCopy === JSON.stringify([route.agentId, route.routineId])}
+              onDuplicated={(copyId) => {
+                // Both setters run in this one callback, so React batches them
+                // and the effect above never sees the flag beside the source's route.
+                setFreshCopy(JSON.stringify([route.agentId, copyId]));
+                navigate({ kind: 'task', agentId: route.agentId, routineId: copyId });
+              }}
             />
           )}
           {route.kind === 'task-checkin' && (
