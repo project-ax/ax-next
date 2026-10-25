@@ -105,6 +105,7 @@ CounterRow,
   ThreadMessage,
   UserFileEntry,
   TaskCheckin,
+  TaskCompleteResponse,
   TaskDetail,
   TaskFinishByResponse,
   TaskReplyResponse,
@@ -495,7 +496,9 @@ function isTaskFinishBy(v: unknown): boolean {
  * dev-fast`), and reads as null (`withRowDefaults`) rather than failing the
  * Tasks page. The reading (TASK-952) follows the same rule: null or a reading
  * when present, and an absent one, from a host before TASK-952, reads as null
- * (`withReading`).
+ * (`withReading`). So does the claim (TASK-950): true or false when present,
+ * and an absent one, from a host before TASK-950, reads as no claim
+ * (`withRowDefaults`).
  */
 function isTaskReport(v: unknown): boolean {
   return (
@@ -504,6 +507,7 @@ function isTaskReport(v: unknown): boolean {
     (v.update === null || isString(v.update)) &&
     (!('ask' in v) || v.ask === null || isString(v.ask)) &&
     (!('reading' in v) || v.reading === null || isTaskReading(v.reading)) &&
+    (!('doneClaimed' in v) || typeof v.doneClaimed === 'boolean') &&
     isString(v.reportedAt)
   );
 }
@@ -517,7 +521,10 @@ function isTaskReport(v: unknown): boolean {
  * absent steps as null. A kind this page doesn't know reads as `'stay-on-top'`
  * too, as the server reads one (`toTaskKind`): a tab left open across a deploy
  * that adds a kind must still load them. Its steps stay as they came, as on any
- * stay-on-top row, and the Tasks row draws counts for get-done only.
+ * stay-on-top row, and the Tasks row draws counts for get-done only. A host
+ * from before TASK-950 sends no `doneAt` and no claim: an absent `doneAt`
+ * reads as null (not Done) and an absent `doneClaimed` as false (no claim).
+ * One from before TASK-951 sends no finish date, which reads as none.
  */
 function withRowDefaults(row: TaskRow): TaskRow {
   return {
@@ -526,10 +533,17 @@ function withRowDefaults(row: TaskRow): TaskRow {
     steps: 'steps' in row ? row.steps : null,
     // A host from before TASK-951 sends no finish date.
     finishBy: 'finishBy' in row ? row.finishBy : null,
-    task:
-      row.task === null || 'ask' in row.task
-        ? row.task
-        : { ...(row.task as Omit<TaskRowReport, 'ask'>), ask: null },
+    doneAt: 'doneAt' in row ? row.doneAt : null,
+    task: row.task === null ? null : withReportDefaults(row.task),
+  };
+}
+
+/** A checked report with an older host's absent ask (TASK-933) and claim (TASK-950) filled in. */
+function withReportDefaults(report: TaskRowReport): TaskRowReport {
+  return {
+    ...report,
+    ask: 'ask' in report ? report.ask : null,
+    doneClaimed: 'doneClaimed' in report ? report.doneClaimed : false,
   };
 }
 
@@ -566,7 +580,8 @@ function isTaskNoRecentUpdate(v: unknown): boolean {
  * One Tasks row. A kind or steps the row does carry is checked (TASK-948): a
  * kind must be text, and steps null or counts. A kind this page doesn't know
  * reads as stay-on-top (`withRowDefaults`) rather than failing the whole list.
- * Left out, they are an older host's (`withRowDefaults`).
+ * Left out, they are an older host's (`withRowDefaults`). So is a left-out
+ * `doneAt` (TASK-950); one the row carries is null or a time.
  */
 function isTaskRow(v: unknown): boolean {
   return (
@@ -580,7 +595,8 @@ function isTaskRow(v: unknown): boolean {
     (!('steps' in v) || v.steps === null || isTaskStepCounts(v.steps)) &&
     (!('finishBy' in v) || v.finishBy === null || isTaskFinishBy(v.finishBy)) &&
     (v.task === null || isTaskReport(v.task)) &&
-    (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate))
+    (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate)) &&
+    (!('doneAt' in v) || v.doneAt === null || isString(v.doneAt))
   );
 }
 
@@ -607,7 +623,8 @@ function isStringOrNull(v: unknown): v is string | null {
  * agent's notes. The ask must be PRESENT here (text or null): the list route's
  * absent-ask allowance is for an older host, and `task()` doesn't normalise,
  * so an absent ask would reach the page as `undefined` and draw as an ask.
- * The reading must be present too (TASK-952), for the same reason.
+ * The reading must be present too (TASK-952), for the same reason, and so
+ * must the claim (TASK-950), true or false.
  */
 function isTaskDetailReport(v: unknown): boolean {
   return (
@@ -617,7 +634,8 @@ function isTaskDetailReport(v: unknown): boolean {
     isStringOrNull(v.ask) &&
     isStringOrNull(v.agentNotes) &&
     'reading' in v &&
-    (v.reading === null || isTaskReading(v.reading))
+    (v.reading === null || isTaskReading(v.reading)) &&
+    typeof v.doneClaimed === 'boolean'
   );
 }
 
@@ -651,6 +669,11 @@ function isTaskUpdate(v: unknown): boolean {
 /** One reply: when it was sent, the person's fenced text (or null), and whether the caller wrote it. */
 function isTaskReply(v: unknown): boolean {
   return isRecord(v) && isString(v.sentAt) && isStringOrNull(v.text) && typeof v.byYou === 'boolean';
+}
+
+/** A sent reply's answer, a reply's (TASK-931) or Not yet's and Reopen's (TASK-950): what it did about a check-in, one the contract names. */
+function isTaskReplyResponse(v: unknown): boolean {
+  return isRecord(v) && !Array.isArray(v) && ROUTINE_REPLY_CHECK_INS.some((c) => c === v.checkIn);
 }
 
 function isTaskPermissions(v: unknown): boolean {
@@ -694,7 +717,8 @@ function isTaskStepsResponse(v: unknown): boolean {
  * so one missing object would crash it instead of saying "couldn't load".
  * The kind (as text) and the steps (TASK-948) must be there too: `task()`
  * doesn't fill them in, as it doesn't fill in the ask (`isTaskDetailReport`).
- * A kind this page doesn't know is read, not refused (`task()`).
+ * A kind this page doesn't know is read, not refused (`task()`). So must
+ * `doneAt` (TASK-950), null or a time, for the same reason.
  */
 function isTaskDetail(b: unknown): boolean {
   return (
@@ -714,6 +738,8 @@ function isTaskDetail(b: unknown): boolean {
     'finishBy' in b &&
     (b.finishBy === null || isTaskFinishBy(b.finishBy)) &&
     (b.noRecentUpdate === null || isTaskNoRecentUpdate(b.noRecentUpdate)) &&
+    'doneAt' in b &&
+    isStringOrNull(b.doneAt) &&
     Array.isArray(b.updates) &&
     b.updates.every(isTaskUpdate) &&
     Array.isArray(b.replies) &&
@@ -1229,11 +1255,54 @@ export const workspaceApi = {
       method: 'POST',
       body: { text: input.text, requestId: input.requestId },
     });
-    return checkedRead<TaskReplyResponse>(
+    return checkedRead<TaskReplyResponse>(path, body, isTaskReplyResponse);
+  },
+
+  /**
+   * Mark a task done (TASK-950). Only its owner, while they manage the
+   * agent's tasks, may: the server answers anyone else with the page's 404,
+   * and an owner who may not with a 403. The press's `requestId` makes a retry safe: the
+   * same one again answers done without finishing the task twice. "Done." is
+   * a claim, so an answer that doesn't say so is a `WorkspaceShapeError`, not
+   * a guess; a refusal or failure is a `WorkspaceApiError` carrying only the
+   * status.
+   */
+  completeTask: async (
+    agentId: string,
+    routineId: string,
+    input: { requestId: string },
+  ) => {
+    const path = `${taskPath(agentId, routineId)}/complete`;
+    const body = await req<unknown>(path, {
+      method: 'POST',
+      body: { requestId: input.requestId },
+    });
+    return checkedRead<TaskCompleteResponse>(
       path,
       body,
-      (v) => isRecord(v) && !Array.isArray(v) && ROUTINE_REPLY_CHECK_INS.some((c) => c === v.checkIn),
+      (v) => isRecord(v) && !Array.isArray(v) && v.done === true,
     );
+  },
+
+  /**
+   * Not yet, or Reopen a Done task, with a reply (TASK-950): a reply that also
+   * takes back the agent's claim, or runs a Done task again. It answers what
+   * the reply did about a check-in, as `sendTaskReply` does, and fails the
+   * same ways; reopening a Done task without `edit` is a 403. Mint a fresh
+   * `requestId` for each press: one an earlier reply used answers `replayed`
+   * and reopens nothing.
+   */
+  reopenTask: async (
+    agentId: string,
+    routineId: string,
+    input: { text: string; requestId: string },
+  ) => {
+    const path = `${taskPath(agentId, routineId)}/reopen`;
+    const body = await req<unknown>(path, {
+      method: 'POST',
+      body: { text: input.text, requestId: input.requestId },
+    });
+    return checkedRead<TaskReplyResponse>(path, body, isTaskReplyResponse);
   },
 
   /**

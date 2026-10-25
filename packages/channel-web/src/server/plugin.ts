@@ -86,6 +86,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     routines:set-finish-by, answering 503 without it. The date itself
 //     reaches the Tasks page and the task page on the routines:list and
 //     routines:get views they already read.
+//     TASK-950 adds no hard call either: Mark done goes through the optional
+//     routines:complete, and Not yet and Reopen through the optional
+//     routines:reopen, each answering 503 without its hook. Both read the
+//     caller's own task first, the task page's read (the optional
+//     routines:get and routines:recent-fires), and answer 404 without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -325,15 +330,16 @@ export function createChannelWebServerPlugin(
           // TASK-910 — the task page reads the task itself, and only for the
           // caller's own task, then its check-ins. Both come from
           // @ax/routines, so the page answers 404 without either. TASK-911's
-          // check-in page reads both too.
+          // check-in page reads both too, and so do TASK-950's Mark done and
+          // Not yet or Reopen, before they write.
           hook: 'routines:get',
           degradation:
-            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId) answer 404, because without @ax/routines there are no tasks',
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId), Mark done (POST .../complete) and Not yet or Reopen (POST .../reopen) answer 404, because without @ax/routines there are no tasks',
         },
         {
           hook: 'routines:recent-fires',
           degradation:
-            'the task page and its check-ins answer 404, as they do without routines:get (both come from @ax/routines)',
+            'the task page, its check-ins, Mark done and Not yet or Reopen answer 404, as they do without routines:get (both come from @ax/routines)',
         },
         {
           // TASK-910 — Clear notes. The service decides who may (the task's
@@ -379,6 +385,21 @@ export function createChannelWebServerPlugin(
           hook: 'routines:set-finish-by',
           degradation:
             'Setting or removing a finish date on the task page (PUT /api/workspace/tasks/:agentId/:routineId/finish-by) answers 503 and the date stays as it was',
+        },
+        {
+          // TASK-950 — Mark done. The route reads the caller's own task first
+          // (so only its owner can be told no), and the service decides who
+          // may (the owner, with `edit`) under the routine's row lock.
+          hook: 'routines:complete',
+          degradation:
+            'Mark done on the task page and on Today (POST /api/workspace/tasks/:agentId/:routineId/complete) answers 503 and the task keeps checking in',
+        },
+        {
+          // TASK-950 — Not yet, and Reopen on a Done task: a reply that also
+          // takes back the agent's claim, or runs a Done task again.
+          hook: 'routines:reopen',
+          degradation:
+            'Not yet and Reopen (POST /api/workspace/tasks/:agentId/:routineId/reopen) answer 503 and nothing is sent',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

@@ -101,6 +101,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     task: null,
     noRecentUpdate: null,
     finishBy: null,
+    done: null,
     ...over,
   };
 }
@@ -114,6 +115,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     agentNotes: 'Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
     reading: null,
+    doneClaimed: false,
     ...over,
   };
 }

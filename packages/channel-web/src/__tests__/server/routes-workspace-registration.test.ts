@@ -67,6 +67,8 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     expect(routes).toContain('POST /api/workspace/tasks/:agentId/:routineId/replies');
     expect(routes).toContain('POST /api/workspace/tasks/:agentId/:routineId/steps');
     expect(routes).toContain('PUT /api/workspace/tasks/:agentId/:routineId/finish-by');
+    expect(routes).toContain('POST /api/workspace/tasks/:agentId/:routineId/complete');
+    expect(routes).toContain('POST /api/workspace/tasks/:agentId/:routineId/reopen');
     expect(routes).toContain('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId');
     expect(routes).toContain('GET /api/workspace/agents/:agentId');
     expect(routes).toContain('POST /api/workspace/route');
