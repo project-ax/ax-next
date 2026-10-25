@@ -242,6 +242,23 @@ describe('useMarkDone', () => {
     expect(completeMock.mock.calls[2]![2].requestId).not.toBe(completeMock.mock.calls[0]![2].requestId);
   });
 
+  // TASK-949's boxes sit above the question, so a step can be ticked while it is open.
+  it('closes the question once every step is ticked, and the next press finishes', async () => {
+    completeMock.mockResolvedValue({ done: true });
+    const onDone = vi.fn();
+    const view = render(<Harness unticked={2} onDone={onDone} />);
+    press();
+    view.rerender(<Harness unticked={1} onDone={onDone} />);
+    expect(screen.getByRole('alert').textContent).toContain('1 step isn’t ticked. It’ll stay on the task as it is.');
+    view.rerender(<Harness unticked={0} onDone={onDone} />);
+    expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
+    expect(screen.queryByText(/ticked/)).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+    press();
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(completeMock).toHaveBeenCalledTimes(1);
+  });
+
   it('shows the failure and keeps the confirmation open for a retry', async () => {
     completeMock.mockRejectedValue(new WorkspaceApiError('/x', 500));
     render(<Harness unticked={2} onDone={() => {}} />);

@@ -2171,6 +2171,22 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.queryByRole('button', { name: 'Mark done' })).toBeNull();
   });
 
+  it('ticking the last step while Mark done asks closes the question, and the next press finishes', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
+    await renderReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    expect(screen.getByText('1 step isn’t ticked. It’ll stay on the task as it is.')).toBeInTheDocument();
+    // The step's box is right above the question (TASK-949); the answer is the list, now all ticked.
+    stepsMock.mockResolvedValue({ steps: STEPS.map((step) => ({ ...step, done: true })), skipped: 0 });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Check the redirects' }));
+    await waitFor(() => expect(screen.queryByText(/isn’t ticked/)).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
+    completeMock.mockResolvedValue({ done: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
+  });
+
   it('the footer’s Mark done asks first with unticked steps, outline', async () => {
     taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
     await renderReady();

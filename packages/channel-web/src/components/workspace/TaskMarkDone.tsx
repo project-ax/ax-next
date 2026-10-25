@@ -25,7 +25,9 @@
  *
  * THE CONFIRMATION asks only when steps are unticked, and says they stay on
  * the task as they are. A task with every step ticked, or with none, is
- * finished on the first press: nobody should have to confirm the obvious.
+ * finished on the first press: nobody should have to confirm the obvious. Its
+ * count follows the steps as they change (a person can tick one right above
+ * it, TASK-949), and once none is left unticked the question closes.
  *
  * WHERE FOCUS GOES, on both pages alike. The caller puts `buttonRef` on Mark
  * done and `controlsRef` on what holds it, the question and the failure. A
@@ -133,6 +135,9 @@ export function useMarkDone({
     setFailure(null);
     setConfirming(false);
   }
+  // Every step got ticked while the question was open (the task page's boxes sit above it, TASK-949):
+  // nothing is left to confirm, so it closes, and the next press finishes.
+  if (confirming && unticked === 0) setConfirming(false);
 
   const send = async () => {
     if (inFlight.current) return;
