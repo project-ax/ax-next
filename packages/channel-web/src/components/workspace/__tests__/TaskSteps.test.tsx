@@ -610,6 +610,43 @@ describe('TaskSteps: the request id (TaskReplyBox’s rule)', () => {
     expect(sentId(1)).not.toBe(sentId(0));
   });
 
+  // The id is keyed on the whole change, its text included: an add or an edit
+  // whose text changed after an unconfirmed failure is a different change, so
+  // reusing the id would have the host refuse it as a reused request.
+  it('is new for an add whose text changed after an unconfirmed failure', async () => {
+    setStepsMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+      .mockResolvedValueOnce(answer([...PLAN, { id: 's4', text: 'Update the robots file', done: false, byAgent: false }]));
+    renderSteps();
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Update the sitemap' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await within(newInput().closest('form')!).findByRole('alert');
+    fireEvent.change(newInput(), { target: { value: 'Update the robots file' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(2));
+    expect(sentOps(0)).toStrictEqual([{ op: 'add', text: 'Update the sitemap' }]);
+    expect(sentOps(1)).toStrictEqual([{ op: 'add', text: 'Update the robots file' }]);
+    expect(sentId(1)).not.toBe(sentId(0));
+  });
+
+  it('is new for an edit whose text changed after an unconfirmed failure', async () => {
+    setStepsMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+      .mockResolvedValueOnce(answer(withStep(PLAN, 's2', { text: 'Check all redirects' })));
+    renderSteps();
+    const input = await edit('Check the redirects');
+    fireEvent.change(input, { target: { value: 'Check every redirect' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await within(input.closest('form')!).findByRole('alert');
+    fireEvent.change(editInput(), { target: { value: 'Check all redirects' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(2));
+    expect(sentOps(0)).toStrictEqual([{ op: 'edit', id: 's2', text: 'Check every redirect' }]);
+    expect(sentOps(1)).toStrictEqual([{ op: 'edit', id: 's2', text: 'Check all redirects' }]);
+    expect(sentId(1)).not.toBe(sentId(0));
+  });
+
   it('is dropped after an answer, so the same change again is a new one', async () => {
     // The host still has it unticked (another tab unticked it), so the same tick can be pressed again.
     setStepsMock.mockResolvedValue(answer(PLAN));
