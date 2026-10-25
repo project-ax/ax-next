@@ -96,6 +96,7 @@ const TASK_DETAIL: TaskDetail = {
   steps: [],
   finishBy: null,
   noRecentUpdate: null,
+  doneAt: null,
   updates: [],
   replies: [],
 };
@@ -259,6 +260,7 @@ describe('landing on a URL', () => {
           finishBy: null,
           task: null,
           noRecentUpdate: null,
+          doneAt: null,
         },
       ],
       unavailableAgents: [],
@@ -767,6 +769,7 @@ describe('one tasks read (TASK-933)', () => {
             finishBy: null,
             task: null,
             noRecentUpdate: null,
+            doneAt: null,
           },
         ],
         unavailableAgents: [],
@@ -792,6 +795,7 @@ describe('one tasks read (TASK-933)', () => {
       finishBy: null,
       task: null,
       noRecentUpdate: null,
+      doneAt: null,
     });
     let landStale!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
     tasksMock
@@ -955,9 +959,11 @@ describe('one tasks read (TASK-933)', () => {
             update: 'Two tickets are still open.',
             ask: 'Want me to draft a reply to #4410?',
             reading: null,
+            doneClaimed: false,
             reportedAt: '2026-10-23T10:00:00.000Z',
           },
           noRecentUpdate: null,
+          doneAt: null,
         },
       ],
       unavailableAgents: [],

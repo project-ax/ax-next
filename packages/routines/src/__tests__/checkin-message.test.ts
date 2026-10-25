@@ -9,7 +9,7 @@ const REPORTS: CheckInMessageInput['reports'] = [
   { firedAt: new Date('2026-10-22T13:45:00Z'), report: { status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out?', reading: null } },
   { firedAt: new Date('2026-10-22T13:30:00Z'), report: { status: 'on-track', update: 'Queue is empty.', ask: null, reading: null } },
 ];
-const SCHEDULED: CheckInMessageInput = { source: 'tick', agentNotes: NOTES, reports: REPORTS, replies: [], missesInARow: 0, steps: null };
+const SCHEDULED: CheckInMessageInput = { source: 'tick', agentNotes: NOTES, reports: REPORTS, replies: [], missesInARow: 0, steps: null, doneClaimed: false };
 /** SCHEDULED's message, exactly. */
 const SCHEDULED_MESSAGE = [
   'Scheduled check-in.',
@@ -38,7 +38,7 @@ describe('the check-in message (TASK-908)', () => {
   });
 
   it('Check now, with no notes, no replies and no reports, exactly', () => {
-    expect(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null })).toBe([
+    expect(renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null, doneClaimed: false })).toBe([
       'Check now: this check-in was started outside its schedule.',
       'You have no saved notes yet.',
       'The person hasn’t replied on this task yet.',
@@ -369,5 +369,34 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
       '',
       'Work on the task now, then finish with one routine_report.',
     ].join('\n'));
+  });
+});
+
+// TASK-950: a "get-done" task whose latest report said it thinks the task is done, and the person hasn't marked it
+// done yet. The host says so on the line after the opening, before the misses line: fixed text, nothing
+// agent-written. The copy is exact.
+describe('a claimed task’s check-in message (TASK-950)', () => {
+  const CLAIMED = 'In your last report you said you think this task is done. The person hasn’t marked it done yet. Check whether it still is, and report again.';
+  const paragraphs = (text: string): string[] => text.split('\n\n');
+
+  it('puts the claim line after the opening, then the misses line, then the steps', () => {
+    const parts = paragraphs(renderCheckInMessage({ ...SCHEDULED, doneClaimed: true, missesInARow: 1, steps: [] }));
+    expect(parts[0]).toBe('Scheduled check-in.');
+    expect(parts[1]).toBe(CLAIMED);
+    expect(parts[2]).toBe('Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.');
+    expect(parts[3]).toMatch(/^This task has no steps yet\./);
+  });
+
+  it('with no misses and no steps paragraph, the notes follow the claim line', () => {
+    const parts = paragraphs(renderCheckInMessage({ ...SCHEDULED, source: 'manual', doneClaimed: true }));
+    expect(parts[0]).toBe('Check now: this check-in was started outside its schedule.');
+    expect(parts[1]).toBe(CLAIMED);
+    expect(parts[2]).toMatch(/^Your notes from earlier check-ins\./);
+  });
+
+  it('an unclaimed task’s message has no claim line and is exactly what it was', () => {
+    const message = renderCheckInMessage({ ...SCHEDULED, doneClaimed: false });
+    expect(message).not.toContain('you think this task is done');
+    expect(message).toBe(SCHEDULED_MESSAGE);
   });
 });

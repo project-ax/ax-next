@@ -68,7 +68,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
     expect(created.task).toBeNull();
     await checkIn(created, 'check-in', { report: needsYou, notes: NOTES, reading: OPEN_5 });
-    const task = { ...needsYou, reading: OPEN_5, reportedAt: now.toISOString(), agentNotes: NOTES };
+    const task = { ...needsYou, reading: OPEN_5, doneClaimed: false, reportedAt: now.toISOString(), agentNotes: NOTES };
     expect((await get(bus, created.routineId)).task).toEqual(task);
     expect((await list(bus)).map(view => view.task)).toEqual([task]);
     // create and update share the view. An edit shows the state and never mints it.
@@ -79,12 +79,12 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // receipt, which keeps no task state: the edit's answer, with task null.
     // TASK-952: a report that sent no reading shows none, unlike notes it left out.
     await checkIn(edited, 'after-edit', { at: later, report: onTrack });
-    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reading: null, reportedAt: later.toISOString(), agentNotes: NOTES });
+    expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reading: null, doneClaimed: false, reportedAt: later.toISOString(), agentNotes: NOTES });
     expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
     // The next check-in's dispatch holds the state as acceptDispatch read it,
     // notes included: TASK-908's check-in message takes them from there.
     const next = await f.store.acceptDispatch({ agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now });
-    expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later, reading: null });
+    expect(next?.accepted.row.task).toEqual({ ...onTrack, agentNotes: NOTES, reportedAt: later, reading: null, doneClaimed: false });
   });
 
   it("receipts keep no copy of a task's state; the live answers keep it", async () => {
@@ -93,12 +93,12 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
     const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
     const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
-    expect(edited.task).toEqual({ ...needsYou, reading: null, reportedAt: now.toISOString(), agentNotes: NOTES });
+    expect(edited.task).toEqual({ ...needsYou, reading: null, doneClaimed: false, reportedAt: now.toISOString(), agentNotes: NOTES });
     // The next check-in's live accept still hands over the state as it read it under the row lock (TASK-908).
     const dispatch = { agentId: 'a', routineId: created.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'next', now } as const;
     const next = await f.store.acceptDispatch(dispatch);
     expect(next?.replayed).toBe(false);
-    expect(next?.accepted.row.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null });
+    expect(next?.accepted.row.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null, doneClaimed: false });
     // The receipts (the create, both accepts, the edit) hold none of the agent's text.
     const receipts = (await sql<{ operation: string; result: unknown }>`SELECT operation, result FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation, request_id`.execute(f.db)).rows;
     expect(receipts.map(receipt => receipt.operation)).toEqual(['create', 'dispatch', 'dispatch', 'update']);
@@ -201,7 +201,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const next = await checkIn(again, 'next', { at: later });
     expect(next.row.task).toBeNull();
     expect(await f.store.recordReport({ agentId: 'a', dispatchId: next.dispatchId, conversationId: 'c-next', actorUserId: 'owner', report: onTrack, now: later })).toBe('recorded');
-    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reading: null, reportedAt: later.toISOString(), agentNotes: null });
+    expect((await get(bus, row.routineId)).task).toEqual({ ...onTrack, reading: null, doneClaimed: false, reportedAt: later.toISOString(), agentNotes: null });
   });
 
   it('a routine turned into a task brings no state with it, even state it held as a repeat routine', async () => {
@@ -211,7 +211,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     await f.db.updateTable('routines_v1_definitions').set({
       task_status: 'needs-you', task_update: needsYou.update, task_ask: needsYou.ask, task_reported_at: now, task_report_accepted_at: now, agent_notes: NOTES,
     }).where('routine_id', '=', row.routineId).execute();
-    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...needsYou, agentNotes: NOTES, reportedAt: now, reading: null, doneClaimed: false });
     const task = await f.store.updateAuthored({
       agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'to-task', now, stopOnly: false,
       patch: { kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.', trigger: { kind: 'interval', every: '15m' } },
@@ -263,7 +263,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
   it('a NaN, infinite or half-set reading, or one another report wrote, reads as none, and none of them stops the tick (TASK-952)', async () => {
     const row = await f.store.createAuthored(taskInput('odd-reading'));
     const run = await checkIn(row, 'odd-reading', { report: onTrack, reading: OPEN_5 });
-    const task = { ...onTrack, agentNotes: null, reportedAt: now };
+    const task = { ...onTrack, agentNotes: null, reportedAt: now, doneClaimed: false };
     // The reading as recordReport left it, and the row due again, before each case.
     const reset = sql`task_reading_value = 5, task_reading_label = 'Open tickets', task_reading_reported_at = task_reported_at, next_run_at = ${row.nextRunAt}`;
     const odd = {
@@ -312,11 +312,11 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const long = { status: 'off-track', update: 'u'.repeat(3000), ask: 'a'.repeat(3000) } as const;
     await finish((await checkIn(row, 'long-run', { report: long, notes: 'n'.repeat(9000) })).dispatchId);
     const task = { ...long, agentNotes: 'n'.repeat(9000) };
-    expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now, reading: null });
-    expect((await get(bus, row.routineId)).task).toEqual({ ...task, reading: null, reportedAt: now.toISOString() });
+    expect((await f.store.findOne(row))?.task).toEqual({ ...task, reportedAt: now, reading: null, doneClaimed: false });
+    expect((await get(bus, row.routineId)).task).toEqual({ ...task, reading: null, doneClaimed: false, reportedAt: now.toISOString() });
     const { fires } = await bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', owner, { agentId: 'a', routineId: row.routineId });
     expect(fires.map(fire => fire.report)).toEqual([{ ...long, reading: null }]);
-    expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now, reading: null } })]);
+    expect(await claimed(row)).toEqual([expect.objectContaining({ routineId: row.routineId, task: { ...task, reportedAt: now, reading: null, doneClaimed: false } })]);
   });
 });
 

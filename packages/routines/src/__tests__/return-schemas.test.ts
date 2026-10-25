@@ -8,7 +8,7 @@ const row: StoredRoutine = {
   ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
   agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
   definitionId: null, definitionUpdatedAt: null, nextRunAt: new Date('2030-01-01T00:00:00Z'), lastRunAt: null,
-  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null,
+  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null,
 };
 describe('canonical routine return schemas', () => {
   it('projects every editable/status field without private owner or storage state', () => {
@@ -29,13 +29,13 @@ describe('canonical routine return schemas', () => {
       }),
       task: {
         status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-        agentNotes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'), reading: OPEN_3,
+        agentNotes: 'Order 1234 waits on a refund.', reportedAt: new Date('2030-01-01T00:05:00Z'), reading: OPEN_3, doneClaimed: false,
       },
     };
     const projected = routineView(task, 'owner', true);
     expect(projected.task).toEqual({
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?',
-      reading: OPEN_3, reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
+      reading: OPEN_3, doneClaimed: false, reportedAt: '2030-01-01T00:05:00.000Z', agentNotes: 'Order 1234 waits on a refund.',
     });
     for (const schema of [C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) expect(schema.parse(projected)).toEqual(projected);
     // The list tools' view is the same report without its agent notes: the reading stays (TASK-952). It
@@ -172,8 +172,55 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineViewSchema.parse({ ...projected, finishBy: 'not a date' }).finishBy).toBe('not a date');
     });
   });
-  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies, a person's step changes and a task's finish date", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(22);
+  describe("a get-done task's claim and Done (TASK-950)", () => {
+    // Both at once, which a real row never holds (Mark done takes the claim back), so one row shows both projections.
+    const task: StoredRoutine = {
+      ...row,
+      ...C.RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site.', enabled: false,
+      }),
+      nextRunAt: null,
+      task: {
+        status: 'needs-you', update: 'Every article is on the new site.', ask: null, agentNotes: null,
+        reportedAt: new Date('2030-01-01T01:00:00Z'), reading: null, doneClaimed: true,
+      },
+      done: { at: new Date('2030-01-01T02:00:00Z'), byUserId: 'owner' },
+    };
+    it('projects them for its owner only, and for no other kind: when it was marked done, never who', () => {
+      const projected = routineView(task, 'owner', true);
+      expect(projected.done).toStrictEqual({ at: '2030-01-01T02:00:00.000Z' });
+      expect(projected.task).toMatchObject({ status: 'needs-you', doneClaimed: true });
+      for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) {
+        expect(schema.parse(projected)).toEqual(projected);
+      }
+      // The tools' views carry both: routine_list's report keeps the claim, and done is beside it.
+      const { agentNotes: _agentNotes, ...listed } = projected.task!;
+      const { steps: _steps, ...toolView } = projected;
+      expect(C.RoutineListToolOutputSchema.parse({ routines: [{ ...toolView, task: listed }] })).toEqual({ routines: [{ ...toolView, task: listed }] });
+      expect(C.RoutineUpdateToolOutputSchema.parse({ ...toolView, task: listed })).toMatchObject({ done: projected.done, task: { doneClaimed: true } });
+      // Anyone but its owner sees the routine without either.
+      const teammate = routineView(task, 'teammate', true);
+      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), task: null, done: null });
+      // No other kind is ever done, nor claimed, even when its row holds both.
+      const stayOnTop = routineView({ ...task, kind: 'stay-on-top' }, 'owner', true);
+      expect(stayOnTop.done).toBeNull();
+      expect(stayOnTop.task).toMatchObject({ status: 'needs-you', doneClaimed: false });
+      for (const view of [teammate, stayOnTop]) expect(C.RoutineViewSchema.parse(view)).toEqual(view);
+      // Who marked it done never crosses: the view is strict, and the store's shape is refused.
+      expect(JSON.stringify(projected)).not.toContain('byUserId');
+      expect(C.RoutineViewSchema.safeParse({ ...projected, done: { at: projected.done!.at, byUserId: 'owner' } }).success).toBe(false);
+      expect(C.RoutineViewSchema.safeParse({ ...projected, done: { at: new Date('2030-01-01T02:00:00Z') } }).success).toBe(false);
+    });
+    it('answers Mark done with done true, and nothing else', () => {
+      expect(C.RoutineCompleteOutputSchema.parse({ done: true })).toStrictEqual({ done: true });
+      for (const output of [{ done: false }, {}, { done: true, at: '2030-01-01T02:00:00.000Z' }]) {
+        expect(C.RoutineCompleteOutputSchema.safeParse(output).success, JSON.stringify(output)).toBe(false);
+      }
+    });
+  });
+  it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and step changes, a task's finish date, and finishing or reopening a task", () => {
+    expect(ROUTINE_SERVICES).toHaveLength(24);
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
@@ -182,6 +229,8 @@ describe('canonical routine return schemas', () => {
     expect(ROUTINE_SERVICES).toContain('routines:recent-replies');
     expect(ROUTINE_SERVICES).toContain('routines:set-steps');
     expect(ROUTINE_SERVICES).toContain('routines:set-finish-by');
+    expect(ROUTINE_SERVICES).toContain('routines:complete');
+    expect(ROUTINE_SERVICES).toContain('routines:reopen');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
     expect(C.RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });

@@ -11,6 +11,8 @@
  * POST /api/workspace/tasks/:agentId/:routineId/replies — reply to the agent about that task (TASK-931)
  * POST /api/workspace/tasks/:agentId/:routineId/steps — add, tick, reword or delete a step on that task (TASK-949)
  * PUT  /api/workspace/tasks/:agentId/:routineId/finish-by — set or remove a "get-done" task's finish date (TASK-951)
+ * POST /api/workspace/tasks/:agentId/:routineId/complete — mark that task done (TASK-950)
+ * POST /api/workspace/tasks/:agentId/:routineId/reopen — "Not yet", or reopen a Done task, with a reply (TASK-950)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
@@ -61,11 +63,11 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's six routes, `/tasks/:agentId/:routineId`, its
+ *     the task page's eight routes, `/tasks/:agentId/:routineId`, its
  *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
- *     `/replies` (TASK-931), its `/steps` (TASK-949) and its `/finish-by`
- *     (TASK-951), which reach the
- *     agent's tasks rather than its files. The order on each is:
+ *     `/replies` (TASK-931), its `/steps` (TASK-949), its `/finish-by`
+ *     (TASK-951), and its `/complete` and `/reopen` (TASK-950), which reach
+ *     the agent's tasks rather than its files. The order on each is:
  *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
  *     → read. Nothing reads before the resolve. The task page then shows
  *     only the caller's own task (`isOwnTask`), and reads no run history and
@@ -76,18 +78,24 @@
  *     read nothing at all: before the resolve they check only the request
  *     (`/replies` and `/steps` their body's shape too) and that their hook is
  *     there, and their services decide ownership under the routine's row
- *     lock. A reply's text is the person's own, and the contract's reply rule
- *     screens it (blank, too long, invisible or broken characters) before
- *     anything is written; it reaches a model only quoted in a check-in's
- *     message. So is a step's text sent to `/steps`: the contract's step rule
- *     screens it the same way (one line too), and a step whose words it
- *     writes is quoted in a check-in's message labelled as the person's, from
- *     the host-set author no change can set. `/finish-by` is a write that
- *     does read first: after the resolve it reads the task (`ownTaskOr404`)
- *     for its time zone. Its service then decides the owner and the kind
- *     under the routine's row lock, the contract's date rule screens the
- *     date before anything is written, and the date reaches a model only as
- *     fixed sentences in a get-done check-in's brief.
+ *     lock. `/finish-by` is a write that does read first: after the resolve
+ *     it reads the task (`ownTaskOr404`) for its time zone. Its service then
+ *     decides the owner and the kind under the routine's row lock, the
+ *     contract's date rule screens the date before anything is written, and
+ *     the date reaches a model only as fixed sentences in a get-done
+ *     check-in's brief. `/complete` and `/reopen` are writes that check the
+ *     request and their hook as the first three do, then read the caller's
+ *     own task first (`ownTaskOr404`, the task page's read), because only an
+ *     owner may learn they can't: an owner without `edit` gets 403, and
+ *     everyone else the read's 404, never a 403. Their services decide again
+ *     under the routine's row lock. A reply's text, Not yet's and Reopen's
+ *     included, is the person's own, and the contract's reply rule screens it
+ *     (blank, too long, invisible or broken characters) before anything is
+ *     written; it reaches a model only quoted in a check-in's message. So is
+ *     a step's text sent to `/steps`: the contract's step rule screens it the
+ *     same way (one line too), and a step whose words it writes is quoted in
+ *     a check-in's message labelled as the person's, from the host-set author
+ *     no change can set.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -176,6 +184,7 @@ import {
 } from '@ax/routines-contract';
 import type {
   RoutineCheckInView,
+  RoutineCompleteOutput,
   RoutineFireView,
   RoutineReplyOutput,
   RoutineReplyView,
@@ -229,6 +238,7 @@ import type {
   PermissionRow,
   RailActivity,
   TaskCheckin,
+  TaskCompleteResponse,
   TaskDetail,
   TaskFinishBy,
   TaskFinishByResponse,
@@ -782,6 +792,7 @@ type TaskListView = Pick<
   | 'noRecentUpdate'
   | 'steps'
   | 'finishBy'
+  | 'done'
   | 'trigger'
   | 'activeHours'
 >;
@@ -812,6 +823,7 @@ type TaskDetailView = Pick<
   | 'noRecentUpdate'
   | 'steps'
   | 'finishBy'
+  | 'done'
 >;
 type TaskFireView = Pick<
   RoutineFireView,
@@ -879,6 +891,17 @@ interface TaskSetFinishByInput extends TaskKeyInput {
   finishBy: string | null;
 }
 type TaskSetFinishByOutput = Pick<RoutineSetFinishByOutput, 'finishBy'>;
+
+/**
+ * `routines:complete` (TASK-950), Mark done, as the task page uses it. The bus
+ * has already parsed its answer through `RoutineCompleteOutputSchema`.
+ * `routines:reopen`, Not yet and Reopen, takes a reply's input and answers a
+ * reply's (`TaskReplyInput`, `TaskReplyOutput`).
+ */
+interface TaskCompleteInput extends TaskKeyInput {
+  requestId: string;
+}
+type TaskCompleteOutput = RoutineCompleteOutput;
 
 /**
  * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
@@ -3508,6 +3531,11 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * TASK-951: a get-done task's finish date crosses as the date and the days
  * left to it at `now`, counted in the task's own time zone (`toTaskFinishBy`),
  * as its page counts them.
+ *
+ * TASK-950: when a person marked the task done crosses as a time
+ * (`toTaskDoneAt`), host-written; who marked it never crosses. A report's
+ * claim that the task is finished (`doneClaimed`) is the agent's word, one
+ * flag: only a literal `true` crosses as a claim.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3533,10 +3561,31 @@ function toTaskRows(
               update: fenceLine(view.task.update, ROUTINE_REPORT_UPDATE_MAX_CHARS),
               ask: fenceLine(view.task.ask, ROUTINE_REPORT_ASK_MAX_CHARS),
               reading: toTaskReading(view.task.reading),
+              doneClaimed: view.task.doneClaimed === true,
               reportedAt: view.task.reportedAt,
             },
       noRecentUpdate: toTaskNoRecentUpdate(view),
+      doneAt: toTaskDoneAt(view),
     }));
+}
+
+/**
+ * When a person marked a task done → the wire's (TASK-950): `done.at`, an
+ * instant the host wrote, or null while the task isn't Done. Only a get-done
+ * task is ever Done, so any other kind reads null whatever its view says (as
+ * `readSteps` reads its steps), and the rows, the page and the reopen route
+ * agree. Lenient about a view the schema didn't parse (TASK-913), as
+ * `toTaskNoRecentUpdate` is: a `done` that is missing, not an object, or
+ * without a string `at` reads as not Done, never a thrown request. Only the
+ * time is read: who marked it (always the task's owner) isn't on the view, and
+ * nothing else of it crosses.
+ */
+function toTaskDoneAt(view: Pick<RoutineView, 'kind' | 'done'>): string | null {
+  if (view.kind !== 'get-done') return null;
+  const done: unknown = view.done;
+  if (done === null || typeof done !== 'object') return null;
+  const { at } = done as Record<string, unknown>;
+  return typeof at === 'string' ? at : null;
 }
 
 /**
@@ -3797,6 +3846,18 @@ function readTaskFinishByBody(parsed: unknown): { finishBy: string | null } | nu
 }
 
 /**
+ * Mark done's body (TASK-950): a non-empty string `requestId`, or null. Only
+ * its shape is checked here; `routines:complete` checks the id itself, and
+ * anything else in the body is left behind.
+ */
+function readTaskCompleteBody(parsed: unknown): { requestId: string } | null {
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { requestId } = parsed as Record<string, unknown>;
+  if (typeof requestId !== 'string' || requestId.length === 0) return null;
+  return { requestId };
+}
+
+/**
  * One task's `routines:get` view and its check-ins → its own page (TASK-910).
  *
  * Built field by field, never spread from the view, so nothing rides along
@@ -3834,6 +3895,11 @@ function readTaskFinishByBody(parsed: unknown): { finishBy: string | null } | nu
  * TASK-951: a get-done task's finish date crosses as the date and the days
  * left to it at `now`, in the task's own time zone (`toTaskFinishBy`), as its
  * Tasks row counts them. The person set it, and it holds no text.
+ *
+ * TASK-950: when a person marked the task done crosses as a time
+ * (`toTaskDoneAt`), host-written; who marked it never crosses. The report's
+ * claim that the task is finished (`doneClaimed`) is the agent's word, one
+ * flag: only a literal `true` crosses as a claim, as on the Tasks row.
  */
 function toTaskDetail(
   agent: { displayName: string },
@@ -3878,11 +3944,13 @@ function toTaskDetail(
               fenceBlock(view.task.agentNotes, TASK_NOTES_MAX_CHARS, TASK_NOTES_MAX_LINES)
                 ?.text ?? null,
             reading: toTaskReading(view.task.reading),
+            doneClaimed: view.task.doneClaimed === true,
             reportedAt: view.task.reportedAt,
           },
     steps: readSteps(view).map(toTaskStep),
     finishBy: toTaskFinishBy(view, now),
     noRecentUpdate: toTaskNoRecentUpdate(view),
+    doneAt: toTaskDoneAt(view),
     updates: fires.map(toTaskUpdate),
     replies: replies.map((reply) => toTaskReply(reply, userId)),
   };
@@ -4834,8 +4902,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * Every 404 written here is `task-not-found`, the missing-service one
    * included, except `resolveAgentOr404`'s own `agent-not-found`. It is the
    * answer an id nobody has gets, so a stranger can't learn that a task
-   * exists. The task page and a check-in's page both go through it, so the
-   * two can't drift about whose task is whose.
+   * exists. The task page, a check-in's page, and Mark done and Not yet or
+   * Reopen (TASK-950, before they can answer 403) all go through it, so they
+   * can't drift about whose task is whose.
    */
   async function ownTaskOr404(
     userId: string,
@@ -7721,14 +7790,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * contract refuses (an id no routine can have is the other case), and
      * answers 400 `steps-invalid`. It is checked before `isTaskRefusal`,
      * which counts `validation` as a read's 404. `not-found` (no such task,
-     * or one that isn't "get-done") and `forbidden` (someone else's) are the
-     * page's own 404. Anything else fails the request, `request-conflict`
-     * included: only a request id reused for a different change raises it,
-     * and the page never sends one. The answer is the steps as they are now,
-     * each built as the task page's read builds it (`readStepList`,
-     * `toTaskStep`), and how many changes were skipped. CSRF is
-     * @ax/http-server's global guard, met by `workspace-api`'s write headers,
-     * as for Clear notes.
+     * or one that isn't "get-done") and `forbidden` (someone else's task,
+     * or a Done task's steps, TASK-950) are the page's own 404. Anything else
+     * fails the request, `request-conflict` included: only a request id
+     * reused for a different change raises it, and the page never sends one.
+     * The answer is the steps as they are now, each built as the task page's
+     * read builds it (`readStepList`, `toTaskStep`), and how many changes were
+     * skipped. CSRF is @ax/http-server's global guard, met by
+     * `workspace-api`'s write headers, as for Clear notes.
      */
     async taskSteps(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -7854,6 +7923,175 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({
         finishBy: toTaskFinishBy({ ...own.view, kind: 'get-done', finishBy: out.finishBy }, now()),
       } satisfies TaskFinishByResponse);
+    },
+
+    /**
+     * POST /api/workspace/tasks/:agentId/:routineId/complete — Mark done: a
+     * task's owner finishes a "get-done" task (TASK-950, decisions row 11). It
+     * stops checking in, and keeps its steps, its report and its notes.
+     *
+     * `authOr401` → ids (400) → the body: JSON (400 `invalid-json`) holding a
+     * non-empty string `requestId` (400 `invalid-body`) → without
+     * `routines:complete`, 503 → `ownTaskOr404`, the task page's own read →
+     * any kind but get-done, 404 `task-not-found` (the service's own answer
+     * for it, given first so `edit` never decides whether a task that can't
+     * be finished answers 403 or 404) → without `edit`, 403
+     * `task-done-not-allowed` → `routines:complete` as the
+     * caller, its input built field by field, so nothing else in the body
+     * rides along and the address, not the body, names the task.
+     *
+     * Unlike a reply it reads the task first, because it can answer 403, and
+     * only an owner may learn they can't mark their task done (they no longer
+     * manage the agent's tasks). Everyone else, a stranger, a teammate on
+     * someone else's task and an id nobody has alike, gets the read's 404 and
+     * never a 403, so nobody learns that a task exists. The service decides
+     * again under the routine's row lock: its `forbidden` (`edit` taken away
+     * since the read, say) is the same 403. Its `validation` is the body as
+     * sent (a request id the contract refuses, too long, say: the body read
+     * above takes any non-empty text), so it answers 400 `invalid-body`, as
+     * the other task routes answer theirs, checked before `isTaskRefusal`,
+     * which counts `validation` as a read's 404. Any other refusal is the
+     * page's 404. Anything else fails the request, `unavailable` included, so
+     * the page never says a task is done on a press nothing confirmed. The
+     * same `requestId` again answers done without finishing the task twice
+     * (the service keeps a receipt). CSRF is @ax/http-server's global guard,
+     * as for Clear notes.
+     */
+    async completeTask(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readTaskCompleteBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+      if (!bus.hasService('routines:complete')) {
+        res.status(503).json({ error: 'task-complete-unavailable' });
+        return;
+      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
+      if (own.view.kind !== 'get-done') {
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      if (!own.view.permissions.edit) {
+        res.status(403).json({ error: 'task-done-not-allowed' });
+        return;
+      }
+      try {
+        await bus.call<TaskCompleteInput, TaskCompleteOutput>('routines:complete', own.ctx, {
+          agentId: key.agentId,
+          routineId: key.routineId,
+          requestId: body.requestId,
+        });
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'invalid-body' });
+          return;
+        }
+        if (err instanceof SafeToolError && err.toolCode === 'forbidden') {
+          res.status(403).json({ error: 'task-done-not-allowed' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({ done: true } satisfies TaskCompleteResponse);
+    },
+
+    /**
+     * POST /api/workspace/tasks/:agentId/:routineId/reopen — Not yet, and
+     * Reopen on a Done task (TASK-950, decisions row 11): the task's owner
+     * tells their agent what's left. It is a reply, so the text is stored and
+     * a check-in may start (`checkIn` says which, with the reply route's
+     * meanings); it also takes back the agent's claim that the task is
+     * finished, and a Done task runs again.
+     *
+     * `authOr401` → ids (400) → the body, as a reply's (400 `invalid-json`,
+     * 400 `invalid-body`) → without `routines:reopen`, 503 → `ownTaskOr404` →
+     * any kind but get-done, 404 `task-not-found`, as for Mark done → on a
+     * Done task, without `edit`, 403 `task-done-not-allowed` →
+     * `routines:reopen` as the caller, its input built field by field, as the
+     * reply route builds it.
+     *
+     * It reads the task first for Mark done's reason: reopening a Done task
+     * needs `edit`, and only its owner may learn they lack it, so everyone
+     * else gets the read's 404 and never a 403. "Done" is read as the page
+     * reads it (`toTaskDoneAt`), so the route and the page can't disagree
+     * about whether the task is Done. Not yet on a task that still runs
+     * needs only ownership, like a reply, so nothing is refused before the
+     * call for it. A `validation` refusal is the reply rule refusing the text
+     * and answers 400 `reply-invalid`, checked before `isTaskRefusal` as the
+     * reply route does. `forbidden` is the service's own check under the row
+     * lock (the task became Done, for an owner without `edit`, since the
+     * read, say) and the same 403; any other refusal is the page's 404.
+     * Anything else fails the request, so the box never says "Sent." for a
+     * reply nothing confirmed. CSRF is @ax/http-server's global guard.
+     */
+    async reopenTask(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readTaskReplyBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+      if (!bus.hasService('routines:reopen')) {
+        res.status(503).json({ error: 'task-reopen-unavailable' });
+        return;
+      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
+      if (own.view.kind !== 'get-done') {
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      if (toTaskDoneAt(own.view) !== null && !own.view.permissions.edit) {
+        res.status(403).json({ error: 'task-done-not-allowed' });
+        return;
+      }
+      let out: TaskReplyOutput;
+      try {
+        out = await bus.call<TaskReplyInput, TaskReplyOutput>('routines:reopen', own.ctx, {
+          agentId: key.agentId,
+          routineId: key.routineId,
+          requestId: body.requestId,
+          text: body.text,
+        });
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'reply-invalid' });
+          return;
+        }
+        if (err instanceof SafeToolError && err.toolCode === 'forbidden') {
+          res.status(403).json({ error: 'task-done-not-allowed' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({ checkIn: out.checkIn } satisfies TaskReplyResponse);
     },
 
     /**
@@ -10240,6 +10478,19 @@ export async function registerWorkspaceRoutes(
       method: 'PUT',
       path: '/api/workspace/tasks/:agentId/:routineId/finish-by',
       handler: handlers.setTaskFinishBy as unknown as RouteHandler,
+    },
+    {
+      // TASK-950 — Mark done, and Not yet or Reopen with a reply. Both read
+      // the caller's own task first, so only its owner can be told no (403);
+      // the services decide again under the routine's row lock.
+      method: 'POST',
+      path: '/api/workspace/tasks/:agentId/:routineId/complete',
+      handler: handlers.completeTask as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/tasks/:agentId/:routineId/reopen',
+      handler: handlers.reopenTask as unknown as RouteHandler,
     },
     {
       // TASK-911 — one check-in's transcript, for the task's owner. The only

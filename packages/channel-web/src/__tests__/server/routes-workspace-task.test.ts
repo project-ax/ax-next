@@ -4,8 +4,9 @@
  * task's own page, and `DELETE …/notes`, which clears the agent's notes on it
  * (TASK-910); `POST …/replies`, the task's owner writing to their agent
  * about it (TASK-931); `POST …/steps`, the task's owner changing its steps
- * (TASK-949); and `PUT …/finish-by`, the owner setting or removing a
- * "get-done" task's finish date (TASK-951).
+ * (TASK-949); `PUT …/finish-by`, the owner setting or removing a
+ * "get-done" task's finish date (TASK-951); and `POST …/complete` and
+ * `POST …/reopen`, Mark done, and Not yet or Reopen with a reply (TASK-950).
  *
  * `routines:get` here is the real view producer, not a literal. Each view is
  * made by @ax/routines' own `routineView` and parsed on the bus through
@@ -24,6 +25,8 @@
  * `routines:set-finish-by` checks its input with `RoutineSetFinishByInputSchema`
  * the same way, so a date the contract's rule refuses is a real `validation`
  * refusal too.
+ * `routines:complete` and `routines:reopen` check theirs the same way, with
+ * `RoutineCompleteInputSchema` and `RoutineReopenInputSchema`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -35,23 +38,30 @@ import {
 } from '@ax/core';
 import {
   ROUTINE_AGENT_NOTES_MAX_CHARS,
+  ROUTINE_OPAQUE_STRING_MAX_CHARS,
   ROUTINE_REPLY_MAX_CHARS,
   ROUTINE_REPORT_ASK_MAX_CHARS,
   ROUTINE_REPORT_UPDATE_MAX_CHARS,
   ROUTINE_STEP_TEXT_MAX_CHARS,
   RoutineClearNotesOutputSchema,
+  RoutineCompleteInputSchema,
+  RoutineCompleteOutputSchema,
   RoutineGetInputSchema,
   RoutineGetOutputSchema,
   RoutineRecentFiresOutputSchema,
   RoutineRecentRepliesInputSchema,
   RoutineRecentRepliesOutputSchema,
+  RoutineReopenInputSchema,
+  RoutineReopenOutputSchema,
   RoutineReplyInputSchema,
   RoutineReplyOutputSchema,
   RoutineSetFinishByInputSchema,
   RoutineSetFinishByOutputSchema,
   RoutineSetStepsInputSchema,
   RoutineSetStepsOutputSchema,
+  type RoutineCompleteOutput,
   type RoutineFireView,
+  type RoutineReopenOutput,
   type RoutineReplyOutput,
   type RoutineReplyView,
   type RoutineReportStatus,
@@ -134,6 +144,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     task: null,
     noRecentUpdate: null,
     finishBy: null,
+    done: null,
     ...over,
   };
 }
@@ -147,6 +158,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     agentNotes: 'Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
     reading: null,
+    doneClaimed: false,
     ...over,
   };
 }
@@ -203,6 +215,14 @@ interface World {
   stepsFailure: Error | null;
   /** Set: `routines:set-finish-by` throws this, after its input check (TASK-951). */
   finishByFailure: Error | null;
+  /** What `routines:complete` answers when it marks the task done (TASK-950). */
+  completeAnswer: RoutineCompleteOutput;
+  /** Set: `routines:complete` throws this, after its input check. */
+  completeFailure: Error | null;
+  /** What `routines:reopen` answers when it takes Not yet or Reopen (TASK-950). */
+  reopenAnswer: RoutineReopenOutput;
+  /** Set: `routines:reopen` throws this, after its input check. */
+  reopenFailure: Error | null;
   /**
    * True: `routines:get`, `routines:recent-fires` and (TASK-949)
    * `routines:set-steps` are registered without `returns`, so their answers
@@ -244,6 +264,10 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     stepsAnswer: { steps: [], skipped: 0 },
     stepsFailure: null,
     finishByFailure: null,
+    completeAnswer: { done: true },
+    completeFailure: null,
+    reopenAnswer: { replyId: 'REPLY-ID-1', checkIn: 'started' },
+    reopenFailure: null,
     unvalidated: false,
     viewMiss: null,
     viewPatch: null,
@@ -258,6 +282,8 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
   const replyCalls: Array<Call<unknown>> = [];
   const stepsCalls: Array<Call<unknown>> = [];
   const finishByCalls: Array<Call<unknown>> = [];
+  const completeCalls: Array<Call<unknown>> = [];
+  const reopenCalls: Array<Call<unknown>> = [];
   /** Every routines hook asked, in the order it was asked. */
   const order: string[] = [];
 
@@ -362,6 +388,37 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
       world.unvalidated ? undefined : { returns: RoutineSetStepsOutputSchema },
     );
   }
+  if (!world.absent.has('routines:complete')) {
+    bus.registerService(
+      'routines:complete',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        completeCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:complete');
+        // The service's own input check, before anything else (TASK-950).
+        parseRoutineInput(RoutineCompleteInputSchema, raw);
+        if (world.completeFailure !== null) throw world.completeFailure;
+        return world.completeAnswer;
+      },
+      { returns: RoutineCompleteOutputSchema },
+    );
+  }
+  if (!world.absent.has('routines:reopen')) {
+    bus.registerService(
+      'routines:reopen',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        reopenCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:reopen');
+        // As for a reply: the contract's reply rule refuses the text as
+        // `validation` before anything else (TASK-950).
+        parseRoutineInput(RoutineReopenInputSchema, raw);
+        if (world.reopenFailure !== null) throw world.reopenFailure;
+        return world.reopenAnswer;
+      },
+      { returns: RoutineReopenOutputSchema },
+    );
+  }
   if (!world.absent.has('routines:clear-notes')) {
     bus.registerService(
       'routines:clear-notes',
@@ -436,12 +493,32 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     await handlers.setTaskFinishBy(mkReq(params, body), res);
     return captured;
   }
+  async function complete(
+    params: Record<string, string> = KEY,
+    body: unknown = PRESS,
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.completeTask(mkReq(params, body), res);
+    return captured;
+  }
+  async function reopen(
+    params: Record<string, string> = KEY,
+    body: unknown = NOT_YET,
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.reopenTask(mkReq(params, body), res);
+    return captured;
+  }
   return {
     detail,
     clear,
     reply,
     steps,
     finishBy,
+    complete,
+    reopen,
     resolveCalls,
     getCalls,
     firesCalls,
@@ -450,6 +527,8 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     replyCalls,
     stepsCalls,
     finishByCalls,
+    completeCalls,
+    reopenCalls,
     order,
     lastWritten: () => last,
   };
@@ -463,6 +542,37 @@ const ADD = { op: 'add', text: 'Ask Dana to review billing' } as const;
 const CHANGE = { requestId: 'req-1', ops: [ADD] };
 /** A finish date as the task page sends it (TASK-951). */
 const SET = { finishBy: '2026-11-14' };
+
+/** Mark done's press as the page sends it (TASK-950). */
+const PRESS = { requestId: 'req-1' };
+
+/** Not yet, or Reopen, as the page sends it (TASK-950): a reply's body. */
+const NOT_YET = { text: 'The billing page still needs a review.', requestId: 'req-2' };
+
+/**
+ * A "get-done" task of alice's on a1 whose latest report claims it is
+ * finished (TASK-950). It has reported, so it is hers whether or not she still
+ * manages the agent's tasks (`isOwnTask`).
+ */
+function claimed(over: Partial<StoredRoutine> = {}): StoredRoutine {
+  return stored({
+    agentId: 'a1',
+    routineId: 't1',
+    kind: 'get-done',
+    task: report('needs-you', { doneClaimed: true }),
+    ...over,
+  });
+}
+
+/** That task once alice marked it done (TASK-950): off, its claim gone, its completion hers. */
+function markedDone(over: Partial<StoredRoutine> = {}): StoredRoutine {
+  return claimed({
+    enabled: false,
+    task: report('needs-you'),
+    done: { at: new Date('2026-10-23T10:00:00.000Z'), byUserId: 'alice' },
+    ...over,
+  });
+}
 
 function bodyOf(captured: CapturedRes): TaskDetail {
   return captured.body as TaskDetail;
@@ -529,11 +639,13 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         ask: 'Want me to draft replies to both?',
         agentNotes: 'Acme is an enterprise customer.\nReply within the hour.',
         reading: null,
+        doneClaimed: false,
         reportedAt: '2026-10-22T14:58:00.000Z',
       },
       steps: [],
       finishBy: null,
       noRecentUpdate: null,
+      doneAt: null,
       updates: [
         {
           firedAt: '2026-10-22T14:57:00.000Z',
@@ -1053,6 +1165,8 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         'routines:reply',
         'routines:set-steps',
         'routines:set-finish-by',
+        'routines:complete',
+        'routines:reopen',
       ],
     ],
     ['without routines:get', ['routines:get']],
@@ -1294,6 +1408,80 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, the finish date (TASK-95
     const captured = await detail();
     expect(captured.statusCode).toBe(200);
     expect(bodyOf(captured).finishBy).toBeNull();
+  });
+});
+
+describe('GET /api/workspace/tasks/:agentId/:routineId, the page carries doneAt and the claim (TASK-950)', () => {
+  it('a claimed get-done task carries its claim, and isn’t done', async () => {
+    const { detail } = setup({ rows: [claimed()] });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).task?.doneClaimed).toBe(true);
+    expect(bodyOf(captured).doneAt).toBeNull();
+  });
+
+  it('a Done task carries when it was marked done, and never who marked it', async () => {
+    // The routines view never names the completer, so the route's own mapping is what's tested:
+    // a view the schema didn't parse (TASK-913's shape) that does name one.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { done: { at: '2026-10-23T10:00:00.000Z', byUserId: 'alice' } },
+      rows: [markedDone()],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).doneAt).toBe('2026-10-23T10:00:00.000Z');
+    expect(bodyOf(captured).task?.doneClaimed).toBe(false);
+    expect(JSON.stringify(captured.body)).not.toContain('byUserId');
+    expect(Object.keys(bodyOf(captured))).not.toContain('done');
+  });
+
+  it.each<[string, unknown]>([
+    ['not an object', 'nope'],
+    ['an object without a time', {}],
+    ['a time that isn’t text', { at: 7 }],
+    ['missing', undefined],
+  ])('reads a done that is %s as not done, not a crash', async (_what, done) => {
+    // A view the schema didn't parse (TASK-913's shape).
+    const { detail } = setup({ unvalidated: true, viewPatch: { done }, rows: [markedDone()] });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).doneAt).toBeNull();
+  });
+
+  it('reads a task of any kind but get-done as not done, whatever its view says', async () => {
+    // routines sends `done` only for a get-done task; a view the schema didn't parse can still
+    // carry one. Only a get-done task is ever Done, here as on the reopen route.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { done: { at: '2026-10-23T10:00:00.000Z' } },
+      rows: [stored({ agentId: 'a1', routineId: 't1', enabled: false, task: report('on-track') })],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).kind).toBe('stay-on-top');
+    expect(bodyOf(captured).doneAt).toBeNull();
+  });
+
+  it('reads anything but a literal true as no claim', async () => {
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: {
+        task: {
+          status: 'needs-you',
+          update: 'Every article is exported.',
+          ask: null,
+          reading: null,
+          doneClaimed: 'yes',
+          reportedAt: '2026-10-22T09:58:00.000Z',
+          agentNotes: null,
+        },
+      },
+      rows: [claimed()],
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).task?.doneClaimed).toBe(false);
   });
 });
 
@@ -1561,6 +1749,11 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/steps (TASK-949)', () =>
   it.each([
     ['a task that isn’t get-done, or isn’t there', new SafeToolError('not-found', 'routineId')],
     ['someone else’s task', new SafeToolError('forbidden', 'input')],
+    // TASK-950: the service's refusal of a Done task's steps, the same `forbidden`, so it reads as the page's own
+    // 404 and the page reads the task again (TaskSteps' onRefused). A mapping pin only: this row is the one above,
+    // and passes whichever refusal the service throws. That a Done task's steps ARE refused `forbidden` is the
+    // store's and the service's to prove (set-steps-store.test.ts, the routines services tests).
+    ['a Done task’s steps', new SafeToolError('forbidden', 'input')],
     ['an agent it can no longer reach', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
   ])('404s %s as task-not-found', async (_what, failure) => {
     const { steps, stepsCalls } = setup({ stepsFailure: failure });
@@ -1837,6 +2030,461 @@ describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', ()
       });
       await expect(finishBy()).rejects.toThrow(message);
       expect(finishByCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
+});
+
+describe('POST /api/workspace/tasks/:agentId/:routineId/complete (TASK-950)', () => {
+  it('reads the task, then marks it done as the caller, and answers done', async () => {
+    const { complete, completeCalls, order } = setup({ rows: [claimed()] });
+    // The address names the task. Nothing else in the body rides along.
+    const captured = await complete(KEY, { ...PRESS, agentId: 'zzz', admin: true });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ done: true });
+    expect(completeCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: { agentId: 'a1', routineId: 't1', requestId: 'req-1' },
+      },
+    ]);
+    expect(order).toEqual(['routines:get', 'routines:complete']);
+  });
+
+  it('403s an owner who no longer manages the agent’s tasks, without asking to mark it done', async () => {
+    // Her task has reported, so it is still hers (`isOwnTask`): only an owner
+    // may learn she can't.
+    const { complete, completeCalls } = setup({ managers: { a1: [] }, rows: [claimed()] });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'task-done-not-allowed' });
+    expect(completeCalls).toEqual([]);
+  });
+
+  it.each([
+    ['who manages the agent’s tasks', ['alice']],
+    ['who doesn’t manage the agent’s tasks', []],
+  ])(
+    '404s a task of any other kind to its owner %s, never 403, and never asks',
+    async (_who, managers) => {
+      // Only a get-done task can be marked done: the store's own refusal of any other kind is a 404.
+      const { complete, completeCalls } = setup({
+        managers: { a1: managers },
+        rows: [claimed({ kind: 'stay-on-top', task: report('needs-you') })],
+      });
+      const captured = await complete();
+      expect(captured.statusCode).toBe(404);
+      expect(captured.body).toEqual({ error: 'task-not-found' });
+      expect(completeCalls).toEqual([]);
+    },
+  );
+
+  it('403s when the service refuses it as forbidden (edit taken away since the read)', async () => {
+    const { complete, completeCalls } = setup({
+      rows: [claimed()],
+      completeFailure: new SafeToolError('forbidden', 'input'),
+    });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'task-done-not-allowed' });
+    expect(completeCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['who manages the agent’s tasks', ['alice', 'bob']],
+    ['who doesn’t manage the agent’s tasks', ['bob']],
+  ])(
+    '404s someone else’s task on a team agent, never 403, to a teammate %s, and never asks',
+    async (_who, managers) => {
+      const { complete, completeCalls } = setup({
+        agents: TEAM_AGENTS,
+        managers: { team: managers },
+        rows: [claimed({ agentId: 'team', routineId: 'tB', ownerUserId: 'bob' })],
+      });
+      const captured = await complete({ agentId: 'team', routineId: 'tB' });
+      expect(captured.statusCode).toBe(404);
+      expect(captured.body).toEqual({ error: 'task-not-found' });
+      expect(completeCalls).toEqual([]);
+    },
+  );
+
+  it('404s an agent the caller can’t reach, and reads nothing of it', async () => {
+    const { complete, resolveCalls, getCalls, completeCalls } = setup({
+      viewer: 'mallory',
+      rows: [claimed()],
+    });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(getCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  it.each([
+    ['a SafeToolError not-found', new SafeToolError('not-found', 'routineId')],
+    ['a PluginError not-found', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
+    // Only the service's own forbidden is a 403: the agent refusing the caller makes them a stranger.
+    ['a PluginError forbidden', new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' })],
+  ])('404s when the service refuses with %s', async (_kind, failure) => {
+    const { complete, completeCalls } = setup({ rows: [claimed()], completeFailure: failure });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(completeCalls).toHaveLength(1);
+  });
+
+  it('503s without routines:complete, before reading anything', async () => {
+    const { complete, resolveCalls, getCalls } = setup({
+      rows: [claimed()],
+      absent: new Set(['routines:complete']),
+    });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-complete-unavailable' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+  });
+
+  it.each([
+    ['routines:get'],
+    ['routines:recent-fires'],
+  ])('404s task-not-found without %s, like the task page, and asks no one to mark it done', async (hook) => {
+    const { complete, resolveCalls, getCalls, completeCalls } = setup({
+      rows: [claimed()],
+      absent: new Set([hook]),
+    });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  it.each<[string, Buffer]>([
+    ['an unparseable body', Buffer.from('{"requestId": "req', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+  ])('400s %s as invalid-json, and asks no one', async (_what, raw) => {
+    const { complete, resolveCalls, completeCalls } = setup({ rows: [claimed()] });
+    const captured = await complete(KEY, raw);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-json' });
+    expect(resolveCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['an empty object', {}],
+    ['an empty request id', { requestId: '' }],
+    ['a request id that isn’t text', { requestId: 7 }],
+    ['null', null],
+  ])('400s a body that is %s as invalid-body, and asks no one', async (_what, body) => {
+    const { complete, resolveCalls, completeCalls } = setup({ rows: [claimed()] });
+    const captured = await complete(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(resolveCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  // The body reader takes any non-empty text; the contract's own rule (its length cap) is the service's. A
+  // `validation` refusal is the body as sent, so it answers 400 like the other task routes, not a read's 404.
+  it('400s a request id the service refuses as invalid-body, after asking', async () => {
+    const { complete, completeCalls } = setup({ rows: [claimed()] });
+    const captured = await complete(KEY, { requestId: 'r'.repeat(ROUTINE_OPAQUE_STRING_MAX_CHARS + 1) });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(completeCalls).toHaveLength(1);
+  });
+
+  it('401s without a session, and asks no one', async () => {
+    const { complete, resolveCalls, getCalls, completeCalls } = setup({
+      viewer: null,
+      rows: [claimed()],
+    });
+    const captured = await complete();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  it('400s a blank id, and asks no one', async () => {
+    const { complete, resolveCalls, completeCalls } = setup({ rows: [claimed()] });
+    const captured = await complete({ agentId: 'a1', routineId: ' ' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(completeCalls).toEqual([]);
+  });
+
+  it.each([
+    ['an unavailable service', new SafeToolError('unavailable', 'input'), 'temporarily unavailable'],
+    ['any other failure', new Error('db down'), 'db down'],
+  ])(
+    'fails the request when the service fails with %s, rather than saying it is done',
+    async (_kind, failure, message) => {
+      const { complete, completeCalls, lastWritten } = setup({
+        rows: [claimed()],
+        completeFailure: failure,
+      });
+      await expect(complete()).rejects.toThrow(message);
+      expect(completeCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
+});
+
+describe('POST /api/workspace/tasks/:agentId/:routineId/reopen (TASK-950)', () => {
+  it('reads the task, then sends Not yet as the caller, and answers what it did about a check-in', async () => {
+    const { reopen, reopenCalls, order } = setup({ rows: [claimed()] });
+    // The address names the task. Nothing else in the body rides along.
+    const captured = await reopen(KEY, { ...NOT_YET, agentId: 'zzz', admin: true });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ checkIn: 'started' });
+    expect(reopenCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: {
+          agentId: 'a1',
+          routineId: 't1',
+          requestId: 'req-2',
+          text: 'The billing page still needs a review.',
+        },
+      },
+    ]);
+    expect(order).toEqual(['routines:get', 'routines:reopen']);
+  });
+
+  it.each(['started', 'paused', 'not-allowed', 'replayed'] as const)(
+    'answers %s when that is what the service did',
+    async (checkIn) => {
+      const { reopen } = setup({
+        rows: [claimed()],
+        reopenAnswer: { replyId: 'REPLY-ID-1', checkIn },
+      });
+      const captured = await reopen();
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toStrictEqual({ checkIn });
+    },
+  );
+
+  it('reopens a Done task for an owner who manages the agent’s tasks', async () => {
+    const { reopen, reopenCalls } = setup({ rows: [markedDone()] });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ checkIn: 'started' });
+    expect(reopenCalls).toHaveLength(1);
+  });
+
+  it('403s Reopen on a Done task for an owner who no longer manages the agent’s tasks, without asking', async () => {
+    const { reopen, reopenCalls } = setup({ managers: { a1: [] }, rows: [markedDone()] });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'task-done-not-allowed' });
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it.each([
+    ['who manages the agent’s tasks', ['alice']],
+    ['who doesn’t manage the agent’s tasks', []],
+  ])(
+    '404s a task of any other kind to its owner %s, even one whose view reads as Done, and never asks',
+    async (_who, managers) => {
+      // A view the schema didn't parse (TASK-913's shape) can carry a completion on any kind; the
+      // store refuses every kind but get-done as not-found, so the route answers that first.
+      const { reopen, reopenCalls } = setup({
+        managers: { a1: managers },
+        unvalidated: true,
+        viewPatch: { kind: 'stay-on-top' },
+        rows: [markedDone()],
+      });
+      const captured = await reopen();
+      expect(captured.statusCode).toBe(404);
+      expect(captured.body).toEqual({ error: 'task-not-found' });
+      expect(reopenCalls).toEqual([]);
+    },
+  );
+
+  it('sends Not yet on a claimed task that still runs for an owner without edit: it needs only ownership, like a reply', async () => {
+    const { reopen, reopenCalls } = setup({
+      managers: { a1: [] },
+      rows: [claimed()],
+      reopenAnswer: { replyId: 'REPLY-ID-1', checkIn: 'not-allowed' },
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ checkIn: 'not-allowed' });
+    expect(reopenCalls).toHaveLength(1);
+  });
+
+  it('403s when the service refuses it as forbidden, deciding again under the row lock', async () => {
+    const { reopen, reopenCalls } = setup({
+      rows: [claimed()],
+      reopenFailure: new SafeToolError('forbidden', 'input'),
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'task-done-not-allowed' });
+    expect(reopenCalls).toHaveLength(1);
+  });
+
+  it.each<[string, string]>([
+    ['a blank reply', '   '],
+    ['a reply over 2,000 characters', 'x'.repeat(ROUTINE_REPLY_MAX_CHARS + 1)],
+  ])('400s text the service refuses (%s) as reply-invalid', async (_what, text) => {
+    const { reopen, reopenCalls } = setup({ rows: [claimed()] });
+    const captured = await reopen(KEY, { text, requestId: 'req-2' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'reply-invalid' });
+    expect(reopenCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['who manages the agent’s tasks', ['alice', 'bob']],
+    ['who doesn’t manage the agent’s tasks', ['bob']],
+  ])(
+    '404s someone else’s Done task on a team agent, never 403, to a teammate %s, and never asks',
+    async (_who, managers) => {
+      const { reopen, reopenCalls } = setup({
+        agents: TEAM_AGENTS,
+        managers: { team: managers },
+        rows: [
+          markedDone({
+            agentId: 'team',
+            routineId: 'tB',
+            ownerUserId: 'bob',
+            done: { at: new Date('2026-10-23T10:00:00.000Z'), byUserId: 'bob' },
+          }),
+        ],
+      });
+      const captured = await reopen({ agentId: 'team', routineId: 'tB' });
+      expect(captured.statusCode).toBe(404);
+      expect(captured.body).toEqual({ error: 'task-not-found' });
+      expect(reopenCalls).toEqual([]);
+    },
+  );
+
+  it('404s an agent the caller can’t reach, and reads nothing of it', async () => {
+    const { reopen, resolveCalls, getCalls, reopenCalls } = setup({
+      viewer: 'mallory',
+      rows: [markedDone()],
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(getCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it.each([
+    ['a SafeToolError not-found', new SafeToolError('not-found', 'routineId')],
+    ['a PluginError not-found', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
+    ['a PluginError forbidden', new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' })],
+  ])('404s when the service refuses with %s', async (_kind, failure) => {
+    const { reopen, reopenCalls } = setup({ rows: [claimed()], reopenFailure: failure });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(reopenCalls).toHaveLength(1);
+  });
+
+  it('503s without routines:reopen, before reading anything', async () => {
+    const { reopen, resolveCalls, getCalls } = setup({
+      rows: [claimed()],
+      absent: new Set(['routines:reopen']),
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-reopen-unavailable' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+  });
+
+  it.each([
+    ['routines:get'],
+    ['routines:recent-fires'],
+  ])('404s task-not-found without %s, like the task page, and asks no one to send it', async (hook) => {
+    const { reopen, resolveCalls, getCalls, reopenCalls } = setup({
+      rows: [claimed()],
+      absent: new Set([hook]),
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it.each<[string, Buffer]>([
+    ['an unparseable body', Buffer.from('{"text": "The billing', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+  ])('400s %s as invalid-json, and asks no one', async (_what, raw) => {
+    const { reopen, resolveCalls, reopenCalls } = setup({ rows: [claimed()] });
+    const captured = await reopen(KEY, raw);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-json' });
+    expect(resolveCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['an empty object', {}],
+    ['text that isn’t text', { text: 3, requestId: 'r' }],
+    ['no request id', { text: 'hi' }],
+    ['an empty request id', { text: 'hi', requestId: '' }],
+    ['a request id that isn’t text', { text: 'hi', requestId: 7 }],
+  ])('400s a body that is %s as invalid-body, and asks no one', async (_what, body) => {
+    const { reopen, resolveCalls, reopenCalls } = setup({ rows: [claimed()] });
+    const captured = await reopen(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(resolveCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it('401s without a session, and asks no one', async () => {
+    const { reopen, resolveCalls, getCalls, reopenCalls } = setup({
+      viewer: null,
+      rows: [claimed()],
+    });
+    const captured = await reopen();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(getCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it('400s a blank id, and asks no one', async () => {
+    const { reopen, resolveCalls, reopenCalls } = setup({ rows: [claimed()] });
+    const captured = await reopen({ agentId: ' ', routineId: 't1' });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(reopenCalls).toEqual([]);
+  });
+
+  it.each([
+    ['an unavailable service', new SafeToolError('unavailable', 'input'), 'temporarily unavailable'],
+    ['any other failure', new Error('db down'), 'db down'],
+  ])(
+    'fails the request when the service fails with %s, rather than saying it was sent',
+    async (_kind, failure, message) => {
+      const { reopen, reopenCalls, lastWritten } = setup({
+        rows: [claimed()],
+        reopenFailure: failure,
+      });
+      await expect(reopen()).rejects.toThrow(message);
+      expect(reopenCalls).toHaveLength(1);
       expect(lastWritten()?.statusCode).not.toBe(200);
       expect(lastWritten()?.body).toBeUndefined();
     },

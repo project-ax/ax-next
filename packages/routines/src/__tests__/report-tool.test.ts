@@ -94,7 +94,8 @@ async function written() {
     tasks: await ids(sql<{ id: string }>`SELECT routine_id AS id FROM routines_v1_definitions
       WHERE task_status IS NOT NULL OR task_update IS NOT NULL OR task_ask IS NOT NULL OR task_reported_at IS NOT NULL
         OR task_report_accepted_at IS NOT NULL OR agent_notes IS NOT NULL
-        OR task_reading_value IS NOT NULL OR task_reading_label IS NOT NULL OR task_reading_reported_at IS NOT NULL`),
+        OR task_reading_value IS NOT NULL OR task_reading_label IS NOT NULL OR task_reading_reported_at IS NOT NULL
+        OR task_done_claimed_at IS NOT NULL OR task_completed_at IS NOT NULL`),
     fires: await ids(sql<{ id: string }>`SELECT id::text AS id FROM routines_v1_fires
       WHERE report_status IS NOT NULL OR report_update IS NOT NULL OR report_ask IS NOT NULL
         OR report_reading_value IS NOT NULL OR report_reading_label IS NOT NULL`),
@@ -124,7 +125,7 @@ describe('routine_report (TASK-907)', () => {
     // agents and decisions nothing, and calls the one writer of a task's report.
     expect(hooks).toEqual(['tool:execute:routine_report', 'routines:report']);
     const { task: state } = await get(task);
-    expect(state).toEqual({ ...NEEDS_YOU, reading: null, agentNotes: NOTES, reportedAt: expect.any(String) });
+    expect(state).toEqual({ ...NEEDS_YOU, reading: null, doneClaimed: false, agentNotes: NOTES, reportedAt: expect.any(String) });
     expect(new Date(state!.reportedAt).toISOString()).toBe(state!.reportedAt);
     const fires = await history(task);
     expect(fires).toHaveLength(1);
@@ -139,7 +140,7 @@ describe('routine_report (TASK-907)', () => {
     const execute = <T,>(name: string, input: Record<string, unknown>) =>
       h.bus.call<ToolCall, T>(`tool:execute:${name}`, chat, { id: name, name, input });
     // TASK-952: both tools show the report's reading. Only the agent notes stay out of the list.
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, doneClaimed: false, reportedAt: expect.any(String) };
     const list = await execute<RoutineListToolOutput>('routine_list', {});
     const listed = list.routines.find(row => row.routineId === task.routineId);
     expect(listed?.task).toEqual(shown);
@@ -242,7 +243,7 @@ describe('routine_report (TASK-907)', () => {
         getTool: await execute<RoutineView>(chat, { id: 'get', name: 'routine_get', input: { routineId: task.routineId } }),
       };
     }
-    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, reportedAt: expect.any(String) };
+    const shown = { status: 'needs-you', update: NEEDS_YOU.update, ask: NEEDS_YOU.ask, reading: OPEN_3, doneClaimed: false, reportedAt: expect.any(String) };
     for (const person of [h.teamMember, h.teamAdmin]) {
       const seen = await reads(person);
       // The routine itself stays visible to them; only its task state, and each run's report, is the owner's.
@@ -592,5 +593,47 @@ describe('routine_report steps (TASK-948)', () => {
     expect(list.routines.map(routine => routine.routineId)).toContain(task.routineId);
     for (const routine of list.routines) expect('steps' in routine, routine.routineId).toBe(false);
     expect(JSON.stringify(list)).not.toContain('STEP-ONE');
+  });
+});
+
+describe('routine_report done (TASK-950)', () => {
+  const GET_DONE = { ...TASK, name: 'Move the help docs', kind: 'get-done', goodWhen: 'Every article is on the new site.' };
+  const CLAIM = { status: 'needs-you', update: 'Every article is on the new site.', ask: null, done: true } as const;
+  /** One refused call in the check-in's own context, at pre-call and at execute, each naming done. */
+  const refusedNamingDone = async (ctx: AgentContext, call: ToolCall) => {
+    expect(await h.bus.fire('tool:pre-call', runner(ctx), call)).toMatchObject({ rejected: true, reason: INVALID('done') });
+    await expect(report(runner(ctx), call)).rejects.toMatchObject({ toolCode: 'validation', field: 'done', message: INVALID('done') });
+  };
+
+  it('done on a stay-on-top check-in is refused at pre-call and at execute, naming done, and writes nothing', async () => {
+    await start();
+    const task = await create(TASK, 'task');
+    await checkIn(task, 'run', async ctx => { await refusedNamingDone(ctx, reportCall(CLAIM)); });
+    expect(await written()).toEqual(NOTHING);
+  });
+
+  it('done with on-track is refused, naming done', async () => {
+    await start();
+    const task = await create(GET_DONE, 'task');
+    await checkIn(task, 'run', async ctx => { await refusedNamingDone(ctx, reportCall({ ...CLAIM, status: 'on-track' })); });
+    expect(await written()).toEqual(NOTHING);
+  });
+
+  it('a get-done check-in claims done: routine_get and routine_list show it', async () => {
+    await start();
+    const task = await create(GET_DONE, 'task');
+    let answer: unknown;
+    await checkIn(task, 'run', async ctx => { answer = await report(runner(ctx), reportCall(CLAIM)); });
+    expect(answer).toStrictEqual({ recorded: true });
+    const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
+    const execute = <T,>(name: string, input: Record<string, unknown>) =>
+      h.bus.call<ToolCall, T>(`tool:execute:${name}`, chat, { id: name, name, input });
+    const got = await execute<RoutineView>('routine_get', { routineId: task.routineId });
+    const listed = (await execute<RoutineListToolOutput>('routine_list', {})).routines.find(routine => routine.routineId === task.routineId);
+    // Claimed, not done: only a person marks a task done.
+    for (const view of [got, listed]) {
+      expect(view?.task).toMatchObject({ status: 'needs-you', update: CLAIM.update, doneClaimed: true });
+      expect(view?.done).toBeNull();
+    }
   });
 });

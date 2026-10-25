@@ -33,6 +33,7 @@ const ALREADY_LISTED = `That step is already on the list, so we${String.fromCode
 const CAP_REACHED = `The list reached 50 steps meanwhile, so we${String.fromCodePoint(0x2019)}ve loaded the latest.`;
 const AT_CAP = 'A task can have up to 50 steps.';
 const EDIT_NOTE = 'Once you save it, Quill reads this as your words.';
+const NOT_SAVED = `This task was marked done, so that change wasn${String.fromCodePoint(0x2019)}t saved.`;
 
 const HOSTILE = '**bold** <img src=x onerror=alert(1)>';
 
@@ -779,5 +780,224 @@ describe('TaskSteps: when a change fails (TASK-949)', () => {
     fireEvent.click(box('Check the redirects'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(NOT_FOUND));
     expect(screen.getByRole('alert').className).toContain('text-destructive');
+  });
+});
+
+describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
+  const footer = <button type="button">Mark done</button>;
+  const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+
+  function done(readOnly: boolean, steps: TaskStep[] = PLAN) {
+    return (
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={steps} onChanged={vi.fn()} readOnly={readOnly} />
+    );
+  }
+
+  it('draws its footer last: under the steps and Add a step, and under the empty line', () => {
+    const { unmount } = render(
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={PLAN} onChanged={vi.fn()} footer={footer} />,
+    );
+    const mark = screen.getByRole('button', { name: 'Mark done' });
+    expect(after(screen.getByRole('list'), mark)).toBeTruthy();
+    expect(after(addStep(), mark)).toBeTruthy();
+    unmount();
+    render(<TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={[]} onChanged={vi.fn()} footer={footer} />);
+    const empty = screen.getByText('No steps yet. Add one, or Quill drafts them at its next check-in.');
+    expect(after(empty, screen.getByRole('button', { name: 'Mark done' }))).toBeTruthy();
+  });
+
+  it('shows a Done task’s steps as they were left, ticked or not, with nothing to change', () => {
+    render(done(true));
+    expect(screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 3 done' })).toBeInTheDocument();
+    // Each box is a picture of its state, said in words, then the text and who added it.
+    expect(within(screen.getByRole('list')).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'Done: Export every articleadded by Quill',
+      'Not done: Check the redirects',
+      'Not done: Tell the teamadded by Quill',
+    ]);
+    expect(screen.queryAllByRole('checkbox')).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Step options' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a step' })).toBeNull();
+  });
+
+  it('says a Done task had no steps, and offers none to add', () => {
+    render(done(true, []));
+    expect(screen.getByText('No steps.')).toBeInTheDocument();
+    expect(screen.queryByText(/Add one/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a step' })).toBeNull();
+  });
+
+  it('closes an editor left open once the task is Done, and it stays closed after a Reopen', () => {
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    view.rerender(done(false));
+    expect(screen.queryByRole('textbox', { name: 'New step' })).toBeNull();
+    expect(addStep()).toBeEnabled();
+  });
+
+  // Refused as not there or not theirs, the task may have been marked done (or deleted) since the page read it.
+  it.each<[number, boolean]>([
+    [404, true],
+    [403, true],
+    [400, false],
+    [503, false],
+  ])('a change answered %i asks the page to read the task again: %s', async (status, again) => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', status));
+    const onRefused = vi.fn();
+    render(
+      <TaskSteps agentId="a1" routineId="t1" agentName="Quill" steps={PLAN} onChanged={vi.fn()} onRefused={onRefused} />,
+    );
+    fireEvent.click(box('Check the redirects'));
+    await screen.findByRole('alert');
+    expect(onRefused).toHaveBeenCalledTimes(again ? 1 : 0);
+  });
+
+  it('drops a failed change’s line once the task is Done', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 503));
+    const view = render(done(false));
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(UNCONFIRMED);
+    view.rerender(done(true));
+    expect(screen.queryByRole('alert')).toBeNull();
+    // Nobody could confirm it, so it may have landed: the record shows which, and says nothing more.
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  // Marked done elsewhere while the person was changing a step: what they did goes, and the record says so.
+  it('says a refused change wasn’t saved once the task is Done, and the line goes after a Reopen', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+    view.rerender(done(false));
+    expect(screen.getByRole('status').textContent).toBe('');
+    // The Reopen dropped what was left: marking it done again, with nothing changed since, says nothing.
+    view.rerender(done(true));
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('says a refused Add wasn’t saved once the task is Done', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    pressEnter(newInput());
+    expect(await screen.findByText(NOT_FOUND)).toBeInTheDocument();
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  // The store refuses the same request again once the task is Done, so a retry of a change that landed
+  // (its first try unconfirmed) is refused too: the record shows it, and says nothing more.
+  it.each<[string, () => Promise<void>, TaskStep[]]>([
+    ['tick', async () => void fireEvent.click(box('Check the redirects')), withStep(PLAN, 's2', { done: true })],
+    ['untick', async () => void fireEvent.click(box('Export every article')), withStep(PLAN, 's1', { done: false })],
+    ['Delete', () => choose('Check the redirects', 'Delete'), [PLAN[0]!, PLAN[2]!]],
+  ])('says nothing for a refused %s the record shows', async (_what, press, record) => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    await press();
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, record));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it.each<[string, () => Promise<void>]>([
+    ['tick', async () => void fireEvent.click(box('Check the redirects'))],
+    ['untick', async () => void fireEvent.click(box('Export every article'))],
+    ['Delete', () => choose('Check the redirects', 'Delete')],
+  ])('says a refused %s wasn’t saved when the record doesn’t show it', async (_what, press) => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    await press();
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, PLAN));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  // Tick boxes stay enabled while an editor holds typed text: a refused tick and the editor are each judged.
+  it('says typed text wasn’t saved when a refused tick the record shows closes its editor', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it('says reworded text wasn’t saved when a refused tick the record shows closes its Edit editor', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.change(await edit('Tell the team'), { target: { value: 'Tell the whole team' } });
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it('keeps saying typed text wasn’t saved when a tick out as the task turns Done is refused after it', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    fireEvent.click(box('Check the redirects'));
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+    await act(async () => d.reject(new WorkspaceApiError('/tasks/a1/t1/steps', 404)));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  // One read can both take the step being edited away and show the task Done.
+  it.each<[string, string | null, string]>([
+    ['says nothing for an untouched Edit editor', null, ''],
+    ['says typed text wasn’t saved', 'Check every redirect', NOT_SAVED],
+  ])('when one read removes the step being edited and shows Done, %s', async (_what, typedText, line) => {
+    const view = render(done(false));
+    const input = await edit('Check the redirects');
+    if (typedText !== null) fireEvent.change(input, { target: { value: typedText } });
+    view.rerender(done(true, [PLAN[0]!, PLAN[2]!]));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(line);
+  });
+
+  it('says typed text wasn’t saved when the task turns Done with an editor open', async () => {
+    const view = render(done(false));
+    const input = await edit('Check the redirects');
+    fireEvent.change(input, { target: { value: 'Check every redirect' } });
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it.each<[string, TaskStep[]]>([
+    ['an Add editor left empty', PLAN],
+    ['an Edit editor left unchanged', PLAN],
+    ['text the record now shows', withStep(PLAN, 's2', { text: 'Check every redirect' })],
+  ])('says nothing for %s', async (what, record) => {
+    const view = render(done(false));
+    if (what === 'an Add editor left empty') {
+      fireEvent.click(addStep());
+    } else {
+      const input = await edit('Check the redirects');
+      if (what === 'text the record now shows') {
+        fireEvent.change(input, { target: { value: 'Check  every redirect ' } });
+      }
+    }
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    view.rerender(done(true, record));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
   });
 });

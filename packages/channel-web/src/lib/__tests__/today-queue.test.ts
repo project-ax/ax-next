@@ -17,6 +17,7 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
     ...over,
   };
 }
@@ -25,7 +26,14 @@ function report(
   status: TaskRowReport['status'],
   reportedAt = '2026-10-23T10:00:00.000Z',
 ): TaskRowReport {
-  return { status, update: 'Queue is empty.', ask: 'Want me to draft a reply?', reading: null, reportedAt };
+  return {
+    status,
+    update: 'Queue is empty.',
+    ask: 'Want me to draft a reply?',
+    reading: null,
+    doneClaimed: false,
+    reportedAt,
+  };
 }
 
 function under(routineId: string, taskName = 'Zero open tickets'): Decision['checkIn'] {
@@ -73,6 +81,13 @@ describe('waitingOnYou', () => {
 });
 
 describe('todayQueue', () => {
+  it('a task that thinks it’s done counts once and makes one done-claimed block (TASK-950)', () => {
+    const tasks = [row({ routineId: 't1', task: { ...report('needs-you'), doneClaimed: true } })];
+    expect(waitingOnYou({ decisions: [], grants: [], tasks })).toBe(1);
+    const out = todayQueue({ tasks, decisions: [], agents: AGENTS, now: NOW });
+    expect(out.groups.map((g) => [g.routineId, g.reason])).toEqual([['t1', 'done-claimed']]);
+  });
+
   it("puts a check-in's approval under its task, matched on agent and task", () => {
     const tasks = [row({ routineId: 't1', task: report('needs-you') })];
     const d1 = open('d1', { checkIn: under('t1') });

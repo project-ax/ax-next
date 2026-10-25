@@ -68,6 +68,7 @@ const STATES = Object.keys(STATE_SHAPE) as Array<keyof typeof STATE_SHAPE>;
 describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
   it('covers every state the dot can draw', () => {
     expect([...STATES].sort()).toEqual([
+      'done',
       'held',
       'needs-you',
       'no-recent-update',
@@ -131,6 +132,19 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
       expect(STATE_SHAPE.paused).not.toBe(STATE_SHAPE[agent]);
     }
     expect(dot).toContain('bg-state-quiet');
+  });
+
+  it('draws done as a check no other mark uses (TASK-950)', () => {
+    const { dot } = renderSlotted('done');
+    expect(widthPx(STATE_SHAPE.done)).toBe(4);
+    expect(STATE_SHAPE.done).toContain('rotate-45');
+    expect(STATE_SHAPE.done).toContain('border-b-[1.5px]');
+    expect(STATE_SHAPE.done).toContain('border-r-[1.5px]');
+    for (const other of STATES.filter((s) => s !== 'done')) {
+      expect(STATE_SHAPE.done).not.toBe(STATE_SHAPE[other]);
+    }
+    expect(dot).toContain('border-primary');
+    expect(dot).not.toMatch(/\bbg-/);
   });
 
   it('reads the widths it is meant to read', () => {

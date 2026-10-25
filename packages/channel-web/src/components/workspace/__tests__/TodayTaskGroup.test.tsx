@@ -8,19 +8,26 @@
  */
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { todayQueue, type TodayGroup } from '@/lib/today-queue';
-import { workspaceApi } from '@/lib/workspace-api';
+import { WorkspaceApiError, workspaceApi } from '@/lib/workspace-api';
 import type { Decision, TaskRow, TaskRowReport } from '@/lib/workspace-types';
+import { MARK_DONE_NOT_ALLOWED } from '../TaskMarkDone';
+import { CANT_SHOW } from '../TaskPage';
 import { TodayTaskGroup } from '../TodayTaskGroup';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
-  return { ...actual, workspaceApi: { sendTaskReply: vi.fn() } };
+  return {
+    ...actual,
+    workspaceApi: { sendTaskReply: vi.fn(), completeTask: vi.fn(), reopenTask: vi.fn() },
+  };
 });
 
 const sendMock = vi.mocked(workspaceApi.sendTaskReply);
+const completeMock = vi.mocked(workspaceApi.completeTask);
+const reopenMock = vi.mocked(workspaceApi.reopenTask);
 
 const NAME = 'Zero open support tickets';
 const LABEL = { routineId: 't1', taskName: NAME };
@@ -38,6 +45,7 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
     ...over,
   };
 }
@@ -51,6 +59,7 @@ function report(
     update: 'Two tickets are still open.',
     ask: null,
     reading: null,
+    doneClaimed: false,
     reportedAt: '2026-10-23T10:00:00.000Z',
     ...over,
   };
@@ -410,5 +419,276 @@ describe('TodayTaskGroup (TASK-933)', () => {
     expect(screen.getByRole('button', { name: 'Reply' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('textbox', { name: BOX })).toBeNull();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe('a task that thinks it’s done (TASK-950)', () => {
+  const UPDATE = 'Every ticket is closed.';
+  const ASK = 'Want me to stop checking in?';
+  const NOT_YET = 'What’s left for Caveman to do?';
+  const UNCONFIRMED =
+    'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.';
+  /** A report after `report()`'s: a newer claim. */
+  const LATER = '2026-10-23T12:00:00.000Z';
+
+  /** An enabled task whose latest report claimed done. */
+  function claimed(over: Partial<TaskRow> = {}, rep: Partial<TaskRowReport> = {}): TaskRow {
+    return row({
+      kind: 'get-done',
+      task: report('needs-you', { update: UPDATE, doneClaimed: true, ...rep }),
+      ...over,
+    });
+  }
+
+  beforeEach(() => {
+    completeMock.mockReset();
+    reopenMock.mockReset();
+  });
+
+  it('says it thinks the task is done, then the update, then the ask muted', () => {
+    renderGroup(group([claimed({}, { ask: ASK })]));
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
+    expect(block).toHaveTextContent(', needs you');
+    expect(within(block).getByText('Caveman thinks this is done.')).toBeInTheDocument();
+    expect(within(block).getByText(UPDATE)).toBeInTheDocument();
+    expect(within(block).getByText(`Caveman asks: ${ASK}`)).toHaveClass('text-muted-foreground');
+    expect(within(block).queryByRole('button', { name: 'Reply' })).toBeNull();
+    expect(within(block).getByRole('link', { name: /Open task/ })).toBeInTheDocument();
+  });
+
+  it('says so when the update can’t be shown', () => {
+    renderGroup(group([claimed({}, { update: '' })]));
+    expect(screen.getByText('Caveman thinks this is done.')).toBeInTheDocument();
+    expect(screen.getByText(CANT_SHOW)).toBeInTheDocument();
+  });
+
+  it('Mark done and Not yet are both outline: Approve stays the one primary action', () => {
+    renderGroup(group([claimed()]));
+    for (const name of ['Mark done', 'Not yet']) {
+      const button = screen.getByRole('button', { name });
+      expect(button.className).not.toContain('bg-action');
+      expect(button.className).not.toContain('bg-primary');
+    }
+  });
+
+  it('Mark done with nothing unticked finishes the task and tells Today to look again', async () => {
+    completeMock.mockResolvedValue({ done: true });
+    const { onReplied } = renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+    expect(completeMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
+  });
+
+  it('asks first when steps aren’t ticked, and says they stay as they are', async () => {
+    completeMock.mockResolvedValue({ done: true });
+    const { onReplied } = renderGroup(group([claimed({ steps: { done: 1, total: 3 } })]));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    expect(
+      screen.getByText('2 steps aren’t ticked. They’ll stay on the task as they are.'),
+    ).toBeInTheDocument();
+    expect(completeMock).not.toHaveBeenCalled();
+    // The confirmation takes the action row's place, and Mark done anyway is not primary here.
+    expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull();
+    const anyway = screen.getByRole('button', { name: 'Mark done anyway' });
+    expect(anyway.className).not.toContain('bg-action');
+    fireEvent.click(anyway);
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+    expect(completeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Not yet opens the box, and its Send reopens the task and tells Today to look again', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const { onReplied } = renderGroup(group([claimed()]));
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
+
+    fireEvent.click(within(block).getByRole('button', { name: 'Not yet' }));
+    const box = within(block).getByRole('textbox', { name: NOT_YET });
+    expect(box).toBeVisible();
+    expect(document.activeElement).toBe(box);
+
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+    expect(reopenMock).toHaveBeenCalledWith('a1', 't1', {
+      text: 'Two are still open',
+      requestId: expect.any(String),
+    });
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('after Not yet the block stays, as after a Reply, and its box keeps its own words', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const onNavigate = vi.fn();
+    const onReplied = vi.fn();
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} />
+    );
+    const view = render(ui(group([claimed()])));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    fireEvent.change(screen.getByRole('textbox', { name: NOT_YET }), {
+      target: { value: 'Two are still open' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+
+    // Today reads the tasks again: the claim is taken back, and the report still says Needs you.
+    view.rerender(ui(group([claimed({}, { doneClaimed: false })])));
+    expect(screen.queryByText('Caveman thinks this is done.')).toBeNull();
+    expect(screen.getByRole('textbox', { name: NOT_YET })).toBeVisible();
+    expect(screen.getByRole('status').textContent).toBe('Sent. Caveman is checking in now.');
+    const reply = screen.getByRole('button', { name: 'Reply' });
+    expect(reply).toHaveAttribute('aria-expanded', 'true');
+
+    // Opened again, the box answers what the block shows now.
+    fireEvent.click(reply);
+    fireEvent.click(reply);
+    expect(screen.getByRole('textbox', { name: BOX })).toBeVisible();
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('a refused Mark done says why, under the row, and keeps the block', async () => {
+    completeMock.mockRejectedValue(new WorkspaceApiError('/x', 403));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { onReplied } = renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    expect(await screen.findByText(MARK_DONE_NOT_ALLOWED)).toBeInTheDocument();
+    expect(onReplied).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Mark done' })).toBeEnabled();
+  });
+
+  /**
+   * Presses `button` with the answer held, drops focus on `<body>` as a browser does from a button
+   * that goes disabled, then fails the press. jsdom keeps focus on a disabled button (its `blur()`
+   * does nothing there), so a decoy takes focus and leaves the document (TaskPage.test's
+   * `dropFocusOnBody`).
+   */
+  async function failWhileBusy(button: HTMLElement, status: number) {
+    let fail!: (e: unknown) => void;
+    completeMock.mockReturnValue(new Promise((_, reject) => (fail = reject)));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    act(() => button.focus());
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    const decoy = document.createElement('button');
+    document.body.append(decoy);
+    act(() => decoy.focus());
+    act(() => decoy.remove());
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => fail(new WorkspaceApiError('/x', status)));
+    await waitFor(() => expect(button).toBeEnabled());
+  }
+
+  it('a failed Mark done puts focus back on the button', async () => {
+    renderGroup(group([claimed()]));
+    const button = screen.getByRole('button', { name: 'Mark done' });
+    await failWhileBusy(button, 503);
+    expect(
+      screen.getByText(
+        'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.',
+      ),
+    ).toBeInTheDocument();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('after an unconfirmed Mark done, a claim that goes and comes back is a new press', async () => {
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} />
+    );
+    const view = render(ui(group([claimed()])));
+    await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
+    // Not yet (here, or on the task page) took the claim back; later the agent claims again.
+    view.rerender(ui(group([claimed({}, { doneClaimed: false })])));
+    view.rerender(ui(group([claimed()])));
+    expect(
+      screen.queryByText(
+        'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.',
+      ),
+    ).toBeNull();
+    completeMock.mockResolvedValue({ done: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(2));
+    expect(completeMock.mock.calls[1]![2].requestId).not.toBe(completeMock.mock.calls[0]![2].requestId);
+  });
+
+  it('after an unconfirmed Mark done anyway, a claim that goes and comes back asks afresh', async () => {
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} />
+    );
+    const steps = { done: 1, total: 3 };
+    const view = render(ui(group([claimed({ steps })])));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await failWhileBusy(screen.getByRole('button', { name: 'Mark done anyway' }), 502);
+    view.rerender(ui(group([claimed({ steps }, { doneClaimed: false })])));
+    view.rerender(ui(group([claimed({ steps }, { reportedAt: LATER })])));
+    // The old question doesn't come back with the new claim: it takes focus when it opens, and
+    // its Mark done anyway is one Enter from finishing the task.
+    expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
+    completeMock.mockResolvedValue({ done: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done anyway' }));
+    await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(2));
+    expect(completeMock.mock.calls[1]![2].requestId).not.toBe(completeMock.mock.calls[0]![2].requestId);
+  });
+
+  it('after an unconfirmed Mark done, a newer claim on the next read is a new press', async () => {
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} />
+    );
+    const view = render(ui(group([claimed()])));
+    await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
+    // Between two reads the claim was taken back and the agent claimed again: still a claim,
+    // but not the one the press answered.
+    view.rerender(ui(group([claimed({}, { update: 'All of them are closed.', reportedAt: LATER })])));
+    expect(screen.queryByText(UNCONFIRMED)).toBeNull();
+    completeMock.mockResolvedValue({ done: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(2));
+    expect(completeMock.mock.calls[1]![2].requestId).not.toBe(completeMock.mock.calls[0]![2].requestId);
+  });
+
+  it('after an unconfirmed Mark done, a read showing the same claim keeps the press', async () => {
+    const ui = (g: TodayGroup) => (
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} />
+    );
+    const view = render(ui(group([claimed()])));
+    await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
+    // Today reads the tasks again, and this one hasn't changed: a retry is the same request.
+    view.rerender(ui(group([claimed()])));
+    expect(screen.getByText(UNCONFIRMED)).toBeInTheDocument();
+    completeMock.mockResolvedValue({ done: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(2));
+    expect(completeMock.mock.calls[1]![2]).toEqual(completeMock.mock.calls[0]![2]);
+  });
+
+  it('a failed Mark done anyway puts focus back inside the question', async () => {
+    renderGroup(group([claimed({ steps: { done: 1, total: 3 } })]));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    const anyway = screen.getByRole('button', { name: 'Mark done anyway' });
+    await failWhileBusy(anyway, 500);
+    expect(document.activeElement).toBe(anyway);
+  });
+
+  it('Cancel puts focus back on Mark done', () => {
+    renderGroup(group([claimed({ steps: { done: 1, total: 3 } })]));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    act(() => cancel.focus());
+    fireEvent.click(cancel);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Mark done' }));
+  });
+
+  it('hands focus to Today’s consent region before the block leaves', async () => {
+    completeMock.mockResolvedValue({ done: true });
+    const onReplied = vi.fn();
+    const g = group([claimed()]);
+    render(
+      <div data-consent-region="" tabIndex={-1} aria-label="Waiting on you">
+        <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={onReplied} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
+    expect(document.activeElement).toBe(screen.getByLabelText('Waiting on you'));
   });
 });

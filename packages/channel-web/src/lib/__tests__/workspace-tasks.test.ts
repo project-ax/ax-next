@@ -30,6 +30,7 @@ function row(routineId: string, name: string): TaskRow {
     finishBy: null,
     task: null,
     noRecentUpdate: null,
+    doneAt: null,
   };
 }
 

@@ -1,14 +1,14 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineDeleteOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
-  type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineCompleteOutputSchema, RoutineDeleteOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  type CheckInMiss, type RoutineCompleteOutput, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
-import { createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
+import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
+import { createRequestHash, updateRequestHash, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 
@@ -60,6 +60,12 @@ export interface RoutinesStore {
    * that is no longer get-done skips them all. The answer is `'recorded'` when
    * the report sent no step changes, and counts those that applied and those
    * skipped when it did.
+   * TASK-950: a report's claim that a get-done task is done lands with it, under
+   * the same guard, stamped with the report's time (`task_done_claimed_at`), and
+   * any later report without one takes it back. A claim on any other kind
+   * records the report and no claim. Nothing is written, and the answer is
+   * `'done'`, once a person has marked the task done (`doneOf`), a report that
+   * waited on the row lock while they did included.
    */
   recordReport(input: RecordReportInput): Promise<'recorded' | RecordedSteps | ReportRefusal>;
   /**
@@ -78,6 +84,11 @@ export interface RoutinesStore {
    * checks the date (`RoutineSetFinishByInputSchema`); the column's CHECK
    * refuses anything not written `YYYY-MM-DD`, and every read takes a value the
    * contract's rule refuses as none.
+   *
+   * It takes a date on a Done task (TASK-950), on purpose, unlike `setSteps`,
+   * which refuses a Done task's steps: no page offers the date there, and a
+   * reopened task shows it again. See TASK-950's decisions ("A Done task shows
+   * no Finish by"). Don't "fix" the difference without a card.
    */
   setFinishBy(input: RoutineKey & Actor & { finishBy: string | null }): Promise<{ finishBy: string | null } | 'not-found' | 'forbidden'>;
   /**
@@ -92,6 +103,42 @@ export interface RoutinesStore {
    * the person's, checked by the caller (`RoutineReplyTextSchema`).
    */
   addReply(input: RoutineKey & Actor & { requestId: string; text: string; now: Date }): Promise<AddReplyResult>;
+  /**
+   * TASK-950. Mark done: a person finishes a get-done task. Only its owner, and
+   * only while they manage the agent's tasks (`mayEdit`, the caller's `edit`),
+   * decided under the agent fence and the routine's row lock; a missing
+   * routine, a retired agent and any other kind are `not-found`. It pauses the
+   * task the way a person's pause does (not enabled, a new revision, the paused
+   * definition's hash, no next run, `updated_at`) and, in the same statement,
+   * records the completion (`doneOf`), takes back the agent's claim and starts
+   * the missed check-ins over. The steps, the report and the notes stay. A task
+   * already Done answers done and writes nothing. The refusals are thrown
+   * inside the receipt's transaction, never returned: `receiptTransaction`
+   * keeps whatever the effect returns as the request's receipt, so a returned
+   * refusal would answer a retry made once the person may again. The receipt
+   * is the answer, `{ done: true }`, and the same `requestId` again answers
+   * from it and writes nothing, even after a Reopen ran the task again: a press
+   * retried after its answer was lost can't finish a task the person has since
+   * reopened.
+   */
+  completeTask(input: RoutineKey & Actor & { requestId: string; mayEdit: boolean; now: Date }): Promise<RoutineCompleteOutput>;
+  /**
+   * TASK-950. Not yet, and Reopen on a Done task: a person's reply on a
+   * get-done task, stored as `addReply` stores one, in its lock order (the
+   * agent fence, then the routine's row), with its retries and its refusals: a
+   * missing routine, a retired agent and any other kind are `not-found`, anyone
+   * but the owner `forbidden`. Reopening a Done task also needs `edit`
+   * (`mayEdit`), decided before the reply is stored, so a refused Reopen stores
+   * nothing, a retry of one included. A new reply takes back the agent's claim,
+   * and on a Done task also clears the completion and runs the task again the
+   * way a Resume does (enabled, a new revision, the running definition's hash,
+   * its next run, the missed check-ins started over). On a task neither claimed
+   * nor Done it writes nothing else. Only a new reply clears the claim: by the
+   * time a retry comes, the agent may have claimed again in the check-in that
+   * reply started, and that claim is its latest word. The text is the
+   * person's, checked by the caller (`RoutineReplyTextSchema`).
+   */
+  reopenTask(input: RoutineKey & Actor & { requestId: string; text: string; mayEdit: boolean; now: Date }): Promise<ReopenTaskResult>;
   /**
    * TASK-931. The replies `actorUserId` wrote on a routine they own now, newest
    * first (ties by reply id). None when the routine is gone or someone else owns
@@ -108,10 +155,12 @@ export interface RoutinesStore {
    * Owner only, decided under the agent fence and the routine's row lock, which
    * `recordReport` takes too, so a change and a report that overlap both land:
    * whichever waits re-reads the steps the other wrote. A missing routine, and
-   * one that isn't get-done, is `not-found`; someone else's is `forbidden`. The
-   * changes apply as the person's, in order, by id (`changeStoredSteps`): they
-   * may tick, reword or remove any step, and their add, like a step whose words
-   * they change, is theirs. A change that can't apply is skipped and counted;
+   * one that isn't get-done, is `not-found`; someone else's is `forbidden`, and
+   * so is a Done one's (TASK-950, `doneOf`): its steps are its record until a
+   * Reopen, the same request again included. The changes apply as the
+   * person's, in order, by id (`changeStoredSteps`): they may tick, reword or
+   * remove any step, and their add, like a step whose words they change, is
+   * theirs. A change that can't apply is skipped and counted;
    * `steps` is the list after them all. The same `requestId` again, from the
    * same person with the same changes, changes nothing: it answers the first
    * try's count with the steps as they are now, the owner checked again under
@@ -271,7 +320,10 @@ function readingOf(value: number | null, label: string | null): StoredReading | 
  * of it, claimDue's included (TASK-913). TASK-952: its reading shows only when
  * it came with this report (`task_reading_reported_at` is this report's time):
  * code from before version 10 writes a report without touching the reading, and
- * the reading it leaves is an earlier report's.
+ * the reading it leaves is an earlier report's. TASK-950: so does its claim that
+ * a get-done task is done (`task_done_claimed_at` is this report's time), for the
+ * same reason: code from before version 13 writes a report, or moves an owner,
+ * without touching the stamp.
  */
 function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | null {
   if (row.task_status === null || row.task_update === null || row.task_reported_at === null) return null;
@@ -279,6 +331,7 @@ function taskState(row: Selectable<RoutinesDefinitionsRow>): StoredTaskState | n
   return {
     status: row.task_status, update: row.task_update, ask: row.task_ask, agentNotes: row.agent_notes, reportedAt: row.task_reported_at,
     reading: ownReading ? readingOf(row.task_reading_value, row.task_reading_label) : null,
+    doneClaimed: row.task_done_claimed_at !== null && row.task_done_claimed_at.getTime() === row.task_reported_at.getTime(),
   };
 }
 /**
@@ -294,6 +347,31 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
   if (!Number.isInteger(inARow) || inARow < 1 || row.task_miss_at === null) return null;
   const reason = CheckInMissSchema.safeParse(row.task_miss_reason);
   return { inARow, reason: reason.success ? reason.data : 'failed', at: row.task_miss_at, autoPausedAt: row.task_auto_paused_at };
+}
+/**
+ * TASK-950. A task's completion, cleared. Written by a Reopen, and by every write
+ * that must not leave a completion to come back as Done: every edit but one that
+ * leaves a Done task off (`updateAuthored`), ax's pause after missed check-ins
+ * (`missesAfterRun`), and a change of kind or of owner (`NO_TASK_STATE`).
+ */
+const NO_COMPLETION = { task_completed_at: null, task_completed_by_user_id: null } as const;
+/**
+ * TASK-950. The one reading of Done: a "get-done" task a person marked done
+ * (`task_completed_at`), still off, and completed by its owner. A completion on
+ * a running row isn't Done (code from before version 13 can resume a Done task
+ * without clearing it, after a rollback), so a running task never refuses its
+ * own reports or freezes its misses, and its next pause (by this version's
+ * code) clears the completion. A pause by that older code leaves it, so such a
+ * task reads as Done again after rolling forward: an accepted rollback window.
+ * One whose completer isn't its owner (an owner move by that code) reads as a
+ * plain pause, and so does one with a time and no person. Under this version
+ * every Done row meets all four: only the owner can mark a task done, and a
+ * change of kind or of owner clears the completion (`NO_TASK_STATE`).
+ */
+function doneOf(row: Pick<Selectable<RoutinesDefinitionsRow>, 'kind' | 'enabled' | 'owner_user_id' | 'task_completed_at' | 'task_completed_by_user_id'>): StoredDone | null {
+  return row.kind === 'get-done' && !row.enabled && row.task_completed_at !== null
+    && row.task_completed_by_user_id !== null && row.task_completed_by_user_id === row.owner_user_id
+    ? { at: row.task_completed_at, byUserId: row.task_completed_by_user_id } : null;
 }
 /**
  * TASK-907. A task's state belongs to the kind it was reported under, so an edit
@@ -333,6 +411,11 @@ function noRecentUpdate(row: Selectable<RoutinesDefinitionsRow>): StoredNoRecent
  * JSON text the column parses. Steps the agent added can carry what only the
  * earlier owner could reach.
  *
+ * TASK-950: a get-done task's claim that it's done (`task_done_claimed_at`) and
+ * its completion (`NO_COMPLETION`) are task state too, so a change of kind or of
+ * owner clears both. `enabled` isn't touched here either, so a Done task whose
+ * kind or owner changes stays off, now as a plain pause.
+ *
  * TASK-951: a get-done task's finish date isn't here. A change of kind clears
  * it beside these (`NO_FINISH_BY`); a change of owner, which writes these too,
  * keeps it.
@@ -342,6 +425,7 @@ const NO_TASK_STATE = {
   task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null,
   task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
   task_steps: '[]',
+  task_done_claimed_at: null, ...NO_COMPLETION,
   ...NO_MISSES,
 } as const;
 /**
@@ -372,7 +456,9 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * it by reporting. Only a person's Resume or a kind change (`updateAuthored`),
  * or a change of owner (`reconcileOwners`, TASK-936), ends that. Keyed on
  * `enabled` too: a row resumed without a reset (code from before version 7,
- * after a rollback) counts again, and can pause again.
+ * after a rollback) counts again, and can pause again. TASK-950: null too while
+ * the task is Done (`doneOf`), so a check-in still running when a person marks
+ * it done neither counts a miss nor clears one, whatever it reported before.
  *
  * Runs that overlap (a Check now beside a scheduled check-in) answer in the
  * order they started, whatever order they finish in, as `recordReport` keeps
@@ -409,6 +495,9 @@ type MissesWrite = { columns: Updateable<RoutinesDefinitionsRow> } & ({ paused: 
  * does (design §7's cost bound): not enabled, a new revision, so an edit, Check
  * now or tick held against the old one is refused, the paused definition's hash,
  * no next run, and `updated_at`, at the instant `task_auto_paused_at` records.
+ * TASK-950: the pause clears a completion the running row holds
+ * (`NO_COMPLETION`), one code from before version 13 left when it resumed a Done
+ * task, so it can't come back as Done now that the task is off.
  */
 async function missesAfterRun(
   trx: Transaction<RoutinesDatabase>,
@@ -416,7 +505,7 @@ async function missesAfterRun(
   run: { reported: boolean; status: FireStatus; miss: DispatchMiss | undefined; acceptedAt: Date },
   now: Date,
 ): Promise<MissesWrite | null> {
-  if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled)) return null;
+  if (row.kind === 'repeat' || (row.task_auto_paused_at !== null && !row.enabled) || doneOf(row) !== null) return null;
   // recordReport's order: a run started after this one has already answered.
   const newerMiss = row.task_miss_at !== null && row.task_miss_at > run.acceptedAt;
   if (run.reported) {
@@ -443,7 +532,7 @@ async function missesAfterRun(
   return {
     columns: {
       ...counted, enabled: false, revision: opaqueId('rev'), spec_hash: specHash.hash,
-      next_run_at: null, updated_at: now, task_auto_paused_at: now,
+      next_run_at: null, updated_at: now, task_auto_paused_at: now, ...NO_COMPLETION,
     },
     paused: true, keptHash: specHash.kept,
   };
@@ -499,7 +588,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
-    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps), finishBy: storedFinishBy(row.finish_by),
+    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps), finishBy: storedFinishBy(row.finish_by), done: doneOf(row),
   });
 }
 /**
@@ -543,6 +632,7 @@ function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'create' || operation === 'update') return parseStoredRoutine(value);
   if (operation === 'delete') return RoutineDeleteOutputSchema.parse(value);
   if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
+  if (operation === 'complete') return RoutineCompleteOutputSchema.parse(value);
   if (operation === 'set-steps') return StepsReceiptSchema.parse(value);
   throw new Error('Unknown routine receipt operation');
 }
@@ -554,18 +644,20 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * too. They're the task's, not the request's, and move on without it.
  * TASK-948: so do a get-done task's steps, beside the report and the misses:
  * agent- or person-written text the task row already holds, once.
+ * TASK-950: so does whether a person marked the task done (`done`): the task's,
+ * not the request's, like the misses, and it moves on without it.
  * TASK-951: so does a get-done task's finish date, not because it's agent text
  * (a person sets it) but for the reason that follows.
- * All four keys are left out, not stored as null or `[]`, so code from before
+ * All five keys are left out, not stored as null or `[]`, so code from before
  * each field (whose strict schema has no such key) still reads the receipt
  * after a rollback; the schema's defaults fill them in on read. So an exact
- * replay answers with `task: null`, `noRecentUpdate: null`, `steps: []` and
- * `finishBy: null`: a replay answers from its receipt, never from a fresh read.
- * The live answer is the effect's own, state and all, so `acceptDispatch`'s
- * `accepted.row` still holds the task's state, misses, steps and finish date as
- * it read them under the row lock. A replayed accept starts no run (the tick
- * and the webhook mint a request per dispatch, and every caller skips
- * `replayed`), so no run reads a receipt's row.
+ * replay answers with `task: null`, `noRecentUpdate: null`, `steps: []`,
+ * `finishBy: null` and `done: null`: a replay answers from its receipt, never
+ * from a fresh read. The live answer is the effect's own, state and all, so
+ * `acceptDispatch`'s `accepted.row` still holds the task's state, misses, steps
+ * and finish date as it read them under the row lock. A replayed accept starts
+ * no run (the tick and the webhook mint a request per dispatch, and every
+ * caller skips `replayed`), so no run reads a receipt's row.
  * TASK-949: `set-steps`' result is its count alone (`{ skipped }`), stored as
  * it is. Its steps leave `setSteps` beside the receipt, never through it, and a
  * replay reads them again under the routine's row lock.
@@ -578,7 +670,7 @@ function receiptCopy(operation: string, result: unknown): unknown {
   }
   return result;
 }
-function withoutTaskState({ task: _task, noRecentUpdate: _misses, steps: _steps, finishBy: _finishBy, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate' | 'steps' | 'finishBy'> { return routine; }
+function withoutTaskState({ task: _task, noRecentUpdate: _misses, steps: _steps, finishBy: _finishBy, done: _done, ...routine }: StoredRoutine): Omit<StoredRoutine, 'task' | 'noRecentUpdate' | 'steps' | 'finishBy' | 'done'> { return routine; }
 function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
@@ -735,6 +827,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
           // shortening instructions that were too long leaves the task paused, and counted.
           ...(!current.enabled && next.enabled ? NO_MISSES : {}),
+          // TASK-950: a completion is kept only while the task is Done and stays off. Every other edit
+          // clears it: a Resume runs a Done task again, and a completion on a row that isn't Done (one
+          // code from before version 13 resumed) can't come back as Done at its next pause. The claim
+          // is the latest report's, so only a kind change clears it (NO_TASK_STATE); a Done task's is clear.
+          ...(current.done !== null && !next.enabled ? {} : NO_COMPLETION),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -923,12 +1020,16 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // Compared here rather than in the WHERE, so a refusal can say which of the two it was (TASK-907).
         if (!dispatch || dispatch.completed_at !== null) return 'run-closed';
         if (dispatch.conversation_id !== input.conversationId) return 'not-bound';
-        const definition = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'agent_notes_cleared_at', 'task_steps'])
+        const definition = await trx.selectFrom('routines_v1_definitions')
+          .select(['kind', 'enabled', 'owner_user_id', 'agent_notes_cleared_at', 'task_steps', 'task_completed_at', 'task_completed_by_user_id'])
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).forUpdate().executeTakeFirst();
         if (!definition) return 'routine-gone';
         // An explicit allowlist (TASK-948): a write path refuses a kind it doesn't know.
         if (!isTaskKind(definition.kind)) return 'kind';
         if (definition.owner_user_id !== input.actorUserId) return 'owner';
+        // TASK-950: a person marked the task done, read under the row lock, so a check-in still running
+        // then (or one that waited here while they did) can't write onto the finished task.
+        if (doneOf(definition) !== null) return 'done';
         const { status, update, ask } = input.report;
         // TASK-952: left out or null, this report has no reading, so the task's latest has none either.
         const reading = input.reading ?? null;
@@ -953,12 +1054,19 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           // The run accepted last owns the task's state, whatever order the runs report in. There's
           // no revision clause, so an edit during the check-in can't drop its report, and the state
           // never moves revision, spec_hash or updated_at. TASK-952: the reading is stamped with its
-          // report's time, which is what lets a read show it (taskState).
+          // report's time, which is what lets a read show it (taskState). TASK-950: so is the claim
+          // that the task is done, written for a get-done task only (decided under this row lock, so
+          // a kind change that landed after the tool's check records the report with no claim), and
+          // only beside "needs-you": the contract refuses any other pairing, and the store holds the
+          // same rule so a caller that skips the schema can't put a claim beside "on-track". It
+          // lives on the task alone: the run's report JSON keeps its three keys, since code from
+          // before version 13 reads it with a strict schema.
           await trx.updateTable('routines_v1_definitions').set({
             task_status: status, task_update: update, task_ask: ask,
             task_reported_at: input.now, task_report_accepted_at: dispatch.accepted_at,
             task_reading_value: reading?.value ?? null, task_reading_label: reading?.label ?? null,
             task_reading_reported_at: reading === null ? null : input.now,
+            task_done_claimed_at: definition.kind === 'get-done' && input.done === true && status === 'needs-you' ? input.now : null,
             ...(writesNotes ? { agent_notes: input.notes } : {}),
           }).where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id)
             .where(eb => eb.or([eb('task_report_accepted_at', 'is', null), eb('task_report_accepted_at', '<=', dispatch.accepted_at)])).execute();
@@ -1041,16 +1149,81 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         return { outcome: 'replayed', replyId: first.reply_id, row };
       });
     },
+    async completeTask(input) {
+      // The receipt's transaction takes the agent fence, then the receipt's row; the routine's row comes
+      // last, as for every edit. Every refusal is thrown, so the receipt's row rolls back with it.
+      return receiptTransaction(db, operationKey(input, 'complete', completeRequestHash(input)), async trx => {
+        const raw = await trx.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        if (!raw || raw.kind !== 'get-done') throw new SafeToolError('not-found', 'routineId');
+        if (raw.owner_user_id !== input.actorUserId || !input.mayEdit) throw new SafeToolError('forbidden', 'input');
+        // Done already: the first Mark done's time and revision stand.
+        if (doneOf(raw) !== null) return { done: true as const };
+        // A person's pause (what updateAuthored writes for `enabled: false`), and the completion with it. The
+        // report, its notes and the steps stay where they are.
+        await trx.updateTable('routines_v1_definitions').set({
+          enabled: false, revision: opaqueId('rev'), spec_hash: pausedSpecHash(raw).hash, next_run_at: null, updated_at: input.now,
+          task_done_claimed_at: null, task_completed_at: input.now, task_completed_by_user_id: input.actorUserId, ...NO_MISSES,
+        }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        return { done: true as const };
+      });
+    },
+    async reopenTask(input) {
+      return db.transaction().execute(async (trx): Promise<ReopenTaskResult> => {
+        // addReply's order: the agent fence, then the routine's row.
+        if (!await lockLiveAgent(trx, input.agentId)) return 'not-found';
+        const raw = await trx.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
+        if (!raw || raw.kind !== 'get-done') return 'not-found';
+        if (raw.owner_user_id !== input.actorUserId) return 'forbidden';
+        const wasDone = doneOf(raw) !== null;
+        // Before the insert, so a refused Reopen stores nothing. A retry of a reply sent before the task was
+        // marked done is refused the same way.
+        if (wasDone && !input.mayEdit) return 'forbidden';
+        const row = rowToRoutine(raw);
+        const added = await trx.insertInto('routines_v1_replies').values({
+          reply_id: opaqueId('reply'), agent_id: input.agentId, routine_id: input.routineId, author_user_id: input.actorUserId,
+          request_id: input.requestId, body: input.text, created_at: input.now,
+        }).onConflict(oc => oc.columns(['agent_id', 'routine_id', 'author_user_id', 'request_id']).doNothing())
+          .returning('reply_id').executeTakeFirst();
+        if (added === undefined) {
+          // A retry: the first try's reply stands, and nothing else moves. A claim the agent made since, in
+          // the check-in that reply started, is its latest word, so it stays.
+          const first = await trx.selectFrom('routines_v1_replies').select('reply_id')
+            .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId)
+            .where('author_user_id', '=', input.actorUserId).where('request_id', '=', input.requestId).executeTakeFirstOrThrow();
+          return { outcome: 'replayed', replyId: first.reply_id, row, wasDone };
+        }
+        if (wasDone) {
+          // A person's Resume (what updateAuthored writes for `enabled: true`), with the completion cleared.
+          const running = { ...editableDefinition(row), enabled: true };
+          const reopenedRow = await trx.updateTable('routines_v1_definitions').set({
+            ...NO_COMPLETION, task_done_claimed_at: null, enabled: true, revision: opaqueId('rev'), spec_hash: inputHash(running),
+            next_run_at: nextRun(running, input.now), updated_at: input.now, ...NO_MISSES,
+          }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
+          return { outcome: 'added', replyId: added.reply_id, row: rowToRoutine(reopenedRow), wasDone };
+        }
+        // Not yet: the claim goes. It is task state, like the report it came with, so no new revision.
+        if (raw.task_done_claimed_at === null) return { outcome: 'added', replyId: added.reply_id, row, wasDone };
+        const unclaimed = await trx.updateTable('routines_v1_definitions').set({ task_done_claimed_at: null })
+          .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
+        return { outcome: 'added', replyId: added.reply_id, row: rowToRoutine(unclaimed), wasDone };
+      });
+    },
     async setSteps(input) {
       // Inside receiptTransaction, so after the agent fence and the request's row: acceptDispatch's and
       // updateAuthored's order. recordReport takes the fence, the run's row, then this row, and nothing locks a
       // request row after a routine's, so this adds no deadlock.
       const locked = async (trx: Transaction<RoutinesDatabase>) => {
-        const row = await trx.selectFrom('routines_v1_definitions').select(['kind', 'owner_user_id', 'task_steps'])
+        const row = await trx.selectFrom('routines_v1_definitions')
+          .select(['kind', 'enabled', 'owner_user_id', 'task_steps', 'task_completed_at', 'task_completed_by_user_id'])
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
         // An explicit allowlist (TASK-948): only a get-done task has steps.
         if (!row || row.kind !== 'get-done') throw new StepsRefused('not-found');
         if (row.owner_user_id !== input.actorUserId) throw new StepsRefused('forbidden');
+        // TASK-950: a Done task's steps are its record, read under the row lock (doneOf), so a change waits for a
+        // Reopen; the same request again too, since this runs on the replay path as well.
+        if (doneOf(row) !== null) throw new StepsRefused('forbidden');
         return row;
       };
       // The steps leave through here, never through the receipt, and so does whether this was a replay.

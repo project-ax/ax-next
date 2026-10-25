@@ -111,6 +111,25 @@ export interface RoutinesDefinitionsRow {
    * takes it through the contract's whole rule (`storedFinishBy`, store.ts).
    */
   finish_by: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * Version 13 (TASK-950). A "get-done" task's claim that it's done: the
+   * `task_reported_at` of the report that made it, written by `recordReport`
+   * beside that report (NULL when it made none), and cleared by `completeTask`,
+   * `reopenTask` and a change of kind or of owner (`NO_TASK_STATE`). A read shows
+   * the claim only while the two match (`taskState`), so a report from code
+   * before version 13 takes it back (`addDoneColumns`).
+   */
+  task_done_claimed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /**
+   * Version 13 (TASK-950). When a person marked a "get-done" task done, and who.
+   * Written by `completeTask`; cleared by `reopenTask`, `updateAuthored` (every
+   * edit but one that leaves a Done task off), ax's pause after missed check-ins
+   * (`missesAfterRun`) and a change of kind or of owner (`NO_TASK_STATE`). Read
+   * only through `doneOf` (store.ts): Done needs the task off, its kind
+   * get-done and its completer its owner.
+   */
+  task_completed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  task_completed_by_user_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -292,6 +311,10 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addFinishByColumn(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (12)`.execute(trx);
     }
+    if (!await done(13)) {
+      await addDoneColumns(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (13)`.execute(trx);
+    }
   });
 }
 
@@ -329,6 +352,33 @@ async function addFinishByColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
       END IF;
     END $$;
   `.execute(db);
+}
+
+/** Version 13 (TASK-950): a "get-done" task's claim that it's done, and its
+ * completion. The claim is the time of the report that made it
+ * (`task_done_claimed_at`, that report's `task_reported_at`), and a read shows
+ * it only while the two match (`taskState`): code from before this version,
+ * after a rollback, writes reports and moves owners without touching it, so a
+ * report or owner move there takes the claim back rather than show it beside a
+ * report that never said done (TASK-952's stamp, for the same window). The
+ * completion is when a person marked the task done and who, read only through
+ * `doneOf` (store.ts). Code from before this version ignores the three
+ * columns, so a Done task reads there as a paused one: the tick doesn't claim
+ * it, Check now is refused, and its agent's reads work. A person may resume it
+ * there, and the completion stays, but this version reads a running task as not
+ * Done (`doneOf` needs it off), and its next pause here, a person's or ax's,
+ * clears it. A pause made there leaves it, so a Done task that code resumed and
+ * paused again reads as Done once more after rolling forward. An owner move there leaves a completion whose completer isn't the new
+ * owner, so it reads as a plain pause. Code from before this version never
+ * looks up a `'complete'` receipt. Nullable, with no default, no backfill and
+ * no foreign key (a new foreign key on a shared table has broken other
+ * packages' test teardown before): additive, existing rows read unclaimed and
+ * not Done, and a re-run keeps every value.
+ */
+async function addDoneColumns(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_done_claimed_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_completed_at TIMESTAMPTZ`.execute(db);
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS task_completed_by_user_id TEXT`.execute(db);
 }
 
 /** Version 11 (TASK-948): the "get-done" kind and its checklist. The kind

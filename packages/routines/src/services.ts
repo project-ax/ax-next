@@ -12,7 +12,7 @@ export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
-  'reply', 'recent-replies', 'set-steps', 'set-finish-by',
+  'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen',
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
@@ -40,7 +40,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
-    noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row) };
+    noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row),
+    done: doneView(row, userId) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -50,18 +51,36 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * get, create, update, their replays, the tools' recovery), so no caller (a tool,
  * the Settings routes, the Tasks page) needs a rule of its own for these. It covers
  * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`), a
- * "get-done" task's steps (TASK-948: `stepsView`) and `report` only: a fire's
+ * "get-done" task's steps (TASK-948: `stepsView`), when a get-done task was marked
+ * done (TASK-950: `doneView`) and `report` only: a fire's
  * `renderedPrompt` is not gated here (a task run's check-in message never lands
  * there: fire.ts stores `renderedPrompt: null` for task runs, TASK-908). A repeat
  * routine shows none either: changing a kind clears it, and this hides any a row
  * holds anyway. TASK-952: a report's reading is part of `task` and of `report`,
- * so it follows the same rule. TASK-951: a "get-done" task's finish date isn't
- * task state, so this rule doesn't cover it (`finishByView`).
+ * so it follows the same rule. TASK-950: so is a report's claim that the task is
+ * done (`doneClaimed`), which only a "get-done" task makes: `=== 'get-done'`, an
+ * explicit allowlist, so a row of any other kind that holds one shows none.
+ * TASK-951: a "get-done" task's finish date isn't task state, so this rule
+ * doesn't cover it (`finishByView`).
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
-  const { status, update, ask, reading, reportedAt, agentNotes } = row.task;
-  return { status, update, ask, reading: readingView(reading), reportedAt: reportedAt.toISOString(), agentNotes };
+  const { status, update, ask, reading, doneClaimed, reportedAt, agentNotes } = row.task;
+  return {
+    status, update, ask, reading: readingView(reading), doneClaimed: row.kind === 'get-done' && doneClaimed,
+    reportedAt: reportedAt.toISOString(), agentNotes,
+  };
+}
+/**
+ * TASK-950. When a person marked a "get-done" task done, under `taskView`'s rule:
+ * only its owner sees it. The store says Done only while it holds (`doneOf`: off,
+ * and finished by its owner), and `=== 'get-done'` is an explicit allowlist, so a
+ * row of any other kind that holds a completion shows none. Only the time: who
+ * marked it is always the owner, so `byUserId` stays here.
+ */
+function doneView(row: StoredRoutine, userId: string): C.RoutineDoneView | null {
+  if (row.done === null || row.ownerUserId !== userId || row.kind !== 'get-done') return null;
+  return { at: row.done.at.toISOString() };
 }
 /** TASK-952. A report's reading as a view shows it: field by field, never a spread, so nothing the store reads reaches the view unnamed. */
 function readingView(reading: StoredReading | null): C.RoutineReadingView | null {
@@ -157,8 +176,10 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     requireAllowed(result?.isAdmin === true);
   }
   /**
-   * TASK-931. What a stored reply does next, decided on the routine as `addReply` read it under its
-   * row lock. The order is the point: `not-allowed` comes before `paused`, so "when you resume the
+   * TASK-931. What a stored reply does next, decided on the routine as the store left it under its
+   * row lock: `addReply`'s, for `routines:reply`, and TASK-950's `reopenTask`'s, for `routines:reopen`
+   * (Not yet and Reopen are replies too), reopened or with its claim taken back when the reply was
+   * new. The order is the point: `not-allowed` comes before `paused`, so "when you resume the
    * task" is only said to someone who may resume it (for a task's owner, `fire` is
    * agents:can-manage-routines' answer). The check-in is keyed on the reply, not on the caller's
    * requestId, so one reply starts at most one check-in and never shares a receipt with a Check now
@@ -195,6 +216,23 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     if (result.replayed) return 'replayed';
     await send(result.accepted);
     return 'started';
+  }
+  /**
+   * `replyCheckIn` for a reply the store just stored or found, for `routines:reply` and (TASK-950)
+   * `routines:reopen`. When the step throws, the reply is stored (and still there unless the routine
+   * was deleted meanwhile) with no check-in behind it, so one warn line says so and it can be found.
+   * Ids and the closed tool code only: the error's message may carry anything.
+   */
+  async function storedReplyCheckIn(ctx: AgentContext, allowed: boolean, key: C.RoutineKey, stored: { row: StoredRoutine; replyId: string }, send: (accepted: AcceptedDispatch) => Promise<unknown>): Promise<C.RoutineReplyCheckIn> {
+    try {
+      return await replyCheckIn(ctx, allowed, stored.row, stored.replyId, send);
+    } catch (err) {
+      ctx.logger.warn('routines_reply_check_in_failed', {
+        agentId: key.agentId, routineId: key.routineId, replyId: stored.replyId,
+        toolCode: err instanceof SafeToolError ? err.toolCode : 'unknown',
+      });
+      throw err;
+    }
   }
   register('list', C.RoutineListInputSchema, C.RoutineListOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
@@ -301,17 +339,24 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // failure as one routines_report_failed warn line and answers the closed "unavailable", a 503,
   // which the runner's IPC client retries up to its 5xx cap: a retry runs the whole report again. A
   // report that lands just replaces the run's report, and its step changes find their work done (an
-  // add whose text is already on the list is skipped), so only the counts differ.
+  // add whose text is already on the list is skipped), so only the counts differ. TASK-950: `done`
+  // true is the agent's claim that a get-done task is finished. The input schema refuses it without
+  // "needs-you"; the store writes it beside the report, for a get-done task only, and any later report
+  // without it takes it back. It goes to the store on its own, never inside `report`, which is the
+  // run's three fields. Once a person has marked the task done, the store refuses every report
+  // (`'done'`, through reportRefused like the others), so a check-in still running then can't write
+  // onto the finished task.
   register('report', C.RoutineReportInputSchema, C.RoutineReportOutputSchema, async (ctx, input) => {
-    const { agentId, dispatchId, notes, reading, steps, ...report } = input;
+    const { agentId, dispatchId, notes, reading, steps, done, ...report } = input;
     const conversationId = ctx.conversationId;
     if (ctx.source !== 'routine') throw reportRefused(ctx, 'hook', 'no-source', { dispatchId });
     if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'hook', 'no-conversation', { dispatchId });
     if (agentId !== ctx.agentId) throw reportRefused(ctx, 'hook', 'not-bound', { dispatchId });
-    // TASK-952: a reading left out or sent as null is none this time.
+    // TASK-952: a reading left out or sent as null is none this time. TASK-950: so is a claim left out or false.
     const outcome = await store.recordReport({
       agentId, dispatchId, conversationId, actorUserId: ctx.userId, report,
-      ...(notes === undefined ? {} : { notes }), reading: reading ?? null, ...(steps === undefined ? {} : { steps }), now: now(),
+      ...(notes === undefined ? {} : { notes }), reading: reading ?? null, ...(steps === undefined ? {} : { steps }),
+      ...(done === true ? { done: true } : {}), now: now(),
     });
     if (outcome === 'recorded') return { recorded: true as const };
     if (typeof outcome === 'string') throw reportRefused(ctx, 'hook', outcome, { dispatchId });
@@ -379,20 +424,47 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
-    let checkIn: C.RoutineReplyCheckIn;
-    try {
-      checkIn = await replyCheckIn(ctx, a.allowed, outcome.row, outcome.replyId, send);
-    } catch (err) {
-      // The reply was stored (and is still there unless the routine was deleted meanwhile), but its
-      // check-in step failed: say so so a stored reply with no check-in behind it can be found. Ids
-      // and the closed tool code only; the error's message may carry anything.
-      ctx.logger.warn('routines_reply_check_in_failed', {
-        agentId: input.agentId, routineId: input.routineId, replyId: outcome.replyId,
-        toolCode: err instanceof SafeToolError ? err.toolCode : 'unknown',
-      });
-      throw err;
-    }
+    const checkIn = await storedReplyCheckIn(ctx, a.allowed, input, outcome, send);
     ctx.logger.info('routines_reply_added', { agentId: input.agentId, routineId: input.routineId, checkIn, replayed: outcome.outcome === 'replayed' });
+    return { replyId: outcome.replyId, checkIn };
+  }));
+  // TASK-950. Mark done: a person finishes a "get-done" task. Only its owner, while they manage the
+  // agent's tasks: `edit`, from routinePermissions (its one definition) over the row as agents:resolve
+  // left it. The store decides owner and kind again under the routine's row lock and throws its
+  // refusals, which pass through as they are. It starts nothing, so it runs outside admitDispatch. The
+  // same requestId again answers from its receipt and writes nothing. Neither a tool nor an IPC
+  // action: only a person marks a task done. The log line carries ids only.
+  register('complete', C.RoutineCompleteInputSchema, C.RoutineCompleteOutputSchema, async (ctx, input) => {
+    const a = await access(ctx, input.agentId);
+    const row = await rowFor(input);
+    await store.completeTask({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId,
+      mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
+    });
+    ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
+    return { done: true as const };
+  });
+  // TASK-950. Not yet, and Reopen on a Done task: the task's owner tells their agent what's left. It is
+  // a reply (`routines:reply`'s rules, its text checked by the input schema before anything ran), and
+  // reopening a Done task also needs `edit`, read here as for complete and decided again by the store
+  // under the row lock before the reply is stored, so a refused Reopen stores nothing. A new reply takes
+  // back the agent's claim and, on a Done task, runs it again; then the reply's own check-in step runs
+  // (`storedReplyCheckIn`, keyed on the reply). Inside admitDispatch, like reply, so a shutting-down host
+  // refuses it before anything is written. Neither a tool nor an IPC action. The log lines carry ids and
+  // closed words, never the text.
+  register('reopen', C.RoutineReopenInputSchema, C.RoutineReopenOutputSchema, (ctx, input) => admitDispatch(async () => {
+    const a = await access(ctx, input.agentId);
+    const send = dispatch;
+    if (!send) throw new SafeToolError('unavailable', 'input');
+    const row = await rowFor(input);
+    const outcome = await store.reopenTask({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId, text: input.text,
+      mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
+    });
+    if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
+    if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
+    const checkIn = await storedReplyCheckIn(ctx, a.allowed, input, outcome, send);
+    ctx.logger.info('routines_task_reopened', { agentId: input.agentId, routineId: input.routineId, wasDone: outcome.wasDone, checkIn });
     return { replyId: outcome.replyId, checkIn };
   }));
   // TASK-931. A task's replies, newest first, for its owner only: taskView's rule, not `allowed`'s,
@@ -415,6 +487,8 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // (stepsView), and changing them adds no reach, since the next check-in still runs under the agent's own approval
   // rules. agents:resolve runs first, and the input schema has checked every change's text before anything ran; the
   // store decides ownership under the routine's row lock, and a retry under the same requestId changes nothing.
+  // `forbidden` is someone else's task, or a Done task's steps (TASK-950: a Done task's steps are its record, so
+  // the store refuses every change to them under the same lock, a replay included).
   // Neither a tool nor an IPC action, so no model can call it. Each step goes out field by field, and the log line
   // carries ids, counts and whether the store answered from the receipt (`replayed`, as routines_reply_added does;
   // it stays out of the answer), never a step's text.

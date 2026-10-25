@@ -32,6 +32,7 @@ function detail(name: string, over: Partial<TaskDetail> = {}): TaskDetail {
     steps: [],
     finishBy: null,
     noRecentUpdate: null,
+    doneAt: null,
     updates: [],
     replies: [],
     ...over,

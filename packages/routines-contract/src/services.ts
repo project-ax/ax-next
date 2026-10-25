@@ -4,7 +4,7 @@ import {
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
   RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineStepViewSchema,
-  RoutineViewSchema,
+  RoutineViewSchema, refuseDoneWithoutNeedsYou,
 } from './definition.js';
 import { RoutineFinishBySchema } from './finish-by.js';
 
@@ -56,14 +56,18 @@ export const RoutineFireReportViewSchema = z.object({
  * `steps` (TASK-948) is for a "get-done" task only: changes to its checklist,
  * applied in order. One that can't apply is skipped and counted, and the rest
  * of the report still lands.
+ * `done` (TASK-950): true says the agent thinks a "get-done" task is finished;
+ * it must come with "needs-you" (`refuseDoneWithoutNeedsYou`). Left out or
+ * false is no claim, and a later report without it takes the claim back.
  */
 export const RoutineReportInputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, dispatchId: RoutineOpaqueStringSchema,
   status: RoutineReportFieldShape.status, update: RoutineReportFieldShape.update,
   ask: RoutineReportFieldShape.ask, notes: RoutineReportFieldShape.notes.optional(),
   reading: RoutineReportFieldShape.reading.optional(),
+  done: RoutineReportFieldShape.done.optional(),
   steps: RoutineReportStepsSchema.optional(),
-}).strict();
+}).strict().superRefine(refuseDoneWithoutNeedsYou);
 /** `steps` is there only when the report sent changes: how many applied and how many were skipped (TASK-948). */
 export const RoutineReportOutputSchema = z.object({ recorded: z.literal(true), steps: RoutineReportStepsOutcomeSchema.optional() }).strict();
 /**
@@ -121,6 +125,25 @@ export const ROUTINE_REPLY_CHECK_INS = ['started', 'paused', 'not-allowed', 'rep
 export const RoutineReplyCheckInSchema = z.enum(ROUTINE_REPLY_CHECK_INS);
 export const RoutineReplyInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, text: RoutineReplyTextSchema }).strict();
 export const RoutineReplyOutputSchema = z.object({ replyId: RoutineOpaqueStringSchema, checkIn: RoutineReplyCheckInSchema }).strict();
+/**
+ * `routines:complete` (TASK-950): a person marks a "get-done" task done. Only
+ * its owner, who manages the agent's tasks (`edit`), may. It stops checking in
+ * the way a pause does and keeps its steps, report and notes. The same
+ * `requestId` again answers the same without doing it twice; a task already
+ * done answers done with no change. Neither a tool nor an IPC action: only a
+ * person marks a task done.
+ */
+export const RoutineCompleteInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema }).strict();
+export const RoutineCompleteOutputSchema = z.object({ done: z.literal(true) }).strict();
+/**
+ * `routines:reopen` (TASK-950): Not yet, and Reopen on a Done task. It stores
+ * a reply as `routines:reply` does; it clears the agent's claim, and on a Done
+ * task it also clears the completion and runs the task again (that needs
+ * `edit`); then it starts a check-in as a reply does, and `checkIn` says what
+ * happened, with `routines:reply`'s meanings. Neither a tool nor an IPC action.
+ */
+export const RoutineReopenInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, text: RoutineReplyTextSchema }).strict();
+export const RoutineReopenOutputSchema = RoutineReplyOutputSchema;
 /**
  * `routines:recent-replies` (TASK-931): a task's replies, newest first, for its
  * owner, and only the ones they wrote: once a task moves to a new owner, the
@@ -252,6 +275,10 @@ export type RoutineCheckInView = z.output<typeof RoutineCheckInViewSchema>;
 export type RoutineReplyCheckIn = z.output<typeof RoutineReplyCheckInSchema>;
 export type RoutineReplyInput = z.output<typeof RoutineReplyInputSchema>;
 export type RoutineReplyOutput = z.output<typeof RoutineReplyOutputSchema>;
+export type RoutineCompleteInput = z.output<typeof RoutineCompleteInputSchema>;
+export type RoutineCompleteOutput = z.output<typeof RoutineCompleteOutputSchema>;
+export type RoutineReopenInput = z.output<typeof RoutineReopenInputSchema>;
+export type RoutineReopenOutput = z.output<typeof RoutineReopenOutputSchema>;
 export type RoutineRecentRepliesInput = z.output<typeof RoutineRecentRepliesInputSchema>;
 export type RoutineRecentRepliesOutput = z.output<typeof RoutineRecentRepliesOutputSchema>;
 export type RoutineReplyView = z.output<typeof RoutineReplyViewSchema>;

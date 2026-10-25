@@ -1356,7 +1356,7 @@ function dotFills(): Array<readonly [string, string]> {
   const arms = parseStateDotArms(readSource(STATE_DOT_FILE));
   const variants = parseVariantClass(readSource(STATUS_DOT_FILE));
   return [
-    ...[...arms].map(([k, v]) => [`StateDot.${k}`, v.replace('border-state-quiet', 'bg-state-quiet')] as const),
+    ...[...arms].map(([k, v]) => [`StateDot.${k}`, v.replace('border-state-quiet', 'bg-state-quiet').replace('border-primary', 'bg-primary')] as const),
     ...[...variants].map(([k, v]) => [`StatusDot.${k}`, v] as const),
   ];
 }
@@ -1386,6 +1386,7 @@ describe('state dots clear the 3:1 non-text floor', () => {
       'StateDot.no-update',
       'StateDot.no-recent-update',
       'StateDot.paused',
+      'StateDot.done',
       'StatusDot.empty',
       'StatusDot.ok',
       'StatusDot.bad',

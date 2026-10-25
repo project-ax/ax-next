@@ -778,12 +778,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'routines:get',
           degradation:
-            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId) answer 404, because without @ax/routines there are no tasks',
+            'the task page (GET /api/workspace/tasks/:agentId/:routineId) and its check-ins (GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId), Mark done (POST .../complete) and Not yet or Reopen (POST .../reopen) answer 404, because without @ax/routines there are no tasks',
         },
         {
           hook: 'routines:recent-fires',
           degradation:
-            'the task page and its check-ins answer 404, as they do without routines:get (both come from @ax/routines)',
+            'the task page, its check-ins, Mark done and Not yet or Reopen answer 404, as they do without routines:get (both come from @ax/routines)',
         },
         {
           hook: 'routines:clear-notes',
@@ -813,6 +813,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
           hook: 'routines:set-finish-by',
           degradation:
             'Setting or removing a finish date on the task page (PUT /api/workspace/tasks/:agentId/:routineId/finish-by) answers 503 and the date stays as it was',
+        },
+        {
+          hook: 'routines:complete',
+          degradation:
+            'Mark done on the task page and on Today (POST /api/workspace/tasks/:agentId/:routineId/complete) answers 503 and the task keeps checking in',
+        },
+        {
+          hook: 'routines:reopen',
+          degradation:
+            'Not yet and Reopen (POST /api/workspace/tasks/:agentId/:routineId/reopen) answer 503 and nothing is sent',
         },
         {
           hook: 'connectors:list-effective',

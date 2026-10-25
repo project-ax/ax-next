@@ -53,4 +53,10 @@ describe('safe routine tool failures', () => {
     expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: steps');
     expect(safeToolMessage('validation', 'steps')).toBe(error.message);
   });
+  it('names a report’s done (TASK-950)', () => {
+    const error = new SafeToolError('validation', 'done');
+    expect(error.field).toBe('done');
+    expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: done');
+    expect(safeToolMessage('validation', 'done')).toBe(error.message);
+  });
 });

@@ -93,6 +93,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     task: null,
     noRecentUpdate: null,
     finishBy: null,
+    done: null,
     ...over,
   };
 }
@@ -109,6 +110,7 @@ function report(status: RoutineReportStatus, over: Partial<StoredTask> = {}): St
     agentNotes: 'NOTES-TEXT Acme is an enterprise customer.',
     reportedAt: new Date('2026-10-22T09:58:00.000Z'),
     reading: null,
+    doneClaimed: false,
     ...over,
   };
 }
@@ -310,9 +312,11 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
         update: 'Queue is empty.',
         ask: 'ASK-TEXT want me to draft a reply?',
         reading: null,
+        doneClaimed: false,
         reportedAt: '2026-10-22T09:58:00.000Z',
       },
       noRecentUpdate: null,
+      doneAt: null,
     });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('NOTES-TEXT');
@@ -520,7 +524,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     const { get } = setup({ rows: [row, stored({ agentId: 'a2', routineId: 't2' })] });
     const captured = await get();
     expect(captured.statusCode).toBe(200);
-    const offTrack = groupTasks(bodyOf(captured).tasks).groups.find(
+    const offTrack = groupTasks(bodyOf(captured).tasks, new Date()).groups.find(
       (g) => g.group === 'off-track',
     );
     expect(offTrack?.rows[0]).toMatchObject({
@@ -560,7 +564,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     const { get } = setup({ rows: [one, three] });
     const captured = await get();
     expect(captured.statusCode).toBe(200);
-    const { groups } = groupTasks(bodyOf(captured).tasks);
+    const { groups } = groupTasks(bodyOf(captured).tasks, new Date());
     const ids = (g: string) =>
       groups.find((x) => x.group === g)?.rows.map((r) => r.routineId);
     expect(ids('no-recent-update')).toEqual(['t1']);
@@ -1074,5 +1078,90 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
       ['docs', null],
       ['queue', null],
     ]);
+  });
+});
+
+describe('GET /api/workspace/tasks, done and the claim (TASK-950)', () => {
+  it('a Done row carries when it was marked done and a claimed row its claim, and who marked a task done never crosses', async () => {
+    const { get } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 'done',
+          kind: 'get-done',
+          enabled: false,
+          task: report('needs-you'),
+          done: { at: new Date('2026-10-23T10:00:00.000Z'), byUserId: 'alice' },
+        }),
+        stored({
+          agentId: 'a1',
+          routineId: 'claimed',
+          kind: 'get-done',
+          task: report('needs-you', { doneClaimed: true }),
+        }),
+        stored({ agentId: 'a1', routineId: 'running', kind: 'get-done', task: report('on-track') }),
+      ],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.doneAt, t.task?.doneClaimed])).toEqual([
+      ['done', '2026-10-23T10:00:00.000Z', false],
+      ['claimed', null, true],
+      ['running', null, false],
+    ]);
+    // Only the time crosses: who marked it is always the task's owner.
+    expect(JSON.stringify(captured.body)).not.toContain('byUserId');
+  });
+
+  it.each<[string, unknown]>([
+    ['not an object', 'nope'],
+    ['a time that isn’t text', { at: 7 }],
+  ])('reads a done that is %s as not done, not a crash', async (_what, done) => {
+    // A view the schema didn't parse reaches the route as it is (TASK-913's shape).
+    const { get } = setup({
+      unvalidated: true,
+      viewPatch: { done },
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'get-done' })],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks[0]?.doneAt).toBeNull();
+  });
+
+  it('reads a row of any kind but get-done as not done, whatever its view says', async () => {
+    // routines sends `done` only for a get-done task; a view the schema didn't parse can still
+    // carry one. Only a get-done task is ever Done, on the rows as on the task page.
+    const { get } = setup({
+      unvalidated: true,
+      viewPatch: { done: { at: '2026-10-23T10:00:00.000Z' } },
+      rows: [stored({ agentId: 'a1', routineId: 't1', enabled: false, task: report('on-track') })],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.kind, t.doneAt])).toEqual([
+      ['t1', 'stay-on-top', null],
+    ]);
+  });
+
+  it('reads anything but a literal true as no claim', async () => {
+    // A view the schema didn't parse (TASK-913's shape). The row feeds Today
+    // and the badge, so only `true` is the agent saying the task is finished.
+    const { get } = setup({
+      unvalidated: true,
+      viewPatch: {
+        task: {
+          status: 'needs-you',
+          update: 'Every article is exported.',
+          ask: null,
+          reading: null,
+          doneClaimed: 'yes',
+          reportedAt: '2026-10-22T09:58:00.000Z',
+        },
+      },
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'get-done' })],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks[0]?.task?.doneClaimed).toBe(false);
   });
 });

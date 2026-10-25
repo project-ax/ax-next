@@ -13,7 +13,7 @@ import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
-function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null }; }
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null }; }
 async function setup(options: {
   resolveError?: PluginError;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
@@ -165,7 +165,7 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     const h = await setup({ definition: TASK });
     const result = await h.fire(h.accepted);
     expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBeNull();
-    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null }) } });
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null, doneClaimed: false }) } });
     expect(result).toMatchObject({ status: 'ok', renderedPrompt: null, recordedAtTurnEnd: true });
   });
   // TASK-931: the person's replies on the task reach the run only in its check-in message.

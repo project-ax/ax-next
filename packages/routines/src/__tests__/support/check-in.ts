@@ -1,5 +1,5 @@
 import { makeAgentContext, SYSTEM_PROMPT_LANDED_HOOK, type AgentContext, type HookBus } from '@ax/core';
-import type { RoutineReplyOutput, RoutineView } from '@ax/routines-contract';
+import type { RoutineReopenOutput, RoutineReplyOutput, RoutineView } from '@ax/routines-contract';
 import { ROUTINES_AUGMENT_PROVIDER } from '../../brief.js';
 import { createRoutineHarness, type RoutineHarness } from './routine-harness.js';
 
@@ -66,6 +66,12 @@ export type CheckInHarness = RoutineHarness & {
    * it would wait for a turn that never comes.
    */
   replyCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts?: CheckInOptions): Promise<CheckIn & { answer: RoutineReplyOutput }>;
+  /**
+   * TASK-950. `replyCheckIn`'s twin over `routines:reopen`: the person's Not
+   * yet, or Reopen on a Done task, with `requestId` and `text`, and the
+   * check-in it starts. It throws in the same cases, for the same reason.
+   */
+  reopenCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts?: CheckInOptions): Promise<CheckIn & { answer: RoutineReopenOutput }>;
 };
 
 type HarnessOptions = NonNullable<Parameters<typeof createRoutineHarness>[0]>;
@@ -131,10 +137,10 @@ export async function createCheckInHarness(options: Omit<HarnessOptions, 'invoke
     },
   });
   /**
-   * What `checkIn` and `replyCheckIn` share: the next invoke gets `body`,
-   * `start` starts the check-in, and it resolves with what the turn saw and
-   * `start`'s answer. `start` throws when it started none, since nothing would
-   * ever take `waiting` then.
+   * What `checkIn`, `replyCheckIn` and `reopenCheckIn` share: the next invoke
+   * gets `body`, `start` starts the check-in, and it resolves with what the
+   * turn saw and `start`'s answer. `start` throws when it started none, since
+   * nothing would ever take `waiting` then.
    */
   async function run<T>(body: CheckInBody, opts: CheckInOptions, start: () => Promise<T>): Promise<{ seen: CheckIn; answer: T }> {
     if (waiting !== undefined) throw new Error('One check-in at a time: the harness gives every run the same conversation.');
@@ -160,16 +166,26 @@ export async function createCheckInHarness(options: Omit<HarnessOptions, 'invoke
     });
     return seen;
   }
-  async function replyCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn & { answer: RoutineReplyOutput }> {
+  /**
+   * What `replyCheckIn` and `reopenCheckIn` share: `hook` stores the person's
+   * `text` as a reply and starts its check-in. The two answer alike.
+   */
+  async function wroteCheckIn(hook: 'routines:reply' | 'routines:reopen', view: RoutineView, requestId: string, text: string, body: CheckInBody, opts: CheckInOptions): Promise<CheckIn & { answer: RoutineReplyOutput }> {
     const { seen, answer } = await run(body, opts, async () => {
-      const replied = await h.bus.call<unknown, RoutineReplyOutput>('routines:reply', opts.asOwner ?? h.owner, {
+      const replied = await h.bus.call<unknown, RoutineReplyOutput>(hook, opts.asOwner ?? h.owner, {
         agentId: view.agentId, routineId: view.routineId, requestId, text,
       });
       // Any other answer started nothing, so nothing will ever take `waiting`.
-      if (replied.checkIn !== 'started') throw new Error(`The reply started no check-in (it answered ${replied.checkIn}).`);
+      if (replied.checkIn !== 'started') throw new Error(`${hook} started no check-in (it answered ${replied.checkIn}).`);
       return replied;
     });
     return { ...seen, answer };
   }
-  return { ...h, checkIn, replyCheckIn };
+  async function replyCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn & { answer: RoutineReplyOutput }> {
+    return wroteCheckIn('routines:reply', view, requestId, text, body, opts);
+  }
+  async function reopenCheckIn(view: RoutineView, requestId: string, text: string, body: CheckInBody, opts: CheckInOptions = {}): Promise<CheckIn & { answer: RoutineReopenOutput }> {
+    return wroteCheckIn('routines:reopen', view, requestId, text, body, opts);
+  }
+  return { ...h, checkIn, replyCheckIn, reopenCheckIn };
 }

@@ -33,9 +33,11 @@ const ROW = {
     update: 'Filed 12 receipts',
     ask: null,
     reading: null,
+    doneClaimed: false,
     reportedAt: '2026-10-22T08:00:00.000Z',
   },
   noRecentUpdate: null,
+  doneAt: null,
 };
 
 const MISS = {
@@ -200,6 +202,47 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     ['a fractional count of steps', { ...ROW, kind: 'get-done', steps: { done: 1.5, total: 2 } }],
     ['a negative count of steps', { ...ROW, kind: 'get-done', steps: { done: -1, total: 2 } }],
   ])('refuses a row with %s (TASK-948)', async (_label, row) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith({ tasks: [row], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+
+  it('reads a Done row’s time and a report’s claim (TASK-950)', async () => {
+    const body = {
+      tasks: [
+        { ...ROW, kind: 'get-done', steps: { done: 3, total: 3 }, enabled: false, doneAt: '2026-10-23T10:00:00.000Z' },
+        {
+          ...ROW,
+          routineId: 'r-2',
+          kind: 'get-done',
+          steps: { done: 1, total: 3 },
+          task: { ...ROW.task, status: 'needs-you', doneClaimed: true },
+        },
+      ],
+      unavailableAgents: [],
+    };
+    respondWith(body);
+    await expect(workspaceApi.tasks()).resolves.toEqual(body);
+  });
+
+  it('reads a row with no doneAt key, and a report with no doneClaimed key, as not done and no claim (a host from before TASK-950)', async () => {
+    // As for the ask: an SPA synced onto an older host (`make dev-fast`) must still load Tasks.
+    const { doneAt: _doneAt, ...older } = ROW;
+    const { doneClaimed: _doneClaimed, ...olderReport } = ROW.task;
+    respondWith({
+      tasks: [{ ...older, task: olderReport }, { ...older, routineId: 'r-2', task: null }],
+      unavailableAgents: [],
+    });
+    await expect(workspaceApi.tasks()).resolves.toStrictEqual({
+      tasks: [ROW, { ...ROW, routineId: 'r-2', task: null }],
+      unavailableAgents: [],
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['a doneAt that is a number', { ...ROW, doneAt: 7 }],
+    ['a report whose doneClaimed is text', { ...ROW, task: { ...ROW.task, doneClaimed: 'yes' } }],
+  ])('refuses %s (TASK-950)', async (_label, row) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ tasks: [row], unavailableAgents: [] });
     await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);

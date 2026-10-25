@@ -8,9 +8,22 @@
  * get-done task's steps under that (TASK-948), the brief under those, then
  * every check-in and the person's replies, then the reply box (TASK-931; the
  * latest update's ask has a Reply button that focuses it). The header holds
- * the page's two actions, Check now and Pause, or Resume while it's paused. The page reads its own task
+ * Check now and Pause, or Resume while it's paused. The page reads its own task
  * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
  * task's ids, since a refresh keeps what's on screen.
+ *
+ * FINISHING A TASK (TASK-950). Only the person marks a task done. When the
+ * agent says it thinks the task is finished (`task.doneClaimed`), the latest
+ * update leads with that and Mark done becomes the page's one primary action
+ * (Check now and Pause/Resume go outline), beside Not yet, which opens a
+ * what's-left box in place. A get-done task that hasn't claimed anything has
+ * Mark done under its steps, outline. With unticked steps the press asks
+ * first. A Done task shows a Done line instead of an update card, keeps its
+ * steps as they were, read-only, has no reply box, and its header holds only
+ * Reopen, which opens the same box in its reopen mode. The in-place box is
+ * mounted from its first opening and hidden while closed, so its "Sent." line
+ * is still there when the claim or Done state it answered has gone. A later
+ * claim or Done is a new question: it finds the box closed and empty.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
  * ask, its reading's label and the agent's notes were written by a model, and
@@ -26,7 +39,8 @@
  * with its own field to set, change or remove it (`TaskFinishDate`). The host
  * counts the days left in the task's own time zone; a saved date shows at
  * once and the page then reads the task again (`useTask`'s `applyAnswer`). A
- * stay-on-top task shows none, whatever it carries.
+ * stay-on-top task shows none, whatever it carries, and neither does a Done
+ * one (TASK-950): it has no days left to count, and nothing to set.
  *
  * THE ACTIONS go through the routines admin routes (`routineApi`), so the
  * routines services decide who may do what; the page only explains a button it
@@ -39,6 +53,8 @@
  * A STEP CHANGE (TASK-949) is `TaskSteps`' own, and moves no revision. Its
  * answer is the steps as they now are, which the page swaps in with no re-read
  * (`useTask().replaceSteps`), so a tick leaves the rest of the page as it was.
+ * A Done task's steps take none (TASK-950): they show as a record, and the
+ * host refuses a change to them.
  *
  * A PRESS WHOSE ANSWER NEVER CAME keeps its request (`FireNowControl`'s rule):
  * pressing the same action again sends the very same request, so the server
@@ -71,10 +87,13 @@
  * to the button that was pressed (Pause and Resume are one button, so pressing
  * Pause lands on Resume), or the other one if that can't be pressed now, or
  * else the line that says why neither can. Only from `<body>` or those
- * buttons: someone who moved on meanwhile stays where they went.
+ * buttons: someone who moved on meanwhile stays where they went. Mark done
+ * follows the same rule: once the task reads as Done, focus goes to the Done
+ * line; after a failure, back to the button (or into the question).
  */
 import {
   Fragment,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -111,9 +130,14 @@ import { checkInWhen } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { TaskFinishDate } from './TaskFinishDate';
+import {
+  MARK_DONE_NOT_ALLOWED,
+  MarkDoneConfirmation,
+  useMarkDone,
+} from './TaskMarkDone';
 import { TaskNotes } from './TaskNotes';
 import { TaskReadingBlock } from './TaskReadingBlock';
-import { TaskReplyBox } from './TaskReplyBox';
+import { TaskReplyBox, type TaskReplyMode } from './TaskReplyBox';
 import { TaskSteps } from './TaskSteps';
 import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
@@ -160,6 +184,12 @@ const NOT_THEIRS = 'You can’t change this task any more.';
  * needs `edit`, like any other resume.
  */
 function actionNote(detail: TaskDetail): string | null {
+  // A Done task is off too, but it isn't paused: only Reopen is left, and it needs edit.
+  if (detail.doneAt !== null) {
+    return detail.permissions.edit
+      ? null
+      : 'Done. Only someone who manages this agent’s tasks can reopen it.';
+  }
   if (!detail.enabled && detail.noRecentUpdate?.autoPaused) {
     return detail.permissions.edit
       ? `${AUTO_PAUSED_LINE} Fix what’s below, then Resume.`
@@ -175,6 +205,18 @@ function actionNote(detail: TaskDetail): string | null {
   }
   return null;
 }
+
+/** The agent says it thinks the task is finished, and the person hasn't answered. */
+function isClaimed(detail: TaskDetail): boolean {
+  return detail.doneAt === null && detail.task?.doneClaimed === true;
+}
+
+/**
+ * The in-place box: which words it speaks (Not yet, or Reopen on a Done task),
+ * whether it shows, and whether the claim or Done state it was opened for has
+ * ended since (then the next claim or Done closes and empties it).
+ */
+type InPlaceBox = { mode: Exclude<TaskReplyMode, 'reply'>; open: boolean; ended: boolean };
 
 /** Status 0, a server error, or no `RoutineApiError` at all: nobody knows whether it happened. */
 function unconfirmed(e: unknown): boolean {
@@ -317,6 +359,29 @@ export function TaskPage({
   const pressed = useRef<'check' | 'toggle' | null>(null);
   useFocusAfterPress(busy, pressed, checkRef, toggleRef, noteRef);
 
+  // Not yet and Reopen share one box under the latest update (see FINISHING A TASK).
+  const boxId = useId();
+  const [inPlace, setInPlace] = useState<InPlaceBox | null>(null);
+  const toggleBox = (mode: InPlaceBox['mode']) =>
+    setInPlace((cur) =>
+      cur !== null && cur.mode === mode
+        ? { ...cur, open: !cur.open }
+        : { mode, open: true, ended: false },
+    );
+  // What the page asks the person now, in the box's terms: a Done task's Reopen, a claim's Not yet.
+  const question: InPlaceBox['mode'] | null =
+    detail === null ? null : detail.doneAt !== null ? 'reopen' : isClaimed(detail) ? 'not-yet' : null;
+  // The box's answer stays on screen once its question has gone, until a new one comes: then it
+  // closes and empties. A layout effect, so a new claim never shows Not yet expanded over the old answer.
+  useLayoutEffect(() => {
+    if (detail === null) return;
+    setInPlace((cur) => {
+      if (cur === null) return cur;
+      if (question === null) return cur.ended ? cur : { ...cur, ended: true };
+      return question === cur.mode && !cur.ended ? cur : null;
+    });
+  }, [detail, question]);
+
   const onPress = (kind: ActionKind) => {
     pressed.current = kind === 'check' ? 'check' : 'toggle';
     void press(kind);
@@ -362,6 +427,9 @@ export function TaskPage({
             checkRef={checkRef}
             toggleRef={toggleRef}
             onPress={onPress}
+            boxId={boxId}
+            reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
+            onReopen={() => toggleBox('reopen')}
           />
         )}
       </WorkspaceHeader>
@@ -384,6 +452,9 @@ export function TaskPage({
               poll={poll}
               noteId={noteId}
               noteRef={noteRef}
+              boxId={boxId}
+              inPlace={inPlace}
+              onNotYet={() => toggleBox('not-yet')}
               onRefresh={refresh}
               onReplySent={onReplySent}
               onStepsChanged={replaceSteps}
@@ -401,7 +472,8 @@ export function TaskPage({
  * Check now, then Pause or Resume, always in that order and always the same
  * two buttons: React keeps each one's node, so pressing Pause leaves the person
  * on what is now Resume. One primary action at a time: Check now while it
- * runs, Resume while it's paused.
+ * runs, Resume while it's paused, and neither while the agent's claim waits
+ * for Mark done (TASK-950). A Done task has only Reopen.
  */
 function TaskActions({
   detail,
@@ -411,6 +483,9 @@ function TaskActions({
   checkRef,
   toggleRef,
   onPress,
+  boxId,
+  reopenOpen,
+  onReopen,
 }: {
   detail: TaskDetail;
   busy: boolean;
@@ -419,9 +494,29 @@ function TaskActions({
   checkRef: RefObject<HTMLButtonElement | null>;
   toggleRef: RefObject<HTMLButtonElement | null>;
   onPress: (kind: ActionKind) => void;
+  /** The in-place box's id, and whether it is open in its reopen mode. */
+  boxId: string;
+  reopenOpen: boolean;
+  onReopen: () => void;
 }) {
   const { enabled, permissions } = detail;
   const hasNote = actionNote(detail) !== null;
+  if (detail.doneAt !== null) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!permissions.edit}
+        aria-describedby={!permissions.edit && hasNote ? noteId : undefined}
+        aria-expanded={reopenOpen}
+        aria-controls={boxId}
+        onClick={onReopen}
+      >
+        Reopen
+      </Button>
+    );
+  }
+  const claimed = isClaimed(detail);
   const checkBlocked = !enabled || !permissions.fire;
   const toggleBlocked = enabled ? !permissions.stop : !permissions.edit;
   // Only a button the note explains points at it; one that's only waiting
@@ -432,7 +527,7 @@ function TaskActions({
       <Button
         ref={checkRef}
         size="sm"
-        variant={enabled ? 'default' : 'outline'}
+        variant={enabled && !claimed ? 'default' : 'outline'}
         disabled={checkBlocked || busy}
         aria-describedby={describedBy(checkBlocked)}
         onClick={() => onPress('check')}
@@ -443,7 +538,7 @@ function TaskActions({
       <Button
         ref={toggleRef}
         size="sm"
-        variant={enabled ? 'outline' : 'default'}
+        variant={enabled || claimed ? 'outline' : 'default'}
         disabled={toggleBlocked || busy}
         aria-describedby={describedBy(toggleBlocked)}
         onClick={() => onPress(enabled ? 'pause' : 'resume')}
@@ -487,6 +582,9 @@ function TaskBody({
   poll,
   noteId,
   noteRef,
+  boxId,
+  inPlace,
+  onNotYet,
   onRefresh,
   onReplySent,
   onStepsChanged,
@@ -502,6 +600,10 @@ function TaskBody({
   poll: TaskPoll;
   noteId: string;
   noteRef: RefObject<HTMLParagraphElement | null>;
+  /** The in-place box's id and state (see FINISHING A TASK, above). */
+  boxId: string;
+  inPlace: InPlaceBox | null;
+  onNotYet: () => void;
   onRefresh: () => void;
   onReplySent: (checkIn: TaskReplyCheckIn) => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
@@ -510,6 +612,61 @@ function TaskBody({
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const done = detail.doneAt !== null;
+  const claimed = isClaimed(detail);
+  const unticked = detail.steps.filter((s) => !s.done).length;
+
+  // Mark done (TASK-950). Its success reads the task again; once that shows it
+  // Done, focus goes to the Done line, from `<body>` only (WHERE FOCUS GOES).
+  // A step change refused because the task was marked done elsewhere asks the
+  // same of its re-read (`onStepsRefused`): the steps turn into a record, the
+  // control focus was on goes, and focus would be left on `<body>`.
+  const doneLineRef = useRef<HTMLParagraphElement>(null);
+  const focusDoneLine = useRef(false);
+  const markDone = useMarkDone({
+    agentId,
+    routineId,
+    doneAt: detail.doneAt,
+    claim: claimed ? (detail.task?.reportedAt ?? null) : null,
+    unticked,
+    onDone: () => {
+      focusDoneLine.current = true;
+      onRefresh();
+    },
+  });
+  const onStepsRefused = () => {
+    focusDoneLine.current = true;
+    onRefresh();
+  };
+  // Asked once, of the re-read Mark done (or a refused step change) started: if that read fails,
+  // a later one that shows the task Done (a poll's, say) answers something else and leaves focus
+  // alone. The read has settled once the task isn't refreshing and a new task or a failure has
+  // arrived: `onRefresh` marks it refreshing in the same commit as the press settles, but a fast
+  // answer can land in that commit too. A failed press, and Cancel, put focus back themselves
+  // (`useMarkDone`).
+  useLayoutEffect(() => {
+    if (!focusDoneLine.current || refreshing) return;
+    focusDoneLine.current = false;
+    if (detail.doneAt === null) return;
+    const at = document.activeElement;
+    if (at === null || at === document.body) takeResolutionFocus(doneLineRef.current);
+  }, [detail, refreshing, refreshFailed]);
+
+  // Opening the in-place box puts the cursor in it, as Today's Reply does.
+  const boxOpen = inPlace?.open === true;
+  const boxMode = inPlace?.mode;
+  useEffect(() => {
+    if (boxOpen) boxRef.current?.focus();
+  }, [boxOpen, boxMode]);
+
+  const finish: Finish = {
+    markDone,
+    doneLineRef,
+    boxId,
+    notYetOpen: inPlace?.mode === 'not-yet' && inPlace.open,
+    onNotYet,
+  };
   // Times on the page are read against the clock when the task last arrived,
   // not when the page first opened. A layout effect, so a stale time never
   // reaches the screen.
@@ -545,8 +702,8 @@ function TaskBody({
       )}
       <div className="flex flex-col">
         <p className="break-words text-[13px] text-muted-foreground">{meta}</p>
-        {/* TASK-950 adds Done: whichever of TASK-950 / TASK-951 merges second hides this on a Done task. */}
-        {detail.kind === 'get-done' && (
+        {/* A Done task has no date left to keep (TASK-950): it shows neither the date nor the field. */}
+        {detail.kind === 'get-done' && !done && (
           <TaskFinishDate
             agentId={agentId}
             routineId={routineId}
@@ -585,7 +742,29 @@ function TaskBody({
         routineId={routineId}
         onNavigate={onNavigate}
         onReply={() => replyRef.current?.focus()}
+        finish={finish}
       />
+      {/*
+        Not yet and Reopen open this. It is mounted from its first opening and
+        only hidden after that, so its "Sent." line survives the claim or the
+        Done state it answered ending when the page reads the task again. No
+        display class on this element: it would beat `[hidden]`.
+      */}
+      <div id={boxId} hidden={!boxOpen}>
+        {inPlace !== null && (
+          <TaskReplyBox
+            key={inPlace.mode}
+            mode={inPlace.mode}
+            agentId={agentId}
+            routineId={routineId}
+            agentName={agentName}
+            enabled={detail.enabled}
+            canStart={detail.permissions.fire}
+            inputRef={boxRef}
+            onSent={onReplySent}
+          />
+        )}
+      </div>
       {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
       <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
       {detail.kind === 'get-done' && (
@@ -595,6 +774,20 @@ function TaskBody({
           steps={detail.steps}
           agentName={agentName}
           onChanged={onStepsChanged}
+          onRefused={onStepsRefused}
+          readOnly={done}
+          footer={
+            done || claimed ? undefined : (
+              <MarkDoneControls
+                variant="footer"
+                finish={finish}
+                unticked={unticked}
+                canEdit={detail.permissions.edit}
+                agentName={agentName}
+                running={detail.enabled}
+              />
+            )
+          }
         />
       )}
       <section aria-labelledby={briefId} className="flex flex-col gap-3">
@@ -635,15 +828,18 @@ function TaskBody({
         routineId={routineId}
         onNavigate={onNavigate}
       />
-      <TaskReplyBox
-        agentId={agentId}
-        routineId={routineId}
-        agentName={agentName}
-        enabled={detail.enabled}
-        canStart={detail.permissions.fire}
-        inputRef={replyRef}
-        onSent={onReplySent}
-      />
+      {/* A Done task has nothing to reply to; Reopen is how a person writes to it. */}
+      {!done && (
+        <TaskReplyBox
+          agentId={agentId}
+          routineId={routineId}
+          agentName={agentName}
+          enabled={detail.enabled}
+          canStart={detail.permissions.fire}
+          inputRef={replyRef}
+          onSent={onReplySent}
+        />
+      )}
     </>
   );
 }
@@ -720,6 +916,10 @@ function BriefRow({
  *
  * Wherever the ask shows, a Reply button follows it (TASK-931): the ask is the
  * person being waited on, and the reply box under Updates is how to answer.
+ *
+ * A claim (TASK-950) adds a line saying the agent thinks the task is done, and
+ * Mark done and Not yet after the ask, so a pending ask is never hidden by it.
+ * A Done task leads with its Done line instead and shows the last update, muted.
  */
 function LatestUpdate({
   detail,
@@ -728,6 +928,7 @@ function LatestUpdate({
   routineId,
   onNavigate,
   onReply,
+  finish,
 }: {
   detail: TaskDetail;
   now: Date;
@@ -736,6 +937,7 @@ function LatestUpdate({
   onNavigate: (route: WorkspaceRoute) => void;
   /** Takes the person to the reply box. */
   onReply: () => void;
+  finish: Finish;
 }) {
   const headingId = useId();
   const { task, enabled, agentName } = detail;
@@ -743,9 +945,59 @@ function LatestUpdate({
   const next =
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
   const miss = detail.noRecentUpdate;
+  const claimed = isClaimed(detail);
+  const claimActions = claimed && (
+    <MarkDoneControls
+      variant="claim"
+      finish={finish}
+      unticked={detail.steps.filter((s) => !s.done).length}
+      canEdit={detail.permissions.edit}
+      agentName={agentName}
+      running={enabled}
+    />
+  );
+  if (detail.doneAt !== null) {
+    const doneWhen = checkInWhen(detail.doneAt, now);
+    const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
+    return (
+      <section aria-labelledby={headingId}>
+        <h2 id={headingId} className="sr-only">
+          Latest update
+        </h2>
+        <Card>
+          <CardContent className="flex flex-col gap-2 px-5 py-4">
+            <p
+              ref={finish.doneLineRef}
+              tabIndex={-1}
+              className={cn(
+                'flex items-center gap-2 self-start rounded-sm text-[12.5px] font-medium',
+                RESOLUTION_FOCUS_RING,
+              )}
+            >
+              <StateDotSlot>
+                <StateDot state="done" />
+              </StateDotSlot>
+              <span>
+                {doneWhen === null
+                  ? 'Done · You marked it done.'
+                  : `Done · You marked it done ${doneWhen}.`}
+              </span>
+            </p>
+            {task !== null && (
+              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
+                  task.update === null || task.update === '' ? CANT_SHOW : task.update
+                }`}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+    );
+  }
   if (miss !== null) {
     // Grouped as the Tasks row groups it, minus the pause: this card says "Paused" in its own line.
-    const group = taskGroup({ enabled: true, task, noRecentUpdate: miss });
+    const group = taskGroup({ enabled: true, doneAt: null, task, noRecentUpdate: miss });
     const words = missWords(miss.reason, agentName, !enabled, {
       checkNow: detail.permissions.fire,
       edit: detail.permissions.edit,
@@ -805,6 +1057,11 @@ function LatestUpdate({
                     }
               }
             />
+            {claimed && (
+              <p className="text-[12px] text-muted-foreground">
+                {`${agentName} said it thinks this is done.`}
+              </p>
+            )}
             {task !== null && (
               <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
                 {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
@@ -820,6 +1077,7 @@ function LatestUpdate({
                 <ReplyButton onReply={onReply} />
               </>
             )}
+            {claimActions}
           </CardContent>
         </Card>
       </section>
@@ -847,6 +1105,7 @@ function LatestUpdate({
                 </StateDotSlot>
                 <span>{TASK_GROUP_LABELS[task.status]}</span>
               </p>
+              {claimed && <p className="text-[13px] font-medium">{`${agentName} thinks this is done.`}</p>}
               <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
                 {task.update === null || task.update === '' ? CANT_SHOW : task.update}
               </p>
@@ -878,11 +1137,117 @@ function LatestUpdate({
                   <ReplyButton onReply={onReply} />
                 </>
               )}
+              {claimActions}
             </>
           )}
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+type MarkDone = ReturnType<typeof useMarkDone>;
+
+/** What the latest-update card, the steps footer and the body share about finishing a task. */
+interface Finish {
+  /** Its `buttonRef` goes on whichever Mark done is on screen (the claim's or the footer's; never both), its `controlsRef` on what holds it. */
+  markDone: MarkDone;
+  doneLineRef: RefObject<HTMLParagraphElement | null>;
+  boxId: string;
+  notYetOpen: boolean;
+  onNotYet: () => void;
+}
+
+/**
+ * Mark done: in the claim card as the page's primary action beside Not yet, or
+ * under the steps as an outline button. The words and the button need the same
+ * permission (`edit`): without it the button is disabled and the line says why,
+ * and nothing here names an action the viewer can't take. With unticked steps
+ * the press opens a question in place of the row.
+ */
+function MarkDoneControls({
+  variant,
+  finish,
+  unticked,
+  canEdit,
+  agentName,
+  running,
+}: {
+  variant: 'claim' | 'footer';
+  finish: Finish;
+  unticked: number;
+  canEdit: boolean;
+  agentName: string;
+  /** Switched on, not paused. */
+  running: boolean;
+}) {
+  const whyId = useId();
+  const { markDone } = finish;
+  const claim = variant === 'claim';
+  const button = (
+    <Button
+      ref={markDone.buttonRef}
+      type="button"
+      size="sm"
+      variant={claim ? 'default' : 'outline'}
+      disabled={!canEdit || markDone.busy}
+      aria-describedby={claim && canEdit ? undefined : whyId}
+      onClick={markDone.press}
+    >
+      {markDone.busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+      Mark done
+    </Button>
+  );
+  const footerLine = !canEdit
+    ? MARK_DONE_NOT_ALLOWED
+    : running
+      ? `Only you can mark this task done. When ${agentName} thinks it’s finished, it’ll ask you here and on Today.`
+      : 'Only you can mark this task done.';
+  return (
+    <div ref={markDone.controlsRef} className="flex flex-col gap-2">
+      {markDone.confirming ? (
+        <MarkDoneConfirmation
+          unticked={unticked}
+          primary={claim}
+          busy={markDone.busy}
+          onConfirm={markDone.confirm}
+          onCancel={markDone.cancel}
+        />
+      ) : claim ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            {button}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-expanded={finish.notYetOpen}
+              aria-controls={finish.boxId}
+              onClick={finish.onNotYet}
+            >
+              Not yet
+            </Button>
+          </div>
+          {!canEdit && (
+            <p id={whyId} className="text-[12px] text-muted-foreground">
+              {MARK_DONE_NOT_ALLOWED}
+            </p>
+          )}
+        </>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          {button}
+          <p id={whyId} className="text-[13px] text-muted-foreground">
+            {footerLine}
+          </p>
+        </div>
+      )}
+      {markDone.failure !== null && (
+        <Alert variant={markDone.failure.register}>
+          <AlertDescription>{markDone.failure.text}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   );
 }
 

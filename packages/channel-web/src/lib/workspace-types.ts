@@ -1374,6 +1374,12 @@ export interface TaskRowReport {
   ask: string | null;
   /** The reading this report sent, or null (TASK-952). */
   reading: TaskReading | null;
+  /**
+   * TASK-950. This report said the "get-done" task is finished, and nobody has
+   * marked it done or said Not yet since. The agent's claim, one flag the
+   * server worked out: the person decides.
+   */
+  doneClaimed: boolean;
   reportedAt: string;
 }
 
@@ -1428,6 +1434,8 @@ export interface TaskRow {
   task: TaskRowReport | null;
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
+  /** TASK-950. When a person marked the task done, ISO; null while it isn't Done. */
+  doneAt: string | null;
 }
 
 /** An agent whose tasks couldn't be read, so the page can say so instead of looking complete. */
@@ -1454,6 +1462,8 @@ export interface TaskDetailReport {
   agentNotes: string | null;
   /** The reading this report sent, or null (TASK-952). */
   reading: TaskReading | null;
+  /** TASK-950. This report claimed the task is finished, as on its Tasks row (`TaskRowReport`). */
+  doneClaimed: boolean;
   reportedAt: string;
 }
 
@@ -1494,9 +1504,17 @@ export interface TaskReply {
   byYou: boolean;
 }
 
-/** `POST /api/workspace/tasks/:agentId/:routineId/replies`'s answer (TASK-931). */
+/**
+ * `POST /api/workspace/tasks/:agentId/:routineId/replies`'s answer (TASK-931),
+ * and `…/reopen`'s, Not yet and Reopen (TASK-950).
+ */
 export interface TaskReplyResponse {
   checkIn: TaskReplyCheckIn;
+}
+
+/** `POST /api/workspace/tasks/:agentId/:routineId/complete`'s answer (TASK-950). */
+export interface TaskCompleteResponse {
+  done: true;
 }
 
 /**
@@ -1548,6 +1566,8 @@ export interface TaskDetail {
   finishBy: TaskFinishBy | null;
   /** Null for a task that has not missed a check-in (TASK-930). */
   noRecentUpdate: TaskNoRecentUpdate | null;
+  /** TASK-950. When a person marked the task done, ISO; null while it isn't Done. */
+  doneAt: string | null;
   /** Newest first, at most 50. */
   updates: TaskUpdate[];
   /** The person's replies, newest first, at most 50 (TASK-931). */

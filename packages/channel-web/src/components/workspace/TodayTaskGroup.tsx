@@ -9,6 +9,19 @@
  * and nothing about the task itself. Those approvals are drawn under the block
  * by its parent, as `children`.
  *
+ * A TASK THAT THINKS IT'S DONE (TASK-950). When the agent's last report claimed
+ * the task is done, the block says "{agent} thinks this is done.", then the
+ * update it came with, then (muted) the ask, if there is one. Its actions are
+ * Mark done and Not yet, both outline (Approve stays Today's one primary
+ * action), and Open task. Mark done finishes the task, asking first only when
+ * steps aren't ticked (`TaskMarkDone`); Not yet opens the reply box in its
+ * `not-yet` mode, whose Send takes the claim back and starts a check-in. A
+ * finished task leaves Today, so Mark done hands focus to the consent region
+ * first. Not yet's block stays, as a Reply's does: its report still says Needs
+ * you until the agent's next one, so the block now reads as an ask, with Reply,
+ * and the open box keeps the mode it was opened in (its label and "Sent." line)
+ * until it is opened again. A refused press says why under the actions.
+ *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its ask and its update
  * were written by a model or a person; the server fenced each to one line and
  * capped it before it left (`server/routes-workspace.ts`). Here they are only
@@ -33,6 +46,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -40,6 +54,8 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
+import { Spinner } from '@/components/ui/spinner';
+import { returnFocusToConsentRegion } from '@/lib/consent-focus';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS, type TodayTaskReason } from '@/lib/task-groups';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
@@ -48,14 +64,16 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { isOpenDecision, type TaskRow } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
+import { MarkDoneConfirmation, useMarkDone } from './TaskMarkDone';
 import { CANT_SHOW } from './TaskPage';
 import { TaskReplyBox } from './TaskReplyBox';
 
-/** The heading's mark, as the Tasks page draws it: Needs you for an ask or three misses, Paused once the host paused it. */
+/** The heading's mark, as the Tasks page draws it: Needs you for an ask, a claim of done or three misses, Paused once the host paused it. */
 const MARK: Record<TodayTaskReason, 'needs-you' | 'paused'> = {
   asks: 'needs-you',
   escalated: 'needs-you',
   'auto-paused': 'paused',
+  'done-claimed': 'needs-you',
 };
 
 /** Text with something in it, else null. An empty string is nothing to show, as the task page reads an update. */
@@ -87,6 +105,9 @@ function bodyLine(group: TodayGroup): string | null {
   switch (group.reason) {
     case 'asks':
       return legible(group.row.task?.ask) ?? legible(group.row.task?.update) ?? CANT_SHOW;
+    // The block draws "{agent} thinks this is done." above this; this is the update it came with.
+    case 'done-claimed':
+      return legible(group.row.task?.update) ?? CANT_SHOW;
     case 'escalated':
       return group.row.noRecentUpdate === null ? null : missSummary(group.row.noRecentUpdate);
     case 'auto-paused':
@@ -117,8 +138,30 @@ export function TodayTaskGroup({
   children?: ReactNode;
 }) {
   const headingId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  // The box's mode, fixed when it opens (see A TASK THAT THINKS IT'S DONE).
+  const [boxMode, setBoxMode] = useState<'reply' | 'not-yet'>('reply');
   const replyRef = useRef<HTMLTextAreaElement>(null);
+  // The row of a claim (a claim always has one), else null.
+  const claimedRow = group.reason === 'done-claimed' ? group.row : null;
+  const claimed = claimedRow !== null;
+  // Mark done is only offered on a claim, but the hook runs for every block:
+  // its press is simply never reachable otherwise.
+  const unticked =
+    claimedRow?.steps == null ? 0 : claimedRow.steps.total - claimedRow.steps.done;
+  const markDone = useMarkDone({
+    agentId: group.agentId,
+    routineId: group.routineId,
+    doneAt: group.row?.doneAt ?? null,
+    claim: claimedRow?.task?.reportedAt ?? null,
+    unticked,
+    onDone: () => {
+      // The block leaves Today with the re-read: hand focus to the region that stays.
+      returnFocusToConsentRegion(rootRef.current);
+      onReplied();
+    },
+  });
   // Opening the box puts the cursor in it. An effect, so it runs after the
   // commit that drops `hidden`: a hidden textarea can't take focus.
   useEffect(() => {
@@ -135,18 +178,24 @@ export function TodayTaskGroup({
       : null;
   // Reply goes wherever the block shows the agent's Needs you words.
   const replyTo = group.reason === 'asks' || askLine !== null ? group.row : null;
+  // A claim's box is Not yet's, on the same row.
+  const boxRow = replyTo ?? claimedRow;
   // The box unmounts with the ask. Close it then, so a later ask doesn't
   // arrive already open and take focus.
-  const canReply = replyTo !== null;
+  const hasBox = boxRow !== null;
   useEffect(() => {
-    if (!canReply) setOpen(false);
-  }, [canReply]);
+    if (!hasBox) setOpen(false);
+  }, [hasBox]);
+  // On a claim, the ask the agent left beside it is shown muted, not as the body.
+  const claimAsk = claimedRow === null ? null : legible(claimedRow.task?.ask);
+  const heldAsk = claimAsk === null ? askLine : `${group.agentName} asks: ${claimAsk}`;
 
   return (
     // A labelled group, not a `<section>`: a labelled section is a region
     // landmark, and Today can hold many blocks (TodayView's consent wrapper
     // does the same).
     <div
+      ref={rootRef}
       role="group"
       aria-labelledby={headingId}
       className="min-w-0 border-b border-rule-soft last:border-b-0"
@@ -177,6 +226,11 @@ export function TodayTaskGroup({
             </span>
           </span>
         </h2>
+        {claimed && (
+          <p className="break-words pl-5 text-[13.5px] font-medium leading-relaxed">
+            {`${group.agentName} thinks this is done.`}
+          </p>
+        )}
         {body !== null && (
           <p
             className={cn(
@@ -190,56 +244,93 @@ export function TodayTaskGroup({
             {body}
           </p>
         )}
-        {askLine !== null && (
+        {heldAsk !== null && (
           <p
             className="line-clamp-2 break-words pl-5 text-[12.5px] text-muted-foreground"
-            title={askLine}
+            title={heldAsk}
           >
-            {askLine}
+            {heldAsk}
           </p>
         )}
         <Collapsible
           open={open}
-          onOpenChange={setOpen}
+          onOpenChange={(next) => {
+            if (next) setBoxMode(claimed ? 'not-yet' : 'reply');
+            setOpen(next);
+          }}
           className="flex min-w-0 flex-col gap-2 pl-5 pt-1.5"
         >
-          <div className="flex flex-wrap items-center gap-2">
-            {replyTo !== null && (
-              <CollapsibleTrigger asChild>
+          {/* Mark done's controls and its failure: where `useMarkDone` puts focus back. */}
+          <div ref={markDone.controlsRef} className="flex min-w-0 flex-col gap-2">
+            {claimed && markDone.confirming ? (
+              // Asked in place of the actions; Mark done anyway is a side action here.
+              <MarkDoneConfirmation
+                unticked={unticked}
+                primary={false}
+                busy={markDone.busy}
+                onConfirm={markDone.confirm}
+                onCancel={markDone.cancel}
+              />
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
                 {/* Outline: Approve stays the one primary action on Today. */}
-                <Button variant="outline" size="sm">
-                  Reply
-                </Button>
-              </CollapsibleTrigger>
-            )}
-            {/* First in its row, a ghost button lines its text up with the lines above. */}
-            <Button
-              asChild
-              size="sm"
-              variant="ghost"
-              className={cn(replyTo === null && '-ml-3')}
-            >
-              <a
-                {...routeLinkProps(
-                  { kind: 'task', agentId: group.agentId, routineId: group.routineId },
-                  onNavigate,
+                {claimed && (
+                  <Button
+                    ref={markDone.buttonRef}
+                    variant="outline"
+                    size="sm"
+                    disabled={markDone.busy}
+                    onClick={markDone.press}
+                  >
+                    {markDone.busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+                    Mark done
+                  </Button>
                 )}
-              >
-                Open task
-                <ArrowRight data-icon="inline-end" aria-hidden="true" />
-              </a>
-            </Button>
+                {boxRow !== null && (
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      {claimed ? 'Not yet' : 'Reply'}
+                    </Button>
+                  </CollapsibleTrigger>
+                )}
+                {/* First in its row, a ghost button lines its text up with the lines above. */}
+                <Button
+                  asChild
+                  size="sm"
+                  variant="ghost"
+                  className={cn(boxRow === null && '-ml-3')}
+                >
+                  <a
+                    {...routeLinkProps(
+                      { kind: 'task', agentId: group.agentId, routineId: group.routineId },
+                      onNavigate,
+                    )}
+                  >
+                    Open task
+                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                  </a>
+                </Button>
+              </div>
+            )}
+            {claimed && markDone.failure !== null && (
+              <Alert variant={markDone.failure.register}>
+                <AlertDescription>{markDone.failure.text}</AlertDescription>
+              </Alert>
+            )}
           </div>
-          {replyTo !== null && (
+          {boxRow !== null && (
             // No display utility on this element: a `flex` class would beat
             // Tailwind's `[hidden]` rule and show the box while it's closed.
             <CollapsibleContent forceMount hidden={!open}>
               <TaskReplyBox
+                // A new mode is a new question: its own draft and request id.
+                key={boxMode}
                 agentId={group.agentId}
                 routineId={group.routineId}
                 agentName={group.agentName}
-                enabled={replyTo.enabled}
+                enabled={boxRow.enabled}
                 canStart={false}
+                mode={boxMode}
                 onSent={() => onReplied()}
                 inputRef={replyRef}
               />

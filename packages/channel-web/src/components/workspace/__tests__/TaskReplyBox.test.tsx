@@ -11,14 +11,15 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { WorkspaceApiError, WorkspaceShapeError, workspaceApi } from '@/lib/workspace-api';
 import type { TaskReplyCheckIn } from '@/lib/workspace-types';
-import { TaskReplyBox } from '../TaskReplyBox';
+import { TaskReplyBox, type TaskReplyMode } from '../TaskReplyBox';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
-  return { ...actual, workspaceApi: { sendTaskReply: vi.fn() } };
+  return { ...actual, workspaceApi: { sendTaskReply: vi.fn(), reopenTask: vi.fn() } };
 });
 
 const sendMock = vi.mocked(workspaceApi.sendTaskReply);
+const reopenMock = vi.mocked(workspaceApi.reopenTask);
 
 const UNCONFIRMED =
   'We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.';
@@ -29,6 +30,7 @@ function renderBox(
   over: Partial<{
     enabled: boolean;
     canStart: boolean;
+    mode: TaskReplyMode;
     onSent: (c: TaskReplyCheckIn) => void;
     inputRef: Ref<HTMLTextAreaElement>;
   }> = {},
@@ -43,6 +45,7 @@ function renderBox(
         agentName="Quill"
         enabled={over.enabled ?? true}
         canStart={over.canStart ?? true}
+        {...(over.mode === undefined ? {} : { mode: over.mode })}
         onSent={onSent}
         {...(over.inputRef === undefined ? {} : { inputRef: over.inputRef })}
       />
@@ -74,6 +77,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   sendMock.mockReset();
+  reopenMock.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
@@ -354,5 +358,154 @@ describe('TaskReplyBox — focus', () => {
     const ref = createRef<HTMLTextAreaElement>();
     renderBox({ inputRef: ref });
     expect(ref.current).toBe(box());
+  });
+});
+
+describe('TaskReplyBox — Not yet and Reopen (TASK-950)', () => {
+  const notYetBox = () =>
+    screen.getByLabelText('What’s left for Quill to do?') as HTMLTextAreaElement;
+
+  it.each<[string, { mode: TaskReplyMode; enabled: boolean; canStart: boolean }, string]>([
+    [
+      'not-yet, running, may start',
+      { mode: 'not-yet', enabled: true, canStart: true },
+      'Quill reads this, and sending it starts a check-in now.',
+    ],
+    [
+      'not-yet, running, may not start',
+      { mode: 'not-yet', enabled: true, canStart: false },
+      'Quill reads this at its next check-in.',
+    ],
+    [
+      'not-yet, paused, may start',
+      { mode: 'not-yet', enabled: false, canStart: true },
+      'It’s paused, so Quill will read this once you resume it.',
+    ],
+    [
+      'not-yet, paused, may not start',
+      { mode: 'not-yet', enabled: false, canStart: false },
+      'It’s paused, so Quill will read this once it’s resumed.',
+    ],
+    [
+      'reopen, may start',
+      { mode: 'reopen', enabled: false, canStart: true },
+      'Sending this reopens the task, and Quill starts checking in again.',
+    ],
+    [
+      'reopen, may not start',
+      { mode: 'reopen', enabled: false, canStart: false },
+      'Sending this reopens the task, and Quill starts checking in again.',
+    ],
+  ])('label and helper line: %s', (_l, props, line) => {
+    renderBox(props);
+    const helper = screen.getByText(line);
+    expect(notYetBox().getAttribute('aria-describedby')).toContain(helper.id);
+    expect(screen.queryByLabelText('Reply to Quill about this task')).toBeNull();
+  });
+
+  it('sends through reopenTask and never sendTaskReply', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const { onSent } = renderBox({ mode: 'not-yet' });
+    fireEvent.change(notYetBox(), { target: { value: 'The totals are missing.' } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith('started'));
+    expect(reopenMock).toHaveBeenCalledWith('a1', 't1', {
+      text: 'The totals are missing.',
+      requestId: expect.any(String),
+    });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('status').textContent).toBe('Sent. Quill is checking in now.');
+  });
+
+  it.each<[TaskReplyCheckIn, boolean, string]>([
+    ['started', true, 'Sent. Quill is checking in now.'],
+    ['replayed', true, 'Sent. Quill is checking in now.'],
+    ['paused', false, 'Sent. Quill will read it when you resume the task.'],
+    ['not-allowed', true, 'Sent. Quill will read it at its next check-in.'],
+    ['not-allowed', false, 'Sent. Quill will read it once the task is resumed.'],
+  ])('not-yet sent line for %s (enabled %s)', async (checkIn, enabled, line) => {
+    reopenMock.mockResolvedValue({ checkIn });
+    renderBox({ mode: 'not-yet', enabled });
+    fireEvent.change(notYetBox(), { target: { value: 'Hi' } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe(line));
+  });
+
+  it('reopen mode shares not-yet’s sent line', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    renderBox({ mode: 'reopen', enabled: false });
+    fireEvent.change(notYetBox(), { target: { value: 'Hi' } });
+    fireEvent.click(sendButton());
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe('Sent. Quill is checking in now.'),
+    );
+  });
+
+  // A Reopen switches the task on, so the box's `enabled` (false: it was Done) no longer says
+  // whether it runs. `paused` there means it was paused again before the check-in could start.
+  it.each<[TaskReplyCheckIn, string]>([
+    ['not-allowed', 'Sent. Quill will read it at its next check-in.'],
+    ['paused', 'Sent. Quill will read it when you resume the task.'],
+  ])('reopen sent line for %s treats the reopened task as running', async (checkIn, line) => {
+    reopenMock.mockResolvedValue({ checkIn });
+    renderBox({ mode: 'reopen', enabled: false });
+    fireEvent.change(notYetBox(), { target: { value: 'Hi' } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe(line));
+  });
+
+  it('a 403 says the person can no longer reopen the task', async () => {
+    reopenMock.mockRejectedValue(new WorkspaceApiError('/x', 403));
+    renderBox({ mode: 'reopen', enabled: false });
+    fireEvent.change(notYetBox(), { target: { value: 'Hi' } });
+    fireEvent.click(sendButton());
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toBe(
+        'You can’t reopen this task, because you no longer manage this agent’s tasks.',
+      ),
+    );
+  });
+
+  it.each<TaskReplyMode>(['not-yet', 'reopen'])(
+    '%s: an unconfirmed send keeps its id for the same text, and an edited text gets a new one',
+    async (mode) => {
+      reopenMock
+        .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+        .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+        .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+        .mockResolvedValueOnce({ checkIn: 'started' });
+      renderBox({ mode, enabled: false });
+      const sendAndWait = async () => {
+        fireEvent.click(sendButton());
+        await waitFor(() => expect(notYetBox().readOnly).toBe(false));
+      };
+      fireEvent.change(notYetBox(), { target: { value: 'The totals are missing' } });
+      await sendAndWait();
+      expect(screen.getByRole('alert').textContent).toBe(
+        'We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.',
+      );
+      await sendAndWait();
+      expect(reopenMock).toHaveBeenCalledTimes(2);
+      const ids = () => reopenMock.mock.calls.map((c) => c[2].requestId);
+      expect(ids()[1]).toBe(ids()[0]);
+
+      fireEvent.change(notYetBox(), { target: { value: 'The totals are missing.' } });
+      await sendAndWait();
+      expect(reopenMock).toHaveBeenCalledTimes(3);
+      expect(ids()[2]).not.toBe(ids()[1]);
+
+      // The edited text, failed unconfirmed in its turn, keeps its own id on a retry.
+      await sendAndWait();
+      expect(ids()[3]).toBe(ids()[2]);
+      expect(sendMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reply mode keeps its own words and endpoint', async () => {
+    sendMock.mockResolvedValue({ checkIn: 'started' });
+    renderBox();
+    await send('Hi');
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(reopenMock).not.toHaveBeenCalled();
   });
 });

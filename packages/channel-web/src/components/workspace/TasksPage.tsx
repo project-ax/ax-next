@@ -2,6 +2,12 @@
  * `/workspace/tasks` — every task the person owns, across the agents they can
  * see, grouped by what needs them (TASK-909).
  *
+ * Two views (TASK-950). Current is the groups, then "Done this week" (tasks
+ * marked done in the last 7 days, against the browser's clock), then paused
+ * tasks behind their toggle. Done is every task ever marked done, newest first.
+ * The switch between them shows only once a task is done; with none, the page
+ * is the one it always was.
+ *
  * The page draws the shell's tasks read (TASK-933), the same one Today and the
  * sidebar badge count from. `groupTasks` decides the groups
  * and their order; each group's mark is `StateDot`'s task mark, so a task
@@ -46,10 +52,10 @@ import { formatReading } from '@/lib/task-reading';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
-import { timeAgo } from '@/lib/workspace-time';
+import { checkInWhen, timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
-import { WorkspaceHeader } from './WorkspaceHeader';
+import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
 const AGO_TICK_MS = 30_000;
@@ -133,6 +139,9 @@ function TasksLoadFailure({
   );
 }
 
+/** Which list the Tasks page shows (TASK-950). */
+type TasksView = 'current' | 'done';
+
 function TaskBoard({
   tasks,
   unavailableAgents,
@@ -148,17 +157,24 @@ function TaskBoard({
   onNavigate: (route: WorkspaceRoute) => void;
   onRetry: () => void;
 }) {
-  const { groups, paused } = groupTasks(tasks);
-
   // "checked 4 min ago" keeps moving on a tab left open, but the clock only
-  // runs while a row (a paused one included) has a report to date.
+  // runs while a row (a paused one included) has a report or a done time to date.
   const [now, setNow] = useState(() => new Date());
+  const { groups, paused, doneRecently, doneAll } = groupTasks(tasks, now);
+  // What the person picked; with nothing done there is nothing to pick, so the
+  // page is Current whatever was chosen before (the last done task was reopened),
+  // and the choice goes back to Current too: the next task marked done brings
+  // the toggle back on Current instead of switching the page to Done by itself.
+  // Set while rendering, React's way to adjust state to new props.
+  const [chosen, setChosen] = useState<TasksView>('current');
+  if (doneAll.length === 0 && chosen !== 'current') setChosen('current');
+  const view: TasksView = doneAll.length === 0 ? 'current' : chosen;
   // New rows are dated against the clock now, not when the page first opened:
   // the interval below only runs while a row has a report, so a retry that
   // brings the first reported row in would otherwise read a stale `now`.
   // A layout effect, so the stale time never reaches the screen.
   useLayoutEffect(() => setNow(new Date()), [tasks]);
-  const anyReported = tasks.some((t) => t.task !== null);
+  const anyReported = tasks.some((t) => t.task !== null || t.doneAt !== null);
   useEffect(() => {
     if (!anyReported) return;
     const id = setInterval(() => setNow(new Date()), AGO_TICK_MS);
@@ -167,6 +183,19 @@ function TaskBoard({
 
   return (
     <>
+      {doneAll.length > 0 && (
+        <div className="self-start">
+          <Segmented<TasksView>
+            label="Which tasks to show"
+            value={view}
+            onValueChange={setChosen}
+            options={[
+              { value: 'current', label: 'Current' },
+              { value: 'done', label: 'Done', count: doneAll.length },
+            ]}
+          />
+        </div>
+      )}
       {/*
         No title: this sits over rows the page can still show, and it knows
         nothing about the tasks it couldn't load (`lib/read-register.ts`).
@@ -213,10 +242,28 @@ function TaskBoard({
           </EmptyHeader>
         </Empty>
       )}
-      {groups.map(({ group, rows }) => (
-        <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
-      ))}
-      {paused.length > 0 && <PausedTasks rows={paused} now={now} onNavigate={onNavigate} />}
+      {view === 'current' && (
+        <>
+          {groups.map(({ group, rows }) => (
+            <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
+          ))}
+          {doneRecently.length > 0 && (
+            <DoneSection title="Done this week" rows={doneRecently} now={now} onNavigate={onNavigate} />
+          )}
+          {paused.length > 0 && <PausedTasks rows={paused} now={now} onNavigate={onNavigate} />}
+          {groups.length === 0 &&
+            doneRecently.length === 0 &&
+            paused.length === 0 &&
+            doneAll.length > 0 && (
+              <p className="text-[13px] text-muted-foreground">
+                No tasks need looking after right now. Finished ones are under Done.
+              </p>
+            )}
+        </>
+      )}
+      {view === 'done' && (
+        <DoneSection title="Done" rows={doneAll} now={now} onNavigate={onNavigate} />
+      )}
     </>
   );
 }
@@ -242,6 +289,34 @@ function TaskGroupSection({
         <span>
           {TASK_GROUP_LABELS[group]}{' '}
           <span className="text-muted-foreground">· {rows.length}</span>
+        </span>
+      </h2>
+      <TaskList rows={rows} now={now} onNavigate={onNavigate} />
+    </section>
+  );
+}
+
+/** Tasks marked done, under a heading with a check, headed like a group (TASK-950). */
+function DoneSection({
+  title,
+  rows,
+  now,
+  onNavigate,
+}: {
+  title: string;
+  rows: TaskRow[];
+  now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
+      <h2 id={headingId} className="flex items-center gap-2 text-[12.5px] font-medium">
+        <StateDotSlot>
+          <StateDot state="done" />
+        </StateDotSlot>
+        <span>
+          {title} <span className="text-muted-foreground">· {rows.length}</span>
         </span>
       </h2>
       <TaskList rows={rows} now={now} onNavigate={onNavigate} />
@@ -317,10 +392,13 @@ function TaskList({
  * agent's latest update, or, when its last check-ins left none, why (TASK-930),
  * and the agent's reading from that update's report (TASK-952).
  * A get-done task's finish date, when it has one, ends the second line
- * ("2 of 5 steps · 9 days left", TASK-951).
+ * ("2 of 5 steps · 9 days left", TASK-951), unless the task is done.
  * "checked" still dates the last real report. A never-reported task shows its agent's name alone:
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
+ * A done task (TASK-950) says when it was marked done in place of either, and
+ * shows its last update whatever misses it had before: it is finished, and the
+ * update is what the person accepted.
  */
 function TaskItem({
   row,
@@ -342,27 +420,33 @@ function TaskItem({
   // The agent's reading (TASK-952) shows only beside that update: next to a
   // miss, the same stale report's number would contradict it, and with no
   // update line (it fenced to nothing) it would hang under nothing.
-  const third =
-    !row.enabled && row.noRecentUpdate?.autoPaused
+  const isDone = row.doneAt !== null;
+  const third = isDone
+    ? (row.task?.update ?? null)
+    : !row.enabled && row.noRecentUpdate?.autoPaused
       ? AUTO_PAUSED_LINE
       : row.noRecentUpdate !== null
         ? missSummary(row.noRecentUpdate)
         : (row.task?.update ?? null);
   const reading =
-    row.noRecentUpdate === null && row.task?.update != null ? (row.task.reading ?? null) : null;
+    (isDone || row.noRecentUpdate === null) && row.task?.update != null ? (row.task.reading ?? null) : null;
   // A get-done task with steps says how far along it is where a stay-on-top
   // one says when it last checked in (TASK-948). One with none yet reads as any
   // other, so a row never claims "0 of 0 steps".
-  const progress =
-    row.kind === 'get-done' && row.steps !== null && row.steps.total > 0
+  const doneWhen = row.doneAt === null ? null : checkInWhen(row.doneAt, now);
+  const progress = isDone
+    ? doneWhen === null
+      ? `${row.agentName} · Done`
+      : `${row.agentName} · Done ${doneWhen}`
+    : row.kind === 'get-done' && row.steps !== null && row.steps.total > 0
       ? `${row.agentName} · ${row.steps.done} of ${row.steps.total} steps`
       : ago === null
         ? row.agentName
         : `${row.agentName} · checked ${ago}`;
-  // A get-done task with a finish date says how long is left after that (TASK-951).
-  // TASK-950 adds Done: whichever of TASK-950 / TASK-951 merges second hides this on a Done task.
+  // A get-done task with a finish date says how long is left after that (TASK-951), unless it is
+  // Done (TASK-950): a finished task has no days left to count, and its row says when it was done.
   const secondLine =
-    row.kind === 'get-done' && row.finishBy !== null
+    !isDone && row.kind === 'get-done' && row.finishBy !== null
       ? `${progress} · ${finishByCount(row.finishBy.daysLeft)}`
       : progress;
   return (

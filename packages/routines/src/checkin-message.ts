@@ -45,6 +45,13 @@ export type CheckInMessageInput = {
    * sets. Null for any other kind of task, which gets no steps paragraph.
    */
   steps: ReadonlyArray<StoredStep> | null;
+  /**
+   * TASK-950. The accepted row's live claim: true for a "get-done" task whose
+   * latest report said it thinks the task is done, which the person hasn't
+   * answered yet (Mark done, or Not yet). The host's own reading of the row,
+   * not agent text: it adds a fixed line. Anything but true adds none.
+   */
+  doneClaimed: boolean;
 };
 
 function opening(source: FireSource): string {
@@ -53,6 +60,12 @@ function opening(source: FireSource): string {
     case 'manual': return 'Check now: this check-in was started outside its schedule.';
     default: return 'Check-in.';
   }
+}
+
+/** TASK-950. The host's own line to a check-in of a task its latest report claimed is done; null when it isn't claimed. Fixed text, nothing agent-written. */
+function claimedLine(doneClaimed: boolean): string | null {
+  if (doneClaimed !== true) return null;
+  return 'In your last report you said you think this task is done. The person hasn’t marked it done yet. Check whether it still is, and report again.';
 }
 
 /** The host's own line to a check-in whose last ones left no report; null when none did. Fixed text plus a count, nothing agent-written. */
@@ -148,9 +161,13 @@ function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
  * is one of three fixed words (a CHECK constraint on its column), so it isn't
  * quoted. A report's reading (TASK-952) is agent-written too: its label is cut
  * and kept on the report's line, and the paragraph's own framing covers it.
- * When the task's last check-ins left no report, the host says so on the line
- * after the opening, from a count alone (TASK-930); the steps come next. Reads
- * nothing but its argument.
+ * When a "get-done" task's latest report said it thinks the task is done and
+ * the person hasn't answered (TASK-950), the host says so on the line after
+ * the opening, fixed text from `doneClaimed` alone; a Not yet arrives as the
+ * person's reply, in the replies paragraph, marked new. When the task's last
+ * check-ins left no report, the host says so on the next line, from a count
+ * alone (TASK-930); the steps come next (TASK-950 decisions row 13 pins the
+ * order). Reads nothing but its argument.
  */
 export function renderCheckInMessage(input: CheckInMessageInput): string {
   const reports = input.reports.slice(0, CHECK_IN_REPORTS);
@@ -166,11 +183,12 @@ export function renderCheckInMessage(input: CheckInMessageInput): string {
         return `- ${startedAt(firedAt)}, ${report.status}${reading}:\n${quoteLines(cut(report.update, ROUTINE_REPORT_UPDATE_MAX_CHARS), '  ')}`;
       }),
     ].join('\n');
+  const claimed = claimedLine(input.doneClaimed);
   const missed = missedLine(input.missesInARow);
   const steps = stepsParagraph(input.steps);
   const replies = repliesParagraph(input.replies, input.reports[0]?.firedAt);
   return [
-    opening(input.source), ...(missed === null ? [] : [missed]), ...(steps === null ? [] : [steps]),
+    opening(input.source), ...(claimed === null ? [] : [claimed]), ...(missed === null ? [] : [missed]), ...(steps === null ? [] : [steps]),
     notes, replies, recent, 'Work on the task now, then finish with one routine_report.',
   ].join('\n\n');
 }

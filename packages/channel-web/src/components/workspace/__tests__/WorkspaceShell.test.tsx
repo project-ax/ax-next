@@ -645,9 +645,11 @@ describe('tasks on Today, and one count (TASK-933)', () => {
         update: 'Two tickets are still open.',
         ask: 'Want me to draft a reply to #4410?',
         reading: null,
+        doneClaimed: false,
         reportedAt: '2026-10-23T10:00:00.000Z',
       },
       noRecentUpdate: null,
+      doneAt: null,
       ...over,
     };
   }
@@ -656,7 +658,14 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     taskRow({
       routineId: 't2',
       name: 'Weekly invoice run',
-      task: { status: 'on-track', update: 'All sent.', ask: null, reading: null, reportedAt: '2026-10-23T10:00:00.000Z' },
+      task: {
+        status: 'on-track',
+        update: 'All sent.',
+        ask: null,
+        reading: null,
+        doneClaimed: false,
+        reportedAt: '2026-10-23T10:00:00.000Z',
+      },
     });
 
   /** The sidebar's Today button's badge, or null when it shows none. */

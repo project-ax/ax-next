@@ -1,6 +1,8 @@
 /**
  * `workspaceApi.task()` and `workspaceApi.clearTaskNotes()`: a task page's
- * read and its one write (TASK-910).
+ * read and its first write (TASK-910); `sendTaskReply()` (TASK-931); and
+ * `completeTask()` and `reopenTask()`, Mark done, and Not yet or Reopen
+ * (TASK-950).
  *
  * The same boundary rule as `tasks()`: a 200 whose body is not the shape the
  * page draws from is a `WorkspaceShapeError`, thrown here, so the page's
@@ -41,6 +43,7 @@ const REPORT: TaskDetailReport = {
   ask: 'Can I refund order 1182?',
   agentNotes: 'Ticket 1182 is waiting on finance.',
   reading: null,
+  doneClaimed: false,
   reportedAt: '2026-10-22T12:00:00.000Z',
 };
 
@@ -75,6 +78,7 @@ const DETAIL: TaskDetail = {
   steps: [],
   finishBy: null,
   noRecentUpdate: null,
+  doneAt: null,
   updates: [
     UPDATE,
     { firedAt: '2026-10-22T11:00:00.000Z', status: 'error', error: 'The check-in ran out of time.', report: null, conversationId: null },
@@ -184,6 +188,21 @@ describe('workspaceApi.task (TASK-910)', () => {
     }
   });
 
+  it('reads when a Done task was marked done, and a report’s claim (TASK-950)', async () => {
+    const done: TaskDetail = {
+      ...DETAIL,
+      kind: 'get-done',
+      enabled: false,
+      nextCheckAt: null,
+      doneAt: '2026-10-23T10:00:00.000Z',
+    };
+    respondWith(done);
+    await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(done);
+    const claimed: TaskDetail = { ...DETAIL, kind: 'get-done', task: { ...REPORT, doneClaimed: true } };
+    respondWith(claimed);
+    await expect(workspaceApi.task('a1', 't1')).resolves.toEqual(claimed);
+  });
+
   it('refuses an update with a status it doesn’t know', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith({ ...DETAIL, updates: [{ ...UPDATE, status: 'skipped' }] });
@@ -228,6 +247,11 @@ describe('workspaceApi.task (TASK-910)', () => {
     // The page draws the reading (TASK-952), so it must be present: null or a reading.
     ['a report without a reading', { ...DETAIL, task: { ...REPORT, reading: undefined } }],
     ['a report whose reading has no label', { ...DETAIL, task: { ...REPORT, reading: { value: 3 } } }],
+    // TASK-950: `task()` doesn't fill in when the task was done or a report's claim, so both must be there.
+    ['no doneAt key', { ...DETAIL, doneAt: undefined }],
+    ['a doneAt that isn’t text', { ...DETAIL, doneAt: 7 }],
+    ['a report without its claim', { ...DETAIL, task: { ...REPORT, doneClaimed: undefined } }],
+    ['a report whose claim is text', { ...DETAIL, task: { ...REPORT, doneClaimed: 'yes' } }],
     ['no missed-check-ins key', { ...DETAIL, noRecentUpdate: undefined }],
     ['missed check-ins with a zero count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 0 } }],
     ['missed check-ins with a fractional count', { ...DETAIL, noRecentUpdate: { ...MISS, inARow: 1.5 } }],
@@ -357,6 +381,91 @@ describe('workspaceApi.sendTaskReply (TASK-931)', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(503);
+  });
+});
+
+describe('workspaceApi.completeTask (TASK-950)', () => {
+  it('marks a task done with POST, the CSRF header and only the request id', async () => {
+    const fetchSpy = respondWith({ done: true });
+    await expect(workspaceApi.completeTask('a1', 't1', { requestId: 'req-1' })).resolves.toEqual({
+      done: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a1/t1/complete');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ requestId: 'req-1' });
+  });
+
+  // "Done." is a claim, so it rests on the server saying so.
+  it.each<[string, unknown]>([
+    ['done as false', { done: false }],
+    ['done as text', { done: 'true' }],
+    ['no done at all', {}],
+    ['no object at all', null],
+  ])('refuses an answer with %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(workspaceApi.completeTask('a1', 't1', { requestId: 'r' })).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('carries the status of a failed press', async () => {
+    failWith(403);
+    const err = await workspaceApi.completeTask('a1', 't1', { requestId: 'r' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(403);
+  });
+});
+
+describe('workspaceApi.reopenTask (TASK-950)', () => {
+  it('sends Not yet or Reopen with POST, the CSRF header and only the text and request id', async () => {
+    const fetchSpy = respondWith({ checkIn: 'started' });
+    await expect(
+      workspaceApi.reopenTask('a1', 't1', { text: 'The billing page still needs a review.', requestId: 'req-2' }),
+    ).resolves.toEqual({ checkIn: 'started' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a1/t1/reopen');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({
+      text: 'The billing page still needs a review.',
+      requestId: 'req-2',
+    });
+  });
+
+  it('reads every answer the contract names', async () => {
+    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed']) {
+      respondWith({ checkIn });
+      await expect(workspaceApi.reopenTask('a1', 't1', { text: 'Hi', requestId: 'r' })).resolves.toEqual({
+        checkIn,
+      });
+    }
+  });
+
+  // "Sent." is a claim, so it rests on the server saying what it did.
+  it.each<[string, unknown]>([
+    ['a check-in outcome it doesn’t know', { checkIn: 'reopened' }],
+    ['no check-in outcome', {}],
+    ['no object at all', null],
+  ])('refuses an answer with %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(
+      workspaceApi.reopenTask('a1', 't1', { text: 'Hi', requestId: 'r' }),
+    ).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
+
+  it('carries the status of a failed send', async () => {
+    failWith(403);
+    const err = await workspaceApi
+      .reopenTask('a1', 't1', { text: 'Hi', requestId: 'r' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(403);
   });
 });
 
