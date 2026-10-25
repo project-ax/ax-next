@@ -268,6 +268,23 @@ describe("a check-in's accept time (TASK-951)", () => {
     const ctx = makeAgentContext({ reqId: h.accepted.reqId, sessionId: 's', agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine' });
     expect(checkInBrief(h.pending, ctx).brief).toContain('That’s 10 days from today (Tuesday, 31 December 2030).');
   });
+  it("a zoneless task's brief counts on the calendar its date was set from, through the stored row (TASK-955)", async () => {
+    // An interval and no active hours: the task has no zone of its own, so the zone stored with its date counts.
+    const h = await setup({
+      definition: { kind: 'get-done', goodWhen: 'Done when it is done.', trigger: { kind: 'interval', every: '1h' } },
+      finishBy: '2030-12-31',
+      finishByTimeZone: 'America/Los_Angeles',
+    });
+    await h.fire(h.accepted);
+    // The zone rides on the row the run was accepted with, the snapshot the brief is built from.
+    expect(h.accepted.row.finishByTimeZone).toBe('America/Los_Angeles');
+    const ctx = makeAgentContext({ reqId: h.accepted.reqId, sessionId: 's', agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine' });
+    // The fixture's `now`, 2031-01-01T00:00Z, is 16:00 on 31 December 2030 in Los Angeles. On UTC's calendar, already
+    // on 1 January, the brief would say 1 day ago.
+    const brief = checkInBrief(h.pending, ctx).brief;
+    expect(brief).toContain('The person wants this finished today (Tuesday, 31 December 2030).');
+    expect(brief).not.toContain('1 day ago');
+  });
 });
 describe('connector skips per fire (slice 6)', () => {
   function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {

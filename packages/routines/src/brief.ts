@@ -10,8 +10,9 @@ import type { DispatchMiss } from './types.js';
 // A task check-in's brief (TASK-908): what the run is for, in W1's `brief`
 // section of its system prompt. Built only from what the person wrote, a date
 // only the person sets (TASK-951) and fixed text, so no text an agent can
-// change reaches it. The schedule's time zone picks only which calendar day is
-// today.
+// change reaches it. The task's time zone (`taskTimeZone`: its schedule's, else
+// the one the person set the date from, TASK-955) picks only which calendar day
+// is today.
 // ---------------------------------------------------------------------------
 
 /** The W1 provider that gives a task check-in its brief. Optional: a failure drops only its block. */
@@ -128,9 +129,11 @@ function finishByParagraph(finishBy: string, today: string): string | null {
  * `today` is the run's accept date in the task's time zone (`taskTimeZone`),
  * `YYYY-MM-DD`. An agent that edits the schedule under Always Allow can move
  * that day, and so the count, by up to two days, but no text from the schedule
- * reaches the brief. `validateDefinition` has already run on every read of a
- * task row (`StoredRoutineSchema`), so the name is one line and none of the
- * fields hold invisible characters. The person's text is quoted line by line,
+ * reaches the brief. The zone the date was set from (TASK-955), which counts
+ * only for a task with no zone of its own, comes from the person's browser,
+ * and no tool can set it. `validateDefinition` has already run on every read
+ * of a task row (`StoredRoutineSchema`), so the name is one line and none of
+ * the fields hold invisible characters. The person's text is quoted line by line,
  * so nothing typed into it reads as a heading or as our own text. `kind` picks
  * the fixed lines: a "get-done" task gets three, two on its steps (TASK-948)
  * and one on how to claim it's done, since only the person marks it done
@@ -206,8 +209,10 @@ function checkInOf(pending: PendingFires, ctx: AgentContext): PendingFire | unde
  * for anything else. The brief is built from the row the run was accepted
  * with, the same snapshot its check-in message came from, so an edit made
  * while the run starts reaches the next check-in, not this one. A finish
- * date's days count from the day of that accept too, on the task's own
- * calendar, never from the clock when the brief is built (TASK-951). A brief
+ * date's days count from the day of that accept too, on the task's calendar
+ * (`taskTimeZone`; TASK-955: for a task with no zone of its own, the one the
+ * date was set from, which the accepted row carries), never from the clock
+ * when the brief is built (TASK-951). A brief
  * over the orchestrator's cap is not sent: the run is marked so its veto says
  * why.
  */

@@ -44,13 +44,14 @@ describe('routines:set-finish-by (TASK-951)', () => {
   it("the owner sets a get-done task's finish date and removes it; its revision stays", async () => {
     h = await createRoutineHarness();
     const task = await createTask(h.owner, h.agentId);
-    expect(task.finishBy).toBeNull();
+    expect([task.finishBy, task.finishByTimeZone]).toEqual([null, null]);
     const before = await get(h.owner, task);
     expect(before.revision).toBe(task.revision);
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
-    // The date shows, and nothing else on the routine moved, its revision included.
-    expect(await get(h.owner, task)).toEqual({ ...before, finishBy: DATE });
-    expect((await listed(h.owner, task))?.finishBy).toBe(DATE);
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' }))
+      .toStrictEqual({ finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' });
+    // The date and the zone it was set from show (TASK-955), and nothing else on the routine moved, its revision included.
+    expect(await get(h.owner, task)).toEqual({ ...before, finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' });
+    expect(await listed(h.owner, task)).toMatchObject({ finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' });
     expect(await setFinishBy(h.owner, { ...key(task), finishBy: null })).toStrictEqual({ finishBy: null, finishByTimeZone: null });
     expect(await get(h.owner, task)).toEqual(before);
     expect(await finishByOf(task.routineId)).toBeNull();
@@ -71,14 +72,15 @@ describe('routines:set-finish-by (TASK-951)', () => {
     h = await createRoutineHarness();
     const task = await createTask(h.teamAdmin, h.teamAgentId);
     await withState(task.routineId);
-    expect(await setFinishBy(h.teamAdmin, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
-    // Its owner sees the date beside the task's state...
-    expect(await get(h.teamAdmin, task)).toMatchObject({ finishBy: DATE, task: { status: 'on-track' }, steps: [{ id: 's000001' }] });
-    // ...and so does anyone else who sees the task, without that state: the date is about the work, and holds no agent text.
-    // Another admin of the team, who manages its tasks, and an ordinary member.
+    const dated = { finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' };
+    expect(await setFinishBy(h.teamAdmin, { ...key(task), ...dated })).toStrictEqual(dated);
+    // Its owner sees the date and the zone it was set from beside the task's state...
+    expect(await get(h.teamAdmin, task)).toMatchObject({ ...dated, task: { status: 'on-track' }, steps: [{ id: 's000001' }] });
+    // ...and so does anyone else who sees the task, without that state: the date is about the work, and holds no agent text,
+    // and so is its zone (TASK-955). Another admin of the team, who manages its tasks, and an ordinary member.
     for (const person of [h.owner, h.teamMember]) {
-      expect(await get(person, task), person.userId).toMatchObject({ finishBy: DATE, task: null, steps: [] });
-      expect((await listed(person, task))?.finishBy, person.userId).toBe(DATE);
+      expect(await get(person, task), person.userId).toMatchObject({ ...dated, task: null, steps: [] });
+      expect(await listed(person, task), person.userId).toMatchObject(dated);
       for (const finishBy of ['2030-01-01', null]) {
         await expect(setFinishBy(person, { ...key(task), finishBy }), `${person.userId} ${finishBy}`).rejects.toMatchObject({ toolCode: 'forbidden' });
       }
@@ -132,13 +134,15 @@ describe('routines:set-finish-by (TASK-951)', () => {
     expect(resolves()).toBeGreaterThan(0);
   });
 
-  it("a stay-on-top task's view shows no date even when its row holds one", async () => {
+  it("a stay-on-top task's view shows no date, and no zone, even when its row holds them", async () => {
     h = await createRoutineHarness();
     const stayOnTop = await createTask(h.owner, h.agentId, TASK_DEFINITION, 'stay-on-top');
-    // A hand edit, or a kind change made by code from before version 12, which didn't clear the date.
-    await sql`UPDATE routines_v1_definitions SET finish_by = ${DATE} WHERE routine_id = ${stayOnTop.routineId}`.execute(h.db);
-    expect((await get(h.owner, stayOnTop)).finishBy).toBeNull();
-    expect((await listed(h.owner, stayOnTop))?.finishBy).toBeNull();
+    // A hand edit, or a kind change made by code from before version 12, which cleared neither the date nor (TASK-955)
+    // the zone stored beside it.
+    await sql`UPDATE routines_v1_definitions SET finish_by = ${DATE}, finish_by_time_zone = 'America/Los_Angeles'
+               WHERE routine_id = ${stayOnTop.routineId}`.execute(h.db);
+    expect(await get(h.owner, stayOnTop)).toMatchObject({ finishBy: null, finishByTimeZone: null });
+    expect(await listed(h.owner, stayOnTop)).toMatchObject({ finishBy: null, finishByTimeZone: null });
   });
 
   it('leaves one routines_finish_by_set line, with ids and whether it cleared', async () => {

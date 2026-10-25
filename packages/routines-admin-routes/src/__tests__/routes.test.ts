@@ -38,7 +38,7 @@ const routine = {
   task: null,
   noRecentUpdate: null,
   steps: [],
-  finishBy: null, done: null,
+  finishBy: null, finishByTimeZone: null, done: null,
 };
 function req(
   body?: unknown,
@@ -361,7 +361,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
       { id: 's000001', text: AGENT_TEXT.agentStep, done: true, addedBy: 'agent' },
       { id: 's000002', text: AGENT_TEXT.personStep, done: false, addedBy: 'person' },
     ],
-    finishBy: '2026-11-01', done: { at: '2026-10-25T09:40:00.000Z' },
+    finishBy: '2026-11-01', finishByTimeZone: 'America/Los_Angeles', done: { at: '2026-10-25T09:40:00.000Z' },
   };
   const runView = {
     agentId: 'a', routineId: 'rtn_a', firedAt: '2026-10-25T09:00:00.000Z', triggerSource: 'tick', conversationId: 'conv_1',
@@ -373,9 +373,9 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
    * writes any of it, settingsView leaves it out; if only the host or a person writes it, add it here.
    */
   const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'description', 'done', 'enabled',
-    'finishBy', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning', 'name', 'nextRunAt',
-    'noRecentUpdate', 'origin', 'permissions', 'promptBody', 'revision', 'routineId', 'silenceMaxChars',
-    'silenceToken', 'steps', 'task', 'trigger'];
+    'finishBy', 'finishByTimeZone', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning',
+    'name', 'nextRunAt', 'noRecentUpdate', 'origin', 'permissions', 'promptBody', 'revision', 'routineId',
+    'silenceMaxChars', 'silenceToken', 'steps', 'task', 'trigger'];
   /** Every field a Settings run carries, reviewed the same way. */
   const RUN_KEYS = ['agentId', 'conversationId', 'error', 'firedAt', 'renderedPrompt', 'report', 'routineId',
     'status', 'triggerSource', 'warning'];

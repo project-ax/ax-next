@@ -18,9 +18,9 @@ import type { ActiveHours, RoutineTrigger } from './definition.js';
  * passed (TASK-906). A date in the past is a late task, and its brief says so.
  *
  * One calendar is shared by the brief, the Tasks row and the task page, so the
- * agent and the person count the same days: the task's own time zone
- * (`taskTimeZone`), the date there (`calendarDateIn`), and whole days between
- * two dates (`calendarDaysBetween`).
+ * agent and the person count the same days: the task's own time zone, else the
+ * one its date was set from (`taskTimeZone`), the date there
+ * (`calendarDateIn`), and whole days between two dates (`calendarDaysBetween`).
  */
 
 export const ROUTINE_FINISH_BY_EARLIEST = '2000-01-01';
@@ -60,13 +60,23 @@ export const RoutineFinishBySchema = z.string().superRefine((value, ctx) => {
 });
 
 /**
- * The time zone a task's calendar runs on: its cron's, else its active hours',
- * else 'UTC'. A cron's times are written in its own zone. An interval has no
- * zone, so the active hours', the hours of the person's day, come next.
+ * The time zone a task's calendar runs on, in four steps: its cron's, else its
+ * active hours', else the zone its finish date was set from, else 'UTC'. A
+ * cron's times are written in its own zone. An interval has no zone, so the
+ * active hours', the hours of the person's day, come next. A task with neither
+ * counts on the calendar of the person who set the date (TASK-955): the zone
+ * their browser reported with it, stored beside it (`finishByTimeZone`).
+ *
+ * The task's own zone wins when the two differ (TASK-955 decisions row 2), so a
+ * check-in's "today" is always the day its own schedule is on, and a task that
+ * has a zone counts as it did before TASK-955. `finishByTimeZone` is required,
+ * not optional: a caller that doesn't pass the stored zone fails to compile
+ * rather than quietly counting in UTC. Callers pass a zone the contract's rule
+ * (`RoutineTimezoneSchema`) accepted on this runtime, or null.
  */
-export function taskTimeZone(row: { trigger: RoutineTrigger; activeHours: ActiveHours | null }): string {
+export function taskTimeZone(row: { trigger: RoutineTrigger; activeHours: ActiveHours | null; finishByTimeZone: string | null }): string {
   if (row.trigger.kind === 'cron') return row.trigger.tz;
-  return row.activeHours?.tz ?? 'UTC';
+  return row.activeHours?.tz ?? row.finishByTimeZone ?? 'UTC';
 }
 
 /**

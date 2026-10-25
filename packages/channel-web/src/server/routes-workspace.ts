@@ -784,8 +784,8 @@ interface RoutinesListOutput {
  * What the Tasks page (TASK-909) reads off one `routines:list` view. The bus
  * has already parsed the answer through `RoutineListOutputSchema` (the
  * service's `returns`), so these fields are read, not validated again. The
- * trigger and the active hours are read only for a finish date's time zone
- * (TASK-951).
+ * trigger, the active hours and the zone a finish date was set from are read
+ * only for that date's time zone (TASK-951, TASK-955).
  */
 type TaskListView = Pick<
   RoutineView,
@@ -798,6 +798,7 @@ type TaskListView = Pick<
   | 'noRecentUpdate'
   | 'steps'
   | 'finishBy'
+  | 'finishByTimeZone'
   | 'done'
   | 'trigger'
   | 'activeHours'
@@ -829,6 +830,7 @@ type TaskDetailView = Pick<
   | 'noRecentUpdate'
   | 'steps'
   | 'finishBy'
+  | 'finishByTimeZone'
   | 'done'
 >;
 type TaskFireView = Pick<
@@ -891,12 +893,13 @@ interface TaskStepsOutput {
 /**
  * `routines:set-finish-by` (TASK-951), as the task page uses it. The bus has
  * already parsed the answer through the service's `returns`
- * (`RoutineSetFinishByOutputSchema`).
+ * (`RoutineSetFinishByOutputSchema`). TASK-955: the answer's zone is the one
+ * the date was saved with, which the answer's days left are counted in.
  */
 interface TaskSetFinishByInput extends TaskKeyInput {
   finishBy: string | null;
 }
-type TaskSetFinishByOutput = Pick<RoutineSetFinishByOutput, 'finishBy'>;
+type TaskSetFinishByOutput = Pick<RoutineSetFinishByOutput, 'finishBy' | 'finishByTimeZone'>;
 
 /**
  * `routines:complete` (TASK-950), Mark done, as the task page uses it. The bus
@@ -3548,8 +3551,8 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * the badge, and a step's words belong on its task's own page.
  *
  * TASK-951: a get-done task's finish date crosses as the date and the days
- * left to it at `now`, counted in the task's own time zone (`toTaskFinishBy`),
- * as its page counts them.
+ * left to it at `now`, counted in the task's own time zone, else the one its
+ * date was set from (`toTaskFinishBy`, TASK-955), as its page counts them.
  *
  * TASK-950: when a person marked the task done crosses as a time
  * (`toTaskDoneAt`), host-written; who marked it never crosses. A report's
@@ -3699,25 +3702,33 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
 /**
  * A view's finish date → the wire's (TASK-951): none unless the task is
  * `get-done` and its date is one the contract's rule accepts, else the date
- * and the whole days left to it at `now`, counted in the task's own time zone
- * (`taskTimeZone`), never the reader's or the host's, so the Tasks row, the
- * page and the check-in's brief agree.
+ * and the whole days left to it at `now`, counted in the task's own time zone,
+ * else the one its date was set from (`taskTimeZone`, TASK-955), never the
+ * reader's or the host's, so the Tasks row, the page and the check-in's brief
+ * agree. The zone itself never crosses.
  *
  * Lenient about a view the schema didn't parse (TASK-913), as
  * `toTaskNoRecentUpdate` is, and never a thrown request: a date the rule
  * refuses reads as none, a day no calendar has included, which would draw as
- * another day or make `Intl` throw. So does a time zone this runtime doesn't
- * know, which the count would throw on (a parsed view's zone was checked on
- * this runtime).
+ * another day or make `Intl` throw. So does a task's own time zone this
+ * runtime doesn't know, which the count would throw on (a parsed view's zone
+ * was checked on this runtime). The zone the date was set from is only the
+ * fallback, so one the contract's zone rule refuses here, or one that isn't
+ * text, reads as none: the date still shows, counted on UTC's calendar.
  */
 function toTaskFinishBy(
-  view: Pick<RoutineView, 'kind' | 'finishBy' | 'trigger' | 'activeHours'>,
+  view: Pick<RoutineView, 'kind' | 'finishBy' | 'finishByTimeZone' | 'trigger' | 'activeHours'>,
   now: Date,
 ): TaskFinishBy | null {
   const date: unknown = view.finishBy;
   if (view.kind !== 'get-done' || typeof date !== 'string') return null;
   if (!RoutineFinishBySchema.safeParse(date).success) return null;
-  const tz = taskTimeZone(view);
+  const setFrom = RoutineTimezoneSchema.safeParse(view.finishByTimeZone);
+  const tz = taskTimeZone({
+    trigger: view.trigger,
+    activeHours: view.activeHours,
+    finishByTimeZone: setFrom.success ? setFrom.data : null,
+  });
   if (!RoutineTimezoneSchema.safeParse(tz).success) return null;
   const daysLeft = calendarDaysUntil(date, now, tz);
   // A NaN would cross as null and make the client reject the whole Tasks list.
@@ -3927,8 +3938,9 @@ function readTaskDuplicateBody(parsed: unknown): { requestId: string } | null {
  * author; any other kind has none.
  *
  * TASK-951: a get-done task's finish date crosses as the date and the days
- * left to it at `now`, in the task's own time zone (`toTaskFinishBy`), as its
- * Tasks row counts them. The person set it, and it holds no text.
+ * left to it at `now`, in the task's own time zone, else the one its date was
+ * set from (`toTaskFinishBy`, TASK-955), as its Tasks row counts them. The
+ * person set it, and it holds no text.
  *
  * TASK-950: when a person marked the task done crosses as a time
  * (`toTaskDoneAt`), host-written; who marked it never crosses. The report's
@@ -7896,12 +7908,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * input built field by field, so nothing else in the body rides along
      * and the address, not the body, names the task.
      *
-     * The read supplies the task's time zone, which the answer's days left
-     * are counted in, and makes this route's 404s the page's own, but it is
-     * not the authority. The service decides who may (the task's owner) and
-     * that the task is still get-done, under the routine's row lock, and its
-     * input check, the contract's rule, refuses a date no calendar has
-     * before anything is written. A `validation` refusal is that date and
+     * The read supplies the task's own time zone, and the service's answer
+     * the zone the date was saved with (TASK-955): the answer's days left are
+     * counted in them (`taskTimeZone`). The read also makes this route's 404s
+     * the page's own, but it is not the authority. The service decides who
+     * may (the task's owner) and that the task is still get-done, under the
+     * routine's row lock, and its input check, the contract's rule, refuses a
+     * date no calendar has before anything is written. A `validation` refusal is that date and
      * answers 400 `finish-by-invalid`, checked before `isTaskRefusal`, which
      * counts `validation` as a read's 404. `not-found` (no such task, or one
      * that is no longer get-done) and `forbidden` (not its owner) are the
@@ -7953,9 +7966,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       // The service saves only on a get-done task, under its row lock, so a success proves the kind;
-      // the view read above may be older than that lock, so its kind is not asked again.
+      // the view read above may be older than that lock, so its kind is not asked again. The date and
+      // the zone it was saved with are the service's answer, never the view's (TASK-955).
       res.status(200).json({
-        finishBy: toTaskFinishBy({ ...own.view, kind: 'get-done', finishBy: out.finishBy }, now()),
+        finishBy: toTaskFinishBy(
+          {
+            ...own.view,
+            kind: 'get-done',
+            finishBy: out.finishBy,
+            finishByTimeZone: out.finishByTimeZone,
+          },
+          now(),
+        ),
       } satisfies TaskFinishByResponse);
     },
 

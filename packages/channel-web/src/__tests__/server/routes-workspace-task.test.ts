@@ -1464,6 +1464,47 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, the finish date (TASK-95
   });
 });
 
+/**
+ * TASK-955's boundary: Sunday 25 October, set from Los Angeles, on a task with
+ * no zone of its own, read at 01:00 UTC on the 26th: 18:00 that Sunday in Los
+ * Angeles, when UTC's calendar is already on Monday.
+ */
+const zonelessLaTask = (): StoredRoutine =>
+  laTask({
+    trigger: { kind: 'interval', every: '1h' },
+    finishBy: '2026-10-25',
+    finishByTimeZone: 'America/Los_Angeles',
+  });
+const AT_BOUNDARY = (): Date => new Date('2026-10-26T01:00:00.000Z');
+
+describe('GET /api/workspace/tasks/:agentId/:routineId, the zone a finish date was set from (TASK-955)', () => {
+  it('at the boundary, a zoneless task’s page counts on the calendar its date was set from, as the brief and the row do (TASK-955)', async () => {
+    const { detail } = setup({ rows: [zonelessLaTask()], now: AT_BOUNDARY });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    // Due today. UTC's calendar, already on Monday, would count a day past.
+    expect(bodyOf(captured).finishBy).toStrictEqual({ date: '2026-10-25', daysLeft: 0 });
+  });
+
+  it.each<[string, unknown]>([
+    ['a zone no calendar has', 'Mars/Olympus_Mons'],
+    ['a number', 5],
+  ])('a stored zone the contract refuses counts on UTC rather than hiding the date (%s) (TASK-955)', async (_what, value) => {
+    // A view the schema didn't parse (TASK-913's shape). Counting in a zone
+    // Intl doesn't know would throw; the zone is only the fallback, so the date
+    // still shows, counted on UTC's calendar.
+    const { detail } = setup({
+      unvalidated: true,
+      viewPatch: { finishByTimeZone: value },
+      rows: [zonelessLaTask()],
+      now: AT_BOUNDARY,
+    });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).finishBy).toStrictEqual({ date: '2026-10-25', daysLeft: -1 });
+  });
+});
+
 describe('GET /api/workspace/tasks/:agentId/:routineId, the page carries doneAt and the claim (TASK-950)', () => {
   it('a claimed get-done task carries its claim, and isn’t done', async () => {
     const { detail } = setup({ rows: [claimed()] });
@@ -1953,6 +1994,19 @@ describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', ()
     expect(captured.statusCode).toBe(200);
     expect(captured.body).toStrictEqual({
       finishBy: { date: '2026-11-14', daysLeft: 10 },
+    } satisfies TaskFinishByResponse);
+  });
+
+  it('answers the days left in the zone the service saved, not the one the page read before (TASK-955)', async () => {
+    // The view read first holds Los Angeles. This body sends no zone, so the
+    // service saves none, and the answer counts on UTC's calendar, as the next
+    // read will.
+    const { finishBy, finishByCalls } = setup({ rows: [zonelessLaTask()], now: AT_BOUNDARY });
+    const captured = await finishBy(KEY, { finishBy: '2026-10-25' });
+    expect(captured.statusCode).toBe(200);
+    expect(finishByCalls).toHaveLength(1);
+    expect(captured.body).toStrictEqual({
+      finishBy: { date: '2026-10-25', daysLeft: -1 },
     } satisfies TaskFinishByResponse);
   });
 

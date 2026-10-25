@@ -7,9 +7,10 @@
  * never remaining" rule is about the agent's own estimate of how long a run
  * or a check-in has to go, which nobody can know. This is a count of whole
  * days to a date the PERSON picked, so it is no estimate: it is the date,
- * restated. The host counts it (`daysLeft`, in the task's own time zone, so
- * the page, the row and the check-in's brief agree), and this file only words
- * it.
+ * restated. The host counts it (`daysLeft`, in the task's time zone: its
+ * schedule's, else its active hours', else the zone the person set the date
+ * from, else UTC; TASK-955), so the page, the row and the check-in's brief
+ * agree, and this file only words it.
  *
  * THE DATE IS A CALENDAR DAY, NEVER AN INSTANT. It is read at UTC midnight and
  * written in UTC, so the browser's own time zone can't move it a day either

@@ -54,11 +54,14 @@ describe("a task's finish date (TASK-951)", () => {
 });
 
 describe("a task's calendar (TASK-951)", () => {
-  it('runs on the cron’s zone, else the active hours’, else UTC', () => {
+  it('runs on the cron’s zone, else the active hours’, else the zone its date was set from, else UTC (TASK-955)', () => {
     const tokyoHours = { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' };
-    expect(taskTimeZone({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours })).toBe('America/New_York');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: tokyoHours })).toBe('Asia/Tokyo');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null })).toBe('UTC');
+    const setFrom = 'America/Los_Angeles';
+    // The task's own zone wins over the one its date was set from.
+    expect(taskTimeZone({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/New_York');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('Asia/Tokyo');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: null })).toBe('UTC');
   });
 
   it('reads a calendar date in a time zone, whatever the host’s zone is', () => {
@@ -172,14 +175,15 @@ describe('no tool can set a finish date (TASK-951)', () => {
 });
 
 describe('the tools tell the agent about the date, and that only the person sets it (TASK-951)', () => {
-  it('routine_list and routine_get say what finishBy is, and routine_update that a retry answers it null', () => {
-    // The views the tools answer with carry the date, so the model reads what it means and who sets it.
-    const sentence = 'finishBy is the date the person wants a "get-done" task finished by, or null. Only the person sets it.';
+  it('routine_list and routine_get say what finishBy and finishByTimeZone are, and routine_update that a retry answers them null (TASK-955)', () => {
+    // The views the tools answer with carry the date and the zone it was set from, so the model reads what they mean
+    // and who sets them.
+    const sentence = 'finishBy is the date the person wants a "get-done" task finished by, or null. Only the person sets it. finishByTimeZone is the time zone they set it from, or null.';
     for (const name of ['routine_list', 'routine_get'] as const) expect(RoutineToolDescriptions[name], name).toContain(sentence);
-    // routine_update answers with the list tools' view, which carries it, and a replay answers from a receipt, which keeps none.
-    // (TASK-950's done, the receipt keeps none either.)
+    // routine_update answers with the list tools' view, which carries both, and a replay answers from a receipt, which keeps
+    // neither. (TASK-950's done, the receipt keeps none either.)
     expect(RoutineToolDescriptions.routine_update)
-      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy and done null, so read the task with routine_get.');
+      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy, finishByTimeZone and done null, so read the task with routine_get.');
     // Neither creating a task nor reporting on one can carry a date.
     for (const name of ['routine_create', 'routine_report'] as const) expect(RoutineToolDescriptions[name], name).not.toContain('finishBy');
   });

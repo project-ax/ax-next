@@ -1034,7 +1034,7 @@ describe('finish-by canary (TASK-951)', () => {
     const ch = await createCheckInHarness({ clock });
     h = ch;
     const store = createRoutinesStore(h.db);
-    // An interval and no active hours, so the task's calendar is UTC's.
+    // An interval, no active hours and no zone sent with the date, so the task's calendar is UTC's.
     const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse({
         name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
@@ -1055,6 +1055,48 @@ describe('finish-by canary (TASK-951)', () => {
     });
     expect((checkIn.brief as { brief?: string }).brief).toContain(
       'The person wants this finished by Saturday, 14 November 2026. That’s 9 days from today (Thursday, 5 November 2026). If the steps left won’t fit before then, report "off-track" and say why in your update.');
+    await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
+    expect((await store.recentFires(task))[0]).toMatchObject({ status: 'ok', report: { status: 'on-track' } });
+  });
+});
+
+// TASK-955: a task with no time zone of its own counts its Finish by date on the calendar of the person who set it,
+// end to end through the real routines, agents, tool-policy and decisions plugins and Postgres. The person sets Sunday
+// 25 October from Los Angeles, where their browser sends its zone with the date; the check-in starts at 01:00 UTC on
+// the 26th, 18:00 that Sunday in Los Angeles, when UTC's calendar is already on Monday.
+describe('finish-by time zone canary (TASK-955)', () => {
+  it("a zoneless task's date set from Los Angeles reads today, not 1 day ago, in a check-in at 01:00 UTC the next day", async () => {
+    const clock: Clock = {
+      now: () => new Date('2026-10-26T01:00:00Z'),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      }),
+    };
+    const ch = await createCheckInHarness({ clock });
+    h = ch;
+    const store = createRoutinesStore(h.db);
+    // An interval and no active hours: no zone of its own.
+    const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: randomUUID(), definition: RoutineDefinitionSchema.parse({
+        name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
+        kind: 'get-done', goodWhen: 'Every article is on the new site and the old links redirect.',
+      }),
+    });
+    const key = { agentId: h.agentId, routineId: task.routineId };
+    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' }))
+      .toStrictEqual({ finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' });
+    expect(await h.bus.call('routines:get', h.owner, key))
+      .toMatchObject({ finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles', revision: task.revision });
+
+    const checkIn = await ch.checkIn(task, 'run-1', async (ctx, bus) => {
+      expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: {
+        status: 'on-track', update: 'Moved the first ten articles.', ask: null,
+      } })).toStrictEqual({ recorded: true });
+    });
+    const brief = (checkIn.brief as { brief?: string }).brief;
+    expect(brief).toContain('The person wants this finished today (Sunday, 25 October 2026).');
+    expect(brief).not.toContain('1 day ago');
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
     expect((await store.recentFires(task))[0]).toMatchObject({ status: 'ok', report: { status: 'on-track' } });
   });

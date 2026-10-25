@@ -1403,10 +1403,11 @@ export interface TaskStepCounts {
 
 /**
  * TASK-951. A "get-done" task's finish date and the whole days left to it. `date` is the
- * person's `YYYY-MM-DD`; `daysLeft` is counted on the host in the TASK's own time zone
- * (its schedule's, else its active hours', else UTC), not the reader's, so the page, the
- * row and the check-in's brief agree: 0 on the day, negative after. A count, not a
- * display string; the page words it.
+ * person's `YYYY-MM-DD`; `daysLeft` is counted on the host in the TASK's time zone (its
+ * schedule's, else its active hours', else the zone the person set the date from, else
+ * UTC; TASK-955), not the reader's, so the page, the row and the check-in's brief agree:
+ * 0 on the day, negative after. A count, not a display string; the page words it. The
+ * zone itself never crosses.
  */
 export interface TaskFinishBy {
   date: string;

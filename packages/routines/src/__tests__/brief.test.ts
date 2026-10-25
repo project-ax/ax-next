@@ -400,9 +400,42 @@ describe("a get-done task's finish date in its brief (TASK-951)", () => {
     expect(checkInBrief(pending, runCtx()).brief).toContain(expected);
   });
 
-  it('a task with an interval and no active hours counts on UTC’s calendar', () => {
+  it('a task with an interval, no active hours and no zone stored with its date counts on UTC’s calendar', () => {
     const row: StoredRoutine = { ...storedRow({ ...TASK, kind: 'get-done', trigger: { kind: 'interval', every: '1h' } }), finishBy: '2026-11-14' };
     const pending: PendingFires = new Map([['rA', { ...entry(row), acceptedAt: new Date('2026-11-05T02:00:00Z') }]]);
     expect(checkInBrief(pending, runCtx()).brief).toContain('That’s 9 days from today (Thursday, 5 November 2026).');
+  });
+});
+
+// TASK-955: a task with no time zone of its own counts its finish date on the calendar of the person who set it,
+// whose browser sent its zone with the date. The person sets Sunday 25 October from Los Angeles at 17:30 there
+// (00:30 UTC on the 26th), and the check-in is accepted at 01:00 UTC on the 26th: 18:00 that Sunday in Los Angeles,
+// when UTC's calendar is already on Monday.
+describe("a finish date's days, counted in the zone it was set from (TASK-955)", () => {
+  const AT_BOUNDARY = new Date('2026-10-26T01:00:00Z');
+  const TODAY = 'The person wants this finished today (Sunday, 25 October 2026).';
+  const DAY_AGO = 'The person wanted this finished by Sunday, 25 October 2026, 1 day ago.';
+  const dated = (definition: object, finishByTimeZone: string | null): StoredRoutine => ({
+    ...storedRow({ ...TASK, kind: 'get-done', ...definition }), finishBy: '2026-10-25', finishByTimeZone,
+  });
+  const briefAtBoundary = (row: StoredRoutine): string | undefined =>
+    checkInBrief(new Map([['rA', { ...entry(row), acceptedAt: AT_BOUNDARY }]]), runCtx()).brief;
+  const interval = { trigger: { kind: 'interval', every: '1h' } };
+
+  it('a zoneless task counts on the calendar its date was set from: "today", not 1 day ago, at 01:00 UTC the next day (TASK-955)', () => {
+    const brief = briefAtBoundary(dated(interval, 'America/Los_Angeles'));
+    expect(brief).toContain(TODAY);
+    expect(brief).not.toContain('1 day ago');
+    // The control: no zone was sent with the date, so the count is on UTC's calendar, already on Monday.
+    expect(briefAtBoundary(dated(interval, null))).toContain(DAY_AGO);
+  });
+
+  it('the task’s own zone wins over the zone its date was set from (TASK-955)', () => {
+    // Tokyo is already on Monday the 26th at that instant, whichever of the task's own zones names it.
+    const tokyoCron = dated({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' } }, 'America/Los_Angeles');
+    const tokyoHours = dated({ ...interval, activeHours: { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' } }, 'America/Los_Angeles');
+    for (const [name, row] of [['cron', tokyoCron], ['active hours', tokyoHours]] as const) {
+      expect(briefAtBoundary(row), name).toContain(DAY_AGO);
+    }
   });
 });

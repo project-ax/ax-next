@@ -145,6 +145,7 @@ describe('canonical routine return schemas', () => {
       }),
       steps: [{ id: 's000001', text: 'Export every article', done: true, addedBy: 'agent' }],
       finishBy: '2026-11-14',
+      finishByTimeZone: 'America/Los_Angeles',
     };
     it("projects a get-done task's finish date to whoever sees it, and none for any other kind", () => {
       const projected = routineView(task, 'owner', true);
@@ -170,6 +171,27 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineViewSchema.safeParse(without).success).toBe(false);
       expect(C.RoutineViewSchema.safeParse({ ...projected, finishBy: 3 }).success).toBe(false);
       expect(C.RoutineViewSchema.parse({ ...projected, finishBy: 'not a date' }).finishBy).toBe('not a date');
+    });
+    it('projects the zone its date was set from beside it, to whoever sees it, and none for any other kind (TASK-955)', () => {
+      const projected = routineView(task, 'owner', true);
+      expect([projected.finishBy, projected.finishByTimeZone]).toEqual(['2026-11-14', 'America/Los_Angeles']);
+      // Not owner-gated, as the date isn't: whoever sees the routine sees both.
+      expect(routineView(task, 'teammate', true).finishByTimeZone).toBe('America/Los_Angeles');
+      // The list tools' view keeps it, as it keeps the date.
+      const { steps: _steps, ...toolView } = projected;
+      expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] }).routines[0]?.finishByTimeZone).toBe('America/Los_Angeles');
+      // Any other kind shows none, even when its row holds one.
+      const stayOnTop = routineView({ ...task, kind: 'stay-on-top' }, 'owner', true);
+      const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
+      for (const view of [stayOnTop, repeat]) {
+        expect(view.finishByTimeZone, view.kind).toBeNull();
+        expect(C.RoutineViewSchema.parse(view)).toEqual(view);
+      }
+      // Required, so a view from a producer that doesn't know it is refused; and a type, not the zone rule (TASK-913).
+      const { finishByTimeZone: _zone, ...without } = projected;
+      expect(C.RoutineViewSchema.safeParse(without).success).toBe(false);
+      expect(C.RoutineViewSchema.safeParse({ ...projected, finishByTimeZone: 3 }).success).toBe(false);
+      expect(C.RoutineViewSchema.parse({ ...projected, finishByTimeZone: 'not a zone' }).finishByTimeZone).toBe('not a zone');
     });
   });
   describe("a get-done task's claim and Done (TASK-950)", () => {

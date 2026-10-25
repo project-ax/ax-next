@@ -39,8 +39,10 @@
  *
  * A GET-DONE TASK'S FINISH DATE (TASK-951) shows right under the meta line,
  * with its own field to set, change or remove it (`TaskFinishDate`). The host
- * counts the days left in the task's own time zone; a saved date shows at
- * once and the page then reads the task again (`useTask`'s `applyAnswer`). A
+ * counts the days left in the task's time zone (its schedule's, else its
+ * active hours', else the zone the person set the date from, else UTC;
+ * TASK-955); a saved date shows at once and the page then reads the task
+ * again (`useTask`'s `applyAnswer`). A
  * stay-on-top task shows none, whatever it carries, and neither does a Done
  * one (TASK-950): it has no days left to count, and nothing to set.
  *

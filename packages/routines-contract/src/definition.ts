@@ -762,6 +762,19 @@ const RoutineViewShape = {
    */
   finishBy: z.string().nullable(),
   /**
+   * TASK-955. The time zone the person's browser reported when they set
+   * `finishBy`, or null: null for any kind but get-done, when there is no
+   * date, and when the browser reported none. A task with no zone of its own
+   * counts its date's days on it (`taskTimeZone`). Only a person's browser
+   * sends it, through `routines:set-finish-by`; no tool can. Like `finishBy`,
+   * it isn't owner-gated, and a read takes it as a type, not the zone rule
+   * (TASK-913). Receipts keep none, so an exact replay's answer has none.
+   * Required, so a view from a producer that doesn't know it is refused
+   * rather than read as "no zone". The same in every view, the tools'
+   * included.
+   */
+  finishByTimeZone: z.string().nullable(),
+  /**
    * TASK-950. A "get-done" task a person marked done: `{ at }`, while it stays
    * done (off, and finished by its owner). Host-written, never agent text. Null
    * for anyone but the task's owner (`task`'s rule), for any kind but get-done,

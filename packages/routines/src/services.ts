@@ -47,7 +47,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
     noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row),
-    done: doneView(row, userId) };
+    finishByTimeZone: finishByTimeZoneView(row), done: doneView(row, userId) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -70,7 +70,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * done (`doneClaimed`), which only a "get-done" task makes: `=== 'get-done'`, an
  * explicit allowlist, so a row of any other kind that holds one shows none.
  * TASK-951: a "get-done" task's finish date isn't task state, so this rule
- * doesn't cover it (`finishByView`).
+ * doesn't cover it (`finishByView`), nor (TASK-955) the zone it was set from
+ * (`finishByTimeZoneView`).
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
@@ -118,6 +119,21 @@ function stepsView(row: StoredRoutine, userId: string): C.RoutineStepView[] {
  */
 function finishByView(row: StoredRoutine): string | null {
   return row.kind === 'get-done' ? row.finishBy : null;
+}
+/**
+ * TASK-955. The time zone a "get-done" task's finish date was set from, or
+ * null, under `finishByView`'s rule: `=== 'get-done'`, an explicit allowlist,
+ * so a row of another kind that holds one beside a date (a hand edit, or a
+ * change of kind made by code from before schema version 12, which cleared
+ * neither) shows none, and so does a kind this code doesn't know. A zone left
+ * beside no date already reads as none in the store. Not owner-gated, as the date
+ * isn't (TASK-955 decisions row 5): a person's browser reported it, it holds no
+ * agent text, and the schedule's and active hours' zones, in every view
+ * already, are the same kind of fact. The store has already read it through the
+ * contract's zone rule, and only beside a date (`storedFinishByTimeZone`).
+ */
+function finishByTimeZoneView(row: StoredRoutine): string | null {
+  return row.kind === 'get-done' ? row.finishByTimeZone : null;
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under

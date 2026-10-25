@@ -1027,7 +1027,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
   /** 18:00 on 4 November in Los Angeles, when it is already the 5th in UTC. */
   const LA_EVENING = (): Date => new Date('2026-11-05T02:00:00.000Z');
 
-  it("each get-done row carries its finish date and the days left in its own task's time zone (TASK-951)", async () => {
+  it("each get-done row carries its finish date and the days left in its own task's time zone, else the one its date was set from (TASK-951, TASK-955)", async () => {
     const { get } = setup({
       rows: [
         stored({
@@ -1037,8 +1037,25 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
           trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
           finishBy: '2026-11-14',
         }),
-        // An interval with no active hours runs on UTC's calendar.
+        // An interval, no active hours and no zone stored with its date: UTC's calendar.
         stored({ agentId: 'a1', routineId: 'utc', kind: 'get-done', finishBy: '2026-11-14' }),
+        // No zone of its own, so the one its date was set from (TASK-955).
+        stored({
+          agentId: 'a1',
+          routineId: 'person',
+          kind: 'get-done',
+          finishBy: '2026-11-14',
+          finishByTimeZone: 'America/Los_Angeles',
+        }),
+        // The task's own zone wins over the one its date was set from (TASK-955).
+        stored({
+          agentId: 'a1',
+          routineId: 'tokyo',
+          kind: 'get-done',
+          trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' },
+          finishBy: '2026-11-14',
+          finishByTimeZone: 'America/Los_Angeles',
+        }),
         stored({ agentId: 'a1', routineId: 'queue', finishBy: '2026-11-14' }),
       ],
       now: LA_EVENING,
@@ -1049,8 +1066,37 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
       // Still the 4th in Los Angeles: 10 days.
       ['la', { date: '2026-11-14', daysLeft: 10 }],
       ['utc', { date: '2026-11-14', daysLeft: 9 }],
+      ['person', { date: '2026-11-14', daysLeft: 10 }],
+      // Already the 5th in Tokyo: 9 days, though the date was set from Los Angeles.
+      ['tokyo', { date: '2026-11-14', daysLeft: 9 }],
       // A stay-on-top task never has one.
       ['queue', null],
+    ]);
+  });
+
+  it('at the boundary, a zoneless row counts on the calendar its date was set from, as the brief does (TASK-955)', async () => {
+    // Sunday 25 October set from Los Angeles; read at 01:00 UTC on the 26th, 18:00 that Sunday there, when UTC's
+    // calendar is already on Monday.
+    const { get } = setup({
+      rows: [
+        stored({
+          agentId: 'a1',
+          routineId: 'la',
+          kind: 'get-done',
+          finishBy: '2026-10-25',
+          finishByTimeZone: 'America/Los_Angeles',
+        }),
+        stored({ agentId: 'a1', routineId: 'utc', kind: 'get-done', finishBy: '2026-10-25' }),
+      ],
+      now: () => new Date('2026-10-26T01:00:00.000Z'),
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.finishBy])).toStrictEqual([
+      // Due today, as the check-in's brief says "today".
+      ['la', { date: '2026-10-25', daysLeft: 0 }],
+      // No zone stored with the date: UTC's Monday, a day past.
+      ['utc', { date: '2026-10-25', daysLeft: -1 }],
     ]);
   });
 
