@@ -3,6 +3,8 @@ import { ChevronRight, Copy } from 'lucide-react';
 import {
   RoutineDefinitionSchema,
   editableDefinition,
+  isTaskKind,
+  ROUTINE_GOOD_WHEN_MAX_CHARS,
   validateWebhookPath,
   type RoutineDefinition,
   type RoutinePatch,
@@ -30,6 +32,7 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
+import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -249,6 +252,12 @@ function RoutineForm({
     [draftDefinition],
   );
   const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
+  // Neither the host (core's TOOL_FIELDS) nor RoutineApiError can name
+  // goodWhen, so its invalid state is the contract's own check here, which
+  // already keeps Save off (TASK-953, row 10).
+  const firstIssue =
+    !validation.success && dirty ? validation.error.issues[0] : undefined;
+  const goodWhenInvalid = firstIssue?.path[0] === 'goodWhen';
   const disabled = busy || uncertain || !canEdit;
   useEffect(() => {
     onPendingChange?.(busy || uncertain);
@@ -348,6 +357,11 @@ function RoutineForm({
         void submit();
       }}
     >
+      {isTaskKind(form.kind) && (
+        <p className="text-sm text-muted-foreground">
+          {TASK_KIND_LABELS[form.kind]}
+        </p>
+      )}
       <p className="text-sm text-muted-foreground">
         {agentName} runs this work when its trigger fires.
       </p>
@@ -378,6 +392,20 @@ function RoutineForm({
             aria-invalid={invalidField === 'promptBody' || undefined}
           />
         </Field>
+        {isTaskKind(form.kind) && (
+          <Field data-invalid={goodWhenInvalid || undefined}>
+            <FieldLabel htmlFor={`${id}-goodWhen`}>Going well when</FieldLabel>
+            <Textarea
+              id={`${id}-goodWhen`}
+              rows={2}
+              maxLength={ROUTINE_GOOD_WHEN_MAX_CHARS}
+              value={form.goodWhen ?? ''}
+              onChange={(e) => update('goodWhen', e.target.value)}
+              disabled={disabled}
+              aria-invalid={goodWhenInvalid || undefined}
+            />
+          </Field>
+        )}
         <Field>
           <FieldLabel>When to run</FieldLabel>
           <ToggleGroup
