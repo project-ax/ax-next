@@ -140,6 +140,65 @@ export function isConfirmedRefusal(e: unknown): e is HttpError {
 }
 
 /**
+ * TASK-937: the deadline for a request a person is waiting on, for the callers
+ * that opt in (every request to a task's own address and every routine
+ * request). It sits under the task page's 10 s re-read (`TASK_POLL_INTERVAL_MS`)
+ * so a re-read that hangs fails before the next one replaces it, and three in a
+ * row say the page couldn't refresh. It is many times what those routes take
+ * (a few database reads and writes).
+ */
+export const REQUEST_TIMEOUT_MS = 8_000;
+
+/**
+ * A request that got no answer in time. It reads as a dropped connection does:
+ * a failed read, and a write that stays unconfirmed (it keeps its request id
+ * for the retry), never an answered refusal, so it is deliberately not an
+ * `HttpError`. The message is for the console and carries no request path.
+ */
+export class RequestTimeoutError extends Error {
+  /** The request that timed out. FOR LOGS. Never rendered. */
+  readonly path: string;
+  readonly timeoutMs: number;
+
+  constructor(path: string, timeoutMs: number) {
+    super(`The request didn't answer within ${timeoutMs} ms.`);
+    this.name = 'RequestTimeoutError';
+    this.path = path;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Run one request with a deadline, from start to finish: wrap the whole of it,
+ * the body read included, and pass `run`'s `signal` to the fetch so the
+ * request is dropped too, not just abandoned. At the deadline the result
+ * rejects with a `RequestTimeoutError` even if `run` ignores the signal. The
+ * timer rejects BEFORE it aborts, so the race settles with the timeout even
+ * when the abort makes `run` reject at once. The timer is cleared however
+ * `run` settles.
+ */
+export async function withRequestTimeout<T>(
+  path: string,
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new RequestTimeoutError(path, timeoutMs);
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * `fetch`, plus the 401 latch, plus `credentials: 'include'` (every route here
  * is cookie-authenticated; forgetting it is how a request becomes a 401 that
  * is our own fault).
@@ -148,6 +207,11 @@ export function isConfirmedRefusal(e: unknown): e is HttpError {
  * for their own reasons keep that freedom. The latch fires on the RESPONSE, so
  * it lands before any caller-side `.catch()` can swallow the error, which is
  * the property that makes the silent-on-401 paths safe without rewriting them.
+ *
+ * No deadline of its own, because it also carries the chat stream, the
+ * memory-events stream and file downloads, which must never be cut off. A
+ * caller that wants one wraps the request in `withRequestTimeout` and passes
+ * its signal in `init`.
  */
 export async function httpFetch(
   path: string,

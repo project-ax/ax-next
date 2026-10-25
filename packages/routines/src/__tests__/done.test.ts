@@ -196,7 +196,8 @@ describe('routines:reopen (TASK-950)', () => {
     expect(s.dispatched).toEqual([expect.objectContaining({
       source: 'manual', row: expect.objectContaining({ routineId: task.routineId, revision: reopened.revision, enabled: true }),
     })]);
-    // Keyed on the reply, so a retry can't start a second, and it never shares a receipt with a Check now press.
+    // Keyed on the reply, so a retry starts no second one unless a host restart cut this one off, and it never
+    // shares a receipt with a Check now press.
     expect(await dispatchReceipts()).toEqual([{ owner_user_id: 'owner', request_id: `reply:${out.replyId}` }]);
     expect(await storedReplies()).toEqual([{ request_id: 'q1', body: text }]);
     const lines = entriesOf(log.lines, 'routines_task_reopened');

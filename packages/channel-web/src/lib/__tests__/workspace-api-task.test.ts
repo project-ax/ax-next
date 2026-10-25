@@ -2,15 +2,20 @@
  * `workspaceApi.task()` and `workspaceApi.clearTaskNotes()`: a task page's
  * read and its first write (TASK-910); `sendTaskReply()` (TASK-931); and
  * `completeTask()` and `reopenTask()`, Mark done, and Not yet or Reopen
- * (TASK-950).
+ * (TASK-950). The last two describes (TASK-937) pin the deadline every task
+ * request carries, and what the task page does with a read that never answers.
  *
  * The same boundary rule as `tasks()`: a 200 whose body is not the shape the
  * page draws from is a `WorkspaceShapeError`, thrown here, so the page's
  * "couldn't load" state shows instead of a render crash on a missing field.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CHECK_IN_MISSES } from '@ax/routines-contract';
+import { REQUEST_TIMEOUT_MS, RequestTimeoutError } from '../http';
+import { TASK_POLL_INTERVAL_MS } from '../use-task-poll';
 import { workspaceApi, WorkspaceApiError, WorkspaceShapeError } from '../workspace-api';
+import { useTask } from '../workspace-task';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate, TaskStep, TaskUpdate } from '../workspace-types';
 
 /**
@@ -596,5 +601,118 @@ describe('workspaceApi.duplicateTask (TASK-953)', () => {
     const err = await workspaceApi.duplicateTask('a1', 't1', { requestId: 'r' }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(403);
+  });
+});
+
+/** A fetch that never answers: the host went quiet mid-request. */
+function hangForever() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+}
+
+describe('a request to a task that never answers (TASK-937)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const calls: Array<[string, () => Promise<unknown>]> = [
+    ['task', () => workspaceApi.task('a1', 't1')],
+    ['taskCheckin', () => workspaceApi.taskCheckin('a1', 't1', 'c1')],
+    ['clearTaskNotes', () => workspaceApi.clearTaskNotes('a1', 't1')],
+    ['sendTaskReply', () => workspaceApi.sendTaskReply('a1', 't1', { text: 'Yes', requestId: 'r1' })],
+    ['completeTask', () => workspaceApi.completeTask('a1', 't1', { requestId: 'r1' })],
+    ['reopenTask', () => workspaceApi.reopenTask('a1', 't1', { text: 'Again', requestId: 'r1' })],
+    ['setTaskSteps', () => workspaceApi.setTaskSteps('a1', 't1', { requestId: 'r1', ops: [] })],
+    ['setTaskFinishBy', () => workspaceApi.setTaskFinishBy('a1', 't1', null)],
+    ['duplicateTask', () => workspaceApi.duplicateTask('a1', 't1', { requestId: 'r1' })],
+  ];
+
+  it.each(calls)('%s gives up at the deadline, as a RequestTimeoutError, and drops its request', async (_name, call) => {
+    const fetchSpy = hangForever();
+    const result = call();
+    const settled = vi.fn();
+    result.then(settled, settled);
+    const assertion = expect(result).rejects.toBeInstanceOf(RequestTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(settled).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect((fetchSpy.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
+  });
+
+  it('the tasks list gets no request deadline (its 15 s race lives in useTasks)', async () => {
+    const fetchSpy = hangForever();
+    const result = workspaceApi.tasks();
+    const settled = vi.fn();
+    result.then(settled, settled);
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+    expect(settled).not.toHaveBeenCalled();
+    expect((fetchSpy.mock.calls[0]![1] as RequestInit).signal).toBeUndefined();
+  });
+});
+
+describe('useTask over a read that never answers (TASK-937)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => vi.useRealTimers());
+
+  /** The first read answers with DETAIL; every read after it hangs. */
+  function answerOnceThenHang() {
+    const wire: unknown = JSON.parse(JSON.stringify(DETAIL));
+    return vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => wire } as unknown as Response)
+      .mockImplementation(() => new Promise<Response>(() => {}));
+  }
+
+  async function mountReady() {
+    const fetchSpy = answerOnceThenHang();
+    const hook = renderHook(() => useTask('a1', 't1'));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(hook.result.current.state).toMatchObject({ kind: 'ready', refreshing: false, refreshFailed: false });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    return { ...hook, fetchSpy };
+  }
+
+  it('a refresh that never answers ends at the deadline: buttons back, the failure said, quiet re-reads read again', async () => {
+    const { result, fetchSpy } = await mountReady();
+
+    act(() => result.current.refresh());
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
+    // A quiet re-read waits out an ordinary refresh in flight.
+    act(() => result.current.refreshQuietly());
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    await act(async () => vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1));
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: true });
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(result.current.state).toMatchObject({ kind: 'ready', refreshing: false, refreshFailed: true });
+
+    act(() => result.current.refreshQuietly());
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('quiet re-reads that never answer count as failed ones: the third in a row says so', async () => {
+    const { result } = await mountReady();
+
+    for (let round = 1; round <= 3; round++) {
+      act(() => result.current.refreshQuietly());
+      await act(async () => vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS));
+      expect(result.current.state).toMatchObject({
+        kind: 'ready',
+        refreshFailed: round === 3,
+      });
+    }
+  });
+
+  it('the deadline is under the poll interval, so a hung re-read fails before the next one replaces it', () => {
+    expect(REQUEST_TIMEOUT_MS).toBeLessThan(TASK_POLL_INTERVAL_MS);
   });
 });

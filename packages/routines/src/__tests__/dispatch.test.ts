@@ -51,6 +51,22 @@ describe('durable dispatch', () => {
     expect(await f.store.recentFires(row)).toEqual([]);
     expect((await sql`SELECT * FROM routines_v1_requests`.execute(f.db)).rows).toHaveLength(0);
   });
+  it('acceptedDispatchId finds the check-in a request started, whatever the revision is now (TASK-937)', async () => {
+    const row = await f.store.createAuthored(createInput());
+    const started = (await f.store.acceptDispatch(accept(row, 'r1')))!.accepted;
+    const key = { agentId: 'a', actorUserId: 'editor', requestId: 'r1' };
+    expect(await f.store.acceptedDispatchId(key)).toBe(started.dispatchId);
+    // A new revision: an accept under 'r1' now would be a request-conflict, and the read still finds it.
+    const disabled = await f.store.updateAuthored({ ...accept(row), patch: { enabled: false }, requestId: 'disable', stopOnly: true });
+    expect(await f.store.acceptedDispatchId(key)).toBe(started.dispatchId);
+    // A refused accept leaves no receipt.
+    expect(await f.store.acceptDispatch(accept(disabled, 'r2'))).toBeNull();
+    expect(await f.store.acceptedDispatchId({ ...key, requestId: 'r2' })).toBeNull();
+    // Someone else's request id, another agent's, and one never sent.
+    expect(await f.store.acceptedDispatchId({ ...key, actorUserId: 'owner' })).toBeNull();
+    expect(await f.store.acceptedDispatchId({ ...key, agentId: 'b' })).toBeNull();
+    expect(await f.store.acceptedDispatchId({ ...key, requestId: 'never-sent' })).toBeNull();
+  });
 });
 
 describe('agent retirement serialization', () => {
