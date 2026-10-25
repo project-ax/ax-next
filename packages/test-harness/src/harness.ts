@@ -108,6 +108,15 @@ export async function createTestHarness(
           );
         });
 
+      // As the kernel does: a throwing sink must not stop the other plugins.
+      const report = (name: string, err: unknown): void => {
+        try {
+          onError(name, err);
+        } catch {
+          // The sink itself failed; keep going so every plugin still stops.
+        }
+      };
+
       // As KernelHandle.shutdown() does: every plugin stops admitting
       // outside work (stopAdmission) before any plugin tears down.
       for (let i = plugins.length - 1; i >= 0; i--) {
@@ -120,7 +129,7 @@ export async function createTestHarness(
             `plugin '${p.manifest.name}' stopAdmission exceeded ${timeoutMs}ms`,
           );
         } catch (err) {
-          onError(p.manifest.name, err);
+          report(p.manifest.name, err);
         }
       }
 
@@ -136,7 +145,7 @@ export async function createTestHarness(
             `plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`,
           );
         } catch (err) {
-          onError(p.manifest.name, err);
+          report(p.manifest.name, err);
         }
       }
     },

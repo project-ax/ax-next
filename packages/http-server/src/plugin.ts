@@ -90,6 +90,13 @@ export function createHttpServerPlugin(
   let closing: Promise<void> | null = null;
   // Requests the gate refused after the stop; shutdown() reports the count.
   let dropped = 0;
+  const reportDropped = (): void => {
+    if (dropped === 0) return;
+    process.stderr.write(
+      `[ax/http-server] dropped ${dropped} request${dropped === 1 ? '' : 's'} that arrived after it stopped accepting\n`,
+    );
+    dropped = 0;
+  };
 
   // Idempotent. Closing the listener also drops idle kept-alive sockets. It
   // does not wait for open connections to end; shutdown() does that.
@@ -321,14 +328,12 @@ export function createHttpServerPlugin(
       // close() dropped only the sockets idle at the stop. One that was busy
       // then and is idle now would hold the close for keep-alive (about 6 s).
       server?.closeIdleConnections();
+      // Report before waiting: an open stream can hold the close past this
+      // plugin's shutdown timeout, and the process may exit before it settles.
+      reportDropped();
       if (closing !== null) await closing;
       server = null;
-      if (dropped > 0) {
-        process.stderr.write(
-          `[ax/http-server] dropped ${dropped} request${dropped === 1 ? '' : 's'} that arrived after it stopped accepting\n`,
-        );
-        dropped = 0;
-      }
+      reportDropped();
     },
   };
 }

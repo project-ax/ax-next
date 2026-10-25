@@ -106,6 +106,8 @@ function routinesStub(gates: { initGate?: Promise<void>; drainGate?: Promise<voi
 function taskRoutesStub() {
   const slowEntered = deferred();
   const slowGate = deferred();
+  const holdEntered = deferred();
+  const holdGate = deferred();
   const unregisters: Array<() => void> = [];
   const routes: HttpRegisterRouteInput[] = [
     {
@@ -122,6 +124,16 @@ function taskRoutesStub() {
         slowEntered.resolve();
         await slowGate.promise;
         res.status(200).text('slow-done');
+      },
+    },
+    {
+      // A response that stays open, like the chat or memory-events stream.
+      method: 'GET',
+      path: '/hold',
+      handler: async (_req, res) => {
+        holdEntered.resolve();
+        await holdGate.promise;
+        res.status(200).text('hold-done');
       },
     },
   ];
@@ -154,12 +166,15 @@ function taskRoutesStub() {
     plugin,
     slowEntered: slowEntered.promise,
     releaseSlow: () => slowGate.resolve(),
+    holdEntered: holdEntered.promise,
+    releaseHold: () => holdGate.resolve(),
   };
 }
 
 function productionShapedKernel(
   port: number,
   gates: { initGate?: Promise<void>; drainGate?: Promise<void> } = {},
+  shutdownTimeoutMs?: number,
 ) {
   const http = createHttpServerPlugin({
     host: '127.0.0.1',
@@ -175,6 +190,7 @@ function productionShapedKernel(
       bus: new HookBus(),
       plugins: [http, routines.plugin, routes.plugin],
       config: {},
+      ...(shutdownTimeoutMs !== undefined ? { shutdownTimeoutMs } : {}),
       onShutdownError: (name, err) => {
         shutdownErrors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
       },
@@ -324,7 +340,7 @@ describe('@ax/http-server admission (TASK-942)', () => {
           plugin: '@ax/http-server',
           message: expect.stringMatching(/EADDRINUSE/),
         });
-        // The failed boot's rollback shut the never-bound plugin down cleanly.
+        // No shutdown reported an error (the kernel tests check that the rollback ran).
         expect(shutdownErrors).toEqual([]);
       } finally {
         await new Promise<void>((resolve) => blocker.close(() => resolve()));
@@ -361,6 +377,51 @@ describe('@ax/http-server admission (TASK-942)', () => {
         await handle.shutdown();
       }
       expect(k.shutdownErrors).toEqual([]);
+    },
+    TEST_MS,
+  );
+
+  it(
+    'the dropped-request count is logged even while an open stream holds the close past its timeout',
+    async () => {
+      const drainGate = deferred();
+      const k = productionShapedKernel(0, { drainGate: drainGate.promise }, 300);
+      const handle = await k.boot();
+      const stream = rawConnection(k.http.boundPort());
+      const conn = rawConnection(k.http.boundPort());
+      const stderr = vi.spyOn(process.stderr, 'write');
+      let lines: string[] = [];
+      try {
+        // A response that never ends while shutdown runs, so the close never settles.
+        stream.sock.write('GET /hold HTTP/1.1\r\nHost: t\r\nConnection: keep-alive\r\n\r\n');
+        await within(k.routes.holdEntered, STEP_MS, '/hold to be admitted');
+        conn.sock.write('GET /slow HTTP/1.1\r\nHost: t\r\nConnection: keep-alive\r\n\r\n');
+        await within(k.routes.slowEntered, STEP_MS, '/slow to be admitted');
+
+        const stopping = handle.shutdown();
+        await within(k.routines.draining, STEP_MS, "routines' drain");
+        k.routes.releaseSlow();
+        await within(conn.slowAnswered, STEP_MS, 'the /slow answer');
+        conn.sock.write(`GET ${TASK_PATH} HTTP/1.1\r\nHost: t\r\n\r\n`);
+        await within(conn.closed, STEP_MS, 'the dropped request to close its socket');
+
+        drainGate.resolve();
+        // http-server's shutdown() times out on the held close, and the kernel moves on.
+        await within(stopping, STEP_MS, 'shutdown()');
+        lines = stderr.mock.calls.map((c) => String(c[0]));
+      } finally {
+        stderr.mockRestore();
+        k.routes.releaseHold();
+        stream.sock.destroy();
+        conn.sock.destroy();
+        k.routes.releaseSlow();
+        drainGate.resolve();
+        await handle.shutdown();
+      }
+      expect(
+        lines.filter((l) => l.includes('[ax/http-server] dropped 1 request that arrived after it stopped accepting')),
+      ).toHaveLength(1);
+      expect(k.shutdownErrors).toEqual([expect.stringMatching(/^@ax\/http-server: .*shutdown exceeded 300ms/)]);
     },
     TEST_MS,
   );

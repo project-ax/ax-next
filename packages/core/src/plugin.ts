@@ -74,9 +74,18 @@ export interface Plugin {
   /**
    * Optional. Stop admitting outside work. The kernel calls it once, in
    * reverse init order, when `KernelHandle.shutdown()` begins, before any
-   * plugin's `shutdown()`. It runs under the per-plugin shutdown timeout, and
-   * a throw or timeout is reported, never fatal. It must not wait for work
-   * already admitted; `shutdown()` does that.
+   * plugin's `shutdown()`, and on a failed boot for plugins admitted before a
+   * later `startAdmission()` threw. It runs under the per-plugin shutdown
+   * timeout, and a throw or timeout is reported, never fatal. It must not
+   * wait for work already admitted; `shutdown()` does that. It closes the door
+   * to new outside work and must never cut a channel that admitted work still
+   * needs.
+   *
+   * Both phases run in init order, so a plugin opens after, and closes
+   * before, the plugins it calls. A plugin whose handlers another plugin
+   * admits work into (a route registered with `@ax/http-server`) is opened
+   * after and closed before it, so those handlers must work from the end of
+   * their own `init()` until their `shutdown()`.
    */
   stopAdmission?(): Promise<void> | void;
   /** Default bounded shutdown continues after its deadline. Joined shutdown reports

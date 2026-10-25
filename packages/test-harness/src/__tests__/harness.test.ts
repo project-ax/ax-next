@@ -104,6 +104,24 @@ describe('TestHarness.close()', () => {
     expect(calls).toEqual(['down:a']);
   });
 
+  it('a throwing onError sink does not stop the remaining stops and shutdowns', async () => {
+    const calls: string[] = [];
+    const a = makePlugin('a', { onShutdown: () => { calls.push('down:a'); } });
+    const b = makePlugin('b', {
+      onShutdown: () => {
+        calls.push('down:b');
+        throw new Error('down failed');
+      },
+    });
+    a.stopAdmission = () => { calls.push('stop:a'); };
+    b.stopAdmission = () => { throw new Error('stop failed'); };
+    const h = await createTestHarness({ plugins: [a, b] });
+    await expect(
+      h.close({ onError: () => { throw new Error('sink down'); } }),
+    ).resolves.toBeUndefined();
+    expect(calls).toEqual(['stop:a', 'down:b', 'down:a']);
+  });
+
   it('awaits async shutdown handlers', async () => {
     const completed: string[] = [];
     const slow = makePlugin('slow', {
