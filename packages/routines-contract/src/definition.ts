@@ -306,9 +306,9 @@ const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
  * the contract knows draw as nothing are already refused.
  */
 const BLANK_LINE = /^[\p{M}\s]*$/u;
-/** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. A report's text too (TASK-957). */
+/** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. A report's and a step's text too (TASK-957). */
 const BASELESS_MARK = /(?:^|\s)\p{M}/u;
-/** More than 8 combining marks in a row, on one character. Ordinary text stacks two or three. A report's text too (TASK-957). */
+/** More than 8 combining marks in a row, on one character. Ordinary text stacks two or three. A report's and a step's text too (TASK-957). */
 const MARK_STACK = /\p{M}{9}/u;
 
 /** More than two blank lines in a row. */
@@ -621,6 +621,11 @@ export const RoutineReplyTextSchema = z.string()
  *   - refuses a lone surrogate (half of a character), which a JSON body can
  *     carry: Postgres refuses one in a JSONB value and quotes the value it
  *     refused in its error.
+ *   - refuses a combining mark with nothing to draw on (at the start or after
+ *     a space) and more than 8 combining marks on one character, the brief's
+ *     and the report's `BASELESS_MARK` and `MARK_STACK` (TASK-957): a mark
+ *     with no base lands on whatever the page draws before the step, and a
+ *     tall stack draws over the steps around it.
  * Like a reply's, these messages reach a person (the task page's step editor
  * shows them, TASK-949), so each says what to fix; the agent gets only the
  * field's name, through core's fixed template. Stored text isn't re-checked
@@ -643,7 +648,9 @@ function stepTextIssue(value: string): string | null {
   if (/[\n\r]/.test(value)) return 'A step is one line.';
   const hidden = firstHiddenCharacter(value);
   if (hidden !== null) return `A step can’t contain invisible characters (${hiddenCharacterAt(hidden)}).`;
-  return LONE_SURROGATE.test(value) ? 'A step can’t contain broken characters.' : null;
+  if (LONE_SURROGATE.test(value)) return 'A step can’t contain broken characters.';
+  if (BASELESS_MARK.test(value)) return 'A step can’t have an accent or other combining mark at the start or after a space.';
+  return MARK_STACK.test(value) ? 'A step can’t stack more than 8 accents or other combining marks on one character.' : null;
 }
 
 /** zod's cap with the person's own words for it, then the first rule the text breaks, so it gets one reason. */
