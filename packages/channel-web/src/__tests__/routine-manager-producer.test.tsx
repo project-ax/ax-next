@@ -14,7 +14,7 @@ import { RoutinesList } from '../components/routines/RoutinesList';
 afterEach(() => vi.unstubAllGlobals());
 it('a stop-only manager emits validated disable/delete requests through the actual HTTP producer', async () => {
   const bus = new HookBus();
-  let row: StoredRoutine = { ...routineFixture, ownerUserId: 'creator', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null };
+  let row: StoredRoutine = { ...routineFixture, ownerUserId: 'creator', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null };
   let removed = false;
   const view = () => routineView(row, 'manager', true);
   expect(routineView({ ...row, definitionId: 'default-heartbeat-2026-05-19' }, 'creator', true).permissions).toEqual({ edit: false, stop: false, fire: true, manageSecret: false });

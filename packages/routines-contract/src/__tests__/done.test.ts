@@ -115,6 +115,6 @@ describe('a report’s done (TASK-950)', () => {
       // Last, after the misses.
       expect(description.slice(-done.length), name).toBe(done);
     }
-    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy and done null, so read the task with routine_get.');
+    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy, finishByTimeZone and done null, so read the task with routine_get.');
   });
 });

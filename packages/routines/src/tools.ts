@@ -216,6 +216,8 @@ async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKe
  * and no steps before it gets here. TASK-951: a "get-done" task's finish date
  * stays in both answers. It's one short date a person set, not agent text, and
  * it tells the agent how much time is left when it says how a task is going.
+ * TASK-955: so does the zone the date was set from, a zone id the contract's
+ * rule accepted.
  */
 function listToolView({ task, steps: _steps, ...routine }: C.RoutineView) {
   if (task === null) return { ...routine, task };

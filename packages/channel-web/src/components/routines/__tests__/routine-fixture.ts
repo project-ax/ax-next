@@ -26,5 +26,6 @@ export const routineFixture: RoutineView = {
   noRecentUpdate: null,
   steps: [],
   finishBy: null,
+  finishByTimeZone: null,
   done: null,
 };

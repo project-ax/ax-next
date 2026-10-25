@@ -13,7 +13,7 @@ import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
-function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null }; }
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null }; }
 async function setup(options: {
   resolveError?: PluginError;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
@@ -24,10 +24,14 @@ async function setup(options: {
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
   /** TASK-951. The finish date the owner sets on the task before its run is accepted. */
   finishBy?: string;
+  /** TASK-955. The time zone that date is set from. */
+  finishByTimeZone?: string;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
   if (options.finishBy !== undefined) {
-    expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy })).toEqual({ finishBy: options.finishBy });
+    const finishByTimeZone = options.finishByTimeZone ?? null;
+    expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy, finishByTimeZone }))
+      .toEqual({ finishBy: options.finishBy, finishByTimeZone });
   }
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
   const bus = new HookBus();
@@ -263,6 +267,23 @@ describe("a check-in's accept time (TASK-951)", () => {
     expect(h.pending.get(h.accepted.reqId)?.acceptedAt).toEqual(h.accepted.acceptedAt);
     const ctx = makeAgentContext({ reqId: h.accepted.reqId, sessionId: 's', agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine' });
     expect(checkInBrief(h.pending, ctx).brief).toContain('That’s 10 days from today (Tuesday, 31 December 2030).');
+  });
+  it("a zoneless task's brief counts on the calendar its date was set from, through the stored row (TASK-955)", async () => {
+    // An interval and no active hours: the task has no zone of its own, so the zone stored with its date counts.
+    const h = await setup({
+      definition: { kind: 'get-done', goodWhen: 'Done when it is done.', trigger: { kind: 'interval', every: '1h' } },
+      finishBy: '2030-12-31',
+      finishByTimeZone: 'America/Los_Angeles',
+    });
+    await h.fire(h.accepted);
+    // The zone rides on the row the run was accepted with, the snapshot the brief is built from.
+    expect(h.accepted.row.finishByTimeZone).toBe('America/Los_Angeles');
+    const ctx = makeAgentContext({ reqId: h.accepted.reqId, sessionId: 's', agentId: 'a', userId: 'owner', conversationId: 'c', source: 'routine' });
+    // The fixture's `now`, 2031-01-01T00:00Z, is 16:00 on 31 December 2030 in Los Angeles. On UTC's calendar, already
+    // on 1 January, the brief would say 1 day ago.
+    const brief = checkInBrief(h.pending, ctx).brief;
+    expect(brief).toContain('The person wants this finished today (Tuesday, 31 December 2030).');
+    expect(brief).not.toContain('1 day ago');
   });
 });
 describe('connector skips per fire (slice 6)', () => {

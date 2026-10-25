@@ -4,7 +4,7 @@ import {
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
   RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineStepViewSchema,
-  RoutineViewSchema, refuseDoneWithoutNeedsYou,
+  RoutineTimezoneSchema, RoutineViewSchema, refuseDoneWithoutNeedsYou,
 } from './definition.js';
 import { RoutineFinishBySchema } from './finish-by.js';
 
@@ -83,9 +83,19 @@ export const RoutineClearNotesOutputSchema = z.object({ cleared: z.literal(true)
  * task's finish date, on its task page. Only the routine's owner may, and only
  * on a get-done task. It never changes the routine's revision. Neither a tool
  * nor an IPC action, so no model can set it. Null removes it.
+ *
+ * TASK-955. `finishByTimeZone` is the time zone the person's browser reported
+ * when they set the date; absent or null when it reported none. It must be a
+ * zone this runtime's `Intl` knows (`RoutineTimezoneSchema`, a schedule's zone
+ * rule), and it is kept as sent. It is stored only beside a date, so removing
+ * the date removes it too, and the answer says what was stored. Whether it
+ * counts, and on which calendar, is `taskTimeZone`'s to decide.
  */
-export const RoutineSetFinishByInputSchema = RoutineKeySchema.extend({ finishBy: RoutineFinishBySchema.nullable() }).strict();
-export const RoutineSetFinishByOutputSchema = z.object({ finishBy: z.string().nullable() }).strict();
+export const RoutineSetFinishByInputSchema = RoutineKeySchema.extend({
+  finishBy: RoutineFinishBySchema.nullable(),
+  finishByTimeZone: RoutineTimezoneSchema.nullable().optional(),
+}).strict();
+export const RoutineSetFinishByOutputSchema = z.object({ finishBy: z.string().nullable(), finishByTimeZone: z.string().nullable() }).strict();
 /**
  * `routines:tasks-for-conversations` (TASK-932): which of these conversations
  * are check-ins of a task the caller owns, on this agent, so Today can name the

@@ -49,7 +49,7 @@ describe('a view’s noRecentUpdate (TASK-930)', () => {
   const view = {
     ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, finishBy: null, done: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, finishBy: null, finishByTimeZone: null, done: null,
   } as const;
   const paused = { inARow: 5, reason: 'interrupted', at: '2026-10-23T11:00:00.000Z', autoPaused: true } as const;
 

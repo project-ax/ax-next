@@ -1,21 +1,23 @@
 /**
  * A get-done task's finish date as words (TASK-951): "Finish by Sat, Nov 14 ·
- * 9 days left" on the task page, "9 days left" on the Tasks row, and the two
- * rules the date field checks before it asks the host.
+ * 9 days left" on the task page, "9 days left" on the Tasks row, the two
+ * rules the date field checks before it asks the host, and the browser's own
+ * time zone, which the date field sends with a date (TASK-955).
  *
  * WHY "DAYS LEFT" IS NOT THE ETA `bits.tsx` FORBIDS. That file's "Elapsed,
  * never remaining" rule is about the agent's own estimate of how long a run
  * or a check-in has to go, which nobody can know. This is a count of whole
  * days to a date the PERSON picked, so it is no estimate: it is the date,
- * restated. The host counts it (`daysLeft`, in the task's own time zone, so
- * the page, the row and the check-in's brief agree), and this file only words
- * it.
+ * restated. The host counts it (`daysLeft`, in the task's time zone: its
+ * schedule's, else its active hours', else the zone the person set the date
+ * from, else UTC; TASK-955), so the page, the row and the check-in's brief
+ * agree, and this file only words it.
  *
  * THE DATE IS A CALENDAR DAY, NEVER AN INSTANT. It is read at UTC midnight and
  * written in UTC, so the browser's own time zone can't move it a day either
  * way. Client-only: the server's helpers come from `@ax/routines-contract`.
  */
-import { RoutineFinishBySchema } from '@ax/routines-contract';
+import { RoutineFinishBySchema, RoutineTimezoneSchema } from '@ax/routines-contract';
 import type { TaskFinishBy } from './workspace-types';
 
 const PICK_TODAY_OR_LATER = 'Pick today or a later date.';
@@ -48,6 +50,21 @@ export function browserToday(now: Date = new Date()): string {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${String(now.getFullYear()).padStart(4, '0')}-${month}-${day}`;
+}
+
+/**
+ * The browser's own time zone, or null when it can't tell (TASK-955). The
+ * date field sends it with a date, and the host counts the days in it when the
+ * task has no zone of its own. A browser that can't tell reports
+ * "Etc/Unknown", which `Intl` refuses, so a zone the contract's zone rule
+ * refuses here is not sent at all and the date counts on UTC. The host would
+ * drop it anyway (and log `workspace_finish_by_zone_unusable`); that warn line
+ * is for a zone this browser knows and the host doesn't, not for this case.
+ */
+export function browserTimeZone(): string | null {
+  const zone: unknown = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const rule = RoutineTimezoneSchema.safeParse(zone);
+  return rule.success ? rule.data : null;
 }
 
 /**

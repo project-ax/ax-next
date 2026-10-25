@@ -54,11 +54,14 @@ describe("a task's finish date (TASK-951)", () => {
 });
 
 describe("a task's calendar (TASK-951)", () => {
-  it('runs on the cron’s zone, else the active hours’, else UTC', () => {
+  it('runs on the cron’s zone, else the active hours’, else the zone its date was set from, else UTC (TASK-955)', () => {
     const tokyoHours = { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' };
-    expect(taskTimeZone({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours })).toBe('America/New_York');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: tokyoHours })).toBe('Asia/Tokyo');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null })).toBe('UTC');
+    const setFrom = 'America/Los_Angeles';
+    // The task's own zone wins over the one its date was set from.
+    expect(taskTimeZone({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/New_York');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('Asia/Tokyo');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
+    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: null })).toBe('UTC');
   });
 
   it('reads a calendar date in a time zone, whatever the host’s zone is', () => {
@@ -120,25 +123,50 @@ describe('routines:set-finish-by (TASK-951)', () => {
     }
   });
 
-  it('answers only the date, or null', () => {
-    expect(RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14' })).toEqual({ finishBy: '2026-11-14' });
-    expect(RoutineSetFinishByOutputSchema.parse({ finishBy: null })).toEqual({ finishBy: null });
-    expect(RoutineSetFinishByOutputSchema.safeParse({ finishBy: null, revision: 'r' }).success).toBe(false);
+  it('takes the time zone the date was set from, and refuses anything that isn\'t a zone (TASK-955)', () => {
+    // Kept as sent, never canonicalized: a fixed offset and a name in another case are zones Intl reads.
+    for (const finishByTimeZone of ['America/Los_Angeles', '+05:30', 'america/los_angeles']) {
+      const input = { ...key, finishBy: '2026-10-25', finishByTimeZone };
+      expect(RoutineSetFinishByInputSchema.parse(input), finishByTimeZone).toStrictEqual(input);
+    }
+    // None: null, or the key left out.
+    expect(RoutineSetFinishByInputSchema.parse({ ...key, finishBy: null, finishByTimeZone: null }))
+      .toStrictEqual({ ...key, finishBy: null, finishByTimeZone: null });
+    expect(RoutineSetFinishByInputSchema.parse({ ...key, finishBy: '2026-10-25' })).toStrictEqual({ ...key, finishBy: '2026-10-25' });
+    // No calendar has the first. The second is what a browser that can't tell its zone reports. Then an empty name,
+    // a padded one, one past the 256-character cap, and something that isn't text.
+    for (const finishByTimeZone of ['Not/AZone', 'Etc/Unknown', '', ' America/Los_Angeles', 'x'.repeat(257), 5]) {
+      const input = { ...key, finishBy: '2026-10-25', finishByTimeZone };
+      expect(RoutineSetFinishByInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+
+  it('answers the date and the zone it was set from, or nulls', () => {
+    const answer = { finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' };
+    expect(RoutineSetFinishByOutputSchema.parse(answer)).toStrictEqual(answer);
+    expect(RoutineSetFinishByOutputSchema.parse({ finishBy: null, finishByTimeZone: null })).toStrictEqual({ finishBy: null, finishByTimeZone: null });
+    // Both keys, always, and nothing beside them.
+    for (const output of [{ finishBy: null }, { finishBy: null, finishByTimeZone: null, revision: 'r' }]) {
+      expect(RoutineSetFinishByOutputSchema.safeParse(output).success, JSON.stringify(output)).toBe(false);
+    }
   });
 });
 
 describe('no tool can set a finish date (TASK-951)', () => {
-  it('the strict create and patch schemas refuse a finishBy key', () => {
-    const finishBy = '2026-11-14';
+  it('the strict create and patch schemas refuse a finishBy key, and a finishByTimeZone one (TASK-955)', () => {
     const create = (definition: object): boolean => RoutineCreateToolInputSchema.safeParse({ requestId: 'r', definition }).success;
     const update = (patch: object): boolean =>
       RoutineUpdateToolInputSchema.safeParse({ requestId: 'r', routineId: 'r', expectedRevision: 'v', patch }).success;
     // Each list starts with the same input without the key, which passes, so the key is what's refused.
-    expect([create(GET_DONE), create({ ...GET_DONE, finishBy })]).toEqual([true, false]);
-    expect([update({ enabled: false }), update({ finishBy }), update({ enabled: false, finishBy })]).toEqual([true, false, false]);
-    expect([GET_DONE, { ...GET_DONE, finishBy }].map(value => RoutineDefinitionSchema.safeParse(value).success)).toEqual([true, false]);
-    expect([{ enabled: false }, { finishBy }, { enabled: false, finishBy }].map(value => RoutinePatchSchema.safeParse(value).success))
-      .toEqual([true, false, false]);
+    for (const field of [{ finishBy: '2026-11-14' }, { finishByTimeZone: 'America/Los_Angeles' }]) {
+      const name = Object.keys(field).join();
+      expect([create(GET_DONE), create({ ...GET_DONE, ...field })], name).toEqual([true, false]);
+      expect([update({ enabled: false }), update(field), update({ enabled: false, ...field })], name).toEqual([true, false, false]);
+      expect([GET_DONE, { ...GET_DONE, ...field }].map(value => RoutineDefinitionSchema.safeParse(value).success), name).toEqual([true, false]);
+      expect([{ enabled: false }, field, { enabled: false, ...field }].map(value => RoutinePatchSchema.safeParse(value).success), name)
+        .toEqual([true, false, false]);
+    }
+    // finishByTimeZone contains finishBy, so this rules out both.
     expect(JSON.stringify(RoutineToolJsonSchemas)).not.toContain('finishBy');
     expect(Object.keys(RoutineToolInputSchemas)).toEqual([
       'routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now', 'routine_report',
@@ -147,14 +175,15 @@ describe('no tool can set a finish date (TASK-951)', () => {
 });
 
 describe('the tools tell the agent about the date, and that only the person sets it (TASK-951)', () => {
-  it('routine_list and routine_get say what finishBy is, and routine_update that a retry answers it null', () => {
-    // The views the tools answer with carry the date, so the model reads what it means and who sets it.
-    const sentence = 'finishBy is the date the person wants a "get-done" task finished by, or null. Only the person sets it.';
+  it('routine_list and routine_get say what finishBy and finishByTimeZone are, and routine_update that a retry answers them null (TASK-955)', () => {
+    // The views the tools answer with carry the date and the zone it was set from, so the model reads what they mean
+    // and who sets them.
+    const sentence = 'finishBy is the date the person wants a "get-done" task finished by, or null. Only the person sets it. finishByTimeZone is the time zone they set it from, or null.';
     for (const name of ['routine_list', 'routine_get'] as const) expect(RoutineToolDescriptions[name], name).toContain(sentence);
-    // routine_update answers with the list tools' view, which carries it, and a replay answers from a receipt, which keeps none.
-    // (TASK-950's done, the receipt keeps none either.)
+    // routine_update answers with the list tools' view, which carries both, and a replay answers from a receipt, which keeps
+    // neither. (TASK-950's done, the receipt keeps none either.)
     expect(RoutineToolDescriptions.routine_update)
-      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy and done null, so read the task with routine_get.');
+      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy, finishByTimeZone and done null, so read the task with routine_get.');
     // Neither creating a task nor reporting on one can carry a date.
     for (const name of ['routine_create', 'routine_report'] as const) expect(RoutineToolDescriptions[name], name).not.toContain('finishBy');
   });

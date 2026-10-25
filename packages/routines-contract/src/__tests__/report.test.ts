@@ -178,7 +178,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
     const view = {
       ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
       nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, steps: [], finishBy: null, done: null,
+      permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
     } as const;
     const task = {
       status: 'needs-you', update: 'Two tickets wait on a refund rule.', ask: 'Can refunds over $50 go out without you?', reading: null, doneClaimed: false,
@@ -210,7 +210,7 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
   const view = {
     ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, finishBy: null, done: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, finishBy: null, finishByTimeZone: null, done: null,
   } as const;
   const shown = { status: 'needs-you', update: 'Two tickets wait.', ask: null, reading: null, doneClaimed: false, reportedAt: '2026-10-21T10:02:00.000Z' } as const;
   /** TASK-952. The same report with a reading: the list tools carry it, since only the agent notes stay out. */
@@ -258,8 +258,8 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     expect(RoutineUpdateToolOutputSchema.safeParse(view).success).toBe(false);
     expect(RoutineToolDescriptions.routine_update).toContain('The answer shows a task’s latest report as routine_list does, without its agentNotes.');
     // A retry of an edit that went through answers from its receipt, which keeps no task state, no finish date
-    // (TASK-951) and no done (TASK-950).
-    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy and done null, so read the task with routine_get.');
+    // (TASK-951) or the zone it was set from (TASK-955), and no done (TASK-950).
+    expect(RoutineToolDescriptions.routine_update).toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy, finishByTimeZone and done null, so read the task with routine_get.');
   });
 });
 

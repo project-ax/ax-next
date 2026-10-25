@@ -47,7 +47,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
     permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
     noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row),
-    done: doneView(row, userId) };
+    finishByTimeZone: finishByTimeZoneView(row), done: doneView(row, userId) };
 }
 /**
  * TASK-907. A task's state goes only to its owner. A check-in runs as the owner,
@@ -70,7 +70,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * done (`doneClaimed`), which only a "get-done" task makes: `=== 'get-done'`, an
  * explicit allowlist, so a row of any other kind that holds one shows none.
  * TASK-951: a "get-done" task's finish date isn't task state, so this rule
- * doesn't cover it (`finishByView`).
+ * doesn't cover it (`finishByView`), nor (TASK-955) the zone it was set from
+ * (`finishByTimeZoneView`).
  */
 function taskView(row: StoredRoutine, userId: string): C.RoutineTaskView | null {
   if (row.ownerUserId !== userId || row.kind === 'repeat' || row.task === null) return null;
@@ -118,6 +119,21 @@ function stepsView(row: StoredRoutine, userId: string): C.RoutineStepView[] {
  */
 function finishByView(row: StoredRoutine): string | null {
   return row.kind === 'get-done' ? row.finishBy : null;
+}
+/**
+ * TASK-955. The time zone a "get-done" task's finish date was set from, or
+ * null, under `finishByView`'s rule: `=== 'get-done'`, an explicit allowlist,
+ * so a row of another kind that holds one beside a date (a hand edit, or a
+ * change of kind made by code from before schema version 12, which cleared
+ * neither) shows none, and so does a kind this code doesn't know. A zone left
+ * beside no date already reads as none in the store. Not owner-gated, as the date
+ * isn't (TASK-955 decisions row 5): a person's browser reported it, it holds no
+ * agent text, and the schedule's and active hours' zones, in every view
+ * already, are the same kind of fact. The store has already read it through the
+ * contract's zone rule, and only beside a date (`storedFinishByTimeZone`).
+ */
+function finishByTimeZoneView(row: StoredRoutine): string | null {
+  return row.kind === 'get-done' ? row.finishByTimeZone : null;
 }
 /**
  * TASK-930. A task's check-ins in a row that ended without a report, under
@@ -412,18 +428,22 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // task's owner may, whether or not they still manage the agent's tasks: the date changes only how
   // the agent words its status at its check-ins, so it adds no reach. So there's no `allowed` check,
   // but agents:resolve still runs first and refuses an agent the caller can't reach. The input
-  // schema checked the date before anything ran. The store then decides the owner and the kind
-  // under the agent fence and the routine's row lock, so a task that stopped being get-done before
-  // the write (a change of kind committed first) is not-found, and it never moves the revision: an
-  // edit, Check now or Pause held against the current one still lands. Neither a tool nor an IPC
-  // action, so no model can set it. The log line carries ids and a flag only, never the date.
+  // schema checked the date and its zone (`RoutineTimezoneSchema`, TASK-955) before anything ran.
+  // The store then decides the owner and the kind under the agent fence and the routine's row
+  // lock, so a task that stopped being get-done before the write (a change of kind committed
+  // first) is not-found, and it never moves the revision: an edit, Check now or Pause held against
+  // the current one still lands. Neither a tool nor an IPC action, so no model can set it. The log
+  // line carries ids and a flag only, never the date and never the zone.
   register('set-finish-by', C.RoutineSetFinishByInputSchema, C.RoutineSetFinishByOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
-    const outcome = await store.setFinishBy({ agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, finishBy: input.finishBy });
+    const outcome = await store.setFinishBy({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId,
+      finishBy: input.finishBy, finishByTimeZone: input.finishByTimeZone ?? null,
+    });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
     ctx.logger.info('routines_finish_by_set', { agentId: input.agentId, routineId: input.routineId, cleared: outcome.finishBy === null });
-    return { finishBy: outcome.finishBy };
+    return { finishBy: outcome.finishBy, finishByTimeZone: outcome.finishByTimeZone };
   });
   // TASK-932. Which of these conversations are check-ins of the caller's own tasks, so Today can name the
   // task an approval was held in. A label, never an authorization: approve and dismiss go through

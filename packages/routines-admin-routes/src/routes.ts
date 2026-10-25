@@ -98,7 +98,7 @@ function scoped(
  * owner: `task` null, `steps` empty, a run's `report` null. Each answer still
  * parses as the contract's view, which is what the SPA types it as. What the
  * host writes (missed check-ins, when the task was marked done) and the
- * person's finish date stay.
+ * person's finish date and the zone it was set from (TASK-955) stay.
  */
 function settingsView(view: C.RoutineView): C.RoutineView {
   return { ...view, task: null, steps: [] };

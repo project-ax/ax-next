@@ -12,11 +12,12 @@
  * and nothing else from the page. The page owns the date and shows the host's
  * answer at once (`useTask`'s `applyAnswer`).
  *
- * THE DAYS LEFT COME FROM THE HOST. It counts them in the task's own time zone,
- * so this component never works them out from the browser's clock. The browser
- * knows only "today", for the field's `min` and the "not in the past" check,
- * and that is the reader's own calendar day, which is what they are picking
- * against. The host decides the rest.
+ * THE DAYS LEFT COME FROM THE HOST. The browser counts nothing, so this
+ * component never works them out from the browser's clock. It knows its own
+ * "today", for the field's `min` and the "not in the past" check, which is the
+ * reader's own calendar day, the one they are picking against. And it sends its
+ * own time zone with a date (`browserTimeZone`, TASK-955), which the host keeps
+ * and counts in when the task has no zone of its own. The host decides the rest.
  *
  * A SAVE NOBODY COULD CONFIRM (the network dropped, 5xx, 408 or 429, an
  * unreadable answer) may or may not have landed. Pressing Save again sends the
@@ -46,7 +47,7 @@ import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { ROUTINE_FINISH_BY_LATEST } from '@ax/routines-contract';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
-import { browserToday, finishByLine, finishByPickIssue } from '@/lib/task-finish-by';
+import { browserTimeZone, browserToday, finishByLine, finishByPickIssue } from '@/lib/task-finish-by';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { TaskFinishBy } from '@/lib/workspace-types';
 
@@ -155,7 +156,13 @@ export function TaskFinishDate({
     setSaving(true);
     setFailure(null);
     try {
-      const answer = await workspaceApi.setTaskFinishBy(agentId, routineId, next);
+      // The browser's zone travels only with a date: removing the date clears both (TASK-955).
+      const answer = await workspaceApi.setTaskFinishBy(
+        agentId,
+        routineId,
+        next,
+        next === null ? null : browserTimeZone(),
+      );
       if (focusIsAdrift()) focusTrigger.current = true;
       setEditing(false);
       onSaved(answer.finishBy);
