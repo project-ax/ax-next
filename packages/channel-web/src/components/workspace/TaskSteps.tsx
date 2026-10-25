@@ -95,6 +95,8 @@ const SKIPPED = 'That step was changed or removed meanwhile, so we’ve loaded t
 const DUPLICATE = 'That step is already on the list.';
 const ALREADY_LISTED = 'That step is already on the list, so we’ve loaded the latest.';
 const AT_CAP = `A task can have up to ${ROUTINE_STEPS_MAX} steps.`;
+/** A skipped add at the cap: the list filled meanwhile. The open add editor's note already states the cap. */
+const CAP_REACHED = `The list reached ${ROUTINE_STEPS_MAX} steps meanwhile, so we’ve loaded the latest.`;
 
 /** A failed change, worded from its status, never from the server's message. */
 function failureLine(e: unknown): string {
@@ -112,13 +114,13 @@ function asShown(text: string): string {
 /**
  * Why the host skipped a change, read from its answer. The host skips an add
  * whose text is already listed, or one past the cap (the agent's add rules),
- * and any change whose step has gone or changed hands meanwhile.
+ * and any change whose step has gone meanwhile.
  */
 function skippedLine(op: RoutineStepOp, steps: TaskStep[]): string {
   if (op.op !== 'add') return SKIPPED;
   const text = asShown(op.text);
   if (steps.some((step) => step.text !== null && asShown(step.text) === text)) return ALREADY_LISTED;
-  if (steps.length >= ROUTINE_STEPS_MAX) return AT_CAP;
+  if (steps.length >= ROUTINE_STEPS_MAX) return CAP_REACHED;
   return SKIPPED;
 }
 

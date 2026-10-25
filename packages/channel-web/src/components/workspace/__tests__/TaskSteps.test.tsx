@@ -30,6 +30,7 @@ const AS_WRITTEN = 'We couldn’t save that step as written. Change it and try a
 const SKIPPED = 'That step was changed or removed meanwhile, so we’ve loaded the latest.';
 const DUPLICATE = 'That step is already on the list.';
 const ALREADY_LISTED = `That step is already on the list, so we${String.fromCodePoint(0x2019)}ve loaded the latest.`;
+const CAP_REACHED = `The list reached 50 steps meanwhile, so we${String.fromCodePoint(0x2019)}ve loaded the latest.`;
 const AT_CAP = 'A task can have up to 50 steps.';
 const EDIT_NOTE = 'Once you save it, Quill reads this as your words.';
 
@@ -584,7 +585,7 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
     expect(onChanged).toHaveBeenCalledWith(meanwhile);
   });
 
-  it('a skipped add whose answer holds 50 steps says a task can have up to 50', async () => {
+  it('a skipped add whose answer holds 50 steps says the list filled meanwhile; the cap itself is the editor’s note', async () => {
     // The agent filled the list before the add reached the host.
     setStepsMock.mockResolvedValueOnce(answer(many(50), 1));
     renderSteps(many(49));
@@ -592,7 +593,9 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
     fireEvent.click(addStep());
     fireEvent.change(newInput(), { target: { value: 'Update the sitemap' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    await waitFor(() => expect(status.textContent).toBe(AT_CAP));
+    await waitFor(() => expect(status.textContent).toBe(CAP_REACHED));
+    expect(newInput()).toHaveAccessibleDescription(AT_CAP);
+    expect(screen.getAllByText(AT_CAP)).toHaveLength(1);
     expect(newInput()).toHaveValue('Update the sitemap');
   });
 
