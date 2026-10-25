@@ -98,9 +98,9 @@ export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; r
  * TASK-949. What `setSteps` did with a person's changes to a get-done task's
  * steps: the steps after them, as read under the routine's row lock, and how
  * many of the changes were skipped. A replay answers the first try's count
- * with the steps as they are now.
+ * with the steps as they are now. `replayed`: the store answered from the
+ * request's receipt (the same request again), for the log line only.
  */
-/** `replayed`: the store answered from the request's receipt (the same request again), for the log line only. */
 export type SetStepsResult = { steps: StoredStep[]; skipped: number; replayed: boolean } | 'not-found' | 'forbidden';
 /**
  * TASK-907. One run's report: kept on its dispatch as JSON (`DispatchReportSchema`,
