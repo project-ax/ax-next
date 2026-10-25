@@ -4936,9 +4936,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * Every 404 written here is `task-not-found`, the missing-service one
    * included, except `resolveAgentOr404`'s own `agent-not-found`. It is the
    * answer an id nobody has gets, so a stranger can't learn that a task
-   * exists. The task page, a check-in's page, and Mark done and Not yet or
-   * Reopen (TASK-950, before they can answer 403) all go through it, so they
-   * can't drift about whose task is whose.
+   * exists. The task page, a check-in's page, Mark done and Not yet or
+   * Reopen (TASK-950, before they can answer 403), and Duplicate (TASK-953)
+   * all go through it, so they can't drift about whose task is whose.
    */
   async function ownTaskOr404(
     userId: string,

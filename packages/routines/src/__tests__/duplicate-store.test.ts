@@ -147,7 +147,8 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     const copy = await rowOf(routineId);
     expect(copy).toMatchObject({ enabled: false, task_done_claimed_at: null, task_completed_at: null, task_completed_by_user_id: null });
     // Negative space: every column but the ones a copy sets is as a task that was never run, reported on or
-    // marked done has it, so no column a later version adds can ride across unnoticed.
+    // marked done has it, so none of TASK-950's columns, or anything else this source holds, rides across. (A
+    // column a later version adds is guarded by the INSERT naming its columns, not by this sweep.)
     const fresh = (await rowOf((await createTask('fresh')).routineId))!;
     const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'created_at', 'updated_at', 'task_steps']);
     for (const [column, value] of Object.entries(copy!)) {
