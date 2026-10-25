@@ -28,16 +28,16 @@ const routineIds = async () => (await f.store.list({ agentId: 'a' })).map(row =>
  * The hook on a bus whose agents:resolve refuses anyone outside `reach`, over the real store with `store`'s
  * methods swapped in. `order` records agents:resolve and each duplicateAuthored, as they run.
  */
-function services({ reach = ['owner', 'editor', 'teammate'], allowed = true, store: swapped = {} }: {
-  reach?: readonly string[]; allowed?: boolean; store?: Partial<RoutinesStore>;
+function services({ reach = ['owner', 'editor', 'teammate'], allowed = true, store: swapped = {}, agent = { ownerType: 'team', ownerId: 'team-1' } }: {
+  reach?: readonly string[]; allowed?: boolean; store?: Partial<RoutinesStore>; agent?: { ownerType: 'user' | 'team'; ownerId: string };
 } = {}) {
   const order: string[] = [];
   const bus = new HookBus();
   bus.registerService<{ agentId: string; userId: string }, unknown>('agents:resolve', 'test', async (_ctx, input) => {
     order.push('agents:resolve');
     if (!reach.includes(input.userId)) throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'not yours' });
-    // A team agent: a personal one would make reconcileOwners rewrite every routine's owner, and a copy the agent owner's.
-    return { agent: { id: 'a', ownerType: 'team', ownerId: 'team-1' } };
+    // A team agent unless a case says otherwise: a personal one makes reconcileOwners rewrite every routine's owner.
+    return { agent: { id: 'a', ...agent } };
   });
   bus.registerService('agents:can-manage-routines', 'test', async () => ({ allowed }));
   const store = f.store;
@@ -62,6 +62,27 @@ describe('routines:duplicate (TASK-953)', () => {
     // The caller's, on a team agent, as routines:create's routine is: not the team's.
     expect(await f.store.findOne({ agentId: 'a', routineId: answer.routineId }))
       .toMatchObject({ ownerUserId: 'owner', enabled: false, name: 'Copy of Move the help docs' });
+  });
+
+  it("on a personal agent the task is its owner's first: they copy it, and a previous owner is refused", async () => {
+    // A task 'previous' owns, with a step they wrote, on an agent that has since passed to 'owner'.
+    const task = await f.store.createAuthored({ ...createInput('task'), definition: GET_DONE, ownerUserId: 'previous' });
+    await f.store.setSteps({ agentId: 'a', routineId: task.routineId, actorUserId: 'previous', requestId: 'step', ops: [{ op: 'add', text: 'List the articles' }] });
+    const s = services({ reach: ['owner', 'previous'], agent: { ownerType: 'user', ownerId: 'owner' } });
+    // agents:resolve runs first, and the service moves every task to the agent's owner before it reads this one.
+    const first = await s.duplicate(copyOf(task, 'q-owner'), s.as('owner'));
+    expect(await f.store.findOne({ agentId: 'a', routineId: task.routineId })).toMatchObject({ ownerUserId: 'owner' });
+    // A change of owner starts a task's steps over (reconcileOwners), so there were none to copy.
+    expect(await f.store.findOne({ agentId: 'a', routineId: first.routineId }))
+      .toMatchObject({ ownerUserId: 'owner', enabled: false, steps: [] });
+    // Their own steps, now that it is theirs, are copied.
+    await f.store.setSteps({ agentId: 'a', routineId: task.routineId, actorUserId: 'owner', requestId: 'step-2', ops: [{ op: 'add', text: 'List the articles' }] });
+    const second = await s.duplicate(copyOf(task, 'q-owner-2'), s.as('owner'));
+    expect(await f.store.findOne({ agentId: 'a', routineId: second.routineId }))
+      .toMatchObject({ ownerUserId: 'owner', steps: [{ text: 'List the articles' }] });
+    // The one who held it before no longer owns it, so it is no longer theirs to copy.
+    await expect(s.duplicate(copyOf(task, 'q-previous'), s.as('previous'))).rejects.toMatchObject({ toolCode: 'forbidden', field: 'input' });
+    expect(await routineIds()).toEqual([task.routineId, first.routineId, second.routineId].sort());
   });
 
   it('the same request again answers the same copy; another request makes another', async () => {
