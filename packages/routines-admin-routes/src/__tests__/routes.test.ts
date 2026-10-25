@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 import {
   RoutineDefinitionSchema,
+  RoutineFireViewSchema,
   RoutineUpdateInputSchema,
   RoutineViewSchema,
 } from '@ax/routines-contract';
@@ -428,6 +429,12 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
       // The SPA types this answer as a RoutineView.
       expect(RoutineViewSchema.safeParse(view).success, name).toBe(true);
     }
+  });
+  it('the reviewed key lists are every field the contract\u2019s views have, optional ones included', () => {
+    // The fixtures above can leave out an optional field, which settingsView would then pass on unreviewed.
+    // Checked against the schemas themselves, a new field of either kind fails here until someone decides.
+    expect(Object.keys(RoutineViewSchema.innerType().shape).sort()).toEqual([...VIEW_KEYS].sort());
+    expect(Object.keys(RoutineFireViewSchema.shape).sort()).toEqual([...RUN_KEYS].sort());
   });
   it('a run keeps everything but its report', async () => {
     const { h } = asOwner();

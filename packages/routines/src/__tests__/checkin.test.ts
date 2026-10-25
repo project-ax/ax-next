@@ -100,7 +100,10 @@ describe('the check-in message (TASK-908)', () => {
     const key = { agentId: h.teamAgentId, routineId: task.routineId };
     const chatOf = (person: AgentContext) => makeAgentContext({ ...person, agentId: h.teamAgentId, conversationId: `chat-${person.userId}` });
     const execute = <T,>(ctx: AgentContext, call: ToolCall) => h.bus.call<ToolCall, T>(`tool:execute:${call.name}`, ctx, call);
-    /** Every read a person has of the task: the services (what Settings and the Tasks page serve) and the tools in their own chat. */
+    /**
+     * Every read a person has of the task: the services (the Tasks page shows their text through fenced
+     * routes; the Settings routes leave a task's state out, TASK-957), and the tools in their own chat.
+     */
     async function reads(person: AgentContext) {
       const chat = chatOf(person);
       return {

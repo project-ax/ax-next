@@ -52,7 +52,7 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
  * the Settings routes, the Tasks page) needs an owner rule of its own for these.
  * The Settings routes go further: they leave `task`, `steps` and a run's `report`
  * out for everyone, the owner included, since Settings never draws them
- * (TASK-957). This rule covers
+ * (TASK-957). The owner rule covers
  * `task`, its missed check-ins (`noRecentUpdate`, TASK-930: `noRecentUpdateView`), a
  * "get-done" task's steps (TASK-948: `stepsView`), when a get-done task was marked
  * done (TASK-950: `doneView`) and `report` only: a fire's
