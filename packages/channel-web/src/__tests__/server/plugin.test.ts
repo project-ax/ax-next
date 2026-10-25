@@ -825,6 +825,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Not yet and Reopen (POST /api/workspace/tasks/:agentId/:routineId/reopen) answer 503 and nothing is sent',
         },
         {
+          hook: 'routines:duplicate',
+          degradation:
+            'Duplicate on the task page (POST /api/workspace/tasks/:agentId/:routineId/duplicate) answers 503 and makes no copy',
+        },
+        {
           hook: 'connectors:list-effective',
           degradation:
             'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and adding a key-based connector all answer 503 (there is no list of what this agent may use to check against)',

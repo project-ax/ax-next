@@ -1,16 +1,17 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import {
-  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineCompleteOutputSchema, RoutineDeleteOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
+  applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineCompleteOutputSchema, RoutineDeleteOutputSchema, RoutineDuplicateOutputSchema, RoutineFinishBySchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCompleteOutput, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
+import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
 import { createRequestHash, updateRequestHash, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
+import { copiedSteps, duplicateName } from './duplicate.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -171,6 +172,31 @@ export interface RoutinesStore {
    * updated time: the steps are task state.
    */
   setSteps(input: RoutineKey & Actor & { requestId: string; ops: readonly RoutineStepOp[] }): Promise<SetStepsResult>;
+  /**
+   * TASK-953. A person's copy of their own task, from its task page: a new task
+   * of the same kind on the same agent, owned by the source's owner (any other
+   * `ownerUserId` is `forbidden`), paused (not
+   * enabled, no next run), named by `duplicateName`, with the source's
+   * definition otherwise and, for a "get-done" task alone, its steps as
+   * `copiedSteps` copies them, in one
+   * statement, so a copy never exists without its steps. Every column the copy
+   * leaves out takes its default: no report, notes, reading, misses, stamps,
+   * last run or finish date, and none of the source's replies, runs or
+   * receipts. Under the agent fence and the request's row, the source is read
+   * FOR SHARE, so a change or delete that commits first is seen, and nothing is
+   * written to it. A missing routine, a default and a kind outside
+   * `TASK_KINDS` are `not-found`; someone else's is `forbidden`, as is an
+   * `ownerUserId` that isn't the source's owner, decided under that lock
+   * whatever the caller read first; a task holding a webhook trigger,
+   * which no task can have, is `not-found` before its row is parsed. A source
+   * today's rules refuse, and a copy they refuse (a copy is 9 bytes longer than
+   * its source), throw `validation`. The same `requestId` again, from the same
+   * person on the same task, makes nothing and answers the first copy's id,
+   * `replayed`; on another task it throws `request-conflict`, and a retired
+   * agent throws `not-found` (`receiptTransaction`). The receipt keeps the
+   * copy's id alone.
+   */
+  duplicateAuthored(input: RoutineKey & Actor & { ownerUserId: string; requestId: string; now: Date }): Promise<DuplicateResult>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   /**
@@ -634,6 +660,7 @@ function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'dispatch') return AcceptedDispatchSchema.nullable().parse(value);
   if (operation === 'complete') return RoutineCompleteOutputSchema.parse(value);
   if (operation === 'set-steps') return StepsReceiptSchema.parse(value);
+  if (operation === 'duplicate') return RoutineDuplicateOutputSchema.parse(value);
   throw new Error('Unknown routine receipt operation');
 }
 /**
@@ -661,6 +688,7 @@ function parseReceipt(operation: string, value: unknown): unknown {
  * TASK-949: `set-steps`' result is its count alone (`{ skipped }`), stored as
  * it is. Its steps leave `setSteps` beside the receipt, never through it, and a
  * replay reads them again under the routine's row lock.
+ * TASK-953: `duplicate`'s result is the copy's id alone, stored as it is.
  */
 function receiptCopy(operation: string, result: unknown): unknown {
   if (operation === 'create' || operation === 'update') return withoutTaskState(result as StoredRoutine);
@@ -764,6 +792,15 @@ function stepsWriteError(routineId: string, error: unknown): Error {
  * `receiptTransaction` stores whatever its effect returns as a settled receipt.
  */
 class StepsRefused extends Error {
+  constructor(readonly reason: 'not-found' | 'forbidden') { super(reason); }
+}
+/**
+ * TASK-953. Why `duplicateAuthored` made no copy, thrown inside its receipt's
+ * transaction for `StepsRefused`' reason: `receiptTransaction` stores whatever
+ * its effect returns as a settled receipt, so a returned refusal would answer
+ * every retry of the request.
+ */
+class DuplicateRefused extends Error {
   constructor(readonly reason: 'not-found' | 'forbidden') { super(reason); }
 }
 function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string): OperationKey {
@@ -1254,6 +1291,45 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         return { steps, skipped, replayed };
       } catch (error) {
         if (error instanceof StepsRefused) return error.reason;
+        throw error;
+      }
+    },
+    async duplicateAuthored(input) {
+      // Inside receiptTransaction: the agent fence, then the request's row, then the source FOR SHARE (a copy
+      // changes nothing on it). Nothing locks a request row after a routine's, so this adds no deadlock.
+      let replayed = false;
+      try {
+        const key = operationKey(input, 'duplicate', inputHash({ agentId: input.agentId, routineId: input.routineId }));
+        const { routineId } = await receiptTransaction(db, key, async trx => {
+          const raw = await trx.selectFrom('routines_v1_definitions').selectAll()
+            .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forShare().executeTakeFirst();
+          // TASK_KINDS, an explicit allowlist: a repeat routine, a default and a kind this code doesn't know stay.
+          if (!raw || raw.definition_id !== null || !isTaskKind(raw.kind)) throw new DuplicateRefused('not-found');
+          if (raw.owner_user_id !== input.actorUserId) throw new DuplicateRefused('forbidden');
+          // The copy is the source's owner's, decided here under the lock rather than from the caller's unlocked
+          // read: the service reconciles a personal agent's tasks to its owner first, so the two always agree, and
+          // a caller that names anyone else is refused instead of handing the task to them.
+          if (input.ownerUserId !== raw.owner_user_id) throw new DuplicateRefused('forbidden');
+          // No task has a webhook trigger (validateDefinition): no path, HMAC or credential to copy.
+          if (raw.trigger_kind === 'webhook') throw new DuplicateRefused('not-found');
+          let source: StoredRoutine;
+          try { source = rowToRoutine(raw); } catch (error) { throw validationError(error); }
+          const definition = validateDefinition({ ...editableDefinition(source), name: duplicateName(source.name), enabled: false });
+          // Every column left out takes its default: no task state, stamps, warning or finish date (TASK-951).
+          const row = await trx.insertInto('routines_v1_definitions').values({
+            ...definitionColumns(definition), agent_id: input.agentId,
+            routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: raw.owner_user_id, next_run_at: null,
+            last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null,
+            created_at: input.now, updated_at: input.now,
+            // Only a get-done task shows steps (stepsView), so only its copy carries them.
+            task_steps: JSON.stringify(raw.kind === 'get-done' ? copiedSteps(raw.task_steps) : []),
+          }).returning('routine_id').executeTakeFirstOrThrow();
+          // All the receipt keeps (receiptCopy, parseReceipt).
+          return { routineId: row.routine_id };
+        }, async () => { replayed = true; });
+        return { routineId, replayed };
+      } catch (error) {
+        if (error instanceof DuplicateRefused) return error.reason;
         throw error;
       }
     },

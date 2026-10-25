@@ -128,6 +128,13 @@ export type ReopenTaskResult = { outcome: 'added' | 'replayed'; replyId: string;
  */
 export type SetStepsResult = { steps: StoredStep[]; skipped: number; replayed: boolean } | 'not-found' | 'forbidden';
 /**
+ * TASK-953. What `duplicateAuthored` did with a person's copy of their task:
+ * the copy's id, made now or by the same request before. `replayed`: the store
+ * answered from the request's receipt (the same request again), for the log
+ * line only.
+ */
+export type DuplicateResult = { routineId: string; replayed: boolean } | 'not-found' | 'forbidden';
+/**
  * TASK-907. One run's report: kept on its dispatch as JSON (`DispatchReportSchema`,
  * strict), then on its fire row. The notes stay on the task. TASK-952: this is
  * the JSON's shape, so it never holds the run's reading, which has columns of

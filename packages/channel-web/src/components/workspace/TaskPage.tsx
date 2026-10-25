@@ -8,7 +8,8 @@
  * get-done task's steps under that (TASK-948), the brief under those, then
  * every check-in and the person's replies, then the reply box (TASK-931; the
  * latest update's ask has a Reply button that focuses it). The header holds
- * Check now and Pause, or Resume while it's paused. The page reads its own task
+ * Check now, Pause (or Resume while it's paused) and ⋯ with Duplicate
+ * (TASK-953). The page reads its own task
  * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
  * task's ids, since a refresh keeps what's on screen.
  *
@@ -19,9 +20,10 @@
  * what's-left box in place. A get-done task that hasn't claimed anything has
  * Mark done under its steps, outline. With unticked steps the press asks
  * first. A Done task shows a Done line instead of an update card, keeps its
- * steps as they were, read-only, has no reply box, and its header holds only
- * Reopen, which opens the same box in its reopen mode. The in-place box is
- * mounted from its first opening and hidden while closed, so its "Sent." line
+ * steps as they were, read-only, has no reply box, and its header holds
+ * Reopen, which opens the same box in its reopen mode, and the ⋯ with
+ * Duplicate (TASK-953: copying a finished plan is its main use). The in-place
+ * box is mounted from its first opening and hidden while closed, so its "Sent." line
  * is still there when the claim or Done state it answered has gone. A later
  * claim or Done is a new question: it finds the box closed and empty.
  *
@@ -48,7 +50,19 @@
  * person who manages the agent's tasks resumes one (design §3.6). One press at
  * a time, and each reads the task again afterwards, so the next one carries the
  * revision it just read. A failure is worded per `RoutineApiError.code`, never
- * with its `message`, which speaks of routines.
+ * with its `message`, which speaks of routines. Duplicate goes through
+ * `workspaceApi` to the page's own route instead, and is worded from the
+ * status (`duplicateFailure`); on success the shell opens the copy, so the
+ * page doesn't read this task again.
+ *
+ * THE PAUSED-COPY LINE (TASK-953). A copy opens paused, and its page says so
+ * once, with the way to change it. The shell tells the page it was just
+ * opened by Duplicate (`justCopied`, shell memory, never the URL, so a reload
+ * or Back and Forward say nothing); the page keeps that as a one-way latch the
+ * first read showing the copy running or Done clears, so Resume (or Mark done,
+ * which leaves no Resume to press) uses the line up and a later Pause or
+ * Reopen doesn't bring it back. Only a person who may edit sees it, since it
+ * says "press Resume".
  *
  * A STEP CHANGE (TASK-949) is `TaskSteps`' own, and moves no revision. Its
  * answer is the steps as they now are, which the page swaps in with no re-read
@@ -58,7 +72,8 @@
  *
  * A PRESS WHOSE ANSWER NEVER CAME keeps its request (`FireNowControl`'s rule):
  * pressing the same action again sends the very same request, so the server
- * replays what it did the first time instead of doing it twice. That holds even
+ * replays what it did the first time instead of doing it twice. That holds for
+ * Duplicate too: a retry answers the first press's copy. That holds even
  * when the re-read shows the task changed meanwhile. A check-in that may have
  * started can only be found by its own request id, and a new id against the
  * new revision would start a second one; the old request is refused instead
@@ -85,11 +100,11 @@
  * button the moment it goes disabled, and every button here is disabled while
  * a press and its re-read are on their way. When they're done, focus goes back
  * to the button that was pressed (Pause and Resume are one button, so pressing
- * Pause lands on Resume), or the other one if that can't be pressed now, or
- * else the line that says why neither can. Only from `<body>` or those
- * buttons: someone who moved on meanwhile stays where they went. Mark done
- * follows the same rule: once the task reads as Done, focus goes to the Done
- * line; after a failure, back to the button (or into the question).
+ * Pause lands on Resume; Duplicate lands on the ⋯), or the others if that can't
+ * be pressed now, or else the line that says why none can. Only from `<body>`
+ * or those buttons: someone who moved on meanwhile stays where they went. Mark
+ * done follows the same rule: once the task reads as Done, focus goes to the
+ * Done line; after a failure, back to the button (or into the question).
  */
 import {
   Fragment,
@@ -102,6 +117,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { MoreHorizontal } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Breadcrumb,
@@ -112,9 +128,16 @@ import {
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
-import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
+import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
 import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
@@ -125,6 +148,7 @@ import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
+import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import { checkInWhen } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
@@ -157,20 +181,26 @@ const DIDNT_FINISH = 'The check-in didn’t finish. The reason is under Updates.
 const STILL_CHECKING = 'Still checking in. Its update will be under Updates when it’s done.';
 export const CANT_SHOW = 'It left an update we can’t show.';
 
-type ActionKind = 'check' | 'pause' | 'resume';
+type ActionKind = 'check' | 'pause' | 'resume' | 'duplicate';
 
 /** The answer never came, or couldn't be read: the press may or may not have happened. */
 const UNCONFIRMED: Record<ActionKind, string> = {
   check: 'We couldn’t confirm the check-in started. Try again, and it won’t start twice.',
   pause: 'We couldn’t confirm that change. Try again.',
   resume: 'We couldn’t confirm that change. Try again.',
+  duplicate: 'We couldn’t confirm the copy was made. Try again, and it won’t be made twice.',
 };
 /** Refused, or the check-in couldn't start, for a reason with no words of its own. */
 const REFUSED: Record<ActionKind, string> = {
   check: 'We couldn’t start the check-in. Try again.',
   pause: 'We couldn’t pause this task just now. Try again.',
   resume: 'We couldn’t resume this task just now. Try again.',
+  duplicate: 'We couldn’t copy this task just now. Try again.',
 };
+/** Duplicate's 403, and the note when only the ⋯ is off: the person no longer manages the agent's tasks. */
+const COPY_NOT_ALLOWED =
+  'You can’t copy this task, because you no longer manage this agent’s tasks.';
+const COPY_LINE = 'This is a paused copy. Change what you need, then press Resume.';
 const CHANGED_ELSEWHERE =
   'This task changed while you had it open. We’ve loaded the latest, so try again.';
 const PAUSED_ELSEWHERE = 'This task is paused, so it can’t check in. Resume it first.';
@@ -184,25 +214,29 @@ const NOT_THEIRS = 'You can’t change this task any more.';
  * needs `edit`, like any other resume.
  */
 function actionNote(detail: TaskDetail): string | null {
-  // A Done task is off too, but it isn't paused: only Reopen is left, and it needs edit.
+  // A Done task is off too, but it isn't paused: Reopen and Duplicate are left, and both need edit.
   if (detail.doneAt !== null) {
     return detail.permissions.edit
       ? null
-      : 'Done. Only someone who manages this agent’s tasks can reopen it.';
+      : 'Done. Only someone who manages this agent’s tasks can reopen or copy it.';
   }
   if (!detail.enabled && detail.noRecentUpdate?.autoPaused) {
     return detail.permissions.edit
       ? `${AUTO_PAUSED_LINE} Fix what’s below, then Resume.`
-      : `${AUTO_PAUSED_LINE} Only someone who manages this agent’s tasks can resume it.`;
+      : `${AUTO_PAUSED_LINE} Only someone who manages this agent’s tasks can resume or copy it.`;
   }
   if (!detail.enabled) {
     return detail.permissions.edit
       ? 'Paused. It won’t check in until you resume it.'
-      : 'Paused. Only someone who manages this agent’s tasks can resume it.';
+      : 'Paused. Only someone who manages this agent’s tasks can resume or copy it.';
   }
   if (!detail.permissions.fire) {
-    return 'You can’t start or pause this task’s check-ins, because you no longer manage this agent’s tasks.';
+    return detail.permissions.edit
+      ? 'You can’t start or pause this task’s check-ins, because you no longer manage this agent’s tasks.'
+      : 'You can’t start or pause this task’s check-ins, or copy the task, because you no longer manage this agent’s tasks.';
   }
+  // Nothing produces this for a task (`fire` and `edit` are one answer for its owner), but the ⋯ is off and shouldn't be silent.
+  if (!detail.permissions.edit) return COPY_NOT_ALLOWED;
   return null;
 }
 
@@ -242,6 +276,31 @@ function pressFailure(kind: ActionKind, e: unknown): { text: string; register: A
   }
 }
 
+/**
+ * A failed Duplicate, worded from the status and never the message. Whether the
+ * answer came decides what the retry sends (`isConfirmedRefusal`, the
+ * workspace routes' rule).
+ */
+function duplicateFailure(e: unknown, agentName: string): { text: string; register: AlertRegister } {
+  if (!isConfirmedRefusal(e)) return { text: UNCONFIRMED.duplicate, register: 'destructive' };
+  switch (e.status) {
+    case 401:
+      // A session running out isn't a malfunction (`lib/read-register.ts`).
+      return { text: HTTP_SESSION_ENDED, register: 'default' };
+    case 403:
+      return { text: COPY_NOT_ALLOWED, register: 'destructive' };
+    case 400:
+      return {
+        text: `We couldn’t copy this task as it is. Change it in ${agentName}’s settings first.`,
+        register: 'destructive',
+      };
+    case 404:
+      return { text: LOAD_COPY.gone, register: 'destructive' };
+    default:
+      return { text: REFUSED.duplicate, register: 'destructive' };
+  }
+}
+
 /** What the last press left on the page when it failed: an alert. Success speaks through the poll. */
 type Notice = { failed: string; register: AlertRegister } | null;
 
@@ -259,10 +318,15 @@ function useTaskActions(
   detail: TaskDetail | null,
   refresh: () => void,
   poll: Pick<TaskPoll, 'start' | 'stop'>,
+  onDuplicated: (routineId: string) => void,
 ) {
   const [acting, setActing] = useState<ActionKind | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  // Duplicate keeps its own slot: a copy whose answer never came must survive
+  // any Check now, Pause or Resume in between (and theirs must survive it), or
+  // the retry mints a new id and the server makes a second copy (or check-in).
   const pending = useRef<PendingPress | null>(null);
+  const pendingCopy = useRef<string | null>(null);
   const inFlight = useRef(false);
 
   const press = async (kind: ActionKind) => {
@@ -272,6 +336,28 @@ function useTaskActions(
     setNotice(null);
     // Clearing the line at the press is what lets the same words be heard again.
     if (kind === 'check') poll.stop();
+    let opened = false;
+    if (kind === 'duplicate') {
+      const requestId = pendingCopy.current ?? crypto.randomUUID();
+      pendingCopy.current = requestId;
+      try {
+        const copy = await workspaceApi.duplicateTask(agentId, routineId, { requestId });
+        pendingCopy.current = null;
+        // The shell opens the copy and this page goes away: nothing to read again.
+        opened = true;
+        onDuplicated(copy.routineId);
+      } catch (e) {
+        logRequestFailure(e, 'task-actions');
+        if (isConfirmedRefusal(e)) pendingCopy.current = null;
+        const { text, register } = duplicateFailure(e, detail.agentName);
+        setNotice({ failed: text, register });
+      } finally {
+        inFlight.current = false;
+        setActing(null);
+        if (!opened) refresh();
+      }
+      return;
+    }
     const op: PendingPress =
       pending.current?.kind === kind
         ? pending.current
@@ -307,15 +393,18 @@ function useTaskActions(
   return { acting, notice, press };
 }
 
+type FocusSlot = 'check' | 'toggle' | 'more';
+
 /**
  * Hands focus back after a press (see WHERE FOCUS GOES, above). `pressed` is
  * set by the click and read once, when the press and its re-read are done.
  */
 function useFocusAfterPress(
   busy: boolean,
-  pressed: RefObject<'check' | 'toggle' | null>,
+  pressed: RefObject<FocusSlot | null>,
   check: RefObject<HTMLButtonElement | null>,
   toggle: RefObject<HTMLButtonElement | null>,
+  more: RefObject<HTMLButtonElement | null>,
   note: RefObject<HTMLParagraphElement | null>,
 ) {
   // A layout effect, so focus is back in the same commit that enables the
@@ -324,15 +413,16 @@ function useFocusAfterPress(
     if (busy || pressed.current === null) return;
     const slot = pressed.current;
     pressed.current = null;
-    const first = slot === 'check' ? check.current : toggle.current;
-    const second = slot === 'check' ? toggle.current : check.current;
+    // The pressed control first, then the others in header order.
+    const inOrder = [check.current, toggle.current, more.current];
+    const pressedButton = { check: check, toggle: toggle, more: more }[slot].current;
+    const candidates = [pressedButton, ...inOrder.filter((b) => b !== pressedButton)];
     const at = document.activeElement;
-    if (at !== null && at !== document.body && at !== first && at !== second) return;
+    if (at !== null && at !== document.body && !inOrder.includes(at as HTMLButtonElement)) return;
     const target =
-      [first, second].find((b): b is HTMLButtonElement => b !== null && !b.disabled) ??
-      note.current;
+      candidates.find((b): b is HTMLButtonElement => b !== null && !b.disabled) ?? note.current;
     if (target !== null && target !== at) takeResolutionFocus(target);
-  }, [busy, pressed, check, toggle, note]);
+  }, [busy, pressed, check, toggle, more, note]);
 }
 
 export function TaskPage({
@@ -340,24 +430,47 @@ export function TaskPage({
   routineId,
   leading,
   onNavigate,
+  onDuplicated,
+  justCopied = false,
 }: {
   agentId: string;
   routineId: string;
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** The copy Duplicate made (same agent): the shell opens it. */
+  onDuplicated: (routineId: string) => void;
+  /** This page was just opened by Duplicate, so it says once that it's a paused copy. */
+  justCopied?: boolean;
 }) {
   const { state, refresh, refreshQuietly, replaceSteps, applyAnswer } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
   const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
-  const { acting, notice, press } = useTaskActions(agentId, routineId, detail, refresh, poll);
+  const { acting, notice, press } = useTaskActions(
+    agentId,
+    routineId,
+    detail,
+    refresh,
+    poll,
+    onDuplicated,
+  );
   const busy = acting !== null || (state.kind === 'ready' && state.refreshing);
+
+  // One-way: the first read that shows the copy running, or Done, uses the
+  // line up, so a later Pause or Reopen doesn't bring it back (see THE
+  // PAUSED-COPY LINE).
+  const [copyLine, setCopyLine] = useState(justCopied);
+  const lineUsedUp = detail !== null && (detail.enabled || detail.doneAt !== null);
+  useEffect(() => {
+    if (lineUsedUp) setCopyLine(false);
+  }, [lineUsedUp]);
 
   const noteId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const noteRef = useRef<HTMLParagraphElement>(null);
-  const pressed = useRef<'check' | 'toggle' | null>(null);
-  useFocusAfterPress(busy, pressed, checkRef, toggleRef, noteRef);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const pressed = useRef<FocusSlot | null>(null);
+  useFocusAfterPress(busy, pressed, checkRef, toggleRef, moreRef, noteRef);
 
   // Not yet and Reopen share one box under the latest update (see FINISHING A TASK).
   const boxId = useId();
@@ -383,7 +496,7 @@ export function TaskPage({
   }, [detail, question]);
 
   const onPress = (kind: ActionKind) => {
-    pressed.current = kind === 'check' ? 'check' : 'toggle';
+    pressed.current = kind === 'check' ? 'check' : kind === 'duplicate' ? 'more' : 'toggle';
     void press(kind);
   };
 
@@ -426,6 +539,7 @@ export function TaskPage({
             noteId={noteId}
             checkRef={checkRef}
             toggleRef={toggleRef}
+            moreRef={moreRef}
             onPress={onPress}
             boxId={boxId}
             reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
@@ -455,6 +569,7 @@ export function TaskPage({
               boxId={boxId}
               inPlace={inPlace}
               onNotYet={() => toggleBox('not-yet')}
+              copyLine={copyLine}
               onRefresh={refresh}
               onReplySent={onReplySent}
               onStepsChanged={replaceSteps}
@@ -469,11 +584,15 @@ export function TaskPage({
 }
 
 /**
- * Check now, then Pause or Resume, always in that order and always the same
- * two buttons: React keeps each one's node, so pressing Pause leaves the person
- * on what is now Resume. One primary action at a time: Check now while it
- * runs, Resume while it's paused, and neither while the agent's claim waits
- * for Mark done (TASK-950). A Done task has only Reopen.
+ * Check now, then Pause or Resume, then ⋯ with Duplicate, always in that order
+ * and always the same three buttons: React keeps each one's node, so pressing
+ * Pause leaves the person on what is now Resume. One primary action at a time:
+ * Check now while it runs, Resume while it's paused, and neither while the
+ * agent's claim waits for Mark done (TASK-950). It's the ⋯ that is disabled
+ * without `edit`, not its one item: a disabled menu item can't take keyboard
+ * focus, so a menu of one disabled item would say nothing about why. A Done
+ * task has Reopen and the same ⋯: copying a finished plan is Duplicate's main
+ * use, and the copy is a fresh, paused task that isn't Done.
  */
 function TaskActions({
   detail,
@@ -482,6 +601,7 @@ function TaskActions({
   noteId,
   checkRef,
   toggleRef,
+  moreRef,
   onPress,
   boxId,
   reopenOpen,
@@ -493,35 +613,83 @@ function TaskActions({
   noteId: string;
   checkRef: RefObject<HTMLButtonElement | null>;
   toggleRef: RefObject<HTMLButtonElement | null>;
+  moreRef: RefObject<HTMLButtonElement | null>;
   onPress: (kind: ActionKind) => void;
   /** The in-place box's id, and whether it is open in its reopen mode. */
   boxId: string;
   reopenOpen: boolean;
   onReopen: () => void;
 }) {
+  // The chosen action runs once the menu has handed focus back to the ⋯ (TaskSteps' way).
+  const chosen = useRef<(() => void) | null>(null);
   const { enabled, permissions } = detail;
   const hasNote = actionNote(detail) !== null;
+  // Only a button the note explains points at it; one that's only waiting
+  // for a press to finish needs no reason.
+  const describedBy = (blocked: boolean) => (blocked && hasNote ? noteId : undefined);
+  const more = (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          ref={moreRef}
+          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label="More actions"
+          disabled={!permissions.edit || busy}
+          aria-describedby={describedBy(!permissions.edit)}
+        >
+          {acting === 'duplicate' ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <MoreHorizontal aria-hidden="true" />
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(event) => {
+          const action = chosen.current;
+          chosen.current = null;
+          if (action === null) return;
+          event.preventDefault();
+          moreRef.current?.focus();
+          setTimeout(action, 0);
+        }}
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            onSelect={() => {
+              chosen.current = () => onPress('duplicate');
+            }}
+          >
+            Duplicate
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
   if (detail.doneAt !== null) {
     return (
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={!permissions.edit}
-        aria-describedby={!permissions.edit && hasNote ? noteId : undefined}
-        aria-expanded={reopenOpen}
-        aria-controls={boxId}
-        onClick={onReopen}
-      >
-        Reopen
-      </Button>
+      <>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!permissions.edit}
+          aria-describedby={describedBy(!permissions.edit)}
+          aria-expanded={reopenOpen}
+          aria-controls={boxId}
+          onClick={onReopen}
+        >
+          Reopen
+        </Button>
+        {more}
+      </>
     );
   }
   const claimed = isClaimed(detail);
   const checkBlocked = !enabled || !permissions.fire;
   const toggleBlocked = enabled ? !permissions.stop : !permissions.edit;
-  // Only a button the note explains points at it; one that's only waiting
-  // for a press to finish needs no reason.
-  const describedBy = (blocked: boolean) => (blocked && hasNote ? noteId : undefined);
   return (
     <>
       <Button
@@ -548,6 +716,7 @@ function TaskActions({
         )}
         {enabled ? 'Pause' : 'Resume'}
       </Button>
+      {more}
     </>
   );
 }
@@ -585,6 +754,7 @@ function TaskBody({
   boxId,
   inPlace,
   onNotYet,
+  copyLine,
   onRefresh,
   onReplySent,
   onStepsChanged,
@@ -604,6 +774,8 @@ function TaskBody({
   boxId: string;
   inPlace: InPlaceBox | null;
   onNotYet: () => void;
+  /** This page was just opened by Duplicate and hasn't run yet (TASK-953). */
+  copyLine: boolean;
   onRefresh: () => void;
   onReplySent: (checkIn: TaskReplyCheckIn) => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
@@ -730,6 +902,22 @@ function TaskBody({
           <PollLine poll={poll} agentName={agentName} />
         </p>
       </div>
+      {copyLine && !detail.enabled && detail.permissions.edit && (
+        <Alert>
+          <AlertDescription className="flex flex-col gap-1">
+            <span>{COPY_LINE}</span>
+            <a
+              {...routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate)}
+              className={cn(
+                'self-start rounded-sm underline underline-offset-2 hover:text-foreground',
+                RESOLUTION_FOCUS_RING,
+              )}
+            >
+              {`Change it in ${agentName}’s settings`}
+            </a>
+          </AlertDescription>
+        </Alert>
+      )}
       {notice !== null && (
         <Alert variant={notice.register}>
           <AlertDescription>{notice.failed}</AlertDescription>

@@ -1528,6 +1528,11 @@ export interface TaskStepsResponse {
   skipped: number;
 }
 
+/** `POST /api/workspace/tasks/:agentId/:routineId/duplicate`'s answer (TASK-953): the copy's id, which the page opens. */
+export interface TaskDuplicateResponse {
+  routineId: string;
+}
+
 /**
  * One step on a task's page (TASK-948). `text` is agent- or person-written,
  * fenced to one line; null when nothing legible survived. `id` is an opaque
@@ -1551,7 +1556,7 @@ export interface TaskDetail {
   enabled: boolean;
   /** Check now's and Pause/Resume's `expectedRevision`. */
   revision: string;
-  /** fire: start a check-in. stop: pause. edit: resume. As the routines services decide them. */
+  /** fire: start a check-in. stop: pause. edit: resume, and copy the task (TASK-953). As the routines services decide them. */
   permissions: { fire: boolean; stop: boolean; edit: boolean };
   /** The words after "checks in", or null. */
   schedule: string | null;

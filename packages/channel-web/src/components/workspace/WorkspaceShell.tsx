@@ -241,9 +241,19 @@ function Inner({
    * initializer reads the URL once — `parseWorkspaceRoute` never throws, so a
    * mangled link degrades to Today instead of blanking the shell.
    */
-  const [route, setRoute] = useState<WorkspaceRoute>(() =>
+  const [route, setRouteState] = useState<WorkspaceRoute>(() =>
     parseWorkspaceRoute(window.location.pathname),
   );
+  /**
+   * Where the person is right now, for an answer that lands after they may
+   * have moved on (Duplicate's, TASK-953). Written beside every route change,
+   * not after the commit, so an answer can't read the route they just left.
+   */
+  const routeNow = useRef(route);
+  const setRoute = useCallback((next: WorkspaceRoute) => {
+    routeNow.current = next;
+    setRouteState(next);
+  }, []);
 
   /**
    * Move, and leave an address behind. Pushes only when the URL would
@@ -256,7 +266,22 @@ function Inner({
     if (path !== window.location.pathname) {
       window.history.pushState(null, '', path);
     }
-  }, []);
+  }, [setRoute]);
+
+  /**
+   * The task Duplicate just made, by TaskPage's own key (TASK-953): its page
+   * says once that it is a paused copy. Memory only, never the URL, so a
+   * reload, a shared link and Back and Forward never repeat the line. Cleared
+   * as soon as the route is anywhere but that task, so a later visit shows
+   * nothing either.
+   */
+  const [freshCopy, setFreshCopy] = useState<string | null>(null);
+  useEffect(() => {
+    if (freshCopy === null) return;
+    const here =
+      route.kind === 'task' ? JSON.stringify([route.agentId, route.routineId]) : null;
+    if (here !== freshCopy) setFreshCopy(null);
+  }, [route, freshCopy]);
 
   /**
    * Back / forward. The URL is the source of truth on the way in, exactly as
@@ -272,7 +297,7 @@ function Inner({
     const onPop = () => setRoute(parseWorkspaceRoute(window.location.pathname));
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, []);
+  }, [setRoute]);
 
   /**
    * Canonicalize whatever we were opened with, once.
@@ -352,8 +377,9 @@ function Inner({
     The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
     page share. It reads at mount (the badge is on screen on every route), again
     when the route CHANGES to Today or Tasks, so a returning person never meets
-    a stale list, and after a reply sent from Today. It doesn't poll, and the
-    task page's own buttons don't re-read it (Back or Today does). Entering a
+    a stale list, after a reply sent from Today, and when a Duplicate answer
+    lands after the person left the source task (TASK-953). It doesn't poll, and
+    the task page's other buttons don't re-read it (Back or Today does). Entering a
     route and Try again join a read already in flight (`retry`), except coming
     after a visit to a page that writes task rows (a task or check-in page, an
     agent's page, whose chat can approve or make routine changes, or an agent's
@@ -1012,6 +1038,25 @@ function Inner({
               routineId={route.routineId}
               leading={navTrigger}
               onNavigate={navigate}
+              justCopied={freshCopy === JSON.stringify([route.agentId, route.routineId])}
+              onDuplicated={(copyId) => {
+                // Someone who left while the copy was being made stays where
+                // they went: the copy is in Tasks, and no line waits for it.
+                const now = routeNow.current;
+                if (
+                  now.kind !== 'task' ||
+                  now.agentId !== route.agentId ||
+                  now.routineId !== route.routineId
+                ) {
+                  // Entering Tasks or Today read the list before the copy was saved, and nothing polls.
+                  reloadTaskRead();
+                  return;
+                }
+                // Both setters run in this one callback, so React batches them
+                // and the effect above never sees the flag beside the source's route.
+                setFreshCopy(JSON.stringify([route.agentId, copyId]));
+                navigate({ kind: 'task', agentId: route.agentId, routineId: copyId });
+              }}
             />
           )}
           {route.kind === 'task-checkin' && (

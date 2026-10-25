@@ -40,6 +40,7 @@ vi.mock('@/lib/workspace-api', async () => {
       tasks: vi.fn(),
       task: vi.fn(),
       taskCheckin: vi.fn(),
+      duplicateTask: vi.fn(),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -72,6 +73,7 @@ const decisionsMock = vi.mocked(workspaceApi.decisions);
 const tasksMock = vi.mocked(workspaceApi.tasks);
 const taskMock = vi.mocked(workspaceApi.task);
 const taskCheckinMock = vi.mocked(workspaceApi.taskCheckin);
+const duplicateMock = vi.mocked(workspaceApi.duplicateTask);
 const saveRulesMock = vi.mocked(workspaceApi.saveRules);
 
 const user = {
@@ -164,6 +166,7 @@ beforeEach(() => {
   taskMock.mockResolvedValue(TASK_DETAIL);
   taskCheckinMock.mockReset();
   taskCheckinMock.mockResolvedValue(CHECKIN);
+  duplicateMock.mockReset();
 });
 
 afterEach(clearViewport);
@@ -977,5 +980,117 @@ describe('one tasks read (TASK-933)', () => {
         within(screen.getByRole('button', { name: /^Today/ })).queryByText(/^\d+$/)?.textContent,
       ).toBe('1'),
     );
+  });
+});
+
+describe('Duplicate opens a paused copy (TASK-953)', () => {
+  const COPY_LINE = 'This is a paused copy. Change what you need, then press Resume.';
+  const COPY: TaskDetail = {
+    ...TASK_DETAIL,
+    name: 'Copy of Zero open support tickets',
+    enabled: false,
+    revision: 'rev-copy',
+    nextCheckAt: null,
+  };
+
+  /** The source answers as itself, the copy as a paused copy. */
+  function answerByTask() {
+    taskMock.mockImplementation(async (_agentId: string, routineId: string) =>
+      routineId === 't2' ? COPY : TASK_DETAIL,
+    );
+    duplicateMock.mockResolvedValue({ routineId: 't2' });
+  }
+
+  async function duplicateFromSource() {
+    const view = renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+    await screen.findByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' });
+    return view;
+  }
+
+  it('Duplicate opens the copy at its own address, which says once that it’s a paused copy', async () => {
+    answerByTask();
+    await duplicateFromSource();
+    expect(window.location.pathname).toBe('/workspace/tasks/a1/t2');
+    expect(duplicateMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
+    expect(screen.getByText(COPY_LINE)).toBeInTheDocument();
+  });
+
+  it('the line doesn’t come back after Back and Forward, or on opening the copy’s address again', async () => {
+    answerByTask();
+    const view = await duplicateFromSource();
+
+    act(() => {
+      window.history.back();
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    expect(window.location.pathname).toBe('/workspace/tasks/a1/t1');
+
+    act(() => {
+      window.history.forward();
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' });
+    expect(screen.queryByText(COPY_LINE)).toBeNull();
+
+    // A reload: the same address, mounted fresh.
+    view.unmount();
+    renderAt('/workspace/tasks/a1/t2');
+    await screen.findByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' });
+    expect(screen.queryByText(COPY_LINE)).toBeNull();
+  });
+
+  it('someone who left while the copy was being made stays where they went', async () => {
+    answerByTask();
+    let resolve!: (copy: { routineId: string }) => void;
+    duplicateMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { level: 1, name: 'Zero open support tickets' })).toBeNull(),
+    );
+
+    await act(async () => resolve({ routineId: 't2' }));
+    expect(window.location.pathname).toBe('/workspace');
+    expect(screen.queryByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' })).toBeNull();
+  });
+
+  it('someone who left for Tasks gets a fresh list read once the copy is saved', async () => {
+    answerByTask();
+    let resolve!: (copy: { routineId: string }) => void;
+    duplicateMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    // Entering Tasks read the list, before the copy was saved.
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => resolve({ routineId: 't2' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    expect(window.location.pathname).toBe('/workspace/tasks');
   });
 });

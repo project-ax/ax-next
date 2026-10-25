@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { RoutineEditor, DefaultRoutineEditor } from '../RoutineEditor';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { routineFixture as row } from './routine-fixture';
-import { editableDefinition } from '@ax/routines-contract';
+import { editableDefinition, type RoutineView } from '@ax/routines-contract';
 vi.mock('@/lib/routines', async (original) => ({
   ...(await original<typeof import('@/lib/routines')>()),
   routineApi: {
@@ -130,6 +130,83 @@ describe('structured routine form', () => {
         ),
       ).toBeVisible();
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
+  });
+  describe("a task's Going well when (TASK-953)", () => {
+    const task = {
+      ...row,
+      kind: 'get-done' as const,
+      goodWhen: 'Every article is on the new site.',
+    };
+    async function editTask(view: RoutineView = task) {
+      vi.mocked(routineApi.get).mockResolvedValue(view);
+      render(
+        <RoutineEditor
+          mode="edit"
+          agentId="a"
+          agentName="Caveman"
+          routine={view}
+          onSaved={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      await screen.findByDisplayValue(view.goodWhen ?? '');
+    }
+    it('shows Going well when for a task, filled in, after what the agent should do, and names its kind', async () => {
+      await editTask();
+      const field = screen.getByLabelText('Going well when');
+      expect(field.tagName).toBe('TEXTAREA');
+      expect(field).toHaveAttribute('rows', '2');
+      const prompt = screen.getByLabelText('What should Caveman do?');
+      expect(
+        prompt.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(screen.getByText('Get something done')).toBeVisible();
+      cleanup();
+      await editTask({ ...task, kind: 'stay-on-top' });
+      expect(screen.getByText('Stay on top of something')).toBeVisible();
+    });
+    it('shows neither for a repeat routine, or when creating one', () => {
+      edit();
+      expect(screen.queryByLabelText('Going well when')).not.toBeInTheDocument();
+      expect(screen.queryByText('Get something done')).not.toBeInTheDocument();
+      expect(screen.queryByText('Stay on top of something')).not.toBeInTheDocument();
+      cleanup();
+      render(
+        <RoutineEditor
+          mode="create"
+          agentId="a"
+          agentName="Caveman"
+          onSaved={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText('Going well when')).not.toBeInTheDocument();
+      expect(screen.queryByText('Get something done')).not.toBeInTheDocument();
+      expect(screen.queryByText('Stay on top of something')).not.toBeInTheDocument();
+    });
+    it('saves Going well when only when it changed', async () => {
+      await editTask();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      fill('Going well when', 'Every article is live.');
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.update).mock.calls[0]?.[0].patch).toStrictEqual({
+        goodWhen: 'Every article is live.',
+      });
+    });
+    it('an emptied Going well when shows the contract’s own message, marks the field, and keeps Save off', async () => {
+      await editTask();
+      fill('Going well when', '');
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'Say how we’ll know this task is going well.',
+      );
+      expect(screen.getByLabelText('Going well when')).toHaveAttribute(
+        'aria-invalid',
+        'true',
+      );
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(routineApi.update).not.toHaveBeenCalled();
     });
   });
   it('fresh-reads edits and sends only changed fields, including nullable clears and complete nested replacements', async () => {

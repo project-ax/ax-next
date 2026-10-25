@@ -557,3 +557,44 @@ describe('workspaceApi.setTaskFinishBy (TASK-951)', () => {
     expect((err as WorkspaceApiError).status).toBe(404);
   });
 });
+
+describe('workspaceApi.duplicateTask (TASK-953)', () => {
+  it('posts only the request id to the task’s duplicate route, with the write headers', async () => {
+    const fetchSpy = respondWith({ routineId: 'rtn_2' });
+    await workspaceApi.duplicateTask('a1', 't1', { requestId: 'req-1' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe('/api/workspace/tasks/a1/t1/duplicate');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ requestId: 'req-1' });
+  });
+
+  it('answers the copy’s id', async () => {
+    respondWith({ routineId: 'rtn_2' });
+    await expect(workspaceApi.duplicateTask('a1', 't1', { requestId: 'req-1' })).resolves.toEqual({
+      routineId: 'rtn_2',
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['no id', {}],
+    ['an empty id', { routineId: '' }],
+    ['a number for an id', { routineId: 7 }],
+    ['a list in place of the object', []],
+    ['no object at all', null],
+  ])('a 200 it can’t read is a WorkspaceShapeError: %s', async (_label, body) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith(body);
+    await expect(workspaceApi.duplicateTask('a1', 't1', { requestId: 'r' })).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('a refusal is a WorkspaceApiError carrying its status', async () => {
+    failWith(403);
+    const err = await workspaceApi.duplicateTask('a1', 't1', { requestId: 'r' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WorkspaceApiError);
+    expect((err as WorkspaceApiError).status).toBe(403);
+  });
+});

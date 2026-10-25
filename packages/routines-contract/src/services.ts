@@ -177,6 +177,28 @@ export const RoutineRecentRepliesOutputSchema = z.object({ replies: z.array(Rout
  */
 export const RoutineSetStepsInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, ops: RoutineReportStepsSchema }).strict();
 export const RoutineSetStepsOutputSchema = z.object({ steps: z.array(RoutineStepViewSchema), skipped: z.number().int().min(0) }).strict();
+/**
+ * `routines:duplicate` (TASK-953): a person copies their own task, from its
+ * page. The copy is a new task of the same kind, paused (not enabled, no
+ * next check-in), named "Copy of {name}" (cut to fit the name limit, never
+ * inside a character), with the source's definition otherwise: its brief,
+ * its schedule and its active hours. A "get-done" task's steps come along
+ * unticked, under new ids, each still saying who wrote it. It copies none
+ * of the task's state (its report, notes, reading or missed check-ins),
+ * nor its finish date, and none of its replies or its history. The answer
+ * is the copy's id. The same `requestId` again answers with the same copy;
+ * on another task it is refused (`request-conflict`). Who may follows
+ * `routines:create` (someone who may manage the agent's tasks; the copy is
+ * the agent's owner's on a personal agent, else the caller's), plus `edit`
+ * on the source, so only its owner copies it. Someone else's routine, and a
+ * default (which no one edits), are `forbidden`; a repeat routine of the
+ * caller's own and a missing one are `not-found`; a task whose copy today's
+ * rules refuse is `validation`. Neither a tool nor an IPC action, so no
+ * model can call it, and no approval: the person makes the copy themselves,
+ * and it stays paused until a person resumes it.
+ */
+export const RoutineDuplicateInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema }).strict();
+export const RoutineDuplicateOutputSchema = z.object({ routineId: RoutineOpaqueStringSchema }).strict();
 export const RoutineFireViewSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
@@ -284,3 +306,5 @@ export type RoutineRecentRepliesOutput = z.output<typeof RoutineRecentRepliesOut
 export type RoutineReplyView = z.output<typeof RoutineReplyViewSchema>;
 export type RoutineSetStepsInput = z.output<typeof RoutineSetStepsInputSchema>;
 export type RoutineSetStepsOutput = z.output<typeof RoutineSetStepsOutputSchema>;
+export type RoutineDuplicateInput = z.output<typeof RoutineDuplicateInputSchema>;
+export type RoutineDuplicateOutput = z.output<typeof RoutineDuplicateOutputSchema>;
