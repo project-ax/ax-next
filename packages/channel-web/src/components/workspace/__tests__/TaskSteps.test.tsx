@@ -29,6 +29,7 @@ const NOT_FOUND = 'We couldn’t find this task any more. It may have been delet
 const AS_WRITTEN = 'We couldn’t save that step as written. Change it and try again.';
 const SKIPPED = 'That step was changed or removed meanwhile, so we’ve loaded the latest.';
 const DUPLICATE = 'That step is already on the list.';
+const ALREADY_LISTED = `That step is already on the list, so we${String.fromCodePoint(0x2019)}ve loaded the latest.`;
 const AT_CAP = 'A task can have up to 50 steps.';
 const EDIT_NOTE = 'Once you save it, Quill reads this as your words.';
 
@@ -568,6 +569,39 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
     fireEvent.click(box('Tell the team'));
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(3));
     expect(status.textContent).toBe('');
+  });
+
+  it('a skipped add whose text is now listed says it is already on the list', async () => {
+    // Another tab, or the agent, added the same step first; the answer's copy has its spaces folded.
+    const meanwhile = [...PLAN, { id: 's4', text: 'Update the sitemap', done: false, byAgent: true }];
+    setStepsMock.mockResolvedValueOnce(answer(meanwhile, 1));
+    const { onChanged } = renderSteps();
+    const status = screen.getByRole('status');
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: '  Update   the sitemap ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(status.textContent).toBe(ALREADY_LISTED));
+    expect(onChanged).toHaveBeenCalledWith(meanwhile);
+  });
+
+  it('a skipped add whose answer holds 50 steps says a task can have up to 50', async () => {
+    // The agent filled the list before the add reached the host.
+    setStepsMock.mockResolvedValueOnce(answer(many(50), 1));
+    renderSteps(many(49));
+    const status = screen.getByRole('status');
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Update the sitemap' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(status.textContent).toBe(AT_CAP));
+    expect(newInput()).toHaveValue('Update the sitemap');
+  });
+
+  it('a skipped change that isn’t an add keeps the changed-or-removed line, even at 50 steps', async () => {
+    setStepsMock.mockResolvedValueOnce(answer(many(50), 1));
+    renderSteps(many(50));
+    const status = screen.getByRole('status');
+    fireEvent.click(box('Step 1'));
+    await waitFor(() => expect(status.textContent).toBe(SKIPPED));
   });
 });
 

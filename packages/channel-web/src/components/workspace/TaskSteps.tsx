@@ -14,7 +14,8 @@
  * Delete sends one change, the same kind the agent's report sends
  * (`RoutineStepOpSchema`). Its answer is the steps as they are now, which the
  * page swaps in without reading the task again (`onChanged`); one that skipped
- * the change (its step had gone, say) says the list was reloaded. A box isn't
+ * the change says the list was reloaded, and why when the answer shows it (an
+ * add whose step is now listed, or one at the cap). A box isn't
  * ticked ahead of the answer. While a change is out every control waits, the
  * open input goes read-only (so focus stays in it), and Escape does nothing,
  * so the editor whose change is out is still there for its answer. Delete asks
@@ -92,6 +93,7 @@ const NOT_FOUND = 'We couldn’t find this task any more. It may have been delet
 const AS_WRITTEN = 'We couldn’t save that step as written. Change it and try again.';
 const SKIPPED = 'That step was changed or removed meanwhile, so we’ve loaded the latest.';
 const DUPLICATE = 'That step is already on the list.';
+const ALREADY_LISTED = 'That step is already on the list, so we’ve loaded the latest.';
 const AT_CAP = `A task can have up to ${ROUTINE_STEPS_MAX} steps.`;
 
 /** A failed change, worded from its status, never from the server's message. */
@@ -105,6 +107,19 @@ function failureLine(e: unknown): string {
 /** A step's text as the page shows it: whitespace runs folded to one space, then trimmed (the route's fence). */
 function asShown(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Why the host skipped a change, read from its answer. The host skips an add
+ * whose text is already listed, or one past the cap (the agent's add rules),
+ * and any change whose step has gone or changed hands meanwhile.
+ */
+function skippedLine(op: RoutineStepOp, steps: TaskStep[]): string {
+  if (op.op !== 'add') return SKIPPED;
+  const text = asShown(op.text);
+  if (steps.some((step) => step.text !== null && asShown(step.text) === text)) return ALREADY_LISTED;
+  if (steps.length >= ROUTINE_STEPS_MAX) return AT_CAP;
+  return SKIPPED;
 }
 
 /** The first thing the contract's text rule finds wrong, in the person's words, or null. */
@@ -159,7 +174,7 @@ export function TaskSteps({
   const [editor, setEditor] = useState<Editor | null>(null);
   // The change out, if any, by where it came from: only its own editor's button spins.
   const [busy, setBusy] = useState<Place | null>(null);
-  const [skipped, setSkipped] = useState(false);
+  const [skipped, setSkipped] = useState<string | null>(null);
   const [listFailure, setListFailure] = useState<{ line: string; register: AlertRegister } | null>(null);
   const pending = useRef<{ key: string; requestId: string } | null>(null);
   const inFlight = useRef(false);
@@ -229,7 +244,7 @@ export function TaskSteps({
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(place);
-    setSkipped(false);
+    setSkipped(null);
     setListFailure(null);
     setEditor((open) => (open === null ? open : { ...open, failure: null }));
     const key = JSON.stringify(op);
@@ -243,7 +258,7 @@ export function TaskSteps({
       });
       pending.current = null;
       onChanged(answer.steps);
-      setSkipped(answer.skipped > 0);
+      setSkipped(answer.skipped > 0 ? skippedLine(op, answer.steps) : null);
       answered?.(answer);
       focusNext.current = focus.answered;
     } catch (e) {
@@ -438,7 +453,7 @@ export function TaskSteps({
         filled together is the announcement screen readers drop (TASK-651).
       */}
       <p role="status" className="text-[12.5px] text-muted-foreground empty:-mt-2.5">
-        {skipped ? SKIPPED : ''}
+        {skipped ?? ''}
       </p>
     </section>
   );

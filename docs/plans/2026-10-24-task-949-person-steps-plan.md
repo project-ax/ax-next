@@ -664,6 +664,7 @@ Invoke the `shadcn` skill (installed primitives, `-c packages/channel-web`) and 
 | Any other answered refusal (400 and the rest) | `We couldn’t save that step as written. Change it and try again.` |
 | 401 | `HTTP_SESSION_ENDED` from `@/lib/http` |
 | Skipped | `That step was changed or removed meanwhile, so we’ve loaded the latest.` |
+| Skipped add (review F4), worded from the answer | its folded text now listed: `That step is already on the list, so we’ve loaded the latest.`; else 50 steps in the answer: `A task can have up to 50 steps.`; else the Skipped line |
 | Duplicate add | `That step is already on the list.` |
 | Editing the agent's step | `Once you save it, {agent} reads this as your words.` |
 | Kept from TASK-948 | `added by {agent}`, `We can’t show this step’s text.` |
