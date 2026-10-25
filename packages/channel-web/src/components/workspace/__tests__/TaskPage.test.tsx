@@ -2203,7 +2203,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
-  it('a Done task: Reopen only, the Done line, its steps as they are, no reply box', async () => {
+  it('a Done task: Reopen and ⋯ (TASK-953), the Done line, its steps as they are, no reply box', async () => {
     taskMock.mockResolvedValue(doneTask());
     await renderReady();
     expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
@@ -2211,6 +2211,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Mark done' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Reopen' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeEnabled();
     expect(
       within(latestUpdate()).getByText(`Done · You marked it done at ${localTime(DONE_AT)}.`),
     ).toBeInTheDocument();
@@ -2314,13 +2315,16 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.getByText('Sent. Quill is checking in now.')).toBeInTheDocument();
   });
 
-  it('a Done task without edit can’t reopen it, and the note says who can', async () => {
+  it('a Done task without edit can’t reopen or copy it, and the note says who can', async () => {
     taskMock.mockResolvedValue(doneTask({ permissions: { fire: false, stop: false, edit: false } }));
     await renderReady();
     const reopen = screen.getByRole('button', { name: 'Reopen' });
+    const more = screen.getByRole('button', { name: 'More actions' });
     expect(reopen).toBeDisabled();
-    const note = screen.getByText('Done. Only someone who manages this agent’s tasks can reopen it.');
+    expect(more).toBeDisabled();
+    const note = screen.getByText('Done. Only someone who manages this agent’s tasks can reopen or copy it.');
     expect(reopen).toHaveAttribute('aria-describedby', note.id);
+    expect(more).toHaveAttribute('aria-describedby', note.id);
   });
 });
 
@@ -2351,6 +2355,30 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     expect(duplicateMock).toHaveBeenCalledTimes(1);
     expect(duplicateMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
     expect(taskMock).toHaveBeenCalledTimes(reads);
+  });
+
+  it('Duplicate is offered on a Done task: ⋯ follows Reopen, and copies it (TASK-950)', async () => {
+    // Copying a finished plan is the main use. The copy is the host's: paused and not Done.
+    taskMock.mockResolvedValue(
+      detail({
+        kind: 'get-done',
+        enabled: false,
+        nextCheckAt: null,
+        doneAt: new Date(2026, 9, 22, 11, 30).toISOString(),
+        steps: [{ id: 's1', text: 'Export every article', done: true, byAgent: true }],
+        task: report({ ask: null, doneClaimed: false }),
+      }),
+    );
+    duplicateMock.mockResolvedValue({ routineId: 'rtn_copy' });
+    const { onDuplicated } = await renderReady();
+    const reopen = screen.getByRole('button', { name: 'Reopen' });
+    expect(more()).toBeEnabled();
+    expect(more()).not.toHaveAttribute('aria-describedby');
+    expect(reopen.compareDocumentPosition(more()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
+    await chooseDuplicate();
+    await waitFor(() => expect(onDuplicated).toHaveBeenCalledWith('rtn_copy'));
+    expect(duplicateMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
   });
 
   it('a press whose answer never came keeps its request id, and the retry sends the same one', async () => {
