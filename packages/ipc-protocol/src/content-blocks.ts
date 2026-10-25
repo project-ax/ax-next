@@ -287,8 +287,9 @@ export function formatAttachmentInline(
  * claude-sdk runner emits one block per SDK block and is bounded by time.
  *
  * The same limit applies to `session.next-message`, whose messages the host
- * re-checks before sending (a failure there is a 500 that stalls the runner's
- * poll). Nothing queues that many: chat caps a user message at 20 blocks
+ * re-checks before sending (a failure there is a 500; after three retries
+ * the runner's message pull throws and the runner exits). Nothing queues
+ * that many: chat caps a user message at 20 blocks
  * (`PostMessageRequest`), and the orchestrator queues it as-is. A producer
  * that could approach this limit must refuse at the queue, not on the wire.
  *
