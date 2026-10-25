@@ -720,6 +720,18 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
   // still-undefined constant would make a body that never ends.
   const BIG = 64 * 1024 * 1024;
   const piece = Buffer.alloc(64 * 1024, 0x61);
+  /** One SSE comment line of 64 KiB: the client's parser drops it, so only the byte cap ever stops a stream of them. */
+  const commentLine = Buffer.concat([Buffer.from(': '), piece, Buffer.from('\n')]);
+  /** Comment lines without end. The server stops only when the client hangs up. */
+  function* endlessComments(): Generator<Buffer> {
+    for (;;) yield commentLine;
+  }
+  /**
+   * Long enough for a `notifications/cancelled` the client sent to reach the
+   * server. A cancellation is a fire-and-forget POST, so a test can only wait
+   * and then look for its absence.
+   */
+  const settleMs = () => new Promise((r) => setTimeout(r, 250));
   const CALL_TOO_LARGE =
     "connector tool 'big' failed: the response was larger than 8 MiB, so we stopped reading it";
 
@@ -828,6 +840,59 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     expect(err.message).toBe(CALL_TOO_LARGE);
     expect(ms).toBeLessThan(10_000);
     expect(s.rawBytesWritten()).toBeLessThan(40 * 1024 * 1024);
+  });
+
+  // The result arrives first, so the call resolves; the 8 MiB cut that comes
+  // later must not reach the finished call. If it did, the SDK would send
+  // `notifications/cancelled` for a request the server already answered.
+  it('a tools/call answer that streams on past 8 MiB after its result resolves the call and cancels nothing', async () => {
+    function* resultThenJunk(id: unknown): Generator<string | Buffer> {
+      yield `event: message\ndata: {"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"content":[{"type":"text","text":"ok"}]}}\n\n`;
+      yield* endlessComments();
+    }
+    const s = await testServer([{ name: 'big' }], {
+      raw: { method: 'tools/call', headers: { 'content-type': 'text/event-stream' }, chunks: resultThenJunk },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__big`, {})).resolves.toBe('ok');
+    // The answer never ends on its own, so it finished only because the cap cut it.
+    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(1), { timeout: 10_000 });
+    await settleMs();
+    expect(s.seenMethods).toContain('tools/call');
+    expect(s.seenMethods).not.toContain('notifications/cancelled');
+  });
+
+  // The server's event stream (the client's GET) opens during the connect and
+  // reads under the connect's 2 MiB. A cut there after the connect finished
+  // must not abort the finished connect.
+  it("the server's event stream passing 2 MiB after connect keeps the connector and cancels nothing", async () => {
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    cleanups.push(async () => openGate());
+    async function* junkAfterConnect(): AsyncGenerator<Buffer> {
+      await gate;
+      yield* endlessComments();
+    }
+    const s = await testServer(
+      [{ name: 'echo', handler: () => ({ content: [{ type: 'text', text: 'pong' }] }) }],
+      {
+        rawGet: {
+          headers: { 'content-type': 'text/event-stream' },
+          // Only the first GET; the client's retry gets 405 and stops.
+          chunks: (n) => (n === 0 ? junkAfterConnect() : undefined),
+        },
+      },
+    );
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.loadedBundles).toEqual(new Set(['b']));
+    openGate();
+    // The stream never ends on its own, so it finished only because the cap cut it.
+    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(1), { timeout: 10_000 });
+    await expect(exec(ct, `mcp__${NS}__echo`, {})).resolves.toBe('pong');
+    await settleMs();
+    expect(s.seenMethods).not.toContain('notifications/cancelled');
   });
 
   it('an answer just under 8 MiB still works', async () => {
