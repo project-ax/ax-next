@@ -8,6 +8,8 @@ import { StoredRoutineSchema } from '../definition.js';
 // (schema version 12), read through the contract's rule, written only by setFinishBy (the owner's, under the agent
 // fence and the row lock, never moving the revision), cleared by a change of kind, kept by a change of owner, and
 // left out of every receipt. The columns a date must not move aren't on StoredRoutine, so they're read with SQL.
+// TASK-955: the time zone the date was set from (schema version 14) lives beside it: written only with a date, cleared
+// with it, kept and left out wherever the date is, and read through the contract's zone rule.
 const f = fixture();
 const GET_DONE = RoutineDefinitionSchema.parse({
   name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', trigger: { kind: 'interval', every: '1h' },
@@ -18,8 +20,9 @@ const STAY_ON_TOP = RoutineDefinitionSchema.parse({
   kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
 });
 const taskInput = (requestId: string) => ({ ...createInput(requestId), definition: GET_DONE });
-const setFinishBy = (routineId: string, finishBy: string | null, actorUserId = 'owner') =>
-  f.store.setFinishBy({ agentId: 'a', routineId, actorUserId, finishBy });
+const setFinishBy = (routineId: string, finishBy: string | null, actorUserId = 'owner', finishByTimeZone: string | null = null) =>
+  f.store.setFinishBy({ agentId: 'a', routineId, actorUserId, finishBy, finishByTimeZone });
+const LA = 'America/Los_Angeles';
 /** Resolves once some session waits on a lock that backend `pid` holds; fails after five seconds. */
 async function waitsOn(pid: number): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -34,6 +37,7 @@ async function waitsOn(pid: number): Promise<void> {
 const wholeRow = async (routineId: string) => (await sql<Record<string, unknown>>`
   SELECT * FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
 const finishByColumn = async (routineId: string) => (await wholeRow(routineId))?.finish_by;
+const zoneColumn = async (routineId: string) => (await wholeRow(routineId))?.finish_by_time_zone;
 const receipts = async () => (await sql<{ operation: string; request_id: string; result: unknown }>`
   SELECT operation, request_id, result FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation, request_id`.execute(f.db)).rows;
 
@@ -43,11 +47,11 @@ describe("a get-done task's stored finish date (TASK-951)", () => {
     expect(task.finishBy).toBeNull();
     const before = await wholeRow(task.routineId);
     expect(before).toMatchObject({ finish_by: null });
-    expect(await setFinishBy(task.routineId, '2026-11-14')).toEqual({ finishBy: '2026-11-14' });
+    expect(await setFinishBy(task.routineId, '2026-11-14')).toEqual({ finishBy: '2026-11-14', finishByTimeZone: null });
     expect((await f.store.findOne(task))?.finishBy).toBe('2026-11-14');
     expect((await f.store.list({ agentId: 'a' })).map(row => row.finishBy)).toEqual(['2026-11-14']);
     expect(await wholeRow(task.routineId)).toEqual({ ...before, finish_by: '2026-11-14' });
-    expect(await setFinishBy(task.routineId, null)).toEqual({ finishBy: null });
+    expect(await setFinishBy(task.routineId, null)).toEqual({ finishBy: null, finishByTimeZone: null });
     expect((await f.store.findOne(task))?.finishBy).toBeNull();
     // The revision, spec_hash and updated_at are the ones from before the first call, and no receipt was kept.
     expect(await wholeRow(task.routineId)).toEqual(before);
@@ -56,7 +60,7 @@ describe("a get-done task's stored finish date (TASK-951)", () => {
 
   it('anyone but the owner is forbidden, and the date stays', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
-    expect(await setFinishBy(task.routineId, '2026-11-14')).toEqual({ finishBy: '2026-11-14' });
+    expect(await setFinishBy(task.routineId, '2026-11-14')).toEqual({ finishBy: '2026-11-14', finishByTimeZone: null });
     const before = await wholeRow(task.routineId);
     // 'editor' made the task; 'owner' owns it.
     expect(await setFinishBy(task.routineId, '2027-01-01', 'editor')).toBe('forbidden');
@@ -79,32 +83,93 @@ describe("a get-done task's stored finish date (TASK-951)", () => {
 
   it('a change of kind clears it in the edit itself; a change of owner keeps it', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
-    await setFinishBy(task.routineId, '2026-11-14');
+    await setFinishBy(task.routineId, '2026-11-14', 'owner', LA);
     const edit = (requestId: string, expectedRevision: string, patch: Record<string, unknown>) => f.store.updateAuthored({
       agentId: 'a', routineId: task.routineId, expectedRevision, actorUserId: 'owner', requestId, patch, now, stopOnly: false,
     });
     const described = await edit('describe', task.revision, { description: 'Moving the docs.' });
     expect(described.finishBy).toBe('2026-11-14');
-    const stay = await edit('to-stay-on-top', described.revision, { kind: 'stay-on-top' });
-    expect(stay).toMatchObject({ kind: 'stay-on-top', finishBy: null });
-    expect((await f.store.findOne(task))?.finishBy).toBeNull();
+    // TASK-955: a schedule edit keeps the date and the zone it was set from, even one that gives the task a zone of its
+    // own: which zone counts is decided where the days are counted, not here.
+    const scheduled = await edit('schedule', described.revision, { trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' } });
+    expect(scheduled).toMatchObject({ finishBy: '2026-11-14', finishByTimeZone: LA });
+    const stay = await edit('to-stay-on-top', scheduled.revision, { kind: 'stay-on-top' });
+    expect(stay).toMatchObject({ kind: 'stay-on-top', finishBy: null, finishByTimeZone: null });
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: null, finishByTimeZone: null });
     expect(await finishByColumn(task.routineId)).toBeNull();
-    // Back to get-done, the task starts over: the old date doesn't come back.
+    expect(await zoneColumn(task.routineId)).toBeNull();
+    // Back to get-done, the task starts over: the old date doesn't come back, nor does its zone.
     const back = await edit('to-get-done', stay.revision, { kind: 'get-done' });
-    expect(back).toMatchObject({ kind: 'get-done', finishBy: null });
-    expect((await f.store.findOne(task))?.finishBy).toBeNull();
+    expect(back).toMatchObject({ kind: 'get-done', finishBy: null, finishByTimeZone: null });
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: null, finishByTimeZone: null });
+    expect(await zoneColumn(task.routineId)).toBeNull();
 
     // A change of owner (drift repair) starts the task's state over in the statement that moves it (TASK-936), and
-    // leaves the date: it is about the work, not text from the earlier owner's runs.
+    // leaves the date and its zone: they are about the work, not text from the earlier owner's runs.
     const other = await f.store.createAuthored(taskInput('other'));
-    await setFinishBy(other.routineId, '2026-11-14');
+    await setFinishBy(other.routineId, '2026-11-14', 'owner', LA);
     await sql`UPDATE routines_v1_definitions SET task_status = 'on-track', task_update = 'Moving.', task_reported_at = ${now} WHERE routine_id = ${other.routineId}`.execute(f.db);
     expect((await f.store.findOne(other))?.task).toMatchObject({ status: 'on-track' });
     expect(await f.store.reconcileOwners({ agents: [{ agentId: 'a', ownerUserId: 'new-owner' }] })).toBe(2);
-    expect(await f.store.findOne(other)).toMatchObject({ ownerUserId: 'new-owner', task: null, finishBy: '2026-11-14' });
+    expect(await f.store.findOne(other)).toMatchObject({ ownerUserId: 'new-owner', task: null, finishBy: '2026-11-14', finishByTimeZone: LA });
     // Who may set it moves with the task.
     expect(await setFinishBy(other.routineId, null, 'owner')).toBe('forbidden');
-    expect(await setFinishBy(other.routineId, '2026-12-01', 'new-owner')).toEqual({ finishBy: '2026-12-01' });
+    expect(await setFinishBy(other.routineId, '2026-12-01', 'new-owner')).toEqual({ finishBy: '2026-12-01', finishByTimeZone: null });
+  });
+
+  it('stores the zone sent with a date beside it, and removing the date clears both (TASK-955)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    const zoned = { finishBy: '2026-10-25', finishByTimeZone: LA };
+    expect(await setFinishBy(task.routineId, '2026-10-25', 'owner', LA)).toEqual(zoned);
+    expect(await f.store.findOne(task)).toMatchObject(zoned);
+    expect(await f.store.list({ agentId: 'a' })).toEqual([expect.objectContaining(zoned)]);
+    // The check-in's brief reads the row acceptDispatch hands over, read under the row lock.
+    const accepted = await f.store.acceptDispatch({
+      agentId: 'a', routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', source: 'manual', requestId: 'run', now,
+    });
+    expect(accepted?.accepted.row).toMatchObject(zoned);
+    expect(await wholeRow(task.routineId)).toMatchObject({ finish_by: '2026-10-25', finish_by_time_zone: LA });
+    // Remove date takes the zone with it, whatever zone the call names.
+    expect(await setFinishBy(task.routineId, null, 'owner', LA)).toEqual({ finishBy: null, finishByTimeZone: null });
+    expect(await wholeRow(task.routineId)).toMatchObject({ finish_by: null, finish_by_time_zone: null });
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: null, finishByTimeZone: null });
+    // A date sent with no zone stores none.
+    expect(await setFinishBy(task.routineId, '2026-10-25', 'owner', null)).toEqual({ finishBy: '2026-10-25', finishByTimeZone: null });
+    expect(await wholeRow(task.routineId)).toMatchObject({ finish_by: '2026-10-25', finish_by_time_zone: null });
+  });
+
+  it('a date saved again from another zone takes the new zone (TASK-955)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await setFinishBy(task.routineId, '2026-10-25', 'owner', LA);
+    expect(await setFinishBy(task.routineId, '2026-10-25', 'owner', 'Asia/Tokyo')).toEqual({ finishBy: '2026-10-25', finishByTimeZone: 'Asia/Tokyo' });
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: '2026-10-25', finishByTimeZone: 'Asia/Tokyo' });
+  });
+
+  it('a caller that leaves the zone out stores none, even over an earlier one (TASK-955)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await setFinishBy(task.routineId, '2026-10-25', 'owner', LA);
+    // Kysely drops an undefined value from an UPDATE's set, so the store has to write the missing zone as NULL itself,
+    // or the earlier zone would stay beside the new date. Only tsc would catch the missing key, and it doesn't check tests.
+    expect(await f.store.setFinishBy({ agentId: 'a', routineId: task.routineId, actorUserId: 'owner', finishBy: '2026-10-26' } as never))
+      .toEqual({ finishBy: '2026-10-26', finishByTimeZone: null });
+    expect(await wholeRow(task.routineId)).toMatchObject({ finish_by: '2026-10-26', finish_by_time_zone: null });
+  });
+
+  it('a stored zone this runtime doesn\'t know, or one beside no date, reads as none, and no read throws (TASK-955)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await setFinishBy(task.routineId, '2026-11-14', 'owner', LA);
+    // A hand edit, or one a host with newer time-zone data stored. Read as is, it would make Intl throw mid-brief.
+    await sql`UPDATE routines_v1_definitions SET finish_by_time_zone = 'Mars/Olympus_Mons' WHERE routine_id = ${task.routineId}`.execute(f.db);
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: '2026-11-14', finishByTimeZone: null });
+    expect(await f.store.list({ agentId: 'a' })).toEqual([expect.objectContaining({ finishBy: '2026-11-14', finishByTimeZone: null })]);
+    // claimDue parses every due row, so one odd row can't stop the tick for everyone (TASK-913).
+    const claimed = await f.store.claimDue({ now: new Date(task.nextRunAt!.getTime() + 3_600_000), limit: 10, claimWindowMinutes: 5 });
+    expect(claimed).toEqual([expect.objectContaining({ routineId: task.routineId, finishBy: '2026-11-14', finishByTimeZone: null })]);
+    // A zone beside no date (code from before version 14 removes the date alone), or beside a date that doesn't read.
+    for (const finishBy of [null, '2026-02-30']) {
+      await sql`UPDATE routines_v1_definitions SET finish_by = ${finishBy}, finish_by_time_zone = ${LA} WHERE routine_id = ${task.routineId}`.execute(f.db);
+      expect(await f.store.findOne(task), String(finishBy)).toMatchObject({ finishBy: null, finishByTimeZone: null });
+    }
   });
 
   it('a kind change that commits while setFinishBy waits on the row lock makes it not-found', async () => {
@@ -139,26 +204,27 @@ describe("a get-done task's stored finish date (TASK-951)", () => {
     expect(claimed).toEqual([expect.objectContaining({ routineId: task.routineId, finishBy: null })]);
   });
 
-  it('a receipt leaves the date out, so code from before version 12 still reads it, and an exact replay answers none', async () => {
+  it('a receipt leaves the date and its zone out, so code from before version 12 or 14 still reads it, and an exact replay answers none', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
-    await setFinishBy(task.routineId, '2026-11-14');
+    await setFinishBy(task.routineId, '2026-11-14', 'owner', LA);
     const edit = { agentId: 'a', routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', requestId: 'edit', patch: { description: 'x' }, now, stopOnly: false };
     const edited = await f.store.updateAuthored(edit);
-    expect(edited.finishBy).toBe('2026-11-14');
+    expect(edited).toMatchObject({ finishBy: '2026-11-14', finishByTimeZone: LA });
     const dispatch = { agentId: 'a', routineId: task.routineId, expectedRevision: edited.revision, actorUserId: 'owner', source: 'manual', requestId: 'run', now } as const;
-    // The live accept hands over the date it read under the row lock: the check-in's brief reads this row.
-    expect((await f.store.acceptDispatch(dispatch))?.accepted.row.finishBy).toBe('2026-11-14');
+    // The live accept hands over the date and its zone as it read them under the row lock: the check-in's brief reads this row.
+    expect((await f.store.acceptDispatch(dispatch))?.accepted.row).toMatchObject({ finishBy: '2026-11-14', finishByTimeZone: LA });
     const kept = await receipts();
     expect(kept.map(receipt => receipt.operation)).toEqual(['create', 'dispatch', 'update']);
-    // The key is left out rather than stored as null, so code from before this field (whose strict schema has no
+    // The keys are left out rather than stored as null, so code from before each field (whose strict schema has no
     // such key) still reads every receipt after a rollback.
-    expect((await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests WHERE result ? 'finishBy' OR result->'row' ? 'finishBy'`.execute(f.db)).rows[0]?.n).toBe(0);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ finishBy: true });
+    expect((await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests
+      WHERE result ? 'finishBy' OR result->'row' ? 'finishBy' OR result ? 'finishByTimeZone' OR result->'row' ? 'finishByTimeZone'`.execute(f.db)).rows[0]?.n).toBe(0);
+    const beforeThisField = StoredRoutineSchema.innerType().omit({ finishBy: true, finishByTimeZone: true });
     for (const { operation, result } of kept) {
       expect(beforeThisField.safeParse(operation === 'dispatch' ? (result as { row: unknown }).row : result).success, operation).toBe(true);
     }
-    // An exact replay answers from its receipt: no date.
-    expect((await f.store.updateAuthored(edit)).finishBy).toBeNull();
-    expect((await f.store.acceptDispatch(dispatch))?.accepted.row.finishBy).toBeNull();
+    // An exact replay answers from its receipt: no date, and no zone.
+    expect(await f.store.updateAuthored(edit)).toMatchObject({ finishBy: null, finishByTimeZone: null });
+    expect((await f.store.acceptDispatch(dispatch))?.accepted.row).toMatchObject({ finishBy: null, finishByTimeZone: null });
   });
 });

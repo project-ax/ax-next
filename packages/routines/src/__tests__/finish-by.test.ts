@@ -29,6 +29,9 @@ const listed = async (person: AgentContext, view: RoutineView) => (await h.bus.c
 const setFinishBy = (person: AgentContext, input: Record<string, unknown>) => h.bus.call<unknown, unknown>('routines:set-finish-by', person, input);
 const finishByOf = async (routineId: string) => (await sql<{ finish_by: string | null }>`
   SELECT finish_by FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(h.db)).rows[0]?.finish_by;
+/** TASK-955. The time zone stored beside the date. */
+const zoneOf = async (routineId: string) => (await sql<{ finish_by_time_zone: string | null }>`
+  SELECT finish_by_time_zone FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(h.db)).rows[0]?.finish_by_time_zone;
 /** A report and a step, written straight to the row, so the task has state only its owner is shown. */
 const withState = (routineId: string) => sql`
   UPDATE routines_v1_definitions
@@ -44,11 +47,11 @@ describe('routines:set-finish-by (TASK-951)', () => {
     expect(task.finishBy).toBeNull();
     const before = await get(h.owner, task);
     expect(before.revision).toBe(task.revision);
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     // The date shows, and nothing else on the routine moved, its revision included.
     expect(await get(h.owner, task)).toEqual({ ...before, finishBy: DATE });
     expect((await listed(h.owner, task))?.finishBy).toBe(DATE);
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: null })).toStrictEqual({ finishBy: null });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: null })).toStrictEqual({ finishBy: null, finishByTimeZone: null });
     expect(await get(h.owner, task)).toEqual(before);
     expect(await finishByOf(task.routineId)).toBeNull();
   });
@@ -58,9 +61,9 @@ describe('routines:set-finish-by (TASK-951)', () => {
     const task = await createTask(h.owner, h.agentId);
     // A save whose answer was lost, pressed again: the same value set twice is the same write.
     for (const finishBy of [DATE, DATE, null, null]) {
-      expect(await setFinishBy(h.owner, { ...key(task), finishBy }), String(finishBy)).toStrictEqual({ finishBy });
+      expect(await setFinishBy(h.owner, { ...key(task), finishBy }), String(finishBy)).toStrictEqual({ finishBy, finishByTimeZone: null });
     }
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     expect(await get(h.owner, task)).toMatchObject({ finishBy: DATE, revision: task.revision });
   });
 
@@ -68,7 +71,7 @@ describe('routines:set-finish-by (TASK-951)', () => {
     h = await createRoutineHarness();
     const task = await createTask(h.teamAdmin, h.teamAgentId);
     await withState(task.routineId);
-    expect(await setFinishBy(h.teamAdmin, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.teamAdmin, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     // Its owner sees the date beside the task's state...
     expect(await get(h.teamAdmin, task)).toMatchObject({ finishBy: DATE, task: { status: 'on-track' }, steps: [{ id: 's000001' }] });
     // ...and so does anyone else who sees the task, without that state: the date is about the work, and holds no agent text.
@@ -91,7 +94,7 @@ describe('routines:set-finish-by (TASK-951)', () => {
     // They can change nothing else on it...
     expect((await get(h.teamMember, task)).permissions).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
     // ...and they can set its date: it changes only how the agent words its status, so it adds no reach.
-    expect(await setFinishBy(h.teamMember, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.teamMember, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     expect((await get(h.teamMember, task)).finishBy).toBe(DATE);
     expect(await finishByOf(task.routineId)).toBe(DATE);
   });
@@ -125,7 +128,7 @@ describe('routines:set-finish-by (TASK-951)', () => {
     expect(resolves()).toBe(0);
     expect(await finishByOf(task.routineId)).toBeNull();
     // ...where a real date is looked up, then written.
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     expect(resolves()).toBeGreaterThan(0);
   });
 
@@ -142,20 +145,54 @@ describe('routines:set-finish-by (TASK-951)', () => {
     h = await createRoutineHarness();
     const task = await createTask(h.owner, h.agentId);
     const info = vi.spyOn(h.owner.logger, 'info');
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: null })).toStrictEqual({ finishBy: null });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' }))
+      .toStrictEqual({ finishBy: DATE, finishByTimeZone: 'America/Los_Angeles' });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: null })).toStrictEqual({ finishBy: null, finishByTimeZone: null });
     expect(info.mock.calls.filter(([message]) => message === 'routines_finish_by_set')).toEqual([
       ['routines_finish_by_set', { agentId: h.agentId, routineId: task.routineId, cleared: false }],
       ['routines_finish_by_set', { agentId: h.agentId, routineId: task.routineId, cleared: true }],
     ]);
-    // Ids and a flag only.
+    // Ids and a flag only: never the date, and never the zone it was set from (TASK-955).
     expect(JSON.stringify(info.mock.calls)).not.toContain(DATE);
+    expect(JSON.stringify(info.mock.calls)).not.toContain('Los_Angeles');
+  });
+
+  it('the owner sets a date with the zone it was set from; the answer and the row carry it (TASK-955)', async () => {
+    h = await createRoutineHarness();
+    const task = await createTask(h.owner, h.agentId);
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' }))
+      .toStrictEqual({ finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' });
+    expect(await zoneOf(task.routineId)).toBe('America/Los_Angeles');
+    expect(await finishByOf(task.routineId)).toBe('2026-10-25');
+    // Like the date, the zone never moves the revision.
+    expect((await get(h.owner, task)).revision).toBe(task.revision);
+  });
+
+  it("a zone that isn't one is refused before anything is written (TASK-955)", async () => {
+    h = await createRoutineHarness();
+    const task = await createTask(h.owner, h.agentId);
+    const callJoined = vi.spyOn(h.bus, 'callJoined');
+    const resolves = () => callJoined.mock.calls.filter(([hook]) => hook === 'agents:resolve').length;
+    // No calendar has the first; the second is what a browser that can't tell its zone reports; then an empty name and
+    // one past the 256-character cap.
+    for (const finishByTimeZone of ['Not/AZone', 'Etc/Unknown', '', 'x'.repeat(257)]) {
+      await expect(setFinishBy(h.owner, { ...key(task), finishBy: DATE, finishByTimeZone }), JSON.stringify(finishByTimeZone))
+        .rejects.toMatchObject({ toolCode: 'validation' });
+    }
+    // Refused before the agent was even looked up, and neither column was written...
+    expect(resolves()).toBe(0);
+    expect(await finishByOf(task.routineId)).toBeNull();
+    expect(await zoneOf(task.routineId)).toBeNull();
+    // ...where a real zone is looked up, then written beside the date.
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE, finishByTimeZone: 'Asia/Tokyo' }))
+      .toStrictEqual({ finishBy: DATE, finishByTimeZone: 'Asia/Tokyo' });
+    expect(resolves()).toBeGreaterThan(0);
   });
 
   it('routine_update and routine_create with a finishBy key are refused at pre-call and at execute, and the date stays', async () => {
     h = await createRoutineHarness();
     const task = await createTask(h.owner, h.agentId);
-    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE });
+    expect(await setFinishBy(h.owner, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
     const chat = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'chat' });
     const decisions = async () => (await h.bus.call<unknown, { decisions: unknown[] }>('decisions:list', chat, { userId: chat.userId })).decisions;
     const routineIds = async () => (await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId }))

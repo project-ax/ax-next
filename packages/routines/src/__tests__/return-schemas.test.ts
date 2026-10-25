@@ -8,7 +8,7 @@ const row: StoredRoutine = {
   ...C.RoutineDefinitionSchema.parse({ name: 'Notify', promptBody: 'Do the thing', trigger: { kind: 'interval', every: '1h' } }),
   agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner',
   definitionId: null, definitionUpdatedAt: null, nextRunAt: new Date('2030-01-01T00:00:00Z'), lastRunAt: null,
-  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null,
+  lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
 };
 describe('canonical routine return schemas', () => {
   it('projects every editable/status field without private owner or storage state', () => {
@@ -234,7 +234,7 @@ describe('canonical routine return schemas', () => {
     expect(ROUTINE_SERVICES).toContain('routines:duplicate');
     expect(C.RoutineSecretOutputSchema.parse({ saved: true })).toEqual({ saved: true });
     expect(C.RoutineClearNotesOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
-    expect(C.RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
+    expect(C.RoutineSetFinishByOutputSchema.parse({ finishBy: '2026-11-14', finishByTimeZone: null })).toStrictEqual({ finishBy: '2026-11-14', finishByTimeZone: null });
   });
   it("answers a person's step changes with the steps and a count, and nothing else (TASK-949)", () => {
     const answer = { steps: [{ id: 's000001', text: 'Ask Dana to review billing', done: false, addedBy: 'person' }], skipped: 1 };

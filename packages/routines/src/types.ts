@@ -60,6 +60,15 @@ export type StoredRoutine = RoutineDefinition & {
    */
   finishBy: string | null;
   /**
+   * TASK-955. The time zone `finishBy` was set from, as the person's browser
+   * reported it: null when it reported none, when there is no date, and when
+   * the stored value isn't a zone this runtime knows. Counted only when the
+   * task has no zone of its own (`taskTimeZone`). Written only beside the date
+   * (`setFinishBy`); a change of kind clears both, and a change of owner keeps
+   * both.
+   */
+  finishByTimeZone: string | null;
+  /**
    * TASK-950. When a person marked a "get-done" task done, and who: null unless
    * it is Done (`doneOf`: off, get-done, and completed by its owner), so null
    * again once it runs (a Reopen, a Resume) or its kind or owner changes.

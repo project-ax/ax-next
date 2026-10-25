@@ -83,6 +83,11 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   // (store.ts, storedFinishBy), so no stored row is refused here. Receipts leave the key out
   // (store.ts, receiptCopy), as did any written before this field, and the default fills it in.
   finishBy: z.string().nullable().default(null),
+  // TASK-955. A type only, as for `finishBy`: rowToRoutine has already read the column through the
+  // contract's zone rule (store.ts, storedFinishByTimeZone), so no stored row is refused here.
+  // Receipts leave the key out (store.ts, receiptCopy), as did any written before this field, and
+  // the default fills it in.
+  finishByTimeZone: z.string().nullable().default(null),
   // TASK-950. Types only, as for `task`: rowToRoutine has already read the columns through
   // `doneOf` (store.ts), so no stored row is refused here. Receipts leave the key out (store.ts,
   // receiptCopy), as did any written before this field, and the default fills it in.

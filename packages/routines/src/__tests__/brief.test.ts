@@ -171,7 +171,7 @@ function storedRow(definition: object): StoredRoutine {
   return {
     ...RoutineDefinitionSchema.parse(definition), agentId: 'agent', routineId: 'r_task', revision: 'v', ownerUserId: 'owner',
     definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null,
-    lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null,
+    lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
   } as StoredRoutine;
 }
 function entry(row: StoredRoutine, conversationId = 'conv-1'): PendingFire {

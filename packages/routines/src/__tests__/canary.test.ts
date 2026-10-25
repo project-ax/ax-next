@@ -1043,7 +1043,7 @@ describe('finish-by canary (TASK-951)', () => {
     });
     expect(task).toMatchObject({ kind: 'get-done', finishBy: null });
     const key = { agentId: h.agentId, routineId: task.routineId };
-    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
+    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14', finishByTimeZone: null });
     expect(await h.bus.call('routines:get', h.owner, key)).toMatchObject({ finishBy: '2026-11-14', revision: task.revision });
 
     // Check now with the view as created: it carries the revision from before the date was set, so it starts only
@@ -1098,7 +1098,7 @@ describe('duplicate canary (TASK-953)', () => {
     });
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
     // Then the person gives it a finish date.
-    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
+    expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14', finishByTimeZone: null });
     // And marks it done (TASK-950).
     expect(await h.bus.call('routines:complete', h.owner, { ...key, requestId: 'mark-done' })).toStrictEqual({ done: true });
     const source = await get(task.routineId);

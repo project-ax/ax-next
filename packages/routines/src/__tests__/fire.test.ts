@@ -13,7 +13,7 @@ import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
-function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null }; }
+function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null }; }
 async function setup(options: {
   resolveError?: PluginError;
   invoke?: (ctx: AgentContext, bus: HookBus) => Promise<unknown>;
@@ -24,10 +24,14 @@ async function setup(options: {
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
   /** TASK-951. The finish date the owner sets on the task before its run is accepted. */
   finishBy?: string;
+  /** TASK-955. The time zone that date is set from. */
+  finishByTimeZone?: string;
 } = {}) {
   const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
   if (options.finishBy !== undefined) {
-    expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy })).toEqual({ finishBy: options.finishBy });
+    const finishByTimeZone = options.finishByTimeZone ?? null;
+    expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy, finishByTimeZone }))
+      .toEqual({ finishBy: options.finishBy, finishByTimeZone });
   }
   const accepted = (await f.store.acceptDispatch({ ...row, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'fire', source: 'manual', now }))!.accepted;
   const bus = new HookBus();

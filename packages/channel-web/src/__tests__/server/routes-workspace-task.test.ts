@@ -155,6 +155,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     task: null,
     noRecentUpdate: null,
     finishBy: null,
+    finishByTimeZone: null,
     done: null,
     ...over,
   };
@@ -462,7 +463,11 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
         // key the service doesn't take.
         const input = parseRoutineInput(RoutineSetFinishByInputSchema, raw);
         if (world.finishByFailure !== null) throw world.finishByFailure;
-        return { finishBy: input.finishBy };
+        // What the store saved (TASK-955): a zone only beside a date.
+        return {
+          finishBy: input.finishBy,
+          finishByTimeZone: input.finishBy === null ? null : (input.finishByTimeZone ?? null),
+        };
       },
       { returns: RoutineSetFinishByOutputSchema },
     );

@@ -93,6 +93,7 @@ function stored(over: Partial<StoredRoutine>): StoredRoutine {
     task: null,
     noRecentUpdate: null,
     finishBy: null,
+    finishByTimeZone: null,
     done: null,
     ...over,
   };

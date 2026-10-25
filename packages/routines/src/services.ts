@@ -412,18 +412,22 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // task's owner may, whether or not they still manage the agent's tasks: the date changes only how
   // the agent words its status at its check-ins, so it adds no reach. So there's no `allowed` check,
   // but agents:resolve still runs first and refuses an agent the caller can't reach. The input
-  // schema checked the date before anything ran. The store then decides the owner and the kind
-  // under the agent fence and the routine's row lock, so a task that stopped being get-done before
-  // the write (a change of kind committed first) is not-found, and it never moves the revision: an
-  // edit, Check now or Pause held against the current one still lands. Neither a tool nor an IPC
-  // action, so no model can set it. The log line carries ids and a flag only, never the date.
+  // schema checked the date and its zone (`RoutineTimezoneSchema`, TASK-955) before anything ran.
+  // The store then decides the owner and the kind under the agent fence and the routine's row
+  // lock, so a task that stopped being get-done before the write (a change of kind committed
+  // first) is not-found, and it never moves the revision: an edit, Check now or Pause held against
+  // the current one still lands. Neither a tool nor an IPC action, so no model can set it. The log
+  // line carries ids and a flag only, never the date and never the zone.
   register('set-finish-by', C.RoutineSetFinishByInputSchema, C.RoutineSetFinishByOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
-    const outcome = await store.setFinishBy({ agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, finishBy: input.finishBy });
+    const outcome = await store.setFinishBy({
+      agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId,
+      finishBy: input.finishBy, finishByTimeZone: input.finishByTimeZone ?? null,
+    });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
     ctx.logger.info('routines_finish_by_set', { agentId: input.agentId, routineId: input.routineId, cleared: outcome.finishBy === null });
-    return { finishBy: outcome.finishBy };
+    return { finishBy: outcome.finishBy, finishByTimeZone: outcome.finishByTimeZone };
   });
   // TASK-932. Which of these conversations are check-ins of the caller's own tasks, so Today can name the
   // task an approval was held in. A label, never an authorization: approve and dismiss go through

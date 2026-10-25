@@ -98,7 +98,8 @@ describe("a person's copy of their task (store, TASK-953)", () => {
 
   it('copies none of the task’s state, replies or history', async () => {
     const task = await createTask('task');
-    expect(await f.store.setFinishBy({ agentId: 'a', routineId: task.routineId, actorUserId: 'owner', finishBy: '2026-11-14' })).toEqual({ finishBy: '2026-11-14' });
+    expect(await f.store.setFinishBy({ agentId: 'a', routineId: task.routineId, actorUserId: 'owner', finishBy: '2026-11-14', finishByTimeZone: 'America/Los_Angeles' }))
+      .toEqual({ finishBy: '2026-11-14', finishByTimeZone: 'America/Los_Angeles' });
     expect(await f.store.addReply({ agentId: 'a', routineId: task.routineId, actorUserId: 'owner', requestId: 'reply', text: 'Use the code QX7731.', now: minute(1) }))
       .toMatchObject({ outcome: 'added' });
     const run = await f.store.acceptDispatch({
@@ -122,10 +123,10 @@ describe("a person's copy of their task (store, TASK-953)", () => {
       task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null,
       agent_notes: null, agent_notes_cleared_at: null, task_reading_value: null, task_reading_label: null, task_reading_reported_at: null,
       task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null,
-      last_run_at: null, last_status: null, last_error: null, last_warning: null, finish_by: null, task_steps: [],
+      last_run_at: null, last_status: null, last_error: null, last_warning: null, finish_by: null, finish_by_time_zone: null, task_steps: [],
     });
-    expect(await f.store.findOne({ agentId: 'a', routineId })).toMatchObject({ task: null, noRecentUpdate: null, finishBy: null });
-    expect((await f.store.findOne(task))?.finishBy).toBe('2026-11-14');
+    expect(await f.store.findOne({ agentId: 'a', routineId })).toMatchObject({ task: null, noRecentUpdate: null, finishBy: null, finishByTimeZone: null });
+    expect(await f.store.findOne(task)).toMatchObject({ finishBy: '2026-11-14', finishByTimeZone: 'America/Los_Angeles' });
     for (const table of ['routines_v1_replies', 'routines_v1_fires', 'routines_v1_dispatches'] as const) {
       expect(await rowsFor(table, task.routineId), table).toBe(1);
       expect(await rowsFor(table, routineId), table).toBe(0);
