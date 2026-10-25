@@ -48,7 +48,7 @@ const finish = async (run: Run, outcome: Partial<DispatchOutcome> = {}) => {
 };
 /**
  * A completion written by hand at minute 40: off, as Mark done leaves it, or running, as code from before
- * version 12 leaves a Done task it resumed. Mark done also mints a revision and clears the claim; this doesn't.
+ * version 13 leaves a Done task it resumed. Mark done also mints a revision and clears the claim; this doesn't.
  */
 const setCompletion = (routineId: string, { enabled, by }: { enabled: boolean; by: string | null }) => sql`
   UPDATE routines_v1_definitions SET enabled = ${enabled}, task_completed_at = ${minute(40)}, task_completed_by_user_id = ${by}
@@ -166,7 +166,7 @@ describe("a task's claim and Done, as the store keeps them (TASK-950)", () => {
     const task = await f.store.createAuthored(taskInput('task'));
     await record(await bound(task, 'run', minute(1)), needsYouDone, { done: true });
     expect((await f.store.findOne(task))?.task?.doneClaimed).toBe(true);
-    // A report from code before version 12, after a rollback: a later report time, and the stamp left as it was.
+    // A report from code before version 13, after a rollback: a later report time, and the stamp left as it was.
     await sql`UPDATE routines_v1_definitions SET task_reported_at = ${minute(31)} WHERE routine_id = ${task.routineId}`.execute(f.db);
     expect((await f.store.findOne(task))?.task).toMatchObject({ status: 'needs-you', reportedAt: minute(31), doneClaimed: false });
   });
@@ -231,7 +231,7 @@ describe("a task's claim and Done, as the store keeps them (TASK-950)", () => {
 
   it('Done needs the task off, its completer its owner, and a get-done kind', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
-    // Completed by its owner but running, as code from before version 12 leaves a Done task it resumed: not
+    // Completed by its owner but running, as code from before version 13 leaves a Done task it resumed: not
     // Done, and its reports land.
     await setCompletion(task.routineId, { enabled: true, by: 'owner' });
     expect((await f.store.findOne(task))?.done).toBeNull();
@@ -485,7 +485,7 @@ describe('Not yet and Reopen (store, TASK-950)', () => {
     const runningHash = (await storedRow(task.routineId))!.spec_hash;
     await complete(task, 'mark-done');
     const marked = (await f.store.findOne(task))!;
-    // Misses on a Done task come only from code before version 12 (a rollback): a Reopen starts them over, as a Resume does.
+    // Misses on a Done task come only from code before version 13 (a rollback): a Reopen starts them over, as a Resume does.
     await setMisses(task.routineId, 2);
     const reopenedTask = await reopened(task, 'reopen', 'Also redirect the old links.');
     expect(reopenedTask).toEqual({ outcome: 'added', replyId: expect.stringMatching(/^reply_/), wasDone: true, row: await f.store.findOne(task) });
