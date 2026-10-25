@@ -174,17 +174,20 @@ export interface RoutinesStore {
   setSteps(input: RoutineKey & Actor & { requestId: string; ops: readonly RoutineStepOp[] }): Promise<SetStepsResult>;
   /**
    * TASK-953. A person's copy of their own task, from its task page: a new task
-   * of the same kind on the same agent, owned by `ownerUserId`, paused (not
+   * of the same kind on the same agent, owned by the source's owner (any other
+   * `ownerUserId` is `forbidden`), paused (not
    * enabled, no next run), named by `duplicateName`, with the source's
-   * definition otherwise and its steps as `copiedSteps` copies them, in one
+   * definition otherwise and, for a "get-done" task alone, its steps as
+   * `copiedSteps` copies them, in one
    * statement, so a copy never exists without its steps. Every column the copy
    * leaves out takes its default: no report, notes, reading, misses, stamps,
    * last run or finish date, and none of the source's replies, runs or
    * receipts. Under the agent fence and the request's row, the source is read
    * FOR SHARE, so a change or delete that commits first is seen, and nothing is
    * written to it. A missing routine, a default and a kind outside
-   * `TASK_KINDS` are `not-found`; someone else's is `forbidden`, decided under
-   * that lock whatever the caller read first; a task holding a webhook trigger,
+   * `TASK_KINDS` are `not-found`; someone else's is `forbidden`, as is an
+   * `ownerUserId` that isn't the source's owner, decided under that lock
+   * whatever the caller read first; a task holding a webhook trigger,
    * which no task can have, is `not-found` before its row is parsed. A source
    * today's rules refuse, and a copy they refuse (a copy is 9 bytes longer than
    * its source), throw `validation`. The same `requestId` again, from the same
