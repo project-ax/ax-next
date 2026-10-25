@@ -29,7 +29,7 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); Mark done (TASK-950) comes next.
+- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); TASK-950 adds "I think it's done", Mark done, Not yet, Reopen and the Done filter (schema version 13). Duplicate task (TASK-953) comes next.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -139,6 +139,8 @@ What your agents are looking after
 ```
 
 Done tasks drop off after a week and stay findable under a Done filter.
+
+> PR 3 (TASK-950): Tasks has Current and Done. Current shows a Done task under "Done this week" for 7 days after it was marked done, counted on the person's own clock, then only Done lists it, newest first, as "{agent} · Done {when}". The Done filter shows with a count ("Done 3"), and only while a Done task exists.
 
 ### 3.2 Starting a task
 
@@ -255,6 +257,8 @@ design's judge model and its counted or estimated measures.
 
 > PR 3 (TASK-951): A "Get something done" task can have a Finish by date that only a person sets, on its task page, under its kind and schedule ("Add a finish date", then "Change"; in the open field, "Save", "Remove date" or "Cancel"). It's a date, not a time, read in the task's own time zone (its schedule's, else its active hours', else UTC). The page says "Finish by Sat, Nov 14 · 9 days left", "Due today" or "3 days past its finish date", and the Tasks row adds the count after its steps. Each check-in's brief says how many days are left and asks the agent to report Off track when the steps left won't fit; ax never works that out itself. No agent or tool can set it. A change of kind clears it, a change of owner keeps it, and Duplicate (TASK-953) leaves it behind.
 
+> PR 3 (TASK-950): The agent says "I think it's done" by reporting status "needs-you" with done true; any other status with done is refused. The claim is stored as the time of the report that made it, so a later report without it takes the claim back, and the task keeps checking in on its schedule meanwhile, each check-in told about its own claim. The person can press Mark done at any time, on a running or a paused task; it becomes the page's primary action once the agent claims done, and with unticked steps it says how many first and keeps them as they are. Not yet needs a reply: it takes the claim back and starts a check-in that reads it. A Done task stops checking in the way a pause does, keeps its steps, report and notes, and refuses a report from a check-in still running. Reopen, with a reply, runs it again and starts a check-in; switching it back on in Settings reopens it too. Mark done and Reopen need the person to manage the agent's tasks; Not yet needs only to own the task. The reply box has three modes (reply, Not yet, Reopen), each with its own helper line. A Done task's steps are a record: the page shows them as they were left, with nothing to change, and the host refuses a person's change to them. Its Finish by date (TASK-951) doesn't show while it is Done.
+
 ### 3.5 Today
 
 Today stays the one inbox. Anything a task needs from a person joins the
@@ -279,6 +283,8 @@ Three things are waiting on you
 
 > PR 2 (TASK-933): Today reads the same list as the Tasks page, through one read the whole workspace shares (it also feeds the sidebar badge), and reads it again on opening Today or Tasks and after a reply. A task shows on Today when its last report says Needs you, after three check-ins in a row leave no update, or once the host has paused it after five, until a person resumes it. A task a person paused never shows. Each one shows its ask (else its update) or why it's there, with Open task, and Reply when the agent's last report said Needs you (under a miss or a pause too); the reply box opens in place. Approvals raised during a task's check-ins sit under that task, each answered on its own. A task that's fine but has approvals waiting shows only its name and how many. The badge, the Needs you tab and the headline are one count: open approvals, grants and tasks that need you, each once. A tasks read that failed, or that missed an agent, says so and never lets the headline say nothing is waiting.
 
+> PR 3 (TASK-950): A task that thinks it's done shows on Today as "{agent} thinks this is done." with its update and any question it asked, then Mark done and Not yet, both outline, then Open task. Three missed check-ins still read as missed.
+
 ### 3.6 Status
 
 | Mark | Status | Set by | Means |
@@ -293,6 +299,8 @@ Three things are waiting on you
 PR 1 ships part of this table (TASK-909). The Tasks page draws ○ as **No update yet** for a task that has never reported. A check-in that fails, or ends without a report, leaves the task showing its last report until PR 2 adds No recent update and failure counting. Telling those apart needs each run's report: a task's last-run time moves when a check-in starts and when one is skipped outside its active hours, so it can't stand in for "the last check-in".
 
 PR 2 (TASK-930) builds the rest. A check-in that finishes without a report counts, whatever its status. A report resets the count. Check-ins that overlap (a Check now beside a scheduled one) count in the order they started, not the order they finish, so an older one that ends late can't undo a newer one's report or miss. One or two misses show ○ No recent update with the reason and a fix. Three or more show ◆ Needs you. The fifth pauses the task: it is no longer enabled, it has a new revision and no next run. While it is paused by misses the count freezes, so a late run (a Check now that overlapped the fifth) neither adds to it nor clears the paused state, even if it reports. Only a person's Resume, a change of kind or a change of owner (TASK-936) starts the count over. An edit that keeps it paused doesn't. The agent can't resume a paused task: its `routine_update` with `enabled: true` is refused (`forbidden`, field `enabled`), before any approval and again at run time. The reason is one of six codes, set where the miss is seen and never read out of an error string: `no-report`, `brief-missing`, `brief-unconfirmed`, `brief-too-long`, `interrupted`, `failed`. The belt that fails a check-in with no landed confirmation gets its own code, because that run may have had its brief.
+
+PR 3 (TASK-950) builds ✓ Done: a check mark in the primary color. A Done task counts no missed check-ins, and only a person reopens it. A task reads as Done only while it is off, was marked done, and was marked by its current owner; anything else is a plain pause.
 
 ### 3.7 Activity goes away
 
@@ -470,7 +478,7 @@ the model that people call routines "tasks".
 | Piece | Change |
 |---|---|
 | Routine definition (`@ax/routines-contract`) | Adds `kind` (repeat, stay on top, get done) and `goodWhen`. The single `trigger` splits into two optional parts, `schedule` and `webhook`, checked per kind: a repeated job needs at least one, and the other two kinds always keep a schedule. All of it belongs to the person. An agent's proposed change still goes through today's routine approval card. (As built: repeat and stay-on-top in TASK-906, schema version 3; get-done in TASK-948, schema version 11, which shares stay-on-top's rules: goodWhen, a schedule at least 15 minutes apart, its own conversation per check-in, no silence token.) (TASK-951: a "get-done" task's Finish by date is a column of its own beside the definition, schema version 12; only a person sets it, and it's in no tool's input.) |
-| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). (TASK-948: steps are one JSON list on the routine, edited by id by the agent's report and (TASK-949) by the person on the task page through `routines:set-steps`, both under the routine's row lock, and cleared with the rest of the state on a change of kind or owner.) |
+| Task state | New fields on the routine: status, update, ask, reported at, steps (up to 50), agent notes (up to 2,000 characters), done claimed, completed by, failures in a row (TASK-930: check-ins in a row without a report, the last one's reason and start, and when the host paused it). The agent and the person can both edit steps without an approval. (TASK-936: a change of owner clears it, as a change of kind does) (TASK-952: and the latest report's reading). (TASK-948: steps are one JSON list on the routine, edited by id by the agent's report and (TASK-949) by the person on the task page through `routines:set-steps`, both under the routine's row lock, and cleared with the rest of the state on a change of kind or owner.) (TASK-950: the claim is kept as the time of the report that made it, so a later report takes it back; done is when the owner marked it, read only while the task is off; a change of kind or owner clears both, schema version 13. Hooks: `routines:complete` and `routines:reopen`. Neither writer changes a Done task's steps.) |
 | Run history | Each run keeps its report (status and update). That is the task's Updates thread. (TASK-936: and who it ran as, schema version 9; Updates and the check-in message read only the runs that ran as the task's current owner) (TASK-952: and its reading, schema version 10). |
 | Replies | One small new table: author, text, time. The last 20 go into every check-in. (TASK-931: `routines_v1_replies`, schema version 8, with each reply's request id so a retry is stored once; the task page shows the last 50.) |
 | Update inbox | One small new table for batched tasks: received at, capped payload, the check-in that consumed it (§5.4). |
@@ -645,7 +653,7 @@ suggest a short body for known apps.
   year.) Who may create or change a task follows today's routine permissions
   (`agents:can-manage-routines`: personal agent → its owner, team agent →
   team admins).
-- **Only a person** marks a task done or resumes a paused one.
+- **Only a person** marks a task done or resumes a paused one. (TASK-950: no tool reaches `routines:complete` or `routines:reopen`, a report on a Done task is refused, and the agent's resume of it is refused like any paused task's.)
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.
 - **No brief, no check-in** (§4.2).
@@ -1007,3 +1015,6 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-24 | Decided | A task's owner edits its steps on the task page, with no approval and no new revision, one change per press through routines:set-steps: the same changes the agent sends, applied by id under the row lock. They can reword or delete any step, the agent's included; a step they add is theirs, which the agent can tick but not reword or remove. Both writers keep entries they can't read, and receipts keep a count, never step text (TASK-949). |
 | 2026-10-24 | Proposed (to confirm with Vinay) | A person's reword that changes a step's text makes the step theirs (`addedBy: 'person'`), the agent's steps included, so the agent reads it as their words and can then only tick it. Before saving, the editor says so (TASK-949). |
 | 2026-10-24 | Decided | A "Get something done" task can have an optional Finish by date. Only a person sets it, on its task page; no agent or tool can. It's a date in the task's own time zone (its schedule's, else its active hours', else UTC), shown on the Tasks row and the task page as days left. Its check-ins' brief asks the agent to report Off track when the steps left won't fit, and ax never computes that. A change of kind clears it, a change of owner keeps it, and Duplicate doesn't copy it (TASK-951). |
+| 2026-10-24 | Decided | After "I think it's done" the task keeps checking in, and each report keeps the claim or takes it back (questions Q3) (TASK-950). |
+| 2026-10-24 | Decided | A person can press Mark done at any time; it becomes the primary action once the agent claims done; unticked steps are allowed and stay on the task (questions Q4) (TASK-950). |
+| 2026-10-24 | Decided | A Done task can be reopened from its page with a reply, or by switching it on in Settings; Not yet needs a reply (questions Q5) (TASK-950). |
