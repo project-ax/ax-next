@@ -1,0 +1,11 @@
+Check now: this check-in was started outside its schedule.
+
+This task has no steps yet. Before you start, draft the steps you’ll work through. Send them as add changes in your routine_report’s steps field, with done true for any you finish in this check-in.
+
+You have no saved notes yet.
+
+The person hasn’t replied on this task yet.
+
+No earlier reports yet.
+
+Work on the task now, then finish with one routine_report.

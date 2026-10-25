@@ -1,0 +1,14 @@
+-[ RECORD 1 ]--------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+name                 | Copy of Tidy walk notes into three sections
+kind                 | get-done
+enabled              | f
+trigger_spec         | {"tz": "America/New_York", "expr": "*/15 * * * *", "kind": "cron"}
+finish_by            | 
+task_status          | 
+task_update          | 
+agent_notes          | 
+task_done_claimed_at | 
+task_completed_at    | 
+task_reading_value   | 
+task_steps           | [{"id": "sqgb0tr", "done": false, "text": "Ask user to paste their walk notes", "addedBy": "agent"}, {"id": "sl4iljm", "done": false, "text": "Tidy notes into three sections, each with a heading and one paragraph", "addedBy": "agent"}, {"id": "sieak7b", "done": false, "text": "Show me the tidied version in chat", "addedBy": "person"}, {"id": "s3xghri", "done": false, "text": "Check the headings with Sam", "addedBy": "person"}]
+

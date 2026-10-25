@@ -1,0 +1,4 @@
+Total messages: 0 (Errors: 0, Warnings: 0)
+Returning 1 messages for level "warning"
+
+[WARNING] walk-probe: console capture check @ :0
