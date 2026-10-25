@@ -1069,4 +1069,28 @@ describe('Duplicate opens a paused copy (TASK-953)', () => {
     expect(window.location.pathname).toBe('/workspace');
     expect(screen.queryByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' })).toBeNull();
   });
+
+  it('someone who left for Tasks sees the copy there: the list is read again once it is saved', async () => {
+    answerByTask();
+    let resolve!: (copy: { routineId: string }) => void;
+    duplicateMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    renderAt('/workspace/tasks/a1/t1');
+    await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.history.pushState(null, '', '/workspace/tasks');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    // Entering Tasks read the list, before the copy was saved.
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => resolve({ routineId: 't2' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    expect(window.location.pathname).toBe('/workspace/tasks');
+  });
 });

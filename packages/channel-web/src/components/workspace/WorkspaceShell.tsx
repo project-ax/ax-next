@@ -1047,6 +1047,8 @@ function Inner({
                   now.agentId !== route.agentId ||
                   now.routineId !== route.routineId
                 ) {
+                  // Entering Tasks or Today read the list before the copy was saved, and nothing polls.
+                  reloadTaskRead();
                   return;
                 }
                 // Both setters run in this one callback, so React batches them
