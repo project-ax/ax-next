@@ -674,7 +674,10 @@ suggest a short body for known apps.
 - **Reports, steps and notes are untrusted model output.** They are
   length-capped and rendered as plain text. The task page gets them through
   channel-web's workspace routes, which fence each line; the Settings routes
-  leave them out of every answer (TASK-957). Notes and agent-added steps return
+  leave them out of every answer (TASK-957). Before a report's text is stored,
+  it is refused with invisible or broken characters, a combining mark with
+  nothing to draw on, or more than 8 marks on one character (TASK-907,
+  TASK-957). Notes and agent-added steps return
   in the next check-in, framed as the agent's own notes. An instruction injected
   through a ticket could persist that way, so notes are visible and clearable
   on the task page and outward actions stay held. Clearing holds against a

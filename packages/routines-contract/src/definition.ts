@@ -306,9 +306,9 @@ const BRIEF_SPACE_RUN = /[^\S\n]{17}/;
  * the contract knows draw as nothing are already refused.
  */
 const BLANK_LINE = /^[\p{M}\s]*$/u;
-/** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. */
+/** A combining mark at the very start, at the start of a line or after whitespace: it has no character to draw on. A report's text too (TASK-957). */
 const BASELESS_MARK = /(?:^|\s)\p{M}/u;
-/** More than 8 combining marks in a row, on one character. Ordinary text stacks two or three. */
+/** More than 8 combining marks in a row, on one character. Ordinary text stacks two or three. A report's text too (TASK-957). */
 const MARK_STACK = /\p{M}{9}/u;
 
 /** More than two blank lines in a row. */
@@ -467,7 +467,13 @@ export const RoutineStatusSchema = z.enum(['ok', 'silenced', 'error']);
  *   - refuses what `firstHiddenCharacter` finds, the brief's own rule;
  *   - refuses a lone surrogate (half of a character), which a JSON body can
  *     carry. Postgres refuses one in a JSON column and puts U+FFFD in its place
- *     in a text one, so the stored report wouldn't be what the agent sent.
+ *     in a text one, so the stored report wouldn't be what the agent sent;
+ *   - refuses a combining mark with nothing to draw on (at the very start, at
+ *     the start of a line or after a space) and more than 8 combining marks on
+ *     one character, the brief's own `BASELESS_MARK` and `MARK_STACK`
+ *     (TASK-957). A mark draws on the character before it, so one with no base
+ *     lands on whatever is drawn before the text, and a tall stack draws over
+ *     the lines around it.
  * An update is also one line, with no LF or CR. The other line breaks (U+2028,
  * U+2029 and NEL) are invisible characters already. Padding (blank lines, runs
  * of spaces) is allowed: a report is read, not approved.
@@ -508,6 +514,8 @@ function reportText(rule: { max: number; blank: string; oneLine: boolean }): z.Z
       : rule.oneLine && /[\n\r]/.test(value) ? 'An update is one line.'
       : firstHiddenCharacter(value) !== null ? 'A report can’t contain invisible characters.'
       : LONE_SURROGATE.test(value) ? 'A report can’t contain broken characters.'
+      : BASELESS_MARK.test(value) ? 'A report can’t have an accent or other combining mark at the start of a line or after a space.'
+      : MARK_STACK.test(value) ? 'A report can’t stack more than 8 accents or other combining marks on one character.'
       : null;
     if (problem !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   });

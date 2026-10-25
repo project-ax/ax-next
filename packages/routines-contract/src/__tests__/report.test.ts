@@ -25,6 +25,10 @@ const ONE_LINE = 'An update is one line.';
 const BLANK_UPDATE = 'Say how the task is going.';
 const BLANK_TEXT = 'Write something, or send null.';
 const BLANK_LABEL = 'Name what you read, for example "Open tickets".';
+const BASELESS = 'A report can’t have an accent or other combining mark at the start of a line or after a space.';
+const STACK = 'A report can’t stack more than 8 accents or other combining marks on one character.';
+/** Marks of each kind, as the brief's tests use them: nonspacing (acute, grave, a strikethrough), spacing (Devanagari visarga), enclosing (a circle), and one from the extended block. */
+const MARKS = ['\u0301', '\u0300', '\u0336', '\u0903', '\u20DD', '\u1AB0'];
 
 /** The tool input with `value` in `field`, and the rest minimal. */
 const report = (field: Field, value: unknown): Record<string, unknown> => ({ ...minimal, [field]: value });
@@ -352,6 +356,10 @@ describe('a task’s report can’t say more than the page shows (TASK-907)', ()
     ['Arabic', '\u0645\u0631\u062D\u0628\u0627'],
     ['Japanese', '\u3053\u3093\u306B\u3061\u306F'],
     ['Mongolian with a variation selector', '\u1820\u180B\u1821'],
+    ['Hebrew with its points', '\u05E9\u05B8\u05C1\u05DC\u05D5\u05B9\u05DD'],
+    ['Arabic with its vowel marks', '\u0645\u064E\u0631\u0652\u062D\u064E\u0628\u064B\u0627'],
+    ['Tibetan, three marks on one letter', '\u0F56\u0F66\u0F92\u0FB2\u0F74\u0F56\u0F66'],
+    ['eight marks on one letter', `e${'\u0301'.repeat(8)}`],
   ])('accepts ordinary text in every field: %s', (_label, text) => {
     for (const field of FIELDS) expect(messagesOf(report(field, text)), field).toEqual([]);
   });
@@ -371,6 +379,9 @@ describe('a task’s report can’t say more than the page shows (TASK-907)', ()
       ['update', 'a\u200Bb', 'a zero-width space'], ['update', 'a\uD800b', 'a lone surrogate'],
       ['ask', '', 'empty'], ['ask', ' ', 'blank'], ['ask', 'a'.repeat(501), 'over the cap'], ['ask', 'a\u{E0041}', 'a tag character'],
       ['notes', '\n', 'blank'], ['notes', 'a'.repeat(2001), 'over the cap'], ['notes', 'a\u202Eb', 'a bidi override'],
+      // TASK-957: the brief's two mark rules.
+      ['update', '\u0301Moving.', 'a mark with nothing to draw on'], ['ask', `Is e${'\u0301'.repeat(9)} right?`, 'nine marks on one letter'],
+      ['notes', 'First.\n\u0301Second.', 'a mark at the start of a line'],
     ];
     for (const [field, value, label] of cases) {
       expect(RoutineReportInputSchema.safeParse({ ...input, [field]: value }).success, `${field}: ${label}`).toBe(false);
@@ -381,6 +392,49 @@ describe('a task’s report can’t say more than the page shows (TASK-907)', ()
     // "Keep the queue empty " is 21 characters, the emoji the 22nd (two UTF-16 units), the tag character the 23rd.
     expect(firstHiddenCharacter('Keep the queue empty \u{1F600}\u{E0041}')).toEqual({ codePoint: 0xE0041, position: 23 });
     expect(firstHiddenCharacter('Keep the queue empty \u2764\uFE0F')).toBeNull();
+  });
+});
+
+describe('a report\u2019s text can\u2019t draw on what\u2019s around it (TASK-957)', () => {
+  // A combining mark draws on the character before it. One with nothing before it lands on whatever the
+  // page or the check-in message puts before the text (the reading's label sits right after host-written
+  // words), and a tall stack draws over the lines around it. A report refuses both, as the brief does.
+
+  it('refuses a mark at the very start or after a space, in every field', () => {
+    for (const mark of MARKS) {
+      for (const text of [`${mark}Queue is empty.`, `Queue is ${mark}empty.`, `Queue is\t${mark}empty.`, `Queue is\u00A0${mark}empty.`]) {
+        for (const field of FIELDS) expect(messagesOf(report(field, text)), `${field} ${hex(text)}`).toEqual([BASELESS]);
+      }
+    }
+  });
+
+  it('refuses a mark at the start of a line in ask and notes', () => {
+    for (const mark of MARKS) {
+      for (const text of [`First.\n${mark}Second.`, `First.\r\n${mark}Second.`]) {
+        for (const field of ['ask', 'notes'] as const) expect(messagesOf(report(field, text)), `${field} ${hex(text)}`).toEqual([BASELESS]);
+      }
+    }
+  });
+
+  it('refuses more than 8 marks on one character, and accepts 8', () => {
+    for (const field of FIELDS) {
+      expect(messagesOf(report(field, `Queue e${'\u0301'.repeat(9)}mpty.`)), field).toEqual([STACK]);
+      expect(messagesOf(report(field, `Queue e${'\u0301\u0300\u0336'.repeat(3)}mpty.`)), field).toEqual([STACK]);
+      expect(messagesOf(report(field, `Queue e${'\u0301'.repeat(8)}mpty.`)), field).toEqual([]);
+    }
+  });
+
+  it('refuses text of nothing but marks', () => {
+    for (const text of ['\u0301', '\u0301\u0300']) {
+      for (const field of FIELDS) expect(messagesOf(report(field, text)), `${field} ${hex(text)}`).toEqual([BASELESS]);
+    }
+  });
+
+  it('gives one reason: the earlier rules speak first, and a mark with nothing to draw on before a stack', () => {
+    expect(messagesOf(report('update', 'a\n\u0301'))).toEqual([ONE_LINE]);
+    expect(messagesOf(report('notes', ' \u0301\u200B'))).toEqual([HIDDEN]);
+    expect(messagesOf(report('notes', ' \u0301\uD800'))).toEqual([BROKEN]);
+    expect(messagesOf(report('notes', ` ${'\u0301'.repeat(10)}`))).toEqual([BASELESS]);
   });
 });
 
@@ -409,6 +463,10 @@ describe('a report\u2019s reading (TASK-952)', () => {
     ['tag characters', `${LABEL}${tags('IGN')}`, [HIDDEN]],
     ['a line separator', `a${String.fromCodePoint(0x2028)}b`, [HIDDEN]],
     ['a lone surrogate', `Open${String.fromCharCode(0xD800)}`, [BROKEN]],
+    // TASK-957: the label sits right after host-written words, where a mark with nothing to draw on lands on them.
+    ['a mark with nothing to draw on', '\u0301Open tickets', [BASELESS]],
+    ['a mark after a space', 'Open \u0301tickets', [BASELESS]],
+    ['nine marks on one letter', `Open${'\u0301'.repeat(9)}`, [STACK]],
   ];
   /** Anything but `{ value, label }`. */
   const badShapes: Array<[string, unknown]> = [
@@ -430,6 +488,10 @@ describe('a report\u2019s reading (TASK-952)', () => {
     expect(RoutineReadingSchema.parse({ value: -2.5, label: LABEL })).toEqual({ value: -2.5, label: LABEL });
     expect(messagesOf(withReading({ value: 3, label: 'x'.repeat(40) }))).toEqual([]);
     expect(messagesOf(withReading({ value: 3, label: `Happy customers ${smile}` }))).toEqual([]);
+    // Marks on a letter are ordinary text (TASK-957): only one with nothing to draw on, or more than 8, is refused.
+    for (const label of ['Ti\u1EBFng Vi\u1EC7t'.normalize('NFD'), `Open${'\u0301'.repeat(8)}`]) {
+      expect(messagesOf(withReading({ value: 3, label })), hex(label)).toEqual([]);
+    }
     // Counted in UTF-16 units, like the rest of the contract: an emoji is two.
     expect(messagesOf(withReading({ value: 3, label: smile.repeat(20) }))).toEqual([]);
     expect(refused(withReading({ value: 3, label: `${smile.repeat(20)}a` }))).toBe(true);
@@ -454,7 +516,7 @@ describe('a report\u2019s reading (TASK-952)', () => {
       }
       // An empty label or one over the cap gets zod's own message, alone.
       expect(messages, name).toHaveLength(1);
-      expect([BLANK_LABEL, ONE_LINE, HIDDEN, BROKEN], name).not.toContain(messages[0]);
+      expect([BLANK_LABEL, ONE_LINE, HIDDEN, BROKEN, BASELESS, STACK], name).not.toContain(messages[0]);
     }
   });
 
