@@ -12,7 +12,7 @@
  * the expected words from `localTime`, so nothing depends on where or when the
  * suite runs.
  */
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type MockInstance } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
@@ -2254,12 +2254,12 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     // Somewhere that outlives the page's re-read.
     const elsewhere = document.createElement('button');
     document.body.append(elsewhere);
+    onTestFinished(() => elsewhere.remove());
     act(() => elsewhere.focus());
     await act(async () => answer.reject(new WorkspaceApiError('/tasks/a1/t1/steps', 404)));
     await screen.findByText(/^Done · You marked it done/);
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     expect(document.activeElement).toBe(elsewhere);
-    elsewhere.remove();
   });
 
   it('a Done task shows no finish date and no field to set one (TASK-951)', async () => {

@@ -7793,11 +7793,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * or one that isn't "get-done") and `forbidden` (someone else's task,
      * or a Done task's steps, TASK-950) are the page's own 404. Anything else
      * fails the request, `request-conflict` included: only a request id
-     * reused for a different change raises it, and the page never sends one. The answer is the steps as they are now,
-     * each built as the task page's read builds it (`readStepList`,
-     * `toTaskStep`), and how many changes were skipped. CSRF is
-     * @ax/http-server's global guard, met by `workspace-api`'s write headers,
-     * as for Clear notes.
+     * reused for a different change raises it, and the page never sends one.
+     * The answer is the steps as they are now, each built as the task page's
+     * read builds it (`readStepList`, `toTaskStep`), and how many changes were
+     * skipped. CSRF is @ax/http-server's global guard, met by
+     * `workspace-api`'s write headers, as for Clear notes.
      */
     async taskSteps(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);

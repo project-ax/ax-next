@@ -641,10 +641,10 @@ function TaskBody({
   };
   // Asked once, of the re-read Mark done (or a refused step change) started: if that read fails,
   // a later one that shows the task Done (a poll's, say) answers something else and leaves focus
-  // alone. The read has settled
-  // once the task isn't refreshing and a new task or a failure has arrived: `onRefresh` marks it
-  // refreshing in the same commit as the press settles, but a fast answer can land in that commit
-  // too. A failed press, and Cancel, put focus back themselves (`useMarkDone`).
+  // alone. The read has settled once the task isn't refreshing and a new task or a failure has
+  // arrived: `onRefresh` marks it refreshing in the same commit as the press settles, but a fast
+  // answer can land in that commit too. A failed press, and Cancel, put focus back themselves
+  // (`useMarkDone`).
   useLayoutEffect(() => {
     if (!focusDoneLine.current || refreshing) return;
     focusDoneLine.current = false;
