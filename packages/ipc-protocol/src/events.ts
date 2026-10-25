@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AgentMessageSchema, ToolCallSchema } from './actions.js';
-import { ContentBlockSchema } from './content-blocks.js';
+import { CONTENT_BLOCKS_MAX, ContentBlockSchema } from './content-blocks.js';
 import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ export const EventTurnEndSchema = z.object({
     })
     .optional(),
   /** The turn's content blocks, in emission order. Optional until Task 3. */
-  contentBlocks: z.array(ContentBlockSchema).optional(),
+  contentBlocks: z.array(ContentBlockSchema).max(CONTENT_BLOCKS_MAX).optional(),
   /** The role the runner emitted this turn under. Optional until Task 3. */
   role: z.enum(['user', 'assistant', 'tool']).optional(),
   /** Stable identifier for the turn the runner just emitted, used by
@@ -178,13 +178,22 @@ export const EventTurnEndSchema = z.object({
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 
 /**
+ * The most messages one `event.chat-end` outcome may carry (TASK-945). The
+ * runner sends its whole life's text-only history here: every user message
+ * and every recorded assistant text, up to the pod's 6 h deadline. The limit
+ * sits where that history cannot reach it, because a refused chat-end loses
+ * `chat:end`.
+ */
+export const CHAT_END_MESSAGES_MAX = 50_000;
+
+/**
  * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `AgentOutcome`
  * but declared locally to keep this package independent of the kernel.
  */
 export const AgentOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('complete'),
-    messages: z.array(AgentMessageSchema),
+    messages: z.array(AgentMessageSchema).max(CHAT_END_MESSAGES_MAX),
   }),
   z.object({
     kind: z.literal('terminated'),

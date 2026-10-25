@@ -274,6 +274,23 @@ export function formatAttachmentInline(
   return `${formatAttachmentMention(fields)}\n\n${content}`;
 }
 
+/**
+ * The most content blocks one `event.turn-end`, or one `AgentMessage`, may
+ * carry on the IPC wire (TASK-945). Runner data is untrusted. An array over
+ * its `.max()` is refused right after its size issue, before any element is
+ * parsed.
+ *
+ * Sized so real traffic never reaches it: a refused turn-end loses that
+ * turn's whole display frame. One turn-end carries a whole multi-step turn:
+ * every assistant block, or every tool result plus one chip per file the
+ * turn created (up to 10,000). Real blocks average well over 84 bytes, so
+ * 50,000 of them do not fit the 4 MiB frame anyway.
+ *
+ * Not applied to `tool_result.content`: this schema also re-parses stored
+ * transcripts, and the conversations read path drops a turn that fails it.
+ */
+export const CONTENT_BLOCKS_MAX = 50_000;
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,

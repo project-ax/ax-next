@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, HOLD_NOTE_MAX, type WorkspaceVersion } from '@ax/core';
-import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
+import { CONTENT_BLOCKS_MAX, ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
 import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
@@ -26,7 +26,7 @@ export const AgentMessageSchema = z.object({
   // not emit this yet (Phase 3); shipping the schema first lets the
   // runner translation pass be testable. Backward-compat: omitting the
   // field reproduces the prior string-only shape exactly.
-  contentBlocks: z.array(ContentBlockSchema).optional(),
+  contentBlocks: z.array(ContentBlockSchema).max(CONTENT_BLOCKS_MAX).optional(),
   /**
    * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id, used
    * by the runner to bind the user message to the same turn the host
