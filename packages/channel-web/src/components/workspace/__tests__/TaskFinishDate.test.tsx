@@ -116,10 +116,12 @@ describe('TaskFinishDate — setting and removing', () => {
     ).not.toBe('');
     pick('2026-11-14');
     fireEvent.click(button('Save'));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(FB));
+    // Wait for the field to go, not for onSaved: onSaved runs before React commits the
+    // close, and the focus check below is only meaningful once that commit has landed.
+    await waitFor(() => expect(screen.queryByLabelText('Finish by')).toBeNull());
+    expect(onSaved).toHaveBeenCalledWith(FB);
     expect(setMock).toHaveBeenCalledTimes(1);
     expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14');
-    expect(screen.queryByLabelText('Finish by')).toBeNull();
     expect(document.activeElement).toBe(button('Change'));
   });
 
@@ -129,9 +131,39 @@ describe('TaskFinishDate — setting and removing', () => {
     fireEvent.click(button('Change'));
     expect(field().value).toBe('2026-11-14');
     fireEvent.click(button('Remove date'));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(null));
+    await waitFor(() => expect(screen.queryByLabelText('Finish by')).toBeNull());
+    expect(onSaved).toHaveBeenCalledWith(null);
     expect(setMock).toHaveBeenCalledWith('a1', 't1', null);
     expect(document.activeElement).toBe(button('Add a finish date'));
+  });
+
+  // TASK-960. The answer to a save lands outside any event, so React commits it on a
+  // later task, and an effect that runs after paint left focus on <body> for a frame
+  // once the field was gone: a key pressed then went nowhere, and the test above
+  // flaked when its check landed in that frame. Watching the DOM pins the moment the
+  // field goes, which no amount of waiting can: focus must already be on the button.
+  it.each<[string, TaskFinishBy | null, string, string]>([
+    ['Save', null, 'Add a finish date', 'Change'],
+    ['Remove date', FB, 'Change', 'Add a finish date'],
+  ])('%s hands focus back in the same commit that closes the field', async (press, initial, opener, after) => {
+    setMock.mockResolvedValueOnce({ finishBy: initial === null ? FB : null });
+    renderField(initial);
+    fireEvent.click(button(opener));
+    if (initial === null) pick('2026-11-14');
+    const seen: { focused: Element | null }[] = [];
+    const watch = new MutationObserver(() => {
+      if (seen.length === 0 && screen.queryByLabelText('Finish by') === null) {
+        seen.push({ focused: document.activeElement });
+      }
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    try {
+      fireEvent.click(button(press));
+      await waitFor(() => expect(seen).toHaveLength(1));
+    } finally {
+      watch.disconnect();
+    }
+    expect(seen[0]?.focused).toBe(button(after));
   });
 
   it('shows Save working while it sends, and sends nothing twice', async () => {
