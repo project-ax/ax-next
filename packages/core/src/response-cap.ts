@@ -39,9 +39,16 @@
  *     with the runner's MCP SDK (zod 4.6.7): 400 KB of junk MCP content kept
  *     306 MB of zod issues, so a caller that validates with zod bounds that
  *     separately.
- *   - The same Response. The capped one is new, so it has no `url`,
- *     `redirected` or `type`; no caller reads them. Its status text is kept
- *     only when `new Response` accepts it (see REASON_PHRASE).
+ *   - The same Response. The capped one is new: its `url` is empty,
+ *     `redirected` is false and `type` is "default". The MCP SDK does read
+ *     `type` and `url`, in `unfollowedRedirect`, to word the error for a
+ *     redirect it did not follow, and that is harmless. Node's fetch never
+ *     returns an `opaqueredirect`. mcp-oauth's `safeFetch` returns a 3xx only
+ *     when it has no Location to follow, so there is no target to word. In
+ *     the runner, an empty `url` makes the SDK resolve the Location against
+ *     the URL it requested, so the only effect is on the error text for an
+ *     unfollowed cross-origin redirect. Its status text is kept only when
+ *     `new Response` accepts it (see REASON_PHRASE).
  */
 
 const KIB = 1024;

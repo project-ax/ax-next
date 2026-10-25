@@ -146,8 +146,11 @@ export const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024;
  * deliberately not a `TypeError`: fetch reports a network failure as a
  * `TypeError`, and the SDK's discovery takes one thrown by fetch for a
  * browser CORS failure and moves on. The returned Response is a
- * new one with an empty `url`; the SDK reads `url` only to resolve a
- * redirect's Location, and a 3xx comes back from here only without one.
+ * new one with an empty `url` and `type` "default". The SDK reads them
+ * only to word the error for a redirect it did not follow
+ * (`unfollowedRedirect`): `type` to spot an `opaqueredirect`, which Node's
+ * fetch never returns, and `url` to resolve the Location, and a 3xx comes
+ * back from here only without one.
  * Intermediate redirect hops are never read, so they are not wrapped.
  */
 export async function safeFetch(
