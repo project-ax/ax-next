@@ -198,7 +198,9 @@ jobs:
           # packages". The guard test pins that this step has no `shell:` and
           # this file has no `defaults:`.
           full=
-          if [ -z "$BASE_SHA" ] || ! changed=$(git diff --name-only "$BASE_SHA"...HEAD); then
+          # --no-renames: a rename otherwise lists only its destination, so
+          # moving a trigger file (or a sandbox-protocol file) away would hide.
+          if [ -z "$BASE_SHA" ] || ! changed=$(git diff --name-only --no-renames "$BASE_SHA"...HEAD); then
             echo "::warning::could not diff against the PR base (${BASE_SHA:-empty}), so running the full suite rather than guessing."
             full=yes
           fi
@@ -217,7 +219,10 @@ jobs:
           # - tsconfig.base.json, which every package's tsconfig extends.
           # - this workflow, so a PR that changes how CI tests (or the node
           #   version it tests on) runs everything, and the full branch below
-          #   gets exercised by the PR that changes it.
+          #   gets exercised by the PR that changes it. The flip side: such a
+          #   PR runs the affected-path lines below only against the guard's
+          #   stub pnpm, so a bad filter there first fails (loudly) on the
+          #   next PR that takes that path.
           # scripts/__tests__/ci-dependency-changes-run-full-suite.test.js runs
           # this block in throwaway repos and pins every rule above.
           repo_wide='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|\.npmrc|\.pnpmfile\.cjs|tsconfig\.base\.json|\.github/workflows/ci\.yml)$|^patches/'

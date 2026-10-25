@@ -76,8 +76,9 @@ function stepRunScript(yaml, name) {
 // default branch), so global and system config are switched off. Git's
 // location variables are dropped too: run from a git hook or `rebase -x`, an
 // inherited GIT_DIR would point every `add -A` and `commit` here at the REAL
-// repository.
-const GIT_LOCATION_VARS = [
+// repository. So is config injected through the environment (`git -c k=v`
+// exports GIT_CONFIG_PARAMETERS, which GIT_CONFIG_GLOBAL does not switch off).
+const GIT_INHERITED_VARS = [
   'GIT_DIR',
   'GIT_WORK_TREE',
   'GIT_INDEX_FILE',
@@ -85,9 +86,13 @@ const GIT_LOCATION_VARS = [
   'GIT_ALTERNATE_OBJECT_DIRECTORIES',
   'GIT_COMMON_DIR',
   'GIT_PREFIX',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
 ];
 const inherited = { ...process.env };
-for (const name of GIT_LOCATION_VARS) delete inherited[name];
+for (const name of Object.keys(inherited)) {
+  if (GIT_INHERITED_VARS.includes(name) || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(name)) delete inherited[name];
+}
 const GIT_ENV = {
   ...inherited,
   GIT_AUTHOR_NAME: 't',
@@ -134,7 +139,9 @@ const SCRIPT = stepRunScript(WORKFLOW, STEP_NAME);
 /**
  * The lines of the step called `name`, from its `- name:` line up to the next
  * line at or left of its indent. Used to check the step's own keys (`shell:`),
- * which the run-block slice above never sees.
+ * which the run-block slice above never sees. Comment lines don't end a YAML
+ * mapping, so they're skipped like blank ones: a `# …` at the step's indent
+ * followed by `shell: bash` still puts `shell` on this step.
  */
 function stepLines(yaml, name) {
   const lines = yaml.split('\n');
@@ -144,7 +151,8 @@ function stepLines(yaml, name) {
   const stepIndent = indentOf(lines[at]);
   const out = [lines[at]];
   for (let i = at + 1; i < lines.length; i++) {
-    if (lines[i].trim() !== '' && indentOf(lines[i]) <= stepIndent) break;
+    const t = lines[i].trim();
+    if (t !== '' && !t.startsWith('#') && indentOf(lines[i]) <= stepIndent) break;
     out.push(lines[i]);
   }
   return out;
@@ -190,7 +198,8 @@ let repos = 0;
 
 /**
  * Runs the step in a fresh repo whose PR commit applies `files` on top of
- * BASE_TREE. `affected` is what the stub prints for `list`, `base` overrides
+ * BASE_TREE (a `null` body deletes the path). `affected` is what the stub
+ * prints for `list`, `base` overrides
  * BASE_SHA, and `testStatus` is the exit status of any `pnpm … run test`.
  * Returns the exit status, the output, and every pnpm call as an argv array.
  */
@@ -203,7 +212,10 @@ function runStep({ files, affected = '', base, testStatus = 0 }) {
   git(repo, 'commit', '-q', '-m', 'base');
   const baseSha = git(repo, 'rev-parse', 'HEAD');
   git(repo, 'checkout', '-q', '-b', 'pr');
-  for (const [path, body] of Object.entries(files)) put(repo, path, body);
+  for (const [path, body] of Object.entries(files)) {
+    if (body === null) rmSync(join(repo, path));
+    else put(repo, path, body);
+  }
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'pr');
   // Inside .git, so the log can never show up in the diff the step reads.
@@ -229,10 +241,9 @@ function runStep({ files, affected = '', base, testStatus = 0 }) {
   return { status: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}`, calls, baseSha };
 }
 
-const isFullSuite = (argv) =>
-  (argv.includes('-r') || argv.includes('--recursive')) &&
-  !argv.includes('--filter') &&
-  argv.slice(-2).join(' ') === 'run test';
+// Exactly `pnpm -r run test`: any filter (`-F x`, `--filter=x`) would make it
+// something less than the full suite.
+const isFullSuite = (argv) => argv.join(' ') === '-r run test';
 const isAffectedRun = (argv, base) =>
   argv.includes(`...[${base}]`) && argv.includes('!{.}') && argv.slice(-2).join(' ') === 'run test';
 
@@ -258,7 +269,7 @@ function expectAffectedOnly(r) {
   expect(r.calls.filter(isFullSuite), `ran the full suite. ${why}`).toHaveLength(0);
 }
 
-describe('the PR test step runs the full suite when dependency resolution changes', () => {
+describe('the PR test step runs the full suite when a repo-wide input changes', () => {
   it('finds the PR test step and its run block in ci.yml', () => {
     expect(SCRIPT, `no "${STEP_NAME}" step with a \`run: |\` block in ci.yml`).not.toBeNull();
     // Over-guard: the slice holds the whole block, not just its head.
@@ -299,6 +310,34 @@ describe('the PR test step runs the full suite when dependency resolution change
     // would otherwise look like a PR that changed nothing.
     const r = runStep({ files: { 'docs/notes.md': 'more notes\n' }, base: '' });
     expectFullSuite(r);
+  });
+
+  it('deleting a patch runs the full suite', () => {
+    expectFullSuite(runStep({ files: { 'patches/left-pad@1.3.0.patch': null } }));
+  });
+
+  it('moving a patch out of patches/ runs the full suite', () => {
+    // git's rename detection would list only the destination, docs/…, which
+    // matches nothing, so the step must diff with --no-renames.
+    const r = runStep({
+      files: {
+        'patches/left-pad@1.3.0.patch': null,
+        'docs/left-pad@1.3.0.patch': BASE_TREE['patches/left-pad@1.3.0.patch'],
+      },
+    });
+    expectFullSuite(r);
+  });
+
+  it("the full branch runs the same suites as the root's own `pnpm test`", () => {
+    // Main's full run is the root `test` script. The PR full branch spells the
+    // same three suites out (it can't call `pnpm test`, which would also run
+    // the two trailing suites twice), so a suite added to the root script must
+    // be added to the step too.
+    const rootTest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).scripts.test;
+    const suites = rootTest.split('&&').map((s) => s.trim());
+    expect(suites).toEqual(['pnpm -r run test', 'pnpm test:eslint-rules', 'pnpm test:scripts']);
+    const stepCommands = SCRIPT.split('\n').map((line) => line.trim());
+    for (const suite of suites) expect(stepCommands, suite).toContain(suite);
   });
 
   it('a lockfile change next to a package change runs the full suite, not the affected set', () => {
