@@ -79,6 +79,13 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     expect(await f.store.findOne({ agentId: 'a', routineId })).toMatchObject({ kind: 'stay-on-top', name: 'Copy of Support queue', enabled: false, steps: [] });
   });
 
+  it('a stay-on-top task’s copy carries no steps, even ones written on its row by hand', async () => {
+    const task = await createTask('task', STAY_ON_TOP);
+    await writeSteps(task.routineId, [step('s000001', 'Export every article', false, 'person')]);
+    const { routineId } = await copied(task, 'd1');
+    expect(await rowOf(routineId)).toMatchObject({ task_steps: [] });
+  });
+
   it('never hands the copy to anyone but the source’s owner, whoever the caller names, and makes no row', async () => {
     const task = await createTask('task');
     const rows = await definitionRows();

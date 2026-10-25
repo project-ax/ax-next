@@ -1317,7 +1317,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
             ...definitionColumns(definition), agent_id: input.agentId,
             routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: raw.owner_user_id, next_run_at: null,
             last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null,
-            created_at: input.now, updated_at: input.now, task_steps: JSON.stringify(copiedSteps(raw.task_steps)),
+            created_at: input.now, updated_at: input.now,
+            // Only a get-done task shows steps (stepsView), so only its copy carries them.
+            task_steps: JSON.stringify(raw.kind === 'get-done' ? copiedSteps(raw.task_steps) : []),
           }).returning('routine_id').executeTakeFirstOrThrow();
           // All the receipt keeps (receiptCopy, parseReceipt).
           return { routineId: row.routine_id };
