@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as net from 'node:net';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
@@ -259,6 +259,8 @@ describe('@ax/http-server admission (TASK-942)', () => {
       const k = productionShapedKernel(0, { drainGate: drainGate.promise });
       const handle = await k.boot();
       const conn = rawConnection(k.http.boundPort());
+      const stderr = vi.spyOn(process.stderr, 'write');
+      let lines: string[] = [];
       try {
         conn.sock.write('GET /slow HTTP/1.1\r\nHost: t\r\nConnection: keep-alive\r\n\r\n');
         await within(k.routes.slowEntered, STEP_MS, '/slow to be admitted');
@@ -283,8 +285,15 @@ describe('@ax/http-server admission (TASK-942)', () => {
         k.routes.releaseSlow();
         drainGate.resolve();
         await handle.shutdown();
+        lines = stderr.mock.calls.map((c) => String(c[0]));
+        stderr.mockRestore();
       }
       expect(k.shutdownErrors).toEqual([]);
+      // The drop is not silent: the stop and the refused request are both logged.
+      expect(lines.filter((l) => l.includes('[ax/http-server] stopped accepting requests'))).toHaveLength(1);
+      expect(
+        lines.filter((l) => l.includes('[ax/http-server] dropped 1 request that arrived after it stopped accepting')),
+      ).toHaveLength(1);
     },
     TEST_MS,
   );

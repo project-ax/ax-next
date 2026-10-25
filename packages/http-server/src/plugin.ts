@@ -88,6 +88,8 @@ export function createHttpServerPlugin(
   let admitting = false;
   // The listener's close, begun by the first stop. shutdown() awaits it.
   let closing: Promise<void> | null = null;
+  // Requests the gate refused after the stop; shutdown() reports the count.
+  let dropped = 0;
 
   // Idempotent. Closing the listener also drops idle kept-alive sockets. It
   // does not wait for open connections to end; shutdown() does that.
@@ -98,6 +100,7 @@ export function createHttpServerPlugin(
     closing = new Promise<void>((resolve) => {
       srv.close(() => resolve());
     });
+    process.stderr.write('[ax/http-server] stopped accepting requests (shutting down)\n');
   };
 
   const allowedOrigins = opts.allowedOrigins ?? [];
@@ -230,6 +233,7 @@ export function createHttpServerPlugin(
       const srv = http.createServer((req, res) => {
         // Node keeps dispatching on a busy kept-alive socket after close(); drop those requests (TASK-942).
         if (!admitting) {
+          dropped += 1;
           req.socket.destroy();
           return;
         }
@@ -319,6 +323,12 @@ export function createHttpServerPlugin(
       server?.closeIdleConnections();
       if (closing !== null) await closing;
       server = null;
+      if (dropped > 0) {
+        process.stderr.write(
+          `[ax/http-server] dropped ${dropped} request${dropped === 1 ? '' : 's'} that arrived after it stopped accepting\n`,
+        );
+        dropped = 0;
+      }
     },
   };
 }
