@@ -607,6 +607,20 @@ async function unansweredAfter(trx: Transaction<RoutinesDatabase>, row: Selectab
 function storedFinishBy(value: string | null): string | null {
   return RoutineFinishBySchema.safeParse(value).success ? value : null;
 }
+/**
+ * TASK-957. A row's steps as every read sees them (`storedSteps`), and one
+ * stderr line, ids only, when the stored value isn't a list. No writer stores
+ * one (`NO_TASK_STATE` and `changeStoredSteps` write lists), so it's a hand edit
+ * or a later version's format; it would otherwise read as no steps with nothing
+ * said, while every step change to it is skipped. Never the value: it can hold
+ * the agent's text. Every read says it again, until someone repairs the row.
+ */
+function rowSteps(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'routine_id' | 'task_steps'>): StoredStep[] {
+  if (!Array.isArray(row.task_steps)) {
+    process.stderr.write(`[ax/routines] steps of routine ${row.agent_id}/${row.routine_id} aren't stored as a list, so they read as none\n`);
+  }
+  return storedSteps(row.task_steps);
+}
 function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -614,7 +628,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
-    noRecentUpdate: noRecentUpdate(row), steps: storedSteps(row.task_steps), finishBy: storedFinishBy(row.finish_by), done: doneOf(row),
+    noRecentUpdate: noRecentUpdate(row), steps: rowSteps(row), finishBy: storedFinishBy(row.finish_by), done: doneOf(row),
   });
 }
 /**

@@ -52,9 +52,10 @@ export function readStoredSteps(value: unknown): { steps: StoredStep[]; unread: 
 /**
  * TASK-948. A get-done task's checklist as a read shows it: the steps
  * `readStoredSteps` reads, in order, and no steps when the value isn't a list.
- * `rowToRoutine` runs this on every read, `claimDue`'s included, so one odd
- * value (a rollback, a hand edit, a later version) can't stop a read or the
- * tick (TASK-913).
+ * `rowToRoutine` runs this on every read, `claimDue`'s included, through
+ * `rowSteps`, so one odd value (a rollback, a hand edit, a later version) can't
+ * stop a read or the tick (TASK-913). `rowSteps` writes one stderr line when the
+ * value isn't a list (TASK-957); this stays pure.
  */
 export function storedSteps(value: unknown): StoredStep[] {
   return readStoredSteps(value)?.steps ?? [];
