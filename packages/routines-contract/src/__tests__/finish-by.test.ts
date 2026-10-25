@@ -152,8 +152,9 @@ describe('the tools tell the agent about the date, and that only the person sets
     const sentence = 'finishBy is the date the person wants a "get-done" task finished by, or null. Only the person sets it.';
     for (const name of ['routine_list', 'routine_get'] as const) expect(RoutineToolDescriptions[name], name).toContain(sentence);
     // routine_update answers with the list tools' view, which carries it, and a replay answers from a receipt, which keeps none.
+    // (TASK-950's done, the receipt keeps none either.)
     expect(RoutineToolDescriptions.routine_update)
-      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate and finishBy null, so read the task with routine_get.');
+      .toContain('A retry of an edit that already went through answers with task, noRecentUpdate, finishBy and done null, so read the task with routine_get.');
     // Neither creating a task nor reporting on one can carry a date.
     for (const name of ['routine_create', 'routine_report'] as const) expect(RoutineToolDescriptions[name], name).not.toContain('finishBy');
   });

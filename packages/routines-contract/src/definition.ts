@@ -525,7 +525,8 @@ export type RoutineReading = z.output<typeof RoutineReadingSchema>;
  * required here, and each schema that uses them picks its own default: the tool
  * fills a missing `ask` with null, and leaving `notes` out keeps the saved ones.
  * `reading` is nullable and required here too; the tool and the service take it
- * optional, and absent or null both mean no reading this time.
+ * optional, and absent or null both mean no reading this time. `done`
+ * (TASK-950) is optional on both inputs, and left out or false is no claim.
  */
 export const RoutineReportFieldShape = {
   status: RoutineReportStatusSchema,
@@ -533,7 +534,25 @@ export const RoutineReportFieldShape = {
   ask: reportText({ max: ROUTINE_REPORT_ASK_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
   notes: reportText({ max: ROUTINE_AGENT_NOTES_MAX_CHARS, blank: 'Write something, or send null.', oneLine: false }).nullable(),
   reading: RoutineReadingSchema.nullable(),
+  done: z.boolean(),
 };
+
+/**
+ * TASK-950. A claim that a task is done comes with status "needs-you": one
+ * issue, at path `['done']`. The claim is part of the report, and every reader
+ * of a task (the Tasks page's groups, Today, the badge) keys on the report's
+ * status, so a claim must come with "needs-you" to reach the person who
+ * decides. Both report inputs refine their whole object with it: a rule on the
+ * `done` field alone can't see `status`. The message never reaches the agent,
+ * whose refusal names only the field (core's fixed template); it is for the
+ * contract's own callers and tests.
+ */
+export function refuseDoneWithoutNeedsYou(
+  report: { status: RoutineReportStatus; done?: boolean | undefined }, ctx: z.RefinementCtx,
+): void {
+  if (report.done !== true || report.status === 'needs-you') return;
+  ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['done'], message: 'When you think the task is done, send status "needs-you" with done true.' });
+}
 
 /*
  * A reply (TASK-931): what a task's owner writes to their agent about the task,
@@ -673,11 +692,15 @@ export type RoutineReadingView = z.output<typeof RoutineReadingViewSchema>;
  * them `agentNotes`, so whoever reads them knows who wrote them. TASK-952:
  * `reading` is the reading that report sent, or null. It's required, so a view
  * from a producer that doesn't know it is refused rather than read as "no
- * reading". Stored text isn't re-capped (TASK-913).
+ * reading". TASK-950: `doneClaimed` says that report claimed a "get-done" task
+ * is finished (its `done`), so the person can mark it done or say what's left;
+ * always false for any other kind. Required too, so a view from a producer
+ * that doesn't know it is refused rather than read as "no claim". Stored text
+ * isn't re-capped (TASK-913).
  */
 export const RoutineTaskViewSchema = z.object({
   status: RoutineReportStatusSchema, update: z.string(), ask: z.string().nullable(),
-  reading: RoutineReadingViewSchema.nullable(),
+  reading: RoutineReadingViewSchema.nullable(), doneClaimed: z.boolean(),
   reportedAt: RoutineInstantSchema, agentNotes: z.string().nullable(),
 }).strict();
 export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;
@@ -685,6 +708,14 @@ export type RoutineTaskView = z.output<typeof RoutineTaskViewSchema>;
 /** What a task's report shows when its agent notes stay out of the read: the list tool's view (TASK-907). */
 export const RoutineTaskListViewSchema = RoutineTaskViewSchema.omit({ agentNotes: true });
 export type RoutineTaskListView = z.output<typeof RoutineTaskListViewSchema>;
+
+/**
+ * TASK-950. When a person marked a "get-done" task done. Only `at`: who marked
+ * it is always the task's owner, the one person a view shows it to, so the
+ * view never names anyone.
+ */
+export const RoutineDoneViewSchema = z.object({ at: RoutineInstantSchema }).strict();
+export type RoutineDoneView = z.output<typeof RoutineDoneViewSchema>;
 
 const RoutineViewShape = {
   ...RoutineEditableShape,
@@ -715,6 +746,16 @@ const RoutineViewShape = {
    * The same in every view, the tools' included.
    */
   finishBy: z.string().nullable(),
+  /**
+   * TASK-950. A "get-done" task a person marked done: `{ at }`, while it stays
+   * done (off, and finished by its owner). Host-written, never agent text. Null
+   * for anyone but the task's owner (`task`'s rule), for any kind but get-done,
+   * for a task that isn't done, and in an exact replay's answer: a receipt
+   * keeps none. Required, so a view from a producer that doesn't know it is
+   * refused rather than read as "not done". The same in every view, the tools'
+   * included: their descriptions say only a person reopens a done task.
+   */
+  done: RoutineDoneViewSchema.nullable(),
 };
 function validateView(view: Record<string, unknown>, ctx: z.RefinementCtx): void {
   const definition = Object.fromEntries(Object.keys(RoutineEditableShape).map(key => [key, view[key]]));

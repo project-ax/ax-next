@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { build } from 'vite';
+import { z } from 'zod';
 import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 import * as contract from '../index.js';
 import {
@@ -133,10 +134,17 @@ describe('webhooks', () => {
 });
 
 describe('public services and tools', () => {
-  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null };
+  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null };
   it('round-trips the full view and forbids protected state and Date objects', () => {
     expect(RoutineViewSchema.parse(view)).toEqual(view);
     for (const extra of [{ ownerUserId: 'u' }, { specHash: 'hash' }, { nextRunAt: new Date() }, { nextRunAt: 'not-a-date' }, { permissions: { ...view.permissions, isAdmin: true } }]) expect(RoutineViewSchema.safeParse({ ...view, ...extra }).success).toBe(false);
+    // TASK-950. When a task was marked done is an instant, and who marked it never crosses. Left out is refused,
+    // so no reader mistakes an older producer's view for "not done".
+    const done = { at: '2026-10-09T13:00:00.000Z' };
+    expect(RoutineViewSchema.parse({ ...view, done })).toEqual({ ...view, done });
+    for (const value of [{ ...done, byUserId: 'u' }, { at: new Date() }, { at: 'not-a-date' }, {}]) expect(RoutineViewSchema.safeParse({ ...view, done: value }).success, JSON.stringify(value)).toBe(false);
+    const { done: _done, ...undated } = view;
+    expect(RoutineViewSchema.safeParse(undated).success).toBe(false);
   });
   it('bounds IDs, revisions and logical request IDs without parsing encoding', () => {
     const input = { agentId: 'opaque agent/value', routineId: 'legacy/default.id', requestId: 'retry opaque', expectedRevision: 'revision +/= !', patch: { enabled: false } };
@@ -237,8 +245,10 @@ describe('public services and tools', () => {
     for (const value of [0, 201, 1.5]) expect(contract.RoutineRecentFiresInputSchema.safeParse({ ...key, limit: value }).success).toBe(false);
   });
   it('keeps JSON schema fields and required keys aligned with runtime tools', () => {
+    // A tool whose rule spans its fields refines its whole object (routine_report's done, TASK-950): read the object inside.
+    const objectOf = (schema: z.ZodTypeAny) => (schema instanceof z.ZodEffects ? schema.innerType() : schema) as z.AnyZodObject;
     for (const name of Object.keys(RoutineToolInputSchemas) as (keyof typeof RoutineToolInputSchemas)[]) {
-      const runtime = RoutineToolInputSchemas[name];
+      const runtime = objectOf(RoutineToolInputSchemas[name]);
       const json = RoutineToolJsonSchemas[name];
       expect(Object.keys(json.properties).sort()).toEqual(Object.keys(runtime.shape).sort());
       const required = Object.entries(runtime.shape).filter(([, field]) => !field.isOptional()).map(([name]) => name).sort();
@@ -264,7 +274,7 @@ describe('task kinds (TASK-906)', () => {
   const view = {
     ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
-    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null,
+    permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null,
   };
 
   it('defaults kind to repeat and goodWhen to null', () => {
@@ -1004,7 +1014,7 @@ describe('a task’s brief can’t hide text from the card (TASK-906)', () => {
   });
 
   it('views recheck it, so a read never shows a task brief with hidden text', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${tags(' x')}` }).success).toBe(false);
   });
@@ -1186,7 +1196,7 @@ describe('a task’s brief can’t push text out of the card’s view (TASK-906)
   });
 
   it('views recheck it', () => {
-    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null };
+    const view = { ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, done: null };
     expect(RoutineViewSchema.safeParse(view).success).toBe(true);
     expect(RoutineViewSchema.safeParse({ ...view, promptBody: `Keep the queue empty.${'\n'.repeat(1000)}${payload}` }).success).toBe(false);
   });
