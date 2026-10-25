@@ -925,7 +925,7 @@ describe('person steps canary (TASK-949)', () => {
       } })).toStrictEqual({ recorded: true, steps: { applied: 1, skipped: 1 } });
     });
     expect(next.message).toContain(`- [ ] ${id} (the person wrote this):\n  > ${TEXT}`);
-    expect((next.brief as { brief?: string }).brief).toContain('and the steps marked "the person wrote this"');
+    expect((next.brief as { brief?: string }).brief).toContain('and each step whose own line, which the host writes, ends "(the person wrote this):"');
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
 
     // The agent's tick landed; its rewording didn't, so the words are still the person's.
