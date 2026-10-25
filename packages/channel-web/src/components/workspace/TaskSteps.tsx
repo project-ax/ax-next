@@ -59,10 +59,13 @@
  * refused change (the task was marked done elsewhere first) isn't on the
  * record, the status line says "This task was marked done, so that change
  * wasn’t saved." A refused change can be on the record: a retry of one that
- * landed, its first try unconfirmed, is refused once the task is Done. A
- * change nobody could confirm says nothing more: the record shows whether it
- * landed. Reopening the task brings the controls back. `footer` is drawn
- * last, under the steps and their controls: the page's Mark done.
+ * landed, its first try unconfirmed, is refused once the task is Done. Both
+ * are kept and each is judged, since a box can be ticked while an editor
+ * holds typed text, and a tick out as the task turns Done can be refused
+ * after the editor closed. A change nobody could confirm says nothing more:
+ * the record shows whether it landed. Reopening the task brings the controls
+ * back, and the line goes. `footer` is drawn last, under the steps and their
+ * controls: the page's Mark done.
  *
  * AGENT- OR PERSON-WRITTEN TEXT IS DRAWN AS TEXT. A step was written by a
  * model or by the person, and the server fenced it to one line before it left
@@ -156,15 +159,24 @@ type Editor =
   | { kind: 'edit'; id: string; text: string; opened: string; failure: EditorFailure | null }
   | { kind: 'add'; text: string; failure: EditorFailure | null };
 
+/** A change the list sends: a tick, an untick or a Delete. An editor sends an add or an edit. */
+type ListOp = Extract<RoutineStepOp, { op: 'tick' | 'untick' | 'remove' }>;
+type EditorOp = Extract<RoutineStepOp, { op: 'add' | 'edit' }>;
+
+/** A change and where it came from, which is where its failure is said. */
+type Sent = { place: 'list'; op: ListOp } | { place: 'editor'; op: EditorOp };
+type Place = Sent['place'];
+
 /**
  * What the person was changing when the task turned Done (TASK-950): an
- * editor's text, or a change refused as not there (403 or 404). Kept so the
- * record can say it wasn't saved, unless the record shows it was.
+ * editor's text, or a list change refused as not there (403 or 404). Kept so
+ * the record can say it wasn't saved, unless the record shows it was. An add
+ * or an edit is judged through its editor's text, which still holds it.
  */
 type Left =
   | { kind: 'edit'; id: string; text: string; opened: string }
   | { kind: 'add'; text: string }
-  | { kind: 'refused'; op: RoutineStepOp };
+  | { kind: 'refused'; op: ListOp };
 
 /** Whether a step's text, as shown, is `text`. */
 function reads(step: TaskStep, text: string): boolean {
@@ -194,10 +206,6 @@ function onRecord(left: Left, steps: TaskStep[]): boolean {
           return steps.some((step) => step.id === op.id && step.done === (op.op === 'tick'));
         case 'remove':
           return !steps.some((step) => step.id === op.id);
-        case 'edit':
-          return steps.some((step) => step.id === op.id && reads(step, op.text));
-        case 'add':
-          return steps.some((step) => reads(step, op.text));
       }
     }
   }
@@ -209,9 +217,6 @@ type FocusTarget =
   | { to: 'in-place-of'; index: number }
   | { to: 'editor' }
   | { to: 'add' };
-
-/** Where a change came from, which is where its failure is said. */
-type Place = 'editor' | 'list';
 
 /** A ref that files a step's element under its id while it's mounted. */
 function fileUnder(map: Map<string, HTMLButtonElement>, id: string) {
@@ -255,9 +260,9 @@ export function TaskSteps({
   const [listFailure, setListFailure] = useState<{
     line: string;
     register: AlertRegister;
-    refused: RoutineStepOp | null;
+    refused: ListOp | null;
   } | null>(null);
-  const [left, setLeft] = useState<Left | null>(null);
+  const [left, setLeft] = useState<Left[]>([]);
   const pending = useRef<{ key: string; requestId: string } | null>(null);
   const inFlight = useRef(false);
   const focusNext = useRef<FocusTarget | null>(null);
@@ -275,25 +280,24 @@ export function TaskSteps({
   if (editor?.kind === 'edit' && !steps.some((step) => step.id === editor.id)) setEditor(null);
   // A Done task's steps change no more (TASK-950): an open editor closes, and a change's failure or
   // skipped line goes, so the record never shows a change it can't take. What the person was changing
-  // is kept, to say it wasn't saved. Adjusted while rendering, too. Level-triggered, not on the change
-  // to `readOnly`: a change out when the task turned Done may fail after it.
+  // is kept, added to what was kept before, to say it wasn't saved: a refused tick and the editor open
+  // beside it are each judged. Adjusted while rendering, too. Level-triggered, not on the change to
+  // `readOnly`: a change out when the task turned Done may fail after it.
   if (readOnly && (editor !== null || listFailure !== null || skipped !== null)) {
-    const leaving: Left | null =
-      listFailure?.refused != null
-        ? { kind: 'refused', op: listFailure.refused }
-        : editor === null
-          ? null
-          : editor.kind === 'edit'
-            ? { kind: 'edit', id: editor.id, text: editor.text, opened: editor.opened }
-            : { kind: 'add', text: editor.text };
-    if (leaving !== null) setLeft(leaving);
+    const leaving: Left[] = [];
+    if (listFailure?.refused != null) leaving.push({ kind: 'refused', op: listFailure.refused });
+    if (editor?.kind === 'edit') {
+      leaving.push({ kind: 'edit', id: editor.id, text: editor.text, opened: editor.opened });
+    }
+    if (editor?.kind === 'add') leaving.push({ kind: 'add', text: editor.text });
+    if (leaving.length > 0) setLeft((kept) => [...kept, ...leaving]);
     setEditor(null);
     setListFailure(null);
     setSkipped(null);
   }
   // Reopened: the controls are back, and the line goes.
-  if (!readOnly && left !== null) setLeft(null);
-  const notSaved = readOnly && left !== null && !onRecord(left, steps);
+  if (!readOnly && left.length > 0) setLeft([]);
+  const notSaved = readOnly && left.some((l) => !onRecord(l, steps));
 
   const done = steps.filter((step) => step.done).length;
   const atCap = steps.length >= ROUTINE_STEPS_MAX;
@@ -339,8 +343,7 @@ export function TaskSteps({
   });
 
   const change = async (
-    op: RoutineStepOp,
-    place: Place,
+    { op, place }: Sent,
     focus: { answered: FocusTarget; failed: FocusTarget },
     answered?: (answer: TaskStepsResponse) => void,
   ) => {
@@ -388,11 +391,12 @@ export function TaskSteps({
 
   const tick = (step: TaskStep, index: number, checked: boolean) => {
     const back: FocusTarget = { to: 'box', id: step.id, index };
-    void change({ op: checked ? 'tick' : 'untick', id: step.id }, 'list', { answered: back, failed: back });
+    const op: ListOp = { op: checked ? 'tick' : 'untick', id: step.id };
+    void change({ place: 'list', op }, { answered: back, failed: back });
   };
 
   const remove = (step: TaskStep, index: number) => {
-    void change({ op: 'remove', id: step.id }, 'list', {
+    void change({ place: 'list', op: { op: 'remove', id: step.id } }, {
       answered: { to: 'in-place-of', index },
       failed: { to: 'options', id: step.id, index },
     });
@@ -437,8 +441,7 @@ export function TaskSteps({
       return;
     }
     void change(
-      { op: 'edit', id: step.id, text: asShown(editor.text) },
-      'editor',
+      { place: 'editor', op: { op: 'edit', id: step.id, text: asShown(editor.text) } },
       { answered: { to: 'options', id: step.id, index }, failed: { to: 'editor' } },
       () => setEditor(null),
     );
@@ -457,8 +460,7 @@ export function TaskSteps({
       return;
     }
     void change(
-      { op: 'add', text: asShown(text) },
-      'editor',
+      { place: 'editor', op: { op: 'add', text: asShown(text) } },
       { answered: { to: 'editor' }, failed: { to: 'editor' } },
       // Applied, it empties for the next step; skipped, it keeps its text beside the skipped line.
       (answer) => {

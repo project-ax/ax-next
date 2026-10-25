@@ -907,12 +907,52 @@ describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
     expect(screen.getByRole('status').textContent).toBe('');
   });
 
-  it('says a refused Delete wasn’t saved when the record still lists the step', async () => {
+  it.each<[string, () => Promise<void>]>([
+    ['tick', async () => void fireEvent.click(box('Check the redirects'))],
+    ['untick', async () => void fireEvent.click(box('Export every article'))],
+    ['Delete', () => choose('Check the redirects', 'Delete')],
+  ])('says a refused %s wasn’t saved when the record doesn’t show it', async (_what, press) => {
     setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
     const view = render(done(false));
-    await choose('Check the redirects', 'Delete');
+    await press();
     expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
-    view.rerender(done(true));
+    view.rerender(done(true, PLAN));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  // Tick boxes stay enabled while an editor holds typed text: a refused tick and the editor are each judged.
+  it('says typed text wasn’t saved when a refused tick the record shows closes its editor', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it('says reworded text wasn’t saved when a refused tick the record shows closes its Edit editor', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.change(await edit('Tell the team'), { target: { value: 'Tell the whole team' } });
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it('keeps saying typed text wasn’t saved when a tick out as the task turns Done is refused after it', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    fireEvent.click(box('Check the redirects'));
+    view.rerender(done(true, withStep(PLAN, 's2', { done: true })));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+    await act(async () => d.reject(new WorkspaceApiError('/tasks/a1/t1/steps', 404)));
     expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
   });
 
