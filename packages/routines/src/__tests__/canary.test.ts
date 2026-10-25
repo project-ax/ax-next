@@ -1062,12 +1062,13 @@ describe('finish-by canary (TASK-951)', () => {
 
 // TASK-953: a person's copy of their task, end to end through the real routines, agents, tool-policy and decisions
 // plugins and Postgres. On a team agent task made as TASK-949's canary makes one, with a check-in behind it (the
-// agent's notes and two steps, one done) and a finish date, the owner copies it through routines:duplicate, and
-// neither a teammate nor another admin of the team can. The copy is paused, with the source's brief and schedule, its
-// steps unticked and still the agent's, and none of its state or its finish date. Resumed, its first check-in lists
+// agent's notes and two steps, one done) and a finish date, marked done (TASK-950: copying a finished plan is the main
+// use), the owner copies it through routines:duplicate, and neither a teammate nor another admin of the team can. The
+// copy is paused and not Done, with the source's brief and schedule, its steps unticked and still the agent's, and
+// none of its state or its finish date. Resumed, its first check-in lists
 // those steps as the agent's own plan, with no notes and no earlier reports, and its brief names no finish date.
 describe('duplicate canary (TASK-953)', () => {
-  it('the owner copies a get-done task: paused, its steps unticked; resumed, its first check-in lists them and no notes', async () => {
+  it('the owner copies a Done get-done task: paused, not Done, its steps unticked; resumed, its first check-in lists them and no notes', async () => {
     const ch = await createCheckInHarness();
     h = ch;
     const store = createRoutinesStore(h.db);
@@ -1098,8 +1099,12 @@ describe('duplicate canary (TASK-953)', () => {
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
     // Then the person gives it a finish date.
     expect(await h.bus.call('routines:set-finish-by', h.owner, { ...key, finishBy: '2026-11-14' })).toStrictEqual({ finishBy: '2026-11-14' });
+    // And marks it done (TASK-950).
+    expect(await h.bus.call('routines:complete', h.owner, { ...key, requestId: 'mark-done' })).toStrictEqual({ done: true });
     const source = await get(task.routineId);
-    expect(source).toMatchObject({ finishBy: '2026-11-14', task: { agentNotes: 'The billing images move first.' } });
+    expect(source).toMatchObject({
+      enabled: false, done: { at: expect.any(String) }, finishBy: '2026-11-14', task: { agentNotes: 'The billing images move first.' },
+    });
     expect(source.steps.map(step => step.done)).toEqual([true, false]);
 
     // The owner copies it from its task page. A teammate, who doesn't manage the agent's tasks, can't, and nor can
@@ -1110,12 +1115,12 @@ describe('duplicate canary (TASK-953)', () => {
         .rejects.toMatchObject({ toolCode: 'forbidden' });
     }
 
-    // The copy: paused, with the same brief and schedule, its steps unticked and still the agent's, and none of the
-    // task's state or its finish date.
+    // The copy: paused and not Done, with the same brief and schedule, its steps unticked and still the agent's, and
+    // none of the task's state or its finish date.
     const copy = await get(copyId);
     expect(copy).toMatchObject({
       name: 'Copy of Move the help docs', enabled: false, nextRunAt: null, kind: 'get-done',
-      goodWhen: task.goodWhen, promptBody: task.promptBody, trigger: task.trigger, task: null, finishBy: null,
+      goodWhen: task.goodWhen, promptBody: task.promptBody, trigger: task.trigger, task: null, finishBy: null, done: null,
     });
     expect(copy.steps).toEqual([
       { id: expect.any(String), text: 'Export every article from the old help center', done: false, addedBy: 'agent' },
@@ -1145,7 +1150,9 @@ describe('duplicate canary (TASK-953)', () => {
     // no notes keeps whatever notes the row already holds.
     expect((await get(copyId)).task).toMatchObject({ status: 'on-track', update: 'Picked up the copy.', agentNotes: null });
 
-    // The source is as it was: its first step still done, and its notes and finish date still its own.
-    expect(await get(task.routineId)).toMatchObject({ steps: source.steps, finishBy: '2026-11-14', task: { agentNotes: 'The billing images move first.' } });
+    // The source is as it was: still Done, its first step still done, and its notes and finish date still its own.
+    expect(await get(task.routineId)).toMatchObject({
+      enabled: false, done: source.done, steps: source.steps, finishBy: '2026-11-14', task: { agentNotes: 'The billing images move first.' },
+    });
   });
 });
