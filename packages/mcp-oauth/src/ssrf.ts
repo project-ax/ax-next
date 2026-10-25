@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { capResponseBody } from '@ax/core/response-cap';
 import ipaddr from 'ipaddr.js';
 
 export class BlockedUrlError extends Error {
@@ -93,6 +94,19 @@ export type FetchFn = (url: string | URL, init?: RequestInit) => Promise<Respons
 const MAX_REDIRECT_HOPS = 5;
 
 /**
+ * The most we read of any response `safeFetch` returns: 64 KiB (TASK-944).
+ *
+ * Those responses are protected-resource and authorization-server metadata,
+ * client registration, token exchange and refresh, and the error bodies the
+ * MCP SDK reads. Each is a document of a few KB (Google's OIDC discovery is
+ * about 2.5 KB), and a bearer token has to fit in a request header anyway.
+ * The authoring preview (`host-discovery.ts`) has read the same metadata
+ * documents, live Google metadata included, under this limit since
+ * 2026-10-01, so one constant serves both.
+ */
+export const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024;
+
+/**
  * `fetch` wrapper that re-runs `assertSafeUrl` on EVERY hop, including redirects.
  *
  * Why manual redirect following: the metadata that names these URLs is untrusted,
@@ -118,6 +132,20 @@ const MAX_REDIRECT_HOPS = 5;
  * undici Agent/dispatcher with a custom `lookup` that returns the vetted address,
  * while keeping the original hostname for TLS SNI + cert validation. That closes
  * the check-vs-connect window entirely. Tracked as a follow-up task.
+ *
+ * Response size (TASK-944). The MCP SDK reads every response this returns
+ * whole, and the server that sent it is untrusted, so each one is cut off at
+ * `MAX_OAUTH_RESPONSE_BYTES` (64 KiB) while it streams. The bytes are counted
+ * as the body yields them, after fetch has undone any gzip, so a small,
+ * missing or lying Content-Length cannot get a bigger body past. A declared
+ * Content-Length over the limit makes `safeFetch` itself reject, before
+ * anything is read. Over the limit the reader gets `ResponseTooLargeError`, a
+ * plain Error and deliberately not a `TypeError`: the SDK's discovery takes a
+ * `TypeError` from fetch for a browser CORS failure and moves on, which would
+ * report an oversize document as missing metadata. The returned Response is a
+ * new one with an empty `url`; the SDK reads `url` only to resolve a
+ * redirect's Location, and a 3xx comes back from here only without one.
+ * Intermediate redirect hops are never read, so they are not wrapped.
  */
 export async function safeFetch(
   url: string,
@@ -133,13 +161,14 @@ export async function safeFetch(
     const res = await doFetch(current, { ...init, redirect: 'manual' });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location');
-      if (!loc) return res; // 3xx without a Location — nothing to follow; caller's call.
+      // 3xx without a Location — nothing to follow; caller's call.
+      if (!loc) return capResponseBody(res, MAX_OAUTH_RESPONSE_BYTES);
       if (hop >= MAX_REDIRECT_HOPS) {
         throw new BlockedUrlError(`too many redirects starting at ${url}`);
       }
       current = new URL(loc, current).toString(); // resolve relative; re-validated next loop
       continue;
     }
-    return res;
+    return capResponseBody(res, MAX_OAUTH_RESPONSE_BYTES);
   }
 }

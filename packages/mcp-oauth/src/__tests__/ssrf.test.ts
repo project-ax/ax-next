@@ -1,6 +1,7 @@
 import { type AddressInfo, createServer, type Server } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { assertSafeUrl, BlockedUrlError, safeFetch } from '../ssrf.js';
+import { assertSafeUrl, BlockedUrlError, MAX_OAUTH_RESPONSE_BYTES, safeFetch } from '../ssrf.js';
 
 const allow = new Set(['mcp.example.com', 'auth.example.com']);
 // Resolver stub: example hosts → public IP; everything else → loopback.
@@ -185,6 +186,118 @@ describe('safeFetch redirect re-validation', () => {
       ).rejects.toBeInstanceOf(BlockedUrlError);
     } finally {
       await new Promise<void>((resolve) => looper.close(() => resolve()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safeFetch response size cap (TASK-944). The MCP SDK reads every response
+// safeFetch hands back whole (`.json()` / `.text()`), so safeFetch cuts each
+// one off at 64 KiB while it streams. Sizes here are literals, never the
+// constant under test: during a red run that export is undefined, and a body
+// sized from it would never end.
+
+/** `total` bytes in `chunk`-byte pieces; records how far a reader pulled. */
+function counted(total: number, chunk: number) {
+  // A NaN total (an import still undefined during a red run) would never end.
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(chunk) || chunk <= 0) {
+    throw new Error(`counted: bad sizes ${String(total)}/${String(chunk)}`);
+  }
+  const stats = { pulled: 0, cancelled: false, reason: undefined as unknown };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (stats.pulled * chunk >= total) return controller.close();
+        stats.pulled += 1;
+        controller.enqueue(new Uint8Array(chunk).fill(0x61));
+      },
+      cancel(reason) {
+        stats.cancelled = true;
+        stats.reason = reason;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, stats };
+}
+
+/** A cancel reaches the source a few microtasks after the reader's rejection. */
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe('safeFetch response size cap', () => {
+  const CAP = 64 * 1024;
+  const url = 'https://good.example.com/x';
+  const allow = new Set(['good.example.com']);
+  const resolver = async () => '93.184.216.34';
+  /** A `doFetch` stub that answers with `res`. */
+  const answer = (res: Response) => async () => res;
+
+  it('the cap is 64 KiB', () => {
+    expect(MAX_OAUTH_RESPONSE_BYTES).toBe(64 * 1024);
+  });
+
+  it('stops reading a body that streams past 64 KiB', async () => {
+    const { stream, stats } = counted(4 * CAP, 4096);
+    const res = await safeFetch(url, allow, undefined, resolver, answer(new Response(stream)));
+    await expect(res.text()).rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
+    await nextTask();
+    expect(stats.pulled).toBeLessThanOrEqual(CAP / 4096 + 2);
+    expect(stats.cancelled).toBe(true);
+  });
+
+  it('refuses a declared Content-Length over 64 KiB before reading', async () => {
+    const { stream, stats } = counted(4 * CAP, 4096);
+    const res = new Response(stream, { headers: { 'content-length': String(CAP + 1) } });
+    await expect(safeFetch(url, allow, undefined, resolver, answer(res)))
+      .rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
+    await nextTask();
+    expect(stats.pulled).toBe(0);
+    // The body it never reads is released, not left holding the connection.
+    expect(stats.cancelled).toBe(true);
+  });
+
+  it('caps the redirect it does not follow, too', async () => {
+    // A 3xx without a Location is handed back to the caller as it is.
+    const { stream } = counted(4 * CAP, 4096);
+    const res = await safeFetch(url, allow, undefined, resolver, answer(new Response(stream, { status: 302 })));
+    expect(res.status).toBe(302);
+    await expect(res.text()).rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
+  });
+
+  it('reads a body one byte under 64 KiB whole', async () => {
+    const res = await safeFetch(url, allow, undefined, resolver, answer(new Response('a'.repeat(CAP - 1))));
+    expect((await res.text()).length).toBe(CAP - 1);
+  });
+
+  it('catches a gzip body whose Content-Length is small', async () => {
+    // Over real HTTP, fetch undoes the gzip. Content-Length is the compressed
+    // size, a few hundred bytes, while the body is 4 times the cap, so only
+    // counting the bytes as they stream can catch it.
+    const gz = gzipSync(Buffer.alloc(4 * CAP, 0x20));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'content-length': String(gz.length),
+      });
+      res.end(gz);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    // Same mapping as `localFetch` above: safeFetch vets the https URL, and the
+    // request goes to the local server.
+    const gzipFetch = (input: string | URL, init?: RequestInit) => {
+      const u = new URL(typeof input === 'string' ? input : input.toString());
+      return fetch(`http://127.0.0.1:${port}${u.pathname}`, init);
+    };
+    try {
+      const res = await safeFetch(url, allow, undefined, resolver, gzipFetch);
+      expect(res.headers.get('content-encoding')).toBe('gzip');
+      expect(Number(res.headers.get('content-length'))).toBeLessThan(CAP);
+      await expect(res.text()).rejects.toMatchObject({ name: 'ResponseTooLargeError', limit: CAP });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

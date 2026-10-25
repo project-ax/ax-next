@@ -4,9 +4,8 @@ import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { discoverMetadata } from './oauth-flow.js';
-import { BlockedUrlError, isPrivateIp, type HostResolver } from './ssrf.js';
+import { BlockedUrlError, isPrivateIp, MAX_OAUTH_RESPONSE_BYTES, type HostResolver } from './ssrf.js';
 
-const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_REQUESTS = 16;
 const MAX_HOSTS = 12;
 const DISCOVERY_TIMEOUT_MS = 15_000;
@@ -64,7 +63,7 @@ export function requestMetadata(url: URL, opts: MetadataRequestOptions): Promise
       let size = 0;
       incoming.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_METADATA_BYTES) {
+        if (size > MAX_OAUTH_RESPONSE_BYTES) {
           req.destroy(new Error('OAuth metadata response too large'));
           return;
         }
