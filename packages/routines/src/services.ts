@@ -385,7 +385,8 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // rules. agents:resolve runs first, and the input schema has checked every change's text before anything ran; the
   // store decides ownership under the routine's row lock, and a retry under the same requestId changes nothing.
   // Neither a tool nor an IPC action, so no model can call it. Each step goes out field by field, and the log line
-  // carries ids and counts, never a step's text.
+  // carries ids, counts and whether the store answered from the receipt (`replayed`, as routines_reply_added does;
+  // it stays out of the answer), never a step's text.
   register('set-steps', C.RoutineSetStepsInputSchema, C.RoutineSetStepsOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     const outcome = await store.setSteps({
@@ -393,7 +394,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
-    ctx.logger.info('routines_steps_set', { agentId: input.agentId, routineId: input.routineId, ops: input.ops.length, skipped: outcome.skipped });
+    ctx.logger.info('routines_steps_set', { agentId: input.agentId, routineId: input.routineId, ops: input.ops.length, skipped: outcome.skipped, replayed: outcome.replayed });
     return { steps: outcome.steps.map(({ id, text, done, addedBy }) => ({ id, text, done, addedBy })), skipped: outcome.skipped };
   });
 }

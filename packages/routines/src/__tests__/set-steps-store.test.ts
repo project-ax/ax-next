@@ -81,7 +81,7 @@ describe("a person's step changes (store, TASK-949)", () => {
   it('an owner’s add is the person’s, and the answer is the list as it is now', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     const answer = await changed(task, 'r1', [{ op: 'add', text: 'Ask Dana to review billing' }]);
-    expect(answer).toEqual({ steps: [{ id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'Ask Dana to review billing', done: false, addedBy: 'person' }], skipped: 0 });
+    expect(answer).toEqual({ steps: [{ id: expect.stringMatching(/^s[0-9a-z]{6}$/), text: 'Ask Dana to review billing', done: false, addedBy: 'person' }], skipped: 0, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual(answer.steps);
   });
 
@@ -90,7 +90,7 @@ describe("a person's step changes (store, TASK-949)", () => {
     await writeSteps(task.routineId, [step('s000001', 'Email all 500 customers'), step('s000002', 'Draft the announcement')]);
     const after = [step('s000001', 'Email the five VIPs', { addedBy: 'person' })];
     expect(await change(task, 'r1', [{ op: 'edit', id: 's000001', text: 'Email the five VIPs' }, { op: 'remove', id: 's000002' }]))
-      .toEqual({ steps: after, skipped: 0 });
+      .toEqual({ steps: after, skipped: 0, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual(after);
   });
 
@@ -99,7 +99,7 @@ describe("a person's step changes (store, TASK-949)", () => {
     const full = Array.from({ length: ROUTINE_STEPS_MAX }, (_, i) => step(`s${String(i + 1).padStart(6, '0')}`, `Step ${i + 1}`));
     await writeSteps(task.routineId, full);
     expect(await change(task, 'r1', [{ op: 'tick', id: 'sgone00' }, { op: 'add', text: 'One more' }, { op: 'add', text: 'Step 1' }]))
-      .toEqual({ steps: full, skipped: 3 });
+      .toEqual({ steps: full, skipped: 3, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual(full);
   });
 
@@ -165,11 +165,11 @@ describe("a person's step changes (store, TASK-949)", () => {
     const run = await bound(task, 'run', minute(1));
     expect(await record(run, onTrack, [{ op: 'tick', id: exported!.id }])).toEqual({ outcome: 'recorded', applied: 1, skipped: 0 });
     // The first try's count (an add applied again would be skipped as already listed), and the steps as they are now.
-    expect(await change(task, 'r1', add)).toEqual({ steps: [{ ...exported, done: true }], skipped: 0 });
+    expect(await change(task, 'r1', add)).toEqual({ steps: [{ ...exported, done: true }], skipped: 0, replayed: true });
     expect(await stepsColumn(task.routineId)).toEqual([{ ...exported, done: true }]);
     // Once the person deletes the step, the first request again still doesn't bring it back.
-    expect(await change(task, 'r2', [{ op: 'remove', id: exported!.id }])).toEqual({ steps: [], skipped: 0 });
-    expect(await change(task, 'r1', add)).toEqual({ steps: [], skipped: 0 });
+    expect(await change(task, 'r2', [{ op: 'remove', id: exported!.id }])).toEqual({ steps: [], skipped: 0, replayed: false });
+    expect(await change(task, 'r1', add)).toEqual({ steps: [], skipped: 0, replayed: true });
     expect(await stepsColumn(task.routineId)).toEqual([]);
   });
 
@@ -213,7 +213,7 @@ describe("a person's step changes (store, TASK-949)", () => {
     expect(await whileHeld(task,
       () => change(task, 'r1', add),
       trx => writeSteps(task.routineId, after, trx),
-    )).toEqual({ steps: after, skipped: 0 });
+    )).toEqual({ steps: after, skipped: 0, replayed: true });
     // The owner: the holder hands the task over, and the replay is refused. It reads the owner under the lock too.
     const other = await f.store.createAuthored(taskInput('other'));
     await changed(other, 'r2', add);
@@ -235,7 +235,7 @@ describe("a person's step changes (store, TASK-949)", () => {
     expect(await whileHeld(task,
       () => change(task, 'r1', [{ op: 'edit', id: upload.id, text: 'Upload all 142' }]),
       trx => writeSteps(task.routineId, [{ ...exported, done: true }, upload], trx),
-    )).toEqual({ steps: both, skipped: 0 });
+    )).toEqual({ steps: both, skipped: 0, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual(both);
     // A report waits on the person's change that rewords the second step.
     const other = await f.store.createAuthored(taskInput('other'));
@@ -253,14 +253,14 @@ describe("a person's step changes (store, TASK-949)", () => {
     const later = { ...step('s000002', 'From later'), addedBy: 'app' };
     await writeSteps(task.routineId, [step('s000001', 'Export every article'), later]);
     expect(await change(task, 'r1', [{ op: 'tick', id: 's000001' }]))
-      .toEqual({ steps: [step('s000001', 'Export every article', { done: true })], skipped: 0 });
+      .toEqual({ steps: [step('s000001', 'Export every article', { done: true })], skipped: 0, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual([step('s000001', 'Export every article', { done: true }), later]);
   });
 
   it('a checklist that isn’t a list skips every change and is left as it is', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     await writeSteps(task.routineId, { not: 'a list' });
-    expect(await change(task, 'r1', [{ op: 'add', text: 'Export every article' }])).toEqual({ steps: [], skipped: 1 });
+    expect(await change(task, 'r1', [{ op: 'add', text: 'Export every article' }])).toEqual({ steps: [], skipped: 1, replayed: false });
     expect(await stepsColumn(task.routineId)).toEqual({ not: 'a list' });
   });
 

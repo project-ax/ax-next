@@ -993,8 +993,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (row.owner_user_id !== input.actorUserId) throw new StepsRefused('forbidden');
         return row;
       };
-      // The steps leave through here, never through the receipt.
+      // The steps leave through here, never through the receipt, and so does whether this was a replay.
       let steps: StoredStep[] = [];
+      let replayed = false;
       try {
         const key = operationKey(input, 'set-steps', inputHash({ agentId: input.agentId, routineId: input.routineId, ops: input.ops }));
         const { skipped } = await receiptTransaction(db, key, async trx => {
@@ -1015,8 +1016,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         }, async trx => {
           // A replay: the owner checked again, and the steps as they are now, beside the first try's count.
           steps = storedSteps((await locked(trx)).task_steps);
+          replayed = true;
         });
-        return { steps, skipped };
+        return { steps, skipped, replayed };
       } catch (error) {
         if (error instanceof StepsRefused) return error.reason;
         throw error;

@@ -100,7 +100,8 @@ export type AddReplyResult = { outcome: 'added' | 'replayed'; replyId: string; r
  * many of the changes were skipped. A replay answers the first try's count
  * with the steps as they are now.
  */
-export type SetStepsResult = { steps: StoredStep[]; skipped: number } | 'not-found' | 'forbidden';
+/** `replayed`: the store answered from the request's receipt (the same request again), for the log line only. */
+export type SetStepsResult = { steps: StoredStep[]; skipped: number; replayed: boolean } | 'not-found' | 'forbidden';
 /**
  * TASK-907. One run's report: kept on its dispatch as JSON (`DispatchReportSchema`,
  * strict), then on its fire row. The notes stay on the task. TASK-952: this is

@@ -115,7 +115,7 @@ describe('routines:set-steps (TASK-949)', () => {
     const task = await createTask();
     // A step as a later store might hand it over, with a field this version doesn't show.
     const stored = { id: 's000001', text: 'Export every article', done: true, addedBy: 'agent', note: 'from a later version' } as StoredStep;
-    const s = services({ store: { setSteps: async () => ({ steps: [stored], skipped: 1 }) } });
+    const s = services({ store: { setSteps: async () => ({ steps: [stored], skipped: 1, replayed: false }) } });
     expect(await s.setSteps(changeOf(task, 'q1', [{ op: 'tick', id: 's000001' }])))
       .toStrictEqual({ steps: [{ id: 's000001', text: 'Export every article', done: true, addedBy: 'agent' }], skipped: 1 });
   });
@@ -123,16 +123,17 @@ describe('routines:set-steps (TASK-949)', () => {
   it('logs one line per change, ids and counts only', async () => {
     const task = await createTask();
     const s = services();
-    const KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'routineId', 'ops', 'skipped'];
+    const KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'routineId', 'ops', 'skipped', 'replayed'];
     const change = changeOf(task, 'q1', [{ op: 'add', text: 'The refund code is QX7731.' }]);
     const entries = (lines: readonly string[]) => lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.msg === 'routines_steps_set');
     const first = logged(s.as('owner'));
     const answer = await s.setSteps(change, first.ctx);
-    // The same request again: a replay, logged the same way.
+    // The same request again: a replay, logged the same way, and says so (routines_reply_added's rule).
     const retry = logged(s.as('owner'));
     expect(await s.setSteps(change, retry.ctx)).toStrictEqual(answer);
+    expect(entries(first.lines)).toEqual([expect.objectContaining({ level: 'info', agentId: 'a', routineId: task.routineId, ops: 1, skipped: 0, replayed: false })]);
+    expect(entries(retry.lines)).toEqual([expect.objectContaining({ level: 'info', agentId: 'a', routineId: task.routineId, ops: 1, skipped: 0, replayed: true })]);
     for (const lines of [first.lines, retry.lines]) {
-      expect(entries(lines)).toEqual([expect.objectContaining({ level: 'info', agentId: 'a', routineId: task.routineId, ops: 1, skipped: 0 })]);
       for (const entry of entries(lines)) for (const key of Object.keys(entry)) expect(KEYS, key).toContain(key);
     }
     expect([...first.lines, ...retry.lines].join('\n')).not.toContain('QX7731');
