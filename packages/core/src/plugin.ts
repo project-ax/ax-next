@@ -63,6 +63,22 @@ export interface PluginInitContext {
 export interface Plugin {
   manifest: PluginManifest;
   init(ctx: PluginInitContext): Promise<void> | void;
+  /**
+   * Optional. Begin admitting outside work, such as a public listener. The
+   * kernel calls it once, in init order, after every plugin's `init()` has
+   * resolved and every declared call is wired. It is awaited: `bootstrap()`
+   * resolves only after every `startAdmission()` has. A throw fails the boot,
+   * and the kernel then shuts down every initialized plugin, this one included.
+   */
+  startAdmission?(): Promise<void> | void;
+  /**
+   * Optional. Stop admitting outside work. The kernel calls it once, in
+   * reverse init order, when `KernelHandle.shutdown()` begins, before any
+   * plugin's `shutdown()`. It runs under the per-plugin shutdown timeout, and
+   * a throw or timeout is reported, never fatal. It must not wait for work
+   * already admitted; `shutdown()` does that.
+   */
+  stopAdmission?(): Promise<void> | void;
   /** Default bounded shutdown continues after its deadline. Joined shutdown reports
    * the deadline but waits for actual settlement before tearing down dependencies.
    * It must stop admission and join only work already owned by this plugin.
@@ -71,11 +87,14 @@ export interface Plugin {
   /**
    * Optional cleanup hook. The kernel calls this in reverse load order
    * (the reverse of `init()`'s topological order) when `KernelHandle.
-   * shutdown()` is invoked, and on init failure for plugins that
-   * already initialized. Each plugin's `shutdown()` runs under a
-   * configurable per-plugin timeout (default 10 s); failures and
-   * timeouts are logged. Bounded mode proceeds after the deadline; joined
-   * mode waits for settlement before closing dependencies.
+   * shutdown()` is invoked, after every plugin's `stopAdmission()` has run,
+   * and on a failed boot for plugins that already initialized. It can run
+   * without a `stopAdmission()` first (a failed boot's rollback, a test
+   * harness), so it must stop admission on its own too. Each plugin's
+   * `shutdown()` runs under a configurable per-plugin timeout (default
+   * 10 s); failures and timeouts are logged. Bounded mode proceeds after
+   * the deadline; joined mode waits for settlement before closing
+   * dependencies.
    *
    * Plugins without long-lived resources (file handles, connection
    * pools, HTTP listeners, timers) don't need to implement this.
