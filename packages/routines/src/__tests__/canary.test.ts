@@ -10,6 +10,7 @@ import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
 import type { Clock } from '../clock.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import { slowDatabase } from './support/slow-database.js';
 
 let h: RoutineHarness;
 afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
@@ -76,6 +77,25 @@ describe('DB routine canary — real ACL, durable dispatch and turn completion',
     await expect(fire(stopped)).rejects.toMatchObject({ toolCode: 'disabled' });
     expect(await h.bus.call('routines:delete', h.owner, { agentId: row.agentId, routineId: row.routineId, requestId: randomUUID(), expectedRevision: stopped.revision })).toEqual({ deleted: true, cleanupPending: false });
     expect(await createRoutinesStore(h.db).findOne(row)).toBeNull();
+  });
+  // The first test's wait, on a database as slow as a loaded CI runner's. Under vitest's default
+  // one-second poll this failed every run; the package config's poll budget (vitest.config.ts) covers it.
+  it('a fire on a slow database is still seen being recorded as silenced', async () => {
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+      await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, turnId: 'turn', contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
+      return { kind: 'complete' };
+    } });
+    const row = await create();
+    const store = createRoutinesStore(h.db);
+    const restore = slowDatabase(200);
+    try {
+      await fire(row);
+      await expect.poll(async () => (await store.recentFires(row)).length).toBe(1);
+    } finally {
+      restore();
+    }
+    expect((await store.recentFires(row))[0]).toMatchObject({ status: 'silenced', error: null });
+    expect((await store.findOne(row))?.lastStatus).toBe('silenced');
   });
 });
 
