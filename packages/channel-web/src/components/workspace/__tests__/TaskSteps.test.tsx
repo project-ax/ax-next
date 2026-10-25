@@ -891,6 +891,44 @@ describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
     expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
   });
 
+  // The store refuses the same request again once the task is Done, so a retry of a change that landed
+  // (its first try unconfirmed) is refused too: the record shows it, and says nothing more.
+  it.each<[string, () => Promise<void>, TaskStep[]]>([
+    ['tick', async () => void fireEvent.click(box('Check the redirects')), withStep(PLAN, 's2', { done: true })],
+    ['untick', async () => void fireEvent.click(box('Export every article')), withStep(PLAN, 's1', { done: false })],
+    ['Delete', () => choose('Check the redirects', 'Delete'), [PLAN[0]!, PLAN[2]!]],
+  ])('says nothing for a refused %s the record shows', async (_what, press, record) => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    await press();
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true, record));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('says a refused Delete wasn’t saved when the record still lists the step', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    await choose('Check the redirects', 'Delete');
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true));
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  // One read can both take the step being edited away and show the task Done.
+  it.each<[string, string | null, string]>([
+    ['says nothing for an untouched Edit editor', null, ''],
+    ['says typed text wasn’t saved', 'Check every redirect', NOT_SAVED],
+  ])('when one read removes the step being edited and shows Done, %s', async (_what, typedText, line) => {
+    const view = render(done(false));
+    const input = await edit('Check the redirects');
+    if (typedText !== null) fireEvent.change(input, { target: { value: typedText } });
+    view.rerender(done(true, [PLAN[0]!, PLAN[2]!]));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(line);
+  });
+
   it('says typed text wasn’t saved when the task turns Done with an editor open', async () => {
     const view = render(done(false));
     const input = await edit('Check the redirects');
