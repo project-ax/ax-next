@@ -147,7 +147,7 @@ describe('routines:reply (TASK-931)', () => {
       ...keyOf(task), expectedRevision: task.revision, actorUserId: 'owner', requestId: 'edit', patch: { goodWhen: 'Nothing waits a day.' }, now, stopOnly: false,
     });
     expect(edited.revision).not.toBe(task.revision);
-    // The check-in's receipt was taken at the old revision; the retry's accept at the new one conflicts with it.
+    // The retry's walk finds the check-in's receipt, taken at the old revision, and answers before any accept.
     expect(await s.reply(replyTo(task, 'q1', 'First.'))).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
     expect(s.dispatched).toHaveLength(1);
     expect(await dispatchReceipts()).toHaveLength(1);
@@ -355,6 +355,46 @@ describe('routines:reply after a host restart cut its check-in off (TASK-937)', 
     expect(answers.map(a => a.checkIn).sort()).toEqual(['replayed', 'started']);
     expect(s.dispatched).toHaveLength(2);
     expect(await dispatchReceipts()).toHaveLength(2);
+  });
+
+  it('two retries that both read no check-in under the new key start one between them: the second accept replays the first', async () => {
+    const task = await createTask();
+    const real = f.store;
+    // Each retry's read of the new key waits until both have read it empty, so both go on to the accept.
+    let emptyReads = 0;
+    let bothRead!: () => void;
+    const both = new Promise<void>(resolve => { bothRead = resolve; });
+    const s = services({ store: {
+      async acceptedDispatchId(input) {
+        const found = await real.acceptedDispatchId(input);
+        if (found === null && input.requestId.includes(':after:')) {
+          if (++emptyReads === 2) bothRead();
+          await both;
+        }
+        return found;
+      },
+    } });
+    const input = replyTo(task, 'q1', 'Are the refunds still stuck?');
+    expect((await s.reply(input)).checkIn).toBe('started');
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    const answers = await Promise.all([s.reply(input), s.reply(input)]);
+    expect(emptyReads).toBe(2);
+    expect(answers.map(a => a.checkIn).sort()).toEqual(['replayed', 'started']);
+    expect(s.dispatched).toHaveLength(2);
+    expect(await dispatchReceipts()).toHaveLength(2);
+  });
+
+  it("a retry whose accept finds the reply's check-in taken at another revision answers replayed", async () => {
+    const { task, input, first } = await firstTry();
+    await f.store.updateAuthored({
+      ...keyOf(task), expectedRevision: task.revision, actorUserId: 'owner', requestId: 'edit', patch: { goodWhen: 'Nothing waits a day.' }, now, stopOnly: false,
+    });
+    // The walk reads no check-in (as if the first try's accept committed just after), so the retry accepts
+    // under `reply:<id>` at the new revision, and the receipt taken at the old one conflicts with it.
+    const s = services({ store: { acceptedDispatchId: async () => null } });
+    expect(await s.reply(input)).toStrictEqual({ replyId: first.replyId, checkIn: 'replayed' });
+    expect(s.dispatched).toEqual([]);
+    expect(await dispatchReceipts()).toEqual([{ owner_user_id: 'owner', request_id: `reply:${first.replyId}` }]);
   });
 
   const endedOnItsOwn: Array<[label: string, end: (dispatchId: string) => Promise<void>]> = [

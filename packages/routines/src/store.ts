@@ -31,8 +31,9 @@ export interface RoutinesStore {
   /**
    * A run's end as its fire row recorded it, or null while it is open.
    * TASK-937: `miss` is `'interrupted'` for a run the restart sweep finished
-   * before it reported (`RUN_INTERRUPTED`), the one reason a fire row can still
-   * show; no `miss` otherwise.
+   * before it reported, recognized by the sweep's text (`RUN_INTERRUPTED`) on a
+   * run with no conversation, the one reason a fire row can still show; no
+   * `miss` otherwise.
    */
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
   /**
@@ -788,7 +789,8 @@ export const RUN_CLOSED = 'The routine run closed before it could start.';
 /**
  * TASK-937. The restart sweep's error (`interruptAbandonedDispatches`), and the
  * one mark a fire row keeps of a run a host restart cut off:
- * `getDispatchOutcome` recognizes it, and nothing else writes it. Changing the
+ * `getDispatchOutcome` recognizes it by this text on a run with no conversation
+ * (the sweep always writes none). Changing the
  * text makes runs interrupted before the change read as ended on their own (a
  * reply's retry then answers `replayed`).
  */
@@ -973,8 +975,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const row = await db.selectFrom('routines_v1_fires').selectAll()
         .where('agent_id', '=', input.agentId).where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
       if (!row) return null;
-      // TASK-937: the sweep's own mark, on a run that holds no report (rowToFire's rule).
-      const cutOff = row.status === 'error' && row.error === RUN_INTERRUPTED && (row.report_status === null || row.report_update === null);
+      // TASK-937: the sweep's own mark (its text, on a run with no conversation: the sweep always writes
+      // none), on a run that holds no report (rowToFire's rule).
+      const cutOff = row.status === 'error' && row.error === RUN_INTERRUPTED && row.conversation_id === null
+        && (row.report_status === null || row.report_update === null);
       return DispatchOutcomeSchema.parse({ status: row.status, conversationId: row.conversation_id,
         error: row.error, renderedPrompt: row.rendered_prompt, warning: row.warning, ...(cutOff ? { miss: 'interrupted' as const } : {}) });
     },

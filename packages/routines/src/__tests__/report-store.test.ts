@@ -336,6 +336,18 @@ describe("a check-in's report and the task's state", () => {
     });
   });
 
+  it("a run that failed with the sweep's text on a conversation of its own reads back with no miss (TASK-937)", async () => {
+    // fire.ts's agent:invoke rejection records the invoke's error on the run's conversation; the sweep never names one.
+    const row = await f.store.createAuthored(taskInput('lookalike'));
+    const run = await bound(row, 'lookalike-fire', 'c1');
+    expect(await f.store.finishDispatch({ dispatchId: run.dispatchId, outcome: {
+      status: 'error', error: RUN_INTERRUPTED, conversationId: 'c1', renderedPrompt: null, warning: null,
+    } })).toBe(true);
+    const outcome = await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: run.dispatchId });
+    expect(outcome).toMatchObject({ status: 'error', error: RUN_INTERRUPTED, conversationId: 'c1' });
+    expect(outcome).not.toHaveProperty('miss');
+  });
+
   it('a run that ended on its own reads back with no miss, whatever its finish said (TASK-937)', async () => {
     const row = await f.store.createAuthored(taskInput('own-end'));
     const failed = await accept(row, 'own-error');

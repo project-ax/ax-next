@@ -200,6 +200,10 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
    * reported (the sweep's `RUN_INTERRUPTED`), the retry starts one more, keyed on the reply and the
    * check-in it replaces (`reply:<replyId>:after:<dispatchId>`), so retries at once start one
    * between them, up to `REPLY_CHECK_IN_RESTARTS` per reply. Check now's own retry doesn't do this.
+   * The walk looks only at the reply's own check-ins: a scheduled check-in or Check now that ran and
+   * reported after the cut-off one already read the reply (fire.ts puts recent replies in every
+   * check-in's message), yet a retry still starts one more; that is bounded (the owner's own retry,
+   * at most `REPLY_CHECK_IN_RESTARTS` per reply) and left as is.
    * The reply stays stored. `started` means accepted, not finished: `send`'s answer isn't read, and
    * a check-in that fails during setup is a recorded failed run.
    */

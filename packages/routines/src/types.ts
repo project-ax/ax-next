@@ -94,8 +94,8 @@ export type AcceptedDispatch = {
  * report because it didn't send one (`no-report`), and only the store says so.
  * TASK-937: a fire row keeps no reason, so `getDispatchOutcome` gives back only
  * `interrupted`, recognized by the restart sweep's own fixed error
- * (`RUN_INTERRUPTED`), which nothing else writes. No other error's text is
- * parsed for one.
+ * (`RUN_INTERRUPTED`) on a run with no conversation (the sweep always writes
+ * none). No other error's text is parsed for one.
  */
 export type DispatchMiss = Exclude<CheckInMiss, 'no-report'>;
 export type DispatchOutcome = {
