@@ -82,10 +82,14 @@
  *     there, and their services decide ownership under the routine's row
  *     lock. `/finish-by` is a write that does read first: after the resolve
  *     it reads the task (`ownTaskOr404`) for its time zone. Its service then
- *     decides the owner and the kind under the routine's row lock, the
- *     contract's date rule screens the date before anything is written, and
- *     the date reaches a model only as fixed sentences in a get-done
- *     check-in's brief. `/complete` and `/reopen` are writes that check the
+ *     decides the owner and the kind under the routine's row lock, and the
+ *     contract's date and zone rules screen the date and the zone the
+ *     browser sent with it (TASK-955) before anything is written; the route
+ *     drops a zone this host can't count in rather than refuse the date. The
+ *     date reaches a model only as fixed sentences in a get-done check-in's
+ *     brief and as the routine tools' `finishBy`; the zone, which picks the
+ *     brief's calendar day but is never written into it, only as their
+ *     `finishByTimeZone`. `/complete` and `/reopen` are writes that check the
  *     request and their hook as the first three do, then read the caller's
  *     own task first (`ownTaskOr404`, the task page's read), because only an
  *     owner may learn they can't: an owner without `edit` gets 403, and
@@ -898,6 +902,8 @@ interface TaskStepsOutput {
  */
 interface TaskSetFinishByInput extends TaskKeyInput {
   finishBy: string | null;
+  /** TASK-955: sent only when the browser named a zone this host can count in. */
+  finishByTimeZone?: string;
 }
 type TaskSetFinishByOutput = Pick<RoutineSetFinishByOutput, 'finishBy' | 'finishByTimeZone'>;
 
@@ -3867,12 +3873,23 @@ function readTaskStepsBody(parsed: unknown): { requestId: string; ops: unknown[]
  * here. Whether the string is a date a task can have is the contract's rule,
  * which `routines:set-finish-by` applies before it writes anything; anything
  * else in the body is left behind.
+ *
+ * TASK-955: it may also hold its own `timeZone`, the zone the person's browser
+ * reported with the date. Absent or null reads as none, and anything else that
+ * isn't text makes the whole body unreadable. Whether the text is a zone this
+ * host can count in is checked by the handler, with the contract's zone rule.
  */
-function readTaskFinishByBody(parsed: unknown): { finishBy: string | null } | null {
+function readTaskFinishByBody(
+  parsed: unknown,
+): { finishBy: string | null; timeZone: string | null } | null {
   if (typeof parsed !== 'object' || parsed === null || !Object.hasOwn(parsed, 'finishBy')) return null;
   const { finishBy } = parsed as Record<string, unknown>;
   if (finishBy !== null && typeof finishBy !== 'string') return null;
-  return { finishBy };
+  const timeZone: unknown = Object.hasOwn(parsed, 'timeZone')
+    ? (parsed as Record<string, unknown>).timeZone
+    : null;
+  if (timeZone !== null && typeof timeZone !== 'string') return null;
+  return { finishBy, timeZone };
 }
 
 /**
@@ -7898,28 +7915,41 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     /**
      * PUT /api/workspace/tasks/:agentId/:routineId/finish-by — a task's owner
      * sets or removes a "get-done" task's finish date (TASK-951, decisions
-     * row 14). The body is `{ finishBy }`: a date, `YYYY-MM-DD`, or null to
-     * remove it.
+     * row 14). The body is `{ finishBy, timeZone }`: a date, `YYYY-MM-DD`, or
+     * null to remove it, and the time zone the person's browser reported, or
+     * null or nothing for none (TASK-955). The host keeps the zone beside the
+     * date and counts in it when the task has no zone of its own.
      *
      * `authOr401` → ids (400) → the body: JSON holding its own `finishBy`, a
-     * string or null (400 `finish-by-body-invalid`, unparseable JSON
-     * included) → without `routines:set-finish-by`, 503 → `ownTaskOr404`, the
-     * task page's own order → `routines:set-finish-by` as the caller, its
-     * input built field by field, so nothing else in the body rides along
-     * and the address, not the body, names the task.
+     * string or null, and a `timeZone` that is a string or null when it is
+     * there (400 `finish-by-body-invalid`, unparseable JSON included) →
+     * without `routines:set-finish-by`, 503 → `ownTaskOr404`, the task page's
+     * own order → the zone (one this host can't count in is dropped, TASK-955
+     * decisions row 9) → `routines:set-finish-by` as the caller, its input
+     * built field by field, so nothing else in the body rides along and the
+     * address, not the body, names the task.
+     *
+     * The zone is what the browser says about its own calendar, not something
+     * the person typed. One the contract's zone rule refuses on this host (the
+     * browser's time-zone data can be newer than the host's) is not sent, so
+     * the date still saves and counts on UTC's calendar, and the route logs
+     * `workspace_finish_by_zone_unusable` with the ids only, never the zone or
+     * the date. Refusing it would leave the person unable to save a date over
+     * a detail they never saw.
      *
      * The read supplies the task's own time zone, and the service's answer
      * the zone the date was saved with (TASK-955): the answer's days left are
      * counted in them (`taskTimeZone`). The read also makes this route's 404s
      * the page's own, but it is not the authority. The service decides who
      * may (the task's owner) and that the task is still get-done, under the
-     * routine's row lock, and its input check, the contract's rule, refuses a
-     * date no calendar has before anything is written. A `validation` refusal is that date and
-     * answers 400 `finish-by-invalid`, checked before `isTaskRefusal`, which
-     * counts `validation` as a read's 404. `not-found` (no such task, or one
-     * that is no longer get-done) and `forbidden` (not its owner) are the
-     * page's own 404. Anything else fails the request: "we don't know" must
-     * not read as "not found".
+     * routine's row lock, and its input check, the contract's rules, refuses
+     * a date no calendar has before anything is written. The zone it is sent
+     * has already passed the same zone rule here, so a `validation` refusal
+     * is that date and answers 400 `finish-by-invalid`, checked before
+     * `isTaskRefusal`, which counts `validation` as a read's 404. `not-found`
+     * (no such task, or one that is no longer get-done) and `forbidden` (not
+     * its owner) are the page's own 404. Anything else fails the request: "we
+     * don't know" must not read as "not found".
      *
      * The answer is the date and the days left to it, as the page and the
      * Tasks row carry them (`toTaskFinishBy`), or null once removed. No
@@ -7949,12 +7979,27 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const own = await ownTaskOr404(userId, key, res);
       if (own === null) return;
+      const zone =
+        body.timeZone !== null && RoutineTimezoneSchema.safeParse(body.timeZone).success
+          ? body.timeZone
+          : null;
+      if (body.timeZone !== null && zone === null) {
+        initCtx.logger.warn('workspace_finish_by_zone_unusable', {
+          agentId: key.agentId,
+          routineId: key.routineId,
+        });
+      }
       let out: TaskSetFinishByOutput;
       try {
         out = await bus.call<TaskSetFinishByInput, TaskSetFinishByOutput>(
           'routines:set-finish-by',
           own.ctx,
-          { agentId: key.agentId, routineId: key.routineId, finishBy: body.finishBy },
+          {
+            agentId: key.agentId,
+            routineId: key.routineId,
+            finishBy: body.finishBy,
+            ...(zone === null ? {} : { finishByTimeZone: zone }),
+          },
         );
       } catch (err) {
         if (err instanceof SafeToolError && err.toolCode === 'validation') {

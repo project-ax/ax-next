@@ -523,21 +523,33 @@ describe('workspaceApi.setTaskSteps (TASK-949)', () => {
 });
 
 describe('workspaceApi.setTaskFinishBy (TASK-951)', () => {
-  it('sends the date with PUT, the CSRF header and only the date, to the task’s own address', async () => {
+  it('sends the date and the browser’s zone with PUT and the CSRF header, to the task’s own address', async () => {
     const answer = { finishBy: { date: '2026-11-14', daysLeft: 9 } };
     const fetchSpy = respondWith(answer);
-    await expect(workspaceApi.setTaskFinishBy('a 1', 'r/1', '2026-11-14')).resolves.toEqual(answer);
+    await expect(
+      workspaceApi.setTaskFinishBy('a 1', 'r/1', '2026-11-14', 'America/Los_Angeles'),
+    ).resolves.toEqual(answer);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(url).toBe('/api/workspace/tasks/a%201/r%2F1/finish-by');
     expect((init as RequestInit).method).toBe('PUT');
     expect(((init as RequestInit).headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({
+      finishBy: '2026-11-14',
+      timeZone: 'America/Los_Angeles',
+    });
+  });
+
+  it('leaves the zone out when the browser named none (TASK-955)', async () => {
+    const fetchSpy = respondWith({ finishBy: { date: '2026-11-14', daysLeft: 9 } });
+    await workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14', null);
+    const [, init] = fetchSpy.mock.calls[0]!;
     expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ finishBy: '2026-11-14' });
   });
 
   it('sends null to remove the date, and reads the null answer', async () => {
     const fetchSpy = respondWith({ finishBy: null });
-    await expect(workspaceApi.setTaskFinishBy('a1', 't1', null)).resolves.toEqual({ finishBy: null });
+    await expect(workspaceApi.setTaskFinishBy('a1', 't1', null, null)).resolves.toEqual({ finishBy: null });
     const [, init] = fetchSpy.mock.calls[0]!;
     expect(JSON.parse((init as RequestInit).body as string)).toStrictEqual({ finishBy: null });
   });
@@ -550,14 +562,16 @@ describe('workspaceApi.setTaskFinishBy (TASK-951)', () => {
   ])('refuses an answer with %s', async (_label, body) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     respondWith(body);
-    await expect(workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14')).rejects.toBeInstanceOf(
-      WorkspaceShapeError,
-    );
+    await expect(
+      workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14', 'America/Los_Angeles'),
+    ).rejects.toBeInstanceOf(WorkspaceShapeError);
   });
 
   it('carries the status of a failed save', async () => {
     failWith(404);
-    const err = await workspaceApi.setTaskFinishBy('a1', 't1', '2026-11-14').catch((e: unknown) => e);
+    const err = await workspaceApi
+      .setTaskFinishBy('a1', 't1', '2026-11-14', 'America/Los_Angeles')
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(404);
   });

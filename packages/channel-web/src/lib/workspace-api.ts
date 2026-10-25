@@ -1353,10 +1353,24 @@ export const workspaceApi = {
    * shows that, so an answer that doesn't say is a `WorkspaceShapeError`.
    * Setting the same date twice is the same write, so a retry is safe. A
    * refusal or failure is a `WorkspaceApiError` carrying only the status.
+   *
+   * `timeZone` is the browser's own zone (`browserTimeZone`), passed with a
+   * date the person picked, and null on Remove date or when the browser can't
+   * tell (TASK-955). It travels only when it is text, and the host keeps it
+   * beside the date to count the days in when the task has no zone of its
+   * own. It never comes back.
    */
-  setTaskFinishBy: async (agentId: string, routineId: string, finishBy: string | null) => {
+  setTaskFinishBy: async (
+    agentId: string,
+    routineId: string,
+    finishBy: string | null,
+    timeZone: string | null,
+  ) => {
     const path = `${taskPath(agentId, routineId)}/finish-by`;
-    const body = await taskReq<unknown>(path, { method: 'PUT', body: { finishBy } });
+    const body = await taskReq<unknown>(path, {
+      method: 'PUT',
+      body: timeZone === null ? { finishBy } : { finishBy, timeZone },
+    });
     return checkedRead<TaskFinishByResponse>(
       path,
       body,

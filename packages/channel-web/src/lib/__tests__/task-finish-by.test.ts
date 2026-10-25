@@ -1,9 +1,12 @@
 /**
  * A get-done task's finish date as words (TASK-951): the count, the date and
  * the line, and the two rules the date field checks before it asks the host.
+ * And the browser's own time zone, which the date field sends with a date
+ * (TASK-955).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  browserTimeZone,
   browserToday,
   finishByCount,
   finishByDate,
@@ -60,6 +63,44 @@ describe('browserToday', () => {
   it('is the browser’s own calendar day, to the last minute of it', () => {
     expect(browserToday(new Date(2026, 10, 5, 23, 59))).toBe('2026-11-05');
     expect(browserToday(new Date(2026, 0, 1, 0, 0))).toBe('2026-01-01');
+  });
+});
+
+describe('browserTimeZone (TASK-955)', () => {
+  it('is the time zone the browser reports', () => {
+    const saved = process.env.TZ;
+    try {
+      process.env.TZ = 'America/Los_Angeles';
+      // How the browser itself reports it, so the flip is shown to have taken.
+      expect(Intl.DateTimeFormat().resolvedOptions().timeZone, 'the browser moved to Los Angeles').toBe(
+        'America/Los_Angeles',
+      );
+      expect(browserTimeZone()).toBe('America/Los_Angeles');
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
+  // A browser that can't tell its zone reports "Etc/Unknown", which Intl refuses: sent, it would
+  // make every save fail, so it isn't sent at all.
+  it.each<[string, string | undefined]>([
+    ['Etc/Unknown', 'Etc/Unknown'],
+    ['an empty zone', ''],
+    ['no zone at all', undefined],
+  ])('is null when the browser can’t tell its zone (%s)', (_what, reported) => {
+    const real = Intl.DateTimeFormat.prototype.resolvedOptions;
+    const spy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+      .mockImplementation(function (this: Intl.DateTimeFormat) {
+        return { ...real.call(this), timeZone: reported } as Intl.ResolvedDateTimeFormatOptions;
+      });
+    try {
+      expect(Intl.DateTimeFormat().resolvedOptions().timeZone, 'the browser reports that').toBe(reported);
+      expect(browserTimeZone()).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -18,7 +18,7 @@ import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { finishByLine } from '@/lib/task-finish-by';
+import { browserTimeZone, finishByLine } from '@/lib/task-finish-by';
 import { localTime } from '@/lib/workspace-time';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate } from '@/lib/workspace-types';
 import { MARK_DONE_NOT_ALLOWED } from '../TaskMarkDone';
@@ -1016,7 +1016,8 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
     fireEvent.change(screen.getByLabelText('Finish by'), { target: { value: '2026-11-14' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(finishByLine(FB))).toBeInTheDocument();
-    expect(finishByMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14');
+    // With the browser's own zone, whatever zone the runner is in (TASK-955).
+    expect(finishByMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14', browserTimeZone());
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check now' })).toBeEnabled());
     expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();

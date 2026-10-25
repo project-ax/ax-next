@@ -31,7 +31,7 @@
  * `routines:duplicate` checks its input with `RoutineDuplicateInputSchema`
  * first, and its answer is parsed through `RoutineDuplicateOutputSchema`.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
@@ -1476,6 +1476,14 @@ const zonelessLaTask = (): StoredRoutine =>
     finishByTimeZone: 'America/Los_Angeles',
   });
 const AT_BOUNDARY = (): Date => new Date('2026-10-26T01:00:00.000Z');
+/** A task with no zone of its own and no date yet, so no zone stored either: the PUT's (TASK-955). */
+const undatedZonelessTask = (): StoredRoutine =>
+  laTask({ trigger: { kind: 'interval', every: '1h' }, finishBy: null });
+
+/** The warn lines the PUT route writes about a zone the browser sent that it couldn't use (TASK-955). */
+function zoneWarnings(warn: { mock: { calls: unknown[][] } }): unknown[][] {
+  return warn.mock.calls.filter(([event]) => event === 'workspace_finish_by_zone_unusable');
+}
 
 describe('GET /api/workspace/tasks/:agentId/:routineId, the zone a finish date was set from (TASK-955)', () => {
   it('at the boundary, a zoneless task’s page counts on the calendar its date was set from, as the brief and the row do (TASK-955)', async () => {
@@ -2008,6 +2016,110 @@ describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', ()
     expect(captured.body).toStrictEqual({
       finishBy: { date: '2026-10-25', daysLeft: -1 },
     } satisfies TaskFinishByResponse);
+  });
+
+  it('sends the zone the browser named with the date, and answers the days left on that calendar (TASK-955)', async () => {
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => {});
+    try {
+      const { finishBy, finishByCalls } = setup({ rows: [undatedZonelessTask()], now: AT_BOUNDARY });
+      const captured = await finishBy(KEY, { finishBy: '2026-10-25', timeZone: 'America/Los_Angeles' });
+      expect(captured.statusCode).toBe(200);
+      expect(finishByCalls.map((call) => call.input)).toStrictEqual([
+        { agentId: 'a1', routineId: 't1', finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' },
+      ]);
+      // Due today on the calendar it was set from. UTC's, already on Monday, would count a day past.
+      expect(captured.body).toStrictEqual({
+        finishBy: { date: '2026-10-25', daysLeft: 0 },
+      } satisfies TaskFinishByResponse);
+      expect(zoneWarnings(warn)).toStrictEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['no zone', { finishBy: '2026-10-25' }],
+    ['a null zone', { finishBy: '2026-10-25', timeZone: null }],
+  ])('a body with %s sends none, and the answer counts on UTC’s calendar (TASK-955)', async (_what, body) => {
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => {});
+    try {
+      const { finishBy, finishByCalls } = setup({ rows: [undatedZonelessTask()], now: AT_BOUNDARY });
+      const captured = await finishBy(KEY, body);
+      expect(captured.statusCode).toBe(200);
+      // No `finishByTimeZone` key at all, not a null one.
+      expect(finishByCalls.map((call) => call.input)).toStrictEqual([
+        { agentId: 'a1', routineId: 't1', finishBy: '2026-10-25' },
+      ]);
+      expect(captured.body).toStrictEqual({
+        finishBy: { date: '2026-10-25', daysLeft: -1 },
+      } satisfies TaskFinishByResponse);
+      expect(zoneWarnings(warn)).toStrictEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a zone this host can’t count in saves the date without it, counted on UTC, and says so in ids only (TASK-955)', async () => {
+    // The browser's time-zone data can know a zone this host's doesn't. The
+    // person never typed it, so it doesn't cost them their date.
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => {});
+    try {
+      const { finishBy, finishByCalls } = setup({ rows: [undatedZonelessTask()], now: AT_BOUNDARY });
+      const captured = await finishBy(KEY, { finishBy: '2026-10-25', timeZone: 'Mars/Olympus_Mons' });
+      expect(captured.statusCode).toBe(200);
+      expect(finishByCalls.map((call) => call.input)).toStrictEqual([
+        { agentId: 'a1', routineId: 't1', finishBy: '2026-10-25' },
+      ]);
+      expect(captured.body).toStrictEqual({
+        finishBy: { date: '2026-10-25', daysLeft: -1 },
+      } satisfies TaskFinishByResponse);
+      expect(zoneWarnings(warn)).toStrictEqual([
+        ['workspace_finish_by_zone_unusable', { agentId: 'a1', routineId: 't1' }],
+      ]);
+      // Ids only: never the zone, never the date.
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('Mars');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('2026-10-25');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each<[string, Partial<World>, Key]>([
+    ['someone who can’t reach the agent', { viewer: 'mallory', rows: [undatedZonelessTask()] }, KEY],
+    [
+      'a teammate, on someone else’s task',
+      {
+        agents: TEAM_AGENTS,
+        managers: { team: ['alice', 'bob'] },
+        rows: [laTask({ agentId: 'team', routineId: 'tB', ownerUserId: 'bob' })],
+      },
+      { agentId: 'team', routineId: 'tB' },
+    ],
+  ])('a zone this host can’t count in, sent by %s, is the page’s 404 and leaves no warn line (TASK-955)', async (_what, world, key) => {
+    // The zone is looked at only once the task is the caller's own, so the line
+    // always names a task whose owner's browser sent it.
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => {});
+    try {
+      const { finishBy, finishByCalls } = setup(world);
+      const captured = await finishBy(key, { finishBy: '2026-10-25', timeZone: 'Mars/Olympus_Mons' });
+      expect(captured.statusCode).toBe(404);
+      expect(finishByCalls).toEqual([]);
+      expect(zoneWarnings(warn)).toStrictEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each<[string, unknown]>([
+    ['a number', 5],
+    ['an object', { tz: 'UTC' }],
+  ])('a timeZone that is %s, not text, is a bad body, and nothing is asked (TASK-955)', async (_what, timeZone) => {
+    const { finishBy, resolveCalls, order } = setup({ rows: [undatedZonelessTask()], now: AT_BOUNDARY });
+    const captured = await finishBy(KEY, { finishBy: '2026-10-25', timeZone });
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'finish-by-body-invalid' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
   });
 
   it('removes the date, and answers none', async () => {

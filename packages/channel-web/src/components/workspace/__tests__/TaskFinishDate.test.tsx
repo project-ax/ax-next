@@ -12,6 +12,10 @@
  * jsdom reads a date input as browsers do: a value no calendar has reads back
  * as '', and a past date is kept. So "Pick a real date." reaches the component
  * only through the host's 400, which the status cases drive.
+ *
+ * The browser sits in Los Angeles for the whole file (`process.env.TZ`, read
+ * live), so the zone each save sends with its date is known whatever zone the
+ * runner is in (TASK-955).
  */
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,7 +73,10 @@ const field = () => screen.getByLabelText('Finish by') as HTMLInputElement;
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 const pick = (value: string) => fireEvent.change(field(), { target: { value } });
 
+let savedTz: string | undefined;
 beforeEach(() => {
+  savedTz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
   setMock.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -78,6 +85,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  if (savedTz === undefined) delete process.env.TZ;
+  else process.env.TZ = savedTz;
 });
 
 describe('TaskFinishDate — what it shows', () => {
@@ -121,7 +130,8 @@ describe('TaskFinishDate — setting and removing', () => {
     await waitFor(() => expect(screen.queryByLabelText('Finish by')).toBeNull());
     expect(onSaved).toHaveBeenCalledWith(FB);
     expect(setMock).toHaveBeenCalledTimes(1);
-    expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14');
+    // With the browser's own zone, which the host counts in when the task has none (TASK-955).
+    expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14', 'America/Los_Angeles');
     expect(document.activeElement).toBe(button('Change'));
   });
 
@@ -133,8 +143,26 @@ describe('TaskFinishDate — setting and removing', () => {
     fireEvent.click(button('Remove date'));
     await waitFor(() => expect(screen.queryByLabelText('Finish by')).toBeNull());
     expect(onSaved).toHaveBeenCalledWith(null);
-    expect(setMock).toHaveBeenCalledWith('a1', 't1', null);
+    // No date, so no zone: the host clears both.
+    expect(setMock).toHaveBeenCalledWith('a1', 't1', null, null);
     expect(document.activeElement).toBe(button('Add a finish date'));
+  });
+
+  it('a browser that can’t tell its zone still saves the date, with none (TASK-955)', async () => {
+    const real = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (
+      this: Intl.DateTimeFormat,
+    ) {
+      return { ...real.call(this), timeZone: 'Etc/Unknown' };
+    });
+    setMock.mockResolvedValueOnce({ finishBy: FB });
+    const { onSaved } = renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(FB));
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14', null);
   });
 
   // TASK-960. The answer to a save lands outside any event, so React commits it on a
