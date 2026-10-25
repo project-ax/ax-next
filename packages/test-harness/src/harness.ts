@@ -12,7 +12,8 @@ export interface TestHarness {
   ctx(overrides?: Partial<Parameters<typeof makeAgentContext>[0]>): AgentContext;
   /**
    * Drain plugin resources held by this harness. Calls each plugin's
-   * optional `shutdown()` in reverse load order (mirrors what the
+   * optional `stopAdmission()`, then each optional `shutdown()`, both in
+   * reverse load order (mirrors what the
    * kernel-shutdown lifecycle does for SIGTERM via `KernelHandle.
    * shutdown()`). Per-plugin failures are logged but never block other
    * shutdowns. Per-plugin timeout defaults to 10 s; pass `{ timeoutMs }`
@@ -107,9 +108,24 @@ export async function createTestHarness(
           );
         });
 
+      // As KernelHandle.shutdown() does: every plugin stops admitting
+      // outside work (stopAdmission) before any plugin tears down.
+      for (let i = plugins.length - 1; i >= 0; i--) {
+        const p = plugins[i]!;
+        if (typeof p.stopAdmission !== 'function') continue;
+        try {
+          await withTimeout(
+            Promise.resolve().then(() => p.stopAdmission!()),
+            timeoutMs,
+            `plugin '${p.manifest.name}' stopAdmission exceeded ${timeoutMs}ms`,
+          );
+        } catch (err) {
+          onError(p.manifest.name, err);
+        }
+      }
+
       // Reverse load order: a plugin that depends on another's resources
-      // should shut down first. Same posture the production kernel-
-      // shutdown slice will adopt for SIGTERM.
+      // should shut down first, as KernelHandle.shutdown() does for SIGTERM.
       for (let i = plugins.length - 1; i >= 0; i--) {
         const p = plugins[i]!;
         if (typeof p.shutdown !== 'function') continue;
