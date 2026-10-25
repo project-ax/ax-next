@@ -91,6 +91,8 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     routines:reopen, each answering 503 without its hook. Both read the
 //     caller's own task first, the task page's read (the optional
 //     routines:get and routines:recent-fires), and answer 404 without it.
+//     TASK-953 adds no hard call either: a task's owner copies it through the
+//     optional routines:duplicate, answering 503 without it.
 //     TASK-234 (AW-13) adds no hard call either: the Memory tab's
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
@@ -400,6 +402,14 @@ export function createChannelWebServerPlugin(
           hook: 'routines:reopen',
           degradation:
             'Not yet and Reopen (POST /api/workspace/tasks/:agentId/:routineId/reopen) answer 503 and nothing is sent',
+        },
+        {
+          // TASK-953 — a task's owner copies it, paused, from the task page.
+          // The service decides who may (the task's owner), and its store
+          // decides the owner again under the task's row lock.
+          hook: 'routines:duplicate',
+          degradation:
+            'Duplicate on the task page (POST /api/workspace/tasks/:agentId/:routineId/duplicate) answers 503 and makes no copy',
         },
         {
           // TASK-739 — the Connectors tab lists this agent's effective

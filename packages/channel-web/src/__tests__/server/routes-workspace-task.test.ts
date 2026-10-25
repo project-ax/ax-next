@@ -5,8 +5,9 @@
  * (TASK-910); `POST …/replies`, the task's owner writing to their agent
  * about it (TASK-931); `POST …/steps`, the task's owner changing its steps
  * (TASK-949); `PUT …/finish-by`, the owner setting or removing a
- * "get-done" task's finish date (TASK-951); and `POST …/complete` and
- * `POST …/reopen`, Mark done, and Not yet or Reopen with a reply (TASK-950).
+ * "get-done" task's finish date (TASK-951); `POST …/complete` and
+ * `POST …/reopen`, Mark done, and Not yet or Reopen with a reply (TASK-950);
+ * and `POST …/duplicate`, the owner copying their task, paused (TASK-953).
  *
  * `routines:get` here is the real view producer, not a literal. Each view is
  * made by @ax/routines' own `routineView` and parsed on the bus through
@@ -27,6 +28,8 @@
  * refusal too.
  * `routines:complete` and `routines:reopen` check theirs the same way, with
  * `RoutineCompleteInputSchema` and `RoutineReopenInputSchema`.
+ * `routines:duplicate` checks its input with `RoutineDuplicateInputSchema`
+ * first, and its answer is parsed through `RoutineDuplicateOutputSchema`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -46,6 +49,8 @@ import {
   RoutineClearNotesOutputSchema,
   RoutineCompleteInputSchema,
   RoutineCompleteOutputSchema,
+  RoutineDuplicateInputSchema,
+  RoutineDuplicateOutputSchema,
   RoutineGetInputSchema,
   RoutineGetOutputSchema,
   RoutineRecentFiresOutputSchema,
@@ -60,6 +65,7 @@ import {
   RoutineSetStepsInputSchema,
   RoutineSetStepsOutputSchema,
   type RoutineCompleteOutput,
+  type RoutineDuplicateOutput,
   type RoutineFireView,
   type RoutineReopenOutput,
   type RoutineReplyOutput,
@@ -72,7 +78,12 @@ import {
   makeWorkspaceHandlers,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
-import type { TaskDetail, TaskFinishByResponse, TaskStepsResponse } from '../../lib/workspace-types.js';
+import type {
+  TaskDetail,
+  TaskDuplicateResponse,
+  TaskFinishByResponse,
+  TaskStepsResponse,
+} from '../../lib/workspace-types.js';
 import { parseRoutineInput, routineView } from '../../../../routines/src/services.js';
 import type { StoredRoutine } from '../../../../routines/src/types.js';
 import { routineFixture } from '../../components/routines/__tests__/routine-fixture.js';
@@ -223,10 +234,15 @@ interface World {
   reopenAnswer: RoutineReopenOutput;
   /** Set: `routines:reopen` throws this, after its input check. */
   reopenFailure: Error | null;
+  /** What `routines:duplicate` answers when it makes a copy (TASK-953). */
+  duplicateAnswer: RoutineDuplicateOutput;
+  /** Set: `routines:duplicate` throws this, after its input check. */
+  duplicateFailure: Error | null;
   /**
-   * True: `routines:get`, `routines:recent-fires` and (TASK-949)
-   * `routines:set-steps` are registered without `returns`, so their answers
-   * reach the route unparsed (TASK-913's shape).
+   * True: `routines:get`, `routines:recent-fires`, (TASK-949)
+   * `routines:set-steps` and (TASK-953) `routines:duplicate` are registered
+   * without `returns`, so their answers reach the route unparsed (TASK-913's
+   * shape).
    */
   unvalidated: boolean;
   /** Set, with `unvalidated`: the view's `noRecentUpdate` is replaced by this (a shape the schema would refuse). */
@@ -268,6 +284,8 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     completeFailure: null,
     reopenAnswer: { replyId: 'REPLY-ID-1', checkIn: 'started' },
     reopenFailure: null,
+    duplicateAnswer: { routineId: 'COPY-ID-1' },
+    duplicateFailure: null,
     unvalidated: false,
     viewMiss: null,
     viewPatch: null,
@@ -284,6 +302,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
   const finishByCalls: Array<Call<unknown>> = [];
   const completeCalls: Array<Call<unknown>> = [];
   const reopenCalls: Array<Call<unknown>> = [];
+  const duplicateCalls: Array<Call<unknown>> = [];
   /** Every routines hook asked, in the order it was asked. */
   const order: string[] = [];
 
@@ -448,6 +467,23 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
       { returns: RoutineSetFinishByOutputSchema },
     );
   }
+  if (!world.absent.has('routines:duplicate')) {
+    bus.registerService(
+      'routines:duplicate',
+      'routines',
+      async (ctx: AgentContext, raw: unknown) => {
+        duplicateCalls.push({ userId: ctx.userId, agentId: ctx.agentId, input: raw });
+        order.push('routines:duplicate');
+        // The service's own input check, before anything else (TASK-953): a
+        // request id the contract refuses is `validation`, and so is a key
+        // the service doesn't take.
+        parseRoutineInput(RoutineDuplicateInputSchema, raw);
+        if (world.duplicateFailure !== null) throw world.duplicateFailure;
+        return world.duplicateAnswer;
+      },
+      world.unvalidated ? undefined : { returns: RoutineDuplicateOutputSchema },
+    );
+  }
 
   // Spread in only when set: the deps' `now` is optional, and
   // exactOptionalPropertyTypes refuses an explicit undefined.
@@ -511,6 +547,15 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     await handlers.reopenTask(mkReq(params, body), res);
     return captured;
   }
+  async function duplicate(
+    params: Record<string, string> = KEY,
+    body: unknown = { requestId: 'req-1' },
+  ): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    last = captured;
+    await handlers.taskDuplicate(mkReq(params, body), res);
+    return captured;
+  }
   return {
     detail,
     clear,
@@ -519,6 +564,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     finishBy,
     complete,
     reopen,
+    duplicate,
     resolveCalls,
     getCalls,
     firesCalls,
@@ -529,6 +575,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     finishByCalls,
     completeCalls,
     reopenCalls,
+    duplicateCalls,
     order,
     lastWritten: () => last,
   };
@@ -1167,6 +1214,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
         'routines:set-finish-by',
         'routines:complete',
         'routines:reopen',
+        'routines:duplicate',
       ],
     ],
     ['without routines:get', ['routines:get']],
@@ -2489,4 +2537,218 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/reopen (TASK-950)', () =
       expect(lastWritten()?.body).toBeUndefined();
     },
   );
+});
+
+describe('POST /api/workspace/tasks/:agentId/:routineId/duplicate (TASK-953)', () => {
+  /**
+   * A stay-on-top task alice owns, at the request's address. The route reads
+   * it (`ownTaskOr404`) before the hook is asked, so every test that gets past
+   * the 503 check needs one.
+   */
+  const MINE: Partial<World> = { rows: [stored({ agentId: 'a1', routineId: 't1' })] };
+
+  it('401s without a session, and reads nothing', async () => {
+    const { duplicate, resolveCalls, duplicateCalls, order } = setup({ ...MINE, viewer: null });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(resolveCalls).toEqual([]);
+    expect(duplicateCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each([
+    ['a blank routine id', { agentId: 'a1', routineId: '  ' }],
+    ['a blank agent id', { agentId: ' ', routineId: 't1' }],
+    ['no ids at all', {}],
+  ])('400s %s, and reads nothing', async (_what, params: Record<string, string>) => {
+    const { duplicate, resolveCalls, order } = setup(MINE);
+    const captured = await duplicate(params);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'missing-task-id' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each<[string, Buffer]>([
+    ['an unparseable body', Buffer.from('{"requestId": "req-1"', 'utf-8')],
+    ['no body at all', Buffer.alloc(0)],
+  ])('400s %s as invalid-json, and reads nothing', async (_what, raw) => {
+    const { duplicate, resolveCalls, order } = setup(MINE);
+    const captured = await duplicate(KEY, raw);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-json' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ['a list', []],
+    ['null', null],
+    ['no request id', {}],
+    ['an empty request id', { requestId: '' }],
+    ['a request id that isn’t text', { requestId: 7 }],
+  ])('400s a body that is %s as invalid-body, before the agent is read', async (_what, body) => {
+    const { duplicate, resolveCalls, duplicateCalls, order } = setup(MINE);
+    const captured = await duplicate(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-body' });
+    expect(resolveCalls).toEqual([]);
+    expect(duplicateCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it('503s without routines:duplicate, before reading the agent', async () => {
+    const { duplicate, resolveCalls, order } = setup({
+      ...MINE,
+      absent: new Set(['routines:duplicate']),
+    });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'task-duplicate-unavailable' });
+    expect(resolveCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it('404s someone agents:resolve refuses, and never calls the hook', async () => {
+    const { duplicate, resolveCalls, duplicateCalls, order } = setup({ ...MINE, viewer: 'mallory' });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'mallory' }]);
+    expect(duplicateCalls).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it.each<[string, Partial<World>, Key]>([
+    [
+      'a task bob owns on a team agent, to a teammate who doesn’t manage its tasks',
+      {
+        agents: TEAM_AGENTS,
+        managers: { team: ['bob'] },
+        rows: [stored({ agentId: 'team', routineId: 't1', ownerUserId: 'bob' })],
+      },
+      { agentId: 'team', routineId: 't1' },
+    ],
+    [
+      'the same task, to a teammate who does',
+      {
+        agents: TEAM_AGENTS,
+        managers: { team: ['alice', 'bob'] },
+        rows: [stored({ agentId: 'team', routineId: 't1', ownerUserId: 'bob' })],
+      },
+      { agentId: 'team', routineId: 't1' },
+    ],
+    [
+      'a repeat routine alice owns',
+      { rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null })] },
+      KEY,
+    ],
+    ['a routine that isn’t there', { rows: [] }, KEY],
+  ])('404s %s as task-not-found, before the hook is asked', async (_what, world, key) => {
+    const { duplicate, duplicateCalls, order } = setup(world);
+    const captured = await duplicate(key);
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(duplicateCalls).toEqual([]);
+    expect(order).toEqual(['routines:get']);
+  });
+
+  it('copies the caller’s own task: 200 with the copy’s id alone, and the hook gets only the address’s ids and the request id', async () => {
+    const { duplicate, resolveCalls, duplicateCalls, order } = setup(MINE);
+    // The address names the task. Nothing else in the body rides along: not
+    // another task's ids, and not a name for the copy, which the host decides.
+    const captured = await duplicate(KEY, {
+      requestId: 'q',
+      agentId: 'other',
+      routineId: 'other',
+      name: 'Mine',
+    });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ routineId: 'COPY-ID-1' } satisfies TaskDuplicateResponse);
+    expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'alice' }]);
+    expect(duplicateCalls).toStrictEqual([
+      {
+        userId: 'alice',
+        agentId: 'a1',
+        input: { agentId: 'a1', routineId: 't1', requestId: 'q' },
+      },
+    ]);
+    // The task is read first, as its page reads it, so its 404s are the page's.
+    expect(order).toEqual(['routines:get', 'routines:duplicate']);
+  });
+
+  it('403s when the service says the owner may not, as task-duplicate-not-allowed', async () => {
+    const { duplicate, duplicateCalls } = setup({
+      ...MINE,
+      duplicateFailure: new SafeToolError('forbidden', 'input'),
+    });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'task-duplicate-not-allowed' });
+    expect(duplicateCalls).toHaveLength(1);
+  });
+
+  it.each<[string, Partial<World>, unknown]>([
+    [
+      'a copy today’s rules refuse',
+      { duplicateFailure: new SafeToolError('validation', 'promptBody') },
+      { requestId: 'req-1' },
+    ],
+    ['a request id the contract refuses', {}, { requestId: 'x'.repeat(257) }],
+  ])('400s %s as duplicate-invalid', async (_what, world, body) => {
+    const { duplicate, duplicateCalls } = setup({ ...MINE, ...world });
+    const captured = await duplicate(KEY, body);
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'duplicate-invalid' });
+    expect(duplicateCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['a task that went meanwhile', new SafeToolError('not-found', 'routineId')],
+    ['an agent it can no longer reach', new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' })],
+  ])('404s %s as task-not-found', async (_what, failure) => {
+    const { duplicate, duplicateCalls } = setup({ ...MINE, duplicateFailure: failure });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'task-not-found' });
+    expect(duplicateCalls).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'a request id already used on another task',
+      new SafeToolError('request-conflict', 'requestId'),
+      'This request ID was used for different input.',
+    ],
+    ['an unavailable service', new SafeToolError('unavailable', 'input'), 'temporarily unavailable'],
+    ['any other failure', new Error('boom'), 'boom'],
+  ])(
+    'fails the request when the service fails with %s, rather than answering a copy',
+    async (_what, failure, message) => {
+      const { duplicate, duplicateCalls, lastWritten } = setup({
+        ...MINE,
+        duplicateFailure: failure,
+      });
+      await expect(duplicate()).rejects.toThrow(message);
+      expect(duplicateCalls).toHaveLength(1);
+      expect(lastWritten()?.statusCode).not.toBe(200);
+      expect(lastWritten()?.body).toBeUndefined();
+    },
+  );
+
+  it('answers the copy’s id alone, whatever else the hook says', async () => {
+    // An answer the bus didn't parse (TASK-913's shape): only the id crosses.
+    const { duplicate } = setup({
+      ...MINE,
+      unvalidated: true,
+      duplicateAnswer: {
+        routineId: 'COPY-ID-1',
+        name: 'Copy of Zero open tickets',
+      } as unknown as RoutineDuplicateOutput,
+    });
+    const captured = await duplicate();
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({ routineId: 'COPY-ID-1' });
+  });
 });

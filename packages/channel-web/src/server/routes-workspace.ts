@@ -13,6 +13,7 @@
  * PUT  /api/workspace/tasks/:agentId/:routineId/finish-by — set or remove a "get-done" task's finish date (TASK-951)
  * POST /api/workspace/tasks/:agentId/:routineId/complete — mark that task done (TASK-950)
  * POST /api/workspace/tasks/:agentId/:routineId/reopen — "Not yet", or reopen a Done task, with a reply (TASK-950)
+ * POST /api/workspace/tasks/:agentId/:routineId/duplicate — copy that task, paused, its steps unticked (TASK-953)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
  * GET  /api/workspace/agents/:agentId/files
  *                                      — what the agent has written
@@ -63,11 +64,12 @@
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's eight routes, `/tasks/:agentId/:routineId`, its
+ *     the task page's nine routes, `/tasks/:agentId/:routineId`, its
  *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
  *     `/replies` (TASK-931), its `/steps` (TASK-949), its `/finish-by`
- *     (TASK-951), and its `/complete` and `/reopen` (TASK-950), which reach
- *     the agent's tasks rather than its files. The order on each is:
+ *     (TASK-951), its `/complete` and `/reopen` (TASK-950), and its
+ *     `/duplicate` (TASK-953), which reach the agent's tasks rather than its
+ *     files. The order on each is:
  *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
  *     → read. Nothing reads before the resolve. The task page then shows
  *     only the caller's own task (`isOwnTask`), and reads no run history and
@@ -95,7 +97,10 @@
  *     a step's text sent to `/steps`: the contract's step rule screens it the
  *     same way (one line too), and a step whose words it writes is quoted in
  *     a check-in's message labelled as the person's, from the host-set author
- *     no change can set.
+ *     no change can set. `/duplicate` reads first too, through
+ *     `ownTaskOr404`, so a stranger, a teammate and a repeat routine get the
+ *     page's 404 before the service is asked, and only the owner's
+ *     `forbidden` is a 403.
  *
  *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
  *     routes. The workspace tier used to hash the CALLER's userId into the
@@ -240,6 +245,7 @@ import type {
   TaskCheckin,
   TaskCompleteResponse,
   TaskDetail,
+  TaskDuplicateResponse,
   TaskFinishBy,
   TaskFinishByResponse,
   TaskNoRecentUpdate,
@@ -902,6 +908,19 @@ interface TaskCompleteInput extends TaskKeyInput {
   requestId: string;
 }
 type TaskCompleteOutput = RoutineCompleteOutput;
+
+/**
+ * `routines:duplicate` (TASK-953), as the task page uses it: the task's key
+ * and a request id, nothing about the copy, which the host names, owns and
+ * keeps paused. The bus has already parsed the answer through the service's
+ * `returns` (`RoutineDuplicateOutputSchema`), and only the copy's id is read.
+ */
+interface TaskDuplicateInput extends TaskKeyInput {
+  requestId: string;
+}
+interface TaskDuplicateOutput {
+  routineId: string;
+}
 
 /**
  * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
@@ -3852,6 +3871,21 @@ function readTaskFinishByBody(parsed: unknown): { finishBy: string | null } | nu
  */
 function readTaskCompleteBody(parsed: unknown): { requestId: string } | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
+  const { requestId } = parsed as Record<string, unknown>;
+  if (typeof requestId !== 'string' || requestId.length === 0) return null;
+  return { requestId };
+}
+
+/**
+ * A copy's body (TASK-953): an object holding a non-empty string `requestId`,
+ * or null. Only its shape is checked here. What a request id may be is the
+ * contract's (`RoutineDuplicateInputSchema`), which `routines:duplicate`
+ * applies before it writes anything; anything else in the body is left
+ * behind, so nothing about the copy (its name, its owner, its steps) can be
+ * asked for.
+ */
+function readTaskDuplicateBody(parsed: unknown): { requestId: string } | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   const { requestId } = parsed as Record<string, unknown>;
   if (typeof requestId !== 'string' || requestId.length === 0) return null;
   return { requestId };
@@ -8095,6 +8129,88 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * POST /api/workspace/tasks/:agentId/:routineId/duplicate — a task's
+     * owner copies it (TASK-953, decisions row 6). The copy is a new task of
+     * the same kind, paused, named "Copy of {name}", with the same brief,
+     * schedule and active hours, and a get-done task's steps unticked: the
+     * service decides all of that, and none of it is the body's to say. The
+     * body is `{ requestId }`, and the same id again answers the same copy.
+     *
+     * `authOr401` → ids (400) → the body: JSON (400 `invalid-json`) holding a
+     * non-empty string `requestId` (400 `invalid-body`) → without
+     * `routines:duplicate`, 503 → `ownTaskOr404`, the task page's own order →
+     * `routines:duplicate` as the caller, its input built field by field, so
+     * nothing in the body but the request id is forwarded and the address,
+     * not the body, names the task.
+     *
+     * It reads the task first, as its page does, so a stranger, a teammate
+     * (whether or not they manage the agent's tasks) and a repeat routine get
+     * the page's 404 before the service is asked, and only the owner's
+     * `forbidden` is a 403 (`task-duplicate-not-allowed`): their own task,
+     * but they no longer manage this agent's tasks. The read is not the
+     * authority. The service decides who may (someone who manages the
+     * agent's tasks, with `edit` on the task, so only its owner), and its
+     * store decides the owner again under the task's row lock. A
+     * `validation` refusal is a copy today's rules refuse (of a task so near
+     * the definition's size cap that "Copy of " and pausing push the copy
+     * past it) or a request id the contract refuses, and answers 400
+     * `duplicate-invalid`. It and `forbidden` are checked before
+     * `isTaskRefusal`, which counts both as a read's 404. `not-found` (the
+     * task or its agent went meanwhile) is the page's own 404. Anything else
+     * fails the request, `request-conflict` included: only a request id
+     * reused on another task raises it, and the page never sends one.
+     *
+     * The answer is the copy's id alone, which the page opens. CSRF is
+     * @ax/http-server's global guard, met by `workspace-api`'s write headers,
+     * as for Clear notes.
+     */
+    async taskDuplicate(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const key = taskKeyOr400(req, res);
+      if (key === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = readTaskDuplicateBody(parsed);
+      if (body === null) {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+      if (!bus.hasService('routines:duplicate')) {
+        res.status(503).json({ error: 'task-duplicate-unavailable' });
+        return;
+      }
+      const own = await ownTaskOr404(userId, key, res);
+      if (own === null) return;
+      let out: TaskDuplicateOutput;
+      try {
+        out = await bus.call<TaskDuplicateInput, TaskDuplicateOutput>(
+          'routines:duplicate',
+          own.ctx,
+          { agentId: key.agentId, routineId: key.routineId, requestId: body.requestId },
+        );
+      } catch (err) {
+        if (err instanceof SafeToolError && err.toolCode === 'validation') {
+          res.status(400).json({ error: 'duplicate-invalid' });
+          return;
+        }
+        if (err instanceof SafeToolError && err.toolCode === 'forbidden') {
+          res.status(403).json({ error: 'task-duplicate-not-allowed' });
+          return;
+        }
+        if (!isTaskRefusal(err)) throw err;
+        res.status(404).json({ error: 'task-not-found' });
+        return;
+      }
+      res.status(200).json({ routineId: out.routineId } satisfies TaskDuplicateResponse);
+    },
+
+    /**
      * GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId —
      * one check-in's transcript, read-only, for its task's owner only
      * (TASK-911, decisions rows 2, 3, 5, 6 and 9).
@@ -10491,6 +10607,13 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/tasks/:agentId/:routineId/reopen',
       handler: handlers.reopenTask as unknown as RouteHandler,
+    },
+    {
+      // TASK-953 — the task's owner copies it, paused. The service decides
+      // who may; the route reads the task first.
+      method: 'POST',
+      path: '/api/workspace/tasks/:agentId/:routineId/duplicate',
+      handler: handlers.taskDuplicate as unknown as RouteHandler,
     },
     {
       // TASK-911 — one check-in's transcript, for the task's owner. The only
