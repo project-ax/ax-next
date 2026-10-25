@@ -7,7 +7,11 @@ import {
   type LlmCallInput,
   type LlmCallOutput,
 } from '@ax/core';
-import { createLlmOpenRouterPlugin } from '../plugin.js';
+import {
+  COMPLETION_MAX_BYTES,
+  ERROR_BODY_MAX_BYTES,
+  createLlmOpenRouterPlugin,
+} from '../plugin.js';
 
 // ---------------------------------------------------------------------------
 // llm:call:openrouter — the OpenAI-compatible POST.
@@ -447,6 +451,171 @@ describe('@ax/llm-openrouter transport failures', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect(serialise(caught)).not.toContain('sk-or-test-key');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Response size cap — TASK-944. We read at most 4 MiB of a completion and at
+// most 64 KiB of an error body, counted as the bytes arrive, so a runaway or
+// hostile answer can't make the host hold it.
+//
+// Every size below is a literal, never the exported constant: during a red
+// run the constants are still undefined, and a body sized from one would
+// never end. The first test pins the constants to these literals.
+// ---------------------------------------------------------------------------
+
+const COMPLETION_CAP = 4 * 1024 * 1024;
+const ERROR_CAP = 64 * 1024;
+
+/** `total` bytes in `chunk`-byte pieces; records how far a reader pulled. */
+function counted(total: number, chunk: number) {
+  // A NaN total (an import still undefined during a red run) would never end.
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(chunk) || chunk <= 0) {
+    throw new Error(`counted: bad sizes ${String(total)}/${String(chunk)}`);
+  }
+  const stats = { pulled: 0, cancelled: false, reason: undefined as unknown };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (stats.pulled * chunk >= total) return controller.close();
+        stats.pulled += 1;
+        controller.enqueue(new Uint8Array(chunk).fill(0x61));
+      },
+      cancel(reason) {
+        stats.cancelled = true;
+        stats.reason = reason;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, stats };
+}
+
+/**
+ * A cancel reaches the source through the pipe a few microtasks after the
+ * reader gives up, so a check on the source waits a macrotask first.
+ */
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** A fetch that answers every request with `res`, counting the requests. */
+function answering(res: Response): { fetchImpl: typeof fetch; calls: { count: number } } {
+  const calls = { count: 0 };
+  const fetchImpl = (async () => {
+    calls.count += 1;
+    return res;
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+/** Make one `llm:call:openrouter` that must fail, and return what it threw. */
+async function thrownBy(bus: HookBus): Promise<unknown> {
+  try {
+    await bus.call<LlmCallInput, LlmCallOutput>('llm:call:openrouter', CTX, INPUT);
+  } catch (e) {
+    return e;
+  }
+  throw new Error('expected llm:call:openrouter to reject');
+}
+
+describe('@ax/llm-openrouter response size cap', () => {
+  it('the caps are 4 MiB and 64 KiB', () => {
+    expect(COMPLETION_MAX_BYTES).toBe(4 * 1024 * 1024);
+    expect(ERROR_BODY_MAX_BYTES).toBe(64 * 1024);
+  });
+
+  it('stops reading a completion past 4 MiB, says why, and does not retry', async () => {
+    const { stream, stats } = counted(4 * COMPLETION_CAP, 64 * 1024);
+    const server = answering(
+      new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const bus = await boot(server.fetchImpl);
+
+    const err = await thrownBy(bus);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err).toMatchObject({ code: 'unknown', plugin: '@ax/llm-openrouter' });
+    expect((err as Error).message).toBe(
+      'OpenRouter API call failed: the response was larger than 4 MiB, so we stopped reading it',
+    );
+    expect(server.calls.count).toBe(1);
+    await nextTask();
+    expect(stats.pulled).toBeLessThanOrEqual(COMPLETION_CAP / (64 * 1024) + 2);
+    expect(stats.cancelled).toBe(true);
+  });
+
+  it('refuses a declared Content-Length over 4 MiB without reading', async () => {
+    const { stream, stats } = counted(4 * COMPLETION_CAP, 64 * 1024);
+    const server = answering(
+      new Response(stream, {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(COMPLETION_CAP + 1),
+        },
+      }),
+    );
+    const bus = await boot(server.fetchImpl);
+
+    const err = await thrownBy(bus);
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as Error).message).toBe(
+      'OpenRouter API call failed: the response was larger than 4 MiB, so we stopped reading it',
+    );
+    expect(server.calls.count).toBe(1);
+    await nextTask();
+    expect(stats.pulled).toBe(0);
+    expect(stats.cancelled).toBe(true);
+  });
+
+  it('accepts a completion one byte under 4 MiB', async () => {
+    const bodyWith = (content: string) =>
+      JSON.stringify(
+        completion({
+          choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        }),
+      );
+    const n = COMPLETION_CAP - 1 - Buffer.byteLength(bodyWith(''));
+    const body = bodyWith('a'.repeat(n));
+    expect(Buffer.byteLength(body)).toBe(COMPLETION_CAP - 1);
+    const server = answering(
+      new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const bus = await boot(server.fetchImpl);
+
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:openrouter', CTX, INPUT);
+    expect(out.text.length).toBe(n);
+  });
+
+  it('reads at most 64 KiB of an error body, then reports the status', async () => {
+    const { stream, stats } = counted(1024 * 1024, 4096);
+    const server = answering(new Response(stream, { status: 400 }));
+    const bus = await boot(server.fetchImpl);
+
+    const err = await thrownBy(bus);
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as Error).message).toMatch(/^OpenRouter API call failed: HTTP 400/);
+    expect(server.calls.count).toBe(1);
+    await nextTask();
+    expect(stats.pulled).toBeLessThanOrEqual(ERROR_CAP / 4096 + 2);
+    expect(stats.cancelled).toBe(true);
+  });
+
+  it('reports the status when an error body declares more than 64 KiB, without reading it', async () => {
+    const { stream, stats } = counted(1024 * 1024, 4096);
+    const server = answering(
+      new Response(stream, {
+        status: 400,
+        headers: { 'content-length': String(ERROR_CAP + 1) },
+      }),
+    );
+    const bus = await boot(server.fetchImpl);
+
+    const err = await thrownBy(bus);
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as Error).message).toMatch(/^OpenRouter API call failed: HTTP 400/);
+    expect(server.calls.count).toBe(1);
+    await nextTask();
+    expect(stats.pulled).toBe(0);
+    expect(stats.cancelled).toBe(true);
   });
 });
 
