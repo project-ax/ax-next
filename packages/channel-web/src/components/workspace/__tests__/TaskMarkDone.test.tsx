@@ -66,6 +66,31 @@ function Harness({
   );
 }
 
+/** The harness with the page's refs wired: `buttonRef` on Mark done, `controlsRef` on what holds it. */
+function FocusHarness({ unticked, doneAt = null, claim = CLAIM }: { unticked: number } & Partial<Shown>) {
+  const m = useMarkDone({ agentId: 'a1', routineId: 't1', doneAt, claim, unticked, onDone: () => {} });
+  return (
+    <div>
+      <button type="button">Elsewhere</button>
+      <div ref={m.controlsRef}>
+        {m.confirming ? (
+          <MarkDoneConfirmation
+            unticked={unticked}
+            primary
+            busy={m.busy}
+            onConfirm={m.confirm}
+            onCancel={m.cancel}
+          />
+        ) : (
+          <button ref={m.buttonRef} type="button" onClick={m.press} disabled={m.busy}>
+            Mark done
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const press = () => fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
 
 beforeEach(() => {
@@ -257,6 +282,29 @@ describe('useMarkDone', () => {
     press();
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(completeMock).toHaveBeenCalledTimes(1);
+  });
+
+  // A read that closes the question (the last step ticked elsewhere, or another claim) takes away the button focus
+  // was on; focus goes back to Mark done rather than `<body>`, unless the person had moved on.
+  it.each<[string, Partial<Shown> & { unticked: number }]>([
+    ['every step ticked', { unticked: 0 }],
+    ['another claim', { unticked: 2, claim: '2026-10-23T11:00:00.000Z' }],
+  ])('a read that closes the question (%s) puts focus back on Mark done', (_what, next) => {
+    const view = render(<FocusHarness unticked={2} />);
+    press();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Mark done anyway' }));
+    view.rerender(<FocusHarness {...next} />);
+    expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Mark done' }));
+  });
+
+  it('a read that closes the question leaves focus alone when the person moved on', () => {
+    const view = render(<FocusHarness unticked={2} />);
+    press();
+    const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+    act(() => elsewhere.focus());
+    view.rerender(<FocusHarness unticked={0} />);
+    expect(document.activeElement).toBe(elsewhere);
   });
 
   it('shows the failure and keeps the confirmation open for a retry', async () => {

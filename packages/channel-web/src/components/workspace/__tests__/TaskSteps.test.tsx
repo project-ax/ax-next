@@ -33,6 +33,7 @@ const ALREADY_LISTED = `That step is already on the list, so we${String.fromCode
 const CAP_REACHED = `The list reached 50 steps meanwhile, so we${String.fromCodePoint(0x2019)}ve loaded the latest.`;
 const AT_CAP = 'A task can have up to 50 steps.';
 const EDIT_NOTE = 'Once you save it, Quill reads this as your words.';
+const NOT_SAVED = `This task was marked done, so that change wasn${String.fromCodePoint(0x2019)}t saved.`;
 
 const HOSTILE = '**bold** <img src=x onerror=alert(1)>';
 
@@ -861,5 +862,61 @@ describe('TaskSteps: the footer, and a Done task’s steps (TASK-950)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(UNCONFIRMED);
     view.rerender(done(true));
     expect(screen.queryByRole('alert')).toBeNull();
+    // Nobody could confirm it, so it may have landed: the record shows which, and says nothing more.
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  // Marked done elsewhere while the person was changing a step: what they did goes, and the record says so.
+  it('says a refused change wasn’t saved once the task is Done, and the line goes after a Reopen', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(box('Check the redirects'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND);
+    view.rerender(done(true));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+    view.rerender(done(false));
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('says a refused Add wasn’t saved once the task is Done', async () => {
+    setStepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
+    const view = render(done(false));
+    fireEvent.click(addStep());
+    fireEvent.change(newInput(), { target: { value: 'Ask Dana' } });
+    pressEnter(newInput());
+    expect(await screen.findByText(NOT_FOUND)).toBeInTheDocument();
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it('says typed text wasn’t saved when the task turns Done with an editor open', async () => {
+    const view = render(done(false));
+    const input = await edit('Check the redirects');
+    fireEvent.change(input, { target: { value: 'Check every redirect' } });
+    view.rerender(done(true));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(NOT_SAVED);
+  });
+
+  it.each<[string, TaskStep[]]>([
+    ['an Add editor left empty', PLAN],
+    ['an Edit editor left unchanged', PLAN],
+    ['text the record now shows', withStep(PLAN, 's2', { text: 'Check every redirect' })],
+  ])('says nothing for %s', async (what, record) => {
+    const view = render(done(false));
+    if (what === 'an Add editor left empty') {
+      fireEvent.click(addStep());
+    } else {
+      const input = await edit('Check the redirects');
+      if (what === 'text the record now shows') {
+        fireEvent.change(input, { target: { value: 'Check  every redirect ' } });
+      }
+    }
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    view.rerender(done(true, record));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
   });
 });

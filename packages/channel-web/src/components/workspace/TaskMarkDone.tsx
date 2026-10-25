@@ -34,7 +34,10 @@
  * press disables its button, and Cancel unmounts itself, and either drops
  * focus on `<body>`. So after a failed press focus goes back to the button (or
  * into the question, if it is open), and after Cancel to the button, unless
- * the person moved on meanwhile (TaskPage's rule). A press that lands is the
+ * the person moved on meanwhile (TaskPage's rule). A read that closes the
+ * question (every step ticked, or the task in another state) takes away the
+ * button focus may be on, so focus goes back to Mark done then too, if it is
+ * still on screen. A press that lands is the
  * caller's to place: the task page focuses its Done line, Today the consent
  * region.
  */
@@ -106,6 +109,8 @@ export function useMarkDone({
   // Set by a press that is on its way, and by Cancel; read once, in the effect below.
   const wasBusy = useRef(false);
   const cancelled = useRef(false);
+  // Whether the question was open at the last commit the effect below saw.
+  const wasConfirming = useRef(false);
 
   // A layout effect, so focus is back in the commit that enables the buttons again.
   useLayoutEffect(() => {
@@ -115,9 +120,12 @@ export function useMarkDone({
     }
     const afterFailure = wasBusy.current && failure !== null;
     const afterCancel = cancelled.current && !confirming;
+    // Closed by neither Cancel nor a press that landed (the caller's to place): a read did it.
+    const afterRead = wasConfirming.current && !confirming && !wasBusy.current && !cancelled.current;
     wasBusy.current = false;
     cancelled.current = false;
-    if (!afterFailure && !afterCancel) return;
+    wasConfirming.current = confirming;
+    if (!afterFailure && !afterCancel && !afterRead) return;
     const target = confirming
       ? controlsRef.current?.querySelector('button')
       : buttonRef.current;

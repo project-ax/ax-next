@@ -619,6 +619,9 @@ function TaskBody({
 
   // Mark done (TASK-950). Its success reads the task again; once that shows it
   // Done, focus goes to the Done line, from `<body>` only (WHERE FOCUS GOES).
+  // A step change refused because the task was marked done elsewhere asks the
+  // same of its re-read (`onStepsRefused`): the steps turn into a record, the
+  // control focus was on goes, and focus would be left on `<body>`.
   const doneLineRef = useRef<HTMLParagraphElement>(null);
   const focusDoneLine = useRef(false);
   const markDone = useMarkDone({
@@ -632,8 +635,13 @@ function TaskBody({
       onRefresh();
     },
   });
-  // Asked once, of the re-read Mark done started: if that read fails, a later one that shows the
-  // task Done (a poll's, say) answers something else and leaves focus alone. The read has settled
+  const onStepsRefused = () => {
+    focusDoneLine.current = true;
+    onRefresh();
+  };
+  // Asked once, of the re-read Mark done (or a refused step change) started: if that read fails,
+  // a later one that shows the task Done (a poll's, say) answers something else and leaves focus
+  // alone. The read has settled
   // once the task isn't refreshing and a new task or a failure has arrived: `onRefresh` marks it
   // refreshing in the same commit as the press settles, but a fast answer can land in that commit
   // too. A failed press, and Cancel, put focus back themselves (`useMarkDone`).
@@ -766,7 +774,7 @@ function TaskBody({
           steps={detail.steps}
           agentName={agentName}
           onChanged={onStepsChanged}
-          onRefused={onRefresh}
+          onRefused={onStepsRefused}
           readOnly={done}
           footer={
             done || claimed ? undefined : (

@@ -55,7 +55,11 @@
  * nothing to change: each box is a picture of its state, said to a screen
  * reader in words (`Done: ` / `Not done: `), and there are no options and no
  * Add a step. An editor left open closes, and a change's failure or skipped
- * line goes. Reopening the task brings the controls back. `footer` is drawn
+ * line goes. If that editor held text the steps don't show, or the change was
+ * refused (the task was marked done elsewhere first), the status line says
+ * "This task was marked done, so that change wasn’t saved." A change nobody
+ * could confirm says nothing more: the record shows whether it landed.
+ * Reopening the task brings the controls back. `footer` is drawn
  * last, under the steps and their controls: the page's Mark done.
  *
  * AGENT- OR PERSON-WRITTEN TEXT IS DRAWN AS TEXT. A step was written by a
@@ -107,6 +111,8 @@ const ALREADY_LISTED = 'That step is already on the list, so we’ve loaded the 
 const AT_CAP = `A task can have up to ${ROUTINE_STEPS_MAX} steps.`;
 /** A skipped add at the cap: the list filled meanwhile. The open add editor's note already states the cap. */
 const CAP_REACHED = `The list reached ${ROUTINE_STEPS_MAX} steps meanwhile, so we’ve loaded the latest.`;
+/** A change the person had out, or was typing, when the task was marked done elsewhere (TASK-950). */
+export const NOT_SAVED_DONE = 'This task was marked done, so that change wasn’t saved.';
 
 /** A failed change, worded from its status, never from the server's message. */
 function failureLine(e: unknown): string {
@@ -147,6 +153,21 @@ type EditorFailure = { line: string; invalid: boolean };
 type Editor =
   | { kind: 'edit'; id: string; text: string; failure: EditorFailure | null }
   | { kind: 'add'; text: string; failure: EditorFailure | null };
+
+/**
+ * What the person was changing when the task turned Done (TASK-950): an
+ * editor's text, or a change refused as not there (403 or 404). Kept so the
+ * record can say it wasn't saved, unless the record shows it was.
+ */
+type Left = { kind: 'edit'; id: string; text: string } | { kind: 'add'; text: string } | { kind: 'refused' };
+
+/** Whether the steps show what was left: a refusal never, an editor's text once a step reads it. */
+function onRecord(left: Left, steps: TaskStep[]): boolean {
+  if (left.kind === 'refused') return false;
+  const text = asShown(left.text);
+  if (left.kind === 'add') return text === '' || steps.some((step) => step.text !== null && asShown(step.text) === text);
+  return steps.some((step) => step.id === left.id && asShown(step.text ?? '') === text);
+}
 
 /** Where focus goes once a change's answer, or a closed editor, is on screen (see WHERE FOCUS GOES). */
 type FocusTarget =
@@ -196,7 +217,11 @@ export function TaskSteps({
   // The change out, if any, by where it came from: only its own editor's button spins.
   const [busy, setBusy] = useState<Place | null>(null);
   const [skipped, setSkipped] = useState<string | null>(null);
-  const [listFailure, setListFailure] = useState<{ line: string; register: AlertRegister } | null>(null);
+  // `refused`: answered 403 or 404, so it didn't apply (said once the task is Done, A DONE TASK'S STEPS).
+  const [listFailure, setListFailure] = useState<{ line: string; register: AlertRegister; refused: boolean } | null>(
+    null,
+  );
+  const [left, setLeft] = useState<Left | null>(null);
   const pending = useRef<{ key: string; requestId: string } | null>(null);
   const inFlight = useRef(false);
   const focusNext = useRef<FocusTarget | null>(null);
@@ -213,12 +238,26 @@ export function TaskSteps({
   // space would tick.
   if (editor?.kind === 'edit' && !steps.some((step) => step.id === editor.id)) setEditor(null);
   // A Done task's steps change no more (TASK-950): an open editor closes, and a change's failure or
-  // skipped line goes, so the record never shows a change it can't take. Adjusted while rendering, too.
+  // skipped line goes, so the record never shows a change it can't take. What the person was changing
+  // is kept, to say it wasn't saved. Adjusted while rendering, too. Level-triggered, not on the change
+  // to `readOnly`: a change out when the task turned Done may fail after it.
   if (readOnly && (editor !== null || listFailure !== null || skipped !== null)) {
+    const leaving: Left | null =
+      listFailure?.refused === true
+        ? { kind: 'refused' }
+        : editor === null
+          ? null
+          : editor.kind === 'edit'
+            ? { kind: 'edit', id: editor.id, text: editor.text }
+            : { kind: 'add', text: editor.text };
+    if (leaving !== null) setLeft(leaving);
     setEditor(null);
     setListFailure(null);
     setSkipped(null);
   }
+  // Reopened: the controls are back, and the line goes.
+  if (!readOnly && left !== null) setLeft(null);
+  const notSaved = readOnly && left !== null && !onRecord(left, steps);
 
   const done = steps.filter((step) => step.done).length;
   const atCap = steps.length >= ROUTINE_STEPS_MAX;
@@ -293,14 +332,16 @@ export function TaskSteps({
       logRequestFailure(e, 'task-steps');
       if (isConfirmedRefusal(e)) pending.current = null;
       // Not there or not theirs, maybe since the page read it: marked done (TASK-950), or deleted. The page reads it
-      // again and shows which; a Done task's steps then show as its record, and this line goes with the controls.
-      if (isConfirmedRefusal(e) && (e.status === 403 || e.status === 404)) onRefused?.();
+      // again and shows which; a Done task's steps then show as its record, and this line goes with the controls,
+      // leaving the record's own (NOT_SAVED_DONE).
+      const refused = isConfirmedRefusal(e) && (e.status === 403 || e.status === 404);
+      if (refused) onRefused?.();
       const line = failureLine(e);
       if (place === 'editor') {
         setEditor((open) => (open === null ? open : { ...open, failure: { line, invalid: false } }));
       } else {
         // An ended session isn't a malfunction (`lib/read-register.ts`).
-        setListFailure({ line, register: isSessionEnded(e) ? 'default' : 'destructive' });
+        setListFailure({ line, register: isSessionEnded(e) ? 'default' : 'destructive', refused });
       }
       focusNext.current = focus.failed;
     } finally {
@@ -485,7 +526,7 @@ export function TaskSteps({
         filled together is the announcement screen readers drop (TASK-651).
       */}
       <p role="status" className="text-[12.5px] text-muted-foreground empty:-mt-2.5">
-        {skipped ?? ''}
+        {notSaved ? NOT_SAVED_DONE : (skipped ?? '')}
       </p>
       {footer}
     </section>

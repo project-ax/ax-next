@@ -2179,7 +2179,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     // The step's box is right above the question (TASK-949); the answer is the list, now all ticked.
     stepsMock.mockResolvedValue({ steps: STEPS.map((step) => ({ ...step, done: true })), skipped: 0 });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Check the redirects' }));
-    await waitFor(() => expect(screen.queryByText(/isn’t ticked/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/ticked/)).toBeNull());
     expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
     completeMock.mockResolvedValue({ done: true });
     fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
@@ -2227,13 +2227,39 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     // Marked done on Today meanwhile: the host refuses the tick, which the route answers as the page's own 404.
     stepsMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/steps', 404));
     taskMock.mockResolvedValue(doneTask());
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Check the redirects' }));
-    expect(await screen.findByText(/^Done · You marked it done/)).toBeInTheDocument();
+    const tick = screen.getByRole('checkbox', { name: 'Check the redirects' });
+    act(() => tick.focus());
+    fireEvent.click(tick);
+    const line = await screen.findByText(/^Done · You marked it done/);
     expect(taskMock).toHaveBeenCalledTimes(2);
-    // The refusal's line went with the controls: the steps show as the record they now are.
+    // The refusal's line went with the controls: the steps show as the record they now are, and say the tick didn't land.
     expect(screen.queryByText('We couldn’t find this task any more. It may have been deleted.')).toBeNull();
     expect(screen.queryAllByRole('checkbox')).toEqual([]);
     expect(screen.getByText('Not done:')).toBeInTheDocument();
+    expect(screen.getByText('This task was marked done, so that change wasn’t saved.')).toHaveAttribute(
+      'role',
+      'status',
+    );
+    // The box focus was on is gone with the controls: focus goes to the Done line, not `<body>`.
+    await waitFor(() => expect(document.activeElement).toBe(line.closest('[tabindex="-1"]')));
+  });
+
+  it('a step change refused while the person had moved on leaves focus where they went', async () => {
+    taskMock.mockResolvedValueOnce(detail({ kind: 'get-done', steps: STEPS }));
+    await renderReady();
+    const answer = deferred<never>();
+    stepsMock.mockReturnValue(answer.promise);
+    taskMock.mockResolvedValue(doneTask());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Check the redirects' }));
+    // Somewhere that outlives the page's re-read.
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    act(() => elsewhere.focus());
+    await act(async () => answer.reject(new WorkspaceApiError('/tasks/a1/t1/steps', 404)));
+    await screen.findByText(/^Done · You marked it done/);
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
   });
 
   it('a Done task shows no finish date and no field to set one (TASK-951)', async () => {
