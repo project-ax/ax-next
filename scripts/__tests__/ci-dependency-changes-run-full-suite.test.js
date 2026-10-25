@@ -8,7 +8,9 @@
 // ROOT, which the step excludes with `!{.}`. So a PR that touched only those
 // selected nothing. #1029 (TASK-938) patched zod for every package, and CI
 // printed "No affected workspace packages — package tests skipped". The full
-// suite first ran on main, after the merge.
+// suite first ran on main, after the merge. The same holds for the other
+// repo-wide inputs the step now lists: `.npmrc`, `.pnpmfile.cjs`,
+// `tsconfig.base.json` and ci.yml itself.
 //
 // Why it RUNS the step instead of grepping it (TASK-392's lesson): a text scan
 // for `pnpm-lock` passes against a script that mentions the file and branches on
@@ -71,9 +73,23 @@ function stepRunScript(yaml, name) {
 }
 
 // Throwaway repos must not pick up the developer's git config (signing, hooks,
-// default branch), so global and system config are switched off.
+// default branch), so global and system config are switched off. Git's
+// location variables are dropped too: run from a git hook or `rebase -x`, an
+// inherited GIT_DIR would point every `add -A` and `commit` here at the REAL
+// repository.
+const GIT_LOCATION_VARS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_PREFIX',
+];
+const inherited = { ...process.env };
+for (const name of GIT_LOCATION_VARS) delete inherited[name];
 const GIT_ENV = {
-  ...process.env,
+  ...inherited,
   GIT_AUTHOR_NAME: 't',
   GIT_AUTHOR_EMAIL: 't@example.invalid',
   GIT_COMMITTER_NAME: 't',
@@ -112,7 +128,27 @@ done
 exit 0
 `;
 
-const SCRIPT = stepRunScript(readFileSync(CI_WORKFLOW, 'utf8'), STEP_NAME);
+const WORKFLOW = readFileSync(CI_WORKFLOW, 'utf8');
+const SCRIPT = stepRunScript(WORKFLOW, STEP_NAME);
+
+/**
+ * The lines of the step called `name`, from its `- name:` line up to the next
+ * line at or left of its indent. Used to check the step's own keys (`shell:`),
+ * which the run-block slice above never sees.
+ */
+function stepLines(yaml, name) {
+  const lines = yaml.split('\n');
+  const indentOf = (line) => line.length - line.trimStart().length;
+  const at = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  if (at === -1) return null;
+  const stepIndent = indentOf(lines[at]);
+  const out = [lines[at]];
+  for (let i = at + 1; i < lines.length; i++) {
+    if (lines[i].trim() !== '' && indentOf(lines[i]) <= stepIndent) break;
+    out.push(lines[i]);
+  }
+  return out;
+}
 const BIN = join(ROOT, 'bin');
 mkdirSync(BIN);
 writeFileSync(join(BIN, 'pnpm'), STUB, { mode: 0o755 });
@@ -239,8 +275,30 @@ describe('the PR test step runs the full suite when dependency resolution change
       { 'package.json': rootManifest({ pnpm: { overrides: { 'left-pad@<1.3.1': '>=1.3.1' } } }) },
     ],
     ['the root package.json packageManager', { 'package.json': rootManifest({ packageManager: 'pnpm@10.34.0' }) }],
+    ['.npmrc', { '.npmrc': 'node-linker=hoisted\n' }],
+    ['.pnpmfile.cjs', { '.pnpmfile.cjs': 'module.exports = { hooks: {} };\n' }],
+    ['tsconfig.base.json', { 'tsconfig.base.json': '{ "compilerOptions": { "target": "es2023" } }\n' }],
+    ['the CI workflow', { '.github/workflows/ci.yml': 'name: CI\n' }],
   ])('a PR that changes only %s runs the full suite', (_, files) => {
     expectFullSuite(runStep({ files }));
+  });
+
+  it('the step runs on the default shell, which is what the rules above assume', () => {
+    // The block is written for GitHub's default `bash -e` (no pipefail), and
+    // the affected-path probe is still a pipe: under pipefail a pnpm error or
+    // a SIGPIPE there reads as "no affected packages". Running the slice under
+    // `bash -e` can't see a `shell:` key, so check for one here.
+    const step = stepLines(WORKFLOW, STEP_NAME);
+    expect(step, `no "${STEP_NAME}" step in ci.yml`).not.toBeNull();
+    expect(step.filter((line) => /^\s*shell\s*:/.test(line))).toEqual([]);
+    expect(WORKFLOW.split('\n').filter((line) => /^\s*defaults\s*:/.test(line))).toEqual([]);
+  });
+
+  it('an empty BASE_SHA runs the full suite, not nothing', () => {
+    // `git diff --name-only ...HEAD` exits 0 with no output, so an empty base
+    // would otherwise look like a PR that changed nothing.
+    const r = runStep({ files: { 'docs/notes.md': 'more notes\n' }, base: '' });
+    expectFullSuite(r);
   });
 
   it('a lockfile change next to a package change runs the full suite, not the affected set', () => {
@@ -299,5 +357,19 @@ describe('the PR test step runs the full suite when dependency resolution change
     expectAffectedOnly(r);
     const run = r.calls.find((c) => isAffectedRun(c, r.baseSha));
     expect(run.join(' ')).toContain('--filter @ax/agent-claude-sdk-runner');
+  });
+
+  it('a sandbox-protocol change on the full branch does not claim an extra filter', () => {
+    // The full suite already includes the runner, so the ARCH-11 line would
+    // only mislead whoever reads the log.
+    const r = runStep({
+      files: {
+        'pnpm-lock.yaml': "lockfileVersion: '9.0'\n# bumped\n",
+        'packages/sandbox-protocol/src/index.ts': 'export const schema = 2;\n',
+      },
+      affected: '/repo/packages/sandbox-protocol',
+    });
+    expectFullSuite(r);
+    expect(r.output).not.toContain('also running @ax/agent-claude-sdk-runner');
   });
 });

@@ -177,7 +177,8 @@ jobs:
       - name: Install zsh (the shell the skill blocks actually run under)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       # Tests: affected packages + dependents on PRs (fast feedback), or the full
-      # suite on a PR that changes dependency resolution (the step says why);
+      # suite on a PR that changes a repo-wide input such as the lockfile (the
+      # step says which, and why);
       # full suite on push to main (cross-package backstop — a shared-table break
       # only shows on the full run; auto-merge relies on this main gate, see
       # auto-ship merge queue).
@@ -186,17 +187,44 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # One diff, read by both checks below. It's captured in an `if`
-          # because a `run:` with no `shell:` gets `bash -e` WITHOUT pipefail:
-          # `git diff … | grep` would turn a failed diff into "nothing
-          # changed", and here "nothing changed" means "skip the tests". A diff
-          # we can't read runs the full suite instead. The checks read it
-          # through here-strings, not pipes, so `grep -q` can't race a writer
-          # if pipefail is ever turned on.
+          # One diff, read by every check below. It's captured in an `if`
+          # because this `run:` has no `shell:`, so GitHub runs it as `bash -e`
+          # WITHOUT pipefail: `git diff … | grep` would turn a failed diff into
+          # "nothing changed", and here "nothing changed" means "skip the
+          # tests". A diff we can't read, or an empty base, runs the full suite
+          # instead. Keep this step on the default shell: the affected-path
+          # probe at the bottom is still a pipe, and under pipefail a pnpm
+          # error there (or SIGPIPE from `grep -q`) would read as "no affected
+          # packages". The guard test pins that this step has no `shell:` and
+          # this file has no `defaults:`.
           full=
-          if ! changed=$(git diff --name-only "$BASE_SHA"...HEAD); then
-            echo "::warning::could not diff against the PR base ($BASE_SHA), so running the full suite rather than guessing."
+          if [ -z "$BASE_SHA" ] || ! changed=$(git diff --name-only "$BASE_SHA"...HEAD); then
+            echo "::warning::could not diff against the PR base (${BASE_SHA:-empty}), so running the full suite rather than guessing."
             full=yes
+          fi
+          # Some inputs reach every package, but `...[$BASE_SHA]` can't see
+          # them. pnpm maps each changed file to the project that contains it,
+          # and these files all live in the workspace ROOT, which '!{.}' below
+          # excludes. So a PR touching only them selected nothing: #1029
+          # (TASK-938) patched zod for every package and CI printed "No
+          # affected workspace packages". The list:
+          # - dependency resolution: the lockfile, patches/, the workspace
+          #   file, .npmrc, .pnpmfile.cjs, and the whole root package.json. Its
+          #   `pnpm` block (overrides, patchedDependencies,
+          #   onlyBuiltDependencies, auditConfig) and `packageManager` (the
+          #   pnpm version CI installs) both live there, and a scripts-only
+          #   edit costing one full run is cheaper than parsing JSON here.
+          # - tsconfig.base.json, which every package's tsconfig extends.
+          # - this workflow, so a PR that changes how CI tests (or the node
+          #   version it tests on) runs everything, and the full branch below
+          #   gets exercised by the PR that changes it.
+          # scripts/__tests__/ci-dependency-changes-run-full-suite.test.js runs
+          # this block in throwaway repos and pins every rule above.
+          repo_wide='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|\.npmrc|\.pnpmfile\.cjs|tsconfig\.base\.json|\.github/workflows/ci\.yml)$|^patches/'
+          if grep -Eq "$repo_wide" <<<"$changed"; then
+            full=yes
+            echo "A repo-wide input changed, so running the FULL suite on this PR:"
+            grep -E "$repo_wide" <<<"$changed"
           fi
           # The @ax/agent-claude-sdk-runner MCP-validator drift guard (ARCH-11)
           # asserts the runner's hand-rolled validateMcpEntry against the SAME
@@ -208,29 +236,11 @@ jobs:
           # the schema, so the runner half of the guard would otherwise be
           # invisible until the post-merge full run. Force it in whenever
           # sandbox-protocol changes so a drift-introducing fixture/schema edit
-          # fails the PR, not main.
+          # fails the PR, not main. (The full suite already includes the runner.)
           extra=()
-          if grep -Eq '^packages/sandbox-protocol/' <<<"$changed"; then
+          if [ -z "$full" ] && grep -Eq '^packages/sandbox-protocol/' <<<"$changed"; then
             extra=(--filter @ax/agent-claude-sdk-runner)
             echo "sandbox-protocol changed — also running @ax/agent-claude-sdk-runner (ARCH-11 cross-boundary drift guard)."
-          fi
-          # Dependency changes reach every package, but `...[$BASE_SHA]` can't
-          # see them. pnpm maps each changed file to the project that contains
-          # it, and these files all live in the workspace ROOT, which '!{.}'
-          # below excludes. So a PR touching only them selected nothing: #1029
-          # (TASK-938) patched zod for every package and CI printed "No affected
-          # workspace packages". The whole root package.json counts, because
-          # its `pnpm` block (overrides, patchedDependencies,
-          # onlyBuiltDependencies, auditConfig) and `packageManager` (the pnpm
-          # version CI installs) both live there. A scripts-only edit costing
-          # one full run is cheaper than parsing JSON here.
-          # scripts/__tests__/ci-dependency-changes-run-full-suite.test.js runs
-          # this block in throwaway repos and pins every rule above.
-          deps='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json)$|^patches/'
-          if grep -Eq "$deps" <<<"$changed"; then
-            full=yes
-            echo "Dependency resolution changed, so running the FULL suite on this PR:"
-            grep -E "$deps" <<<"$changed"
           fi
           # `pnpm -r run` leaves the workspace root out on its own (unlike
           # `pnpm -r list`), so the root's own recursive `test` script can't
