@@ -587,6 +587,7 @@ git commit -m "[TASK-953] channel-web: POST /api/workspace/tasks/:agentId/:routi
 - [ ] **Step 11: Implement the shell**
   - `const [freshCopy, setFreshCopy] = useState<string | null>(null)`, a comment over it (row 9: memory only, never the URL; cleared once the route leaves that task), and an effect on `[route, freshCopy]` that clears it whenever `route` isn't `{ kind: 'task' }` with that key (`JSON.stringify([route.agentId, route.routineId])`, TaskPage's own key).
   - `TaskPage` gets `justCopied={freshCopy === <the route's key>}` and `onDuplicated={(copyId) => { setFreshCopy(JSON.stringify([route.agentId, copyId])); navigate({ kind: 'task', agentId: route.agentId, routineId: copyId }); }}`. Both setters run in that one callback, so React batches them and the effect never sees the flag beside the source's route; the shell test pins it.
+  - *As built (review rounds 1 and 2):* the callback first reads the current route from a `routeNow` ref. Only if the person is still on the source task does it set the flag and navigate; otherwise it calls `reloadTaskRead()` and returns, so a person who left is never pulled to the copy and the Tasks list shows it.
 
 - [ ] **Step 12: Run the client files, then channel-web and its types**
   Run: Steps 2, 6 and 10's files, then `pnpm --filter @ax/channel-web exec vitest run` (with Docker down, the six `--exclude` flags) and `pnpm --filter @ax/channel-web exec tsc --build`

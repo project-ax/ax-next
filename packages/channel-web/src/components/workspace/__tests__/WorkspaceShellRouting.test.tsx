@@ -1070,7 +1070,7 @@ describe('Duplicate opens a paused copy (TASK-953)', () => {
     expect(screen.queryByRole('heading', { level: 1, name: 'Copy of Zero open support tickets' })).toBeNull();
   });
 
-  it('someone who left for Tasks sees the copy there: the list is read again once it is saved', async () => {
+  it('someone who left for Tasks gets a fresh list read once the copy is saved', async () => {
     answerByTask();
     let resolve!: (copy: { routineId: string }) => void;
     duplicateMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));

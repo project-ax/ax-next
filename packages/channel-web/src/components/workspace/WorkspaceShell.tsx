@@ -377,8 +377,9 @@ function Inner({
     The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
     page share. It reads at mount (the badge is on screen on every route), again
     when the route CHANGES to Today or Tasks, so a returning person never meets
-    a stale list, and after a reply sent from Today. It doesn't poll, and the
-    task page's own buttons don't re-read it (Back or Today does). Entering a
+    a stale list, after a reply sent from Today, and when a Duplicate answer
+    lands after the person left the source task (TASK-953). It doesn't poll, and
+    the task page's other buttons don't re-read it (Back or Today does). Entering a
     route and Try again join a read already in flight (`retry`), except coming
     after a visit to a page that writes task rows (a task or check-in page, an
     agent's page, whose chat can approve or make routine changes, or an agent's

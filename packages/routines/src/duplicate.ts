@@ -6,8 +6,9 @@ import type { StoredStep } from './types.js';
 /*
  * TASK-953. What a person's copy of their task carries, in one place. A copy is
  * a new task of the same kind, paused, named by `duplicateName`, with the
- * source's definition otherwise (its brief, schedule and active hours) and its
- * steps as `copiedSteps` copies them. Nothing else of the source comes along:
+ * source's definition otherwise (its brief, schedule and active hours) and,
+ * for a "get-done" task only, its steps as `copiedSteps` copies them. Nothing
+ * else of the source comes along:
  * no report, notes, reading, misses, finish date, replies or runs
  * (`duplicateAuthored`, store.ts). Pure, so it is tested without Postgres.
  */
