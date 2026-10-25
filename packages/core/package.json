@@ -21,6 +21,10 @@
     "./error-codes": {
       "types": "./dist/error-codes.d.ts",
       "default": "./dist/error-codes.js"
+    },
+    "./response-cap": {
+      "types": "./dist/response-cap.d.ts",
+      "default": "./dist/response-cap.js"
     }
   },
   "files": ["dist"],
