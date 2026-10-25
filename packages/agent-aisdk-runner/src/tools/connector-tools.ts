@@ -52,10 +52,10 @@
 // operation. Without that, the SDK leaves an event-stream answer pending until
 // the request times out (300 s for a call). The server's long-lived event
 // stream reads under its connect's scope: 2 MiB for the stream's whole life,
-// and a cut after the connect is one log line, not a dropped connector. An
-// over-cap answer is never parsed. A `tools/call` answer under the cap is
-// parsed loosely (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it
-// costs.
+// and the first cut after the connect is one log line (later ones on that
+// connection are not logged), not a dropped connector. An over-cap answer is
+// never parsed. A `tools/call` answer under the cap is parsed loosely
+// (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it costs.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
@@ -263,8 +263,12 @@ function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch): Con
  * whole life, not for each message on it. A cut there after the connect
  * finished must not abort it (the SDK would send cancellations for requests
  * answered long ago), and the SDK has no `onerror` here to report it, so it
- * gets one log line instead. The connector keeps its tools; the SDK may
- * open the stream again, with a fresh budget.
+ * gets a log line instead. The connector keeps its tools. The SDK may open
+ * the stream again, with a fresh budget, and it schedules that reopen inside
+ * the stream's own async context, so every reopened stream shares this
+ * scope. A server can make it reopen at once (`retry: 0`): MEASURED by a
+ * reviewer, 589 lines in 2 s. So only the first cut is logged, once per
+ * connection.
  */
 function connectScope(
   ac: AbortController,
@@ -272,6 +276,7 @@ function connectScope(
   log: (line: string) => void,
 ): ResponseScope & { settle(): void } {
   let settled = false;
+  let reported = false;
   return {
     maxBytes: MAX_CONNECTOR_RESPONSE_BYTES,
     onOversize(err) {
@@ -279,7 +284,12 @@ function connectScope(
         ac.abort(err);
         return;
       }
-      log(`${ns}: the server's event stream sent more than ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)} MiB, so we stopped reading it; its tools are still offered`);
+      if (reported) return;
+      reported = true;
+      log(
+        `${ns}: the server's event stream sent more than ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)} MiB, ` +
+          'so we stopped reading it; its tools are still offered; later cuts on this connection are not logged',
+      );
     },
     settle() {
       settled = true;

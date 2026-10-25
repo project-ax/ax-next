@@ -865,14 +865,16 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
   // The server's event stream (the client's GET) opens during the connect and
   // reads under the connect's 2 MiB. A cut there after the connect finished
   // must not abort the finished connect.
-  it("the server's event stream passing 2 MiB after connect keeps the connector and cancels nothing", async () => {
+  it("the server's event stream passing 2 MiB after connect keeps the connector, cancels nothing and logs once", async () => {
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => {
       openGate = resolve;
     });
     cleanups.push(async () => openGate());
-    async function* junkAfterConnect(): AsyncGenerator<Buffer> {
+    async function* junkAfterConnect(): AsyncGenerator<string | Buffer> {
       await gate;
+      // `retry: 0` makes the client reopen the stream at once after the cut.
+      yield 'retry: 0\n\n';
       yield* endlessComments();
     }
     const s = await testServer(
@@ -880,22 +882,23 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
       {
         rawGet: {
           headers: { 'content-type': 'text/event-stream' },
-          // Only the first GET; the client's retry gets 405 and stops.
-          chunks: (n) => (n === 0 ? junkAfterConnect() : undefined),
+          // The first GET and the client's reopened one; the next gets 405 and the client stops.
+          chunks: (n) => (n <= 1 ? junkAfterConnect() : undefined),
         },
       },
     );
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     expect(ct.loadedBundles).toEqual(new Set(['b']));
     openGate();
-    // The stream never ends on its own, so it finished only because the cap cut it.
-    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(1), { timeout: 10_000 });
+    // The streams never end on their own, so both finished only because the cap cut them.
+    await vi.waitFor(() => expect(s.rawAnswersFinished()).toBe(2), { timeout: 10_000 });
     await expect(exec(ct, `mcp__${NS}__echo`, {})).resolves.toBe('pong');
     await settleMs();
     expect(s.seenMethods).not.toContain('notifications/cancelled');
-    // The cut is not silent: one plain line says what happened.
+    // The cut is not silent, and not a flood: the reopened stream shares the
+    // connect's scope, so its cut is not logged again.
     expect(ct.logs.filter((l) => l.startsWith(`${NS}: `))).toEqual([
-      `${NS}: the server's event stream sent more than 2 MiB, so we stopped reading it; its tools are still offered`,
+      `${NS}: the server's event stream sent more than 2 MiB, so we stopped reading it; its tools are still offered; later cuts on this connection are not logged`,
     ]);
   });
 
