@@ -79,13 +79,14 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     expect(await f.store.findOne({ agentId: 'a', routineId })).toMatchObject({ kind: 'stay-on-top', name: 'Copy of Support queue', enabled: false, steps: [] });
   });
 
-  it('the copy is owned by the owner the caller names, as routines:create’s routine is', async () => {
+  it('never hands the copy to anyone but the source’s owner, whoever the caller names, and makes no row', async () => {
     const task = await createTask('task');
-    const result = await f.store.duplicateAuthored({
+    const rows = await definitionRows();
+    expect(await f.store.duplicateAuthored({
       agentId: 'a', routineId: task.routineId, actorUserId: 'owner', ownerUserId: 'agent-owner', requestId: 'd1', now: minute(5),
-    });
-    if (typeof result === 'string') throw new Error(`duplicateAuthored answered ${result}`);
-    expect((await f.store.findOne({ agentId: 'a', routineId: result.routineId }))?.ownerUserId).toBe('agent-owner');
+    })).toBe('forbidden');
+    expect(await definitionRows()).toBe(rows);
+    expect(await receipts()).toEqual([]);
   });
 
   it('copies none of the task’s state, replies or history', async () => {

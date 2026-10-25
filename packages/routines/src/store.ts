@@ -1303,6 +1303,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           // TASK_KINDS, an explicit allowlist: a repeat routine, a default and a kind this code doesn't know stay.
           if (!raw || raw.definition_id !== null || !isTaskKind(raw.kind)) throw new DuplicateRefused('not-found');
           if (raw.owner_user_id !== input.actorUserId) throw new DuplicateRefused('forbidden');
+          // The copy is the source's owner's, decided here under the lock rather than from the caller's unlocked
+          // read: the service reconciles a personal agent's tasks to its owner first, so the two always agree, and
+          // a caller that names anyone else is refused instead of handing the task to them.
+          if (input.ownerUserId !== raw.owner_user_id) throw new DuplicateRefused('forbidden');
           // No task has a webhook trigger (validateDefinition): no path, HMAC or credential to copy.
           if (raw.trigger_kind === 'webhook') throw new DuplicateRefused('not-found');
           let source: StoredRoutine;
@@ -1311,7 +1315,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           // Every column left out takes its default: no task state, stamps, warning or finish date (TASK-951).
           const row = await trx.insertInto('routines_v1_definitions').values({
             ...definitionColumns(definition), agent_id: input.agentId,
-            routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: null,
+            routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: raw.owner_user_id, next_run_at: null,
             last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null,
             created_at: input.now, updated_at: input.now, task_steps: JSON.stringify(copiedSteps(raw.task_steps)),
           }).returning('routine_id').executeTakeFirstOrThrow();
