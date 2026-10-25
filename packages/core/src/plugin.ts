@@ -81,8 +81,8 @@ export interface Plugin {
    * to new outside work and must never cut a channel that admitted work still
    * needs.
    *
-   * Both phases run in init order, so a plugin opens after, and closes
-   * before, the plugins it calls. A plugin whose handlers another plugin
+   * `startAdmission` runs in init order and `stopAdmission` in reverse, so a
+   * plugin opens after, and closes before, the plugins it calls. A plugin whose handlers another plugin
    * admits work into (a route registered with `@ax/http-server`) is opened
    * after and closed before it, so those handlers must work from the end of
    * their own `init()` until their `shutdown()`.
