@@ -88,6 +88,7 @@ const GIT_INHERITED_VARS = [
   'GIT_PREFIX',
   'GIT_CONFIG_PARAMETERS',
   'GIT_CONFIG_COUNT',
+  'GIT_TEMPLATE_DIR',
 ];
 const inherited = { ...process.env };
 for (const name of Object.keys(inherited)) {
@@ -116,8 +117,10 @@ afterAll(() => {
 // Stand-in for pnpm. It logs one line per call, with each argument followed by
 // \037 (the ASCII unit separator). It answers `list` with $STUB_AFFECTED, which
 // plays the part of whatever pnpm's affected filter would have selected, and
-// any `run test` exits with $STUB_TEST_STATUS. (No `${…}` in here: inside a
-// template literal, even a String.raw one, that interpolates.)
+// exits with $STUB_LIST_STATUS; any `run test` exits with $STUB_TEST_STATUS.
+// It accepts any arguments, which is why the cases below pin each call's exact
+// argv. (No `${…}` in here: inside a template literal, even a String.raw one,
+// that interpolates.)
 const STUB = String.raw`#!/bin/sh
 for a in "$@"; do printf '%s\037' "$a"; done >> "$PNPM_LOG"
 printf '\n' >> "$PNPM_LOG"
@@ -125,7 +128,7 @@ prev=
 for a in "$@"; do
   if [ "$a" = list ]; then
     if [ -n "$STUB_AFFECTED" ]; then printf '%s\n' "$STUB_AFFECTED"; fi
-    exit 0
+    exit "$STUB_LIST_STATUS"
   fi
   if [ "$prev" = run ] && [ "$a" = test ]; then exit "$STUB_TEST_STATUS"; fi
   prev=$a
@@ -203,7 +206,7 @@ let repos = 0;
  * BASE_SHA, and `testStatus` is the exit status of any `pnpm … run test`.
  * Returns the exit status, the output, and every pnpm call as an argv array.
  */
-function runStep({ files, affected = '', base, testStatus = 0 }) {
+function runStep({ files, affected = '', base, testStatus = 0, listStatus = 0 }) {
   const repo = join(ROOT, `repo-${++repos}`);
   mkdirSync(repo);
   git(repo, 'init', '-q', '-b', 'main');
@@ -231,6 +234,7 @@ function runStep({ files, affected = '', base, testStatus = 0 }) {
       PNPM_LOG: logFile,
       STUB_AFFECTED: affected,
       STUB_TEST_STATUS: String(testStatus),
+      STUB_LIST_STATUS: String(listStatus),
     },
   });
   const log = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
@@ -241,33 +245,29 @@ function runStep({ files, affected = '', base, testStatus = 0 }) {
   return { status: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}`, calls, baseSha };
 }
 
-// Exactly `pnpm -r run test`: any filter (`-F x`, `--filter=x`) would make it
-// something less than the full suite.
-const isFullSuite = (argv) => argv.join(' ') === '-r run test';
-const isAffectedRun = (argv, base) =>
-  argv.includes(`...[${base}]`) && argv.includes('!{.}') && argv.slice(-2).join(' ') === 'run test';
+// The exact pnpm calls each branch may make. Exact, because the stub accepts
+// anything: a typo in a filter (`..[sha]`), a lost option, or an extra filter
+// on the full run (`-F x`, `--filter=x`) would otherwise pass unnoticed.
+const FULL = ['-r', 'run', 'test'];
+const ESLINT_RULES = ['test:eslint-rules'];
+const SCRIPTS = ['test:scripts'];
+const affectedFilters = (base, extra) => ['--filter', `...[${base}]`, ...extra, '--filter', '!{.}'];
+const probe = (base, extra = []) => [...affectedFilters(base, extra), 'list', '--depth', '-1', '--parseable'];
+const affectedRun = (base, extra = []) => [...affectedFilters(base, extra), 'run', 'test'];
 
-/** Exit 0, and the two repo-wide suites ran exactly once whichever branch was taken. */
-function expectCleanRun(r) {
+/** Exit 0, and exactly these pnpm calls, in this order. */
+function expectCalls(r, calls) {
   const why = `${r.output}\npnpm calls: ${JSON.stringify(r.calls)}`;
   expect(r.status, why).toBe(0);
-  expect(r.calls.filter((c) => c.join(' ') === 'test:eslint-rules'), why).toHaveLength(1);
-  expect(r.calls.filter((c) => c.join(' ') === 'test:scripts'), why).toHaveLength(1);
+  expect(r.calls, why).toEqual(calls);
 }
 
-function expectFullSuite(r) {
-  expectCleanRun(r);
-  const why = `pnpm calls: ${JSON.stringify(r.calls)}`;
-  expect(r.calls.filter(isFullSuite), `expected one \`pnpm -r run test\`. ${why}`).toHaveLength(1);
-  expect(r.calls.filter((c) => isAffectedRun(c, r.baseSha)), why).toHaveLength(0);
-}
+/** The full suite, then the two repo-wide suites, and nothing else (no probe). */
+const expectFullSuite = (r) => expectCalls(r, [FULL, ESLINT_RULES, SCRIPTS]);
 
-function expectAffectedOnly(r) {
-  expectCleanRun(r);
-  const why = `pnpm calls: ${JSON.stringify(r.calls)}`;
-  expect(r.calls.filter((c) => isAffectedRun(c, r.baseSha)), why).toHaveLength(1);
-  expect(r.calls.filter(isFullSuite), `ran the full suite. ${why}`).toHaveLength(0);
-}
+/** The probe, the affected run, then the two repo-wide suites. */
+const expectAffectedOnly = (r, extra = []) =>
+  expectCalls(r, [probe(r.baseSha, extra), affectedRun(r.baseSha, extra), ESLINT_RULES, SCRIPTS]);
 
 describe('the PR test step runs the full suite when a repo-wide input changes', () => {
   it('finds the PR test step and its run block in ci.yml', () => {
@@ -295,14 +295,42 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
   });
 
   it('the step runs on the default shell, which is what the rules above assume', () => {
-    // The block is written for GitHub's default `bash -e` (no pipefail), and
-    // the affected-path probe is still a pipe: under pipefail a pnpm error or
-    // a SIGPIPE there reads as "no affected packages". Running the slice under
-    // `bash -e` can't see a `shell:` key, so check for one here.
+    // Every case here runs the block under `bash -e`, GitHub's default for a
+    // `run:` with no `shell:`. A `shell:` on the step, or a `defaults:` in the
+    // file, would mean CI runs it some other way than these cases do, and the
+    // slice can't see either key, so check for them here.
     const step = stepLines(WORKFLOW, STEP_NAME);
     expect(step, `no "${STEP_NAME}" step in ci.yml`).not.toBeNull();
     expect(step.filter((line) => /^\s*shell\s*:/.test(line))).toEqual([]);
     expect(WORKFLOW.split('\n').filter((line) => /^\s*defaults\s*:/.test(line))).toEqual([]);
+  });
+
+  it("stepLines keeps a step's keys past a comment at the step's indent", () => {
+    // YAML comments don't end a mapping, so `shell:` below still belongs to
+    // the step. A helper that stopped at the comment would hide it.
+    const yaml = [
+      'jobs:',
+      '  test:',
+      '    steps:',
+      '      - name: S',
+      '        run: |',
+      '          echo hi',
+      '      # a comment at the step indent',
+      '        shell: bash',
+      '      - name: Next',
+      '        run: echo next',
+    ].join('\n');
+    const step = stepLines(yaml, 'S');
+    expect(step).toContain('        shell: bash');
+    expect(step).not.toContain('      - name: Next');
+  });
+
+  it('a failing affected-path probe fails the step, not skips the tests', () => {
+    // pnpm reports a bad option or filter on stderr and exits 1. Piped into
+    // `grep -q .`, that read as "no affected packages", exit 0.
+    const r = runStep({ files: { 'packages/foo/src/index.ts': 'export const foo = 2;\n' }, listStatus: 1 });
+    expect(r.status, r.output).not.toBe(0);
+    expect(r.calls, JSON.stringify(r.calls)).toEqual([probe(r.baseSha)]);
   });
 
   it('an empty BASE_SHA runs the full suite, not nothing', () => {
@@ -356,7 +384,7 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
     // coverage it never had, which is worse than the gap this closes.
     const r = runStep({ files: { 'pnpm-lock.yaml': "lockfileVersion: '9.0'\n# bumped\n" }, testStatus: 1 });
     expect(r.status, r.output).not.toBe(0);
-    expect(r.calls.filter(isFullSuite), JSON.stringify(r.calls)).toHaveLength(1);
+    expect(r.calls, JSON.stringify(r.calls)).toEqual([FULL]);
   });
 
   it('a base the step cannot diff against runs the full suite, not nothing', () => {
@@ -384,8 +412,7 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
 
   it('a docs-only change runs no package tests', () => {
     const r = runStep({ files: { 'docs/notes.md': 'more notes\n' } });
-    expectCleanRun(r);
-    expect(r.calls.filter((c) => c.slice(-2).join(' ') === 'run test')).toHaveLength(0);
+    expectCalls(r, [probe(r.baseSha), ESLINT_RULES, SCRIPTS]);
   });
 
   it('a sandbox-protocol change still adds @ax/agent-claude-sdk-runner (ARCH-11)', () => {
@@ -393,9 +420,20 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
       files: { 'packages/sandbox-protocol/src/index.ts': 'export const schema = 2;\n' },
       affected: '/repo/packages/sandbox-protocol',
     });
-    expectAffectedOnly(r);
-    const run = r.calls.find((c) => isAffectedRun(c, r.baseSha));
-    expect(run.join(' ')).toContain('--filter @ax/agent-claude-sdk-runner');
+    expectAffectedOnly(r, ['--filter', '@ax/agent-claude-sdk-runner']);
+  });
+
+  it('moving a file out of sandbox-protocol still adds @ax/agent-claude-sdk-runner', () => {
+    // With git's rename detection the diff would list only packages/foo/…, so
+    // the step must diff with --no-renames for ARCH-11 too.
+    const r = runStep({
+      files: {
+        'packages/sandbox-protocol/src/index.ts': null,
+        'packages/foo/src/schema.ts': BASE_TREE['packages/sandbox-protocol/src/index.ts'],
+      },
+      affected: '/repo/packages/foo',
+    });
+    expectAffectedOnly(r, ['--filter', '@ax/agent-claude-sdk-runner']);
   });
 
   it('a sandbox-protocol change on the full branch does not claim an extra filter', () => {
