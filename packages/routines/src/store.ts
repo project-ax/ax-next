@@ -28,7 +28,20 @@ export interface RoutinesStore {
   findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
+  /**
+   * A run's end as its fire row recorded it, or null while it is open.
+   * TASK-937: `miss` is `'interrupted'` for a run the restart sweep finished
+   * before it reported (`RUN_INTERRUPTED`), the one reason a fire row can still
+   * show; no `miss` otherwise.
+   */
   getDispatchOutcome(input: { agentId: string; dispatchId: string }): Promise<DispatchOutcome | null>;
+  /**
+   * TASK-937. The check-in an accepted request started, whatever the routine's
+   * revision was at the accept, or null when no accept under that id committed
+   * (a refused accept leaves no receipt). Read-only: a concurrent accept under
+   * the same id is still serialized by `acceptDispatch`'s own receipt.
+   */
+  acceptedDispatchId(input: { agentId: string; actorUserId: string; requestId: string }): Promise<string | null>;
   /**
    * Records a run's end, once; false when it had already ended, is gone, or its
    * agent is retired. Every run of every routine ends here, so TASK-930 counts a
@@ -773,6 +786,14 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
 /** TASK-907. fire.ts records this as the fire's error when the bind fails. */
 export const RUN_CLOSED = 'The routine run closed before it could start.';
 /**
+ * TASK-937. The restart sweep's error (`interruptAbandonedDispatches`), and the
+ * one mark a fire row keeps of a run a host restart cut off:
+ * `getDispatchOutcome` recognizes it, and nothing else writes it. Changing the
+ * text makes runs interrupted before the change read as ended on their own (a
+ * reply's retry then answers `replayed`).
+ */
+export const RUN_INTERRUPTED = 'The routine run was interrupted by a host restart.';
+/**
  * A run's stored report, for its fire row. SQL NULL (or a JSON null) is no
  * report. Anything else the schema refuses is unreadable and also becomes no
  * report: `interruptAbandonedDispatches` finishes runs during plugin init, so a
@@ -943,7 +964,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       const rows = await db.selectFrom('routines_v1_dispatches').select('dispatch_id').where('completed_at', 'is', null).execute();
       let interrupted = 0;
       for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, outcome: {
-        status: 'error', error: 'The routine run was interrupted by a host restart.',
+        status: 'error', error: RUN_INTERRUPTED,
         conversationId: null, renderedPrompt: null, warning: null, miss: 'interrupted',
       } })) interrupted++;
       return interrupted;
@@ -951,8 +972,19 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async getDispatchOutcome(input) {
       const row = await db.selectFrom('routines_v1_fires').selectAll()
         .where('agent_id', '=', input.agentId).where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
-      return row ? DispatchOutcomeSchema.parse({ status: row.status, conversationId: row.conversation_id,
-        error: row.error, renderedPrompt: row.rendered_prompt, warning: row.warning }) : null;
+      if (!row) return null;
+      // TASK-937: the sweep's own mark, on a run that holds no report (rowToFire's rule).
+      const cutOff = row.status === 'error' && row.error === RUN_INTERRUPTED && (row.report_status === null || row.report_update === null);
+      return DispatchOutcomeSchema.parse({ status: row.status, conversationId: row.conversation_id,
+        error: row.error, renderedPrompt: row.rendered_prompt, warning: row.warning, ...(cutOff ? { miss: 'interrupted' as const } : {}) });
+    },
+    async acceptedDispatchId(input) {
+      // The id alone, so an older receipt's row shape can't fail the read.
+      const row = await db.selectFrom('routines_v1_requests').select(sql<string | null>`result->>'dispatchId'`.as('dispatch_id'))
+        .where('agent_id', '=', input.agentId).where('owner_user_id', '=', input.actorUserId)
+        .where('operation', '=', 'dispatch').where('request_id', '=', input.requestId).executeTakeFirst();
+      const dispatchId = row?.dispatch_id;
+      return typeof dispatchId === 'string' && dispatchId.length > 0 ? dispatchId : null;
     },
     async finishDispatch(input) {
       const outcome = DispatchOutcomeSchema.parse(input.outcome);

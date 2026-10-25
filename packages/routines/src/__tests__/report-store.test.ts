@@ -3,6 +3,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
+import { RUN_INTERRUPTED } from '../store.js';
 import type { DispatchReport, RecordReportInput, StoredReading } from '../types.js';
 
 // TASK-907: a check-in's conversation, its report and the task's state. Task
@@ -319,6 +320,36 @@ describe("a check-in's report and the task's state", () => {
     expect(await fireRow(run.dispatchId)).toEqual({ status: 'error', error: 'The routine run was interrupted by a host restart.', ...fireReport(needsYou) });
     expect(await dispatchRow(run.dispatchId)).toMatchObject({ report: null, completed_at: expect.any(Date) });
     expect(await taskRow(row.routineId)).toMatchObject({ task_status: 'needs-you' });
+    // TASK-937: it reported before the restart, so it isn't a run the restart cut off.
+    const outcome = await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: run.dispatchId });
+    expect(outcome).toMatchObject({ status: 'error', error: RUN_INTERRUPTED });
+    expect(outcome).not.toHaveProperty('miss');
+  });
+
+  it('a run a host restart cut off before it reported reads back as interrupted (TASK-937)', async () => {
+    const row = await f.store.createAuthored(taskInput('cut-off'));
+    const run = await accept(row, 'cut-off-fire');
+    expect(await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: run.dispatchId })).toBeNull();
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    expect(await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: run.dispatchId })).toStrictEqual({
+      status: 'error', conversationId: null, error: RUN_INTERRUPTED, renderedPrompt: null, warning: null, miss: 'interrupted',
+    });
+  });
+
+  it('a run that ended on its own reads back with no miss, whatever its finish said (TASK-937)', async () => {
+    const row = await f.store.createAuthored(taskInput('own-end'));
+    const failed = await accept(row, 'own-error');
+    const ran = await accept(row, 'own-ok');
+    expect(await f.store.finishDispatch({ dispatchId: failed.dispatchId, outcome: {
+      status: 'error', error: 'The check-in ran out of time.', conversationId: null, renderedPrompt: null, warning: null, miss: 'failed',
+    } })).toBe(true);
+    expect(await finish(ran.dispatchId)).toBe(true);
+    const failedOutcome = await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: failed.dispatchId });
+    expect(failedOutcome).toMatchObject({ status: 'error', error: 'The check-in ran out of time.' });
+    expect(failedOutcome).not.toHaveProperty('miss');
+    const ranOutcome = await f.store.getDispatchOutcome({ agentId: 'a', dispatchId: ran.dispatchId });
+    expect(ranOutcome).toMatchObject({ status: 'ok' });
+    expect(ranOutcome).not.toHaveProperty('miss');
   });
 
   it('an agent deleted mid-check-in takes the report with it', async () => {

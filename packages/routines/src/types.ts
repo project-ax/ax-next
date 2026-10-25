@@ -90,16 +90,20 @@ export type AcceptedDispatch = {
 };
 /**
  * TASK-930. Why an `error` run left no report, set by the code that recorded it,
- * which knows (never parsed from the error's text). Absent: `failed`. A run
- * that didn't end in an error left no report because it didn't send one
- * (`no-report`), and only the store says so.
+ * which knows. Absent: `failed`. A run that didn't end in an error left no
+ * report because it didn't send one (`no-report`), and only the store says so.
+ * TASK-937: a fire row keeps no reason, so `getDispatchOutcome` gives back only
+ * `interrupted`, recognized by the restart sweep's own fixed error
+ * (`RUN_INTERRUPTED`), which nothing else writes. No other error's text is
+ * parsed for one.
  */
 export type DispatchMiss = Exclude<CheckInMiss, 'no-report'>;
 export type DispatchOutcome = {
   status: FireStatus; conversationId: string | null; error: string | null;
   renderedPrompt: string | null; warning: string | null;
   /**
-   * TASK-930. Read only for a task's `error` run that left no report. `| undefined`
+   * Read for a task's `error` run that left no report (TASK-930), and by
+   * `replyCheckIn` to tell a check-in a host restart cut off (TASK-937). `| undefined`
    * because `DispatchOutcomeSchema`'s parse (as `getDispatchOutcome` returns it) says so.
    */
   miss?: DispatchMiss | undefined;
