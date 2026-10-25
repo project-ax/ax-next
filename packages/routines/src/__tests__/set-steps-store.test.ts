@@ -248,6 +248,21 @@ describe("a person's step changes (store, TASK-949)", () => {
     )).toBe('forbidden');
   });
 
+  it('a change that waits on the task’s row lock behind a Mark done is refused, and writes and keeps nothing (TASK-950)', async () => {
+    // The holder marks the task done as completeTask leaves it (off, completed by its owner) and commits; the change,
+    // waiting on the lock, then reads the task Done. A Done check made before the lock would let it through.
+    const task = await f.store.createAuthored(taskInput('task'));
+    const exported = step('s000001', 'Export every article');
+    await writeSteps(task.routineId, [exported]);
+    expect(await whileHeld(task,
+      () => change(task, 'r1', [{ op: 'tick', id: exported.id }]),
+      trx => sql`UPDATE routines_v1_definitions SET enabled = false, task_completed_at = ${minute(1)}, task_completed_by_user_id = 'owner'
+        WHERE routine_id = ${task.routineId}`.execute(trx),
+    )).toBe('forbidden');
+    expect(await stepsColumn(task.routineId)).toEqual([exported]);
+    expect(await receipts()).toEqual([]);
+  });
+
   it('a person’s change and a report that wait on each other both land, in either order', async () => {
     // Each writer reads the checklist under the task's row lock, so one that waits there reads what the other just
     // committed (READ COMMITTED). Read before the lock, it would write over that change.
