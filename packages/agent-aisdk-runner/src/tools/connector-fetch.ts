@@ -45,7 +45,10 @@ export const MAX_TOOL_RESULT_BYTES = 8 * 1024 * 1024;
  * Cap on every other answer: initialize, each `tools/list` page, and the
  * server's event stream. 2 MiB matches the host inventory's cap per
  * `tools/list` page (`@ax/mcp-client`), so the Tools tab never lists tools
- * this runner would refuse to load.
+ * this runner would refuse to load. The event stream is one long answer, so
+ * for it this is a budget for the stream's whole life, not a cap on each
+ * message: once it has carried 2 MiB it is cut (and logged; see
+ * `connectScope` in connector-tools.ts).
  */
 export const MAX_CONNECTOR_RESPONSE_BYTES = 2 * 1024 * 1024;
 

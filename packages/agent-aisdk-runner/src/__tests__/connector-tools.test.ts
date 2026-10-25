@@ -893,6 +893,10 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     await expect(exec(ct, `mcp__${NS}__echo`, {})).resolves.toBe('pong');
     await settleMs();
     expect(s.seenMethods).not.toContain('notifications/cancelled');
+    // The cut is not silent: one plain line says what happened.
+    expect(ct.logs.filter((l) => l.startsWith(`${NS}: `))).toEqual([
+      `${NS}: the server's event stream sent more than 2 MiB, so we stopped reading it; its tools are still offered`,
+    ]);
   });
 
   it('an answer just under 8 MiB still works', async () => {

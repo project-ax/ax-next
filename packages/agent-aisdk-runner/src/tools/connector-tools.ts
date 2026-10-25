@@ -50,9 +50,12 @@
 // over-cap answer fails its call, or drops its connector, at once: each call
 // and each connect runs in its own response scope, whose report aborts that
 // operation. Without that, the SDK leaves an event-stream answer pending until
-// the request times out (300 s for a call). An over-cap answer is never
-// parsed. A `tools/call` answer under the cap is parsed loosely
-// (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it costs.
+// the request times out (300 s for a call). The server's long-lived event
+// stream reads under its connect's scope: 2 MiB for the stream's whole life,
+// and a cut after the connect is one log line, not a dropped connector. An
+// over-cap answer is never parsed. A `tools/call` answer under the cap is
+// parsed loosely (TOOL_RESULT_SCHEMA), so the cap also bounds the memory it
+// costs.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
@@ -220,17 +223,30 @@ function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch): Con
 /**
  * The response scope for one connect (TASK-944): answers capped at
  * MAX_CONNECTOR_RESPONSE_BYTES, and an over-cap answer aborts the connect
- * through `ac` at once. `settle()` turns the abort off. The server's
- * long-lived event stream opens during the connect and inherits this scope,
- * and a cut there later must not abort a connect that already finished (the
- * SDK would send cancellations for requests answered long ago).
+ * through `ac` at once. `settle()` turns the abort off.
+ *
+ * The server's long-lived event stream (the client's GET) opens during the
+ * connect and inherits this scope, so its cap is a budget for the stream's
+ * whole life, not for each message on it. A cut there after the connect
+ * finished must not abort it (the SDK would send cancellations for requests
+ * answered long ago), and the SDK has no `onerror` here to report it, so it
+ * gets one log line instead. The connector keeps its tools; the SDK may
+ * open the stream again, with a fresh budget.
  */
-function connectScope(ac: AbortController): ResponseScope & { settle(): void } {
+function connectScope(
+  ac: AbortController,
+  ns: string,
+  log: (line: string) => void,
+): ResponseScope & { settle(): void } {
   let settled = false;
   return {
     maxBytes: MAX_CONNECTOR_RESPONSE_BYTES,
     onOversize(err) {
-      if (!settled) ac.abort(err);
+      if (!settled) {
+        ac.abort(err);
+        return;
+      }
+      log(`${ns}: the server's event stream sent more than ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)} MiB, so we stopped reading it; its tools are still offered`);
     },
     settle() {
       settled = true;
@@ -249,9 +265,11 @@ function isSessionLost(err: unknown, conn: Connection): boolean {
 
 /** A fresh connection (initialize handshake only), bounded like the boot connect. */
 async function reconnect(
+  ns: string,
   server: ProjectedMcpServer,
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  log: (line: string) => void,
 ): Promise<Connection> {
   const conn = newConnection(server, fetchImpl);
   const ac = new AbortController();
@@ -259,7 +277,7 @@ async function reconnect(
     () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
     timeoutMs,
   );
-  const scope = connectScope(ac);
+  const scope = connectScope(ac, ns, log);
   try {
     await raceAbort(
       withResponseScope(scope, () =>
@@ -278,9 +296,11 @@ async function reconnect(
 }
 
 async function connectAndList(
+  ns: string,
   server: ProjectedMcpServer,
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  log: (line: string) => void,
 ): Promise<{ conn: Connection; tools: ListedTool[]; truncated: boolean; morePages: boolean }> {
   const conn = newConnection(server, fetchImpl);
   const { client, transport } = conn;
@@ -289,7 +309,7 @@ async function connectAndList(
     () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
     timeoutMs,
   );
-  const scope = connectScope(ac);
+  const scope = connectScope(ac, ns, log);
   try {
     const work = withResponseScope(scope, async () => {
       const reqOpts = { signal: ac.signal, timeout: timeoutMs };
@@ -361,7 +381,7 @@ export async function connectConnectorTools(
         pending = (async () => {
           let fresh: Connection;
           try {
-            fresh = await reconnect(server, capped, timeoutMs);
+            fresh = await reconnect(ns, server, capped, timeoutMs, log);
           } catch (err) {
             log(`${ns}: the server dropped the MCP session and it could not reconnect: ${quoteUntrusted(errText(err))}`);
             throw err;
@@ -494,7 +514,7 @@ export async function connectConnectorTools(
     Object.entries(opts.servers).map(async ([ns, server]) => ({
       ns,
       server,
-      ...(await connectAndList(server, capped, timeoutMs)),
+      ...(await connectAndList(ns, server, capped, timeoutMs, log)),
     })),
   );
 
