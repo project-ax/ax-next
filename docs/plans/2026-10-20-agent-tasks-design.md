@@ -34,8 +34,10 @@ knows what it's for and says how it's going.
   shown as a small trend (schema version 10); TASK-948 added the kind and the steps
   its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit
   its steps on the task page; TASK-951 added a Finish by date that only a person
-  sets (schema version 12); TASK-955 counts it in the time zone of the person who set it when the task has none of its own (schema version 14); TASK-950 added "I think it's done", Mark done, Not yet,
-  Reopen and the Done filter (schema version 13); TASK-953 added Duplicate task
+  sets (schema version 12); TASK-950 added "I think it's done", Mark done, Not yet,
+  Reopen and the Done filter (schema version 13); TASK-955 counts the Finish by
+  date in the time zone of the person who set it when the task has none of its
+  own (schema version 14); TASK-953 added Duplicate task
   (⋯ › Duplicate on a task's page, a Done task's included) and made "Going well
   when" editable in Settings. The TASK-954 walk passed on kind on 2026-10-25; the
   results, screenshots and the follow-up findings are in
@@ -1045,4 +1047,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-25 | Decided | A Done task can be duplicated: its page keeps ⋯ › Duplicate beside Reopen, with `edit`. The copy is a fresh paused task, not Done, with no claim and no completion, because a copy carries none of the task's state (TASK-953, after TASK-950). |
 | 2026-10-25 | Decided | A reply retried after a host restart cut its check-in off before it reported starts one more check-in, keyed on the reply and the check-in it replaces, so retries at once still start one; at most three per reply. A check-in that ran to its end, failed on its own or reported first isn't started again. Supersedes the 2026-10-23 "a retry starts at most one" row for that case. Check now's own retry still starts nothing then (TASK-937). |
 | 2026-10-25 | Decided | A task page's requests (its read, Check now, Pause, Resume, replies and every other change to the task) give up after 8 seconds, under its 10-second re-read, so a hung request ends as a failure the page already words, its buttons come back, and a host that keeps hanging is said after three re-reads (TASK-937). |
-| 2026-10-25 | Decided | A Finish by date is counted in the task's own time zone (its schedule's, else its active hours'); a task with none counts in the time zone of the person who set the date, which their browser sends with it and the host stores beside it; with no zone, UTC. The task's own zone wins when the two differ. Supersedes the 2026-10-24 TASK-951 row's "else UTC" (confirmed by Vinay, 2026-10-25, TASK-955). |
+| 2026-10-25 | Decided | A Finish by date is counted in the task's own time zone (its schedule's, else its active hours'); a task with none counts in the time zone of the person who set the date, which their browser sends with it and the host stores beside it; with no zone, UTC. Supersedes the 2026-10-24 TASK-951 row's "else UTC": Vinay confirmed "the person's zone, not UTC" on 2026-10-25 (TASK-955). The task's own zone winning when the two differ is the card's call, still open for Vinay: a task an agent made from chat with a UTC schedule still counts on UTC's calendar. |

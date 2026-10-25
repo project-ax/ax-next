@@ -56,8 +56,10 @@ export function browserToday(now: Date = new Date()): string {
  * The browser's own time zone, or null when it can't tell (TASK-955). The
  * date field sends it with a date, and the host counts the days in it when the
  * task has no zone of its own. A browser that can't tell reports
- * "Etc/Unknown", which `Intl` refuses: sent, it would make every save fail, so
- * a zone the contract's zone rule refuses here is not sent at all.
+ * "Etc/Unknown", which `Intl` refuses, so a zone the contract's zone rule
+ * refuses here is not sent at all and the date counts on UTC. The host would
+ * drop it anyway (and log `workspace_finish_by_zone_unusable`); that warn line
+ * is for a zone this browser knows and the host doesn't, not for this case.
  */
 export function browserTimeZone(): string | null {
   const zone: unknown = Intl.DateTimeFormat().resolvedOptions().timeZone;
