@@ -24,6 +24,7 @@ import type {
   UpsertInput,
   UpsertOutput,
 } from '../types.js';
+import { CAPABILITY_WRITE_LIMITS } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Authored-connector hooks through the bus against a real postgres container.
@@ -184,6 +185,33 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
         installInput({ slots: [{ slot: 'lower case bad', kind: 'api-key' }] }),
       ),
     ).rejects.toThrow(PluginError);
+  });
+
+  it('refuses a proposal over a list limit, and files one at the limit (TASK-945)', async () => {
+    // A model-authored proposal is untrusted: `connectors:install-authored`
+    // parses it with the bounded write schema before anything is stored.
+    const limit = CAPABILITY_WRITE_LIMITS.allowedHosts;
+    const hosts = (n: number): string[] =>
+      Array.from({ length: n }, (_, i) => `h${i}.example.com`);
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+        'connectors:install-authored',
+        h.ctx({ userId: 'userA' }),
+        installInput({ hosts: hosts(limit + 1) }),
+      ),
+    ).rejects.toThrow(PluginError);
+    expect(await draftsOf('userA', 'agent1')).toEqual([]);
+
+    await expect(
+      h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+        'connectors:install-authored',
+        h.ctx({ userId: 'userA' }),
+        installInput({ hosts: hosts(limit) }),
+      ),
+    ).resolves.toEqual({ connectorId: 'linear', status: 'pending' });
+    const drafts = await draftsOf('userA', 'agent1');
+    expect(drafts.map((d) => d.proposal.allowedHosts.length)).toEqual([limit]);
   });
 
   it('rejects the reserved id `authored` (it would be shadowed by the admin queue route)', async () => {

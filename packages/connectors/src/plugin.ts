@@ -17,7 +17,7 @@ import {
   createConnectorStore,
   DESCRIPTION_MAX,
   USAGE_NOTE_MAX,
-  validateCapabilities,
+  validateCapabilitiesForWrite,
   validateConnectorId,
   validateKeyMode,
   validateName,
@@ -644,8 +644,8 @@ async function upsertConnector(
   const userId = requireUserId(input.userId, hookName);
   // Validate every field at the boundary so a malformed value surfaces as a
   // structured invalid-payload error rather than a raw pg CHECK violation. The
-  // `capabilities` spec is parsed against the canonical schema (untrusted —
-  // stored opaque, never interpreted).
+  // `capabilities` spec is parsed against the bounded write schema (TASK-945;
+  // untrusted — stored opaque, never interpreted).
   const connectorId = validateConnectorId(input.connectorId);
   const name = validateName(input.name);
   const description = validateOptionalText(
@@ -659,7 +659,7 @@ async function upsertConnector(
     USAGE_NOTE_MAX,
   );
   const keyMode = validateKeyMode(input.keyMode);
-  const capabilities = validateCapabilities(input.capabilities);
+  const capabilities = validateCapabilitiesForWrite(input.capabilities);
   // TASK-712 — an OAuth slot's clientSecretRef may name only this connector's own
   // account key. Checked on WRITE only (the read schema must keep parsing a legacy
   // row so its owner can open and fix it); @ax/mcp-oauth re-checks at `begin`.
@@ -1121,8 +1121,8 @@ function requireField(value: unknown, field: string, hookName: string): string {
  * Assemble + validate a canonical {@link Capabilities} proposal from the flat
  * authored-install args. Slot NAMES are re-checked against SLOT_RE at the
  * boundary (defense-in-depth on untrusted model output); the whole assembled
- * spec is then parsed against the canonical schema (the same don't-trust-input
- * posture the store uses on upsert/read).
+ * spec is then parsed against the bounded write schema, the same check
+ * `connectors:upsert` applies (TASK-945).
  */
 function assembleProposal(input: InstallAuthoredInput): Capabilities {
   const hosts = Array.isArray(input.hosts) ? input.hosts : [];
@@ -1143,9 +1143,10 @@ function assembleProposal(input: InstallAuthoredInput): Capabilities {
     npm: Array.isArray(input.packages?.npm) ? input.packages!.npm : [],
     pypi: Array.isArray(input.packages?.pypi) ? input.packages!.pypi : [],
   };
-  // validateCapabilities re-parses the whole assembled spec against the
-  // canonical schema — a malformed host / mcpServer surfaces as invalid-payload.
-  return validateCapabilities({
+  // validateCapabilitiesForWrite re-parses the whole assembled spec against the
+  // bounded write schema — a malformed host / mcpServer, or a list over its
+  // limit, surfaces as invalid-payload.
+  return validateCapabilitiesForWrite({
     allowedHosts: hosts,
     credentials,
     mcpServers,

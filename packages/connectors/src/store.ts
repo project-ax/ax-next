@@ -1,7 +1,9 @@
 import { PluginError } from '@ax/core';
 import { sql, type Kysely, type Selectable } from 'kysely';
+import type { ZodType } from 'zod';
 import {
   CapabilitiesSchema,
+  CapabilitiesWriteSchema,
   type Capabilities,
   type CapabilitySlot,
   type Connector,
@@ -128,17 +130,35 @@ export function validateSlotName(value: unknown): string {
 /**
  * Parse the mechanism-agnostic capability spec against the canonical schema
  * (single source of truth in @ax/skills-parser, re-declared as zod locally per
- * I2). Used at every store ingress AND egress — we never trust the JSONB column
- * blindly (I5 / J2). The untrusted backing-mechanism vocabulary (transport /
- * url / mcpServers) lives ONLY inside this opaque spec; it is stored
- * verbatim and never interpreted by the store.
+ * I2). This is the READ path's check: every stored row (`rowToConnector`,
+ * `listAllLive`, the non-admin boot sweep) — we never trust the JSONB column
+ * blindly (I5 / J2). It is never bounded (TASK-945): a row stored before the write
+ * limits must stay openable, so its owner can trim it. The write funnels call
+ * {@link validateCapabilitiesForWrite}. The untrusted backing-mechanism
+ * vocabulary (transport / url / mcpServers) lives ONLY inside this opaque
+ * spec; it is stored verbatim and never interpreted by the store.
  */
 export function validateCapabilities(value: unknown): Capabilities {
+  return checkCapabilities(CapabilitiesSchema, value);
+}
+
+/**
+ * The write funnels' check (`connectors:upsert`, `connectors:install-authored`;
+ * TASK-945): {@link validateCapabilities} with every list bounded by
+ * CAPABILITY_WRITE_LIMITS. An oversized list is refused as invalid-payload on
+ * its size alone, before any element is parsed.
+ */
+export function validateCapabilitiesForWrite(value: unknown): Capabilities {
+  return checkCapabilities(CapabilitiesWriteSchema, value);
+}
+
+/** The shared body of the read and write checks; only the schema differs. */
+function checkCapabilities(schema: ZodType<Capabilities>, value: unknown): Capabilities {
   const servers = (value as { mcpServers?: unknown } | null)?.mcpServers;
   if (Array.isArray(servers) && servers.some((s) => (s as { transport?: unknown } | null)?.transport === 'stdio')) {
     throw invalid('Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.');
   }
-  const parsed = CapabilitiesSchema.safeParse(value);
+  const parsed = schema.safeParse(value);
   if (!parsed.success) {
     throw invalid(
       `capabilities must be a valid Capabilities object: ${parsed.error.message}`,

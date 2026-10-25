@@ -20,6 +20,7 @@ import {
   type RouteResponse,
 } from '../admin-routes.js';
 import type { Capabilities } from '../types.js';
+import { CAPABILITY_WRITE_LIMITS } from '../types.js';
 import { createConnectorStore } from '../store.js';
 import type { ConnectorDatabase } from '../migrations.js';
 import type { Kysely } from 'kysely';
@@ -2160,5 +2161,73 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
       fRes,
     );
     expect(fCap.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-945 — the capability list limits (CAPABILITY_WRITE_LIMITS) bind the
+// write funnels only. The read schema also parses every stored row, so a
+// connector stored before the limits, with a list over one, must still open
+// and list, and its owner must be able to trim it (the TASK-712 rule above).
+// ---------------------------------------------------------------------------
+describe('capability list limits apply on write only (TASK-945)', () => {
+  it('a connector stored over a list limit stays readable, and its owner can trim it', async () => {
+    const limit = CAPABILITY_WRITE_LIMITS.allowedHosts;
+    const hosts = (n: number): string[] =>
+      Array.from({ length: n }, (_, i) => `h${i}.example.com`);
+    const capsWithHosts = (allowedHosts: string[]): Capabilities => ({
+      allowedHosts,
+      credentials: [],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    });
+    const h = await makeHarness();
+    const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    await createConnectorStore(db).upsert({
+      userId: 'legacy-945',
+      connectorId: 'wide',
+      name: 'wide',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      capabilities: capsWithHosts(hosts(limit + 1)),
+    });
+
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'legacy-945', isAdmin: true };
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'wide' } }), gRes);
+    expect(gCap.status).toBe(200);
+    // The whole stored list comes back: nothing is trimmed on read.
+    expect(
+      (gCap.body as { connector: { capabilities: Capabilities } }).connector.capabilities
+        .allowedHosts,
+    ).toHaveLength(limit + 1);
+    const { res: lRes, captured: lCap } = makeRes();
+    await handlers.list(makeReq({}), lRes);
+    expect(lCap.status).toBe(200);
+    expect((lCap.body as { connectors: Array<{ id: string }> }).connectors.map((c) => c.id)).toEqual(['wide']);
+
+    // Re-saving it as-is is refused, on its size (it would re-store the
+    // over-limit list)...
+    const { res: sRes, captured: sCap } = makeRes();
+    await handlers.update(makeReq({ params: { id: 'wide' }, body: { name: 'renamed' } }), sRes);
+    expect(sCap.status).toBe(400);
+    expect(JSON.stringify(sCap.body)).toContain('too_big');
+    // ...and trimming the list to the limit saves.
+    const { res: tRes, captured: tCap } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'wide' }, body: { capabilities: capsWithHosts(hosts(limit)) } }),
+      tRes,
+    );
+    expect(tCap.status).toBe(200);
+    expect(
+      (tCap.body as { connector: { capabilities: Capabilities } }).connector.capabilities
+        .allowedHosts,
+    ).toHaveLength(limit);
   });
 });
