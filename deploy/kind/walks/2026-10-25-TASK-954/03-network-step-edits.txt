@@ -1,0 +1,23 @@
+5. [GET] http://localhost:19090/admin/bootstrap-status => [200] OK
+6. [GET] http://localhost:19090/api/branding => [200] OK
+9. [GET] http://localhost:19090/admin/me => [200] OK
+10. [GET] http://localhost:19090/api/chat/agents => [200] OK
+11. [GET] http://localhost:19090/api/workspace/activity => [200] OK
+12. [GET] http://localhost:19090/api/workspace/decisions => [200] OK
+13. [GET] http://localhost:19090/api/workspace/tasks => [200] OK
+14. [GET] http://localhost:19090/api/workspace/grants => [200] OK
+15. [GET] http://localhost:19090/api/workspace/state => [200] OK
+17. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+18. [POST] http://localhost:19090/settings/routines/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07/fire => [200] OK
+19. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+20. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+21. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+22. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+23. [GET] http://localhost:19090/api/workspace/tasks => [200] OK
+24. [GET] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07 => [200] OK
+25. [POST] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07/steps => [200] OK
+26. [POST] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07/steps => [200] OK
+27. [POST] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07/steps => [200] OK
+28. [POST] http://localhost:19090/api/workspace/tasks/agt_l4Zng-wsTGj9BD9kZeCqKw/rtn_1fe257a375154637ba90877ee09def07/steps => [200] OK
+
+Note: 7 static requests not shown, run with "static" option to see them.

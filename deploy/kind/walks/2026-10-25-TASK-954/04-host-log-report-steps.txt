@@ -1,0 +1,3 @@
+{"agentId":"agt_l4Zng-wsTGj9BD9kZeCqKw","dispatchId":"dispatch_21ae46ef00fe4930b4d75b21886ab916","applied":4,"skipped":0,"level":"info","ts":"2026-10-25T10:50:54.762Z","reqId":"req-8b19a5aec65d","msg":"routines_report_steps"}
+{"agentId":"agt_l4Zng-wsTGj9BD9kZeCqKw","dispatchId":"dispatch_5ddb7da4806a43fb81edb3a0f589c09d","applied":1,"skipped":1,"level":"info","ts":"2026-10-25T10:53:36.037Z","reqId":"req-ec1f29aed7e0","msg":"routines_report_steps"}
+{"agentId":"agt_l4Zng-wsTGj9BD9kZeCqKw","dispatchId":"dispatch_ec21571808fe420ca9ccb57d5ac99c5d","applied":1,"skipped":0,"level":"info","ts":"2026-10-25T10:54:45.206Z","reqId":"req-0e3d1c309bfa","msg":"routines_report_steps"}

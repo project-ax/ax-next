@@ -1,0 +1,26 @@
+[
+    {
+        "id": "sy1dq2s",
+        "done": true,
+        "text": "Ask user to paste their walk notes",
+        "addedBy": "agent"
+    },
+    {
+        "id": "ssdtojc",
+        "done": false,
+        "text": "Tidy notes into three sections, each with a heading and one paragraph",
+        "addedBy": "agent"
+    },
+    {
+        "id": "so15fc2",
+        "done": false,
+        "text": "Present tidied version to user",
+        "addedBy": "agent"
+    },
+    {
+        "id": "sby53mw",
+        "done": false,
+        "text": "Confirm whether further edits are needed",
+        "addedBy": "agent"
+    }
+]

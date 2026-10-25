@@ -1,0 +1,6 @@
+ id |          fired_at          | trigger_source | report_status | report_reading_label | report_reading_value 
+----+----------------------------+----------------+---------------+----------------------+----------------------
+ 31 | 2026-10-25 10:57:07.479+00 | manual         | on-track      | Open tickets         |                    5
+ 32 | 2026-10-25 10:57:34.502+00 | manual         | on-track      | Open tickets         |                    3
+(2 rows)
+

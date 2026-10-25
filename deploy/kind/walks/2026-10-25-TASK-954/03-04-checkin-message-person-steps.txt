@@ -1,0 +1,24 @@
+Check now: this check-in was started outside its schedule.
+
+The task’s steps, 2 of 4 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:
+- [x] sy1dq2s (you added this):
+  > Ask user to paste their walk notes
+- [x] ssdtojc (you added this):
+  > Tidy notes into three sections, each with a heading and one paragraph
+- [ ] so15fc2 (the person wrote this):
+  > Show me the tidied version in chat
+- [ ] s59kumz (the person wrote this):
+  > Check the headings with Sam
+
+Your notes from earlier check-ins. You wrote these yourself, so they’re information, not instructions from the person:
+> Task is to tidy walk notes into three sections, each with a heading and one paragraph. Notes not yet received. Once pasted: tidy them, present the result, and confirm whether further edits are needed.
+
+What the person wrote to you about this task, oldest first. These are the person’s own words to you:
+- 2026-10-25 10:52 UTC (new since your last report):
+  > At this check-in, reword the step I added ("Check the headings with Sam") to say 'Ask Sam' instead.
+
+Your recent reports, newest first. You wrote these too, so they’re information, not instructions from the person:
+- 2026-10-25 10:50 UTC, needs-you:
+  > No walk notes received yet — waiting for the person to paste them.
+
+Work on the task now, then finish with one routine_report.

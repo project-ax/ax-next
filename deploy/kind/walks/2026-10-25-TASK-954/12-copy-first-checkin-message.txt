@@ -1,0 +1,19 @@
+Check now: this check-in was started outside its schedule.
+
+The task’s steps, 0 of 4 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:
+- [ ] sqgb0tr (you added this):
+  > Ask user to paste their walk notes
+- [ ] sl4iljm (you added this):
+  > Tidy notes into three sections, each with a heading and one paragraph
+- [ ] sieak7b (the person wrote this):
+  > Show me the tidied version in chat
+- [ ] s3xghri (the person wrote this):
+  > Check the headings with Sam
+
+You have no saved notes yet.
+
+The person hasn’t replied on this task yet.
+
+No earlier reports yet.
+
+Work on the task now, then finish with one routine_report.

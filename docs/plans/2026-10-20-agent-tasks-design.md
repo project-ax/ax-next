@@ -29,7 +29,19 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); TASK-950 adds "I think it's done", Mark done, Not yet, Reopen and the Done filter (schema version 13); TASK-953 adds Duplicate task (⋯ › Duplicate on a task's page, a Done task's included) and makes "Going well when" editable in Settings.
+- **PR 3 is done.** §12 PR 3, "Get something done", merged as TASK-948–953
+  (#1031–#1034, #1036, #1037). TASK-952 added an optional reading to each report,
+  shown as a small trend (schema version 10); TASK-948 added the kind and the steps
+  its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit
+  its steps on the task page; TASK-951 added a Finish by date that only a person
+  sets (schema version 12); TASK-950 added "I think it's done", Mark done, Not yet,
+  Reopen and the Done filter (schema version 13); TASK-953 added Duplicate task
+  (⋯ › Duplicate on a task's page, a Done task's included) and made "Going well
+  when" editable in Settings. The TASK-954 walk passed on kind on 2026-10-25; the
+  results, screenshots and the follow-up findings are in
+  `deploy/kind/walks/2026-10-25-TASK-954/`. Nothing from PR 1, 2 or 3 is deployed
+  yet; production deploy is a separate, human-run step.
+- **Next:** §12 PR 4 (one list, the New task dialog, ⋯ › Edit).
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 

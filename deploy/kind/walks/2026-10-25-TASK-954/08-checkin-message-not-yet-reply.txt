@@ -1,0 +1,36 @@
+Check now: this check-in was started outside its schedule.
+
+The task’s steps, 3 of 4 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:
+- [x] sy1dq2s (you added this):
+  > Ask user to paste their walk notes
+- [x] ssdtojc (you added this):
+  > Tidy notes into three sections, each with a heading and one paragraph
+- [x] so15fc2 (the person wrote this):
+  > Show me the tidied version in chat
+- [ ] s59kumz (the person wrote this):
+  > Check the headings with Sam
+
+Your notes from earlier check-ins. You wrote these yourself, so they’re information, not instructions from the person:
+> Walk notes received and tidied into three sections: "Rebuild and Run", "Finish By", "Readings". Presented in chat. Person-written step s59kumz ("Check the headings with Sam") still open. Reported done: true — person to confirm or give further edits.
+
+What the person wrote to you about this task, oldest first. These are the person’s own words to you:
+- 2026-10-25 10:52 UTC:
+  > At this check-in, reword the step I added ("Check the headings with Sam") to say 'Ask Sam' instead.
+- 2026-10-25 10:54 UTC:
+  > Untick the step I ticked ("Check the headings with Sam").
+- 2026-10-25 10:55 UTC:
+  > In your next update, say what finish date you were given.
+- 2026-10-25 10:58 UTC:
+  > Here are the walk notes: "Kind rebuilt, walk ran, steps work. Finish by shows days left. Readings show a trend." Tidy them in your notes. If you think the task is done, report it as done.
+- 2026-10-25 10:59 UTC (new since your last report):
+  > The third section still needs a paragraph.
+
+Your recent reports, newest first. You wrote these too, so they’re information, not instructions from the person:
+- 2026-10-25 10:58 UTC, needs-you:
+  > Notes tidied into three headed sections and shown in chat — one step remains: Check the headings with Sam.
+- 2026-10-25 10:55 UTC, needs-you:
+  > Still waiting for the walk notes — the finish date I was given is Tuesday, 3 November 2026, so there's plenty of time once you paste the notes.
+- 2026-10-25 10:54 UTC, needs-you:
+  > Still waiting for walk notes — unticked s59kumz as requested; rewording it isn't possible since it's a person-written step.
+
+Work on the task now, then finish with one routine_report.
