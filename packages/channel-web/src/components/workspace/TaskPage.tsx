@@ -320,7 +320,11 @@ function useTaskActions(
 ) {
   const [acting, setActing] = useState<ActionKind | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  // Duplicate keeps its own slot: a copy whose answer never came must survive
+  // any Check now, Pause or Resume in between (and theirs must survive it), or
+  // the retry mints a new id and the server makes a second copy (or check-in).
   const pending = useRef<PendingPress | null>(null);
+  const pendingCopy = useRef<string | null>(null);
   const inFlight = useRef(false);
 
   const press = async (kind: ActionKind) => {
@@ -330,6 +334,28 @@ function useTaskActions(
     setNotice(null);
     // Clearing the line at the press is what lets the same words be heard again.
     if (kind === 'check') poll.stop();
+    let opened = false;
+    if (kind === 'duplicate') {
+      const requestId = pendingCopy.current ?? crypto.randomUUID();
+      pendingCopy.current = requestId;
+      try {
+        const copy = await workspaceApi.duplicateTask(agentId, routineId, { requestId });
+        pendingCopy.current = null;
+        // The shell opens the copy and this page goes away: nothing to read again.
+        opened = true;
+        onDuplicated(copy.routineId);
+      } catch (e) {
+        logRequestFailure(e, 'task-actions');
+        if (isConfirmedRefusal(e)) pendingCopy.current = null;
+        const { text, register } = duplicateFailure(e, detail.agentName);
+        setNotice({ failed: text, register });
+      } finally {
+        inFlight.current = false;
+        setActing(null);
+        if (!opened) refresh();
+      }
+      return;
+    }
     const op: PendingPress =
       pending.current?.kind === kind
         ? pending.current
@@ -341,16 +367,7 @@ function useTaskActions(
       expectedRevision: op.revision,
       requestId: op.requestId,
     };
-    let opened = false;
     try {
-      if (kind === 'duplicate') {
-        const copy = await workspaceApi.duplicateTask(agentId, routineId, { requestId: op.requestId });
-        pending.current = null;
-        // The shell opens the copy and this page goes away: nothing to read again.
-        opened = true;
-        onDuplicated(copy.routineId);
-        return;
-      }
       if (kind === 'check') {
         const result = await routineApi.fireNow(request);
         if (result.status === 'ok') poll.start('check-now');
@@ -361,19 +378,13 @@ function useTaskActions(
       pending.current = null;
     } catch (e) {
       logRequestFailure(e, 'task-actions');
-      if (kind === 'duplicate') {
-        if (isConfirmedRefusal(e)) pending.current = null;
-        const { text, register } = duplicateFailure(e, detail.agentName);
-        setNotice({ failed: text, register });
-      } else {
-        if (!unconfirmed(e)) pending.current = null;
-        const { text, register } = pressFailure(kind, e);
-        setNotice({ failed: text, register });
-      }
+      if (!unconfirmed(e)) pending.current = null;
+      const { text, register } = pressFailure(kind, e);
+      setNotice({ failed: text, register });
     } finally {
       inFlight.current = false;
       setActing(null);
-      if (!opened) refresh();
+      refresh();
     }
   };
 

@@ -2386,6 +2386,45 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     );
   });
 
+  it('a Check now in between doesn’t end an unconfirmed copy, so the retry still can’t make two', async () => {
+    taskMock.mockResolvedValue(detail());
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    duplicateMock
+      .mockRejectedValueOnce(new WorkspaceApiError('/x', 503))
+      .mockResolvedValueOnce({ routineId: 'rtn_copy' });
+    await renderReady();
+    await chooseDuplicate();
+    await screen.findByRole('alert');
+    await waitFor(() => expect(more()).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await waitFor(() => expect(fireNowMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(more()).toBeEnabled());
+
+    await chooseDuplicate();
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledTimes(2));
+    expect(duplicateMock.mock.calls[1]![2].requestId).toBe(duplicateMock.mock.calls[0]![2].requestId);
+  });
+
+  it('a refused copy in between doesn’t end an unconfirmed Check now, so the retry still can’t start two', async () => {
+    taskMock.mockResolvedValue(detail());
+    fireNowMock.mockRejectedValueOnce(new RoutineApiError(503)).mockResolvedValueOnce({ status: 'ok' });
+    duplicateMock.mockRejectedValueOnce(new WorkspaceApiError('/x', 403));
+    await renderReady();
+    const check = screen.getByRole('button', { name: 'Check now' });
+    fireEvent.click(check);
+    await screen.findByRole('alert');
+    await waitFor(() => expect(more()).toBeEnabled());
+
+    await chooseDuplicate();
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(COPY_NOT_ALLOWED));
+    await waitFor(() => expect(check).toBeEnabled());
+
+    fireEvent.click(check);
+    await waitFor(() => expect(fireNowMock).toHaveBeenCalledTimes(2));
+    expect(fireNowMock.mock.calls[1]![0].requestId).toBe(fireNowMock.mock.calls[0]![0].requestId);
+  });
+
   it.each([
     { status: 400, text: 'We couldn’t copy this task as it is. Change it in Quill’s settings first.', destructive: true },
     { status: 404, text: GONE, destructive: true },
