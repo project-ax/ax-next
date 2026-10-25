@@ -215,16 +215,42 @@ describe('TaskFinishDate — when the host says no', () => {
     expect(setMock.mock.calls.map((c) => c[2])).toEqual(['2026-11-14', '2026-11-14']);
   });
 
-  it('keeps a task that is gone as gone when the field is closed and opened again', async () => {
-    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 404));
+  it.each<[number, string]>([
+    [404, NOT_FOUND],
+    [401, HTTP_SESSION_ENDED],
+  ])('keeps a %i refusal on screen after Cancel, and no longer offers to change the date', async (status, line) => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
     renderField(FB);
     fireEvent.click(button('Change'));
     fireEvent.click(button('Save'));
+    await screen.findByText(line);
+    fireEvent.click(button('Cancel'));
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(screen.getByText(line)).toBeTruthy();
+    expect(button('Change').disabled).toBe(true);
+  });
+
+  it('keeps a gone task gone when the date was never set: Add a finish date goes disabled too', async () => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 404));
+    renderField(null);
+    fireEvent.click(button('Add a finish date'));
+    pick('2026-11-14');
+    fireEvent.click(button('Save'));
     await screen.findByText(NOT_FOUND);
     fireEvent.click(button('Cancel'));
-    fireEvent.click(button('Change'));
     expect(screen.getByText(NOT_FOUND)).toBeTruthy();
-    expect(button('Save').disabled).toBe(true);
+    expect(button('Add a finish date').disabled).toBe(true);
+  });
+
+  it('drops a refusal that pressing again could fix when the field is cancelled', async () => {
+    setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 500));
+    renderField(FB);
+    fireEvent.click(button('Change'));
+    fireEvent.click(button('Save'));
+    await screen.findByText(UNCONFIRMED);
+    fireEvent.click(button('Cancel'));
+    expect(screen.queryByText(UNCONFIRMED)).toBeNull();
+    expect(button('Change').disabled).toBe(false);
   });
 
   it('clears an old refusal when the person picks another date', async () => {

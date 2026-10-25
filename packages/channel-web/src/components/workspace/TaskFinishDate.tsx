@@ -22,7 +22,8 @@
  * unreadable answer) may or may not have landed. Pressing Save again sends the
  * same date, which is safe: a date set twice is the same date. A refusal that
  * pressing again can't fix (the task is gone, or the session ended) disables
- * Save and Remove date and keeps saying so.
+ * Save and Remove date and keeps saying so, even after Cancel, where Change (or Add a
+ * finish date) goes disabled under the same line.
  *
  * WHERE FOCUS GOES. Opening the field focuses it. Saving, removing and
  * cancelling hand focus back to the button that replaces it (Change, or Add a
@@ -172,6 +173,12 @@ export function TaskFinishDate({
   };
 
   if (!editing) {
+    // A refusal that pressing again can't fix outlives Cancel: the date shown may be stale
+    // (the task is gone) and Change would only fail the same way, so say so and stop offering it.
+    const stuck = failure?.dead === true ? failure : null;
+    const describedBy =
+      [finishBy === null ? null : lineId, stuck === null ? null : errorId].filter(Boolean).join(' ') ||
+      undefined;
     return (
       <div className="flex flex-wrap items-center gap-x-3">
         {finishBy !== null && (
@@ -185,11 +192,17 @@ export function TaskFinishDate({
           variant="link"
           size="sm"
           className="px-0"
-          aria-describedby={finishBy === null ? undefined : lineId}
+          disabled={stuck !== null}
+          aria-describedby={describedBy}
           onClick={open}
         >
           {finishBy === null ? 'Add a finish date' : 'Change'}
         </Button>
+        {stuck !== null && (
+          <FieldError id={errorId} className="basis-full text-[13px]">
+            {stuck.line}
+          </FieldError>
+        )}
       </div>
     );
   }
