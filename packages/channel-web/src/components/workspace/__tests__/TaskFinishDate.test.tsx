@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { ROUTINE_FINISH_BY_LATEST } from '@ax/routines-contract';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { finishByLine } from '@/lib/task-finish-by';
 import { WorkspaceApiError, workspaceApi } from '@/lib/workspace-api';
@@ -108,6 +109,8 @@ describe('TaskFinishDate — setting and removing', () => {
     expect(document.activeElement).toBe(field());
     expect(field().type).toBe('date');
     expect(field().min).toBe('2026-11-05');
+    // The newest date the host takes, so the picker doesn't offer one it would refuse.
+    expect(field().max).toBe(ROUTINE_FINISH_BY_LATEST);
     expect(
       screen.getByText('Caveman will tell you if the steps left won’t fit.').id,
     ).not.toBe('');

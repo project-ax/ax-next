@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { ROUTINE_FINISH_BY_LATEST } from '@ax/routines-contract';
 import { HTTP_SESSION_ENDED, HttpError, logRequestFailure } from '@/lib/http';
 import { browserToday, finishByLine, finishByPickIssue } from '@/lib/task-finish-by';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -227,6 +228,7 @@ export function TaskFinishDate({
             ref={input}
             type="date"
             min={today}
+            max={ROUTINE_FINISH_BY_LATEST}
             value={value}
             readOnly={saving}
             className="w-auto self-start"
