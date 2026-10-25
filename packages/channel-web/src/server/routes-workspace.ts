@@ -7840,8 +7840,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         res.status(404).json({ error: 'task-not-found' });
         return;
       }
+      // The service saves only on a get-done task, under its row lock, so a success proves the kind;
+      // the view read above may be older than that lock, so its kind is not asked again.
       res.status(200).json({
-        finishBy: toTaskFinishBy({ ...own.view, finishBy: out.finishBy }, now()),
+        finishBy: toTaskFinishBy({ ...own.view, kind: 'get-done', finishBy: out.finishBy }, now()),
       } satisfies TaskFinishByResponse);
     },
 

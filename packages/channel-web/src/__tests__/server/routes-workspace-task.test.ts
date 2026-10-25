@@ -1695,6 +1695,21 @@ describe('PUT /api/workspace/tasks/:agentId/:routineId/finish-by (TASK-951)', ()
     expect(order).toEqual(['routines:get', 'routines:set-finish-by']);
   });
 
+  it('answers the date the service saved even when the view read before it was not get-done', async () => {
+    // The service saves only on a get-done task, under its row lock, so its success proves the
+    // kind. The view read first may be a moment stale (the kind can't change, but a view that
+    // didn't parse can carry any), so the answer must not be gated on it.
+    const { finishBy } = setup({
+      rows: [laTask({ kind: 'stay-on-top', finishBy: null })],
+      now: LA_EVENING,
+    });
+    const captured = await finishBy(KEY, { finishBy: '2026-11-14' });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toStrictEqual({
+      finishBy: { date: '2026-11-14', daysLeft: 10 },
+    } satisfies TaskFinishByResponse);
+  });
+
   it('removes the date, and answers none', async () => {
     const { finishBy, finishByCalls } = setup({ rows: [laTask()], now: LA_EVENING });
     const captured = await finishBy(KEY, { finishBy: null });
