@@ -423,13 +423,15 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     await finish(scheduled.dispatchId);
     expect((await f.store.findOne(row))?.noRecentUpdate).toBeNull();
     expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
-    // Nor is it the fifth miss once the newer one has reported, finished or not.
+    // Nor is it the fifth miss once the newer one has reported, finished or not. Still open, that report has
+    // answered the four before it too, so the fifth's finish clears them (TASK-935).
     const other = await f.store.createAuthored(taskInput('other'));
     await missed(other, TASK_AUTO_PAUSE_AFTER_MISSES - 1);
     const fifth = await checkIn(other, 'fifth', { at: minute(5) });
     const reporting = await checkIn(other, 'reporting', { at: minute(6), report: onTrack });
     await finish(fifth.dispatchId);
-    expect(await f.store.findOne(other)).toMatchObject({ enabled: true, noRecentUpdate: { inARow: TASK_AUTO_PAUSE_AFTER_MISSES - 1 } });
+    expect(await f.store.findOne(other)).toMatchObject({ enabled: true, noRecentUpdate: null });
+    expect(await missColumns(other.routineId)).toEqual(NO_MISSES);
     await finish(reporting.dispatchId);
     expect((await f.store.findOne(other))?.noRecentUpdate).toBeNull();
     expect(lines).toEqual([]);
@@ -449,7 +451,7 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect((await f.store.findOne(row))?.noRecentUpdate).toEqual(missedOnce);
   });
 
-  it("known lag (a closing fix should turn this red on purpose): an older check-in's late report trims from its own start, not from a newer report still open: that one answers when its run finishes", async () => {
+  it("an older check-in's late report ends the misses that a newer report, its run still open, has answered", async () => {
     const row = await f.store.createAuthored(taskInput('task'));
     const scheduled = await checkIn(row, 'scheduled', { at: minute(1) });
     const checkNow = await checkIn(row, 'check-now', { at: minute(2) });
@@ -460,10 +462,97 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     // A newer run reports, and is still open when the older one finishes.
     const open = await checkIn(row, 'open', { at: minute(3), report: onTrack });
     await finish(scheduled.dispatchId);
-    // The older report keeps the miss after it; the open report answers that miss only once its run finishes.
-    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: checkNow.acceptedAt, autoPausedAt: null });
-    await finish(open.dispatchId);
+    // In the order they started: a report, a miss, a report. The open one has answered the miss already.
     expect((await f.store.findOne(row))?.noRecentUpdate).toBeNull();
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    await finish(open.dispatchId);
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+  });
+
+  it('a newer report still open answers only the misses that started before it: an older check-in that finishes, with a late report or none, keeps the ones after it', async () => {
+    const lines = pauseLines();
+    for (const late of [true, false]) {
+      const row = await f.store.createAuthored(taskInput(late ? 'late-report' : 'no-report'));
+      const older = await checkIn(row, 'older', { at: minute(1) });
+      const before = await checkIn(row, 'before', { at: minute(2) });
+      const newer = await checkIn(row, 'newer', { at: minute(3) });
+      const after = await checkIn(row, 'after', { at: minute(4) });
+      await finish(before.dispatchId);
+      await finish(after.dispatchId);
+      const twice = { inARow: 2, reason: 'no-report', at: after.acceptedAt, autoPausedAt: null };
+      expect((await f.store.findOne(row))?.noRecentUpdate, String(late)).toEqual(twice);
+      // Both misses have finished. Now the newer run reports (the older one too, when late) and stays open.
+      for (const run of late ? [older, newer] : [newer]) {
+        expect(await f.store.recordReport({
+          agentId: 'a', dispatchId: run.dispatchId, conversationId: run.conversationId, actorUserId: 'owner', report: onTrack, now: minute(5),
+        })).toBe('recorded');
+      }
+      await finish(older.dispatchId);
+      // In the order they started: the older check-in, a miss, a report, a miss. One in a row.
+      const once = { ...twice, inARow: 1 };
+      expect((await f.store.findOne(row))?.noRecentUpdate, String(late)).toEqual(once);
+      await finish(newer.dispatchId);
+      expect((await f.store.findOne(row))?.noRecentUpdate, String(late)).toEqual(once);
+    }
+    expect(lines).toEqual([]);
+  });
+
+  it('a newer report whose run has finished is passed over: a miss that started in its instant and finished after it still counts, whatever an older check-in does', async () => {
+    for (const late of [true, false]) {
+      const row = await f.store.createAuthored(taskInput(late ? 'late-report' : 'no-report'));
+      const older = await checkIn(row, 'older', { at: minute(1) });
+      await finish((await checkIn(row, 'reported', { at: minute(2), report: onTrack })).dispatchId);
+      // Started in the same instant as that report and finished after it: no report answers it.
+      await finish((await checkIn(row, 'beside', { at: minute(2) })).dispatchId);
+      const once = { inARow: 1, reason: 'no-report', at: minute(2), autoPausedAt: null };
+      expect((await f.store.findOne(row))?.noRecentUpdate, String(late)).toEqual(once);
+      if (late) {
+        expect(await f.store.recordReport({
+          agentId: 'a', dispatchId: older.dispatchId, conversationId: older.conversationId, actorUserId: 'owner', report: onTrack, now: minute(3),
+        })).toBe('recorded');
+      }
+      await finish(older.dispatchId);
+      expect((await f.store.findOne(row))?.noRecentUpdate, String(late)).toEqual(once);
+    }
+  });
+
+  it('an older check-in that finishes without a report beside a newer report still open never raises the count, and leaves a hand-edited one', async () => {
+    // A Resume starts the count over: the misses from before it don't come back.
+    const row = await f.store.createAuthored(taskInput('resumed'));
+    const older = await checkIn(row, 'older', { at: minute(1) });
+    const newer = await checkIn(row, 'newer', { at: minute(2) });
+    await missed(row, 1, 3);
+    const resumed = await edit(await edit(row, 'pause', { enabled: false }), 'resume', { enabled: true });
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    await missed(resumed, 1, 5);
+    expect(await f.store.recordReport({
+      agentId: 'a', dispatchId: newer.dispatchId, conversationId: newer.conversationId, actorUserId: 'owner', report: onTrack, now: minute(6),
+    })).toBe('recorded');
+    await finish(older.dispatchId);
+    const once = { task_misses_in_a_row: 1, task_miss_reason: 'no-report', task_miss_at: minute(5), task_auto_paused_at: null };
+    expect(await missColumns(row.routineId)).toEqual(once);
+    await finish(newer.dispatchId);
+    expect(await missColumns(row.routineId)).toEqual(once);
+    // A count below one is a hand edit: there's nothing to trim, and the finish still succeeds.
+    const edited = await f.store.createAuthored(taskInput('hand-edited'));
+    const early = await checkIn(edited, 'early', { at: minute(1) });
+    await checkIn(edited, 'reporting', { at: minute(2), report: onTrack });
+    const below = { task_misses_in_a_row: -3, task_miss_reason: 'no-report', task_miss_at: minute(5), task_auto_paused_at: null };
+    await setMisses(edited.routineId, below);
+    await finish(early.dispatchId);
+    expect(await missColumns(edited.routineId)).toEqual(below);
+  });
+
+  it('an older check-in that finishes without a report clears a single miss a newer report, its run still open, has answered', async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    const older = await checkIn(row, 'older', { at: minute(1) });
+    await missed(row, 1, 2);
+    expect((await f.store.findOne(row))?.noRecentUpdate).toEqual({ inARow: 1, reason: 'no-report', at: minute(2), autoPausedAt: null });
+    const open = await checkIn(row, 'open', { at: minute(3), report: onTrack });
+    await finish(older.dispatchId);
+    // In the order they started: the older check-in, a miss, a report. Nothing left in a row.
+    expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
+    await finish(open.dispatchId);
     expect(await missColumns(row.routineId)).toEqual(NO_MISSES);
   });
 
