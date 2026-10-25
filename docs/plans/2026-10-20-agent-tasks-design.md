@@ -29,7 +29,7 @@ knows what it's for and says how it's going.
   `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
   deployed yet; production deploy is a separate, human-run step. Email for
   Needs you stays later (§14 Q4).
-- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); TASK-950 adds "I think it's done", Mark done, Not yet, Reopen and the Done filter (schema version 13); TASK-953 adds Duplicate task (⋯ › Duplicate on a task's page) and makes "Going well when" editable in Settings.
+- **Now:** §12 PR 3, "Get something done". TASK-952 added an optional reading to each report, shown as a small trend (schema version 10); TASK-948 adds the kind and the steps its agent drafts and ticks (schema version 11); TASK-949 lets a task's owner edit its steps on the task page; TASK-951 adds a Finish by date that only a person sets (schema version 12); TASK-950 adds "I think it's done", Mark done, Not yet, Reopen and the Done filter (schema version 13); TASK-953 adds Duplicate task (⋯ › Duplicate on a task's page, a Done task's included) and makes "Going well when" editable in Settings.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -229,7 +229,7 @@ check-in now.
 
 > PR 2 (TASK-936): If the task moves to a new owner, it starts over. The new owner sees no latest update, notes or misses. Updates and every check-in's message hold only their own check-ins. The earlier owner's stay stored, and come back only if the task moves back.
 
-> PR 3 (TASK-953): ⋯ holds one item for now, Duplicate. It makes a paused copy named "Copy of {name}" with the same brief, schedule and active hours, and a get-done task's steps unticked, each still labelled by who wrote it. It copies none of the task's state, its finish date, its replies or its history. The person lands on the copy's page ("This is a paused copy. Change what you need, then press Resume."), changes what they need and presses Resume. No approval, because the person made it. Until PR 4's ⋯ › Edit, a task's brief, "Going well when" included, is changed in the agent's settings.
+> PR 3 (TASK-953): ⋯ holds one item for now, Duplicate. It makes a paused copy named "Copy of {name}" with the same brief, schedule and active hours, and a get-done task's steps unticked, each still labelled by who wrote it. It copies none of the task's state, its finish date, its replies or its history. A Done task's page offers it too, beside Reopen: copying a finished plan is the main use, and the copy is a fresh paused task, not Done, with no claim (TASK-950). The person lands on the copy's page ("This is a paused copy. Change what you need, then press Resume."), changes what they need and presses Resume. No approval, because the person made it. Until PR 4's ⋯ › Edit, a task's brief, "Going well when" included, is changed in the agent's settings.
 
 ### 3.4 The task page: "Get something done"
 
@@ -1025,3 +1025,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-24 | Decided | Duplicate is a host service, one transaction and one receipt. The copy is paused, named "Copy of {name}", with the same brief, schedule and active hours, and a get-done task's steps unticked, each keeping who wrote it. Nothing else is copied, the finish date included. The source's owner, with `edit`, makes it, with no approval (TASK-953). |
 | 2026-10-24 | Decided | A person edits a task's "Going well when" in Agent Settings until PR 4's ⋯ › Edit (TASK-953). |
 | 2026-10-24 | Decided | Supersedes the Proposed TASK-949 row above: a person's reword that changes a step's text makes the step theirs (`addedBy: 'person'`), the agent's steps included, so the agent reads it as their words and can then only tick it. Before saving, the editor says so (confirmed by Vinay, 2026-10-24, TASK-953). |
+| 2026-10-25 | Decided | A Done task can be duplicated: its page keeps ⋯ › Duplicate beside Reopen, with `edit`. The copy is a fresh paused task, not Done, with no claim and no completion, because a copy carries none of the task's state (TASK-953, after TASK-950). |

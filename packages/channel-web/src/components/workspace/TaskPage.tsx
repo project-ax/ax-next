@@ -20,9 +20,10 @@
  * what's-left box in place. A get-done task that hasn't claimed anything has
  * Mark done under its steps, outline. With unticked steps the press asks
  * first. A Done task shows a Done line instead of an update card, keeps its
- * steps as they were, read-only, has no reply box, and its header holds only
- * Reopen, which opens the same box in its reopen mode. The in-place box is
- * mounted from its first opening and hidden while closed, so its "Sent." line
+ * steps as they were, read-only, has no reply box, and its header holds
+ * Reopen, which opens the same box in its reopen mode, and the ⋯ with
+ * Duplicate (TASK-953: copying a finished plan is its main use). The in-place
+ * box is mounted from its first opening and hidden while closed, so its "Sent." line
  * is still there when the claim or Done state it answered has gone. A later
  * claim or Done is a new question: it finds the box closed and empty.
  *
@@ -212,11 +213,11 @@ const NOT_THEIRS = 'You can’t change this task any more.';
  * needs `edit`, like any other resume.
  */
 function actionNote(detail: TaskDetail): string | null {
-  // A Done task is off too, but it isn't paused: only Reopen is left, and it needs edit.
+  // A Done task is off too, but it isn't paused: Reopen and Duplicate are left, and both need edit.
   if (detail.doneAt !== null) {
     return detail.permissions.edit
       ? null
-      : 'Done. Only someone who manages this agent’s tasks can reopen it.';
+      : 'Done. Only someone who manages this agent’s tasks can reopen or copy it.';
   }
   if (!detail.enabled && detail.noRecentUpdate?.autoPaused) {
     return detail.permissions.edit
@@ -588,7 +589,8 @@ export function TaskPage({
  * agent's claim waits for Mark done (TASK-950). It's the ⋯ that is disabled
  * without `edit`, not its one item: a disabled menu item can't take keyboard
  * focus, so a menu of one disabled item would say nothing about why. A Done
- * task has only Reopen.
+ * task has Reopen and the same ⋯: copying a finished plan is Duplicate's main
+ * use, and the copy is a fresh, paused task that isn't Done.
  */
 function TaskActions({
   detail,
@@ -620,27 +622,72 @@ function TaskActions({
   const chosen = useRef<(() => void) | null>(null);
   const { enabled, permissions } = detail;
   const hasNote = actionNote(detail) !== null;
+  // Only a button the note explains points at it; one that's only waiting
+  // for a press to finish needs no reason.
+  const describedBy = (blocked: boolean) => (blocked && hasNote ? noteId : undefined);
+  const more = (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          ref={moreRef}
+          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label="More actions"
+          disabled={!permissions.edit || busy}
+          aria-describedby={describedBy(!permissions.edit)}
+        >
+          {acting === 'duplicate' ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <MoreHorizontal aria-hidden="true" />
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(event) => {
+          const action = chosen.current;
+          chosen.current = null;
+          if (action === null) return;
+          event.preventDefault();
+          moreRef.current?.focus();
+          setTimeout(action, 0);
+        }}
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            onSelect={() => {
+              chosen.current = () => onPress('duplicate');
+            }}
+          >
+            Duplicate
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
   if (detail.doneAt !== null) {
     return (
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={!permissions.edit}
-        aria-describedby={!permissions.edit && hasNote ? noteId : undefined}
-        aria-expanded={reopenOpen}
-        aria-controls={boxId}
-        onClick={onReopen}
-      >
-        Reopen
-      </Button>
+      <>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!permissions.edit}
+          aria-describedby={describedBy(!permissions.edit)}
+          aria-expanded={reopenOpen}
+          aria-controls={boxId}
+          onClick={onReopen}
+        >
+          Reopen
+        </Button>
+        {more}
+      </>
     );
   }
   const claimed = isClaimed(detail);
   const checkBlocked = !enabled || !permissions.fire;
   const toggleBlocked = enabled ? !permissions.stop : !permissions.edit;
-  // Only a button the note explains points at it; one that's only waiting
-  // for a press to finish needs no reason.
-  const describedBy = (blocked: boolean) => (blocked && hasNote ? noteId : undefined);
   return (
     <>
       <Button
@@ -667,46 +714,7 @@ function TaskActions({
         )}
         {enabled ? 'Pause' : 'Resume'}
       </Button>
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            ref={moreRef}
-            type="button"
-            size="icon"
-            variant="ghost"
-            aria-label="More actions"
-            disabled={!permissions.edit || busy}
-            aria-describedby={describedBy(!permissions.edit)}
-          >
-            {acting === 'duplicate' ? (
-              <Spinner aria-hidden="true" />
-            ) : (
-              <MoreHorizontal aria-hidden="true" />
-            )}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          onCloseAutoFocus={(event) => {
-            const action = chosen.current;
-            chosen.current = null;
-            if (action === null) return;
-            event.preventDefault();
-            moreRef.current?.focus();
-            setTimeout(action, 0);
-          }}
-        >
-          <DropdownMenuGroup>
-            <DropdownMenuItem
-              onSelect={() => {
-                chosen.current = () => onPress('duplicate');
-              }}
-            >
-              Duplicate
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {more}
     </>
   );
 }
