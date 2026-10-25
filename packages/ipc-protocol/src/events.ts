@@ -180,9 +180,10 @@ export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 /**
  * The most messages one `event.chat-end` outcome may carry (TASK-945). The
  * runner sends its whole life's text-only history here: every user message
- * and every recorded assistant text, up to the pod's 6 h deadline. The limit
- * sits where that history cannot reach it, because a refused chat-end loses
- * `chat:end`.
+ * and every recorded assistant text, for the runner's whole life (k8s pods
+ * have a configurable deadline, 6 h by default; a subprocess runner has
+ * none). For real messages the 4 MiB frame almost always binds first, so
+ * this limit is there to refuse junk; a refused chat-end loses `chat:end`.
  */
 export const CHAT_END_MESSAGES_MAX = 50_000;
 

@@ -283,8 +283,14 @@ export function formatAttachmentInline(
  * Sized so real traffic never reaches it: a refused turn-end loses that
  * turn's whole display frame. One turn-end carries a whole multi-step turn:
  * every assistant block, or every tool result plus one chip per file the
- * turn created (up to 10,000). Real blocks average well over 84 bytes, so
- * 50,000 of them do not fit the 4 MiB frame anyway.
+ * turn created (up to 10,000). The aisdk runner stops at 100 steps; the
+ * claude-sdk runner emits one block per SDK block and is bounded by time.
+ *
+ * The same limit applies to `session.next-message`, whose messages the host
+ * re-checks before sending (a failure there is a 500 that stalls the runner's
+ * poll). Nothing queues that many: chat caps a user message at 20 blocks
+ * (`PostMessageRequest`), and the orchestrator queues it as-is. A producer
+ * that could approach this limit must refuse at the queue, not on the wire.
  *
  * Not applied to `tool_result.content`: this schema also re-parses stored
  * transcripts, and the conversations read path drops a turn that fails it.

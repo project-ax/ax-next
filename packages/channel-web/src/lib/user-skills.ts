@@ -219,8 +219,8 @@ export async function shareUserSkill(
  * out-of-band twin of the in-chat approval card's POST to
  * `/api/chat/permission-decision` — same authored grant, no conversation.
  *
- * NO secret on this wire — only domain ids + the `shown` TOCTOU guard (exactly
- * what the panel displayed). The server ACL-checks the agent and re-resolves the
+ * NO secret on this wire — only domain ids + the optional `shown` (what the
+ * panel displayed, forwarded unread; see ShownCapsSchema). The server ACL-checks the agent and re-resolves the
  * skill as one of THAT agent's pending drafts before approving. A 409
  * 'not-authored' means the skill isn't a pending draft of this agent.
  */

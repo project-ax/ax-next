@@ -145,8 +145,10 @@ export function validateCapabilities(value: unknown): Capabilities {
 /**
  * The write funnels' check (`connectors:upsert`, `connectors:install-authored`;
  * TASK-945): {@link validateCapabilities} with every list bounded by
- * CAPABILITY_WRITE_LIMITS. An oversized list is refused as invalid-payload on
- * its size alone, before any element is parsed.
+ * CAPABILITY_WRITE_LIMITS. Here an oversized list is refused as
+ * invalid-payload on its size alone, before any of its elements is parsed
+ * (a caller may still check elements first; `assembleProposal` checks each
+ * slot name before it gets here).
  */
 export function validateCapabilitiesForWrite(value: unknown): Capabilities {
   return checkCapabilities(CapabilitiesWriteSchema, value);

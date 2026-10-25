@@ -296,8 +296,9 @@ export function GrantRow({
     try {
       const skillId = request.skillId;
       await writeKeys(skillId);
-      // What the row DISPLAYED. The authored grant intersects its proposal with
-      // this, so a card that showed less than the manifest asks for grants less.
+      // What the row DISPLAYED. The server forwards it unread: since TASK-100 a
+      // skill declares no capabilities, so the authored grant only flips the
+      // draft to active (see ShownCapsSchema in wire/chat.ts).
       const shown = {
         hosts: request.hosts,
         slots: request.slots.map((s) => s.slot),

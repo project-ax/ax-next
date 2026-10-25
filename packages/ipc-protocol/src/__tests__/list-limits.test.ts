@@ -25,6 +25,16 @@ function expectOnlySizeIssue(
 }
 
 describe('runner→host list limits (TASK-945)', () => {
+  // The "takes the limit" cases below build their lists FROM the constants, so
+  // they cannot see a lowered limit. A lowered limit is the dangerous direction:
+  // a refused turn-end loses that turn's display frame silently (the runner
+  // swallows the 400). Pin the sized values; raising or lowering one is a
+  // decision to make on purpose (see the constants' comments).
+  it('pins the sized values', () => {
+    expect(CONTENT_BLOCKS_MAX).toBe(50_000);
+    expect(CHAT_END_MESSAGES_MAX).toBe(50_000);
+  });
+
   it('event.turn-end takes CONTENT_BLOCKS_MAX blocks', () => {
     const r = EventTurnEndSchema.safeParse({
       reason: 'complete',

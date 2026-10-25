@@ -79,6 +79,13 @@ const CASES: Case[] = [
 ];
 
 describe('connector capability list limits apply on write only (TASK-945)', () => {
+  // The cases below size their lists FROM the limits, so they cannot see a
+  // changed limit. Pin the values: 64 / 32 / 8 are the sandbox wire's own
+  // per-entry limits (@ax/sandbox-protocol InstalledSkillSchema).
+  it('pins the sized values', () => {
+    expect(L).toEqual({ allowedHosts: 64, credentials: 32, mcpServers: 8, packages: 64, scopes: 128 });
+  });
+
   it.each(CASES)('%s: the write schema takes the limit', (_label, _path, limit, valid, build) => {
     expect(CapabilitiesWriteSchema.safeParse(build(copies(limit, valid))).success).toBe(true);
   });

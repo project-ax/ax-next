@@ -142,6 +142,13 @@ describe('capabilityProposal list limits (TASK-945)', () => {
   }
 
   const L = SKILL_PROPOSE_CAPABILITY_LIMITS;
+
+  // The cases below size their lists FROM `L`, so they cannot see a changed
+  // limit. Pin the values: they mirror @ax/connectors' write limits and the
+  // sandbox wire's per-skill limits.
+  it('pins the sized values', () => {
+    expect(L).toEqual({ allowedHosts: 64, credentials: 32, mcpServers: 8, packages: 64 });
+  });
   const mcp = { name: 'srv', transport: 'http', url: 'https://mcp.example.com', allowedHosts: [], credentials: [] };
   const slot = { slot: 'API_KEY', kind: 'api-key' };
 
