@@ -535,8 +535,11 @@ export async function connectConnectorTools(
           // Parity with host-tools / the claude-sdk runner: a tool that
           // reported its own failure is a FAILED tool call (is_error on the
           // persisted result), not a success whose text complains. ai@7 turns
-          // the throw into a tool-error and the turn continues.
-          if ((res as { isError?: unknown }).isError === true) throw new Error(text);
+          // the throw into a tool-error and the turn continues. Truthy, as
+          // the SDK reads it: the loose parse lets a non-boolean through, and
+          // `isError: 1` is still the tool saying it failed. (Boolean() on an
+          // object calls nothing the server could shape.)
+          if (Boolean((res as { isError?: unknown }).isError)) throw new Error(text);
           return text;
         },
       ),

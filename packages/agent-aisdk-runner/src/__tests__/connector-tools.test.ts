@@ -988,6 +988,15 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     expect(mine[0]).not.toContain('[');
   });
 
+  // The loose parse no longer checks that `isError` is a boolean, so a truthy
+  // non-boolean must still count as the tool's own failure, as it does for
+  // the SDK.
+  it('a truthy isError that is not a boolean still fails the call with the tool text', async () => {
+    const s = await junkServer('tools/call', { content: [{ type: 'text', text: 'boom' }], isError: 1 });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__junk`, {})).rejects.toThrow(/^boom$/);
+  });
+
   it('shows at most four path segments, so a server-chosen key deeper down is not echoed', async () => {
     // The path is tools.0.inputSchema.properties.<key>: the key is the fifth segment.
     const key = 'k'.repeat(100);
