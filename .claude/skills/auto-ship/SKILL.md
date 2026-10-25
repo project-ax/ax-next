@@ -874,7 +874,9 @@ fails loudly, not silently.
   `kind-tooling-pinned-to-kind-context.test.js` (fixed by #917) and
   `FactsMemory.test.tsx` (TASK-845) — are a different problem, and this gate doesn't
   claim to fix them.
-- **Tests the PR's CI doesn't run.** PR CI is affected packages plus dependents. An
+- **Tests the PR's CI doesn't run.** PR CI is affected packages plus dependents (a PR
+  that changes a repo-wide input — the lockfile, `patches/`, the root `package.json`,
+  `tsconfig.base.json`, ci.yml — runs the full suite instead, since TASK-943). An
   interaction that shows up only in an unaffected package still reaches `main`, and the
   backstop is still what catches it. This gate makes the PR's own CI current. It does
   not make it the full suite.
@@ -898,7 +900,8 @@ agent writes is the progress block of its own In-Progress card (§6). **Never** 
 two PRs concurrently.
 
 **Cross-package backstop (auto-merge safety).** PR CI runs only affected-package
-tests for speed (`.github/workflows/ci.yml`), so the **push-to-main full suite** is
+tests for speed (`.github/workflows/ci.yml`; only a PR that changes a repo-wide input
+such as the lockfile runs the full suite), so the **push-to-main full suite** is
 what catches cross-package breakage (e.g. a shared-table teardown no single package
 exercises — see `feedback_new_fk_breaks_downstream_test_teardown`). After each merge,
 read the CI run **for the merge commit**, pinned on BOTH axes — the workflow and the
