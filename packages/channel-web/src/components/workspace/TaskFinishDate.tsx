@@ -33,7 +33,7 @@
  * press that fails leaves the field open and focuses it again, since the
  * pressed button went disabled while it sent and dropped focus on `<body>`.
  */
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -109,7 +109,12 @@ export function TaskFinishDate({
   // the field and hands the page its answer in one batch, so the new button is there by now. When
   // that button went disabled (a refusal that can't be retried), a disabled button can't take
   // focus, so the message under it does.
-  useEffect(() => {
+  //
+  // A LAYOUT effect, so focus moves in the same commit that removes the field (TASK-960). The
+  // host's answer arrives outside any event, so React commits it on a later task, and a plain
+  // effect then runs after paint: for that frame focus sat on <body>, and a key pressed in it
+  // went nowhere.
+  useLayoutEffect(() => {
     if (editing) {
       input.current?.focus();
     } else if (focusTrigger.current) {

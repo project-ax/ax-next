@@ -18,7 +18,7 @@
 // run it, which is exactly the kind of guard that looks strong and isn't.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, afterEach } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,6 +42,19 @@ function driverOf(dbPath: string): BetterSqlite3.Database {
 }
 
 describe('close-on-exit net', () => {
+  // TASK-960. The first test in this file once took 5.6s on a loaded CI runner and timed
+  // out at the 5s default; the five after it took milliseconds, and across fifteen other CI
+  // runs the whole file took 0.1-0.5s. What only the FIRST open pays: better-sqlite3 loads
+  // its native addon on the first `new Database()`, not on import (~170ms on a laptop with
+  // a cold disk cache, ~1ms warm), and this worker's first file write under tmpdir. Pay
+  // those once here, doing what the first test does, in a hook with a budget sized for a
+  // busy runner, so each test's own 5s covers only the behaviour it checks.
+  beforeAll(async () => {
+    const warm = openDatabase(join(scratch(), 'warm.sqlite'));
+    await warm.selectFrom('kv').select('key').limit(1).execute();
+    await warm.destroy();
+  }, 60_000);
+
   it('closes a database the caller never shut down', async () => {
     const path = join(scratch(), 'db.sqlite');
     const db = openDatabase(path);
