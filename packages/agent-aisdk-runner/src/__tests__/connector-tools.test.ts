@@ -1,6 +1,7 @@
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { fetch as undiciFetch } from 'undici';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import {
@@ -998,6 +999,23 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
     const s = await junkServer('tools/call', { content: [{ type: 'text', text: 'boom' }], isError: 1 });
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     await expect(exec(ct, `mcp__${NS}__junk`, {})).rejects.toThrow(/^boom$/);
+  });
+
+  it('clips each path segment to 32 characters, so a server-chosen key shows only its start', async () => {
+    // initialize puts a server-chosen key at the third segment:
+    // capabilities.experimental.<key>, whose value must be an object.
+    const s = await junkServer('initialize', {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: { tools: {}, experimental: { ['k'.repeat(100)]: 5 } },
+      serverInfo: { name: 'junk', version: '0.0.0' },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatch(
+      new RegExp(`\\(1 problem: [a-z_]+ at capabilities\\.experimental\\.${'k'.repeat(32)}\\)"$`),
+    );
+    expect(mine[0]).not.toContain('k'.repeat(33));
   });
 
   it('shows at most four path segments, so a server-chosen key deeper down is not echoed', async () => {
