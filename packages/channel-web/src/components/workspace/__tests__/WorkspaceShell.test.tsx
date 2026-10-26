@@ -679,6 +679,11 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     vi.mocked(workspaceApi.approveDecision).mockReset();
   });
 
+  // The approve answers set here mustn't reach a later describe.
+  afterEach(() => {
+    vi.mocked(workspaceApi.approveDecision).mockReset();
+  });
+
   it('counts a task that needs you in the badge, the Needs you tab and the headline alike (TASK-933)', async () => {
     decisionsMock.mockResolvedValue({
       decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill' })],
@@ -768,6 +773,58 @@ describe('tasks on Today, and one count (TASK-933)', () => {
 
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+    expect(badge()).toBeNull();
+  });
+
+  it('a routine change approved while a tasks read is still out starts a fresh read, and the fresh answer wins (TASK-939)', async () => {
+    decisionsMock.mockResolvedValue({
+      decisions: [
+        decisionFixture({
+          id: 'd1',
+          agentId: 'a-quill',
+          routineOperation: 'routine_update',
+          checkIn: { routineId: 't1', taskName: 'Zero open support tickets' },
+        }),
+      ],
+    });
+    // The read in flight was issued before the edit: it still says the task needs you.
+    let landStale!: (page: { tasks: TaskRow[]; unavailableAgents: [] }) => void;
+    tasksMock
+      .mockReturnValueOnce(new Promise((res) => (landStale = res)))
+      .mockResolvedValueOnce({
+        tasks: [taskRow({ kind: 'get-done', steps: { done: 0, total: 0 }, task: null })],
+        unavailableAgents: [],
+      });
+    vi.mocked(workspaceApi.approveDecision).mockResolvedValue({
+      decision: resolvedFixture('executed', {
+        id: 'd1',
+        agentId: 'a-quill',
+        routineOperation: 'routine_update',
+        routineOutcome: 'succeeded',
+        undoable: false,
+      }),
+      executed: true,
+      path: 'host-replays',
+      error: null,
+      pendingUntil: null,
+      streamReqId: null,
+    });
+
+    renderShell();
+
+    expect(await screen.findByText('One thing is waiting on you.')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: /Move your 1:1/ }));
+    fireEvent.click(await within(block).findByRole('button', { name: 'Move it' }));
+
+    // A fresh read, not a join: the one in flight predates the edit.
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+
+    // The older read lands last and is dropped.
+    await act(async () => landStale({ tasks: [taskRow()], unavailableAgents: [] }));
+    expect(screen.getByText('Nothing is waiting on you.')).toBeTruthy();
     expect(badge()).toBeNull();
   });
 

@@ -360,8 +360,9 @@ function Inner({
     lands after the person left the source task (TASK-953), and when an approved
     routine change goes through, wherever it was approved (TASK-939: the
     queue's `onRoutineChangeSucceeded`; an unattended create, edit or delete
-    goes through inside the approval, a run-now about ten seconds later). It doesn't poll, and
-    the task page's other buttons don't re-read it (Back or Today does). Entering a
+    goes through inside the approval, a run-now about ten seconds later). It
+    doesn't poll, and the task page's other buttons don't re-read it (Back or
+    Today does). Entering a
     route and Try again join a read already in flight (`retry`), except coming
     after a visit to a page that writes task rows (a task or check-in page, an
     agent's page, whose chat can approve or make routine changes, or an agent's
@@ -369,10 +370,12 @@ function Inner({
     on: a reply, Pause, Resume or edit there may postdate the read in flight,
     so the next entry into Today or Tasks starts a fresh one (`reload`),
     however many other pages came between, as a reply from Today does. The
-    fresh answer wins whichever lands last. Two things still aren't announced
-    to it: an agent's own routine change under Always Allow, and the report a
-    check-in writes later. Entering Today or Tasks, and Try again, are the way
-    to those.
+    fresh answer wins whichever lands last. This is still best-effort: other
+    changes aren't announced to it, among them an agent's own routine change
+    under Always Allow, the report a check-in writes later, a missed check-in
+    or an auto-pause the scheduler records, and anything done in another tab,
+    on another device or by another member. Entering Today or Tasks, and Try
+    again, are the way to those.
   */
   const taskRead = useTasks();
   // What Today and the badge read from it (not `today`: that's the date helper above).
