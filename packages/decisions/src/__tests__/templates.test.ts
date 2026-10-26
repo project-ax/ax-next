@@ -11,6 +11,8 @@ import {
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
+  ROUTINE_ALWAYS_ASKS_SENTENCE,
+  ROUTINE_FIRE_NOW_DETAIL,
   ROUTINE_KIND_CHANGE_SENTENCE,
 } from '../templates.js';
 
@@ -315,6 +317,7 @@ describe('no producer in this module ever prints a decision id', () => {
       ...Object.values(decisionText({ capability: null, toolName: 'skill_propose' })),
       holdNote({ capability: CAP, toolName: 'request_capability' }),
       holdNote({ capability: null, toolName: 'skill_propose' }),
+      holdNote({ capability: CAP, toolName: 'routine_fire_now', alwaysAsks: true }),
       denialSentence({ capability: CAP, toolName: 'request_capability' }),
       denialSentence({ capability: null, toolName: 'skill_propose' }),
       decisionApprovedNote(),
@@ -358,5 +361,62 @@ describe('sanitizeFailureDetail', () => {
   it('returns null for a string that is empty or only whitespace', () => {
     expect(sanitizeFailureDetail('')).toBeNull();
     expect(sanitizeFailureDetail('   ')).toBeNull();
+  });
+});
+
+describe('a fire-now says what Allow once does (TASK-941)', () => {
+  it('uses the decided words and keeps its own headline', () => {
+    expect(ROUTINE_FIRE_NOW_DETAIL).toBe(
+      'If you allow it, the routine runs once, right now. Its schedule and instructions stay as they are.',
+    );
+    const text = decisionText({ capability: 'run a routine now', toolName: 'routine_fire_now' });
+    expect(text.summary).toBe('Wants to run a routine now');
+    expect(text.detail).toBe(ROUTINE_FIRE_NOW_DETAIL);
+  });
+
+  it('leaves the other routine tools as they were', () => {
+    for (const toolName of ['routine_create', 'routine_delete']) {
+      expect(decisionText({ capability: null, toolName }).detail).toBe(
+        'Review the proposed routine change before allowing it.',
+      );
+    }
+  });
+});
+
+describe('a hold Always Allow can never lift says so (TASK-941)', () => {
+  const FIRE = { capability: 'run a routine now', toolName: 'routine_fire_now' };
+
+  it('uses the decided words', () => {
+    expect(ROUTINE_ALWAYS_ASKS_SENTENCE).toBe(
+      'This call needs that approval every time. Always Allow does not cover it and no setting changes that, ' +
+        'so do not suggest turning on Always Allow or any other setting for it.',
+    );
+  });
+
+  it('a fire-now hold note, word for word', () => {
+    expect(holdNote({ ...FIRE, alwaysAsks: true })).toBe(
+      "Held for approval. Running routine_fire_now would run a routine now, and that needs a person's approval. " +
+        'This call needs that approval every time. Always Allow does not cover it and no setting changes that, ' +
+        'so do not suggest turning on Always Allow or any other setting for it. ' +
+        'The call has been recorded exactly as you made it and is waiting for the user. ' +
+        'Do not retry it and do not look for another way to do the same thing. ' +
+        'Tell the user what you were about to do and why, then end your turn.',
+    );
+  });
+
+  it('never invites turning Always Allow on', () => {
+    const note = holdNote({ ...FIRE, alwaysAsks: true });
+    // Without this the loop below can run zero assertions and pass on a note that never names it.
+    expect(note).toContain('Always Allow');
+    expect(note).not.toMatch(/\b(enabl\w*|turn(?:s|ed)?\s+on|switch\w*\s+on)\s+Always Allow\b/i);
+    for (const sentence of note.split(/(?<=\.)\s+/)) {
+      if (sentence.includes('Always Allow')) expect(sentence).toMatch(/\b(not|never)\b/);
+    }
+  });
+
+  it('says nothing about Always Allow unless told the hold can never lift', () => {
+    for (const alwaysAsks of [undefined, false]) {
+      expect(holdNote({ ...FIRE, alwaysAsks })).not.toContain('Always Allow');
+    }
   });
 });

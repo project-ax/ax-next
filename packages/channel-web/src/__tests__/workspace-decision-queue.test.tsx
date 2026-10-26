@@ -27,6 +27,10 @@ import {
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-types';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import {
+  DECISION_GOING_OUT,
+  DECISION_GOING_OUT_NOTE,
+  DECISION_ROUTINE_UNDERWAY,
+  DECISION_ROUTINE_UNDERWAY_NOTE,
   DECISION_UNDO_TOO_LATE,
   decisionOutcome,
   undoSecondsLeft,
@@ -525,7 +529,8 @@ describe('routine scope after the grace window', () => {
   it.each(['succeeded', 'failed'] as const)('retains and polls an Allow once unknown outcome after grace until %s', async (routineOutcome) => {
     const pending = resolvedFixture('executed', { routineOperation: 'routine_update', approvalScope: 'once', routineOutcome: null, undoable: false, pendingUntil: new Date(Date.now() - 1000).toISOString(), resolvedAt: new Date(Date.now() - 60000).toISOString(), approvedText: 'The approved routine operation completed.' });
     expect(decisionOutcome(pending)?.tone).toBe('quiet');
-    expect(decisionOutcome(pending)?.line).toBe('The approved routine operation has not completed.');
+    expect(decisionOutcome(pending)?.line).toBe(DECISION_ROUTINE_UNDERWAY);
+    expect(decisionOutcome(pending)?.note).toBe(DECISION_ROUTINE_UNDERWAY_NOTE);
     readDecision.mockResolvedValue({ decision: pending });
     const { result } = await mountWith([pending]);
     listDecisions.mockResolvedValue({ decisions: [] });
@@ -539,6 +544,17 @@ describe('routine scope after the grace window', () => {
     expect(decisionOutcome(result.current.decisions[0]!)?.tone).toBe(routineOutcome === 'succeeded' ? 'done' : 'bad');
     await tick(POLL_MS * 2);
     expect(readDecision).toHaveBeenCalledTimes(4);
+  });
+  it('reads a routine approval in its undo window as about to go ahead; a recorded outcome beats the clock (TASK-941)', () => {
+    const waiting = resolvedFixture('executed', {
+      routineOperation: 'routine_fire_now', approvalScope: 'once', consentDeliveryState: 'none',
+      routineOutcome: null, irreversible: true, pendingUntil: new Date(Date.now() + 9_000).toISOString(),
+    });
+    expect(decisionOutcome(waiting)).toEqual({ line: DECISION_GOING_OUT, note: DECISION_GOING_OUT_NOTE, tone: 'quiet' });
+    expect(decisionOutcome({ ...waiting, routineOutcome: 'succeeded' })).toEqual({ line: 'The routine run was accepted.', note: null, tone: 'done' });
+    expect(decisionOutcome({ ...waiting, pendingUntil: new Date(Date.now() - 1_000).toISOString() })).toEqual({
+      line: DECISION_ROUTINE_UNDERWAY, note: DECISION_ROUTINE_UNDERWAY_NOTE, tone: 'quiet',
+    });
   });
   it('uses durable outcomes for every routine tool, keeps run acceptance honest, and separates permission delivery', () => {
     for (const routineOperation of ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const) {

@@ -1,5 +1,5 @@
 import { routineTaskProposal, routineToolKind, routineUpdateSetsKind } from '@ax/routines-contract';
-import { checkedRoutineCall } from './routine-authorization.js';
+import { checkedRoutineCall, routineConsentNeverCovers } from './routine-authorization.js';
 /**
  * The `tool:pre-call` gate.
  *
@@ -173,6 +173,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     //    here is NOT fatal — we simply have no approval to honour and fall
     //    through to policy, which holds again. Fails toward asking.
     const routine = routineToolKind(call.name) === 'write';
+    const alwaysAsks = routineConsentNeverCovers(call);
     const routineAnswer = routine ? await deps.evaluate(ctx, call) : null;
     if (routineAnswer?.verdict === 'deny')
       return reject({
@@ -206,7 +207,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
         ) {
           return hold({
             decisionId: approved.id,
-            note: holdNote({ capability: routineAnswer?.capability ?? null, toolName: call.name }),
+            note: holdNote({ capability: routineAnswer?.capability ?? null, toolName: call.name, alwaysAsks }),
             source: PLUGIN_NAME,
           });
         }
@@ -348,7 +349,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // `tool:pre-call` events genuinely race.
     const { decision: raised, created } = await deps.store.createOrReuseOpen(decision);
 
-    const note = holdNote({ capability: answer.capability, toolName: call.name });
+    const note = holdNote({ capability: answer.capability, toolName: call.name, alwaysAsks });
 
     if (!created) {
       // The row we hold on is the one already on the queue — a DIFFERENT id

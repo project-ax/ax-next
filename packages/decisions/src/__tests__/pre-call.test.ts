@@ -13,7 +13,12 @@ import {
   type PolicyAnswer,
   type PreCallDeps,
 } from '../pre-call.js';
-import { GATE_FAILURE_SENTENCE, ROUTINE_KIND_CHANGE_SENTENCE } from '../templates.js';
+import {
+  GATE_FAILURE_SENTENCE,
+  ROUTINE_ALWAYS_ASKS_SENTENCE,
+  ROUTINE_FIRE_NOW_DETAIL,
+  ROUTINE_KIND_CHANGE_SENTENCE,
+} from '../templates.js';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 
 const NOW = new Date('2026-08-20T09:00:00.000Z');
@@ -550,5 +555,84 @@ describe('tool:pre-call subscriber — a routine change that sets a kind (TASK-9
     expect(await heldDetail(update({ goodWhen: 'Every article is live.' }))).toBe(
       'Review the change to this task before allowing it.',
     );
+  });
+});
+
+describe('tool:pre-call subscriber — a hold Always Allow can never lift (TASK-941)', () => {
+  const FIRE_NOW: PolicyAnswer = {
+    verdict: 'hold',
+    ruleId: 'routines.fire-now',
+    capability: 'run a routine now',
+    irreversible: true,
+  };
+  const ROUTINE_HOLD: PolicyAnswer = { verdict: 'hold', ruleId: 'routines.update', capability: 'edit routines' };
+  const mutation = (name: string, extra: Record<string, unknown> = {}): ToolCall => ({
+    id: `c-${name}`,
+    name,
+    input: { requestId: `r-${name}`, routineId: 'rtn_a', expectedRevision: 'rev_a', ...extra },
+  });
+  const create = (definition: Record<string, unknown>): ToolCall => ({
+    id: 'c-create',
+    name: 'routine_create',
+    input: { requestId: 'r-create', definition },
+  });
+  const REPEAT = { name: 'Daily', promptBody: 'Do work', trigger: { kind: 'interval', every: '1m' } };
+  const TASK = {
+    name: 'Zero open tickets',
+    promptBody: 'Keep the queue empty.',
+    kind: 'stay-on-top',
+    goodWhen: 'No ticket open longer than an hour.',
+    trigger: { kind: 'interval', every: '15m' },
+  };
+
+  /** A routine write is held only for someone who may manage the agent's routines. */
+  function managing(): HookBus {
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    return bus;
+  }
+
+  async function held(call: ToolCall, answer: PolicyAnswer, store: FakeStore = createFakeStore()) {
+    const { sub } = build(answer, store, async () => 'unattended', managing());
+    const r = await sub(ctx(), call);
+    expect(isHold(r)).toBe(true);
+    return (r as { hold: { decisionId: string; note: string } }).hold;
+  }
+
+  it('a held fire-now tells the agent no setting lifts it, and its card says what Allow once does', async () => {
+    const store = createFakeStore();
+    const { decisionId, note } = await held(mutation('routine_fire_now'), FIRE_NOW, store);
+    expect(note).toContain(ROUTINE_ALWAYS_ASKS_SENTENCE);
+    expect((await store.get(decisionId))!.detail).toBe(ROUTINE_FIRE_NOW_DETAIL);
+  });
+
+  it.each([
+    ['a delete', mutation('routine_delete'), true],
+    ['a task created', create(TASK), true],
+    ["a change to a routine's instructions", mutation('routine_update', { patch: { promptBody: 'New words.' } }), true],
+    ['a repeat routine created', create(REPEAT), false],
+    ["a change to a routine's description", mutation('routine_update', { patch: { description: 'New words.' } }), false],
+  ] as const)('%s', async (_label, call, says) => {
+    // true: Always Allow never lifts it. false: it could, so the note must not say otherwise.
+    const { note } = await held(call, ROUTINE_HOLD);
+    expect(note.includes(ROUTINE_ALWAYS_ASKS_SENTENCE)).toBe(says);
+  });
+
+  it('says it again when the agent re-sends an approved fire-now before its release', async () => {
+    const store = createFakeStore();
+    const call = mutation('routine_fire_now');
+    const { decisionId } = await held(call, FIRE_NOW, store);
+    const later = new Date(NOW.getTime() + 10_000).toISOString();
+    await store.claimForApproval(decisionId, {
+      nowIso: NOW.toISOString(),
+      status: 'executed',
+      replayDueAt: later,
+      approvalScope: 'once',
+      routineReleaseAt: later,
+    });
+    // pre-call.ts:200-211: an approved routine call whose release is still ahead holds again.
+    const again = await held(call, FIRE_NOW, store);
+    expect(again.decisionId).toBe(decisionId);
+    expect(again.note).toContain(ROUTINE_ALWAYS_ASKS_SENTENCE);
   });
 });

@@ -8,9 +8,12 @@
  * this file. That is the H6 / invariant-5 line: model output must not be echoed
  * into a note the model reads back as instruction, nor onto a surface a human
  * reads as a factual claim about what their agent is about to do.
- * (`routineTask` and `routineSetsKind` are the two input-derived values. Each
- * is closed -- `'start' | 'change' | null` and a boolean -- and each is derived
- * from the parsed call by an `@ax/routines-contract` helper, never input text.)
+ * (`routineTask`, `routineSetsKind` and `holdNote`'s `alwaysAsks` are the three
+ * input-derived values. Each is closed -- `'start' | 'change' | null` and two
+ * booleans -- and each is derived from the parsed call outside this file, by
+ * `@ax/routines-contract` helpers (`alwaysAsks` through `routineConsentNeverCovers`
+ * in this package's `routine-authorization.ts`, which applies `touchesTaskBrief`),
+ * never from input text.)
  *
  * `capability` and `toolName` arrive over the hook bus from `@ax/tool-policy`.
  * Today that is the in-repo rule table, but the boundary review names a
@@ -180,6 +183,25 @@ export const ROUTINE_KIND_CHANGE_SENTENCE =
   'Changing what kind of task this is clears its steps, latest update, notes and finish date.';
 
 /**
+ * TASK-941 — a fire-now's review line. Allow once runs the routine one time, now, outside its
+ * schedule, and changes nothing about it, so the routine-change line the other routine tools
+ * use was false here. True for a repeat routine and a task alike: a manual fire leaves the
+ * schedule alone, and a check-in never edits its brief.
+ */
+export const ROUTINE_FIRE_NOW_DETAIL =
+  'If you allow it, the routine runs once, right now. Its schedule and instructions stay as they are.';
+
+/**
+ * TASK-941 — what the model is told about a hold Always Allow can never lift: firing a routine
+ * now, deleting one, creating a task or changing a routine's brief (`routineConsentNeverCovers`).
+ * The TASK-934 walk's agent asked people to "enable Always Allow for routine_fire_now", a setting
+ * that doesn't exist. Worded as a prohibition, never as an option.
+ */
+export const ROUTINE_ALWAYS_ASKS_SENTENCE =
+  'This call needs that approval every time. Always Allow does not cover it and no setting changes that, ' +
+  'so do not suggest turning on Always Allow or any other setting for it.';
+
+/**
  * The Decision row's prose.
  *
  * `approvedText` and `dismissedText` are written independently, on purpose. The
@@ -213,7 +235,9 @@ export function decisionText(input: DecisionTextInput): DecisionText {
         ? 'Review the task before allowing it.'
         : task === 'change'
           ? 'Review the change to this task before allowing it.'
-          : 'Review the proposed routine change before allowing it.';
+          : input.toolName === 'routine_fire_now'
+            ? ROUTINE_FIRE_NOW_DETAIL
+            : 'Review the proposed routine change before allowing it.';
     const setsKind = input.routineSetsKind === true && input.toolName === 'routine_update';
     return {
       summary:
@@ -431,7 +455,13 @@ export function decisionDismissedNote(): string {
 }
 
 /**
- * The sentence the MODEL reads when its call is held.
+ * The sentence the MODEL reads about a call it held — on a LATER turn of the same
+ * conversation, never in the turn the hold ended. Both runners end that turn at the hold
+ * (the claude-sdk runner's `continue: false`, the aisdk runner's `stopWhen` latch), so the
+ * model reads this when the conversation goes on: the person replies in chat, or a repeat
+ * routine with a shared conversation runs again. A task check-in is one turn in a
+ * conversation nothing continues, so its agent never reads this note: what its report says
+ * about approvals comes from its tool descriptions and system prompt (TASK-941).
  *
  * `hold` differs from `deny` precisely here: a deny invites a workaround — a
  * different tool, a shell command — and "not yet" must not read as "not this
@@ -454,7 +484,12 @@ export function decisionDismissedNote(): string {
  * retry. No workspace surface renders tool-result text today; one that starts
  * to must re-name connector tools itself rather than show this sentence.
  */
-export function holdNote(input: { capability: string | null; toolName: string }): string {
+export function holdNote(input: {
+  capability: string | null;
+  toolName: string;
+  /** TASK-941 — true when Always Allow can never lift this hold (`routineConsentNeverCovers`). A closed boolean, never input text. */
+  alwaysAsks?: boolean | undefined;
+}): string {
   const capability = sanitizeCapability(input.capability);
   const tool = sanitizeToolName(input.toolName) ?? UNNAMEABLE_TOOL;
   const what =
@@ -464,6 +499,7 @@ export function holdNote(input: { capability: string | null; toolName: string })
 
   return (
     `Held for approval. ${what} ` +
+    (input.alwaysAsks === true ? `${ROUTINE_ALWAYS_ASKS_SENTENCE} ` : '') +
     `The call has been recorded exactly as you made it and is waiting for the user. ` +
     `Do not retry it and do not look for another way to do the same thing. ` +
     `Tell the user what you were about to do and why, then end your turn.`

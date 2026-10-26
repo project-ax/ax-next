@@ -1333,3 +1333,22 @@ describe('the tools name both task kinds (TASK-948)', () => {
     for (const sentence of sentences) expect(RoutineToolDescriptions[name]).toContain(sentence);
   });
 });
+
+describe('firing and deleting always ask, and the agent never offers a setting (TASK-941)', () => {
+  it.each([
+    ['routine_fire_now', 'Firing always asks the person, even with Always Allow.'],
+    ['routine_delete', 'Deleting always asks the person, even with Always Allow.'],
+  ] as const)('%s', (name, asks) => {
+    const words = RoutineToolDescriptions[name];
+    expect(words).toContain(asks);
+    expect(words).toContain('No setting changes that, so never suggest turning on Always Allow or any other setting for it.');
+    // The clause the TASK-934 walk's agent read past is replaced, not kept beside the new words.
+    expect(words).not.toContain('Always Allow does not cover');
+    expect(words).not.toContain('Requires Allow once approval');
+    // Every sentence that names Always Allow forbids; none invites.
+    expect(words).not.toMatch(/\b(enabl\w*|turn(?:s|ed)?\s+on|switch\w*\s+on)\s+Always Allow\b/i);
+    for (const sentence of words.split(/(?<=\.)\s+/)) {
+      if (sentence.includes('Always Allow')) expect(sentence).toMatch(/\b(even with|never|not)\b/);
+    }
+  });
+});
