@@ -59,4 +59,21 @@ describe('safe routine tool failures', () => {
     expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: done');
     expect(safeToolMessage('validation', 'done')).toBe(error.message);
   });
+
+  it.each([
+    'schedule', 'schedule.every', 'schedule.expr', 'schedule.tz',
+    'webhook', 'webhook.path', 'webhook.events', 'webhook.hmac',
+    'webhook.hmac.header', 'webhook.hmac.algorithm', 'webhook.hmac.prefix',
+  ])('keeps the canonical wake-method field %s actionable without forwarding provider text', field => {
+    const error = new SafeToolError('validation', field as SafeToolField);
+    error.message = 'untrusted provider details';
+    expect(error.field).toBe(field);
+    expect(safeToolMessage(error.toolCode, error.field)).toBe(`Routine input is invalid. Check the indicated field. Field: ${field}`);
+  });
+
+  it.each(['schedule.private value', 'webhook.hmac.secretRef', 'webhook.path.private value'])('refuses arbitrary canonical-looking field text %s', field => {
+    const error = new SafeToolError('validation', field as SafeToolField);
+    expect(error.field).toBe('input');
+    expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: input');
+  });
 });
