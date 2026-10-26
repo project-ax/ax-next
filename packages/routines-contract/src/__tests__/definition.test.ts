@@ -10,7 +10,7 @@ import {
   RoutineUpsertDefaultInputSchema, RoutineGetDefaultOutputSchema,
   RoutineCreateToolInputSchema, RoutineUpdateToolInputSchema, RoutineToolDescriptions,
   applyRoutinePatch, durationToSeconds, editableDefinition, routineToolKind, validateWebhookPath,
-  touchesTaskBrief, routineTaskProposal, routineBriefFields,
+  touchesTaskBrief, routineTaskProposal, routineBriefFields, routineUpdateSetsKind,
 } from '../index.js';
 
 const base = {
@@ -712,6 +712,53 @@ describe('routineBriefFields (TASK-906)', () => {
     expect(routineTaskProposal(edit)).toBeNull();
     expect(routineBriefFields(edit)).not.toBeNull();
     for (const call of [edit, upd({ name: 'x' }), upd({ goodWhen: 'x' })]) expect(touchesTaskBrief(call)).toBe(true);
+  });
+});
+
+// The approval card can't look the routine up to learn its current kind (decisions row 10), so it
+// says what a kind change clears whenever the update sets one, a change back to repeat included.
+describe('routineUpdateSetsKind (TASK-956)', () => {
+  it.each<[string, Call, boolean]>([
+    ['a change to a task kind, with the whole brief', upd(wholeBrief), true],
+    ['a change to get-done', upd({ ...wholeBrief, kind: 'get-done' }), true],
+    ['a change back to repeat', upd({ kind: 'repeat', goodWhen: null }), true],
+    ['a goodWhen change', upd({ goodWhen: 'x' }), false],
+    ['an instructions change', upd({ promptBody: 'x' }), false],
+    ['a pause', upd({ enabled: false }), false],
+    ['a kind change the tool schema refuses', upd({ kind: 'stay-on-top', goodWhen: 'x' }), false],
+    ['a task create', createCall(taskDef), false],
+    ['routine_delete', { name: 'routine_delete', input: mutation }, false],
+    ['another tool with a kind', { name: 'Bash', input: { kind: 'stay-on-top' } }, false],
+  ])('%s', (_label, call, expected) => {
+    expect(routineUpdateSetsKind(call)).toBe(expected);
+  });
+
+  it('reads the patch the way @ax/routines applies it: an inherited or hidden kind counts', () => {
+    const inherited = Object.assign(Object.create({ kind: 'repeat' }), { goodWhen: null });
+    const hidden = Object.defineProperty({ goodWhen: null }, 'kind', { value: 'repeat', enumerable: false });
+    for (const patch of [inherited, hidden]) {
+      expect(RoutineUpdateToolInputSchema.parse(upd(patch).input).patch.kind).toBe('repeat');
+      expect(routineUpdateSetsKind(upd(patch))).toBe(true);
+    }
+  });
+
+  it('never throws, and answers false, on a call it cannot read', () => {
+    const calls: unknown[] = [
+      ...hostileInputs().flatMap(input => [{ name: 'routine_create', input }, { name: 'routine_update', input }]),
+      { get name() { return boom(); }, input: {} }, null, undefined,
+    ];
+    for (const call of calls) {
+      let answer: unknown = 'unset';
+      expect(() => { answer = routineUpdateSetsKind(call as Call); }).not.toThrow();
+      expect(answer).toBe(false);
+    }
+  });
+
+  it('every call it answers true for always asks the person', () => {
+    for (const call of [upd(wholeBrief), upd({ ...wholeBrief, kind: 'get-done' }), upd({ kind: 'repeat', goodWhen: null })]) {
+      expect(routineUpdateSetsKind(call)).toBe(true);
+      expect(touchesTaskBrief(call)).toBe(true);
+    }
   });
 });
 

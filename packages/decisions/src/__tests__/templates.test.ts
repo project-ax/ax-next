@@ -11,6 +11,7 @@ import {
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
+  ROUTINE_KIND_CHANGE_SENTENCE,
 } from '../templates.js';
 
 const CAP = 'gain access to a new service or key';
@@ -101,6 +102,39 @@ describe('words a task hold as a task (TASK-906)', () => {
     const text = decisionText({ capability: null, toolName: 'routine_create' });
     expect(text.summary).toBe('Wants to create a routine');
     expect(text.primaryLabel).toBe('Allow once');
+  });
+});
+
+describe('says what a kind change clears (TASK-956)', () => {
+  it('uses the decided words', () => {
+    expect(ROUTINE_KIND_CHANGE_SENTENCE).toBe(
+      'Changing what kind of task this is clears its steps, latest update, notes and finish date.',
+    );
+  });
+
+  it('a task change that sets a kind says so after its review line', () => {
+    const text = decisionText({ capability: null, toolName: 'routine_update', routineTask: 'change', routineSetsKind: true });
+    expect(text.summary).toBe('Wants to change a task');
+    expect(text.detail).toBe(`Review the change to this task before allowing it. ${ROUTINE_KIND_CHANGE_SENTENCE}`);
+  });
+
+  it('a change back to a repeat routine says so too, under the routine wording', () => {
+    const text = decisionText({ capability: null, toolName: 'routine_update', routineTask: null, routineSetsKind: true });
+    expect(text.summary).toBe('Wants to edit a routine');
+    expect(text.detail).toBe(`Review the proposed routine change before allowing it. ${ROUTINE_KIND_CHANGE_SENTENCE}`);
+  });
+
+  it('says nothing about it when no kind is set, or for any other tool', () => {
+    for (const routineSetsKind of [undefined, false]) {
+      expect(
+        decisionText({ capability: null, toolName: 'routine_update', routineTask: 'change', routineSetsKind }).detail,
+      ).toBe('Review the change to this task before allowing it.');
+    }
+    for (const toolName of ['routine_create', 'routine_delete', 'routine_fire_now', 'request_capability']) {
+      expect(decisionText({ capability: CAP, toolName, routineSetsKind: true }).detail).not.toContain(
+        ROUTINE_KIND_CHANGE_SENTENCE,
+      );
+    }
   });
 });
 

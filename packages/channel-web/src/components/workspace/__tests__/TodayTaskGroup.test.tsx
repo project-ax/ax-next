@@ -46,6 +46,7 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     task: null,
     noRecentUpdate: null,
     doneAt: null,
+    canMarkDone: true,
     ...over,
   };
 }
@@ -469,6 +470,25 @@ describe('a task that thinks it’s done (TASK-950)', () => {
       expect(button.className).not.toContain('bg-action');
       expect(button.className).not.toContain('bg-primary');
     }
+  });
+
+  it('an owner who no longer manages the agent’s tasks sees Mark done off, says why, and can still say Not yet (TASK-956)', () => {
+    renderGroup(group([claimed({ canMarkDone: false })]));
+    const markDone = screen.getByRole('button', { name: 'Mark done' });
+    expect(markDone).toBeDisabled();
+    expect(markDone).toHaveAccessibleDescription(MARK_DONE_NOT_ALLOWED);
+    expect(screen.getByText(MARK_DONE_NOT_ALLOWED)).toHaveClass('text-muted-foreground');
+    fireEvent.click(markDone);
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Not yet' })).toBeEnabled();
+  });
+
+  it('an owner who may mark it done gets it on, with no reason line (TASK-956)', () => {
+    renderGroup(group([claimed()]));
+    const markDone = screen.getByRole('button', { name: 'Mark done' });
+    expect(markDone).toBeEnabled();
+    expect(markDone).not.toHaveAccessibleDescription();
+    expect(screen.queryByText(MARK_DONE_NOT_ALLOWED)).toBeNull();
   });
 
   it('Mark done with nothing unticked finishes the task and tells Today to look again', async () => {

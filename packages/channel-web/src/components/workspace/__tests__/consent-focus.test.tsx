@@ -1104,6 +1104,7 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
     },
     noRecentUpdate: null,
     doneAt: null,
+    canMarkDone: true,
   };
 
   function AnsweredOnToday({

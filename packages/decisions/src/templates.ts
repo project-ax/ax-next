@@ -8,8 +8,9 @@
  * this file. That is the H6 / invariant-5 line: model output must not be echoed
  * into a note the model reads back as instruction, nor onto a surface a human
  * reads as a factual claim about what their agent is about to do.
- * (`routineTask` is the one input-derived value, and it is a closed enum --
- * `'start' | 'change' | null` -- never input text.)
+ * (`routineTask` and `routineSetsKind` are the two input-derived values. Each
+ * is closed -- `'start' | 'change' | null` and a boolean -- and each is derived
+ * from the parsed call by an `@ax/routines-contract` helper, never input text.)
  *
  * `capability` and `toolName` arrive over the hook bus from `@ax/tool-policy`.
  * Today that is the in-repo rule table, but the boundary review names a
@@ -126,6 +127,13 @@ export interface DecisionTextInput {
    * every tool but `routine_create` / `routine_update`.
    */
   routineTask?: 'start' | 'change' | null | undefined;
+  /**
+   * TASK-956 — whether a `routine_update`'s patch sets `kind`, to any value. A
+   * closed boolean derived from the call's input by `routineUpdateSetsKind`;
+   * it is never input text. True adds {@link ROUTINE_KIND_CHANGE_SENTENCE} to
+   * the detail. Ignored for every tool but `routine_update`.
+   */
+  routineSetsKind?: boolean | undefined;
 }
 
 /**
@@ -160,6 +168,18 @@ export interface DecisionText {
 }
 
 /**
+ * TASK-956 — what approving a change of a task's kind clears: `@ax/routines`
+ * clears its task state and finish date when the kind changes. It follows the
+ * review line of a `routine_update` hold whose patch sets `kind`, under the
+ * task wording and the routine wording alike: a task turned back into a
+ * repeat routine loses the same things and reads "Wants to edit a routine".
+ * The card can't look the current kind up, so it is said as a rule, which
+ * stays true when a patch re-sends the kind the task already has.
+ */
+export const ROUTINE_KIND_CHANGE_SENTENCE =
+  'Changing what kind of task this is clears its steps, latest update, notes and finish date.';
+
+/**
  * The Decision row's prose.
  *
  * `approvedText` and `dismissedText` are written independently, on purpose. The
@@ -188,6 +208,13 @@ export function decisionText(input: DecisionTextInput): DecisionText {
         : input.routineTask === 'change' && input.toolName === 'routine_update'
           ? 'change'
           : null;
+    const review =
+      task === 'start'
+        ? 'Review the task before allowing it.'
+        : task === 'change'
+          ? 'Review the change to this task before allowing it.'
+          : 'Review the proposed routine change before allowing it.';
+    const setsKind = input.routineSetsKind === true && input.toolName === 'routine_update';
     return {
       summary:
         task === 'start'
@@ -195,12 +222,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
           : task === 'change'
             ? 'Wants to change a task'
             : `Wants to ${routineAction}`,
-      detail:
-        task === 'start'
-          ? 'Review the task before allowing it.'
-          : task === 'change'
-            ? 'Review the change to this task before allowing it.'
-            : 'Review the proposed routine change before allowing it.',
+      detail: setsKind ? `${review} ${ROUTINE_KIND_CHANGE_SENTENCE}` : review,
       primaryLabel: 'Allow once',
       secondaryLabel: 'Show me the details',
       ghostLabel: 'Decline',

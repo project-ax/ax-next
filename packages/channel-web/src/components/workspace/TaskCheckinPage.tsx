@@ -2,8 +2,9 @@
  * `/workspace/tasks/<agentId>/<routineId>/checkins/<conversationId>` — one
  * task check-in, read-only (See what it did, TASK-911).
  *
- * It says when the check-in ran, why, and the report it ended with, then what
- * the agent said and every tool it ran. The page reads its own check-in
+ * It says when the check-in ran, why, and the report it ended with (with the
+ * agent's reading, when the report sent one: TASK-956), then what the agent
+ * said and every tool it ran. The page reads its own check-in
  * (`useTaskCheckin`), so it only fetches while it is mounted; the shell keys it
  * by the check-in's ids, since a refresh keeps what's on screen.
  *
@@ -18,11 +19,13 @@
  * answered exactly as on Today (decisions row 7).
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT, outside the transcript. The report's
- * update and a failed check-in's reason were written by a model or carry text
- * from outside, and the server fenced both before they left
- * (`server/routes-workspace.ts`). Here they are only React text children:
- * never `dangerouslySetInnerHTML`, never the markdown renderer, so `**bold**`
- * or `<img>` shows as those characters. The task's name is text too, and the
+ * update, its reading's label (TASK-956) and a failed check-in's reason were
+ * written by a model or carry text from outside, and the server fenced all
+ * three to one line before they left (`server/routes-workspace.ts`; the label
+ * to 40 code points, beside a finite number). Here they are only React text
+ * children: never `dangerouslySetInnerHTML`, never the markdown renderer, so
+ * `**bold**` or `<img>` shows as those characters, and the reading's line says
+ * it is the agent's. The task's name is text too, and the
  * one attribute built from it is its crumb's inert `title`. The transcript is
  * drawn only by `AgentConversation`, exactly as the agent view draws it: its
  * markdown shows an image as its alt text, so nothing a model wrote makes the
@@ -43,6 +46,7 @@ import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { readingText } from '@/lib/task-reading';
 import { updateText } from '@/lib/task-updates';
 import type { DecisionQueue } from '@/lib/workspace-decisions';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -275,9 +279,15 @@ function CheckinLoadFailure({ error, onRetry }: { error: TaskReadError; onRetry:
 
 /**
  * How the check-in went, in the agent view's past-conversation banner frame:
- * its mark and group word, what it said (an Updates entry's words), why it
- * failed when it did, and who ran it, why, and that this is read-only. People
- * see no reply box, so the last line says why.
+ * its mark and group word, what it said (an Updates entry's words), the
+ * reading its report sent, if any, right under that, why it failed when it
+ * did, and who ran it, why, and that this is read-only. People see no reply
+ * box, so the last line says why.
+ *
+ * The reading line is "{agent}’s reading · Open tickets: 3" (TASK-956):
+ * `readingText`, the words its Updates entry draws after the update, labelled
+ * as the agent's because this page shows it alone, as every surface that
+ * shows a reading does (`lib/task-reading.ts`).
  */
 function CheckinSummary({ page }: { page: TaskCheckin }) {
   const headingId = useId();
@@ -302,6 +312,11 @@ function CheckinSummary({ page }: { page: TaskCheckin }) {
           <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
             {updateText(checkIn)}
           </p>
+          {report.reading !== null && (
+            <p className="break-words text-[13px] text-muted-foreground">
+              {`${page.agentName}’s reading · ${readingText(report.reading)}`}
+            </p>
+          )}
         </>
       ) : (
         <p className="flex items-center gap-2 text-[13px] leading-relaxed">

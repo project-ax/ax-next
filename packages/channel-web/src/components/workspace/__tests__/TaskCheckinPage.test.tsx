@@ -22,10 +22,11 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { BRIEF_DIDNT_LOAD } from '../../../../../routines/src/brief.js';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
+import { readingText } from '@/lib/task-reading';
 import { workspaceApi, WorkspaceApiError, type ThreadMessage } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { localTime } from '@/lib/workspace-time';
-import type { TaskCheckin, TaskUpdate } from '@/lib/workspace-types';
+import type { TaskCheckin, TaskReading, TaskUpdate } from '@/lib/workspace-types';
 import { saveBlob } from '@/lib/file-download';
 import { DECISION_SESSION_EXPIRED, DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { TaskCheckinPage } from '../TaskCheckinPage';
@@ -504,5 +505,39 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(within(t).getByText(DECISION_SESSION_EXPIRED)).toBeInTheDocument();
     expect(within(t).getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+});
+
+describe('TaskCheckinPage, the agent’s reading (TASK-956)', () => {
+  const READING: TaskReading = { label: 'Open tickets', value: 3 };
+  const withReading = (reading: TaskReading) =>
+    page({ checkIn: checkIn({ report: { status: 'on-track', update: UPDATE, reading } }) });
+
+  it('shows the reading its report sent, labelled as the agent’s, right under the update', async () => {
+    checkinMock.mockResolvedValue(withReading(READING));
+    renderPage();
+    const s = await ready();
+    const line = within(s).getByText(`Caveman’s reading · ${readingText(READING)}`);
+    expect(line).toHaveClass('text-muted-foreground');
+    // Right under the update, and above who ran it.
+    expect(within(s).getByText(UPDATE).nextElementSibling).toBe(line);
+    expect(line.nextElementSibling).toBe(within(s).getByText('Caveman · On its schedule · read-only'));
+  });
+
+  it('shows no reading when its report sent none', async () => {
+    checkinMock.mockResolvedValue(page());
+    renderPage();
+    expect(within(await ready()).queryByText(/reading/)).toBeNull();
+  });
+
+  it('draws the reading’s label as text', async () => {
+    const label = '<img src=x onerror=alert(1)>';
+    checkinMock.mockResolvedValue(withReading({ label, value: 3 }));
+    renderPage();
+    const s = await ready();
+    expect(
+      within(s).getByText(`Caveman’s reading · ${readingText({ label, value: 3 })}`),
+    ).toBeInTheDocument();
+    expect(s.querySelector('img')).toBeNull();
   });
 });

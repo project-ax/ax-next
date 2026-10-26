@@ -31,6 +31,7 @@ function row(routineId: string, name: string): TaskRow {
     task: null,
     noRecentUpdate: null,
     doneAt: null,
+    canMarkDone: true,
   };
 }
 

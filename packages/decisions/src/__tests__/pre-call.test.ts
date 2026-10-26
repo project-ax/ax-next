@@ -13,7 +13,7 @@ import {
   type PolicyAnswer,
   type PreCallDeps,
 } from '../pre-call.js';
-import { GATE_FAILURE_SENTENCE } from '../templates.js';
+import { GATE_FAILURE_SENTENCE, ROUTINE_KIND_CHANGE_SENTENCE } from '../templates.js';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 
 const NOW = new Date('2026-08-20T09:00:00.000Z');
@@ -53,6 +53,7 @@ function build(
   answer: PolicyAnswer | (() => Promise<PolicyAnswer>),
   store: FakeStore = createFakeStore(),
   attendanceFor: PreCallDeps['attendanceFor'] = async () => 'attended',
+  bus?: HookBus,
 ): { sub: ReturnType<typeof createPreCallSubscriber>; store: FakeStore } {
   ids = 0;
   return {
@@ -63,6 +64,7 @@ function build(
       idGen: () => `dec_${(ids += 1)}`,
       ttlMs: TTL_MS,
       attendanceFor,
+      bus,
     }),
     store,
   };
@@ -506,5 +508,47 @@ describe('tool:pre-call subscriber — one call, one question', () => {
     await new Promise((r) => setImmediate(r));
 
     expect(raised).toHaveLength(1);
+  });
+});
+
+describe('tool:pre-call subscriber — a routine change that sets a kind (TASK-956)', () => {
+  const update = (patch: Record<string, unknown>): ToolCall => ({
+    id: 'c-kind',
+    name: 'routine_update',
+    input: { requestId: 'r-kind', routineId: 'rtn_a', expectedRevision: 'rev_a', patch },
+  });
+
+  /** A routine write is held only for someone who may manage the agent's routines. */
+  function managing(): HookBus {
+    const bus = new HookBus();
+    bus.registerService('agents:can-manage-routines', 'agents', async () => ({ allowed: true }));
+    return bus;
+  }
+
+  async function heldDetail(call: ToolCall): Promise<string> {
+    const { sub, store } = build(HOLD, createFakeStore(), undefined, managing());
+    const r = await sub(ctx(), call);
+    expect(isHold(r)).toBe(true);
+    return (await store.get((r as { hold: { decisionId: string } }).hold.decisionId))!.detail;
+  }
+
+  it('stores the warning on a change to a task kind', async () => {
+    expect(
+      await heldDetail(
+        update({ kind: 'get-done', name: 'Ship the docs', promptBody: 'Move every article.', goodWhen: 'Every article is live.' }),
+      ),
+    ).toBe(`Review the change to this task before allowing it. ${ROUTINE_KIND_CHANGE_SENTENCE}`);
+  });
+
+  it('stores it on a change back to a repeat routine', async () => {
+    expect(await heldDetail(update({ kind: 'repeat', goodWhen: null }))).toBe(
+      `Review the proposed routine change before allowing it. ${ROUTINE_KIND_CHANGE_SENTENCE}`,
+    );
+  });
+
+  it('stores none on a change that sets no kind', async () => {
+    expect(await heldDetail(update({ goodWhen: 'Every article is live.' }))).toBe(
+      'Review the change to this task before allowing it.',
+    );
   });
 });

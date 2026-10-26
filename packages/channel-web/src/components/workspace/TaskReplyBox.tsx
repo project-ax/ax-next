@@ -14,8 +14,9 @@
  *
  * STANDALONE ON PURPOSE. It takes the task's address, the agent's name and two
  * flags, and nothing from the page's data, so TASK-933 can put the same box on
- * Today. Today has to decide `canStart` itself: a `TaskRow` carries no
- * permissions.
+ * Today. Today has to decide `canStart` itself: a `TaskRow` carries only
+ * whether its owner may mark it done (`canMarkDone`, TASK-956), not whether a
+ * reply can start a check-in.
  *
  * THE TEXT IS THE PERSON'S OWN. It goes to the host as written (no trimming,
  * no rewriting); the host stores it, shows it in Updates, and quotes the last

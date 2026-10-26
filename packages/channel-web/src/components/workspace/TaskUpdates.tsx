@@ -40,7 +40,7 @@ import {
 } from '@/components/ui/collapsible';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { routeLinkProps } from '@/lib/route-link';
-import { formatReading } from '@/lib/task-reading';
+import { readingText } from '@/lib/task-reading';
 import { foldTimeline, sharedConversationIds, updateText } from '@/lib/task-updates';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
@@ -170,7 +170,9 @@ function UpdateEntry({
 }) {
   const mark = update.report?.status ?? 'no-update';
   const stamp = updateStamp(update.firedAt, now);
-  // Here, not in the shared `updateText`: a check-in's own page doesn't draw it.
+  // Here, not in the shared `updateText`: a check-in's own page draws its
+  // reading on a line of its own, labelled as the agent's, through the same
+  // `readingText` (TASK-956).
   const reading = update.report?.reading ?? null;
   return (
     <li className="flex items-start gap-3 py-2">
@@ -188,7 +190,7 @@ function UpdateEntry({
           {updateText(update)}
           {reading !== null && (
             <span className="text-muted-foreground">
-              {` · ${reading.label}: ${formatReading(reading.value)}`}
+              {` · ${readingText(reading)}`}
             </span>
           )}
         </p>

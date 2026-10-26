@@ -318,6 +318,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
       },
       noRecentUpdate: null,
       doneAt: null,
+      canMarkDone: true,
     });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('NOTES-TEXT');
@@ -1210,5 +1211,33 @@ describe('GET /api/workspace/tasks, done and the claim (TASK-950)', () => {
     const captured = await get();
     expect(captured.statusCode).toBe(200);
     expect(bodyOf(captured).tasks[0]?.task?.doneClaimed).toBe(false);
+  });
+});
+
+describe('GET /api/workspace/tasks, who may mark a task done (TASK-956)', () => {
+  it("each row says whether its owner may mark it done: the services' edit for that agent, as the task page reads it", async () => {
+    const { get } = setup({
+      rows: [
+        stored({ agentId: 'a1', routineId: 't1', kind: 'get-done', task: report('needs-you', { doneClaimed: true }) }),
+        stored({ agentId: 'a2', routineId: 't2', kind: 'get-done', task: report('needs-you', { doneClaimed: true }) }),
+      ],
+      // alice still manages a1's tasks but no longer a2's: t2 is listed for its report (decisions row 2) and can't be marked done.
+      managers: { a1: ['alice'], a2: [] },
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.canMarkDone])).toEqual([['t1', true], ['t2', false]]);
+  });
+
+  it('reads anything but a literal true edit as false', async () => {
+    // A view the schema didn't parse (TASK-913's shape).
+    const { get } = setup({
+      unvalidated: true,
+      viewPatch: { permissions: { fire: true, stop: true, edit: 'yes', manageSecret: true } },
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'get-done', task: report('needs-you', { doneClaimed: true }) })],
+    });
+    const captured = await get();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.canMarkDone])).toEqual([['t1', false]]);
   });
 });

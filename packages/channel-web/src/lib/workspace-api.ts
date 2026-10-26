@@ -525,7 +525,9 @@ function isTaskReport(v: unknown): boolean {
  * stay-on-top row, and the Tasks row draws counts for get-done only. A host
  * from before TASK-950 sends no `doneAt` and no claim: an absent `doneAt`
  * reads as null (not Done) and an absent `doneClaimed` as false (no claim).
- * One from before TASK-951 sends no finish date, which reads as none.
+ * One from before TASK-951 sends no finish date, which reads as none. One from
+ * before TASK-956 sends no `canMarkDone`, which reads as true: the host decides,
+ * as it did, and refuses a press that isn't allowed (403).
  */
 function withRowDefaults(row: TaskRow): TaskRow {
   return {
@@ -535,6 +537,7 @@ function withRowDefaults(row: TaskRow): TaskRow {
     // A host from before TASK-951 sends no finish date.
     finishBy: 'finishBy' in row ? row.finishBy : null,
     doneAt: 'doneAt' in row ? row.doneAt : null,
+    canMarkDone: 'canMarkDone' in row ? row.canMarkDone : true,
     task: row.task === null ? null : withReportDefaults(row.task),
   };
 }
@@ -582,7 +585,9 @@ function isTaskNoRecentUpdate(v: unknown): boolean {
  * kind must be text, and steps null or counts. A kind this page doesn't know
  * reads as stay-on-top (`withRowDefaults`) rather than failing the whole list.
  * Left out, they are an older host's (`withRowDefaults`). So is a left-out
- * `doneAt` (TASK-950); one the row carries is null or a time.
+ * `doneAt` (TASK-950); one the row carries is null or a time. A `canMarkDone`
+ * (TASK-956) the row carries must be true or false; left out, it is an older
+ * host's and reads as true (`withRowDefaults`).
  */
 function isTaskRow(v: unknown): boolean {
   return (
@@ -597,7 +602,8 @@ function isTaskRow(v: unknown): boolean {
     (!('finishBy' in v) || v.finishBy === null || isTaskFinishBy(v.finishBy)) &&
     (v.task === null || isTaskReport(v.task)) &&
     (v.noRecentUpdate === null || isTaskNoRecentUpdate(v.noRecentUpdate)) &&
-    (!('doneAt' in v) || v.doneAt === null || isString(v.doneAt))
+    (!('doneAt' in v) || v.doneAt === null || isString(v.doneAt)) &&
+    (!('canMarkDone' in v) || typeof v.canMarkDone === 'boolean')
   );
 }
 

@@ -650,6 +650,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
       },
       noRecentUpdate: null,
       doneAt: null,
+      canMarkDone: true,
       ...over,
     };
   }

@@ -50,6 +50,7 @@ import {
 } from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
+import { ROUTINE_KIND_CHANGE_SENTENCE, decisionText } from '../../../../../decisions/src/templates.js';
 
 const agent: WorkspaceAgent = {
   id: 'scheduler',
@@ -770,6 +771,69 @@ describe('TASK-948 — both renderers say which kind of task is proposed', () =>
       const { unmount } = render(ui);
       expect(terms()).not.toContain(DECISION_TASK_KIND_LABEL);
       unmount();
+    }
+  });
+});
+
+describe('TASK-956 — both renderers say what changing a task’s kind clears', () => {
+  it('a held kind change, worded by @ax/decisions, reaches both surfaces whole', () => {
+    // The plugin's own words for a held `routine_update` whose patch sets `kind`.
+    const text = decisionText({
+      capability: null,
+      toolName: 'routine_update',
+      routineTask: 'change',
+      routineSetsKind: true,
+    });
+    const now = new Date().toISOString();
+    const held: Parameters<typeof toWireDecision>[0] = {
+      id: 'd-kind',
+      agentId: 'scheduler',
+      ownerUserId: 'u1',
+      conversationId: 'c1',
+      kind: 'action',
+      attendance: 'attended',
+      status: 'pending',
+      call: {
+        id: 'tu1',
+        name: 'routine_update',
+        input: {
+          requestId: 'r1',
+          routineId: 'rtn_a',
+          expectedRevision: 'rev_a',
+          patch: {
+            kind: 'get-done',
+            name: 'Ship the docs',
+            promptBody: 'Move every article.',
+            goodWhen: 'Every article is live.',
+          },
+        },
+      },
+      callFingerprint: 'sha256:abcdef',
+      ruleId: null,
+      irreversible: false,
+      freshness: null,
+      summary: text.summary,
+      detail: text.detail,
+      preview: null,
+      primaryLabel: text.primaryLabel,
+      secondaryLabel: text.secondaryLabel,
+      ghostLabel: text.ghostLabel,
+      approvedText: text.approvedText,
+      dismissedText: text.dismissedText,
+      createdAt: now,
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      resolvedAt: null,
+      staleReason: null,
+      consumedAt: null,
+      replayDueAt: null,
+      replayClaimedAt: null,
+      replayedAt: null,
+      replayError: null,
+    };
+    const projected = toWireDecision(held);
+    expect(projected.detail).toBe(text.detail); // whole, through the 400-character fence
+    for (const shown of [queueText(projected), cardText(projected)]) {
+      expect(shown).toContain(ROUTINE_KIND_CHANGE_SENTENCE);
     }
   });
 });

@@ -97,8 +97,12 @@ export const TASK_BRIEF_FIELDS = ['name', 'promptBody', 'goodWhen', 'kind'] as c
 // parsed output of the same strict tool schema, whose own keys are exactly what
 // `applyRoutinePatch` merges. zod also reads keys the raw object only inherits or
 // hides, so never test the raw input's own keys. Each reads `call.name` and
-// `call.input` once, looks nothing up and never throws: they run inside
-// `tool:pre-call`, where a thrown error is swallowed and the call goes on.
+// `call.input` once, looks nothing up and never throws. `@ax/decisions`'
+// `tool:pre-call` gate reads `touchesTaskBrief` (through tool-policy),
+// `routineTaskProposal` and `routineUpdateSetsKind`, and its catch refuses the
+// call on a thrown error, so a throw there would refuse every call it reads.
+// `routineBriefFields` feeds the approval card's task block in channel-web,
+// where a throw would break the person's read instead.
 
 /**
  * TASK-906 authorization predicate: true when a call creates a task or changes a
@@ -193,6 +197,24 @@ export function routineBriefFields(call: { name: string; input: unknown }): Rout
   const text = Object.hasOwn(patch, 'name') || Object.hasOwn(patch, 'promptBody') ||
     (Object.hasOwn(patch, 'goodWhen') && typeof patch.goodWhen === 'string');
   return text ? { action: 'change', patch } : null;
+}
+
+/**
+ * TASK-956: true when a valid `routine_update`'s patch sets `kind`, to any
+ * value, a change back to "repeat" included. Approving one that changes the
+ * kind clears the task's steps, latest update, notes and finish date
+ * (`@ax/routines`' `NO_TASK_STATE` and `NO_FINISH_BY`), so `@ax/decisions`
+ * says so on the card that asks. The card can't look the routine up to learn
+ * its current kind (a lookup is a write, TASK-906 decisions row 10), so this
+ * reads only whether the patch sets one. A closed boolean, so no input text
+ * leaves it, and it never throws: `@ax/decisions` reads it while it holds the
+ * call, where a throw would refuse every `routine_update`. Never an authority
+ * (that's `touchesTaskBrief`, which asks for every call this answers true
+ * for): anything unreadable is false.
+ */
+export function routineUpdateSetsKind(call: { name: string; input: unknown }): boolean {
+  const write = readRoutineWrite(call);
+  return write !== null && 'patch' in write && Object.hasOwn(write.patch, 'kind');
 }
 
 const opaque = { type: 'string', minLength: 1, maxLength: 256 };

@@ -1,4 +1,4 @@
-import { routineTaskProposal, routineToolKind } from '@ax/routines-contract';
+import { routineTaskProposal, routineToolKind, routineUpdateSetsKind } from '@ax/routines-contract';
 import { checkedRoutineCall } from './routine-authorization.js';
 /**
  * The `tool:pre-call` gate.
@@ -251,6 +251,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       connectorName: naming.connectorName,
       toolTitle: naming.toolTitle,
       routineTask: routine ? (routineTaskProposal(call)?.action ?? null) : null,
+      routineSetsKind: routine && routineUpdateSetsKind(call),
     });
     const decision: Decision = {
       id: decisionId,
