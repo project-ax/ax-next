@@ -223,10 +223,13 @@ export const RoutineFireViewSchema = z.object({
 }).strict();
 /**
  * `routines:recent-fires` and `routines:recent-fires-for-agent` (TASK-936): a
- * routine's runs, newest first. For a live routine, only the runs that ran as
- * its current owner. After a change of owner the earlier owner's runs reach no
- * one, their reports included, until the routine moves back. A gone routine's
- * runs all list, with no report.
+ * routine's runs, newest first, read for the caller (`ctx.userId`). For a live
+ * routine, only the runs that ran as its current owner, for anyone who can see
+ * it. After a change of owner the earlier owner's runs reach no one, their
+ * reports included, until the routine moves back. Once a routine is deleted,
+ * each of its runs lists only for the person it ran as, still with no report,
+ * so neither a later owner nor, on a team agent, another member sees it
+ * (TASK-947).
  */
 export const RoutineRecentFiresOutputSchema = z.object({ fires: z.array(RoutineFireViewSchema) }).strict();
 export const RoutineRecentFiresForAgentOutputSchema = RoutineRecentFiresOutputSchema;
