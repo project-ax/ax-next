@@ -34,7 +34,7 @@ describe('registered routine services with real agents', () => {
   it('pins team creator, lets another admin stop only, and denies ordinary member mutations', async () => {
     h = await createRoutineHarness(); const row = await create(h.teamAgentId);
     const key = { agentId: h.teamAgentId, routineId: row.routineId, expectedRevision: row.revision };
-    await expect(h.bus.call('routines:create', h.teamMember, { agentId: h.teamAgentId, requestId: 'member', definition })).rejects.toMatchObject({ toolCode: 'forbidden' });
+    await expect(h.bus.call('routines:create', h.teamMember, { agentId: h.teamAgentId, requestId: 'member', definition })).resolves.toMatchObject({ ownedByCaller: true, permissions: { edit: true, fire: true, stop: true } });
     await expect(h.bus.call('routines:get', h.teamMember, keyWithoutRevision(key))).resolves.toMatchObject({ permissions: { edit: false, stop: false, fire: false, manageSecret: false } });
     await expect(h.bus.call('routines:update', h.teamAdmin, { ...key, requestId: 'edit', patch: { promptBody: 'Changed' } })).rejects.toMatchObject({ toolCode: 'forbidden' });
     await expect(h.bus.call('routines:fire-now', h.teamAdmin, { ...key, requestId: 'fire' })).rejects.toMatchObject({ toolCode: 'forbidden' });
@@ -63,7 +63,7 @@ describe('registered routine services with real agents', () => {
     await expect(h.bus.call('agents:can-manage-routines', h.owner, { agentId: h.teamAgentId })).rejects.toMatchObject({ code: 'unavailable' });
     h.setTeamFailure('missing');
     await expect(h.bus.call('routines:list', h.owner, { agentId: h.teamAgentId })).rejects.toMatchObject({ code: 'forbidden' });
-    await expect(h.bus.call('agents:can-manage-routines', h.owner, { agentId: h.teamAgentId })).resolves.toEqual({ allowed: false });
+    await expect(h.bus.call('agents:can-manage-routines', h.owner, { agentId: h.teamAgentId })).resolves.toEqual({ allowed: false, stopOthers: false });
   });
   it('replays updates and deletes after response loss while rechecking actor access', async () => {
     h = await createRoutineHarness(); const row = await create();

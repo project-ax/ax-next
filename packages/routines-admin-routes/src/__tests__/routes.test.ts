@@ -27,7 +27,7 @@ const routine = {
   agentId: 'a',
   routineId: 'rtn_a',
   revision: 'rev1',
-  origin: 'authored',
+  ownedByCaller: true, origin: 'authored',
   defaultRoutineId: null,
   nextRunAt: null,
   lastRunAt: null,
@@ -349,7 +349,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
       name: 'Move the help docs', promptBody: 'Move our help docs to the new site.', enabled: false,
       trigger: { kind: 'interval', every: '1h' }, kind: 'get-done', goodWhen: 'Every article is on the new site.',
     }),
-    agentId: 'a', routineId: 'rtn_a', revision: 'rev1', origin: 'authored', defaultRoutineId: null,
+    agentId: 'a', routineId: 'rtn_a', revision: 'rev1', ownedByCaller: true, origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: '2026-10-25T09:00:00.000Z', lastStatus: 'ok', lastError: null, lastWarning: null,
     permissions: { edit: true, stop: true, fire: true, manageSecret: true },
     task: {
@@ -374,7 +374,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
    */
   const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'description', 'done', 'enabled',
     'finishBy', 'finishByTimeZone', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning',
-    'name', 'nextRunAt', 'noRecentUpdate', 'origin', 'permissions', 'promptBody', 'revision', 'routineId',
+    'name', 'nextRunAt', 'noRecentUpdate', 'ownedByCaller', 'origin', 'permissions', 'promptBody', 'revision', 'routineId',
     'silenceMaxChars', 'silenceToken', 'steps', 'task', 'trigger'];
   /** Every field a Settings run carries, reviewed the same way. */
   const RUN_KEYS = ['agentId', 'conversationId', 'error', 'firedAt', 'renderedPrompt', 'report', 'routineId',

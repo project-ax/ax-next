@@ -900,7 +900,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(bodyOf(captured).task?.status).toBe('off-track');
   });
 
-  it('404s that owner’s task until it first reports, as the Tasks page leaves it out (TASK-909’s rule)', async () => {
+  it('opens a never-reported task for its owner without inferring ownership from fire permission', async () => {
     const { detail, firesCalls, repliesCalls } = setup({
       viewer: 'bob',
       agents: TEAM_AGENTS,
@@ -908,10 +908,11 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
       rows: [stored({ agentId: 'team', routineId: 'tD', ownerUserId: 'bob' })],
     });
     const captured = await detail({ agentId: 'team', routineId: 'tD' });
-    expect(captured.statusCode).toBe(404);
-    expect(captured.body).toEqual({ error: 'task-not-found' });
-    expect(firesCalls).toEqual([]);
-    expect(repliesCalls).toEqual([]);
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).task).toBeNull();
+    expect(bodyOf(captured).permissions).toEqual({ fire: false, stop: false, edit: false });
+    expect(firesCalls).toHaveLength(1);
+    expect(repliesCalls).toHaveLength(1);
   });
 
   it('404s an agent the caller can’t reach, and reads nothing of it', async () => {

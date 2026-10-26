@@ -33,6 +33,10 @@ import {
 } from '@ax/test-harness';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
+import { createFireRoutine, type PendingFires } from '../../../../packages/routines/src/fire.js';
+import { createRoutinesStore } from '../../../../packages/routines/src/store.js';
+import { runRoutinesMigration, type RoutinesDatabase } from '../../../../packages/routines/src/migrations.js';
+import { RoutineDefinitionSchema } from '../../../../packages/routines-contract/src/definition.js';
 
 // ---------------------------------------------------------------------------
 // TASK-692 — per-user spend + rate limits canary (Invariant 3: no half-wired
@@ -530,6 +534,70 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       cacheWriteTokens: 0,
       costMicros: 10_500,
     });
+  });
+
+  it('meters saved work as its execution owner for every dispatch source and gates that owner’s later runs', async () => {
+    // Member creation/ACL is pinned by routines' real agents canary. Here the existing
+    // permissive agents stub stays explicit: this proves the saved owner survives
+    // fire.ts -> real orchestrator -> subprocess runner -> IPC -> actual usage rows.
+    const database = await db() as Kysely<RoutinesDatabase>;
+    await runRoutinesMigration(database);
+    const store = createRoutinesStore(database);
+    const pending: PendingFires = new Map();
+    const bus = live().bus;
+    const conversations: string[] = [];
+    bus.registerService('conversations:create', '@test/member-usage', async (ctx, input) => {
+      expect(ctx.userId).toBe(USER_A);
+      expect(input).toMatchObject({ userId: USER_A, agentId: AGENT_ID, origin: 'routine' });
+      const conversationId = `saved-work-${conversations.length}`;
+      conversations.push(conversationId);
+      return { conversationId };
+    });
+    // Only completion persistence is bridged here; dispatch, runner and billing are real.
+    bus.subscribe<{ reqId?: string }>('chat:turn-end', '@test/member-usage', async (ctx, payload) => {
+      const requestId = payload.reqId ?? ctx.reqId;
+      const entry = pending.get(requestId);
+      if (!entry || !pending.delete(requestId)) return;
+      await store.finishDispatch({ dispatchId: entry.dispatchId, outcome: {
+        status: 'ok', conversationId: entry.conversationId, error: null, renderedPrompt: entry.renderedPrompt, warning: null,
+      } });
+    });
+    const fire = createFireRoutine({ bus, store, pending, purgeAgent: async () => {} });
+    try {
+      let turns = 0;
+      for (const source of ['manual', 'tick', 'webhook'] as const) {
+        const row = await store.createAuthored({ agentId: AGENT_ID, actorUserId: USER_A, ownerUserId: USER_A,
+          requestId: `saved-${source}`, now: new Date(), definition: RoutineDefinitionSchema.parse({
+            name: 'Member work', promptBody: 'Do the saved job.',
+            trigger: source === 'webhook' ? { kind: 'webhook', path: '/member-work' } : { kind: 'interval', every: '1h' },
+          }) });
+        const accepted = await store.acceptDispatch({ ...row, actorUserId: USER_A, expectedRevision: row.revision,
+          source, requestId: `run-${source}`, now: new Date() });
+        expect(accepted).not.toBeNull();
+        expect(await fire(accepted!.accepted)).toMatchObject({ status: 'ok' });
+        turns += 1;
+        await waitForCost(USER_A, turns * SONNET_COST_MICROS);
+        await vi.waitFor(async () => expect((await store.recentFires({ ...row, actorUserId: USER_A }))[0]?.status).toBe('ok'));
+        expect(await usageFor(USER_B)).toMatchObject({ turns: 0, costMicros: 0 });
+        expect((await usageFor(USER_A)).turns).toBe(turns);
+      }
+      await setLimits({ dailySpendUsd: 0.03, turnsPerHour: 60, assumedTurnCostUsd: 0.25 });
+      const spawnsBefore = live().sandbox.spawns;
+      const row = await store.createAuthored({ agentId: AGENT_ID, actorUserId: USER_A, ownerUserId: USER_A,
+        requestId: 'saved-capped', now: new Date(), definition: RoutineDefinitionSchema.parse({
+          name: 'Capped member work', promptBody: 'Do the job.', trigger: { kind: 'interval', every: '1h' },
+        }) });
+      const accepted = await store.acceptDispatch({ ...row, actorUserId: USER_A, expectedRevision: row.revision,
+        source: 'manual', requestId: 'run-capped', now: new Date() });
+      await fire(accepted!.accepted);
+      await vi.waitFor(async () => expect((await store.recentFires({ ...row, actorUserId: USER_A }))[0])
+        .toMatchObject({ status: 'error', error: 'terminated: chat:start:usage-limit-daily' }));
+      expect(live().sandbox.spawns).toBe(spawnsBefore);
+      expect(await usageFor(USER_A)).toMatchObject({ turns: 3, costMicros: 3 * SONNET_COST_MICROS });
+    } finally {
+      bus.unsubscribe('chat:turn-end', '@test/member-usage');
+      await fire.shutdown();
+    }
   });
 
   it('(b) refuses an over-cap user with chat:start:usage-limit-daily, before any sandbox', async () => {

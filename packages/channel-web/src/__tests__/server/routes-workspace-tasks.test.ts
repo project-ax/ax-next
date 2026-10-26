@@ -423,11 +423,8 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     expect(wire).not.toContain('BOB-ASK');
   });
 
-  it('lists a reported task whose owner can no longer manage routines, but not a never-reported one (decisions row 2)', async () => {
-    // bob owns tB (reported) and tD (never reported) on a team agent where he
-    // may not manage routines. The view has no owner field: tB shows because
-    // its report is shown only to its owner; tD has neither a report nor
-    // `fire`, so it is left out until its first report. An accepted gap.
+  it('lists both reported and never-reported tasks for an owner without present write authority', async () => {
+    // The host supplies ownership independently of report presence and action permissions.
     const { get } = setup({
       viewer: 'bob',
       rosters: { alice: TEAM_ROSTER, bob: TEAM_ROSTER },
@@ -436,7 +433,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     });
     const captured = await get();
     expect(captured.statusCode).toBe(200);
-    expect(routineIds(captured)).toEqual(['tB']);
+    expect(routineIds(captured)).toEqual(['tB', 'tD']);
   });
 
   it('caps a stored update to one line of 500 characters', async () => {
