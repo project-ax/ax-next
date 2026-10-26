@@ -879,3 +879,34 @@ describe('missed check-in metadata (TASK-940)', () => {
     expect(screen.queryByText(/checked 19 hr ago/)).toBeNull();
   });
 });
+
+
+describe('TasksPage: claimed completion wording (TASK-959)', () => {
+  it('says the agent thinks it is done beside its update, while ordinary and Done rows do not', async () => {
+    tasksMock.mockResolvedValue(page([
+      row('Claimed', { kind: 'get-done', task: report('needs-you', { doneClaimed: true, update: 'All articles moved.' }) }),
+      row('Ordinary', { task: report('needs-you') }),
+      row('Finished', { enabled: false, kind: 'get-done', doneAt: new Date().toISOString(), task: report('needs-you', { doneClaimed: true }) }),
+    ]));
+    renderPage();
+    const claim = (await screen.findByText('Claimed')).closest('a')!;
+    expect(within(claim).getByText('Caveman thinks this is done.')).toBeVisible();
+    expect(within(claim).getByText('All articles moved.')).toBeVisible();
+    for (const name of ['Ordinary', 'Finished']) {
+      expect(within(screen.getByText(name).closest('a')!).queryByText('Caveman thinks this is done.')).toBeNull();
+    }
+  });
+
+  it('keeps missed-check-in wording ahead of an old claim', async () => {
+    tasksMock.mockResolvedValue(page([row('Missed', {
+      kind: 'get-done',
+      task: report('needs-you', { doneClaimed: true, update: 'Old update.' }),
+      noRecentUpdate: { inARow: 3, reason: 'no-report', at: new Date().toISOString(), autoPaused: false },
+    })]));
+    renderPage();
+    const link = (await screen.findByText('Missed')).closest('a')!;
+    expect(link).toHaveTextContent('Its last 3 check-ins didn’t leave an update.');
+    expect(within(link).queryByText('Caveman thinks this is done.')).toBeNull();
+    expect(within(link).queryByText('Old update.')).toBeNull();
+  });
+});

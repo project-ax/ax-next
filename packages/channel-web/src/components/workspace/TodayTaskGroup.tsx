@@ -21,9 +21,10 @@
  * takes the claim back and starts a check-in. A finished task leaves Today,
  * so Mark done hands focus to the consent region first. Not yet's block
  * stays, as a Reply's does: its report still says Needs you until the agent's
- * next one, so the block now reads as an ask, with Reply, and the open box
- * keeps the mode it was opened in (its label and "Sent." line) until it is
- * opened again. A refused press says why under the actions.
+ * next one, so the block now reads as an ask, with Reply. A successful Not yet
+ * closes its form but keeps the composer mounted and its sent receipt visible.
+ * A refused send keeps its open draft and error. A refused Mark done says why
+ * under the actions.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its ask and its update
  * were written by a model or a person; the server fenced each to one line and
@@ -39,11 +40,13 @@
  * (TASK-930: a miss never hides a pending ask). It opens TASK-931's reply box
  * in place, focused. The box stays mounted while it is closed, so a half-typed
  * reply and its retry id survive a collapse; `hidden` is what closes it,
- * because Radix keeps a force-mounted panel open. `canStart` is false: a
- * `TaskRow` carries only whether its owner may mark it done (`canMarkDone`,
+ * because Radix keeps a force-mounted panel open. For ordinary replies,
+ * `canStart` is false: a `TaskRow` carries only whether its owner may mark it done (`canMarkDone`,
  * TASK-956), not whether a reply can start a check-in, so the box never
  * promises a check-in Today can't vouch for, and the server's answer says
- * what happened. A sent reply calls `onReplied`, so Today can read the tasks
+ * what happened. Not yet can reuse `canMarkDone`: for the task owner both
+ * starting a check-in and marking done need the same management permission.
+ * A sent reply calls `onReplied`, so Today can read the tasks
  * again. Started/replayed answers also notify Today to keep its shared list
  * reading for five minutes, even if this block disappears meanwhile.
  *
@@ -158,6 +161,7 @@ export function TodayTaskGroup({
   // The box's mode, fixed when it opens (see A TASK THAT THINKS IT'S DONE).
   const [boxMode, setBoxMode] = useState<'reply' | 'not-yet'>('reply');
   const replyRef = useRef<HTMLTextAreaElement>(null);
+  const replyTriggerRef = useRef<HTMLButtonElement>(null);
   // The row of a claim (a claim always has one), else null.
   const claimedRow = group.reason === 'done-claimed' ? group.row : null;
   const claimed = claimedRow !== null;
@@ -306,7 +310,7 @@ export function TodayTaskGroup({
                 )}
                 {boxRow !== null && (
                   <CollapsibleTrigger asChild>
-                    <Button variant="outline" size="sm">
+                    <Button ref={replyTriggerRef} variant="outline" size="sm">
                       {claimed ? 'Not yet' : 'Reply'}
                     </Button>
                   </CollapsibleTrigger>
@@ -342,9 +346,10 @@ export function TodayTaskGroup({
             )}
           </div>
           {boxRow !== null && (
-            // No display utility on this element: a `flex` class would beat
-            // Tailwind's `[hidden]` rule and show the box while it's closed.
-            <CollapsibleContent forceMount hidden={!open}>
+            // Ordinary replies collapse with their receipt. A special form hides
+            // itself, keeping its single sent status outside the hidden form.
+            // No display utility here: it would beat Tailwind's `[hidden]` rule.
+            <CollapsibleContent forceMount hidden={boxMode === 'reply' && !open}>
               <TaskReplyBox
                 // A new mode is a new question: its own draft and request id.
                 key={boxMode}
@@ -352,10 +357,19 @@ export function TodayTaskGroup({
                 routineId={group.routineId}
                 agentName={group.agentName}
                 enabled={boxRow.enabled}
-                canStart={false}
+                canStart={boxMode === 'not-yet' && boxRow.canMarkDone}
                 mode={boxMode}
+                formHidden={boxMode === 'not-yet' && !open}
                 completedCheckIn={observedCheckIn}
                 onSent={(checkIn) => {
+                  if (boxMode === 'not-yet') {
+                    const at = document.activeElement;
+                    const form = replyRef.current?.closest('form');
+                    setOpen(false);
+                    if (at === null || at === document.body || form?.contains(at)) {
+                      replyTriggerRef.current?.focus();
+                    }
+                  }
                   if (checkIn === 'started' || checkIn === 'replayed') onCheckInStarted();
                   onReplied();
                 }}

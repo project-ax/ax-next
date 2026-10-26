@@ -536,7 +536,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('after Not yet the block stays, as after a Reply, and its box keeps its own words', async () => {
+  it('after Not yet the block stays and its mounted composer closes before the row refresh', async () => {
     reopenMock.mockResolvedValue({ checkIn: 'started' });
     const onNavigate = vi.fn();
     const onReplied = vi.fn();
@@ -545,25 +545,100 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     );
     const view = render(ui(group([claimed()])));
     fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
-    fireEvent.change(screen.getByRole('textbox', { name: NOT_YET }), {
+    const specialBox = screen.getByRole('textbox', { name: NOT_YET });
+    fireEvent.change(specialBox, {
       target: { value: 'Two are still open' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
 
+    expect(specialBox).toBeInTheDocument();
+    expect(specialBox).not.toBeVisible();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBeVisible();
+
     // Today reads the tasks again: the claim is taken back, and the report still says Needs you.
     view.rerender(ui(group([claimed({}, { doneClaimed: false })])));
     expect(screen.queryByText('Caveman thinks this is done.')).toBeNull();
-    expect(screen.getByRole('textbox', { name: NOT_YET })).toBeVisible();
-    expect(screen.getByRole('status').textContent).toBe('Sent. Caveman is checking in now.');
+    expect(specialBox).not.toBeVisible();
+    expect(screen.queryByRole('textbox', { name: NOT_YET })).toBeNull();
     const reply = screen.getByRole('button', { name: 'Reply' });
-    expect(reply).toHaveAttribute('aria-expanded', 'true');
+    expect(reply).toHaveAttribute('aria-expanded', 'false');
 
     // Opened again, the box answers what the block shows now.
     fireEvent.click(reply);
-    fireEvent.click(reply);
     expect(screen.getByRole('textbox', { name: BOX })).toBeVisible();
     expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('Not yet accurately promises an immediate check-in when the owner may manage the task', () => {
+    renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    expect(screen.getByText('Caveman reads this, and sending it starts a check-in now.')).toBeVisible();
+    expect(screen.queryByText('Caveman reads this at its next check-in.')).toBeNull();
+  });
+
+  it.each([
+    [false, true, 'Caveman reads this at its next check-in.'],
+  ] as const)('Not yet keeps its honest fallback: manage %s, enabled %s', (canMarkDone, enabled, hint) => {
+    renderGroup(group([claimed({ canMarkDone, enabled })]));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    expect(screen.getByText(hint)).toBeVisible();
+  });
+
+  it.each([
+    ['started', 'Sent. Caveman is checking in now.'],
+    ['replayed', 'Sent. Caveman is checking in now.'],
+    ['paused', 'Sent. Caveman will read it when you resume the task.'],
+    ['not-allowed', 'Sent. Caveman will read it at its next check-in.'],
+  ] as const)('Not yet keeps one visible, accessible sent confirmation after closing: %s', async (checkIn, line) => {
+    reopenMock.mockResolvedValue({ checkIn });
+    renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    const box = screen.getByRole('textbox', { name: NOT_YET });
+    const status = screen.getByRole('status');
+    expect(status).toBeVisible();
+    expect(status).toBeEmptyDOMElement();
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(box).not.toBeVisible());
+    expect(status).toBeVisible();
+    expect(status).toHaveTextContent(line);
+    expect(screen.getAllByRole('status').filter((node) => node.textContent === line)).toEqual([status]);
+    expect(status.closest('[hidden], [aria-hidden="true"]')).toBeNull();
+  });
+
+  it('a collapsed Not yet receipt clears on completion without remounting its live region', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const ui = (g: TodayGroup) => <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />;
+    const view = render(ui(group([claimed()])));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    const box = screen.getByRole('textbox', { name: NOT_YET });
+    const status = screen.getByRole('status');
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(status).toHaveTextContent('Sent. Caveman is checking in now.'));
+    expect(status).toBeVisible();
+    view.rerender(ui(group([claimed({}, { doneClaimed: false, reportedAt: '2026-10-23T12:00:00.000Z' })])));
+    await waitFor(() => expect(status).toBeEmptyDOMElement());
+    expect(status).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(box).toBeInTheDocument();
+    expect(box).not.toBeVisible();
+  });
+
+  it('a failed Not yet keeps its mounted box, draft and error and never announces a reply', async () => {
+    reopenMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/reopen', 503));
+    const { onReplied } = renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    const box = screen.getByRole('textbox', { name: NOT_YET });
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.')).toBeVisible();
+    expect(box).toBeVisible();
+    expect(box).toHaveValue('Two are still open');
+    expect(screen.getByRole('button', { name: 'Not yet' })).toHaveAttribute('aria-expanded', 'true');
+    expect(onReplied).not.toHaveBeenCalled();
   });
 
   it('a refused Mark done says why, under the row, and keeps the block', async () => {

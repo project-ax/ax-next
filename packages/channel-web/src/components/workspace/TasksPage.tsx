@@ -399,7 +399,8 @@ function TaskList({
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
  * A done task (TASK-950) says when it was marked done in place of either, and
  * shows its last update whatever misses it had before: it is finished, and the
- * update is what the person accepted.
+ * update is what the person accepted. A current claim without misses says
+ * the agent thinks it is done, above the update, as Today and the task page do.
  */
 function TaskItem({
   row,
@@ -465,6 +466,11 @@ function TaskItem({
       <span className="break-words text-[12px] text-muted-foreground">
         {secondLine}
       </span>
+      {!isDone && row.noRecentUpdate === null && row.task?.doneClaimed === true && (
+        <p className="break-words text-[13px] font-medium">
+          {`${row.agentName} thinks this is done.`}
+        </p>
+      )}
       {third !== null && (
         <p className="line-clamp-2 break-words text-[13px]" title={third}>
           {third}

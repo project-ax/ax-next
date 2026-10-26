@@ -5,7 +5,8 @@
  * The shell owns it (TASK-933; TASK-909 decisions row 10 had it inside
  * `TasksPage`), so one read serves Today, the sidebar badge and the Tasks page.
  * The shell reads it at mount, again on entering Today or Tasks, after a
- * reply sent from Today, when a Duplicate answer lands after the person
+ * reply sent from Today or a landed task-page Mark done, Not yet, Reopen or
+ * reply (TASK-959), when a Duplicate answer lands after the person
  * left the source task (TASK-953), and when an approved routine change goes
  * through (TASK-939). A reply that starts a check-in on Today also arms a
  * bounded poll (TASK-940): every 10 seconds for five minutes while Today
@@ -15,8 +16,8 @@
  * read already in flight instead of starting another: a read can take up to
  * 10 s when an agent's routines hang, and restarting it on every click or
  * route change would drop each answer before it lands. `reload` (after a
- * reply, on coming back from a task or check-in page, where a reply,
- * Pause or Resume may have happened, when a Duplicate answer lands after
+ * landed reply, Mark done, Not yet or Reopen, on coming back from a task
+ * or check-in page, where a reply, Pause or Resume may have happened, when a Duplicate answer lands after
  * the person left the source task, and when an approved routine change goes
  * through) always starts a fresh read, because the
  * one in flight may predate it; the newer answer wins.

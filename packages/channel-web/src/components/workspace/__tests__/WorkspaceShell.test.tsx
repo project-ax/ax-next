@@ -16,7 +16,7 @@ import {
   GRANT_READ_FAILED,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
-import type { ActivityEvent, TaskRow } from '@/lib/workspace-types';
+import type { ActivityEvent, TaskDetail, TaskRow } from '@/lib/workspace-types';
 import type { PermissionRequest } from '../../../server/types';
 
 import { rail as railFixture } from './rail-fixture';
@@ -42,6 +42,8 @@ vi.mock('@/lib/workspace-api', async () => {
       tasks: vi.fn(),
       // A reply sent from a task's block on Today (TASK-933).
       sendTaskReply: vi.fn(),
+      task: vi.fn(),
+      completeTask: vi.fn(),
       // The rail reads its own route (TASK-235 / AW-14). Without it in the
       // mock, opening an agent throws before this file's subject renders.
       rail: vi.fn(async () => railFixture()),
@@ -826,6 +828,91 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     await act(async () => landStale({ tasks: [taskRow()], unavailableAgents: [] }));
     expect(screen.getByText('Nothing is waiting on you.')).toBeTruthy();
     expect(badge()).toBeNull();
+  });
+
+  function claimedTask(): TaskRow {
+    const base = taskRow();
+    return { ...base, kind: 'get-done', steps: { done: 0, total: 0 }, task: { ...base.task!, doneClaimed: true } };
+  }
+
+  function claimedDetail(): TaskDetail {
+    const claim = claimedTask();
+    return {
+      agentName: claim.agentName,
+      name: claim.name,
+      kind: 'get-done',
+      enabled: true,
+      revision: 'rev-1',
+      permissions: { fire: true, edit: true, stop: true },
+      schedule: 'every 15 minutes',
+      nextCheckAt: null,
+      brief: { promptBody: 'Move every article.', goodWhen: 'Every article is moved.' },
+      task: { ...claim.task!, agentNotes: null },
+      steps: [],
+      finishBy: null,
+      doneAt: null,
+      noRecentUpdate: null,
+      updates: [],
+      replies: [],
+    };
+  }
+
+  it('Mark done on the task page clears the Today badge before navigating, even if the detail re-read fails (TASK-959)', async () => {
+    const claim = claimedTask();
+    const doneAt = new Date().toISOString();
+    const finished = { ...claim, enabled: false, doneAt };
+    tasksMock.mockResolvedValueOnce({ tasks: [claim], unavailableAgents: [] })
+      .mockResolvedValue({ tasks: [finished], unavailableAgents: [] });
+    vi.mocked(workspaceApi.task).mockReset().mockResolvedValueOnce(claimedDetail())
+      .mockRejectedValue(new Error('detail unavailable'));
+    vi.mocked(workspaceApi.completeTask).mockReset().mockResolvedValue({ done: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      renderShell();
+      await screen.findByRole('group', { name: /Zero open support tickets/ });
+      expect(badge()?.textContent).toBe('1');
+      fireEvent.click(screen.getByRole('link', { name: /Open task/ }));
+      await screen.findByRole('heading', { level: 1, name: claim.name });
+      fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+      await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(badge()).toBeNull());
+      expect(await screen.findByText('We couldn’t refresh this task just now, so what you see may be out of date.')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+      expect(await screen.findByText('Nothing is waiting on you.')).toBeVisible();
+      expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a task-page Mark done forces a new list read over one in flight, and a stale answer cannot restore badge or block (TASK-959)', async () => {
+    const claim = claimedTask();
+    const doneAt = new Date().toISOString();
+    const finished = { ...claim, enabled: false, doneAt };
+    const ADA = { agentId: 'a-ada', agentName: 'Ada' };
+    let landStale!: (page: { tasks: TaskRow[]; unavailableAgents: typeof ADA[] }) => void;
+    tasksMock.mockResolvedValueOnce({ tasks: [claim], unavailableAgents: [ADA] })
+      .mockReturnValueOnce(new Promise((res) => (landStale = res)))
+      .mockResolvedValue({ tasks: [finished], unavailableAgents: [] });
+    vi.mocked(workspaceApi.task).mockReset().mockResolvedValueOnce(claimedDetail())
+      .mockResolvedValue({ ...claimedDetail(), enabled: false, doneAt });
+    vi.mocked(workspaceApi.completeTask).mockReset().mockResolvedValue({ done: true });
+    renderShell();
+    const missing = await screen.findByText(/We couldn’t check tasks from Ada/);
+    expect(badge()?.textContent).toBe('1');
+    fireEvent.click(within(missing.closest<HTMLElement>('[role="alert"]')!).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('link', { name: /Open task/ }));
+    await screen.findByRole('heading', { level: 1, name: claim.name });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+    // `retry` would join request two, which predates the write. It must be reload.
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(badge()).toBeNull());
+    await act(async () => landStale({ tasks: [claim], unavailableAgents: [ADA] }));
+    expect(badge()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeVisible();
+    expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();
   });
 
   it('while the first tasks read runs, Today says it is still checking, then counts what lands (TASK-939)', async () => {
