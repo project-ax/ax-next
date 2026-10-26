@@ -128,6 +128,7 @@ prev=
 for a in "$@"; do
   if [ "$a" = list ]; then
     if [ -n "$STUB_AFFECTED" ]; then printf '%s\n' "$STUB_AFFECTED"; fi
+    if [ "$STUB_LIST_STATUS" != 0 ]; then echo stub-list-stderr >&2; fi
     exit "$STUB_LIST_STATUS"
   fi
   if [ "$prev" = run ] && [ "$a" = test ]; then exit "$STUB_TEST_STATUS"; fi
@@ -325,12 +326,20 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
     expect(step).not.toContain('      - name: Next');
   });
 
-  it('a failing affected-path probe fails the step, not skips the tests', () => {
-    // pnpm reports a bad option or filter on stderr and exits 1. Piped into
-    // `grep -q .`, that read as "no affected packages", exit 0.
-    const r = runStep({ files: { 'packages/foo/src/index.ts': 'export const foo = 2;\n' }, listStatus: 1 });
+  it('a failing affected-path probe fails the step, and shows why', () => {
+    // pnpm exits 1 on, say, an unknown option. Piped into `grep -q .`, that
+    // read as "no affected packages", exit 0. Some pnpm errors go only to
+    // stdout (a bad base prints its JSON there), which a capture swallows, so
+    // the step must print the captured output back, and leave stderr alone.
+    const r = runStep({
+      files: { 'packages/foo/src/index.ts': 'export const foo = 2;\n' },
+      affected: 'stub-list-stdout',
+      listStatus: 1,
+    });
     expect(r.status, r.output).not.toBe(0);
     expect(r.calls, JSON.stringify(r.calls)).toEqual([probe(r.baseSha)]);
+    expect(r.output).toContain('stub-list-stdout');
+    expect(r.output).toContain('stub-list-stderr');
   });
 
   it('an empty BASE_SHA runs the full suite, not nothing', () => {

@@ -192,8 +192,8 @@ jobs:
           # an invisible failure reads as "nothing changed" or "no affected
           # packages", which means "skip the tests". So nothing below pipes a
           # command into a check. Each output is captured first (a failed
-          # capture fails the step, or runs the full suite) and checked through
-          # here-strings. The guard test runs this block under `bash -e`, and
+          # capture fails the step, or runs the full suite) and then checked
+          # without a pipe. The guard test runs this block under `bash -e`, and
           # pins that the step has no `shell:` and this file no `defaults:`,
           # so it tests the shell CI actually uses.
           #
@@ -253,13 +253,23 @@ jobs:
           # re-enter here. On the affected path, '!{.}' excludes the root
           # explicitly — its `test` script is the full recursive
           # `pnpm -r run test`, which any root-level file change would
-          # otherwise trigger. The affected probe is captured, not piped into
-          # `grep -q`: pnpm reports a bad option or filter on stderr and the
-          # pipe used to read that as "no affected packages", exit 0.
+          # otherwise trigger.
+          #
+          # The affected probe is captured, not piped into `grep -q`. The pipe
+          # turned a pnpm failure (an unknown option, exit 1) into "no affected
+          # packages", exit 0. pnpm prints some failures only on stdout, which
+          # the capture swallows, so on failure we print it back before
+          # failing. pnpm does NOT reject a mistyped filter (`..[sha]` selects
+          # nothing, exit 0), so the filters themselves are guarded only by
+          # the exact argv the guard test pins.
           if [ -n "$full" ]; then
             pnpm -r run test
           else
-            affected=$(pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable)
+            if ! affected=$(pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable); then
+              printf '%s\n' "$affected"
+              echo "::error::could not list the packages this PR affects (pnpm output above), so failing rather than skipping their tests."
+              exit 1
+            fi
             if [ -n "$affected" ]; then
               pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' run test
             else
