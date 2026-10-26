@@ -1014,6 +1014,7 @@ function Inner({
                   tasks={tasksOnToday.tasks}
                   tasksError={tasksOnToday.error}
                   tasksRefreshing={tasksOnToday.refreshing}
+                  tasksChecking={tasksOnToday.checking}
                   unavailableTaskAgents={tasksOnToday.unavailableAgents}
                   onRetryTasks={taskRead.retry}
                   onReplied={taskRead.reload}

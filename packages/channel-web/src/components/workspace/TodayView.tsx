@@ -22,6 +22,8 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      It may only be rendered when we actually READ the queue. A failed read
  *      shows the failure, not "nothing is waiting on you"; those two look
  *      identical from the outside and mean opposite things (design H7).
+ *      Nor while a read it depends on is still in flight: until then the
+ *      headline says it is still checking (TASK-939).
  */
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -123,7 +125,11 @@ interface Props {
    * verbatim, which is how "workspace /decisions → 401" ended up being copy.
    */
   error?: DecisionReadError | null;
-  /** True while the first read is still in flight — not the same as empty. */
+  /**
+   * True while any read of the queue is in flight. On Today that is in practice
+   * the first one, because the only other read here is Try again, and that
+   * keeps its error. It is not the same as empty (TASK-939).
+   */
   loading?: boolean;
   onRetry?: () => void;
   onSeeActivity: () => void;
@@ -154,6 +160,8 @@ interface Props {
   tasksError: TasksReadError | null;
   /** A tasks read is in flight: Try again waits for it rather than restarting it. */
   tasksRefreshing: boolean;
+  /** The tasks read's first answer hasn't landed (TASK-939): until it does, Today doesn't know whether any task needs the person. */
+  tasksChecking: boolean;
   /** Agents whose tasks couldn't be read. */
   unavailableTaskAgents: readonly UnavailableAgent[];
   /** Read the tasks again. */
@@ -188,6 +196,7 @@ export function TodayView({
   tasks,
   tasksError,
   tasksRefreshing,
+  tasksChecking,
   unavailableTaskAgents,
   onRetryTasks,
   onReplied,
@@ -241,13 +250,21 @@ export function TodayView({
     failed fetch is the single most damaging sentence this page could print.
     The grants read-back is the second way to not know, the tasks read the
     third (TASK-933), and the empty sentence is exactly as false over either.
+
+    A read still in flight is a fourth way not to know (TASK-939). A failure
+    outranks it, and a count stands as a floor over it.
   */
+  const checking = loading || tasksChecking;
+  const nothingListed =
+    open.length === 0 && justResolved.length === 0 && grants.length === 0 && groups.length === 0;
   const headline =
     !readable || (waiting === 0 && (grantsUnknown || tasksUnknown))
       ? 'We could not check what is waiting on you.'
-      : waiting === 0
-        ? 'Nothing is waiting on you.'
-        : `${WORDS[waiting] ?? `${waiting} things`} ${waiting === 1 ? 'is' : 'are'} waiting on you.`;
+      : waiting === 0 && checking
+        ? 'Checking what is waiting on you…'
+        : waiting === 0
+          ? 'Nothing is waiting on you.'
+          : `${WORDS[waiting] ?? `${waiting} things`} ${waiting === 1 ? 'is' : 'are'} waiting on you.`;
 
   /*
     A COUNT IS ONLY RENDERED WHEN IT IS POSITIVE.
@@ -525,9 +542,11 @@ export function TodayView({
         aria-label="Your queue"
         className={RESOLUTION_FOCUS_RING}
       >
-      {(readable ||
-        filter === 'working' ||
-        (filter === 'needs' && (grants.length > 0 || groups.length > 0))) && (
+      {(filter === 'needs' && readable
+        ? !(checking && nothingListed)
+        : readable ||
+          filter === 'working' ||
+          (filter === 'needs' && (grants.length > 0 || groups.length > 0))) && (
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           {filter === 'needs' ? (
             <>
@@ -572,24 +591,21 @@ export function TodayView({
               */}
               {loose.map((d) => renderRow(d, isOpenDecision(d)))}
               {readable &&
-                open.length === 0 &&
-                justResolved.length === 0 &&
-                grants.length === 0 &&
-                groups.length === 0 && (
+                nothingListed &&
+                !checking && (
                 /*
                   The headline already said the queue is empty. Saying it again
                   two inches lower tells a first-timer nothing; what they do not
                   know is what this list is FOR, and this is the one moment they
                   have the attention to read it.
 
-                  Held back while the FIRST read is still in flight: "nothing is
-                  waiting" flashing up before the rows arrive is the same claim,
-                  just briefer.
+                  While a read is in flight, the headline says it is still
+                  checking and nothing is drawn here: "nothing is waiting"
+                  flashing up before the rows arrive is the same claim, just
+                  briefer (TASK-939).
                 */
                 <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-                  {loading
-                    ? 'Checking what is waiting on you…'
-                    : 'When an agent hits something it wants your OK on, it’ll wait for you here.'}
+                  When an agent hits something it wants your OK on, it’ll wait for you here.
                   </div>
                 )}
             </>

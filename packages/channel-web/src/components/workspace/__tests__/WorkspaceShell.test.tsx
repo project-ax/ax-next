@@ -721,6 +721,24 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(tasksMock).toHaveBeenCalledTimes(1);
   });
 
+  it('while the first tasks read runs, Today says it is still checking, then counts what lands (TASK-939)', async () => {
+    let land!: (page: { tasks: TaskRow[]; unavailableAgents: [] }) => void;
+    tasksMock.mockReturnValueOnce(new Promise((res) => (land = res)));
+
+    renderShell();
+
+    expect(await screen.findByText('Checking what is waiting on you…')).toBeTruthy();
+    // The queue read has landed, empty: only the tasks read is still out.
+    await waitFor(() => expect(decisionsMock).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(screen.getByText('Checking what is waiting on you…')).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+
+    await act(async () => land({ tasks: [taskRow()], unavailableAgents: [] }));
+    expect(await screen.findByText('One thing is waiting on you.')).toBeTruthy();
+    expect(badge()?.textContent).toBe('1');
+  });
+
   it('a failed tasks read never lets Today say nothing is waiting, and Try again reads again', async () => {
     tasksMock
       .mockRejectedValueOnce(new Error('workspace /tasks → 503'))
