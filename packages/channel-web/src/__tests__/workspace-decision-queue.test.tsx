@@ -794,18 +794,18 @@ describe('useDecisionQueue — onRoutineChangeSucceeded (TASK-939)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const onRoutineChangeSucceeded = vi.fn();
-      const { result } = await mountWithHooks([held()], {
-        onRoutineChangeSucceeded,
-        onDecisionApproved: () => {
-          throw new Error('continuation broke');
-        },
+      const onDecisionApproved = vi.fn(() => {
+        throw new Error('continuation broke');
       });
+      const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded, onDecisionApproved });
 
       // Replayed inside the approve, so this answer is the only word: nothing polls it.
-      approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+      // A real continuation id, so the continuation runs whatever the queue's null-stream rule.
+      approveDecision.mockResolvedValue({ ...approved(editWentThrough(), true), streamReqId: 'req-1' });
       act(() => result.current.approve('d-edit'));
       await settle();
 
+      expect(onDecisionApproved).toHaveBeenCalledTimes(1);
       expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();

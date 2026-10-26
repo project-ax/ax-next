@@ -491,6 +491,7 @@ The TASK-574 describe still passes on the hoisted `mountWithHooks`. `tsc` would 
   - Add a stable `noteRoutineChange = useCallback((row: Decision) => { … }, [])`. It returns unless `row.routineOutcome === 'succeeded'` and the id isn't in the set; otherwise it adds the id and calls `routineSucceededRef.current?.(row)`.
 - Call `noteRoutineChange(decision)` in `act`, right after `report?.(raw, decision)` (inside the `try`, after the `isRecord` guard). This covers the approve, dismiss and undo answers.
 - Call `noteRoutineChange(out.decision)` in the poll's `.then`, right after `applyPolledRow(out.decision)`.
+- **As built (review rounds 1–2, see the TASK-939 shard):** both placements above were superseded. In `act` it runs *before* `report` (a throwing continuation must not skip it); in the poll it runs *after* the `ax:routine-permissions-changed` dispatch; and the subscriber call is wrapped in try/catch.
 - Add `noteRoutineChange` to `act`'s and the poll effect's dependency lists. It is stable, so neither re-subscribes.
 - Header (`:1-51`): add one short paragraph after the TASK-933 one. It says that an approved routine change is announced once (TASK-939), from whichever answer or poll first carries its success, so the shell can read the tasks list again; and that the set of reported ids lasts as long as the queue, one id per change.
 

@@ -548,8 +548,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           }
           applyServerRow(decision);
           setNotice(id, notice);
-          // TASK-939 — an approve answer, or an Undo refused because the change
-          // already ran, can be the first word that it went through. Before
+          // TASK-939 — an approve answer, an Undo refused because the change
+          // already ran, or a dismissal that lost the race to an approval
+          // elsewhere can be the first word that it went through. Before
           // `report`: it can't throw, and a continuation that throws must not
           // skip it (an unattended change's answer is the only word we get).
           noteRoutineChange(decision);
@@ -730,8 +731,8 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
             }
             // TASK-939 — a fire-now, an attended approval or a standing one whose
             // consent was pending first says it went through here. Even when the
-            // race guard keeps the row as it is,
-            // the server's word that a task changed still stands.
+            // race guard keeps the row as it is, the server's word that a task
+            // changed still stands.
             noteRoutineChange(out.decision);
           })
           // A FAILED poll changes nothing and sets no notice. The row keeps
