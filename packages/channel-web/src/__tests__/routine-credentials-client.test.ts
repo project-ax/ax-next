@@ -3,7 +3,10 @@ import {
   setDestinationCredential,
   removeDestinationCredential,
   refForDestination,
+  routineSecretConfigured,
 } from '../lib/credentials';
+import { REQUEST_TIMEOUT_MS } from '../lib/http';
+import { RoutineApiError } from '../lib/routines';
 const target = {
   destination: {
     kind: 'routine-hmac' as const,
@@ -13,8 +16,23 @@ const target = {
   expectedRevision: 'rev1',
   scope: { scope: 'agent' as const, ownerId: 'a' },
 };
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 describe('routine credential client', () => {
+  it.each(['fetch', 'body'])('bounds a stalled status %s and aborts without reflecting response details', async stage => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      signal = init?.signal;
+      if (stage === 'fetch') return new Promise<Response>(() => {});
+      return new Response(new ReadableStream({ start() {} }), { status: 200 });
+    });
+    let outcome: unknown = 'pending';
+    void routineSecretConfigured(target.destination).then(value => { outcome = value; }, error => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    expect(outcome).toBeInstanceOf(RoutineApiError);
+    expect(outcome).toMatchObject({ status: 0, code: 'unavailable' });
+    expect(signal?.aborted).toBe(true);
+  });
   it('sends revision-bound set and delete to authenticated own destination with no raw ref', async () => {
     const fetch = vi
       .spyOn(globalThis, 'fetch')

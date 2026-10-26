@@ -66,7 +66,9 @@ function CredentialSlotTarget({ destination, slot, scope, displayName }: Credent
   const humanLabel = humanizeSlotLabel(slot.label, destinationService(destination, routineInfo?.name));
   const destinationLabel = humanDestination(destination, routineInfo?.name);
   const destinationAddsInfo = destinationLabel.length > 0 && !humanLabel.toLowerCase().includes(destinationLabel.toLowerCase());
-  const canManage = status === 'ready' && (destination.kind !== 'routine-hmac' || routineInfo?.manageSecret === true);
+  // Preserve existing non-routine key entry; only routine secrets need the
+  // owner/revision lookup and exact configured status before opening a form.
+  const canManage = destination.kind !== 'routine-hmac' || (status === 'ready' && routineInfo?.manageSecret === true);
   const statusLabel = status === 'loading' ? 'Checking…' : status === 'error' ? 'Unavailable' : isSet ? 'Saved' : 'Not set';
 
   return <>

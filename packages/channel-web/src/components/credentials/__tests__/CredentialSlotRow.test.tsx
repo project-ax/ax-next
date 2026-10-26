@@ -17,6 +17,14 @@ describe('CredentialSlotRow', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it('preserves non-routine key entry while the admin status list is pending', async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(() => new Promise<Response>(() => {}));
+    render(<CredentialSlotRow destination={{ kind: 'provider', provider: 'openrouter' }} slot={{ label: 'OPENROUTER_API_KEY', kind: 'api-key' }} scope={{ scope: 'global', ownerId: null }} />);
+    expect(screen.getByRole('button', { name: 'Add key' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add key' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
   it('renders a humanized slot label and an Add key button when not set', async () => {
     render(
       <CredentialSlotRow

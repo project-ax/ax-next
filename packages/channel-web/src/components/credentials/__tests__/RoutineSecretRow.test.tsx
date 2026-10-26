@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CredentialSlotRow } from '../CredentialSlotRow';
+import { REQUEST_TIMEOUT_MS } from '@/lib/http';
 
 const row = (routineId = 'first') => <CredentialSlotRow
   destination={{ kind: 'routine-hmac', agentId: 'agent', routineId }}
@@ -17,7 +18,25 @@ function deferred() {
 
 describe('own routine signing-secret controls', () => {
   beforeEach(() => { vi.spyOn(globalThis, 'fetch'); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('leaves Checking after a stalled status deadline and can retry', async () => {
+    vi.useFakeTimers();
+    let available = false;
+    vi.mocked(globalThis.fetch).mockImplementation(async input => {
+      if (String(input).includes('/settings/routines/')) return directory();
+      return available ? response({ configured: true }) : new Promise<Response>(() => {});
+    });
+    render(row());
+    await act(async () => { await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not check the signing secret.');
+    expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not set')).not.toBeInTheDocument();
+    vi.useRealTimers();
+    available = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Saved')).toBeInTheDocument();
+  });
 
   it('loads configured state without the global list and removes an existing key', async () => {
     let configured = true;

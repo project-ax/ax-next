@@ -1,4 +1,4 @@
-import { HttpError, httpFetch } from './http';
+import { HttpError, httpFetch, REQUEST_TIMEOUT_MS, RequestTimeoutError, withRequestTimeout } from './http';
 import { readRoutineResponse, RoutineApiError } from './routines';
 import type { Destination } from '@ax/credentials';
 import { RoutineSecretStatusOutputSchema } from '@ax/routines-contract';
@@ -206,13 +206,23 @@ export const CONNECTOR_KEY_NOT_PER_PERSON = 'Connector credentials belong to age
 type RoutineDestination = Extract<Destination, {kind: 'routine-hmac'}>;
 export async function routineSecretConfigured(destination: RoutineDestination): Promise<boolean> {
   const query = new URLSearchParams({ agentId: destination.agentId, routineId: destination.routineId });
-  let res: Response;
-  try { res = await httpFetch(`/settings/destinations/routine-hmac/credential?${query}`); }
-  catch { throw new RoutineApiError(0); }
-  const value = await readRoutineResponse<unknown>(res);
-  const parsed = RoutineSecretStatusOutputSchema.safeParse(value);
-  if (!parsed.success) throw new RoutineApiError(502);
-  return parsed.data.configured;
+  const path = `/settings/destinations/routine-hmac/credential?${query}`;
+  try {
+    // Match routine reads: the deadline includes the response body, so a
+    // stalled presence check reaches the row's error and Retry state.
+    return await withRequestTimeout(path, REQUEST_TIMEOUT_MS, async signal => {
+      let res: Response;
+      try { res = await httpFetch(path, { signal }); }
+      catch { throw new RoutineApiError(0); }
+      const value = await readRoutineResponse<unknown>(res);
+      const parsed = RoutineSecretStatusOutputSchema.safeParse(value);
+      if (!parsed.success) throw new RoutineApiError(502);
+      return parsed.data.configured;
+    });
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new RoutineApiError(0);
+    throw error;
+  }
 }
 export type DestinationCredentialTarget = {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
