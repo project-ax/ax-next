@@ -391,9 +391,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * `act` nor the poll.
    *
    * A subscriber that throws is the subscriber's failure, not the queue's: it
-   * is logged here and goes no further, so an approval the server accepted is
-   * never reported as one that didn't reach it, and a poll goes on to the rest
-   * of its work.
+   * is logged here and goes no further, so this subscriber never makes an
+   * approval the server accepted read as one that didn't reach it, and never
+   * makes a poll that answered count as a failed re-read.
    */
   const noteRoutineChange = useCallback((row: Decision) => {
     if (row.routineOutcome !== 'succeeded') return;
@@ -548,10 +548,12 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           }
           applyServerRow(decision);
           setNotice(id, notice);
-          report?.(raw, decision);
           // TASK-939 — an approve answer, or an Undo refused because the change
-          // already ran, can be the first word that it went through.
+          // already ran, can be the first word that it went through. Before
+          // `report`: it can't throw, and a continuation that throws must not
+          // skip it (an unattended change's answer is the only word we get).
           noteRoutineChange(decision);
+          report?.(raw, decision);
         } catch (err) {
           // Quiet in the UI is not silent anywhere else. The READ path
           // (`checkedRead`) logs its failure too, and this is the one
@@ -726,8 +728,9 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
             if (out.decision.approvalScope === 'agent-routines' && out.decision.consentDeliveryState !== d.consentDeliveryState) {
               window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', { detail: { agentId: d.agentId } }));
             }
-            // TASK-939 — a fire-now or an attended approval first says it went
-            // through here. Even when the race guard keeps the row as it is,
+            // TASK-939 — a fire-now, an attended approval or a standing one whose
+            // consent was pending first says it went through here. Even when the
+            // race guard keeps the row as it is,
             // the server's word that a task changed still stands.
             noteRoutineChange(out.decision);
           })

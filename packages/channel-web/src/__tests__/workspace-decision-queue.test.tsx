@@ -770,51 +770,79 @@ describe('useDecisionQueue — onRoutineChangeSucceeded (TASK-939)', () => {
 
   it('a subscriber that throws never turns an accepted approval into a failed one', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const onRoutineChangeSucceeded = vi.fn(() => {
-      throw new Error('subscriber broke');
-    });
-    const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+    try {
+      const onRoutineChangeSucceeded = vi.fn(() => {
+        throw new Error('subscriber broke');
+      });
+      const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
 
-    approveDecision.mockResolvedValue(approved(editWentThrough(), true));
-    act(() => result.current.approve('d-edit'));
-    await settle();
+      approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+      act(() => result.current.approve('d-edit'));
+      await settle();
 
-    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
-    expect(result.current.decisions[0]).toMatchObject({ id: 'd-edit', status: 'executed', routineOutcome: 'succeeded' });
-    expect(result.current.notices.get('d-edit')).not.toBe(DECISION_ACTION_FAILED);
-    expect(warn.mock.calls.some(([line]) => String(line).includes('did not reach the server'))).toBe(false);
-    expect(warn.mock.calls.some(([line]) => String(line).includes('announcing the routine change of d-edit failed'))).toBe(true);
-    warn.mockRestore();
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+      expect(result.current.decisions[0]).toMatchObject({ id: 'd-edit', status: 'executed', routineOutcome: 'succeeded' });
+      expect(result.current.notices.get('d-edit')).not.toBe(DECISION_ACTION_FAILED);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('did not reach the server'))).toBe(false);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('announcing the routine change of d-edit failed'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a continuation that throws never skips the announcement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const onRoutineChangeSucceeded = vi.fn();
+      const { result } = await mountWithHooks([held()], {
+        onRoutineChangeSucceeded,
+        onDecisionApproved: () => {
+          throw new Error('continuation broke');
+        },
+      });
+
+      // Replayed inside the approve, so this answer is the only word: nothing polls it.
+      approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+      act(() => result.current.approve('d-edit'));
+      await settle();
+
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a subscriber that throws on a poll still lets the poll announce delivered permission', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const changed = vi.fn();
     window.addEventListener('ax:routine-permissions-changed', changed);
-    const onRoutineChangeSucceeded = vi.fn(() => {
-      throw new Error('subscriber broke');
-    });
-    const pending = resolvedFixture('executed', {
-      id: 'd-standing',
-      routineOperation: 'routine_create',
-      approvalScope: 'agent-routines',
-      consentDeliveryState: 'pending',
-      consentGranted: null,
-      routineOutcome: null,
-      undoable: false,
-      resolvedAt: new Date(Date.now() - 11_000).toISOString(),
-    });
-    await mountWithHooks([pending], { onRoutineChangeSucceeded });
+    try {
+      const onRoutineChangeSucceeded = vi.fn(() => {
+        throw new Error('subscriber broke');
+      });
+      const pending = resolvedFixture('executed', {
+        id: 'd-standing',
+        routineOperation: 'routine_create',
+        approvalScope: 'agent-routines',
+        consentDeliveryState: 'pending',
+        consentGranted: null,
+        routineOutcome: null,
+        undoable: false,
+        resolvedAt: new Date(Date.now() - 11_000).toISOString(),
+      });
+      await mountWithHooks([pending], { onRoutineChangeSucceeded });
 
-    readDecision.mockResolvedValue({
-      decision: { ...pending, consentDeliveryState: 'delivered', consentGranted: true, routineOutcome: 'succeeded' },
-    });
-    await tick(POLL_MS);
+      readDecision.mockResolvedValue({
+        decision: { ...pending, consentDeliveryState: 'delivered', consentGranted: true, routineOutcome: 'succeeded' },
+      });
+      await tick(POLL_MS);
 
-    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
-    expect(changed).toHaveBeenCalledTimes(1);
-    window.removeEventListener('ax:routine-permissions-changed', changed);
-    warn.mockRestore();
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('ax:routine-permissions-changed', changed);
+      warn.mockRestore();
+    }
   });
 });
 
