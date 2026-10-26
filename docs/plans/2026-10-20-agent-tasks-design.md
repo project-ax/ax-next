@@ -375,8 +375,12 @@ without a summary. That isn't worth fixing on a page that is going away.
 2. **The host writes the brief**, in two parts (§4.2).
 3. **The agent works** with its usual tools and connectors. Sending, paying and
    other outward actions wait for a person's OK unless the person has already
-   allowed that tool (Always Allow), so the brief tells the agent to treat
-   every outward action as final (TASK-908).
+   allowed them, so the brief tells the agent to treat every outward action as
+   final (TASK-908). A held call ends the check-in's turn, so the agent never
+   reads that call's note: what it can tell the person about approvals comes
+   from its tool descriptions and system prompt, which say that running a
+   routine now, deleting one and a task's brief always ask, even with Always
+   Allow (TASK-941).
 4. **It reports** with one `routine_report` call: status, a one-line update,
    what it needs, steps, notes for next time and, if it counted something, one reading (TASK-952).
 5. **People see it.** The Tasks list and the task's Updates thread show the
@@ -1058,3 +1062,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-25 | Decided | A Finish by date is counted in the task's own time zone (its schedule's, else its active hours'); a task with none counts in the time zone of the person who set the date, which their browser sends with it and the host stores beside it; with no zone, UTC. Supersedes the 2026-10-24 TASK-951 row's "else UTC": Vinay confirmed "the person's zone, not UTC" on 2026-10-25 (TASK-955). The task's own zone winning when the two differ is the card's call, still open for Vinay: a task an agent made from chat with a UTC schedule still counts on UTC's calendar. |
 | 2026-10-25 | Decided | An agent's change that sets a task's kind says on its approval card what changing the kind clears: its steps, latest update, notes and finish date. The card can't look up the current kind, so it says so whenever the change sets one. @ax/decisions writes the words when it holds the call (TASK-956). |
 | 2026-10-26 | Decided | Once a routine is deleted, each of its runs lists only for the person it ran as, without its report. On a team agent the other members stop seeing a deleted task's runs; a live task's runs are unchanged. A run with no record of who it ran as lists for no one. The card left the team call to its builder (TASK-947). |
+| 2026-10-26 | Decided | Running a routine now, deleting one and a task's brief always ask, even with Always Allow, and the agent is told so where it reads before acting: its tool descriptions and system prompt, and the note on a held call. A fire-now's approval card says what Allow once does. A routine approval reads as waiting, not failing, during its undo window and until its outcome lands (TASK-941). |
