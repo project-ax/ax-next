@@ -406,7 +406,7 @@ describe('a hold Always Allow can never lift says so (TASK-941)', () => {
 
   it('never invites turning Always Allow on', () => {
     const note = holdNote({ ...FIRE, alwaysAsks: true });
-    expect(note).not.toMatch(/\b(enable|turn on|switch on)\s+Always Allow\b/i);
+    expect(note).not.toMatch(/\b(enabl\w*|turn\s+on|switch\w*\s+on)\s+Always Allow\b/i);
     for (const sentence of note.split(/(?<=\.)\s+/)) {
       if (sentence.includes('Always Allow')) expect(sentence).toMatch(/\b(not|never)\b/);
     }

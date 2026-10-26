@@ -11,7 +11,8 @@
  * (`routineTask`, `routineSetsKind` and `holdNote`'s `alwaysAsks` are the three
  * input-derived values. Each is closed -- `'start' | 'change' | null` and two
  * booleans -- and each is derived from the parsed call outside this file, by
- * `@ax/routines-contract` helpers (`alwaysAsks` through `routineConsentNeverCovers`),
+ * `@ax/routines-contract` helpers (`alwaysAsks` through `routineConsentNeverCovers`
+ * in this package's `routine-authorization.ts`, which applies `touchesTaskBrief`),
  * never from input text.)
  *
  * `capability` and `toolName` arrive over the hook bus from `@ax/tool-policy`.

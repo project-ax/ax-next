@@ -444,6 +444,6 @@ export function routineNote(): string {
   return 'Use the routine tools to schedule unattended work with interval, cron, or webhook triggers. ' +
     'Use routine_list/routine_get to read current definitions and routine_get before editing. ' +
     `Creates and edits require approval unless the person enabled Always Allow for this agent. Creating a task (kind "stay-on-top" or "get-done"), or changing any routine's name, promptBody, goodWhen or kind, always asks the person. ` +
-    'Deleting a routine or firing one now always asks the person too. Always Allow never covers any of these, so never suggest turning it on for them. ' +
+    'Deleting a routine or firing one now always asks the person too. Always Allow never covers a call that always asks, so never suggest turning it on for one. ' +
     'Report success only after the tool confirms it. Do not create routine files.';
 }
