@@ -329,8 +329,10 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
   it('a failing affected-path probe fails the step, and shows why', () => {
     // pnpm exits 1 on, say, an unknown option. Piped into `grep -q .`, that
     // read as "no affected packages", exit 0. Some pnpm errors go only to
-    // stdout (a bad base prints its JSON there), which a capture swallows, so
-    // the step must print the captured output back, and leave stderr alone.
+    // stdout (a bad base prints its JSON there, though in CI the step's own
+    // diff catches a bad base first), which a capture swallows, so the step
+    // prints the captured output back as a safety net, leaves stderr alone,
+    // and says in an annotation what failed.
     const r = runStep({
       files: { 'packages/foo/src/index.ts': 'export const foo = 2;\n' },
       affected: 'stub-list-stdout',
@@ -340,6 +342,7 @@ describe('the PR test step runs the full suite when a repo-wide input changes', 
     expect(r.calls, JSON.stringify(r.calls)).toEqual([probe(r.baseSha)]);
     expect(r.output).toContain('stub-list-stdout');
     expect(r.output).toContain('stub-list-stderr');
+    expect(r.output).toMatch(/^::error::could not list the packages this PR affects/m);
   });
 
   it('an empty BASE_SHA runs the full suite, not nothing', () => {
