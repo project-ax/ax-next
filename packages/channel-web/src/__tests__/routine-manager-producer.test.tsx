@@ -16,7 +16,7 @@ it('a stop-only manager emits validated disable/delete requests through the actu
   const bus = new HookBus();
   let row: StoredRoutine = { ...routineFixture, ownerUserId: 'creator', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null };
   let removed = false;
-  const view = () => routineView(row, 'manager', true);
+  const view = () => routineView(row, 'manager', true, true);
   expect(routineView({ ...row, definitionId: 'default-heartbeat-2026-05-19' }, 'creator', true).permissions).toEqual({ edit: false, stop: false, fire: true, manageSecret: false });
   expect(view().permissions).toEqual({ edit: false, stop: true, fire: false, manageSecret: false });
   bus.registerService('auth:require-user', 'test', async () => ({ user: { id: 'manager' } }));
