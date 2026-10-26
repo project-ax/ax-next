@@ -132,3 +132,63 @@ describe('independent wake-method patches', () => {
     expect(RoutinePatchSchema.safeParse(input).success).toBe(false);
   });
 });
+
+describe('bounded representation compatibility', () => {
+  const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+  const atSize = (input: Record<string, unknown>, size: number, multibyte = false): Record<string, unknown> => {
+    const remaining = size - bytes({ ...input, promptBody: '' });
+    const promptBody = multibyte
+      ? '😀'.repeat(Math.floor(remaining / 4)) + 'a'.repeat(remaining % 4)
+      : 'a'.repeat(remaining);
+    const value = { ...input, promptBody };
+    expect(bytes(value)).toBe(size);
+    return value;
+  };
+
+  it.each([schedule, { kind: 'cron', expr: '0 8 * * *', tz: 'UTC' }, webhook])('adds only sixteen bytes when normalizing a legacy %j method', trigger => {
+    const legacy = { ...brief, trigger };
+    const canonical = trigger.kind === 'webhook'
+      ? { ...brief, schedule: null, webhook: trigger }
+      : { ...brief, schedule: trigger, webhook: null };
+    expect(bytes(canonical) - bytes(legacy)).toBe(16);
+  });
+
+  it.each([schedule, { kind: 'cron', expr: '0 8 * * *', tz: 'UTC' }, webhook])('preserves a complete legacy definition at 64 KiB and refuses a legacy byte over %j', trigger => {
+    const exact = atSize({ ...brief, trigger }, 65_536);
+    const result = RoutineDefinitionSchema.safeParse(exact);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data).not.toHaveProperty('trigger');
+    expect(bytes(result.data)).toBe(65_552);
+    expect(RoutineDefinitionSchema.safeParse(result.data).success).toBe(true);
+    expect(RoutineDefinitionSchema.safeParse(atSize({ ...brief, trigger }, 65_537)).success).toBe(false);
+  });
+
+  it.each([false, true])('uses one absolute canonical cap for a dual method definition (multibyte=%s)', multibyte => {
+    const input = { ...brief, schedule, webhook };
+    expect(RoutineDefinitionSchema.safeParse(atSize(input, 65_552, multibyte)).success).toBe(true);
+    expect(RoutineDefinitionSchema.safeParse(atSize(input, 65_553, multibyte)).success).toBe(false);
+  });
+
+  it('counts legacy multibyte content by UTF-8 bytes and preserves it after normalization', () => {
+    const exact = atSize({ ...brief, trigger: schedule }, 65_536, true);
+    const result = RoutineDefinitionSchema.safeParse(exact);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.promptBody).toBe(exact.promptBody);
+    expect(bytes(result.data)).toBe(65_552);
+    expect(RoutineDefinitionSchema.safeParse(result.data).success).toBe(true);
+    expect(RoutineDefinitionSchema.safeParse(atSize({ ...brief, trigger: schedule }, 65_537, true)).success).toBe(false);
+  });
+
+  it('keeps distinct hard caps for legacy and canonical patches', () => {
+    const legacy = { trigger: schedule, promptBody: '' };
+    const canonical = { schedule, webhook: null, promptBody: '' };
+    const normalized = RoutinePatchSchema.parse(atSize(legacy, 65_536));
+    expect(normalized).not.toHaveProperty('trigger');
+    expect(bytes(normalized)).toBe(65_552);
+    expect(RoutinePatchSchema.safeParse(atSize(legacy, 65_537)).success).toBe(false);
+    expect(RoutinePatchSchema.safeParse(atSize(canonical, 65_552)).success).toBe(true);
+    expect(RoutinePatchSchema.safeParse(atSize(canonical, 65_553)).success).toBe(false);
+  });
+});
