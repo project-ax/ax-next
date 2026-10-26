@@ -33,6 +33,17 @@ export function formatReading(value: number, locale?: string): string {
   return new Intl.NumberFormat(locale, options).format(v);
 }
 
+/**
+ * A reading as one line of words: its label, a colon, and its number as
+ * `formatReading` words it ("Open tickets: 3"). An Updates entry and a
+ * check-in's own page both draw it through here (TASK-956), so the two never
+ * word one reading two ways. The label is the agent's, passed through as it
+ * came: callers draw the result only as a React text child.
+ */
+export function readingText(reading: TaskReading): string {
+  return `${reading.label}: ${formatReading(reading.value)}`;
+}
+
 function sameReading(a: TaskReading | null, b: TaskReading | null): boolean {
   if (a === null || b === null) return a === b;
   return a.label === b.label && a.value === b.value;

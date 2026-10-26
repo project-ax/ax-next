@@ -1,12 +1,15 @@
 /**
  * A task's reading for a person (TASK-952): its number in their own locale,
- * the readings that share its label, oldest first, and the sparkline's points.
- * Formatting passes 'en-US', so nothing depends on where the suite runs.
+ * the line a reading is drawn as (TASK-956), the readings that share its
+ * label, oldest first, and the sparkline's points. Formatting passes 'en-US',
+ * or compares against `formatReading` in the suite's own locale, so nothing
+ * depends on where the suite runs.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
   formatReading,
   READING_TREND_MAX,
+  readingText,
   readingTrend,
   sparklinePoints,
 } from '../task-reading.js';
@@ -84,6 +87,16 @@ describe('formatReading', () => {
       '1E-300',
       '-1E-5',
     ]);
+  });
+});
+
+describe('readingText (TASK-956)', () => {
+  it('is the label, a colon, and the number as formatReading words it', () => {
+    expect(readingText({ label: 'Open tickets', value: 3 })).toBe(`Open tickets: ${formatReading(3)}`);
+    // Rounded and grouped for the reader, not the raw number ("1234.567").
+    expect(readingText({ label: 'Hours saved', value: 1234.567 })).toBe(
+      `Hours saved: ${formatReading(1234.567)}`,
+    );
   });
 });
 
