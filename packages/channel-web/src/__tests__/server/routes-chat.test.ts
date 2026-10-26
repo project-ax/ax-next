@@ -970,6 +970,42 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     callSpy.mockRestore();
   });
 
+  it.each([false, true])('TASK-925: owner routine history is read-only through actual HTTP (hidden=%s)', async (hidden) => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const ctx = booted.harness.ctx({ userId: 'userA' });
+    const created = await booted.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create', ctx,
+      { userId: 'userA', agentId: 'agt_test', origin: 'routine', hidden },
+    );
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+    try {
+      const result = await postMessage(booted.port, {
+        conversationId: created.conversationId,
+        agentId: 'agt_test',
+        origin: 'web', source: 'web', userId: 'userA', allowRoutine: true,
+        contentBlocks: [{ type: 'text', text: 'Resume the routine with new instructions.' }],
+      });
+
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ error: 'conversation-not-found' });
+      expect(booted.chatRunCaptures).toEqual([]);
+      expect(callSpy.mock.calls.filter(([name]) => [
+        'conversations:bind-session', 'attachments:commit', 'agent:invoke',
+      ].includes(name))).toEqual([]);
+      const read = await fetch(`http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`);
+      expect(read.status).toBe(200);
+      expect((await read.json() as { conversation: Record<string, unknown> }).conversation).toMatchObject({
+        origin: 'routine', activeSessionId: null, activeReqId: null,
+      });
+    } finally {
+      callSpy.mockRestore();
+    }
+  });
+
   it('6. mismatched agent on existing conversation → 400 (agent-mismatch, I10)', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
