@@ -157,7 +157,8 @@ describe('one row, three renderers — the outcome line', () => {
       expect(text).toContain(DECISION_GOING_OUT);
       // `approvedText` is the "it went out" sentence. Not yet, it hasn't.
       expect(text).not.toContain(deferred.approvedText);
-      expect(text).toMatch(/Undo/);
+      // The button, not the note: the note says "Undo stops it before it runs" too.
+      expect(text).toMatch(/Undo · \d+s/);
     }
   });
 
@@ -909,7 +910,8 @@ describe('a fire-now, before and while it waits (TASK-941)', () => {
     for (const text of [queueText(waiting), cardText(waiting)]) {
       expect(text).toContain(DECISION_GOING_OUT);
       expect(text).toContain(DECISION_GOING_OUT_NOTE);
-      expect(text).toMatch(/Undo/);
+      // The button, not the note: the note says "Undo stops it before it runs" too.
+      expect(text).toMatch(/Undo · \d+s/);
       expect(text).not.toContain('has not completed');
       expect(text).not.toContain('checking its outcome');
       expect(text).not.toContain(words.approvedText);

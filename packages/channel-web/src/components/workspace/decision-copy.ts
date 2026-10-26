@@ -372,6 +372,8 @@ export function decisionOutcome(
     const note = d.routineOutcome === 'succeeded' ? 'The original routine change completed.'
       : d.routineOutcome === 'failed' ? 'The original routine change failed.'
       : d.status === 'expired' ? 'The original request expired and was not run.'
+      // TASK-941. In its undo window nothing has run yet, which is not the same as unfinished.
+      : isAboutToHappen(d, now) ? DECISION_GOING_OUT_NOTE
       : 'The original routine change has not completed.';
     return { line, note, tone: d.routineOutcome === 'failed' || d.consentDeliveryState === 'failed' ? 'bad' : d.routineOutcome === 'succeeded' ? 'done' : 'quiet' };
   }
