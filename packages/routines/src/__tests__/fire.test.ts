@@ -110,7 +110,7 @@ describe('accepted DB fire dispatch', () => {
     expect((await h.fire(h.accepted)).agentGone).toBe(true);
     expect(h.pending.size).toBe(0);
     expect(await f.store.findOne(h.row)).toBeNull();
-    expect(await f.store.recentFires(h.row)).toEqual([]);
+    expect(await f.store.recentFires({ agentId: h.row.agentId, routineId: h.row.routineId, actorUserId: 'owner' })).toEqual([]);
     expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([]);
   });
   it.each(['throw', 'terminated', 'missing-turn'])('records exactly one terminal error for %s', async (kind) => {
@@ -138,7 +138,7 @@ describe('accepted DB fire dispatch', () => {
     await f.store.deleteAuthored({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'delete', now });
     expect(await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', error: null, conversationId: 'c', renderedPrompt: 'p', warning: null } })).toBe(true);
     expect(await f.store.findOne(h.row)).toBeNull();
-    expect(await f.store.recentFires(h.row)).toHaveLength(1);
+    expect(await f.store.recentFires({ agentId: h.row.agentId, routineId: h.row.routineId, actorUserId: 'owner' })).toHaveLength(1);
   });
   // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat
   // routine's run keeps the raw reason as its error; only a task's is worded (checkin.test.ts).

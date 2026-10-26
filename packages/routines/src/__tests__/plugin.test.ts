@@ -60,7 +60,7 @@ describe('routines runtime registration', () => {
     await done;
     const store = createRoutinesStore(h.db);
     expect(await store.findOne(row)).toBeNull();
-    expect(await store.recentFires(row)).toEqual([]);
+    expect(await store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: h.owner.userId })).toEqual([]);
     expect((await sql `SELECT * FROM routines_v1_dispatches WHERE agent_id=${h.agentId}`.execute(h.db)).rows).toEqual([]);
   });
   it('restarts by interrupting abandoned acceptance without invoking it again', async () => {

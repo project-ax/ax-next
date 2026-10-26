@@ -39,16 +39,18 @@ describe('durable dispatch', () => {
     await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome });
     expect((await f.store.findOne(row))?.lastStatus).toBeNull();
     await f.store.deleteAuthored({ ...accept(disabled), requestId: 'delete' });
-    expect(await f.store.recentFires(row)).toHaveLength(1);
+    expect(await f.store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner' })).toHaveLength(1);
+    // TASK-947: it lists only for the person it ran as, the owner, not 'editor', who asked for it.
+    expect(await f.store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'editor' })).toEqual([]);
   });
   it('finishes after deletion without recreating a definition, and rejects finish after agent purge', async () => {
     const row = await f.store.createAuthored(createInput()); const dispatch = (await f.store.acceptDispatch(accept(row)))!.accepted;
     await f.store.deleteAuthored({ ...accept(row), requestId: 'delete' });
     expect(await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome })).toBe(true);
-    expect(await f.store.findOne(row)).toBeNull(); expect(await f.store.recentFires(row)).toHaveLength(1);
+    expect(await f.store.findOne(row)).toBeNull(); expect(await f.store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner' })).toHaveLength(1);
     await f.store.purgeAgent('a');
     expect(await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome })).toBe(false);
-    expect(await f.store.recentFires(row)).toEqual([]);
+    expect(await f.store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner' })).toEqual([]);
     expect((await sql`SELECT * FROM routines_v1_requests`.execute(f.db)).rows).toHaveLength(0);
   });
   it('acceptedDispatchId finds the check-in a request started, whatever the revision is now (TASK-937)', async () => {
@@ -96,7 +98,7 @@ describe('agent retirement serialization', () => {
     const finish = f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome });
     await expect.poll(async () => Number((await sql<{ n: string }>`SELECT count(*)::text AS n FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%routines_v1_dispatches%'`.execute(f.db)).rows[0]!.n)).toBeGreaterThan(0);
     const purge = f.store.purgeAgent('a'); release(); await blocker; await finish; await purge;
-    expect(await f.store.recentFires(row)).toEqual([]);
+    expect(await f.store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner' })).toEqual([]);
     expect(await f.store.finishDispatch({ dispatchId: dispatch.dispatchId, outcome })).toBe(false);
   });
 });
