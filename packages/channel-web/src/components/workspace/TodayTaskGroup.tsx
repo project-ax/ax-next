@@ -44,8 +44,8 @@
  * TASK-956), not whether a reply can start a check-in, so the box never
  * promises a check-in Today can't vouch for, and the server's answer says
  * what happened. A sent reply calls `onReplied`, so Today can read the tasks
- * again. Started/replayed answers also watch for a new report or miss every
- * 10 seconds, for up to five minutes, through the shared list read.
+ * again. Started/replayed answers also notify Today to keep its shared list
+ * reading for five minutes, even if this block disappears meanwhile.
  *
  * OPEN TASK is always shown, in the block's own actions, and is a real link,
  * so it can open in a new tab too (`routeLinkProps`).
@@ -67,7 +67,6 @@ import { TASK_GROUP_LABELS, type TodayTaskReason } from '@/lib/task-groups';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
 import type { TodayGroup } from '@/lib/today-queue';
 import { cn } from '@/lib/utils';
-import { useTaskRowPoll } from '@/lib/use-task-poll';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { isOpenDecision, type TaskRow } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
@@ -131,15 +130,15 @@ export function TodayTaskGroup({
   group,
   onNavigate,
   onReplied,
-  onPollTasks,
+  onCheckInStarted,
   children,
 }: {
   group: TodayGroup;
   onNavigate: (route: WorkspaceRoute) => void;
   /** A reply was sent from this block's box: the shell reads the tasks again. */
   onReplied: () => void;
-  /** Periodic reads join the shared list read rather than superseding it. */
-  onPollTasks: () => void;
+  /** A reply started a check-in: the stable Today owner keeps reading the list. */
+  onCheckInStarted: () => void;
   /**
    * The block's approvals, already drawn as `DecisionRow`s, in `group.decisions`
    * order. Draw them without `onNavigate`: the block's own Open task is its
@@ -147,7 +146,12 @@ export function TodayTaskGroup({
    */
   children?: ReactNode;
 }) {
-  const poll = useTaskRowPoll(group.row, onPollTasks);
+  // A newly observed report/miss clears a running receipt, without claiming
+  // which overlapping check-in reported. It must never stop Today's refresh.
+  const reportAt = group.row?.task?.reportedAt ?? null;
+  const missAt = group.row?.noRecentUpdate?.at ?? null;
+  const observedCheckIn =
+    reportAt === null && missAt === null ? null : `${reportAt ?? ''}|${missAt ?? ''}`;
   const headingId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -350,9 +354,9 @@ export function TodayTaskGroup({
                 enabled={boxRow.enabled}
                 canStart={false}
                 mode={boxMode}
-                completedCheckIn={poll.arrived}
+                completedCheckIn={observedCheckIn}
                 onSent={(checkIn) => {
-                  if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply');
+                  if (checkIn === 'started' || checkIn === 'replayed') onCheckInStarted();
                   onReplied();
                 }}
                 inputRef={replyRef}

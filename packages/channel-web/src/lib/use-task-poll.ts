@@ -1,7 +1,8 @@
 /**
- * "Checking in now…" on a task page (TASK-931), and bounded Today re-reads (TASK-940): after Check now or a reply
+ * "Checking in now…" on a task page (TASK-931): after Check now or a reply
  * starts a check-in, the page reads the task again every 10 seconds until that
- * check-in's update is there, for up to five minutes.
+ * check-in's update is there, for up to five minutes. Today shares the clock
+ * but keeps its reply refresh alive for the full window (TASK-940).
  *
  * WHEN IT STOPS. A check-in counts as the one the press started when it
  * wasn't on the page at the press (`seen`) and started no earlier than a
@@ -61,7 +62,7 @@ interface PollState<T> {
   arrived: T | null;
 }
 
-/** Shared bounded clock for the detail page and Today's list-row view (TASK-940). */
+/** Shared bounded clock for the detail page and Today's reply window (TASK-940). */
 function useBoundedTaskPoll<T, A>(
   snapshot: T | null,
   reread: () => void,
@@ -84,7 +85,7 @@ function useBoundedTaskPoll<T, A>(
   }, []);
 
   const start = useCallback((by: TaskPollStarter) => {
-    if (!mounted.current) return;
+    if (!mounted.current || latest.current.snapshot === null) return;
     clear();
     press.current = { at: Date.now(), before: latest.current.snapshot };
     setPoll({ phase: 'checking', startedBy: by, arrived: null });
@@ -135,22 +136,12 @@ export function useTaskPoll(updates: readonly TaskUpdate[] | null, reread: () =>
 }
 
 /**
- * Today has report/miss timestamps, not the detail page's fire identities.
- * This is a bounded best-effort refresh: when runs overlap, an older run's
- * late result can be the first changed timestamp and end the poll. The list
- * cannot identify which run a reply started; do not claim that it can.
+ * Today owns this clock above its disposable task rows. The list has no run
+ * identity: an older overlapping check-in can report first and remove a row,
+ * so no row result can prove the reply's check-in has finished. Keep reading
+ * for the full bounded window; `active` turns false on the Working tab, and
+ * leaving Today unmounts the owner. Ticks should join the shared list read.
  */
-export function useTaskRowPoll(
-  row: { task: { reportedAt: string } | null; noRecentUpdate: { at: string } | null } | null,
-  reread: () => void,
-) {
-  const snapshot = row === null ? null : {
-    report: row.task?.reportedAt ?? null,
-    miss: row.noRecentUpdate?.at ?? null,
-  };
-  return useBoundedTaskPoll(snapshot, reread, (current, before) => {
-    if (current.report !== null && current.report !== before?.report) return `report:${current.report}`;
-    if (current.miss !== null && current.miss !== before?.miss) return `miss:${current.miss}`;
-    return null;
-  });
+export function useTaskReplyPoll(active: boolean, reread: () => void) {
+  return useBoundedTaskPoll(active ? true : null, reread, () => null);
 }

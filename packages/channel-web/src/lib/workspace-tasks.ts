@@ -8,8 +8,8 @@
  * reply sent from Today, when a Duplicate answer lands after the person
  * left the source task (TASK-953), and when an approved routine change goes
  * through (TASK-939). A reply that starts a check-in on Today also arms a
- * bounded poll (TASK-940): every 10 seconds for up to five minutes, until
- * a new report or miss appears.
+ * bounded poll (TASK-940): every 10 seconds for five minutes while Today
+ * stays on Needs you. It outlives any one row/result because runs may overlap.
  *
  * Two ways to read again. `retry` (Try again, entering Today or Tasks, bounded poll ticks) joins a
  * read already in flight instead of starting another: a read can take up to

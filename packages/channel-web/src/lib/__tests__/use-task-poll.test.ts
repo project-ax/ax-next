@@ -13,7 +13,7 @@ import {
   TASK_POLL_INTERVAL_MS,
   TASK_POLL_LIMIT_MS,
   useTaskPoll,
-  useTaskRowPoll,
+  useTaskReplyPoll,
 } from '../use-task-poll';
 
 const NOW = new Date(2026, 9, 23, 12, 0);
@@ -208,30 +208,11 @@ describe('useTaskPoll (TASK-931)', () => {
 });
 
 
-describe('Today list-row polling (TASK-940)', () => {
-  const row = { task: { reportedAt: EARLIER }, noRecentUpdate: null as { at: string } | null };
-
-  it.each(['report', 'miss'] as const)('waits through unchanged rows, then stops on a new %s', async (kind) => {
-    const reread = vi.fn();
-    const { result, rerender } = renderHook(({ current }) => useTaskRowPoll(current, reread), {
-      initialProps: { current: row },
-    });
-    act(() => result.current.start('reply'));
-    rerender({ current: { ...row, task: { ...row.task } } });
-    await advance(10_000);
-    expect(reread).toHaveBeenCalledTimes(1);
-    const at = NOW.toISOString();
-    rerender({ current: kind === 'report' ? { ...row, task: { reportedAt: at } } : { ...row, noRecentUpdate: { at } } });
-    expect(result.current.phase).toBe('arrived');
-    expect(result.current.arrived).toBe(`${kind}:${at}`);
-    await advance(30_000);
-    expect(reread).toHaveBeenCalledTimes(1);
-  });
-
-  it('uses the latest callback without restarting the clock, restarts on Send, and expires after five minutes', async () => {
+describe('Today reply refresh window (TASK-940)', () => {
+  it('keeps reading for the full window; callback changes do not restart it, and another Send does', async () => {
     const first = vi.fn();
     const next = vi.fn();
-    const { result, rerender, unmount } = renderHook(({ reread }) => useTaskRowPoll(row, reread), {
+    const { result, rerender, unmount } = renderHook(({ reread }) => useTaskReplyPoll(true, reread), {
       initialProps: { reread: first },
     });
     act(() => result.current.start('reply'));
@@ -254,5 +235,26 @@ describe('Today list-row polling (TASK-940)', () => {
     start('reply');
     await advance(30_000);
     expect(next).toHaveBeenCalledTimes(calls);
+  });
+
+  it('stops on Working, refuses a late Send there, and does not restart on returning to Needs you', async () => {
+    const reread = vi.fn();
+    const { result, rerender } = renderHook(({ active }) => useTaskReplyPoll(active, reread), {
+      initialProps: { active: true },
+    });
+    act(() => result.current.start('reply'));
+    await advance(10_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    rerender({ active: false });
+    expect(result.current.phase).toBe('idle');
+    act(() => result.current.start('reply'));
+    await advance(30_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    rerender({ active: true });
+    await advance(30_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    act(() => result.current.start('reply'));
+    await advance(10_000);
+    expect(reread).toHaveBeenCalledTimes(2);
   });
 });

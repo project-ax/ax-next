@@ -96,7 +96,7 @@ function renderGroup(g: TodayGroup, children?: ReactNode) {
   const onNavigate = vi.fn();
   const onReplied = vi.fn();
   const view = render(
-    <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onPollTasks={vi.fn()}>
+    <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onCheckInStarted={vi.fn()}>
       {children}
     </TodayTaskGroup>,
   );
@@ -406,7 +406,7 @@ describe('TodayTaskGroup (TASK-933)', () => {
     const onNavigate = vi.fn();
     const onReplied = vi.fn();
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onCheckInStarted={vi.fn()} />
     );
     const view = render(ui(ask));
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
@@ -541,7 +541,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     const onNavigate = vi.fn();
     const onReplied = vi.fn();
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={onNavigate} onReplied={onReplied} onCheckInStarted={vi.fn()} />
     );
     const view = render(ui(group([claimed()])));
     fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
@@ -612,7 +612,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
   it('after an unconfirmed Mark done, a claim that goes and comes back is a new press', async () => {
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />
     );
     const view = render(ui(group([claimed()])));
     await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
@@ -632,7 +632,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
   it('after an unconfirmed Mark done anyway, a claim that goes and comes back asks afresh', async () => {
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />
     );
     const steps = { done: 1, total: 3 };
     const view = render(ui(group([claimed({ steps })])));
@@ -652,7 +652,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
   it('after an unconfirmed Mark done, a newer claim on the next read is a new press', async () => {
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />
     );
     const view = render(ui(group([claimed()])));
     await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
@@ -668,7 +668,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
   it('after an unconfirmed Mark done, a read showing the same claim keeps the press', async () => {
     const ui = (g: TodayGroup) => (
-      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onPollTasks={vi.fn()} />
+      <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />
     );
     const view = render(ui(group([claimed()])));
     await failWhileBusy(screen.getByRole('button', { name: 'Mark done' }), 502);
@@ -704,7 +704,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     const g = group([claimed()]);
     render(
       <div data-consent-region="" tabIndex={-1} aria-label="Waiting on you">
-        <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={onReplied} onPollTasks={vi.fn()} />
+        <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={onReplied} onCheckInStarted={vi.fn()} />
       </div>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
@@ -715,38 +715,61 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
 
 describe('bounded Today reply refresh (TASK-940)', () => {
-  it.each(['started', 'replayed', 'paused', 'not-allowed'] as const)('polls only a running reply answer: %s', async (checkIn) => {
+  it.each(['started', 'replayed', 'paused', 'not-allowed'] as const)('starts the parent window only for a running reply answer: %s', async (checkIn) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     sendMock.mockResolvedValue({ checkIn });
     const onReplied = vi.fn();
-    const onPollTasks = vi.fn();
+    const onCheckInStarted = vi.fn();
     const view = render(<TodayTaskGroup group={group([asking()])} onNavigate={vi.fn()}
-      onReplied={onReplied} onPollTasks={onPollTasks} />);
+      onReplied={onReplied} onCheckInStarted={onCheckInStarted} />);
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
     fireEvent.change(screen.getByRole('textbox', { name: BOX }), { target: { value: 'Please draft it.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
-    expect(onPollTasks).toHaveBeenCalledTimes(checkIn === 'started' || checkIn === 'replayed' ? 1 : 0);
+    expect(onCheckInStarted).toHaveBeenCalledTimes(checkIn === 'started' || checkIn === 'replayed' ? 1 : 0);
     view.unmount();
-    const reads = onPollTasks.mock.calls.length;
+    const starts = onCheckInStarted.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(onPollTasks).toHaveBeenCalledTimes(reads);
+    expect(onCheckInStarted).toHaveBeenCalledTimes(starts);
   });
 
-  it('a reply answer arriving after unmount starts no timer', async () => {
+  it('a new report clears its receipt while later row reads preserve the draft and focus', async () => {
+    sendMock.mockResolvedValue({ checkIn: 'started' });
+    const props = { onNavigate: vi.fn(), onReplied: vi.fn(), onCheckInStarted: vi.fn() };
+    const view = render(<TodayTaskGroup group={group([asking()])} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    const input = screen.getByRole('textbox', { name: BOX });
+    fireEvent.change(input, { target: { value: 'Please draft it.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByText('Sent. Caveman started checking in.')).toBeInTheDocument());
+    view.rerender(<TodayTaskGroup group={group([row({ task: report('needs-you', {
+      ask: 'Which reply?', reportedAt: '2026-10-23T11:00:00.000Z',
+    }) })])} {...props} />);
+    expect(screen.queryByText('Sent. Caveman started checking in.')).toBeNull();
+    fireEvent.change(input, { target: { value: 'My next draft' } });
+    input.focus();
+    view.rerender(<TodayTaskGroup group={group([row({ task: report('needs-you', {
+      ask: 'Which reply?', reportedAt: '2026-10-23T12:00:00.000Z',
+    }) })])} {...props} />);
+    expect(screen.getByRole('textbox', { name: BOX })).toBe(input);
+    expect(input).toHaveValue('My next draft');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('a late reply answer still informs the parent, whose lifetime controls the clock', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let land!: (answer: { checkIn: 'started' }) => void;
     sendMock.mockReturnValue(new Promise((res) => (land = res)));
-    const onPollTasks = vi.fn();
+    const onCheckInStarted = vi.fn();
     const view = render(<TodayTaskGroup group={group([asking()])} onNavigate={vi.fn()}
-      onReplied={vi.fn()} onPollTasks={onPollTasks} />);
+      onReplied={vi.fn()} onCheckInStarted={onCheckInStarted} />);
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
     fireEvent.change(screen.getByRole('textbox', { name: BOX }), { target: { value: 'Please draft it.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     view.unmount();
     await act(async () => land({ checkIn: 'started' }));
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(onPollTasks).not.toHaveBeenCalled();
+    expect(onCheckInStarted).toHaveBeenCalledTimes(1);
   });
 });

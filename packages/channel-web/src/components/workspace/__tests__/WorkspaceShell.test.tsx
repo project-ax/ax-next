@@ -945,7 +945,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     tasksMock
       .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [] })
       .mockReturnValueOnce(new Promise((res) => (land = res)))
-      .mockResolvedValueOnce({ tasks: [onTrack()], unavailableAgents: [] });
+      .mockResolvedValue({ tasks: [onTrack()], unavailableAgents: [] });
     sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
     const view = renderShell();
     const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
@@ -962,7 +962,51 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(screen.getByText('Nothing is waiting on you.')).toBeInTheDocument();
     expect(badge()).toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(tasksMock).toHaveBeenCalledTimes(6);
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(tasksMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('keeps a reply refresh alive when older check-in A removes the row before reply check-in B needs you (TASK-940)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const olderReport = taskRow({
+      task: {
+        ...taskRow().task!,
+        status: 'on-track',
+        ask: null,
+        update: 'A finished its earlier check-in.',
+        reportedAt: '2026-10-23T10:01:00.000Z',
+      },
+    });
+    const replyReport = taskRow({
+      task: {
+        ...taskRow().task!,
+        ask: 'B needs your answer about the new reply.',
+        reportedAt: '2026-10-23T10:02:00.000Z',
+      },
+    });
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [] })
+      // A was already running when the reply started B. A lands first.
+      .mockResolvedValueOnce({ tasks: [olderReport], unavailableAgents: [] })
+      .mockResolvedValue({ tasks: [replyReport], unavailableAgents: [] });
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
+    const view = renderShell();
+    const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(within(block).getByRole('textbox'), { target: { value: 'Please check the new reply.' } });
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();
+    expect(badge()).toBeNull();
+
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(tasksMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('B needs your answer about the new reply.')).toBeInTheDocument();
+    expect(screen.getByText('One thing is waiting on you.')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Needs you/ }).textContent).toBe('Needs you1');
+    expect(badge()?.textContent).toBe('1');
     view.unmount();
   });
 
@@ -979,6 +1023,25 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Working/ }));
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(tasksMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['working', 'tasks'] as const)('a late reply answer after leaving Needs you for %s starts no refresh window', async (destination) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
+    let land!: (answer: { checkIn: 'started' }) => void;
+    sendTaskReplyMock.mockReturnValue(new Promise((res) => (land = res)));
+    const view = renderShell();
+    const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(within(block).getByRole('textbox'), { target: { value: 'Please draft it.' } });
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    if (destination === 'working') fireEvent.click(screen.getByRole('radio', { name: /Working/ }));
+    else fireEvent.click(screen.getByRole('button', { name: /^Tasks/ }));
+    await act(async () => land({ checkIn: 'started' }));
+    const readsAfterWrite = tasksMock.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(tasksMock).toHaveBeenCalledTimes(readsAfterWrite);
+    view.unmount();
   });
 
   it('a reply sent from Today reads the tasks again', async () => {
