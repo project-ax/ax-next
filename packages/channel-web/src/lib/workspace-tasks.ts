@@ -5,16 +5,18 @@
  * The shell owns it (TASK-933; TASK-909 decisions row 10 had it inside
  * `TasksPage`), so one read serves Today, the sidebar badge and the Tasks page.
  * The shell reads it at mount, again on entering Today or Tasks, after a
- * reply sent from Today, and when a Duplicate answer lands after the person
- * left the source task (TASK-953). It doesn't poll.
+ * reply sent from Today, when a Duplicate answer lands after the person
+ * left the source task (TASK-953), and when an approved routine change goes
+ * through (TASK-939). It doesn't poll.
  *
  * Two ways to read again. `retry` (Try again, entering Today or Tasks) joins a
  * read already in flight instead of starting another: a read can take up to
  * 10 s when an agent's routines hang, and restarting it on every click or
  * route change would drop each answer before it lands. `reload` (after a
  * reply, on coming back from a task or check-in page, where a reply,
- * Pause or Resume may have happened, and when a Duplicate answer lands after
- * the person left the source task) always starts a fresh read, because the
+ * Pause or Resume may have happened, when a Duplicate answer lands after
+ * the person left the source task, and when an approved routine change goes
+ * through) always starts a fresh read, because the
  * one in flight may predate it; the newer answer wins.
  *
  * A read that never answers fails after `TASKS_READ_TIMEOUT_MS`, like any
@@ -174,25 +176,31 @@ export function useTasks(): {
  * The first load reads as no rows and no error; a retry after a failure keeps
  * that failure until a read lands. A failed refresh with rows on screen is
  * `failed` too, and keeps the rows: they may be out of date. `refreshing` says a
- * read is in flight, so Today holds its Try again until it lands.
+ * read is in flight, so Today holds its Try again until it lands. `checking` is
+ * true until the first read lands (a reload during it included). Until then
+ * Today doesn't know whether any task needs the person, so it says it is still
+ * checking (TASK-939). A retry after a failure isn't checking: it keeps
+ * reporting the failure.
  */
 export function tasksForToday(state: TasksState): {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
   error: TasksReadError | null;
   refreshing: boolean;
+  checking: boolean;
 } {
   switch (state.kind) {
     case 'loading':
-      return { tasks: [], unavailableAgents: [], error: state.retryingAfter, refreshing: true };
+      return { tasks: [], unavailableAgents: [], error: state.retryingAfter, refreshing: true, checking: state.retryingAfter === null };
     case 'ready':
       return {
         tasks: state.tasks,
         unavailableAgents: state.unavailableAgents,
         error: state.refreshFailed ? 'failed' : null,
         refreshing: state.refreshing,
+        checking: false,
       };
     case 'failed':
-      return { tasks: [], unavailableAgents: [], error: state.error, refreshing: false };
+      return { tasks: [], unavailableAgents: [], error: state.error, refreshing: false, checking: false };
   }
 }

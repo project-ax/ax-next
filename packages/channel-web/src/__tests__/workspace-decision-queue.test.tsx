@@ -27,6 +27,7 @@ import {
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-types';
 import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import {
+  DECISION_ACTION_FAILED,
   DECISION_GOING_OUT,
   DECISION_GOING_OUT_NOTE,
   DECISION_ROUTINE_UNDERWAY,
@@ -86,6 +87,16 @@ async function tick(ms: number): Promise<void> {
 async function mountWith(rows: Decision[]) {
   listDecisions.mockResolvedValue({ decisions: rows });
   const handle = renderHook(() => useDecisionQueue());
+  await settle();
+  return handle;
+}
+
+async function mountWithHooks(
+  rows: Decision[],
+  hooks: Parameters<typeof useDecisionQueue>[0],
+) {
+  listDecisions.mockResolvedValue({ decisions: rows });
+  const handle = renderHook(() => useDecisionQueue(hooks));
   await settle();
   return handle;
 }
@@ -446,16 +457,6 @@ describe('useDecisionQueue — onDecisionUndone (TASK-574)', () => {
     vi.useRealTimers();
   });
 
-  async function mountWithHooks(
-    rows: Decision[],
-    hooks: Parameters<typeof useDecisionQueue>[0],
-  ) {
-    listDecisions.mockResolvedValue({ decisions: rows });
-    const handle = renderHook(() => useDecisionQueue(hooks));
-    await settle();
-    return handle;
-  }
-
   it('calls onDecisionUndone with the id when the server takes the approval back', async () => {
     const onDecisionUndone = vi.fn();
     const resolved = resolvedFixture('executed');
@@ -520,6 +521,328 @@ describe('useDecisionQueue — onDecisionUndone (TASK-574)', () => {
     const [decision, streamReqId] = onDecisionApproved.mock.calls[0]!;
     expect(streamReqId).toBe('req-1');
     expect(decision.pendingUntil).toBe(due);
+  });
+});
+
+/*
+  TASK-939 — an approved routine change can change the tasks list, so the shell
+  reads it again when one goes through. An unattended create, edit or delete is
+  replayed inside the approve request, so its answer already says so; a fire-now
+  (or an attended approval) says so on a later poll of its row.
+*/
+describe('useDecisionQueue — onRoutineChangeSucceeded (TASK-939)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T12:00:00.000Z'));
+    listDecisions.mockReset();
+    readDecision.mockReset();
+    approveDecision.mockReset();
+    dismissDecision.mockReset();
+    undoDecision.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A routine edit held during a check-in, still open. */
+  const held = () => decisionFixture({ id: 'd-edit', routineOperation: 'routine_update' });
+
+  /** The approve answer around `decision`. */
+  const approved = (decision: Decision, executed = false) => ({
+    decision,
+    executed,
+    path: 'host-replays' as const,
+    error: null,
+    pendingUntil: null,
+    streamReqId: null,
+  });
+
+  /** The edit, already replayed inside the approve: not undoable, outcome known. */
+  const editWentThrough = () =>
+    resolvedFixture('executed', {
+      id: 'd-edit',
+      routineOperation: 'routine_update',
+      routineOutcome: 'succeeded',
+      undoable: false,
+    });
+
+  /** A run-now just approved: deferred behind its undo window, outcome not known yet. */
+  const fireNow = () =>
+    resolvedFixture('executed', {
+      id: 'd-fire',
+      routineOperation: 'routine_fire_now',
+      routineOutcome: null,
+      undoable: true,
+      pendingUntil: new Date(Date.now() + UNDO_WINDOW_MS).toISOString(),
+    });
+
+  it('calls it once when the approve answer already says the change went through', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+
+    approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+    act(() => result.current.approve('d-edit'));
+    await settle();
+
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+    expect(onRoutineChangeSucceeded.mock.calls[0]![0]).toMatchObject({ id: 'd-edit', routineOutcome: 'succeeded' });
+  });
+
+  it('an answer that says so, then polls that say so again, still call it once', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+
+    // Still undoable, so the row stays watched and every tick polls it.
+    const went = resolvedFixture('executed', {
+      id: 'd-edit',
+      routineOperation: 'routine_update',
+      routineOutcome: 'succeeded',
+      undoable: true,
+    });
+    approveDecision.mockResolvedValue(approved(went, true));
+    readDecision.mockResolvedValue({ decision: went });
+    act(() => result.current.approve('d-edit'));
+    await settle();
+    await tick(POLL_MS * 3);
+
+    expect(readDecision.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new function on every render never restarts the poll', async () => {
+    const fired = fireNow();
+    listDecisions.mockResolvedValue({ decisions: [fired] });
+    readDecision.mockResolvedValue({ decision: fired });
+    const { rerender } = renderHook(
+      ({ cb }: { cb: (d: Decision) => void }) => useDecisionQueue({ onRoutineChangeSucceeded: cb }),
+      { initialProps: { cb: vi.fn() } },
+    );
+    await settle();
+
+    // A caller passing an inline arrow re-renders with a new one every 500 ms.
+    for (let i = 0; i < 4; i++) {
+      await tick(POLL_MS / 2);
+      rerender({ cb: vi.fn() });
+    }
+
+    expect(readDecision.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('calls it once when a poll first reads success, and not while the outcome is pending', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const fired = fireNow();
+    await mountWithHooks([fired], { onRoutineChangeSucceeded });
+
+    readDecision.mockResolvedValue({ decision: fired });
+    await tick(POLL_MS);
+    expect(readDecision).toHaveBeenCalled();
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+
+    // Still inside its undo window, so every tick polls it again and reads success again.
+    readDecision.mockResolvedValue({ decision: { ...fired, routineOutcome: 'succeeded' } });
+    const before = readDecision.mock.calls.length;
+    await tick(POLL_MS * 3);
+    expect(readDecision.mock.calls.length - before).toBeGreaterThanOrEqual(2);
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('an Undo refused because the change already ran carries its success: calls it, once', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const fired = fireNow();
+    const { result } = await mountWithHooks([fired], { onRoutineChangeSucceeded });
+    readDecision.mockResolvedValue({ decision: fired });
+    await tick(POLL_MS);
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+
+    // The change ran after that poll, and the Undo reached the server before
+    // the next one: the refusal is the first answer to say it went through.
+    const ran = { ...fired, routineOutcome: 'succeeded' as const };
+    undoDecision.mockResolvedValue({ decision: ran, undone: false });
+    readDecision.mockResolvedValue({ decision: ran });
+    act(() => result.current.undo('d-fire'));
+    await settle();
+
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+    expect(onRoutineChangeSucceeded.mock.calls[0]![0]).toMatchObject({ id: 'd-fire', routineOutcome: 'succeeded' });
+    await tick(POLL_MS * 2);
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('a poll that says so, then an Undo refused with the same success, still call it once', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const ran = { ...fireNow(), routineOutcome: 'succeeded' as const };
+    const { result } = await mountWithHooks([fireNow()], { onRoutineChangeSucceeded });
+    readDecision.mockResolvedValue({ decision: ran });
+    await tick(POLL_MS);
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+
+    // Still inside its window, so Undo is still offered, and the server refuses it.
+    undoDecision.mockResolvedValue({ decision: ran, undone: false });
+    act(() => result.current.undo('d-fire'));
+    await settle();
+
+    expect(undoDecision).toHaveBeenCalledTimes(1);
+    expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('never for a routine change that failed', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+
+    approveDecision.mockResolvedValue(
+      approved(resolvedFixture('executed', { id: 'd-edit', routineOperation: 'routine_update', routineOutcome: 'failed', undoable: false })),
+    );
+    act(() => result.current.approve('d-edit'));
+    await settle();
+    await tick(POLL_MS * 2);
+
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('never for a dismissal', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+
+    const dismissed = resolvedFixture('dismissed', { id: 'd-edit', routineOperation: 'routine_update' });
+    dismissDecision.mockResolvedValue({ decision: dismissed });
+    readDecision.mockResolvedValue({ decision: dismissed });
+    act(() => result.current.dismiss('d-edit'));
+    await settle();
+    await tick(POLL_MS * 2);
+
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('never for an approval that is not a routine change, even under a task', async () => {
+    const onRoutineChangeSucceeded = vi.fn();
+    const mail = decisionFixture({ id: 'd-mail', checkIn: { routineId: 't1', taskName: 'Zero open support tickets' } });
+    const { result } = await mountWithHooks([mail], { onRoutineChangeSucceeded });
+
+    const parked = resolvedFixture('approved-pending-agent', { id: 'd-mail' });
+    approveDecision.mockResolvedValue({ ...approved(parked), path: null });
+    readDecision.mockResolvedValue({ decision: parked });
+    act(() => result.current.approve('d-mail'));
+    await settle();
+    await tick(POLL_MS * 2);
+
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('never for a list read, even one that carries a success', async () => {
+    /*
+      Only an answer or a poll is news this tab saw. The list holds open rows
+      only, so a resolved row never arrives this way; a receipt a read keeps is
+      our own copy, already reported by its answer or poll; and at mount a read
+      like this would re-read the tasks for changes their own first read
+      already includes.
+    */
+    const onRoutineChangeSucceeded = vi.fn();
+    const { result } = await mountWithHooks([editWentThrough()], { onRoutineChangeSucceeded });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    await tick(POLL_MS * 2);
+
+    expect(listDecisions).toHaveBeenCalledTimes(2);
+    expect(result.current.decisions[0]).toMatchObject({ id: 'd-edit', routineOutcome: 'succeeded' });
+    expect(onRoutineChangeSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('calls the function from the latest render', async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    listDecisions.mockResolvedValue({ decisions: [held()] });
+    const { result, rerender } = renderHook(
+      ({ cb }: { cb: (d: Decision) => void }) => useDecisionQueue({ onRoutineChangeSucceeded: cb }),
+      { initialProps: { cb: first } },
+    );
+    await settle();
+    rerender({ cb: second });
+
+    approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+    act(() => result.current.approve('d-edit'));
+    await settle();
+
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+  });
+
+  it('a subscriber that throws never turns an accepted approval into a failed one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const onRoutineChangeSucceeded = vi.fn(() => {
+        throw new Error('subscriber broke');
+      });
+      const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded });
+
+      approveDecision.mockResolvedValue(approved(editWentThrough(), true));
+      act(() => result.current.approve('d-edit'));
+      await settle();
+
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+      expect(result.current.decisions[0]).toMatchObject({ id: 'd-edit', status: 'executed', routineOutcome: 'succeeded' });
+      expect(result.current.notices.get('d-edit')).not.toBe(DECISION_ACTION_FAILED);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('did not reach the server'))).toBe(false);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('announcing the routine change of d-edit failed'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a continuation that throws never skips the announcement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const onRoutineChangeSucceeded = vi.fn();
+      const onDecisionApproved = vi.fn(() => {
+        throw new Error('continuation broke');
+      });
+      const { result } = await mountWithHooks([held()], { onRoutineChangeSucceeded, onDecisionApproved });
+
+      // Replayed inside the approve, so this answer is the only word: nothing polls it.
+      // A real continuation id, so the continuation runs whatever the queue's null-stream rule.
+      approveDecision.mockResolvedValue({ ...approved(editWentThrough(), true), streamReqId: 'req-1' });
+      act(() => result.current.approve('d-edit'));
+      await settle();
+
+      expect(onDecisionApproved).toHaveBeenCalledTimes(1);
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a subscriber that throws on a poll still lets the poll announce delivered permission', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const changed = vi.fn();
+    window.addEventListener('ax:routine-permissions-changed', changed);
+    try {
+      const onRoutineChangeSucceeded = vi.fn(() => {
+        throw new Error('subscriber broke');
+      });
+      const pending = resolvedFixture('executed', {
+        id: 'd-standing',
+        routineOperation: 'routine_create',
+        approvalScope: 'agent-routines',
+        consentDeliveryState: 'pending',
+        consentGranted: null,
+        routineOutcome: null,
+        undoable: false,
+        resolvedAt: new Date(Date.now() - 11_000).toISOString(),
+      });
+      await mountWithHooks([pending], { onRoutineChangeSucceeded });
+
+      readDecision.mockResolvedValue({
+        decision: { ...pending, consentDeliveryState: 'delivered', consentGranted: true, routineOutcome: 'succeeded' },
+      });
+      await tick(POLL_MS);
+
+      expect(onRoutineChangeSucceeded).toHaveBeenCalledTimes(1);
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('ax:routine-permissions-changed', changed);
+      warn.mockRestore();
+    }
   });
 });
 

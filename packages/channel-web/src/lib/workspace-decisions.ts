@@ -48,6 +48,12 @@
  * already had when it carries none (`keepCheckIn`); a new label replaces the
  * old. A list read still decides an open row's label: it is the server's fresh
  * word on it (a deleted task, an owner change).
+ *
+ * AND AN APPROVED ROUTINE CHANGE IS ANNOUNCED ONCE (TASK-939). Whichever answer
+ * or poll first carries its success (`routineOutcome: 'succeeded'`) tells the
+ * queue's owner (`onRoutineChangeSucceeded`), so the shell can read the tasks
+ * list again. The set of ids already announced lasts as long as the queue: one
+ * id per change.
  */
 import { isRoutineDecision } from '@/components/workspace/decision-copy';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -318,10 +324,32 @@ export interface DecisionQueueHooks {
    * continuation — standing, so it says nothing.
    */
   onDecisionUndone?: (decisionId: string) => void;
+  /**
+   * TASK-939 — fires once per decision, when an answer or a poll of its row
+   * first says its approved routine change succeeded (`routineOutcome:
+   * 'succeeded'`): a task was started, edited or deleted, or a check-in was
+   * started. The shell reads the tasks list again when it fires.
+   *
+   * An unattended create, edit or delete is replayed inside the approve
+   * request, so the approve answer already says so. So is an unattended
+   * standing (`agent-routines`) approval whose consent was delivered in that
+   * request. A fire-now, an attended approval, or a standing one whose consent
+   * is still pending says so on a later poll.
+   *
+   * A failed change, an Undo the server accepted and any other approval don't
+   * fire it, and nor does a dismissal: none of them changes a task. An Undo
+   * refused because the change already ran, or a dismissal that lost the race
+   * to an approval elsewhere, is answered with the stored row; when that row
+   * carries the change's success, it fires, once.
+   *
+   * A subscriber that throws is logged and goes no further (see
+   * `noteRoutineChange`).
+   */
+  onRoutineChangeSucceeded?: (decision: Decision) => void;
 }
 
 export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
-  const { onDecisionApproved, onDecisionUndone } = hooks ?? {};
+  const { onDecisionApproved, onDecisionUndone, onRoutineChangeSucceeded } = hooks ?? {};
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DecisionReadError | null>(null);
@@ -343,6 +371,40 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * lands every entry is moot and the map is cleared.
    */
   const appliedAtRead = useRef(new Map<string, number>());
+
+  /*
+   * TASK-939 — the newest `onRoutineChangeSucceeded`, read through a ref like
+   * `decisionsRef` below, so a caller passing a new function on every render
+   * never re-subscribes the poll; and the ids already announced. Declared up
+   * here, before `act`, whose dependency list reads `noteRoutineChange` during
+   * render.
+   */
+  const routineSucceededRef = useRef(onRoutineChangeSucceeded);
+  routineSucceededRef.current = onRoutineChangeSucceeded;
+  const announcedRoutineChanges = useRef(new Set<string>());
+
+  /**
+   * Announce `row`'s routine change if this is the first word that it went
+   * through. Called with a row an answer or a poll handed back, after it is
+   * applied and never inside a state updater: React may run an updater twice,
+   * and this reaches outside the queue. Stable, so listing it changes neither
+   * `act` nor the poll.
+   *
+   * A subscriber that throws is the subscriber's failure, not the queue's: it
+   * is logged here and goes no further, so this subscriber never makes an
+   * approval the server accepted read as one that didn't reach it, and never
+   * makes a poll that answered count as a failed re-read.
+   */
+  const noteRoutineChange = useCallback((row: Decision) => {
+    if (row.routineOutcome !== 'succeeded') return;
+    if (announcedRoutineChanges.current.has(row.id)) return;
+    announcedRoutineChanges.current.add(row.id);
+    try {
+      routineSucceededRef.current?.(row);
+    } catch (err) {
+      console.warn(`[decisions] announcing the routine change of ${row.id} failed`, err);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const id = ++readId.current;
@@ -486,6 +548,12 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           }
           applyServerRow(decision);
           setNotice(id, notice);
+          // TASK-939 — an approve answer, an Undo refused because the change
+          // already ran, or a dismissal that lost the race to an approval
+          // elsewhere can be the first word that it went through. Before
+          // `report`: it can't throw, and a continuation that throws must not
+          // skip it (an unattended change's answer is the only word we get).
+          noteRoutineChange(decision);
           report?.(raw, decision);
         } catch (err) {
           // Quiet in the UI is not silent anywhere else. The READ path
@@ -506,7 +574,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
         }
       })();
     },
-    [applyServerRow, busyIds, setNotice],
+    [applyServerRow, busyIds, setNotice, noteRoutineChange],
   );
 
   const approve = useCallback(
@@ -661,6 +729,11 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
             if (out.decision.approvalScope === 'agent-routines' && out.decision.consentDeliveryState !== d.consentDeliveryState) {
               window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', { detail: { agentId: d.agentId } }));
             }
+            // TASK-939 — a fire-now, an attended approval or a standing one whose
+            // consent was pending first says it went through here. Even when the
+            // race guard keeps the row as it is, the server's word that a task
+            // changed still stands.
+            noteRoutineChange(out.decision);
           })
           // A FAILED poll changes nothing and sets no notice. The row keeps
           // saying what the server last told us: a transient network blip
@@ -689,7 +762,7 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
       }
     }, UNDO_POLL_MS);
     return () => clearInterval(id);
-  }, [watchedKey, applyPolledRow]);
+  }, [watchedKey, applyPolledRow, noteRoutineChange]);
 
   return {
     decisions,

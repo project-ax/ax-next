@@ -39,6 +39,8 @@ const sendTaskReplyMock = vi.mocked(workspaceApi.sendTaskReply);
 /** The reassuring green tick that must not sit over a row of zeros. */
 const CHECK_ICON = 'svg[class*="check"]';
 
+const CHECKING = 'Checking what is waiting on you…';
+
 function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
   return {
     id: 'a-quill',
@@ -96,6 +98,7 @@ function renderToday(
       tasks={[]}
       tasksError={null}
       tasksRefreshing={false}
+      tasksChecking={false}
       unavailableTaskAgents={[]}
       onRetryTasks={vi.fn()}
       onReplied={vi.fn()}
@@ -305,6 +308,11 @@ describe('the first read, before it lands', () => {
     renderToday({ loading: true });
     expect(screen.getByText(/Checking what is waiting on you/)).toBeTruthy();
     expect(screen.queryByText(/wants your OK on/)).toBeNull();
+    // TASK-939: the headline says it, once, and the list draws nothing yet.
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(CHECKING);
+    expect(screen.getAllByText(CHECKING)).toHaveLength(1);
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Your queue' })).toBeEmptyDOMElement();
   });
 });
 
@@ -708,6 +716,7 @@ describe('what tasks need from you (TASK-933)', () => {
         tasks={[]}
         tasksError="failed"
         tasksRefreshing={false}
+        tasksChecking={false}
         unavailableTaskAgents={[]}
         onRetryTasks={onRetryTasks}
         onReplied={vi.fn()}
@@ -781,6 +790,7 @@ describe('what tasks need from you (TASK-933)', () => {
         tasks={[needsYouTask()]}
         tasksError={null}
         tasksRefreshing={false}
+        tasksChecking={false}
         unavailableTaskAgents={[]}
         onRetryTasks={vi.fn()}
         onReplied={vi.fn()}
@@ -811,5 +821,38 @@ describe('what tasks need from you (TASK-933)', () => {
       text: 'Yes, draft it',
       requestId: expect.any(String),
     });
+  });
+});
+
+describe('while the first tasks read runs (TASK-939)', () => {
+  it('says it is still checking, not that nothing is waiting', () => {
+    renderToday({ tasksChecking: true });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(CHECKING);
+    expect(screen.getAllByText(CHECKING)).toHaveLength(1);
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+    expect(screen.queryByText(/wants your OK on/)).toBeNull();
+    expect(screen.getByRole('group', { name: 'Your queue' })).toBeEmptyDOMElement();
+  });
+
+  it('counts what it has already read: the count is a floor', () => {
+    renderToday({ tasksChecking: true, decisions: [decision()] });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('One thing is waiting on you.');
+    expect(screen.queryByText(CHECKING)).toBeNull();
+    expect(screen.getByText('Send the reply to Dana?')).toBeInTheDocument();
+  });
+
+  it('a grants read that failed outranks a tasks read still running', () => {
+    renderToday({ tasksChecking: true, grantsError: 'failed' });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(COULD_NOT_CHECK);
+  });
+
+  it('a queue read that failed outranks a tasks read still running', () => {
+    renderToday({ tasksChecking: true, error: { kind: 'failed', detail: 'boom' } });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(COULD_NOT_CHECK);
+  });
+
+  it('the Working filter still lists who is working', () => {
+    renderToday({ tasksChecking: true, filter: 'working', agents: [agent({ state: 'working' })] });
+    expect(screen.getByRole('button', { name: /Quill/ })).toBeInTheDocument();
   });
 });

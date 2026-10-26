@@ -309,6 +309,8 @@ Three things are waiting on you
 
 > PR 3 (TASK-956): For an owner who no longer manages the agent's tasks, Today's Mark done is off and says why, as on the task page. Not yet still works.
 
+> TASK-939: Today reads the list again as soon as an approval's routine change has gone through, wherever it was approved (Today, a chat or a check-in page), so a task's block and the badge follow. An unattended change goes through inside the approval, a run-now about ten seconds later. Approving anything else changes no task until its next check-in reports. While the queue is being read, or until the first tasks read lands, the headline says "Checking what is waiting on you…" instead of claiming nothing is waiting.
+
 ### 3.6 Status
 
 | Mark | Status | Set by | Means |
@@ -1063,3 +1065,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-25 | Decided | An agent's change that sets a task's kind says on its approval card what changing the kind clears: its steps, latest update, notes and finish date. The card can't look up the current kind, so it says so whenever the change sets one. @ax/decisions writes the words when it holds the call (TASK-956). |
 | 2026-10-26 | Decided | Once a routine is deleted, each of its runs lists only for the person it ran as, without its report. On a team agent the other members stop seeing a deleted task's runs; a live task's runs are unchanged. A run with no record of who it ran as lists for no one. The card left the team call to its builder (TASK-947). |
 | 2026-10-26 | Decided | Running a routine now, deleting one and a task's brief always ask, even with Always Allow, and the agent is told so where it reads before acting: its tool descriptions and system prompt, and the note on a held call. A fire-now's approval card says what Allow once does. A routine approval reads as waiting, not failing, during its undo window and until its outcome lands (TASK-941). |
+| 2026-10-26 | Decided | Today reads the tasks list again when an approved routine change goes through (in the approval's answer for an unattended create, edit or delete; on the queue's poll for a run-now or an attended approval), wherever it was approved. Other approvals, dismissals and Undo don't, since no task changes until its next check-in. While the queue's read or the first tasks read is in flight, Today's headline says "Checking what is waiting on you…" rather than that nothing is waiting; a count already read still shows (TASK-939). |
