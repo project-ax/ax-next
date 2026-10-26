@@ -125,10 +125,13 @@ function deferred<T>() {
 }
 
 /**
- * Where a real browser leaves focus once the control just used goes disabled:
- * `<body>`. jsdom keeps focus on a disabled button, so the drop is made by
- * hand (`TaskPage.test.tsx`'s way): a decoy takes focus and leaves the
- * document, and jsdom hands focus to `<body>` as a browser does.
+ * Where a real browser leaves focus once the control just used goes disabled
+ * or leaves the page: `<body>`. jsdom keeps focus on a disabled button, so the
+ * drop is made by hand (`TaskPage.test.tsx`'s way): a decoy takes focus and
+ * leaves the document, and jsdom hands focus to `<body>` as a browser does.
+ * Since TASK-956 a tick's box and a Delete's ⋯ stay focusable while their
+ * change is out, so where those tests call it, it models focus that ended on
+ * `<body>` anyway, which the answer still puts back.
  */
 function dropFocusOnBody() {
   const decoy = document.createElement('button');
@@ -701,7 +704,6 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
       ['Enter', () => fireEvent.keyDown(trigger, { key: 'Enter' })],
       ['Space', () => fireEvent.keyDown(trigger, { key: ' ' })],
       ['pointer', () => fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })],
-      ['click', () => fireEvent.click(trigger)],
     ];
     for (const [name, press] of presses) {
       press();
@@ -728,6 +730,18 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(document.activeElement).toBe(options('Tell the team'));
     fireEvent.keyDown(options('Tell the team'), { key: 'ArrowDown' });
     expect(await screen.findByRole('menu')).toBeInTheDocument();
+  });
+
+  it('a press on the ⋯ while its Delete is out opens no menu later, when the Delete fails', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    await choose('Tell the team', 'Delete');
+    await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(options('Tell the team'), { key: 'ArrowDown' });
+    await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
+    expect(screen.getByRole('alert').textContent).toBe(UNCONFIRMED);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('a Save marks no step: its own button spins', async () => {

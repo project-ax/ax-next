@@ -16,8 +16,8 @@
  * action), and Open task. Mark done finishes the task, asking first only when
  * steps aren't ticked (`TaskMarkDone`). When the row's `canMarkDone` is false
  * (its owner no longer manages the agent's tasks, TASK-956) Mark done is off
- * and the task page's reason (`MARK_DONE_NOT_ALLOWED`) shows under the actions; Not yet opens the reply box in its
- * `not-yet` mode, whose Send takes the claim back and starts a check-in. A
+ * and the task page's reason (`MARK_DONE_NOT_ALLOWED`) shows under the
+ * actions. Not yet opens the reply box in its `not-yet` mode, whose Send takes the claim back and starts a check-in. A
  * finished task leaves Today, so Mark done hands focus to the consent region
  * first. Not yet's block stays, as a Reply's does: its report still says Needs
  * you until the agent's next one, so the block now reads as an ask, with Reply,
@@ -41,8 +41,8 @@
  * because Radix keeps a force-mounted panel open. `canStart` is false: a
  * `TaskRow` carries only whether its owner may mark it done (`canMarkDone`,
  * TASK-956), not whether a reply can start a check-in, so the box never
- * promises a check-in Today can't vouch for, and the server's answer says what happened. A sent reply
- * calls `onReplied`, so Today can read the tasks again.
+ * promises a check-in Today can't vouch for, and the server's answer says
+ * what happened. A sent reply calls `onReplied`, so Today can read the tasks again.
  *
  * OPEN TASK is always shown, in the block's own actions, and is a real link,
  * so it can open in a new tab too (`routeLinkProps`).

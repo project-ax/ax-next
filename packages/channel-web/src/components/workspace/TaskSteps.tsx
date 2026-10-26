@@ -47,8 +47,8 @@
  * WHERE FOCUS GOES. While a tick, an untick or a Delete is out, nowhere: the
  * control that sent it is still focusable, so focus never left it. Once the
  * answer is on screen, and only from `<body>` or inside this section (someone
- * who moved on stays where they went): after a tick, that step's box; after Save or Cancel, that step's options button;
- * after an Add, the add input, which stays open for the next step; after the
+ * who moved on stays where they went): after a tick, that step's box; after
+ * Save or Cancel, that step's options button; after an Add, the add input, which stays open for the next step; after the
  * add editor's Cancel, Add a step (or, while that's disabled at the cap, the
  * last step's box); after a Delete, or any change whose step is no longer
  * listed, the box of the step now in its place, else of the one before it,

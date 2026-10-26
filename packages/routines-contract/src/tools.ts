@@ -98,7 +98,8 @@ export const TASK_BRIEF_FIELDS = ['name', 'promptBody', 'goodWhen', 'kind'] as c
 // `applyRoutinePatch` merges. zod also reads keys the raw object only inherits or
 // hides, so never test the raw input's own keys. Each reads `call.name` and
 // `call.input` once, looks nothing up and never throws: they run inside
-// `tool:pre-call`, where a thrown error is swallowed and the call goes on.
+// `@ax/decisions`' `tool:pre-call` gate, whose catch refuses the call on a
+// thrown error, so a throw would refuse every call it reads.
 
 /**
  * TASK-906 authorization predicate: true when a call creates a task or changes a
