@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
-import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
+import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
 
@@ -293,7 +293,8 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   });
   register('update', C.RoutineUpdateInputSchema, C.RoutineUpdateOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
-    const receipt = await store.findOperationReceipt({ ...input, actorUserId: ctx.userId, operation: 'update', inputHash: updateRequestHash(input) });
+    const hashes = updateRequestHashes(input);
+    const receipt = await store.findOperationReceipt({ ...input, actorUserId: ctx.userId, operation: 'update', inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1) });
     const row = receipt ? parseStoredRoutine(receipt) : await rowFor(input);
     const own = routinePermissions(row, ctx.userId, a.allowed).edit;
     const stopOnly = Object.keys(input.patch).length === 1 && input.patch.enabled === false;

@@ -210,7 +210,7 @@ describe("a person's copy of their task (store, TASK-953)", () => {
 
   it('a task holding a webhook trigger, which no task can have, is not-found rather than a validation error', async () => {
     const task = await createTask('task');
-    await sql`UPDATE routines_v1_definitions SET trigger_kind = 'webhook', trigger_spec = ${JSON.stringify({ kind: 'webhook', path: '/hook' })}::jsonb
+    await sql`UPDATE routines_v1_definitions SET schedule_spec = NULL, webhook_spec = ${JSON.stringify({ kind: 'webhook', path: '/hook' })}::jsonb
       WHERE routine_id = ${task.routineId}`.execute(f.db);
     const rows = await definitionRows();
     expect(await duplicate(task, 'd1')).toBe('not-found');

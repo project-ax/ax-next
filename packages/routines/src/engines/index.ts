@@ -1,4 +1,4 @@
-import type { RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
+import type { RoutineSchedule as TriggerSpec } from '@ax/routines-contract';
 import { intervalEngine, type TriggerEngine } from './interval.js';
 import { cronEngine } from './cron.js';
 
@@ -8,7 +8,6 @@ export function engineFor(spec: TriggerSpec): TriggerEngine | null {
   switch (spec.kind) {
     case 'interval': return intervalEngine;
     case 'cron':     return cronEngine;
-    case 'webhook':  return null; // Phase C
     default:         return null;
   }
 }

@@ -138,12 +138,12 @@ function computeNextRunAt(row: StoredRoutine, originalNextRunAt: Date | null, no
   // null here keeps the row eligible for the next default-branch
   // claim without tripping the constraint.
   if (row.definitionId !== null) return null;
-  if (row.trigger.kind === 'webhook') return null;
-  const eng = engineFor(row.trigger);
+  if (row.schedule === null) return null;
+  const eng = engineFor(row.schedule);
   if (eng === null) return null;
 
-  if (row.trigger.kind === 'interval') {
-    const seconds = durationToSeconds(row.trigger.every) ?? 0;
+  if (row.schedule.kind === 'interval') {
+    const seconds = durationToSeconds(row.schedule.every) ?? 0;
     const prevTarget = originalNextRunAt ?? now;
     const candidate = new Date(prevTarget.getTime() + seconds * 1000);
     const isMoreThanOneBehind =
@@ -152,7 +152,7 @@ function computeNextRunAt(row: StoredRoutine, originalNextRunAt: Date | null, no
     return isMoreThanOneBehind ? oneIntervalAhead : candidate;
   }
 
-  return eng.nextRun(row.trigger, now);
+  return eng.nextRun(row.schedule, now);
 }
 
 export interface TickLoopInput {
