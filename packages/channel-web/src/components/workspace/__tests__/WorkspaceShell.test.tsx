@@ -15,7 +15,7 @@ import {
   DECISION_THREAD_READ_FAILED,
   GRANT_READ_FAILED,
 } from '../decision-copy';
-import { decisionFixture } from './decision-fixture';
+import { decisionFixture, resolvedFixture } from './decision-fixture';
 import type { ActivityEvent, TaskRow } from '@/lib/workspace-types';
 import type { PermissionRequest } from '../../../server/types';
 
@@ -676,6 +676,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
   beforeEach(() => {
     boardMock.mockResolvedValue({ agents: [QUILL] });
     sendTaskReplyMock.mockReset();
+    vi.mocked(workspaceApi.approveDecision).mockReset();
   });
 
   it('counts a task that needs you in the badge, the Needs you tab and the headline alike (TASK-933)', async () => {
@@ -719,6 +720,55 @@ describe('tasks on Today, and one count (TASK-933)', () => {
 
     expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
     expect(tasksMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('approving a routine change held in a task’s check-in reads the tasks again, so the block and the badge follow (TASK-939)', async () => {
+    decisionsMock.mockResolvedValue({
+      decisions: [
+        decisionFixture({
+          id: 'd1',
+          agentId: 'a-quill',
+          routineOperation: 'routine_update',
+          checkIn: { routineId: 't1', taskName: 'Zero open support tickets' },
+        }),
+      ],
+    });
+    // Before: the task needs you. After the edit went through: it changed the
+    // task's kind, which clears its report (TASK-956's warning), so it no longer does.
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [] })
+      .mockResolvedValueOnce({
+        tasks: [taskRow({ kind: 'get-done', steps: { done: 0, total: 0 }, task: null })],
+        unavailableAgents: [],
+      });
+    // An unattended routine edit is replayed inside the approve, so its answer
+    // already says it went through, and there is nothing left to undo.
+    vi.mocked(workspaceApi.approveDecision).mockResolvedValue({
+      decision: resolvedFixture('executed', {
+        id: 'd1',
+        agentId: 'a-quill',
+        routineOperation: 'routine_update',
+        routineOutcome: 'succeeded',
+        undoable: false,
+      }),
+      executed: true,
+      path: 'host-replays',
+      error: null,
+      pendingUntil: null,
+      streamReqId: null,
+    });
+
+    renderShell();
+
+    expect(await screen.findByText('Two things are waiting on you.')).toBeTruthy();
+    expect(tasksMock).toHaveBeenCalledTimes(1);
+    const block = screen.getByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: /Move your 1:1/ }));
+    fireEvent.click(await within(block).findByRole('button', { name: 'Move it' }));
+
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
+    expect(badge()).toBeNull();
   });
 
   it('while the first tasks read runs, Today says it is still checking, then counts what lands (TASK-939)', async () => {

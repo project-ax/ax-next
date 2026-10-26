@@ -352,33 +352,15 @@ function Inner({
    * that tab's `ActivityFeed`.
    */
   const feedStale = feed.scope !== feedScope;
-  /**
-   * The queue, fetched once here and read by three places: Today's rows, the
-   * sidebar's pending badge, and the in-thread approval card on an agent's
-   * tab. One collection, one fetch, one array — the card in the thread and the
-   * row in Today are literally the same object, so resolving one resolves both
-   * without a second read and without two copies drifting apart on screen.
-   *
-   * An approval that woke a warm agent answers a `streamReqId` for the
-   * continuation turn. `continueApprovedTurn` is the one rule chat and this
-   * surface share for it (TASK-542): it attaches only when the decision
-   * belongs to the conversation the mounted `AgentView` has open at settle
-   * time, and is a quiet no-op on Today, where no thread is mounted.
-   *
-   * TASK-574 — the attach waits for the undo window to close (the host holds
-   * the continuation until then), and an accepted Undo drops it through
-   * `cancelApprovedTurn`: nothing will ever run on that id.
-   */
-  const queue = useDecisionQueue({
-    onDecisionApproved: continuationActions.continueApprovedTurn,
-    onDecisionUndone: continuationActions.cancelApprovedTurn,
-  });
   /*
     The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
     page share. It reads at mount (the badge is on screen on every route), again
     when the route CHANGES to Today or Tasks, so a returning person never meets
     a stale list, after a reply sent from Today, and when a Duplicate answer
-    lands after the person left the source task (TASK-953). It doesn't poll, and
+    lands after the person left the source task (TASK-953), and when an approved
+    routine change goes through, wherever it was approved (TASK-939: the
+    queue's `onRoutineChangeSucceeded`; an unattended create, edit or delete
+    goes through inside the approval, a run-now about ten seconds later). It doesn't poll, and
     the task page's other buttons don't re-read it (Back or Today does). Entering a
     route and Try again join a read already in flight (`retry`), except coming
     after a visit to a page that writes task rows (a task or check-in page, an
@@ -387,8 +369,10 @@ function Inner({
     on: a reply, Pause, Resume or edit there may postdate the read in flight,
     so the next entry into Today or Tasks starts a fresh one (`reload`),
     however many other pages came between, as a reply from Today does. The
-    fresh answer wins whichever lands last. This is best-effort: an approved
-    routine change lands after its undo window, so a read can still predate it.
+    fresh answer wins whichever lands last. Two things still aren't announced
+    to it: an agent's own routine change under Always Allow, and the report a
+    check-in writes later. Entering Today or Tasks, and Try again, are the way
+    to those.
   */
   const taskRead = useTasks();
   // What Today and the badge read from it (not `today`: that's the date helper above).
@@ -422,6 +406,31 @@ function Inner({
       } else retryTaskRead();
     }
   }, [routeKind, retryTaskRead, reloadTaskRead]);
+  /**
+   * The queue, fetched once here and read by three places: Today's rows, the
+   * sidebar's pending badge, and the in-thread approval card on an agent's
+   * tab. One collection, one fetch, one array — the card in the thread and the
+   * row in Today are literally the same object, so resolving one resolves both
+   * without a second read and without two copies drifting apart on screen.
+   *
+   * An approval that woke a warm agent answers a `streamReqId` for the
+   * continuation turn. `continueApprovedTurn` is the one rule chat and this
+   * surface share for it (TASK-542): it attaches only when the decision
+   * belongs to the conversation the mounted `AgentView` has open at settle
+   * time, and is a quiet no-op on Today, where no thread is mounted.
+   *
+   * TASK-574 — the attach waits for the undo window to close (the host holds
+   * the continuation until then), and an accepted Undo drops it through
+   * `cancelApprovedTurn`: nothing will ever run on that id.
+   *
+   * When an approved routine change goes through, the queue says so
+   * (`onRoutineChangeSucceeded`) and the tasks list is read again (TASK-939).
+   */
+  const queue = useDecisionQueue({
+    onDecisionApproved: continuationActions.continueApprovedTurn,
+    onDecisionUndone: continuationActions.cancelApprovedTurn,
+    onRoutineChangeSucceeded: taskRead.reload,
+  });
   /*
     Open capability grants (TASK-350). A store with TWO producers that meet in
     one place — `raise()` — so a grant is one row however it arrives:
