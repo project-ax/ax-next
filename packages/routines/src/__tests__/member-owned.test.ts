@@ -17,6 +17,30 @@ const create = (user: AgentContext, kind: 'repeat' | 'stay-on-top' = 'repeat') =
 });
 
 describe('member-owned tasks on a team agent', () => {
+  it('lets a member manage only their own signing secret while the shared webhook address stays privileged', async () => {
+    h = await createRoutineHarness({ strictCredentials: true });
+    const owner = ctx(h.teamMember);
+    const row = await h.bus.call<unknown, RoutineView>('routines:create', owner, {
+      agentId: h.teamAgentId, requestId: 'create-member-webhook',
+      definition: RoutineDefinitionSchema.parse({
+        name: 'My app updates', promptBody: 'Review the update.',
+        trigger: { kind: 'webhook', path: '/member-hook', hmac: { header: 'x-hub-signature-256', algorithm: 'sha256', prefix: 'sha256=' } },
+      }),
+    });
+    const key = { agentId: h.teamAgentId, routineId: row.routineId, expectedRevision: row.revision };
+    await expect(h.bus.call('routines:set-webhook-secret', owner, { ...key, operation: 'set', secret: new Uint8Array([1, 2, 3]) })).resolves.toEqual({ saved: true });
+    expect(h.credentialCalls).toEqual([{ operation: 'set', ref: expect.any(String) }]);
+    for (const user of [makeAgentContext({ ...h.teamMember, userId: 'peer' }), h.teamAdmin]) {
+      await expect(h.bus.call('routines:set-webhook-secret', ctx(user), { ...key, operation: 'set', secret: new Uint8Array([4]) })).rejects.toMatchObject({ toolCode: 'forbidden' });
+      await expect(h.bus.call('routines:set-webhook-secret', ctx(user), { ...key, operation: 'delete' })).rejects.toMatchObject({ toolCode: 'forbidden' });
+    }
+    expect(h.credentialCalls).toHaveLength(1);
+    for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) {
+      await expect(h.bus.call(hook, owner, { agentId: h.teamAgentId, actor: { userId: 'member', isAdmin: false } })).rejects.toMatchObject({ code: 'forbidden' });
+    }
+    await expect(h.bus.call('routines:set-webhook-secret', owner, { ...key, operation: 'delete' })).resolves.toEqual({ saved: true });
+    expect(h.credentialCalls.map(call => call.operation)).toEqual(['set', 'delete']);
+  });
   it.each(['repeat', 'stay-on-top'] as const)('keeps %s creation, controls and private state with its creator', async kind => {
     h = await createRoutineHarness();
     const row = await create(h.teamMember, kind);

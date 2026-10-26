@@ -290,6 +290,17 @@ describe('structured human routine REST adapters', () => {
       denied.calls.some((c) => c.hook === 'agents:ensure-webhook-token'),
     ).toBe(false);
   });
+  it('keeps a member’s own routine authority from disclosing the shared receiver token', async () => {
+    const { h, calls } = setup({ admin: false, failure: new PluginError({ code: 'forbidden', plugin: '@ax/agents', message: 'PRIVATE token access denied' }) });
+    const r = response();
+    await h.receiver(req(), r.res);
+    expect(calls.find(call => call.hook === 'agents:ensure-webhook-token')?.input).toEqual({
+      agentId: 'a', actor: { userId: 'human', isAdmin: false },
+    });
+    expect(r.status).toBe(404);
+    expect(JSON.stringify(r.body)).not.toContain('token');
+    expect(JSON.stringify(r.body)).not.toContain('PRIVATE');
+  });
   it('keeps catalog admin-only and accepts flat canonical interval fields with omitted enabled', async () => {
     const { bus, calls } = setup();
     const h = createAdminDefaultRoutinesHandlers({ bus });

@@ -544,6 +544,7 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
     await runRoutinesMigration(database);
     const store = createRoutinesStore(database);
     const pending: PendingFires = new Map();
+    const requestsBySession = new Map<string, string>();
     const bus = live().bus;
     const conversations: string[] = [];
     bus.registerService('conversations:create', '@test/member-usage', async (ctx, input) => {
@@ -554,13 +555,18 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       return { conversationId };
     });
     // Only completion persistence is bridged here; dispatch, runner and billing are real.
+    // Unlike the full runners, this script-only runner emits no logical reqId on
+    // turn-end. Its authenticated session is still the one fire.ts minted, so
+    // join that exact session rather than the IPC request's fresh tracing id.
     bus.subscribe<{ reqId?: string }>('chat:turn-end', '@test/member-usage', async (ctx, payload) => {
-      const requestId = payload.reqId ?? ctx.reqId;
+      const requestId = payload.reqId ?? requestsBySession.get(ctx.sessionId);
+      if (requestId === undefined) return;
       const entry = pending.get(requestId);
       if (!entry || !pending.delete(requestId)) return;
-      await store.finishDispatch({ dispatchId: entry.dispatchId, outcome: {
+      expect(ctx.userId).toBe(USER_A);
+      expect(await store.finishDispatch({ dispatchId: entry.dispatchId, outcome: {
         status: 'ok', conversationId: entry.conversationId, error: null, renderedPrompt: entry.renderedPrompt, warning: null,
-      } });
+      } })).toBe(true);
     });
     const fire = createFireRoutine({ bus, store, pending, purgeAgent: async () => {} });
     try {
@@ -574,6 +580,7 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
         const accepted = await store.acceptDispatch({ ...row, actorUserId: USER_A, expectedRevision: row.revision,
           source, requestId: `run-${source}`, now: new Date() });
         expect(accepted).not.toBeNull();
+        requestsBySession.set(`routine-${row.agentId}-${row.routineId}-${accepted!.accepted.reqId}`, accepted!.accepted.reqId);
         expect(await fire(accepted!.accepted)).toMatchObject({ status: 'ok' });
         turns += 1;
         await waitForCost(USER_A, turns * SONNET_COST_MICROS);
@@ -594,6 +601,8 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
         .toMatchObject({ status: 'error', error: 'terminated: chat:start:usage-limit-daily' }));
       expect(live().sandbox.spawns).toBe(spawnsBefore);
       expect(await usageFor(USER_A)).toMatchObject({ turns: 3, costMicros: 3 * SONNET_COST_MICROS });
+      await expectAdmitted(USER_B, meteredScript());
+      await waitForCost(USER_B, SONNET_COST_MICROS);
     } finally {
       bus.unsubscribe('chat:turn-end', '@test/member-usage');
       await fire.shutdown();
