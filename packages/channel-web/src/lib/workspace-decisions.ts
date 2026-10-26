@@ -336,9 +336,14 @@ export interface DecisionQueueHooks {
    * request. A fire-now, an attended approval, or a standing one whose consent
    * is still pending says so on a later poll.
    *
-   * A failed change, a dismissal, an Undo the server accepted and any other
-   * approval never fire it: none of them changes a task. An Undo refused
-   * because the change already ran carries its success and may fire it, once.
+   * A failed change, an Undo the server accepted and any other approval don't
+   * fire it, and nor does a dismissal: none of them changes a task. An Undo
+   * refused because the change already ran, or a dismissal that lost the race
+   * to an approval elsewhere, is answered with the stored row; when that row
+   * carries the change's success, it fires, once.
+   *
+   * A subscriber that throws is logged and goes no further (see
+   * `noteRoutineChange`).
    */
   onRoutineChangeSucceeded?: (decision: Decision) => void;
 }
@@ -384,12 +389,21 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
    * applied and never inside a state updater: React may run an updater twice,
    * and this reaches outside the queue. Stable, so listing it changes neither
    * `act` nor the poll.
+   *
+   * A subscriber that throws is the subscriber's failure, not the queue's: it
+   * is logged here and goes no further, so an approval the server accepted is
+   * never reported as one that didn't reach it, and a poll goes on to the rest
+   * of its work.
    */
   const noteRoutineChange = useCallback((row: Decision) => {
     if (row.routineOutcome !== 'succeeded') return;
     if (announcedRoutineChanges.current.has(row.id)) return;
     announcedRoutineChanges.current.add(row.id);
-    routineSucceededRef.current?.(row);
+    try {
+      routineSucceededRef.current?.(row);
+    } catch (err) {
+      console.warn(`[decisions] announcing the routine change of ${row.id} failed`, err);
+    }
   }, []);
 
   const refresh = useCallback(async () => {
@@ -709,13 +723,13 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
           .then((out) => {
             pollFailures.current.delete(d.id);
             applyPolledRow(out.decision);
+            if (out.decision.approvalScope === 'agent-routines' && out.decision.consentDeliveryState !== d.consentDeliveryState) {
+              window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', { detail: { agentId: d.agentId } }));
+            }
             // TASK-939 — a fire-now or an attended approval first says it went
             // through here. Even when the race guard keeps the row as it is,
             // the server's word that a task changed still stands.
             noteRoutineChange(out.decision);
-            if (out.decision.approvalScope === 'agent-routines' && out.decision.consentDeliveryState !== d.consentDeliveryState) {
-              window.dispatchEvent(new CustomEvent('ax:routine-permissions-changed', { detail: { agentId: d.agentId } }));
-            }
           })
           // A FAILED poll changes nothing and sets no notice. The row keeps
           // saying what the server last told us: a transient network blip
