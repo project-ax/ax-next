@@ -1,0 +1,678 @@
+{
+  "sourceCommit": "68e734184eabd5305da2efc040c9aa8d46aead3d",
+  "schemaVersion": 14,
+  "operations": [
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-0",
+        "definition": {
+          "name": "Legacy interval",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "interval",
+            "every": "1h"
+          },
+          "activeHours": {
+            "start": "09:00",
+            "end": "18:00",
+            "tz": "America/New_York"
+          },
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "repeat",
+          "goodWhen": null
+        }
+      },
+      "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203"
+    },
+    {
+      "operation": "update",
+      "input": {
+        "agentId": "fixture-agent",
+        "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+        "expectedRevision": "rev_843c7af454024d6b8101e2ddee1f3764",
+        "requestId": "legacy-update",
+        "patch": {
+          "trigger": {
+            "kind": "cron",
+            "expr": "0 9 * * 1-5",
+            "tz": "UTC"
+          },
+          "name": "Legacy updated interval"
+        }
+      },
+      "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203"
+    },
+    {
+      "operation": "dispatch",
+      "input": {
+        "agentId": "fixture-agent",
+        "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+        "expectedRevision": "rev_88ee4835da6049d384a0c380c96d56e5",
+        "source": "manual",
+        "requestId": "legacy-dispatch"
+      },
+      "dispatchId": "dispatch_34259a443a2345d1adacdf5e82e239dd",
+      "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203"
+    },
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-1",
+        "definition": {
+          "name": "Legacy cron",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "cron",
+            "expr": "0 8 * * 1-5",
+            "tz": "America/New_York"
+          },
+          "activeHours": {
+            "start": "09:00",
+            "end": "18:00",
+            "tz": "America/New_York"
+          },
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "repeat",
+          "goodWhen": null
+        }
+      },
+      "routineId": "rtn_d540c97ee0074178888696629abfd544"
+    },
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-2",
+        "definition": {
+          "name": "Legacy fast cron",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "cron",
+            "expr": "*/10 * * * * *",
+            "tz": "UTC"
+          },
+          "activeHours": {
+            "start": "09:00",
+            "end": "18:00",
+            "tz": "America/New_York"
+          },
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "repeat",
+          "goodWhen": null
+        }
+      },
+      "routineId": "rtn_7ddc3a71ec534a209338683ef164bb32"
+    },
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-3",
+        "definition": {
+          "name": "Legacy signed webhook",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "webhook",
+            "path": "/github",
+            "events": [
+              "push"
+            ],
+            "hmac": {
+              "header": "X-Hub-Signature-256",
+              "algorithm": "sha256",
+              "prefix": "sha256="
+            }
+          },
+          "activeHours": null,
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "repeat",
+          "goodWhen": null
+        }
+      },
+      "routineId": "rtn_67fa8ebeb7e54a15b8fd394f1155b063"
+    },
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-4",
+        "definition": {
+          "name": "Legacy stay-on-top",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "interval",
+            "every": "15m"
+          },
+          "activeHours": {
+            "start": "09:00",
+            "end": "18:00",
+            "tz": "America/New_York"
+          },
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "stay-on-top",
+          "goodWhen": "No open tickets."
+        }
+      },
+      "routineId": "rtn_43f36474e69b4974a8575f11daad313b"
+    },
+    {
+      "operation": "create",
+      "input": {
+        "agentId": "fixture-agent",
+        "requestId": "legacy-create-5",
+        "definition": {
+          "name": "Legacy get-done",
+          "description": "",
+          "promptBody": "Review the queue.",
+          "enabled": true,
+          "trigger": {
+            "kind": "interval",
+            "every": "30m"
+          },
+          "activeHours": {
+            "start": "09:00",
+            "end": "18:00",
+            "tz": "America/New_York"
+          },
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "conversation": "per-fire",
+          "kind": "get-done",
+          "goodWhen": "The checklist is ready."
+        }
+      },
+      "routineId": "rtn_65bced15e8454dd188412e13c0bb325b"
+    }
+  ],
+  "versions": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "receipts": [
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-0",
+      "input_hash": "a57eb3997b14909e503b3019210067e98d84063e7526532877e7936c95d4d7a3",
+      "result": {
+        "kind": "repeat",
+        "name": "Legacy interval",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "kind": "interval",
+          "every": "1h"
+        },
+        "goodWhen": null,
+        "revision": "rev_843c7af454024d6b8101e2ddee1f3764",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T01:00:00.000Z",
+        "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-1",
+      "input_hash": "0eb0fe0b8f6dba49e18e9154aa234e1bb1a128970dc407df65f54c0ae5d0e052",
+      "result": {
+        "kind": "repeat",
+        "name": "Legacy cron",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "tz": "America/New_York",
+          "expr": "0 8 * * 1-5",
+          "kind": "cron"
+        },
+        "goodWhen": null,
+        "revision": "rev_18b88b36f6514aa1ae7d35d9fa0162a0",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T13:00:00.000Z",
+        "routineId": "rtn_d540c97ee0074178888696629abfd544",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-2",
+      "input_hash": "89140870a6ea34290173192219986911fb2d3af04c4806bd7f4e5630be1bfdc0",
+      "result": {
+        "kind": "repeat",
+        "name": "Legacy fast cron",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "tz": "UTC",
+          "expr": "*/10 * * * * *",
+          "kind": "cron"
+        },
+        "goodWhen": null,
+        "revision": "rev_2a980dc35102498a9c87f0f993a01427",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T00:00:10.000Z",
+        "routineId": "rtn_7ddc3a71ec534a209338683ef164bb32",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-3",
+      "input_hash": "9acc5c72a97b371f5f1b34aa8460fb02aff815302cd3e64e9874608a18f16479",
+      "result": {
+        "kind": "repeat",
+        "name": "Legacy signed webhook",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "hmac": {
+            "header": "X-Hub-Signature-256",
+            "prefix": "sha256=",
+            "algorithm": "sha256"
+          },
+          "kind": "webhook",
+          "path": "/github",
+          "events": [
+            "push"
+          ]
+        },
+        "goodWhen": null,
+        "revision": "rev_28ac2cb362a14fbcac111091703b0cfa",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": null,
+        "routineId": "rtn_67fa8ebeb7e54a15b8fd394f1155b063",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": null,
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-4",
+      "input_hash": "10c3dca301b37e7f6e2a87f5b68f77f9c4fad8e051c4f0e9a2375c39d3b8300c",
+      "result": {
+        "kind": "stay-on-top",
+        "name": "Legacy stay-on-top",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "kind": "interval",
+          "every": "15m"
+        },
+        "goodWhen": "No open tickets.",
+        "revision": "rev_4508a760af7f444b8650b3c9638b2934",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T00:15:00.000Z",
+        "routineId": "rtn_43f36474e69b4974a8575f11daad313b",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "create",
+      "request_id": "legacy-create-5",
+      "input_hash": "08974cfbb0c3ef52d654b6a5bf34dbc6ce2ac00e703544a0266677bc910fe236",
+      "result": {
+        "kind": "get-done",
+        "name": "Legacy get-done",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "kind": "interval",
+          "every": "30m"
+        },
+        "goodWhen": "The checklist is ready.",
+        "revision": "rev_b93d8394c5454a9abd1a54dfe31e6112",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T00:30:00.000Z",
+        "routineId": "rtn_65bced15e8454dd188412e13c0bb325b",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "dispatch",
+      "request_id": "legacy-dispatch",
+      "input_hash": "735b91d3c1eb34f65776a38b816ccc2e2f1f646f76bfb718bcbda28932512a5f",
+      "result": {
+        "row": {
+          "kind": "repeat",
+          "name": "Legacy updated interval",
+          "agentId": "fixture-agent",
+          "enabled": true,
+          "trigger": {
+            "tz": "UTC",
+            "expr": "0 9 * * 1-5",
+            "kind": "cron"
+          },
+          "goodWhen": null,
+          "revision": "rev_88ee4835da6049d384a0c380c96d56e5",
+          "lastError": null,
+          "lastRunAt": null,
+          "nextRunAt": "2031-01-01T09:00:00.000Z",
+          "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+          "lastStatus": null,
+          "promptBody": "Review the queue.",
+          "activeHours": {
+            "tz": "America/New_York",
+            "end": "18:00",
+            "start": "09:00"
+          },
+          "description": "",
+          "lastWarning": null,
+          "ownerUserId": "fixture-owner",
+          "conversation": "per-fire",
+          "definitionId": null,
+          "silenceToken": null,
+          "silenceMaxChars": 300,
+          "definitionUpdatedAt": null
+        },
+        "reqId": "routine_run_1e2d2cddcf154646b8a595a14e56efe7",
+        "source": "manual",
+        "acceptedAt": "2031-01-01T00:02:00.000Z",
+        "dispatchId": "dispatch_34259a443a2345d1adacdf5e82e239dd"
+      }
+    },
+    {
+      "agent_id": "fixture-agent",
+      "owner_user_id": "fixture-owner",
+      "operation": "update",
+      "request_id": "legacy-update",
+      "input_hash": "c5e9c3178270ed98e31f1471b1f32fb7174688bbdb78ff1aec7d7fe8aedb6612",
+      "result": {
+        "kind": "repeat",
+        "name": "Legacy updated interval",
+        "agentId": "fixture-agent",
+        "enabled": true,
+        "trigger": {
+          "tz": "UTC",
+          "expr": "0 9 * * 1-5",
+          "kind": "cron"
+        },
+        "goodWhen": null,
+        "revision": "rev_88ee4835da6049d384a0c380c96d56e5",
+        "lastError": null,
+        "lastRunAt": null,
+        "nextRunAt": "2031-01-01T09:00:00.000Z",
+        "routineId": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+        "lastStatus": null,
+        "promptBody": "Review the queue.",
+        "activeHours": {
+          "tz": "America/New_York",
+          "end": "18:00",
+          "start": "09:00"
+        },
+        "description": "",
+        "lastWarning": null,
+        "ownerUserId": "fixture-owner",
+        "conversation": "per-fire",
+        "definitionId": null,
+        "silenceToken": null,
+        "silenceMaxChars": 300,
+        "definitionUpdatedAt": null
+      }
+    }
+  ],
+  "definitions": [
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_d540c97ee0074178888696629abfd544",
+      "revision": "rev_18b88b36f6514aa1ae7d35d9fa0162a0",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy cron",
+      "trigger_kind": "cron",
+      "trigger_spec": {
+        "tz": "America/New_York",
+        "expr": "0 8 * * 1-5",
+        "kind": "cron"
+      },
+      "next_run_at": "2031-01-01T13:00:00.000Z"
+    },
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_7ddc3a71ec534a209338683ef164bb32",
+      "revision": "rev_2a980dc35102498a9c87f0f993a01427",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy fast cron",
+      "trigger_kind": "cron",
+      "trigger_spec": {
+        "tz": "UTC",
+        "expr": "*/10 * * * * *",
+        "kind": "cron"
+      },
+      "next_run_at": "2031-01-01T00:00:10.000Z"
+    },
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_65bced15e8454dd188412e13c0bb325b",
+      "revision": "rev_b93d8394c5454a9abd1a54dfe31e6112",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy get-done",
+      "trigger_kind": "interval",
+      "trigger_spec": {
+        "kind": "interval",
+        "every": "30m"
+      },
+      "next_run_at": "2031-01-01T00:30:00.000Z"
+    },
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_67fa8ebeb7e54a15b8fd394f1155b063",
+      "revision": "rev_28ac2cb362a14fbcac111091703b0cfa",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy signed webhook",
+      "trigger_kind": "webhook",
+      "trigger_spec": {
+        "hmac": {
+          "header": "X-Hub-Signature-256",
+          "prefix": "sha256=",
+          "algorithm": "sha256"
+        },
+        "kind": "webhook",
+        "path": "/github",
+        "events": [
+          "push"
+        ]
+      },
+      "next_run_at": null
+    },
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_43f36474e69b4974a8575f11daad313b",
+      "revision": "rev_4508a760af7f444b8650b3c9638b2934",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy stay-on-top",
+      "trigger_kind": "interval",
+      "trigger_spec": {
+        "kind": "interval",
+        "every": "15m"
+      },
+      "next_run_at": "2031-01-01T00:15:00.000Z"
+    },
+    {
+      "agent_id": "fixture-agent",
+      "routine_id": "rtn_7d1bd6974ec24ef485c10a3d9227e203",
+      "revision": "rev_88ee4835da6049d384a0c380c96d56e5",
+      "owner_user_id": "fixture-owner",
+      "name": "Legacy updated interval",
+      "trigger_kind": "cron",
+      "trigger_spec": {
+        "tz": "UTC",
+        "expr": "0 9 * * 1-5",
+        "kind": "cron"
+      },
+      "next_run_at": "2031-01-01T09:00:00.000Z"
+    }
+  ],
+  "defaults": [
+    {
+      "default_routine_id": "default-heartbeat-2026-05-19",
+      "name": "heartbeat",
+      "description": "Daily check-in: ask if anything is outstanding.",
+      "spec_hash": "seed-2026-05-19",
+      "trigger_kind": "interval",
+      "trigger_spec": {
+        "kind": "interval",
+        "every": "24h"
+      },
+      "interval_seconds": "86400",
+      "active_hours": null,
+      "silence_token": "HEARTBEAT_OK",
+      "silence_max": 300,
+      "conversation": "shared",
+      "prompt_body": "If nothing is outstanding, respond with HEARTBEAT_OK and end.",
+      "enabled": true,
+      "created_at": "2026-10-26T21:45:02.341Z",
+      "updated_at": "2026-10-26T21:45:02.341Z"
+    },
+    {
+      "default_routine_id": "skill-reflection",
+      "name": "skill-reflection",
+      "description": "Autonomously graduate recurring procedures from memory into durable skills.",
+      "spec_hash": "seed-2026-09-27",
+      "trigger_kind": "interval",
+      "trigger_spec": {
+        "kind": "interval",
+        "every": "24h"
+      },
+      "interval_seconds": "86400",
+      "active_hours": null,
+      "silence_token": "REFLECTION_DONE",
+      "silence_max": 4000,
+      "conversation": "per-fire",
+      "prompt_body": "You are running an autonomous self-improvement reflection on your own past work. Nobody is waiting on this; it is a background pass.\n\nYour job: graduate procedures you have PROVEN repeatedly into durable skills, and fix skills you've found wrong. A pass that changes nothing is the correct, common outcome — do NOT invent work.\n\n## Step 1 — Short-circuit\nRead `.ax/skill-reflection/last-run.json` if it exists; it records the date of your last pass. Call the `memory_recall` tool with a query such as \"procedures, workflows and step-by-step ways of doing things\". If no evidence row is dated after the recorded date, you are done: reply with exactly REFLECTION_DONE and stop. Otherwise continue.\n\n## Step 2 — Find recurring procedures\nUse `memory_recall` to look for procedures: repeated ways of doing a task, and the corrections that shaped them. Search with a few focused queries, one per candidate procedure. For each candidate, CONFIRM it actually recurred: it must appear in at least 2 DISTINCT past conversations.\n\nThe recurrence evidence is the Conv column of the `memory_recall` evidence table. Every row recorded in a conversation carries a number such as #1 or #2; two rows with the same number in one answer came from the same conversation, and the line \"Distinct conversations in this evidence\" counts them. The numbers are only comparable within ONE answer, so judge each candidate from a single recall. A procedure is grounded in 2 DISTINCT past conversations only when the rows that actually describe it carry **2 or more different conversation numbers in the same answer**. Rows marked \"-\" were saved outside a conversation and do not count. Rows about these reflection passes, or about skills you created or proposed, do not count either. If the rows describing a procedure carry only one conversation number, it recurred in at most one conversation — it is NOT ready to be a skill, so leave it.\n\n## Step 3 — Crystallize (prefer patch over create)\nIn order of preference:\n1. If an existing skill of yours covers this procedure but is wrong/incomplete, PATCH it.\n2. If an existing skill is close, add to it.\n3. Only if nothing covers it, CREATE a new skill.\nAuthor/patch the skill, then call the `skill_propose` tool to propose it. Keep skills INSTRUCTION-ONLY: do not declare connectors/capabilities. If a procedure genuinely cannot work without a connector, you may declare it — it will go to the user for approval rather than activating — but prefer instruction-only.\n\n## Hard limits\n- At most 3 author/patch operations this pass. Pick the highest-value ones.\n- Do NOT crystallize: environment-dependent failures, one-off/transient errors, negative claims about a tool (\"X doesn't work\"), or specifics of a single session. These are memory's job, not a skill's.\n\n## Step 4 — Finish\nWrite today's date to `.ax/skill-reflection/last-run.json`, then reply with exactly REFLECTION_DONE.",
+      "enabled": false,
+      "created_at": "2026-10-26T21:45:02.341Z",
+      "updated_at": "2026-10-26T21:45:02.341Z"
+    }
+  ]
+}
