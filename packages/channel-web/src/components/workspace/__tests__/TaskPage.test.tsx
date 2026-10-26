@@ -131,6 +131,7 @@ function deferred<T>() {
 function renderPage(over: { justCopied?: boolean } = {}) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
   const onDuplicated = vi.fn<(routineId: string) => void>();
+  const onTaskWriteSucceeded = vi.fn();
   const view = render(
     <TaskPage
       agentId="a1"
@@ -138,10 +139,11 @@ function renderPage(over: { justCopied?: boolean } = {}) {
       leading={<button type="button">Open navigation</button>}
       onNavigate={onNavigate}
       onDuplicated={onDuplicated}
+      onTaskWriteSucceeded={onTaskWriteSucceeded}
       justCopied={over.justCopied ?? false}
     />,
   );
-  return { ...view, onNavigate, onDuplicated };
+  return { ...view, onNavigate, onDuplicated, onTaskWriteSucceeded };
 }
 
 /** Render, and wait for the task to be on screen. */
@@ -2051,11 +2053,12 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     record(watch.takeRecords());
     watch.disconnect();
 
-    // The old press's alert and question never reach the steps' footer, not for one commit, so
-    // nothing takes focus from the box the person is in.
+    // The old press's alert and question never reach the steps' footer, not for one commit.
+    // The successful send closes its box and leaves focus on a visible, stable link.
     expect(added.filter((t) => t.includes(UNCONFIRMED_DONE) || t.includes('Mark done anyway'))).toEqual([]);
-    expect(document.activeElement).toBe(box);
-    expect(screen.getByText('Sent. Quill is checking in now.')).toBeInTheDocument();
+    expect(box).toBeInTheDocument();
+    expect(box).not.toBeVisible();
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Tasks' }));
   });
 
   it('a refused Mark done says why in the page’s words', async () => {
@@ -2067,7 +2070,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(alert).toHaveTextContent(MARK_DONE_NOT_ALLOWED);
   });
 
-  it('Not yet opens the box in place: what’s left, sent as a reopen, and the line stays after the claim goes', async () => {
+  it('Not yet opens the box in place, then closes but stays mounted after a successful send', async () => {
     taskMock.mockResolvedValueOnce(claimed());
     await renderReady();
     const notYet = screen.getByRole('button', { name: 'Not yet' });
@@ -2092,7 +2095,10 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(replyMock).not.toHaveBeenCalled();
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull());
-    expect(screen.getByText('Sent. Quill is checking in now.')).toBeInTheDocument();
+    expect(box).toBeInTheDocument();
+    expect(box).not.toBeVisible();
+    expect(screen.queryByRole('textbox', { name: NOT_YET_BOX })).toBeNull();
+    expect(screen.getByRole('textbox', { name: REPLY_BOX })).toBeVisible();
   });
 
   it('a new claim after a sent Not yet finds the box closed and empty, its old line gone', async () => {
@@ -2108,8 +2114,9 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     });
     fireEvent.click(within(inPlace).getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull());
-    // While the claim is gone, its answer is still on screen.
-    expect(within(inPlace).getByText('Sent. Quill is checking in now.')).toBeInTheDocument();
+    // The composer stays mounted, hidden after its successful send.
+    expect(inPlace).not.toBeVisible();
+    expect(within(inPlace).getByText('Sent. Quill is checking in now.')).not.toBeVisible();
 
     // The agent claims again; the next read shows it.
     fireNowMock.mockResolvedValue({ status: 'ok' });
@@ -2333,7 +2340,10 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
       }),
     );
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull());
-    expect(screen.getByText('Sent. Quill is checking in now.')).toBeInTheDocument();
+    expect(box).toBeInTheDocument();
+    expect(box).not.toBeVisible();
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+    expect(screen.getByRole('textbox', { name: REPLY_BOX })).toBeVisible();
   });
 
   it('a Done task without edit can’t reopen or copy it, and the note says who can', async () => {
@@ -2585,5 +2595,125 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     const resume = await screen.findByRole('button', { name: 'Resume' });
     await settled(resume, 3);
     expect(screen.queryByText(COPY_LINE)).toBeNull();
+  });
+});
+
+
+describe('TaskPage: landed-write announcements and form completion (TASK-959)', () => {
+  const SPECIAL_BOX = 'What’s left for Quill to do?';
+  const NORMAL_BOX = 'Reply to Quill about this task';
+  const DONE_AT = new Date(2026, 9, 22, 11, 30).toISOString();
+  const claimed = () => detail({
+    kind: 'get-done',
+    task: report({ doneClaimed: true }),
+  });
+  const done = () => detail({ kind: 'get-done', enabled: false, doneAt: DONE_AT });
+  const modes = ['Mark done', 'reply', 'Not yet', 'Reopen'] as const;
+
+  function startWrite(mode: typeof modes[number]) {
+    if (mode === 'Mark done') {
+      fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
+      return null;
+    }
+    if (mode !== 'reply') fireEvent.click(screen.getByRole('button', { name: mode }));
+    const box = screen.getByRole('textbox', { name: mode === 'reply' ? NORMAL_BOX : SPECIAL_BOX });
+    fireEvent.change(box, { target: { value: 'Still two tickets left.' } });
+    fireEvent.click(within(box.closest('form')!).getByRole('button', { name: 'Send' }));
+    return box;
+  }
+
+  it.each(modes)('%s announces the landed write even when the following detail read fails', async (mode) => {
+    taskMock.mockResolvedValueOnce(mode === 'Reopen' ? done() : mode === 'reply' ? detail() : claimed());
+    const view = await renderReady();
+    const nextRead = deferred<TaskDetail>();
+    taskMock.mockImplementation(() => {
+      expect(view.onTaskWriteSucceeded).toHaveBeenCalledTimes(1);
+      return nextRead.promise;
+    });
+    completeMock.mockResolvedValue({ done: true });
+    replyMock.mockResolvedValue({ checkIn: 'started' });
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const box = startWrite(mode);
+    await waitFor(() => expect(view.onTaskWriteSucceeded).toHaveBeenCalledTimes(1));
+    expect(taskMock).toHaveBeenCalledTimes(2);
+    if (mode === 'Not yet' || mode === 'Reopen') {
+      expect(box).toBeInTheDocument();
+      expect(box).not.toBeVisible();
+      expect(document.activeElement).not.toBe(box);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBeVisible();
+    }
+    await act(async () => nextRead.reject(new Error('detail unavailable')));
+    expect(await screen.findByText('We couldn’t refresh this task just now, so what you see may be out of date.')).toBeVisible();
+    expect(view.onTaskWriteSucceeded).toHaveBeenCalledTimes(1);
+    if (mode === 'Not yet' || mode === 'Reopen') expect(box).not.toBeVisible();
+  });
+
+  it.each(modes)('%s never announces a failed write or discards its open draft', async (mode) => {
+    taskMock.mockResolvedValue(mode === 'Reopen' ? done() : mode === 'reply' ? detail() : claimed());
+    const view = await renderReady();
+    const error = new WorkspaceApiError('/tasks/a1/t1/write', 503);
+    completeMock.mockRejectedValue(error);
+    replyMock.mockRejectedValue(error);
+    reopenMock.mockRejectedValue(error);
+    const box = startWrite(mode);
+    await screen.findByText(mode === 'Mark done'
+      ? 'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.'
+      : 'We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.');
+    expect(view.onTaskWriteSucceeded).not.toHaveBeenCalled();
+    expect(taskMock).toHaveBeenCalledTimes(1);
+    if (box !== null) {
+      expect(box).toBeVisible();
+      expect(box).toHaveValue('Still two tickets left.');
+    }
+  });
+
+  it.each(modes)('%s still announces its landed write after the task page unmounts', async (mode) => {
+    taskMock.mockResolvedValue(mode === 'Reopen' ? done() : mode === 'reply' ? detail() : claimed());
+    const view = await renderReady();
+    const completion = deferred<{ done: true }>();
+    const reply = deferred<{ checkIn: 'started' }>();
+    completeMock.mockReturnValue(completion.promise);
+    replyMock.mockReturnValue(reply.promise);
+    reopenMock.mockReturnValue(reply.promise);
+    startWrite(mode);
+    view.unmount();
+    await act(async () => {
+      if (mode === 'Mark done') completion.resolve({ done: true });
+      else reply.resolve({ checkIn: 'started' });
+    });
+    expect(view.onTaskWriteSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['Not yet', 'Reopen'] as const)('%s closes on success without stealing focus from someone who moved on', async (mode) => {
+    taskMock.mockResolvedValue(mode === 'Reopen' ? done() : claimed());
+    await renderReady();
+    const reply = deferred<{ checkIn: 'started' }>();
+    reopenMock.mockReturnValue(reply.promise);
+    const box = startWrite(mode);
+    const elsewhere = screen.getByRole('button', { name: 'Open navigation' });
+    act(() => elsewhere.focus());
+    await act(async () => reply.resolve({ checkIn: 'started' }));
+    expect(box).not.toBeVisible();
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it('keeps the running schedule, then drops it after Mark done while retaining the dated Done line', async () => {
+    taskMock.mockResolvedValueOnce(claimed());
+    await renderReady();
+    expect(screen.getByText(/checks in every hour/)).toBeVisible();
+    completeMock.mockResolvedValue({ done: true });
+    taskMock.mockResolvedValue(done());
+    startWrite('Mark done');
+    await screen.findByRole('button', { name: 'Reopen' });
+    expect(screen.queryByText(/checks in every hour/)).toBeNull();
+    expect(within(latestUpdate()).getByText(`Done · You marked it done at ${localTime(DONE_AT)}.`)).toBeVisible();
+  });
+
+  it('omits the schedule on an initially Done task', async () => {
+    taskMock.mockResolvedValue(done());
+    await renderReady();
+    expect(screen.queryByText(/checks in every hour/)).toBeNull();
+    expect(screen.getByText('Quill · Get something done')).toBeVisible();
   });
 });

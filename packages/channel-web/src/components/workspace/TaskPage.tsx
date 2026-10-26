@@ -23,8 +23,7 @@
  * steps as they were, read-only, has no reply box, and its header holds
  * Reopen, which opens the same box in its reopen mode, and the ⋯ with
  * Duplicate (TASK-953: copying a finished plan is its main use). The in-place
- * box is mounted from its first opening and hidden while closed, so its "Sent." line
- * is still there when the claim or Done state it answered has gone. A later
+ * box closes after a successful send and stays mounted while hidden. A later
  * claim or Done is a new question: it finds the box closed and empty.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
@@ -433,6 +432,7 @@ export function TaskPage({
   leading,
   onNavigate,
   onDuplicated,
+  onTaskWriteSucceeded,
   justCopied = false,
 }: {
   agentId: string;
@@ -441,6 +441,8 @@ export function TaskPage({
   onNavigate: (route: WorkspaceRoute) => void;
   /** The copy Duplicate made (same agent): the shell opens it. */
   onDuplicated: (routineId: string) => void;
+  /** A landed write can change Today and its badge, independently of the next detail read. */
+  onTaskWriteSucceeded: () => void;
   /** This page was just opened by Duplicate, so it says once that it's a paused copy. */
   justCopied?: boolean;
 }) {
@@ -476,6 +478,7 @@ export function TaskPage({
 
   // Not yet and Reopen share one box under the latest update (see FINISHING A TASK).
   const boxId = useId();
+  const tasksLinkRef = useRef<HTMLAnchorElement>(null);
   const [inPlace, setInPlace] = useState<InPlaceBox | null>(null);
   const toggleBox = (mode: InPlaceBox['mode']) =>
     setInPlace((cur) =>
@@ -486,8 +489,8 @@ export function TaskPage({
   // What the page asks the person now, in the box's terms: a Done task's Reopen, a claim's Not yet.
   const question: InPlaceBox['mode'] | null =
     detail === null ? null : detail.doneAt !== null ? 'reopen' : isClaimed(detail) ? 'not-yet' : null;
-  // The box's answer stays on screen once its question has gone, until a new one comes: then it
-  // closes and empties. A layout effect, so a new claim never shows Not yet expanded over the old answer.
+  // A closed, sent box stays mounted until a new question comes: then it empties.
+  // A layout effect, so a new claim never shows Not yet expanded over the old answer.
   useLayoutEffect(() => {
     if (detail === null) return;
     setInPlace((cur) => {
@@ -504,7 +507,17 @@ export function TaskPage({
 
   // A reply that started a check-in watches for it like Check now does; every
   // reply reads the task again, so Updates shows it.
-  const onReplySent = (checkIn: TaskReplyCheckIn) => {
+  const onReplySent = (checkIn: TaskReplyCheckIn, closeBox = false) => {
+    onTaskWriteSucceeded();
+    if (closeBox) {
+      const at = document.activeElement;
+      const hadFocus = at === null || at === document.body ||
+        document.getElementById(boxId)?.contains(at) === true;
+      setInPlace((cur) => cur === null ? cur : { ...cur, open: false });
+      // The task state (and its action buttons) may change on the re-read.
+      // This link stays visible through either outcome; never focus the hidden composer.
+      if (hadFocus) tasksLinkRef.current?.focus();
+    }
     if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply');
     refresh();
   };
@@ -524,7 +537,7 @@ export function TaskPage({
               <BreadcrumbList>
                 <BreadcrumbItem>
                   <BreadcrumbLink asChild>
-                    <a {...routeLinkProps({ kind: 'tasks' }, onNavigate)}>Tasks</a>
+                    <a ref={tasksLinkRef} {...routeLinkProps({ kind: 'tasks' }, onNavigate)}>Tasks</a>
                   </BreadcrumbLink>
                 </BreadcrumbItem>
                 <BreadcrumbSeparator />
@@ -574,6 +587,7 @@ export function TaskPage({
               copyLine={copyLine}
               onRefresh={refresh}
               onReplySent={onReplySent}
+              onTaskWriteSucceeded={onTaskWriteSucceeded}
               onStepsChanged={replaceSteps}
               onFinishBySaved={onFinishBySaved}
               onNavigate={onNavigate}
@@ -759,6 +773,7 @@ function TaskBody({
   copyLine,
   onRefresh,
   onReplySent,
+  onTaskWriteSucceeded,
   onStepsChanged,
   onFinishBySaved,
   onNavigate,
@@ -779,7 +794,8 @@ function TaskBody({
   /** This page was just opened by Duplicate and hasn't run yet (TASK-953). */
   copyLine: boolean;
   onRefresh: () => void;
-  onReplySent: (checkIn: TaskReplyCheckIn) => void;
+  onReplySent: (checkIn: TaskReplyCheckIn, closeBox?: boolean) => void;
+  onTaskWriteSucceeded: () => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
   onStepsChanged: (steps: TaskStep[]) => void;
   onFinishBySaved: (finishBy: TaskFinishBy | null) => void;
@@ -805,6 +821,7 @@ function TaskBody({
     claim: claimed ? (detail.task?.reportedAt ?? null) : null,
     unticked,
     onDone: () => {
+      onTaskWriteSucceeded();
       focusDoneLine.current = true;
       onRefresh();
     },
@@ -850,7 +867,7 @@ function TaskBody({
   const note = actionNote(detail);
   const { agentName } = detail;
   const kindMeta = `${agentName} · ${TASK_KIND_LABELS[detail.kind]}`;
-  const meta = detail.schedule === null ? kindMeta : `${kindMeta} · checks in ${detail.schedule}`;
+  const meta = done || detail.schedule === null ? kindMeta : `${kindMeta} · checks in ${detail.schedule}`;
 
   return (
     <>
@@ -936,8 +953,8 @@ function TaskBody({
       />
       {/*
         Not yet and Reopen open this. It is mounted from its first opening and
-        only hidden after that, so its "Sent." line survives the claim or the
-        Done state it answered ending when the page reads the task again. No
+        hidden after a successful send, so its receipt lifecycle stays intact
+        without leaving two forms visible after Reopen. No
         display class on this element: it would beat `[hidden]`.
       */}
       <div id={boxId} hidden={!boxOpen}>
@@ -952,7 +969,7 @@ function TaskBody({
             canStart={detail.permissions.fire}
             inputRef={boxRef}
             completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
-            onSent={onReplySent}
+            onSent={(checkIn) => onReplySent(checkIn, true)}
           />
         )}
       </div>

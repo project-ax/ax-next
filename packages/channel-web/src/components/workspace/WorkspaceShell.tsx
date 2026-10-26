@@ -369,8 +369,9 @@ function Inner({
     settings, where routines are edited), including the page the app opened
     on: a reply, Pause, Resume or edit there may postdate the read in flight,
     so the next entry into Today or Tasks starts a fresh one (`reload`),
-    however many other pages came between, as a reply from Today does. The
-    fresh answer wins whichever lands last. This is still best-effort: other
+    however many other pages came between. A landed task-page Mark done,
+    Not yet, Reopen or reply also announces a fresh read at once, as a reply
+    from Today does. The fresh answer wins whichever lands last. This is still best-effort: other
     changes aren't announced to it, among them an agent's own routine change
     under Always Allow, the report a check-in writes later, a missed check-in
     or an auto-pause the scheduler records, and anything done in another tab,
@@ -1052,6 +1053,7 @@ function Inner({
               routineId={route.routineId}
               leading={navTrigger}
               onNavigate={navigate}
+              onTaskWriteSucceeded={taskRead.reload}
               justCopied={freshCopy === JSON.stringify([route.agentId, route.routineId])}
               onDuplicated={(copyId) => {
                 // Someone who left while the copy was being made stays where
