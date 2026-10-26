@@ -22,6 +22,8 @@ const definition = RoutineDefinitionSchema.parse({
   promptBody: 'Run',
   trigger: { kind: 'interval', every: '1h' },
 });
+const { schedule, webhook: _webhook, ...defaultFields } = definition;
+const defaultDefinition = { ...defaultFields, trigger: schedule! };
 const routine = {
   ...definition,
   agentId: 'a',
@@ -118,9 +120,10 @@ function setup(
     'tool-policy:get-routine-consent': { enabled: false, revision: 'c1' },
     'tool-policy:revoke-routine-consent': { enabled: false, revision: 'c2' },
     'agents:ensure-webhook-token': { token: 'authorized-token' },
+    'agents:can-manage-connectors': { allowed: true },
     'routines:list-defaults': { defaults: [] },
     'routines:get-default': {
-      ...definition,
+      ...defaultDefinition,
       defaultRoutineId: 'd',
       updatedAt: '2026-10-09T00:00:00.000Z',
     },
@@ -293,7 +296,7 @@ describe('structured human routine REST adapters', () => {
   it('keeps catalog admin-only and accepts flat canonical interval fields with omitted enabled', async () => {
     const { bus, calls } = setup();
     const h = createAdminDefaultRoutinesHandlers({ bus });
-    const { enabled: _enabled, ...input } = definition;
+    const { enabled: _enabled, ...input } = defaultDefinition;
     const r = response();
     await h.create(req(input), r.res);
     expect(r.status).toBe(201);
@@ -316,7 +319,7 @@ describe('structured human routine REST adapters', () => {
     const h = createAdminDefaultRoutinesHandlers({ bus });
     const r = response();
     await h.update(
-      req({ ...definition, name: 'Other' }, { id: 'd' } as never),
+      req({ ...defaultDefinition, name: 'Other' }, { id: 'd' } as never),
       r.res,
     );
     expect(r.status).toBe(400);
@@ -328,7 +331,7 @@ describe('structured human routine REST adapters', () => {
     });
     const r = response();
     await createAdminDefaultRoutinesHandlers({ bus }).update(
-      req(definition, { id: 'gone' } as never),
+      req(defaultDefinition, { id: 'gone' } as never),
       r.res,
     );
     expect(r.status).toBe(404);
@@ -375,7 +378,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
   const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'description', 'done', 'enabled',
     'finishBy', 'finishByTimeZone', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning',
     'name', 'nextRunAt', 'noRecentUpdate', 'origin', 'permissions', 'promptBody', 'revision', 'routineId',
-    'silenceMaxChars', 'silenceToken', 'steps', 'task', 'trigger'];
+    'silenceMaxChars', 'silenceToken', 'steps', 'task', 'schedule', 'webhook'];
   /** Every field a Settings run carries, reviewed the same way. */
   const RUN_KEYS = ['agentId', 'conversationId', 'error', 'firedAt', 'renderedPrompt', 'report', 'routineId',
     'status', 'triggerSource', 'warning'];
@@ -391,6 +394,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
     consent: req(),
     revokeConsent: req({}),
     receiver: req(),
+    receiverAccess: req(),
   };
   /** The routines services answer as they do the task's owner: the task's state and the runs' reports. */
   const asOwner = () => setup({ answers: { view: taskView, fires: [runView] } });

@@ -262,6 +262,24 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
             ),
           );
     }),
+    receiverAccess: async (req: RouteRequest, res: RouteResponse) => {
+      const actor = await requireUser(deps.bus, authContext(), req, res);
+      if (!actor) return;
+      const input = key(req, res, false);
+      if (!input) return;
+      const ctx = actorContext(actor.id, input.agentId);
+      try {
+        await deps.bus.call('agents:resolve', ctx, { agentId: input.agentId, userId: actor.id });
+        // The existing agent-management predicate also guards receiver tokens.
+        // This read checks authority only: it never obtains or creates a token.
+        const out = await call('agents:can-manage-connectors', ctx, {
+          agentId: input.agentId, actor: { userId: actor.id, isAdmin: actor.isAdmin },
+        }, z.object({ allowed: z.boolean() }).strict());
+        res.status(200).json(out);
+      } catch (error) {
+        writeServiceError(res, error);
+      }
+    },
     receiver: async (req: RouteRequest, res: RouteResponse) => {
       const actor = await requireUser(deps.bus, authContext(), req, res);
       if (!actor) return;
@@ -331,6 +349,7 @@ export async function registerRoutinesAdminRoutes(
     { method: 'GET', path: `${base}/consent`, handler: h.consent },
     { method: 'DELETE', path: `${base}/consent`, handler: h.revokeConsent },
     { method: 'GET', path: `${base}/receiver`, handler: h.receiver },
+    { method: 'GET', path: `${base}/receiver-access`, handler: h.receiverAccess },
     { method: 'GET', path: base, handler: h.list },
     { method: 'POST', path: base, handler: h.create },
     { method: 'GET', path: `${base}/:routineId`, handler: h.get },

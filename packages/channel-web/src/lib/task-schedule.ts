@@ -24,7 +24,8 @@ import { clockTime, describeCron, describeCronPhrase } from './cron-describe.js'
 const UNIT_WORDS = { s: 'second', m: 'minute', h: 'hour', d: 'day' } as const;
 
 /** One sentence saying when a trigger runs, or `null` when it doesn't run on a schedule. */
-export function describeCheckIns(trigger: RoutineTrigger): string | null {
+export function describeCheckIns(trigger: RoutineTrigger | null): string | null {
+  if (trigger === null) return null;
   switch (trigger.kind) {
     case 'interval': {
       // The contract's own duration shape. Anything else says nothing rather
@@ -61,10 +62,11 @@ function hm(time: string): string {
  * zone, so a caller fences it.
  */
 export function checkInSchedule(
-  trigger: RoutineTrigger,
+  trigger: RoutineTrigger | null,
   activeHours: ActiveHours | null,
 ): string | null {
   let phrase: string | null = null;
+  if (trigger === null) return null;
   switch (trigger.kind) {
     case 'interval': {
       const match = /^(\d+)(s|m|h|d)$/.exec(trigger.every);

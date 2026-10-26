@@ -531,6 +531,15 @@ No new plugins.
 
 ### 5.1 A webhook is a "when", not a kind
 
+TASK-970 (PR 4-B) implements independent nullable `schedule` and `webhook` fields
+for Repeat a job. Its existing editor offers both When choices together, and an
+edit to one preserves the other's configuration. Existing IDs, webhook addresses,
+events and signature settings survive the conversion; old approved `trigger`
+calls still mean an exclusive replacement. Stay on top and Get done keep their
+schedule and have no app-update control until PR 5's inbox and nudges exist.
+This contract change does not move routines into the Tasks list; the remaining
+PR 4 cards do that. The setup flow described in §5.2 remains the PR 5 design.
+
 Folding routines in brings their webhooks along. A webhook is one more way for
 a task to wake up, next to its schedule, a reply and Check now. What an update
 does depends on the kind:
@@ -1082,3 +1091,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-26 | Decided | PR 4 moves existing routines out of Agent Settings into Tasks as **Repeat a job**, preserving their webhook addresses and configuration. Settings keeps Self-improvement (§14 Q1, TASK-968). |
 | 2026-10-26 | Decided | PR 4 adds simple day selectors for active hours, including weekdays. Custom cron stays under More options (TASK-968). |
 | 2026-10-26 | Decided | **Repeat a job** keeps its existing **60-second** minimum repeat interval. **Stay on top of something** and **Get something done** keep **15-minute** minimum schedules. This settles the Repeat a job exception left for PR 4 by the original check-in floor decision (§14 Q3, TASK-968). |
+| 2026-10-26 | Implemented in TASK-970 | Repeat uses independent nullable schedule and webhook methods, with at least one enabled. Canonical patches preserve omitted methods; legacy trigger replacement remains exclusive. New or changed Repeat schedules, custom cron included, enforce 60 seconds while unchanged saved faster cron and completed receipts remain valid. Stay-on-top and get-done schedules remain required with a 15-minute floor, and their app updates remain PR 5. The default catalog keeps its separate interval-only DTO. This is the PR 4-B contract and current editor, not the complete Tasks move or a production deployment. |

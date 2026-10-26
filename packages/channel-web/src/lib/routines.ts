@@ -10,6 +10,8 @@ import type {
   RoutineFireNowInput,
   RoutineFireNowOutput,
   RoutineDeleteOutput,
+  RoutineSchedule,
+  WebhookTrigger,
 } from '@ax/routines-contract';
 /**
  * A Settings answer carries no task state (TASK-957): a routine's `task` is
@@ -18,7 +20,7 @@ import type {
  */
 export type Routine = RoutineView;
 export type Fire = RoutineFireView;
-export type TriggerSpec = RoutineDefinition['trigger'];
+export type TriggerSpec = RoutineSchedule | WebhookTrigger;
 export type ActiveHours = NonNullable<RoutineDefinition['activeHours']>;
 export type FireStatus = RoutineFireView['status'];
 export type FireSource = RoutineFireView['triggerSource'];
@@ -63,6 +65,17 @@ const fields = [
   'trigger.hmac.header',
   'trigger.hmac.algorithm',
   'trigger.hmac.prefix',
+  'schedule',
+  'schedule.every',
+  'schedule.expr',
+  'schedule.tz',
+  'webhook',
+  'webhook.path',
+  'webhook.events',
+  'webhook.hmac',
+  'webhook.hmac.header',
+  'webhook.hmac.algorithm',
+  'webhook.hmac.prefix',
   'activeHours',
   'activeHours.start',
   'activeHours.end',
@@ -215,6 +228,9 @@ export const routineApi = {
   },
   getReceiver(agentId: string): Promise<{ url: string }> {
     return request(`${collection(agentId)}/receiver`);
+  },
+  getReceiverAccess(agentId: string): Promise<{ allowed: boolean }> {
+    return request(`${collection(agentId)}/receiver-access`);
   },
   async listAgentDefaults(agentId: string): Promise<AgentDefaultState[]> {
     return (
