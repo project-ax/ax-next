@@ -174,25 +174,31 @@ export function useTasks(): {
  * The first load reads as no rows and no error; a retry after a failure keeps
  * that failure until a read lands. A failed refresh with rows on screen is
  * `failed` too, and keeps the rows: they may be out of date. `refreshing` says a
- * read is in flight, so Today holds its Try again until it lands.
+ * read is in flight, so Today holds its Try again until it lands. `checking` is
+ * true until the first read lands (a reload during it included). Until then
+ * Today doesn't know whether any task needs the person, so it says it is still
+ * checking (TASK-939). A retry after a failure isn't checking: it keeps
+ * reporting the failure.
  */
 export function tasksForToday(state: TasksState): {
   tasks: TaskRow[];
   unavailableAgents: UnavailableAgent[];
   error: TasksReadError | null;
   refreshing: boolean;
+  checking: boolean;
 } {
   switch (state.kind) {
     case 'loading':
-      return { tasks: [], unavailableAgents: [], error: state.retryingAfter, refreshing: true };
+      return { tasks: [], unavailableAgents: [], error: state.retryingAfter, refreshing: true, checking: state.retryingAfter === null };
     case 'ready':
       return {
         tasks: state.tasks,
         unavailableAgents: state.unavailableAgents,
         error: state.refreshFailed ? 'failed' : null,
         refreshing: state.refreshing,
+        checking: false,
       };
     case 'failed':
-      return { tasks: [], unavailableAgents: [], error: state.error, refreshing: false };
+      return { tasks: [], unavailableAgents: [], error: state.error, refreshing: false, checking: false };
   }
 }

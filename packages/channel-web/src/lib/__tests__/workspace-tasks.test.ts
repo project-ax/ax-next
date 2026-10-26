@@ -401,6 +401,7 @@ describe('tasksForToday (TASK-933)', () => {
       unavailableAgents: [],
       error: null,
       refreshing: true,
+      checking: true,
     });
   });
 
@@ -411,6 +412,7 @@ describe('tasksForToday (TASK-933)', () => {
       unavailableAgents: [],
       error: 'failed',
       refreshing: true,
+      checking: false,
     });
     const expired: TasksState = { kind: 'loading', retryingAfter: 'expired' };
     expect(tasksForToday(expired).error).toBe('expired');
@@ -429,6 +431,7 @@ describe('tasksForToday (TASK-933)', () => {
       unavailableAgents: [ADA],
       error: null,
       refreshing: true,
+      checking: false,
     });
   });
 
@@ -445,6 +448,7 @@ describe('tasksForToday (TASK-933)', () => {
       unavailableAgents: [ADA],
       error: 'failed',
       refreshing: false,
+      checking: false,
     });
   });
 
@@ -455,6 +459,7 @@ describe('tasksForToday (TASK-933)', () => {
         unavailableAgents: [],
         error,
         refreshing: false,
+        checking: false,
       });
     }
   });
@@ -471,5 +476,36 @@ describe('tasksForToday (TASK-933)', () => {
     tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
     act(() => result.current.retry());
     expect(tasksForToday(result.current.state).error).toBe('failed');
+  });
+
+  it('says it is checking only until the first read lands; a re-read of a list never brings it back (TASK-939)', async () => {
+    const first = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useTasks());
+    expect(tasksForToday(result.current.state).checking).toBe(true);
+
+    // A reload during the first read is still the first read.
+    const second = deferred<TasksResponse>();
+    tasksMock.mockReturnValueOnce(second.promise);
+    act(() => result.current.reload());
+    expect(tasksForToday(result.current.state).checking).toBe(true);
+
+    act(() => second.resolve(page()));
+    await waitFor(() => expect(result.current.state.kind).toBe('ready'));
+    expect(tasksForToday(result.current.state).checking).toBe(false);
+
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.reload());
+    expect(tasksForToday(result.current.state)).toMatchObject({ refreshing: true, checking: false });
+  });
+
+  it('a retry after a failed first read keeps the failure and is not checking (TASK-939)', async () => {
+    tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 500));
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.state.kind).toBe('failed'));
+
+    tasksMock.mockReturnValueOnce(new Promise<TasksResponse>(() => {}));
+    act(() => result.current.retry());
+    expect(tasksForToday(result.current.state)).toMatchObject({ error: 'failed', checking: false });
   });
 });
