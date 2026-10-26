@@ -11,6 +11,46 @@ const row: StoredRoutine = {
   lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
 };
 describe('canonical routine return schemas', () => {
+  describe('caller-relative ownership and stop authority', () => {
+    it('keeps an ordinary member from managing another creator’s routine', () => {
+      expect(routinePermissions(row, 'member', true, false)).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+      expect(routinePermissions(row, 'owner', true, false)).toEqual({ edit: true, stop: true, fire: true, manageSecret: true });
+      // Membership alone never carries the privileged stop bit, even for older providers.
+      expect(routinePermissions(row, 'member', true)).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+    });
+    it('reserves emergency stop for the explicit capability and still requires current access', () => {
+      expect(routinePermissions(row, 'admin', true, true)).toEqual({ edit: false, stop: true, fire: false, manageSecret: false });
+      expect(routinePermissions(row, 'owner', false, false)).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+      expect(routinePermissions(row, 'admin', false, true)).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+      const inherited = { ...row, definitionId: 'heartbeat' };
+      expect(routinePermissions(inherited, 'owner', true, true)).toEqual({ edit: false, stop: false, fire: true, manageSecret: false });
+      expect(routinePermissions(inherited, 'admin', true, true)).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+    });
+    it('projects ownership independently of reports, task kind and present write authority', () => {
+      for (const kind of ['repeat', 'stay-on-top', 'get-done'] as const) {
+        const candidate = { ...row, ...C.RoutineDefinitionSchema.parse({
+          name: 'Keep the queue clear', promptBody: 'Check the queue.', trigger: { kind: 'interval', every: '1h' },
+          kind, goodWhen: kind === 'repeat' ? null : 'No work is waiting.',
+        }) };
+        expect(routineView(candidate, 'owner', false)).toMatchObject({ ownedByCaller: true, task: null, permissions: { fire: false } });
+        expect(routineView(candidate, 'member', true)).toMatchObject({ ownedByCaller: false, task: null });
+      }
+    });
+    it('requires a boolean in full and small tool view schemas without exposing the owner id', () => {
+      const projected = routineView(row, 'owner', true);
+      expect(projected).toHaveProperty('ownedByCaller', true);
+      expect(projected).not.toHaveProperty('ownerUserId');
+      const { ownedByCaller: _ownership, ...missingOwnership } = projected;
+      for (const schema of [C.RoutineViewSchema, C.RoutineGetOutputSchema, C.RoutineCreateOutputSchema, C.RoutineUpdateOutputSchema]) {
+        expect(() => schema.parse(missingOwnership)).toThrow();
+        expect(() => schema.parse({ ...projected, ownedByCaller: 'owner' })).toThrow();
+        expect(schema.parse(projected)).toEqual(projected);
+      }
+      const { steps: _steps, ...toolView } = projected;
+      expect(C.RoutineUpdateToolOutputSchema.parse(toolView)).toHaveProperty('ownedByCaller', true);
+      expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] }).routines[0]).toHaveProperty('ownedByCaller', true);
+    });
+  });
   it('projects every editable/status field without private owner or storage state', () => {
     const projected = routineView(row, 'owner', true);
     expect(C.RoutineViewSchema.parse(projected)).toEqual(projected);
@@ -49,7 +89,7 @@ describe('canonical routine return schemas', () => {
     expect(routineView(stray, 'owner', true).task?.reading).toStrictEqual(OPEN_3);
     // Anyone but its owner sees the routine without its task state, its reading included.
     const teammate = routineView(task, 'teammate', true);
-    expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), task: null });
+    expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), task: null });
     expect(C.RoutineViewSchema.parse(teammate)).toEqual(teammate);
     // A repeat routine shows none, even when its row holds some.
     const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
@@ -71,7 +111,7 @@ describe('canonical routine return schemas', () => {
       expect(projected.noRecentUpdate).toEqual({ inARow: 3, reason: 'brief-too-long', at: '2030-01-01T00:10:00.000Z', autoPaused: false });
       // Anyone but its owner sees the routine without them.
       const teammate = routineView(task, 'teammate', true);
-      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), noRecentUpdate: null });
+      expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), noRecentUpdate: null });
       // A repeat routine shows none, even when its row holds some.
       const repeat = routineView({ ...task, kind: 'repeat', goodWhen: null }, 'owner', true);
       expect(repeat.noRecentUpdate).toBeNull();
@@ -152,7 +192,7 @@ describe('canonical routine return schemas', () => {
       expect(projected.finishBy).toBe('2026-11-14');
       // Not owner-gated, unlike the task's steps: the date is about the work, and holds no agent text.
       const teammate = routineView(task, 'teammate', true);
-      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), steps: [] });
+      expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), steps: [] });
       // The list tools' view keeps it: they leave only the agent notes and the steps out.
       const { steps: _steps, ...toolView } = projected;
       expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] })).toEqual({ routines: [toolView] });
@@ -223,7 +263,7 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineUpdateToolOutputSchema.parse({ ...toolView, task: listed })).toMatchObject({ done: projected.done, task: { doneClaimed: true } });
       // Anyone but its owner sees the routine without either.
       const teammate = routineView(task, 'teammate', true);
-      expect(teammate).toEqual({ ...projected, permissions: routinePermissions(task, 'teammate', true), task: null, done: null });
+      expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), task: null, done: null });
       // No other kind is ever done, nor claimed, even when its row holds both.
       const stayOnTop = routineView({ ...task, kind: 'stay-on-top' }, 'owner', true);
       expect(stayOnTop.done).toBeNull();

@@ -176,7 +176,7 @@ describe('a task’s report: its shape (TASK-907)', () => {
       kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
     });
     const view = {
-      ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+      ...brief, agentId: 'a', routineId: 'r', revision: 'rev', ownedByCaller: true, origin: 'authored', defaultRoutineId: null,
       nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
       permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
     } as const;
@@ -208,7 +208,7 @@ describe('routine_list leaves a task’s notes out, routine_get keeps them (TASK
     kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
   });
   const view = {
-    ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+    ...brief, agentId: 'a', routineId: 'r', revision: 'rev', ownedByCaller: true, origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
     permissions: { edit: true, stop: true, fire: true, manageSecret: false }, noRecentUpdate: null, finishBy: null, finishByTimeZone: null, done: null,
   } as const;

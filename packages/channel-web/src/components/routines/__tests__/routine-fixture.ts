@@ -3,7 +3,7 @@ export const routineFixture: RoutineView = {
   agentId: 'a',
   routineId: 'opaque-r1',
   revision: 'opaque-v1',
-  origin: 'authored',
+  ownedByCaller: true, origin: 'authored',
   defaultRoutineId: null,
   name: 'Project check-in',
   description: 'Progress',

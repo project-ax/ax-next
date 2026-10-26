@@ -131,7 +131,7 @@ describe('human routine secret destinations', () => {
     },
   );
 
-  it('retains existing admin gate and has no per-person routine-secret route', async () => {
+  it('retains the admin gate while forwarding authenticated settings writes to routine authority', async () => {
     const { h, calls } = setup(false);
     const r = response();
     await h.create(
@@ -139,13 +139,16 @@ describe('human routine secret destinations', () => {
       r.res,
     );
     expect(r.status).toBe(403);
+    expect(calls).toEqual([]);
     const settings = response();
     await h.createSettings(
       req({ ...base, kind: 'api-key', payloadB64: 'YQ==' }),
       settings.res,
     );
-    expect(settings.status).toBe(404);
-    expect(calls).toEqual([]);
+    expect(settings.status).toBe(204);
+    expect(calls).toEqual([{ ctx: { agentId: 'a', userId: 'human' }, input: {
+      agentId: 'a', routineId: 'rtn_opaque', expectedRevision: 'rev1', operation: 'set', secret: new Uint8Array(Buffer.from('a')),
+    } }]);
   });
   it('rejects scope, owner, ref, colon and legacy path forgery before any secret call', async () => {
     for (const extra of [

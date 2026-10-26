@@ -1,6 +1,7 @@
-import { HttpError, httpFetch } from './http';
+import { HttpError, httpFetch, REQUEST_TIMEOUT_MS, RequestTimeoutError, withRequestTimeout } from './http';
 import { readRoutineResponse, RoutineApiError } from './routines';
 import type { Destination } from '@ax/credentials';
+import { RoutineSecretStatusOutputSchema } from '@ax/routines-contract';
 
 /**
  * Credentials wire client — typed wrappers around `/admin/credentials*` and
@@ -203,6 +204,26 @@ async function keyValidationMessage(res: Response, destination: Destination): Pr
 export const CONNECTOR_KEY_NOT_PER_PERSON = 'Connector credentials belong to agents now.';
 
 type RoutineDestination = Extract<Destination, {kind: 'routine-hmac'}>;
+export async function routineSecretConfigured(destination: RoutineDestination): Promise<boolean> {
+  const query = new URLSearchParams({ agentId: destination.agentId, routineId: destination.routineId });
+  const path = `/settings/destinations/routine-hmac/credential?${query}`;
+  try {
+    // Match routine reads: the deadline includes the response body, so a
+    // stalled presence check reaches the row's error and Retry state.
+    return await withRequestTimeout(path, REQUEST_TIMEOUT_MS, async signal => {
+      let res: Response;
+      try { res = await httpFetch(path, { signal }); }
+      catch { throw new RoutineApiError(0); }
+      const value = await readRoutineResponse<unknown>(res);
+      const parsed = RoutineSecretStatusOutputSchema.safeParse(value);
+      if (!parsed.success) throw new RoutineApiError(502);
+      return parsed.data.configured;
+    });
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new RoutineApiError(0);
+    throw error;
+  }
+}
 export type DestinationCredentialTarget = {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
 } & (
@@ -221,7 +242,7 @@ export async function setDestinationCredential(args: DestinationCredentialTarget
   checkRoutineTarget(args);
   if (args.destination.kind === 'account' && args.scope.scope === 'user')
     throw new Error(CONNECTOR_KEY_NOT_PER_PERSON);
-  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const base = args.destination.kind === 'routine-hmac' || args.scope.scope === 'user' ? '/settings' : '/admin';
   const url = `${base}/destinations/${args.destination.kind}/credential`;
   const body = {
     destination: args.destination,
@@ -261,7 +282,7 @@ export async function setDestinationCredential(args: DestinationCredentialTarget
 /** Routine deletes carry the same lifecycle revision as writes. */
 export async function removeDestinationCredential(args: DestinationCredentialTarget): Promise<void> {
   checkRoutineTarget(args);
-  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const base = args.destination.kind === 'routine-hmac' || args.scope.scope === 'user' ? '/settings' : '/admin';
   const url = `${base}/destinations/${args.destination.kind}/credential`;
   const body = { destination: args.destination, scope: args.scope.scope, ownerId: args.scope.ownerId,
     ...(args.destination.kind === 'routine-hmac' ? {expectedRevision: args.expectedRevision} : {}) };

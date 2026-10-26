@@ -20,7 +20,7 @@ export type RoutineHarness = {
   agentId: string; teamAgentId: string; credentialCalls: Array<{ operation: string; ref: string }>;
   cleanupWarnings: Array<{ message: string; fields: Record<string, unknown> | undefined }>;
   failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
-  db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
+  db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; setTeamRole(userId: string, role: 'admin' | 'member' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 
 /** Materialize the seeded defaults for the harness agents, as a later tick would. */
@@ -45,6 +45,7 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
   const cleanupWarnings: RoutineHarness['cleanupWarnings'] = [];
   let failDelete = false;
   let teamFailure: 'missing' | 'outage' | null = null;
+  const teamRoles = new Map<string, 'admin' | 'member'>([['owner', 'admin'], ['admin', 'admin'], ['member', 'member'], ['peer', 'member']]);
   const invokeCalls: string[] = [];
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
@@ -73,7 +74,8 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
       'teams:is-member': async (_ctx, raw) => {
         if (teamFailure) throw new PluginError({ plugin: 'teams', code: teamFailure === 'missing' ? 'no-service' : 'unavailable', message: 'Team lookup unavailable' });
         const { userId, teamId } = raw as { userId: string; teamId: string };
-        return { member: teamId === 'team-1' && ['owner', 'admin', 'member'].includes(userId), role: userId === 'member' ? 'member' : 'admin' };
+        const role = teamId === 'team-1' ? teamRoles.get(userId) : undefined;
+        return { member: role !== undefined, ...(role === undefined ? {} : { role }) };
       },
       'auth:require-user': async ctx => { const userId = options.authenticatedUserId ?? ctx.userId; return { user: { id: userId, email: `${userId}@example.test`, displayName: userId, isAdmin: userId === 'admin', createdAt: new Date() } }; },
       'auth:get-user': async (_ctx, raw) => { const { userId } = raw as { userId: string }; return { id: userId, email: `${userId}@example.test`, displayName: userId, isAdmin: userId === 'admin' }; },
@@ -138,7 +140,7 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
   const agentId = options.reuse?.agentId ?? await create(false), teamAgentId = options.reuse?.teamAgentId ?? await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),
