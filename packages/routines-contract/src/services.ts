@@ -218,7 +218,7 @@ export const RoutineFireViewSchema = z.object({
   firedAt: RoutineInstantSchema, triggerSource: z.enum(['tick', 'manual', 'webhook']),
   conversationId: RoutineOpaqueStringSchema.nullable(), status: RoutineStatusSchema,
   error: z.string().nullable(), renderedPrompt: z.string().nullable(), warning: z.string().nullable(),
-  /** TASK-907. Null when the run made no report, and for anyone but the routine's owner, who is also the person the run ran as (TASK-936): a report is its task's state. */
+  /** TASK-907. Null when the run made no report, and for anyone but the routine's owner, who is also the person the run ran as (TASK-936), and for everyone once the routine is deleted (TASK-947): a report is its task's state. */
   report: RoutineFireReportViewSchema.nullable(),
 }).strict();
 /**
