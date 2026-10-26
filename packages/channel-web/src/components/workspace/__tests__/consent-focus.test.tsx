@@ -838,7 +838,7 @@ describe('the host grant turned down (site 4)', () => {
             tasksChecking={false}
             unavailableTaskAgents={[]}
             onRetryTasks={vi.fn()}
-            onReplied={vi.fn()}
+            onReplied={vi.fn()} onPollTasks={vi.fn()}
           />
         </div>
       );
@@ -1146,7 +1146,7 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
           tasksChecking={false}
           unavailableTaskAgents={[]}
           onRetryTasks={vi.fn()}
-          onReplied={vi.fn()}
+          onReplied={vi.fn()} onPollTasks={vi.fn()}
         />
       </div>
     );

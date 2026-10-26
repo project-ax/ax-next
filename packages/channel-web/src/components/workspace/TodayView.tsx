@@ -44,6 +44,7 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { todayQueue, waitingOnYou } from '@/lib/today-queue';
 import type { TasksReadError } from '@/lib/workspace-tasks';
+import { useTaskReplyPoll } from '@/lib/use-task-poll';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
 import { TodayTaskGroup } from './TodayTaskGroup';
@@ -173,6 +174,8 @@ interface Props {
   onRetryTasks: () => void;
   /** A reply was sent from a task's block. */
   onReplied: () => void;
+  /** A bounded reply poll tick: join an in-flight tasks read. */
+  onPollTasks: () => void;
 }
 
 export function TodayView({
@@ -205,7 +208,11 @@ export function TodayView({
   unavailableTaskAgents,
   onRetryTasks,
   onReplied,
+  onPollTasks,
 }: Props) {
+  // This owner outlives task rows: an older run can remove a row before the
+  // reply's check-in reports its next ask. Working/route exit stops the clock.
+  const replyPoll = useTaskReplyPoll(filter === 'needs', onPollTasks);
   const readable = error === null;
   const grantsUnknown = grantsError !== null;
   // A tasks read that failed, ran out of session, or missed some agents: we
@@ -583,6 +590,7 @@ export function TodayView({
                   group={g}
                   onNavigate={onNavigate}
                   onReplied={onReplied}
+                  onCheckInStarted={() => replyPoll.start('reply')}
                 >
                   {g.decisions.map((d) => renderRow(d, isOpenDecision(d), { inBlock: true }))}
                 </TodayTaskGroup>

@@ -168,7 +168,7 @@ function UpdateEntry({
   now: Date;
   links: EntryLinks;
 }) {
-  const mark = update.report?.status ?? 'no-update';
+  const mark = update.report?.status ?? 'no-recent-update';
   const stamp = updateStamp(update.firedAt, now);
   // Here, not in the shared `updateText`: a check-in's own page draws its
   // reading on a line of its own, labelled as the agent's, through the same

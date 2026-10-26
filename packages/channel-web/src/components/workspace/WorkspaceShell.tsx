@@ -1030,6 +1030,7 @@ function Inner({
                   unavailableTaskAgents={tasksOnToday.unavailableAgents}
                   onRetryTasks={taskRead.retry}
                   onReplied={taskRead.reload}
+                  onPollTasks={taskRead.retry}
                 />
               </div>
               <HomeComposer agents={board.agents} onSend={startTurn} />

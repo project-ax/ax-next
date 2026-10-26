@@ -13,6 +13,7 @@ import {
   TASK_POLL_INTERVAL_MS,
   TASK_POLL_LIMIT_MS,
   useTaskPoll,
+  useTaskReplyPoll,
 } from '../use-task-poll';
 
 const NOW = new Date(2026, 9, 23, 12, 0);
@@ -203,5 +204,57 @@ describe('useTaskPoll (TASK-931)', () => {
     start('check-now');
     await advance(TASK_POLL_LIMIT_MS + 60_000);
     expect(reread).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Today reply refresh window (TASK-940)', () => {
+  it('keeps reading for the full window; callback changes do not restart it, and another Send does', async () => {
+    const first = vi.fn();
+    const next = vi.fn();
+    const { result, rerender, unmount } = renderHook(({ reread }) => useTaskReplyPoll(true, reread), {
+      initialProps: { reread: first },
+    });
+    act(() => result.current.start('reply'));
+    await advance(9_000);
+    rerender({ reread: next });
+    await advance(1_000);
+    expect(first).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    act(() => result.current.start('reply'));
+    await advance(299_999);
+    expect(result.current.phase).toBe('checking');
+    await advance(1);
+    expect(result.current.phase).toBe('timed-out');
+    const calls = next.mock.calls.length;
+    await advance(30_000);
+    expect(next).toHaveBeenCalledTimes(calls);
+    act(() => result.current.start('reply'));
+    const start = result.current.start;
+    unmount();
+    start('reply');
+    await advance(30_000);
+    expect(next).toHaveBeenCalledTimes(calls);
+  });
+
+  it('stops on Working, refuses a late Send there, and does not restart on returning to Needs you', async () => {
+    const reread = vi.fn();
+    const { result, rerender } = renderHook(({ active }) => useTaskReplyPoll(active, reread), {
+      initialProps: { active: true },
+    });
+    act(() => result.current.start('reply'));
+    await advance(10_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    rerender({ active: false });
+    expect(result.current.phase).toBe('idle');
+    act(() => result.current.start('reply'));
+    await advance(30_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    rerender({ active: true });
+    await advance(30_000);
+    expect(reread).toHaveBeenCalledTimes(1);
+    act(() => result.current.start('reply'));
+    await advance(10_000);
+    expect(reread).toHaveBeenCalledTimes(2);
   });
 });

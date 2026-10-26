@@ -1,7 +1,8 @@
 /**
  * "Checking in now…" on a task page (TASK-931): after Check now or a reply
  * starts a check-in, the page reads the task again every 10 seconds until that
- * check-in's update is there, for up to five minutes.
+ * check-in's update is there, for up to five minutes. Today shares the clock
+ * but keeps its reply refresh alive for the full window (TASK-940).
  *
  * WHEN IT STOPS. A check-in counts as the one the press started when it
  * wasn't on the page at the press (`seen`) and started no earlier than a
@@ -55,40 +56,25 @@ export function arrivedCheckIn(
   return found;
 }
 
-interface PollState {
+interface PollState<T> {
   phase: TaskPollPhase;
   startedBy: TaskPollStarter | null;
-  arrived: TaskUpdate | null;
+  arrived: T | null;
 }
 
-const IDLE: PollState = { phase: 'idle', startedBy: null, arrived: null };
-
-export function useTaskPoll(
-  updates: readonly TaskUpdate[] | null,
+/** Shared bounded clock for the detail page and Today's reply window (TASK-940). */
+function useBoundedTaskPoll<T, A>(
+  snapshot: T | null,
   reread: () => void,
-): {
-  phase: TaskPollPhase;
-  /** Who started the current poll: the reply box speaks for its own check-in, so the page doesn't say it again. */
-  startedBy: TaskPollStarter | null;
-  /** The check-in that ended it, while `phase` is `arrived`. */
-  arrived: TaskUpdate | null;
-  start: (by: TaskPollStarter) => void;
-  stop: () => void;
-} {
-  const [poll, setPoll] = useState<PollState>(IDLE);
-  // The latest of each, for `start` and the timer, without restarting either.
-  const latestUpdates = useRef(updates);
-  const latestReread = useRef(reread);
+  arrival: (current: T, before: T | null, at: number) => A | null,
+) {
+  const [poll, setPoll] = useState<PollState<A>>({ phase: 'idle', startedBy: null, arrived: null });
+  const latest = useRef({ snapshot, reread, arrival });
   useEffect(() => {
-    latestUpdates.current = updates;
-    latestReread.current = reread;
+    latest.current = { snapshot, reread, arrival };
   });
-  const press = useRef<{ at: number; seen: ReadonlySet<string> } | null>(null);
+  const press = useRef<{ at: number; before: T | null } | null>(null);
   const timers = useRef<{ tick: ReturnType<typeof setInterval>; limit: ReturnType<typeof setTimeout> } | null>(null);
-  // False once the page is gone: Check now and a reply call `start` after an
-  // await, which can land after unmount, and a timer started then would never
-  // be cleared. Set inside the effect (not at declaration) so StrictMode's
-  // mount-unmount-mount leaves it true.
   const mounted = useRef(false);
 
   const clear = useCallback(() => {
@@ -98,33 +84,26 @@ export function useTaskPoll(
     timers.current = null;
   }, []);
 
-  const start = useCallback(
-    (by: TaskPollStarter) => {
-      if (!mounted.current) return;
-      clear();
-      press.current = {
-        at: Date.now(),
-        seen: new Set((latestUpdates.current ?? []).map(updateKey)),
-      };
-      setPoll({ phase: 'checking', startedBy: by, arrived: null });
-      timers.current = {
-        tick: setInterval(() => latestReread.current(), TASK_POLL_INTERVAL_MS),
-        limit: setTimeout(() => {
-          clear();
-          setPoll((p) => (p.phase === 'checking' ? { ...p, phase: 'timed-out' } : p));
-        }, TASK_POLL_LIMIT_MS),
-      };
-    },
-    [clear],
-  );
+  const start = useCallback((by: TaskPollStarter) => {
+    if (!mounted.current || latest.current.snapshot === null) return;
+    clear();
+    press.current = { at: Date.now(), before: latest.current.snapshot };
+    setPoll({ phase: 'checking', startedBy: by, arrived: null });
+    timers.current = {
+      tick: setInterval(() => latest.current.reread(), TASK_POLL_INTERVAL_MS),
+      limit: setTimeout(() => {
+        clear();
+        setPoll((p) => p.phase === 'checking' ? { ...p, phase: 'timed-out' } : p);
+      }, TASK_POLL_LIMIT_MS),
+    };
+  }, [clear]);
 
   const stop = useCallback(() => {
     clear();
     press.current = null;
-    setPoll(IDLE);
+    setPoll({ phase: 'idle', startedBy: null, arrived: null });
   }, [clear]);
 
-  // Unmount: no re-read outlives the page, and none starts after it.
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -135,17 +114,34 @@ export function useTaskPoll(
 
   useEffect(() => {
     if (poll.phase !== 'checking' || press.current === null) return;
-    if (updates === null) {
-      clear();
-      setPoll(IDLE);
+    if (snapshot === null) {
+      stop();
       return;
     }
-    const arrived = arrivedCheckIn(updates, press.current);
+    const arrived = latest.current.arrival(snapshot, press.current.before, press.current.at);
     if (arrived !== null) {
       clear();
       setPoll((p) => ({ ...p, phase: 'arrived', arrived }));
     }
-  }, [updates, poll.phase, clear]);
+  }, [snapshot, poll.phase, clear, stop]);
 
   return { ...poll, start, stop };
+}
+
+/** Detail reads retain their fire identity and clock-slack arrival rule. */
+export function useTaskPoll(updates: readonly TaskUpdate[] | null, reread: () => void) {
+  return useBoundedTaskPoll(updates, reread, (current, before, at) =>
+    arrivedCheckIn(current, { at, seen: new Set((before ?? []).map(updateKey)) }),
+  );
+}
+
+/**
+ * Today owns this clock above its disposable task rows. The list has no run
+ * identity: an older overlapping check-in can report first and remove a row,
+ * so no row result can prove the reply's check-in has finished. Keep reading
+ * for the full bounded window; `active` turns false on the Working tab, and
+ * leaving Today unmounts the owner. Ticks should join the shared list read.
+ */
+export function useTaskReplyPoll(active: boolean, reread: () => void) {
+  return useBoundedTaskPoll(active ? true : null, reread, () => null);
 }

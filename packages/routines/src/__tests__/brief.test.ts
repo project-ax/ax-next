@@ -337,7 +337,7 @@ describe('no brief, no check-in (TASK-908)', () => {
 
   it('its run errors are the exact copy', () => {
     expect(BRIEF_DIDNT_LOAD).toBe('This task’s instructions didn’t load, so the check-in didn’t run.');
-    expect(BRIEF_TOO_LONG).toBe('This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.');
+    expect(BRIEF_TOO_LONG).toBe('This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in the agent’s settings and the next check-in will run.');
     expect(BRIEF_UNCONFIRMED).toBe('We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.');
   });
 });

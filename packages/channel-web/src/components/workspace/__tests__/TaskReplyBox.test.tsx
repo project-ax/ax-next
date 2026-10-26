@@ -509,3 +509,53 @@ describe('TaskReplyBox — Not yet and Reopen (TASK-950)', () => {
     expect(reopenMock).not.toHaveBeenCalled();
   });
 });
+
+
+describe('completed reply receipts (TASK-940)', () => {
+  function receiptBox(completedCheckIn: string | null) {
+    return <TaskReplyBox agentId="a1" routineId="t1" agentName="Quill" enabled canStart
+      completedCheckIn={completedCheckIn} onSent={vi.fn()} />;
+  }
+
+  it('clears only a new completion, preserves focus, and does not clear the next Send on the old completion', async () => {
+    sendMock.mockResolvedValue({ checkIn: 'started' });
+    const view = render(receiptBox('previous'));
+    await send('First reply');
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+    box().focus();
+    view.rerender(receiptBox('first'));
+    expect(screen.queryByText('Sent. Quill started checking in.')).toBeNull();
+    expect(document.activeElement).toBe(box());
+    await send('Second reply');
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+    view.rerender(receiptBox('first'));
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+    view.rerender(receiptBox(null));
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+    view.rerender(receiptBox('second'));
+    expect(screen.queryByText('Sent. Quill started checking in.')).toBeNull();
+    type('Draft for later');
+    view.rerender(receiptBox('third'));
+    expect(box()).toHaveValue('Draft for later');
+  });
+
+  it('does not leave a running receipt when completion was already read while the send answer was delayed', async () => {
+    let land!: (answer: { checkIn: 'started' }) => void;
+    sendMock.mockReturnValue(new Promise((res) => (land = res)));
+    const view = render(receiptBox(null));
+    type('Please draft it.');
+    fireEvent.click(sendButton());
+    view.rerender(receiptBox('finished'));
+    await act(async () => land({ checkIn: 'started' }));
+    expect(screen.queryByText('Sent. Quill started checking in.')).toBeNull();
+  });
+
+  it.each(['paused', 'not-allowed'] as const)('keeps a %s receipt through unrelated completions', async (checkIn) => {
+    sendMock.mockResolvedValue({ checkIn });
+    const view = render(receiptBox(null));
+    await send('Read this later');
+    const receipt = screen.getByRole('status').textContent;
+    view.rerender(receiptBox('unrelated'));
+    expect(screen.getByRole('status')).toHaveTextContent(receipt!);
+  });
+});

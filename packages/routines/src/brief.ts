@@ -183,7 +183,7 @@ export function briefFits(brief: string): boolean {
 /** A task check-in refused because its brief didn't land. Exact copy. */
 export const BRIEF_DIDNT_LOAD = 'This task’s instructions didn’t load, so the check-in didn’t run.';
 /** A task check-in refused because its brief was over the prompt cap. Exact copy. */
-export const BRIEF_TOO_LONG = 'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.';
+export const BRIEF_TOO_LONG = 'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in the agent’s settings and the next check-in will run.';
 /** A task check-in whose turn ended with no landed confirmation. It may have run, so it doesn't say it didn't. Exact copy. */
 export const BRIEF_UNCONFIRMED = 'We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.';
 
