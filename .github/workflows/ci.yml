@@ -176,14 +176,62 @@ jobs:
       # deleting the coverage again.
       - name: Install zsh (the shell the skill blocks actually run under)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
-      # Tests: affected packages + dependents on PRs (fast feedback); full suite on
-      # push to main (cross-package backstop — a shared-table break only shows on the
-      # full run; auto-merge relies on this main gate, see auto-ship merge queue).
+      # Tests: affected packages + dependents on PRs (fast feedback), or the full
+      # suite on a PR that changes a repo-wide input such as the lockfile (the
+      # step says which, and why);
+      # full suite on push to main (cross-package backstop — a shared-table break
+      # only shows on the full run; auto-merge relies on this main gate, see
+      # auto-ship merge queue).
       - name: Test (affected packages + dependents)
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # This `run:` has no `shell:`, so GitHub runs it as `bash -e` WITHOUT
+          # pipefail: in `cmd | grep`, a failing `cmd` is invisible, and here
+          # an invisible failure reads as "nothing changed" or "no affected
+          # packages", which means "skip the tests". So nothing below pipes a
+          # command into a check. Each output is captured first (a failed
+          # capture fails the step, or runs the full suite) and then checked
+          # without a pipe. The guard test runs this block under `bash -e`, and
+          # pins that the step has no `shell:` and this file no `defaults:`,
+          # so it tests the shell CI actually uses.
+          #
+          # One diff, read by every check below. A diff we can't read, or an
+          # empty base, runs the full suite.
+          full=
+          # --no-renames: a rename otherwise lists only its destination, so
+          # moving a trigger file (or a sandbox-protocol file) away would hide.
+          if [ -z "$BASE_SHA" ] || ! changed=$(git diff --name-only --no-renames "$BASE_SHA"...HEAD); then
+            echo "::warning::could not diff against the PR base (${BASE_SHA:-empty}), so running the full suite rather than guessing."
+            full=yes
+          fi
+          # Some inputs reach every package, but `...[$BASE_SHA]` can't see
+          # them. pnpm maps each changed file to the project that contains it,
+          # and these files all live in the workspace ROOT, which '!{.}' below
+          # excludes. So a PR touching only them selected nothing: #1029
+          # (TASK-938) patched zod for every package and CI printed "No
+          # affected workspace packages". The list:
+          # - dependency resolution: the lockfile, patches/, the workspace
+          #   file, .npmrc, .pnpmfile.cjs, and the whole root package.json. Its
+          #   `pnpm` block (overrides, patchedDependencies,
+          #   onlyBuiltDependencies, auditConfig) and `packageManager` (the
+          #   pnpm version CI installs) both live there, and a scripts-only
+          #   edit costing one full run is cheaper than parsing JSON here.
+          # - tsconfig.base.json, which every package's tsconfig extends.
+          # - this workflow, so a PR that changes how CI tests (or the node
+          #   version it tests on) runs everything, and the full branch below
+          #   gets exercised by the PR that changes it. The flip side: such a
+          #   PR runs the affected-path lines below only against the guard's
+          #   stub pnpm, which is why the guard pins their exact arguments.
+          # scripts/__tests__/ci-dependency-changes-run-full-suite.test.js runs
+          # this block in throwaway repos and pins every rule above.
+          repo_wide='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|\.npmrc|\.pnpmfile\.cjs|tsconfig\.base\.json|\.github/workflows/ci\.yml)$|^patches/'
+          if grep -Eq "$repo_wide" <<<"$changed"; then
+            full=yes
+            echo "A repo-wide input changed, so running the FULL suite on this PR:"
+            grep -E "$repo_wide" <<<"$changed"
+          fi
           # The @ax/agent-claude-sdk-runner MCP-validator drift guard (ARCH-11)
           # asserts the runner's hand-rolled validateMcpEntry against the SAME
           # golden-vectors fixture that @ax/sandbox-protocol's McpServerSchema is
@@ -194,18 +242,39 @@ jobs:
           # the schema, so the runner half of the guard would otherwise be
           # invisible until the post-merge full run. Force it in whenever
           # sandbox-protocol changes so a drift-introducing fixture/schema edit
-          # fails the PR, not main.
+          # fails the PR, not main. (The full suite already includes the runner.)
           extra=()
-          if git diff --name-only "$BASE_SHA"...HEAD | grep -Eq '^packages/sandbox-protocol/'; then
+          if [ -z "$full" ] && grep -Eq '^packages/sandbox-protocol/' <<<"$changed"; then
             extra=(--filter @ax/agent-claude-sdk-runner)
             echo "sandbox-protocol changed — also running @ax/agent-claude-sdk-runner (ARCH-11 cross-boundary drift guard)."
           fi
-          # '!{.}' excludes the workspace ROOT project — its `test` script is the full
-          # recursive `pnpm -r run test`, which any root-level file change would otherwise trigger.
-          if pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
-            pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' run test
+          # `pnpm -r run` leaves the workspace root out on its own (unlike
+          # `pnpm -r list`), so the root's own recursive `test` script can't
+          # re-enter here. On the affected path, '!{.}' excludes the root
+          # explicitly — its `test` script is the full recursive
+          # `pnpm -r run test`, which any root-level file change would
+          # otherwise trigger.
+          #
+          # The affected probe is captured, not piped into `grep -q`. The pipe
+          # turned a pnpm failure (an unknown option, exit 1) into "no affected
+          # packages", exit 0. pnpm prints some failures only on stdout, which
+          # the capture swallows, so on failure we print it back before
+          # failing. pnpm does NOT reject a mistyped filter (`..[sha]` selects
+          # nothing, exit 0), so the filters themselves are guarded only by
+          # the exact argv the guard test pins.
+          if [ -n "$full" ]; then
+            pnpm -r run test
           else
-            echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
+            if ! affected=$(pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable); then
+              printf '%s\n' "$affected"
+              echo "::error::could not list the packages this PR affects (pnpm output above), so failing rather than skipping their tests."
+              exit 1
+            fi
+            if [ -n "$affected" ]; then
+              pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' run test
+            else
+              echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
+            fi
           fi
           pnpm test:eslint-rules
           pnpm test:scripts
