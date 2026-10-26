@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The agent stops telling people to "enable Always Allow for routine_fire_now" (a setting that doesn't exist), a fire-now's approval card says what Allow once does, and a routine approval reads as waiting, not failing, during its undo window and until its outcome lands. Findings 4 and 5 of the TASK-934 walk (`deploy/kind/walks/2026-10-23-TASK-934/RESULTS.md`).
+**Goal:** The agent stops telling people to "enable Always Allow for routine_fire_now" (a setting that doesn't exist), a fire-now's approval card says what Allow once does, and an Allow once routine approval reads as waiting, not failing, during its undo window and until its outcome lands. Findings 4 and 5 of the TASK-934 walk (`deploy/kind/walks/2026-10-23-TASK-934/RESULTS.md`).
 
 **Architecture:** Five small tasks in four packages plus the design doc. Model-facing words change in three places, because a check-in never reads its held call's note (Premises, Refuted (a)): the `routine_fire_now` and `routine_delete` tool descriptions (`@ax/routines-contract`), the system prompt's `routineNote()` (`@ax/agent-runner-core`), and the hold note (`@ax/decisions`, for conversations that go on). Person-facing words change in two: the fire-now card body (`@ax/decisions`, written onto the row at hold time) and `decisionOutcome`'s routine branch (`@ax/channel-web`, shared by the Today row, the in-thread card and the screen-reader announcement). No hook signature or payload change, no migration, no new component.
 
@@ -72,7 +72,7 @@ The person-facing copy went through the `ux-design` framework in planning (row 6
 
 1. The hold note's sentence appears for exactly the four kinds of call Always Allow never lifts, and never for one it could (Task 3's table test has both sides).
 2. No model-facing text invites turning on Always Allow. Every sentence naming it negates it (Tasks 1-3 assert this per sentence).
-3. A routine approval inside its undo window reads `DECISION_GOING_OUT` and offers Undo on both renderers; a recorded outcome still beats the clock.
+3. An Allow once routine approval inside its undo window reads `DECISION_GOING_OUT` and offers Undo on both renderers; a recorded outcome still beats the clock.
 4. The after-window line claims nothing unobserved: "going ahead", never "done" or "started". The queue does re-read the row until it settles (`needsRoutineRead`, `packages/channel-web/src/lib/workspace-decisions.ts:162-164`), which is what "We’ll update this" promises.
 5. A fire-now's body is true for a repeat routine and for a task alike: a manual fire leaves the schedule alone, and a check-in never edits its brief.
 

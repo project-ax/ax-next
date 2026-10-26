@@ -1346,7 +1346,7 @@ describe('firing and deleting always ask, and the agent never offers a setting (
     expect(words).not.toContain('Always Allow does not cover');
     expect(words).not.toContain('Requires Allow once approval');
     // Every sentence that names Always Allow forbids; none invites.
-    expect(words).not.toMatch(/\b(enabl\w*|turn\s+on|switch\w*\s+on)\s+Always Allow\b/i);
+    expect(words).not.toMatch(/\b(enabl\w*|turn(?:s|ed)?\s+on|switch\w*\s+on)\s+Always Allow\b/i);
     for (const sentence of words.split(/(?<=\.)\s+/)) {
       if (sentence.includes('Always Allow')) expect(sentence).toMatch(/\b(even with|never|not)\b/);
     }
