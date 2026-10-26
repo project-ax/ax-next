@@ -20,8 +20,12 @@
  * add whose step is now listed, or one at the cap). A box isn't
  * ticked ahead of the answer. While a change is out every control waits, the
  * open input goes read-only (so focus stays in it), and Escape does nothing,
- * so the editor whose change is out is still there for its answer. Delete asks
- * nothing: a step is one line, and it can be added back.
+ * so the editor whose change is out is still there for its answer. While a
+ * tick, an untick or a Delete is out (TASK-956), the control that sent it is
+ * the one that doesn't go `disabled`: it stays focusable (`aria-disabled`) and
+ * ignores presses, so focus stays on it, and its step shows a spinner and is
+ * `aria-busy` (`ConnectorDetails`' `ToolRow`'s way); every other control
+ * waits. Delete asks nothing: a step is one line, and it can be added back.
  *
  * BEFORE A CHANGE GOES. An Add or a Save runs the contract's own text rule
  * (`RoutineStepTextSchema`) on the text as typed, so the person reads what to
@@ -40,9 +44,10 @@
  * twice. Any other change gets a new id, and an answer or an answered refusal
  * ends the id.
  *
- * WHERE FOCUS GOES, once the answer is on screen, and only from `<body>` or
- * inside this section (someone who moved on stays where they went): after a
- * tick, that step's box; after Save or Cancel, that step's options button;
+ * WHERE FOCUS GOES. While a tick, an untick or a Delete is out, nowhere: the
+ * control that sent it is still focusable, so focus never left it. Once the
+ * answer is on screen, and only from `<body>` or inside this section (someone
+ * who moved on stays where they went): after a tick, that step's box; after Save or Cancel, that step's options button;
  * after an Add, the add input, which stays open for the next step; after the
  * add editor's Cancel, Add a step (or, while that's disabled at the cap, the
  * last step's box); after a Delete, or any change whose step is no longer
@@ -165,7 +170,6 @@ type EditorOp = Extract<RoutineStepOp, { op: 'add' | 'edit' }>;
 
 /** A change and where it came from, which is where its failure is said. */
 type Sent = { place: 'list'; op: ListOp } | { place: 'editor'; op: EditorOp };
-type Place = Sent['place'];
 
 /**
  * What the person was changing when the task turned Done (TASK-950): an
@@ -253,8 +257,9 @@ export function TaskSteps({
   const headingId = `${ids}-heading`;
   const capId = `${ids}-cap`;
   const [editor, setEditor] = useState<Editor | null>(null);
-  // The change out, if any, by where it came from: only its own editor's button spins.
-  const [busy, setBusy] = useState<Place | null>(null);
+  // The change out, if any: where it came from says whose button spins (an editor's own), and a list
+  // change says which step shows it on its way and keeps its control focusable.
+  const [busy, setBusy] = useState<Sent | null>(null);
   const [skipped, setSkipped] = useState<string | null>(null);
   // `refused`: the change, answered 403 or 404 (said once the task is Done, A DONE TASK'S STEPS), else null.
   const [listFailure, setListFailure] = useState<{
@@ -343,13 +348,14 @@ export function TaskSteps({
   });
 
   const change = async (
-    { op, place }: Sent,
+    sent: Sent,
     focus: { answered: FocusTarget; failed: FocusTarget },
     answered?: (answer: TaskStepsResponse) => void,
   ) => {
     if (inFlight.current) return;
+    const { op, place } = sent;
     inFlight.current = true;
-    setBusy(place);
+    setBusy(sent);
     setSkipped(null);
     setListFailure(null);
     setEditor((open) => (open === null ? open : { ...open, failure: null }));
@@ -489,6 +495,7 @@ export function TaskSteps({
                 step={step}
                 agentName={agentName}
                 busy={busy !== null}
+                sent={busy?.place === 'list' && busy.op.id === step.id ? busy.op.op : null}
                 editing={editing !== null}
                 boxRef={fileUnder(boxes.current, step.id)}
                 optionsRef={fileUnder(optionButtons.current, step.id)}
@@ -507,7 +514,7 @@ export function TaskSteps({
                     failure={editing.failure}
                     note={step.byAgent ? `Once you save it, ${agentName} reads this as your words.` : null}
                     busy={busy !== null}
-                    sending={busy === 'editor'}
+                    sending={busy?.place === 'editor'}
                     canSubmit
                     inputRef={input}
                     onText={typed}
@@ -533,7 +540,7 @@ export function TaskSteps({
           failure={editor.failure}
           note={atCap ? AT_CAP : null}
           busy={busy !== null}
-          sending={busy === 'editor'}
+          sending={busy?.place === 'editor'}
           canSubmit={!atCap}
           inputRef={input}
           onText={typed}
@@ -601,6 +608,7 @@ function StepRow({
   step,
   agentName,
   busy,
+  sent,
   editing,
   boxRef,
   optionsRef,
@@ -611,7 +619,10 @@ function StepRow({
 }: {
   step: TaskStep;
   agentName: string;
+  /** A change is out, whose it is: every control but the one that sent it waits. */
   busy: boolean;
+  /** This step's own list change while it is out. An editor's change never marks a step. */
+  sent: ListOp['op'] | null;
   editing: boolean;
   boxRef: (el: HTMLButtonElement | null) => void;
   optionsRef: (el: HTMLButtonElement | null) => void;
@@ -624,13 +635,20 @@ function StepRow({
   const ids = useId();
   const textId = `${ids}-text`;
   const byId = `${ids}-by`;
+  // A tick or an untick is out: its box stays focusable and ignores presses (`change()` drops them while
+  // one is out, and `checked` is controlled, so it doesn't flip), rather than going `disabled`.
+  const boxSent = sent === 'tick' || sent === 'untick';
   return (
-    <li className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed">
+    <li
+      aria-busy={sent !== null || undefined}
+      className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed"
+    >
       <Checkbox
         ref={boxRef}
         className="mt-2"
         checked={step.done}
-        disabled={busy}
+        disabled={busy && !boxSent}
+        aria-disabled={boxSent || undefined}
         aria-labelledby={textId}
         aria-describedby={step.byAgent ? byId : undefined}
         onCheckedChange={(checked) => {
@@ -656,8 +674,18 @@ function StepRow({
         )}
         {children}
       </div>
+      {sent !== null && (
+        <Spinner aria-hidden="true" className="mt-2 size-3.5 shrink-0 text-muted-foreground" />
+      )}
       {!editing && (
-        <StepOptions textId={textId} busy={busy} buttonRef={optionsRef} onEdit={onEdit} onDelete={onDelete} />
+        <StepOptions
+          textId={textId}
+          busy={busy}
+          sent={sent === 'remove'}
+          buttonRef={optionsRef}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       )}
     </li>
   );
@@ -673,20 +701,25 @@ function StepRow({
 function StepOptions({
   textId,
   busy,
+  sent,
   buttonRef,
   onEdit,
   onDelete,
 }: {
   textId: string;
   busy: boolean;
+  /** This step's Delete is out: the button stays focusable (`aria-disabled`) and its menu can't open. */
+  sent: boolean;
   buttonRef: (el: HTMLButtonElement | null) => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const trigger = useRef<HTMLButtonElement | null>(null);
   const chosen = useRef<(() => void) | null>(null);
+  // Controlled, so a press on the `aria-disabled` button of a step whose Delete is out opens nothing.
+  const [open, setOpen] = useState(false);
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu modal={false} open={open && !sent} onOpenChange={(next) => setOpen(next && !sent)}>
       <DropdownMenuTrigger asChild>
         <Button
           ref={(el) => {
@@ -697,7 +730,8 @@ function StepOptions({
           variant="ghost"
           size="icon"
           className="size-8 shrink-0"
-          disabled={busy}
+          disabled={busy && !sent}
+          aria-disabled={sent || undefined}
           aria-label="Step options"
           aria-describedby={textId}
         >

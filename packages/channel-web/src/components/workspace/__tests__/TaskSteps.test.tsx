@@ -609,6 +609,147 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
   });
 });
 
+describe('TaskSteps: a change on its way (TASK-956)', () => {
+  const rowOf = (text: string) => box(text).closest('li')!;
+  // The spinner is aria-hidden (as ConnectorDetails' is), so it is found with `hidden`.
+  const spinnerIn = (el: HTMLElement) => within(el).queryByRole('status', { hidden: true });
+
+  it('while a tick is out, its step shows a spinner and is busy, its box keeps focus and ignores presses, and every other control waits', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    // Before anything is out, no row shows one.
+    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
+    const redirects = box('Check the redirects');
+    redirects.focus();
+    fireEvent.click(redirects);
+    // jsdom keeps focus even on a disabled box: "not disabled" is what keeps it in a browser.
+    expect(redirects).not.toBeDisabled();
+    expect(redirects).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(redirects);
+    expect(rowOf('Check the redirects')).toHaveAttribute('aria-busy', 'true');
+    expect(spinnerIn(rowOf('Check the redirects'))).not.toBeNull();
+    for (const other of ['Export every article', 'Tell the team']) {
+      expect(box(other)).toBeDisabled();
+      expect(rowOf(other)).not.toHaveAttribute('aria-busy');
+      expect(spinnerIn(rowOf(other))).toBeNull();
+    }
+    for (const control of screen.getAllByRole('button', { name: 'Step options' })) expect(control).toBeDisabled();
+    expect(addStep()).toBeDisabled();
+    fireEvent.click(redirects);
+    expect(setStepsMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => d.resolve(answer(withStep(PLAN, 's2', { done: true }))));
+    expect(box('Check the redirects')).toBeChecked();
+    expect(box('Check the redirects')).not.toHaveAttribute('aria-disabled');
+    expect(rowOf('Check the redirects')).not.toHaveAttribute('aria-busy');
+    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
+    expect(document.activeElement).toBe(box('Check the redirects'));
+  });
+
+  it('an untick on its way is marked the same way', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    const first = box('Export every article');
+    first.focus();
+    fireEvent.click(first);
+    expect(sentOps(0)).toEqual([{ op: 'untick', id: 's1' }]);
+    expect(first).not.toBeDisabled();
+    expect(first).toHaveAttribute('aria-disabled', 'true');
+    expect(first).toBeChecked();
+    expect(rowOf('Export every article')).toHaveAttribute('aria-busy', 'true');
+    expect(spinnerIn(rowOf('Export every article'))).not.toBeNull();
+    await act(async () => d.resolve(answer(withStep(PLAN, 's1', { done: false }))));
+    expect(box('Export every article')).not.toBeChecked();
+    expect(spinnerIn(rowOf('Export every article'))).toBeNull();
+  });
+
+  it('a failed tick takes its spinner away and leaves focus on its box', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    box('Check the redirects').focus();
+    fireEvent.click(box('Check the redirects'));
+    expect(spinnerIn(rowOf('Check the redirects'))).not.toBeNull();
+    await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
+    expect(screen.getByRole('alert').textContent).toBe(UNCONFIRMED);
+    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
+    expect(rowOf('Check the redirects')).not.toHaveAttribute('aria-busy');
+    expect(box('Check the redirects')).toBeEnabled();
+    expect(box('Check the redirects')).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(box('Check the redirects'));
+  });
+
+  it('while a Delete is out, its step shows a spinner, and its options button keeps focus and opens no menu', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    await choose('Tell the team', 'Delete');
+    await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(1));
+    const trigger = options('Tell the team');
+    expect(trigger).not.toBeDisabled();
+    expect(trigger).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(trigger);
+    expect(rowOf('Tell the team')).toHaveAttribute('aria-busy', 'true');
+    expect(spinnerIn(rowOf('Tell the team'))).not.toBeNull();
+    expect(box('Tell the team')).toBeDisabled();
+    // Neither the keyboard nor the pointer opens its menu.
+    // Each press is checked on its own, so one that opens nothing can't hide one that does.
+    const presses: Array<[string, () => void]> = [
+      ['ArrowDown', () => fireEvent.keyDown(trigger, { key: 'ArrowDown' })],
+      ['Enter', () => fireEvent.keyDown(trigger, { key: 'Enter' })],
+      ['Space', () => fireEvent.keyDown(trigger, { key: ' ' })],
+      ['pointer', () => fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })],
+      ['click', () => fireEvent.click(trigger)],
+    ];
+    for (const [name, press] of presses) {
+      press();
+      expect(screen.queryByRole('menu'), name).toBeNull();
+    }
+    expect(setStepsMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => d.resolve(answer(PLAN.slice(0, 2))));
+    expect(screen.queryByText('Tell the team')).toBeNull();
+    // Its step is gone, so focus goes to the one before it, as before (WHERE FOCUS GOES).
+    expect(document.activeElement).toBe(box('Check the redirects'));
+  });
+
+  it('a failed Delete brings its options button back, working, with its spinner gone', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    await choose('Tell the team', 'Delete');
+    await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(1));
+    await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
+    expect(spinnerIn(rowOf('Tell the team'))).toBeNull();
+    expect(rowOf('Tell the team')).not.toHaveAttribute('aria-busy');
+    expect(options('Tell the team')).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(options('Tell the team'));
+    fireEvent.keyDown(options('Tell the team'), { key: 'ArrowDown' });
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+  });
+
+  it('a Save marks no step: its own button spins', async () => {
+    const d = deferred<TaskStepsResponse>();
+    setStepsMock.mockReturnValueOnce(d.promise);
+    renderSteps();
+    const input = await edit('Check the redirects');
+    fireEvent.change(input, { target: { value: 'Check every redirect' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(box('Check the redirects')).toBeDisabled();
+    for (const item of screen.getAllByRole('listitem')) {
+      expect(item).not.toHaveAttribute('aria-busy');
+      // The one spinner in this row is the Save button's own.
+      expect(item.querySelectorAll('[role="status"]').length).toBe(
+        within(item).queryByRole('button', { name: 'Save' }) === null ? 0 : 1,
+      );
+    }
+    expect(within(screen.getByRole('button', { name: 'Save' })).getByRole('status', { hidden: true })).toBeInTheDocument();
+    await act(async () => d.resolve(answer(withStep(PLAN, 's2', { text: 'Check every redirect', byAgent: false }))));
+  });
+});
+
 describe('TaskSteps: the request id (TaskReplyBox’s rule)', () => {
   it('is kept for the same change across an unconfirmed failure, so a retry can’t apply it twice', async () => {
     setStepsMock
