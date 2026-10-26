@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useLayoutEffect } from 'react';
+import { Profiler, useLayoutEffect } from 'react';
 import { RoutineEditor } from '../RoutineEditor';
 import { routineFixture } from './routine-fixture';
 
@@ -96,6 +96,25 @@ describe('independent routine methods in the existing editor', () => {
 });
 
 describe('receiver capability is separate from owning a routine', () => {
+  it('does not reuse an old address while re-enabling updates waits for fresh permission', async () => {
+    const committedUrls: Array<string | null> = [];
+    render(<Profiler id="receiver" onRender={() => {
+      const input = screen.queryByLabelText('Webhook URL') as HTMLInputElement | null;
+      committedUrls.push(input?.value ?? null);
+    }}><RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} /></Profiler>);
+    const updates = screen.getByRole('checkbox', { name: 'When another app sends an update' });
+    fireEvent.click(updates);
+    expect((await screen.findByLabelText('Webhook URL') as HTMLInputElement).value).toContain('original-bearer');
+    fireEvent.click(updates);
+    committedUrls.length = 0;
+    mocks.access.mockResolvedValue({ allowed: false });
+    fireEvent.click(updates);
+    expect(committedUrls.length).toBeGreaterThan(0);
+    for (const url of committedUrls) expect(url ?? '').not.toContain('original-bearer');
+    await screen.findByText(/administrator.*connect.*app updates/i);
+    expect(mocks.receiver).toHaveBeenCalledTimes(1);
+  });
+
   it('never commits a previously resolved receiver URL under a different agent before effects clear it', async () => {
     mocks.access.mockImplementation((agentId: string) => Promise.resolve({ allowed: agentId === 'a' }));
     const commits: Array<{ agentId: string; url: string | null }> = [];

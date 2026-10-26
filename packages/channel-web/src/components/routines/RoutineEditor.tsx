@@ -298,6 +298,11 @@ function RoutineForm({
   }
   function toggleWebhook(on: boolean) {
     if (!on && form.webhook !== null) webhookDraft.current = form.webhook;
+    if (!on) {
+      setReceiverForAgent(null);
+      setReceiverAllowed(null);
+      setReceiverError(false);
+    }
     update('webhook', on ? webhookDraft.current : null);
   }
   function textField(
