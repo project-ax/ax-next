@@ -35,7 +35,9 @@
  * refusal (any other 1xx-4xx answer), where a retry is a new attempt.
  *
  * A running sent receipt clears when its parent observes the new check-in;
- * drafts and paused/not-allowed receipts survive that read.
+ * drafts and paused/not-allowed receipts survive that read. Special forms can
+ * close after success; their one mounted status stays beside the hidden form,
+ * so every outcome remains visible and announced.
  *
  * WHERE FOCUS GOES. A clicked Send goes disabled while it sends (and stays
  * disabled once the box clears), which drops focus on `<body>`. When the send
@@ -133,6 +135,7 @@ export function TaskReplyBox({
   onSent,
   completedCheckIn = null,
   inputRef,
+  formHidden = false,
 }: {
   agentId: string;
   routineId: string;
@@ -147,6 +150,8 @@ export function TaskReplyBox({
   /** Identity of the completed check-in the parent observed; clears only its running receipt. */
   completedCheckIn?: string | null;
   inputRef?: Ref<HTMLTextAreaElement>;
+  /** Hide a closed special form while keeping its sent status mounted and accessible. */
+  formHidden?: boolean;
 }) {
   const ids = useId();
   const helperId = `${ids}-helper`;
@@ -235,8 +240,15 @@ export function TaskReplyBox({
     void send();
   };
 
-  return (
+  const receipt = (
+    <p role="status" className="text-sm text-muted-foreground">
+      {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled, mode)}
+    </p>
+  );
+
+  const form = (
     <form
+      hidden={formHidden}
       onSubmit={(e) => {
         e.preventDefault();
         void send();
@@ -277,11 +289,16 @@ export function TaskReplyBox({
             {sending && <Spinner data-icon="inline-start" aria-hidden="true" />}
             Send
           </Button>
-          <p role="status" className="text-sm text-muted-foreground">
-            {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled, mode)}
-          </p>
+          {mode === 'reply' && receipt}
         </div>
       </FieldGroup>
     </form>
+  );
+
+  return mode === 'reply' ? form : (
+    <>
+      {form}
+      {receipt}
+    </>
   );
 }

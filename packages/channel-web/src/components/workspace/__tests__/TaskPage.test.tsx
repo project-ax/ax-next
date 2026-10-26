@@ -2115,8 +2115,8 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     fireEvent.click(within(inPlace).getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull());
     // The composer stays mounted, hidden after its successful send.
-    expect(inPlace).not.toBeVisible();
-    expect(within(inPlace).getByText('Sent. Quill is checking in now.')).not.toBeVisible();
+    expect(within(inPlace).getByLabelText(NOT_YET_BOX)).not.toBeVisible();
+    expect(within(inPlace).getByText('Sent. Quill is checking in now.')).toBeVisible();
 
     // The agent claims again; the next read shows it.
     fireNowMock.mockResolvedValue({ status: 'ok' });
@@ -2151,7 +2151,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     fireEvent.change(screen.getByRole('textbox', { name: NOT_YET_BOX }), { target: { value: 'Hm' } });
     fireEvent.click(notYet);
     expect(notYet).toHaveAttribute('aria-expanded', 'false');
-    const hidden = document.getElementById(notYet.getAttribute('aria-controls')!)!;
+    const hidden = document.getElementById(notYet.getAttribute('aria-controls')!)!.querySelector('form')!;
     expect(hidden).toHaveAttribute('hidden');
     fireEvent.click(notYet);
     expect(hidden).not.toHaveAttribute('hidden');
@@ -2683,6 +2683,46 @@ describe('TaskPage: landed-write announcements and form completion (TASK-959)', 
       else reply.resolve({ checkIn: 'started' });
     });
     expect(view.onTaskWriteSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['Not yet', 'Reopen'] as const)('%s keeps a mounted accessible live confirmation outside the closed form for every check-in outcome', async (mode) => {
+    taskMock.mockResolvedValue(mode === 'Reopen' ? done() : claimed());
+    await renderReady();
+    const trigger = screen.getByRole('button', { name: mode });
+    fireEvent.click(trigger);
+    const wrapper = document.getElementById(trigger.getAttribute('aria-controls')!)!;
+    const status = within(wrapper).getByRole('status');
+    expect(status).toBeEmptyDOMElement();
+    for (const [checkIn, line] of [
+      ['started', 'Sent. Quill is checking in now.'],
+      ['replayed', 'Sent. Quill is checking in now.'],
+      ['paused', 'Sent. Quill will read it when you resume the task.'],
+      ['not-allowed', 'Sent. Quill will read it at its next check-in.'],
+    ] as const) {
+      if (trigger.getAttribute('aria-expanded') === 'false') fireEvent.click(trigger);
+      const box = screen.getByRole('textbox', { name: SPECIAL_BOX });
+      expect(within(wrapper).getByRole('status')).toBe(status);
+      reopenMock.mockResolvedValue({ checkIn });
+      fireEvent.change(box, { target: { value: `Still needs work: ${checkIn}` } });
+      fireEvent.click(within(box.closest('form')!).getByRole('button', { name: 'Send' }));
+      await waitFor(() => expect(box).not.toBeVisible());
+      expect(status).toBeVisible();
+      expect(status).toHaveTextContent(line);
+      expect(status.closest('[hidden], [aria-hidden="true"]')).toBeNull();
+      expect(screen.getAllByRole('status').filter((node) => node.textContent === line)).toEqual([status]);
+    }
+  });
+
+  it('an ordinary reply retains exactly one accessible sent announcement', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    const status = screen.getAllByRole('status').find((node) => node.closest('form') !== null)!;
+    expect(status).toBeEmptyDOMElement();
+    replyMock.mockResolvedValue({ checkIn: 'started' });
+    startWrite('reply');
+    await waitFor(() => expect(status).toHaveTextContent('Sent. Quill started checking in.'));
+    expect(status).toBeVisible();
+    expect(screen.getAllByRole('status').filter((node) => node.textContent?.startsWith('Sent.'))).toEqual([status]);
   });
 
   it.each(['Not yet', 'Reopen'] as const)('%s closes on success without stealing focus from someone who moved on', async (mode) => {

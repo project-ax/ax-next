@@ -22,8 +22,9 @@
  * so Mark done hands focus to the consent region first. Not yet's block
  * stays, as a Reply's does: its report still says Needs you until the agent's
  * next one, so the block now reads as an ask, with Reply. A successful Not yet
- * closes its box but keeps the composer mounted. A refused send keeps its
- * open draft and error. A refused Mark done says why under the actions.
+ * closes its form but keeps the composer mounted and its sent receipt visible.
+ * A refused send keeps its open draft and error. A refused Mark done says why
+ * under the actions.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its ask and its update
  * were written by a model or a person; the server fenced each to one line and
@@ -345,9 +346,10 @@ export function TodayTaskGroup({
             )}
           </div>
           {boxRow !== null && (
-            // No display utility on this element: a `flex` class would beat
-            // Tailwind's `[hidden]` rule and show the box while it's closed.
-            <CollapsibleContent forceMount hidden={!open}>
+            // Ordinary replies collapse with their receipt. A special form hides
+            // itself, keeping its single sent status outside the hidden form.
+            // No display utility here: it would beat Tailwind's `[hidden]` rule.
+            <CollapsibleContent forceMount hidden={boxMode === 'reply' && !open}>
               <TaskReplyBox
                 // A new mode is a new question: its own draft and request id.
                 key={boxMode}
@@ -357,6 +359,7 @@ export function TodayTaskGroup({
                 enabled={boxRow.enabled}
                 canStart={boxMode === 'not-yet' && boxRow.canMarkDone}
                 mode={boxMode}
+                formHidden={boxMode === 'not-yet' && !open}
                 completedCheckIn={observedCheckIn}
                 onSent={(checkIn) => {
                   if (boxMode === 'not-yet') {

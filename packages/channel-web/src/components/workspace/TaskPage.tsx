@@ -23,8 +23,9 @@
  * steps as they were, read-only, has no reply box, and its header holds
  * Reopen, which opens the same box in its reopen mode, and the ⋯ with
  * Duplicate (TASK-953: copying a finished plan is its main use). The in-place
- * box closes after a successful send and stays mounted while hidden. A later
- * claim or Done is a new question: it finds the box closed and empty.
+ * form closes after a successful send; its composer stays mounted and its
+ * sent receipt stays visible outside the hidden fields. A later claim or Done
+ * is a new question: it finds the box closed and empty.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
  * ask, its reading's label and the agent's notes were written by a model, and
@@ -953,15 +954,15 @@ function TaskBody({
       />
       {/*
         Not yet and Reopen open this. It is mounted from its first opening and
-        hidden after a successful send, so its receipt lifecycle stays intact
-        without leaving two forms visible after Reopen. No
-        display class on this element: it would beat `[hidden]`.
+        only its form hides after a successful send. Its single sent status
+        stays outside that hidden form, visible and accessible after closure.
       */}
-      <div id={boxId} hidden={!boxOpen}>
+      <div id={boxId}>
         {inPlace !== null && (
           <TaskReplyBox
             key={inPlace.mode}
             mode={inPlace.mode}
+            formHidden={!boxOpen}
             agentId={agentId}
             routineId={routineId}
             agentName={agentName}

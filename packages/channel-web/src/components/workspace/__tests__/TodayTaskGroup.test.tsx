@@ -586,6 +586,47 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     expect(screen.getByText(hint)).toBeVisible();
   });
 
+  it.each([
+    ['started', 'Sent. Caveman is checking in now.'],
+    ['replayed', 'Sent. Caveman is checking in now.'],
+    ['paused', 'Sent. Caveman will read it when you resume the task.'],
+    ['not-allowed', 'Sent. Caveman will read it at its next check-in.'],
+  ] as const)('Not yet keeps one visible, accessible sent confirmation after closing: %s', async (checkIn, line) => {
+    reopenMock.mockResolvedValue({ checkIn });
+    renderGroup(group([claimed()]));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    const box = screen.getByRole('textbox', { name: NOT_YET });
+    const status = screen.getByRole('status');
+    expect(status).toBeVisible();
+    expect(status).toBeEmptyDOMElement();
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(box).not.toBeVisible());
+    expect(status).toBeVisible();
+    expect(status).toHaveTextContent(line);
+    expect(screen.getAllByRole('status').filter((node) => node.textContent === line)).toEqual([status]);
+    expect(status.closest('[hidden], [aria-hidden="true"]')).toBeNull();
+  });
+
+  it('a collapsed Not yet receipt clears on completion without remounting its live region', async () => {
+    reopenMock.mockResolvedValue({ checkIn: 'started' });
+    const ui = (g: TodayGroup) => <TodayTaskGroup group={g} onNavigate={vi.fn()} onReplied={vi.fn()} onCheckInStarted={vi.fn()} />;
+    const view = render(ui(group([claimed()])));
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    const box = screen.getByRole('textbox', { name: NOT_YET });
+    const status = screen.getByRole('status');
+    fireEvent.change(box, { target: { value: 'Two are still open' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(status).toHaveTextContent('Sent. Caveman is checking in now.'));
+    expect(status).toBeVisible();
+    view.rerender(ui(group([claimed({}, { doneClaimed: false, reportedAt: '2026-10-23T12:00:00.000Z' })])));
+    await waitFor(() => expect(status).toBeEmptyDOMElement());
+    expect(status).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(box).toBeInTheDocument();
+    expect(box).not.toBeVisible();
+  });
+
   it('a failed Not yet keeps its mounted box, draft and error and never announces a reply', async () => {
     reopenMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/reopen', 503));
     const { onReplied } = renderGroup(group([claimed()]));
