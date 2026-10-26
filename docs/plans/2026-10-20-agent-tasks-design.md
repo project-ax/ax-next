@@ -309,7 +309,7 @@ Three things are waiting on you
 
 > PR 3 (TASK-956): For an owner who no longer manages the agent's tasks, Today's Mark done is off and says why, as on the task page. Not yet still works.
 
-> TASK-939: Today reads the list again as soon as an approval's routine change has gone through, wherever it was approved (Today, a chat or a check-in page), so a task's block and the badge follow. An unattended change goes through inside the approval, a run-now about ten seconds later. Approving anything else changes no task until its next check-in reports. Until the first reads of the queue and the tasks land, the headline says "Checking what is waiting on you…" instead of claiming nothing is waiting.
+> TASK-939: Today reads the list again as soon as an approval's routine change has gone through, wherever it was approved (Today, a chat or a check-in page), so a task's block and the badge follow. An unattended change goes through inside the approval, a run-now about ten seconds later. Approving anything else changes no task until its next check-in reports. While the queue is being read, or until the first tasks read lands, the headline says "Checking what is waiting on you…" instead of claiming nothing is waiting.
 
 ### 3.6 Status
 

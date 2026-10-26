@@ -22,8 +22,10 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      It may only be rendered when we actually READ the queue. A failed read
  *      shows the failure, not "nothing is waiting on you"; those two look
  *      identical from the outside and mean opposite things (design H7).
- *      Nor while a read it depends on is still in flight: until then the
- *      headline says it is still checking (TASK-939).
+ *      Nor while the queue's read or the first tasks read is still in flight:
+ *      until then the headline says it is still checking (TASK-939). The
+ *      grants read is the exception: it is one buffer read at mount, and its
+ *      failure already stops the empty sentence.
  */
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -126,9 +128,12 @@ interface Props {
    */
   error?: DecisionReadError | null;
   /**
-   * True while any read of the queue is in flight. On Today that is in practice
-   * the first one, because the only other read here is Try again, and that
-   * keeps its error. It is not the same as empty (TASK-939).
+   * True while any read of the queue is in flight, not only the first. Most
+   * reads on Today are the first one or Try again (which keeps its error, so
+   * the headline says it couldn't check), but a read an agent's page started
+   * can still be running when the person arrives here. While one runs and
+   * nothing is waiting, the headline says it is still checking. It is not the
+   * same as empty (TASK-939).
    */
   loading?: boolean;
   onRetry?: () => void;
