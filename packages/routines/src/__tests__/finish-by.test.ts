@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
-import { makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { HookBus, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { TASK_DEFINITION } from './support/check-in.js';
+import { createRoutinesStore } from '../store.js';
+import { registerRoutineServices } from '../services.js';
 
 // TASK-951: `routines:set-finish-by`, through the real routines, agents and
 // decisions plugins and Postgres. A person sets or removes a "get-done" task's
@@ -92,12 +94,18 @@ describe('routines:set-finish-by (TASK-951)', () => {
     h = await createRoutineHarness();
     const task = await createTask(h.teamAdmin, h.teamAgentId);
     await sql`UPDATE routines_v1_definitions SET owner_user_id = 'member' WHERE routine_id = ${task.routineId}`.execute(h.db);
-    expect(await h.bus.call('agents:can-manage-routines', h.teamMember, { agentId: h.teamAgentId })).toEqual({ allowed: false });
+    // Current members now manage their own work. Keep the independent read-only
+    // policy contract explicit rather than using membership to stand in for it.
+    const bus = new HookBus();
+    bus.registerService('agents:resolve', 'test', (ctx, input) => h.bus.call('agents:resolve', ctx, input));
+    bus.registerService('agents:can-manage-routines', 'test', async () => ({ allowed: false, stopOthers: false }));
+    registerRoutineServices({ bus, store: createRoutinesStore(h.db), now: () => new Date() });
+    expect(await bus.call('agents:can-manage-routines', h.teamMember, { agentId: h.teamAgentId })).toEqual({ allowed: false, stopOthers: false });
     // They can change nothing else on it...
-    expect((await get(h.teamMember, task)).permissions).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
+    expect((await bus.call<unknown, RoutineView>('routines:get', h.teamMember, key(task))).permissions).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });
     // ...and they can set its date: it changes only how the agent words its status, so it adds no reach.
-    expect(await setFinishBy(h.teamMember, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
-    expect((await get(h.teamMember, task)).finishBy).toBe(DATE);
+    expect(await bus.call('routines:set-finish-by', h.teamMember, { ...key(task), finishBy: DATE })).toStrictEqual({ finishBy: DATE, finishByTimeZone: null });
+    expect((await bus.call<unknown, RoutineView>('routines:get', h.teamMember, key(task))).finishBy).toBe(DATE);
     expect(await finishByOf(task.routineId)).toBe(DATE);
   });
 
