@@ -330,15 +330,16 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     // 'ok' acknowledges the durable dispatch; replay never claims the turn completed.
     return result.replayed ? { status: 'ok' as const } : dispatch(result.accepted);
   }));
+  // TASK-947: read for the caller. A routine that's gone lists a run only for the person it ran as (historyQuery).
   register('recent-fires', C.RoutineRecentFiresInputSchema, C.RoutineRecentFiresOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
-    const fires = await store.recentFires({ agentId: input.agentId, routineId: input.routineId, ...(input.limit === undefined ? {} : { limit: input.limit }) });
+    const fires = await store.recentFires({ agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, ...(input.limit === undefined ? {} : { limit: input.limit }) });
     return { fires: fireViews(ctx.userId, fires) };
   });
   register('recent-fires-for-agent', C.RoutineRecentFiresForAgentInputSchema, C.RoutineRecentFiresForAgentOutputSchema, async (ctx, input) => {
     await access(ctx, input.agentId);
     const { before } = input;
-    const fires = await store.recentFiresForAgent({ agentId: input.agentId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
+    const fires = await store.recentFiresForAgent({ agentId: input.agentId, actorUserId: ctx.userId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
     return { fires: fireViews(ctx.userId, fires) };
   });
   register('set-webhook-secret', C.RoutineSecretInputSchema, C.RoutineSecretOutputSchema, async (ctx, input) => {

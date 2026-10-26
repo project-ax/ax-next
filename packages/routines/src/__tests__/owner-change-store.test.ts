@@ -129,7 +129,7 @@ describe('a change of owner (store, TASK-936)', () => {
     expect((await stateRow(task.routineId))?.task_misses_in_a_row).toBe(1);
   });
 
-  it('a routine’s history lists only the runs that ran as its current owner, with that owner, and every run of a routine that’s gone', async () => {
+  it('a live routine’s history lists only the runs that ran as its current owner, with that owner', async () => {
     const task = await f.store.createAuthored(taskInput('task'));
     await finished(task, 'earlier', minute(1), needsYou);
     await moveTo('new-owner');
@@ -139,16 +139,45 @@ describe('a change of owner (store, TASK-936)', () => {
       forAgent: (await f.store.recentFiresForAgent({ agentId: 'a' })).map(r => [r.firedAt, r.routineOwnerUserId, r.report?.status ?? null]),
     });
     expect(await listed()).toEqual({ byRoutine: [[minute(2), 'new-owner', 'on-track']], forAgent: [[minute(2), 'new-owner', 'on-track']] });
+    // TASK-947 binds the reader only once a routine is gone. While it lives, the earlier owner reading gets
+    // the same as anyone: none of their own runs.
+    const asEarlier = { agentId: 'a', actorUserId: 'owner' };
+    expect((await f.store.recentFires({ ...asEarlier, routineId: task.routineId })).map(r => r.firedAt)).toEqual([minute(2)]);
+    expect((await f.store.recentFiresForAgent(asEarlier)).map(r => r.firedAt)).toEqual([minute(2)]);
     // Back to the earlier owner: their own run lists again, the interim owner's doesn't.
     await moveTo('owner');
     expect(await listed()).toEqual({ byRoutine: [[minute(1), 'owner', 'needs-you']], forAgent: [[minute(1), 'owner', 'needs-you']] });
     // A run with no record of who it ran as (written by code from before version 9) lists for no one.
     await sql`INSERT INTO routines_v1_fires (agent_id, routine_id, fired_at, trigger_source, status) VALUES ('a', ${task.routineId}, ${minute(3)}, 'tick', 'ok')`.execute(f.db);
     expect((await listed()).byRoutine).toEqual([[minute(1), 'owner', 'needs-you']]);
-    // Once the routine is gone every run of it lists, with no owner, as before (fireViews then shows no report).
+  });
+
+  it('a moved, then deleted, routine lists none of the earlier owner’s runs for the new owner: each run lists only for the person it ran as (TASK-947)', async () => {
+    const task = await f.store.createAuthored(taskInput('task'));
+    await finished(task, 'earlier', minute(1), needsYou);
+    // A run with no record of who it ran as (written by code from before version 9).
+    await sql`INSERT INTO routines_v1_fires (agent_id, routine_id, fired_at, trigger_source, status) VALUES ('a', ${task.routineId}, ${minute(2)}, 'tick', 'ok')`.execute(f.db);
+    // Accepted as the earlier owner, and still open across the move and the delete.
+    const open = await bound(task, 'open', minute(3));
+    await moveTo('new-owner');
+    await finished(task, 'newer', minute(4), onTrack, 'new-owner');
     const current = (await f.store.findOne(task))!;
-    await f.store.deleteAuthored({ agentId: 'a', routineId: task.routineId, expectedRevision: current.revision, actorUserId: 'owner', requestId: 'delete', now });
-    expect((await listed()).byRoutine).toEqual([[minute(3), null, null], [minute(2), null, 'on-track'], [minute(1), null, 'needs-you']]);
+    await f.store.deleteAuthored({ agentId: 'a', routineId: task.routineId, expectedRevision: current.revision, actorUserId: 'new-owner', requestId: 'delete', now });
+    // It ends after the delete, so its fire row is written with the routine already gone.
+    expect(await finish(open.dispatchId)).toBe(true);
+    const listed = async (actorUserId: string, limit?: number) => {
+      const page = limit === undefined ? {} : { limit };
+      return {
+        byRoutine: (await f.store.recentFires({ agentId: 'a', routineId: task.routineId, actorUserId, ...page })).map(r => [r.firedAt, r.routineOwnerUserId]),
+        forAgent: (await f.store.recentFiresForAgent({ agentId: 'a', actorUserId, ...page })).map(r => [r.firedAt, r.routineOwnerUserId]),
+      };
+    };
+    // The new owner, who deleted it, reads only their own run; the earlier owner only theirs; anyone else none.
+    expect(await listed('new-owner')).toEqual({ byRoutine: [[minute(4), null]], forAgent: [[minute(4), null]] });
+    expect(await listed('owner')).toEqual({ byRoutine: [[minute(3), null], [minute(1), null]], forAgent: [[minute(3), null], [minute(1), null]] });
+    expect(await listed('someone-else')).toEqual({ byRoutine: [], forAgent: [] });
+    // Filtered before the limit: newer runs the reader can't see don't use up the page.
+    expect(await listed('owner', 1)).toEqual({ byRoutine: [[minute(3), null]], forAgent: [[minute(3), null]] });
   });
 
   it('a check-in reads only the reports of runs that ran as the person it runs as, on a task they own now', async () => {

@@ -811,6 +811,14 @@ describe('owner change canary (TASK-936)', () => {
     await expect.poll(async () => (await sql<{ run_as_user_id: string | null }>`
       SELECT run_as_user_id FROM routines_v1_fires WHERE routine_id = ${task.routineId} ORDER BY fired_at, id`.execute(h.db)).rows
       .map(row => row.run_as_user_id)).toEqual(['owner', 'new-owner', 'new-owner']);
+    // TASK-947: the new owner deletes the task. Their history of it is what it was, without reports,
+    // and the earlier owner's check-in still lists for no one, in the task's history or the agent's feed.
+    const kept = await history();
+    expect(kept.byRoutine).toHaveLength(2);
+    expect(await h.bus.call('routines:delete', newOwner, { agentId: h.agentId, routineId: task.routineId, requestId: randomUUID(), expectedRevision: (await get()).revision }))
+      .toEqual({ deleted: true, cleanupPending: false });
+    const withoutReports = (fires: RoutineFireView[]) => fires.map(fire => ({ ...fire, report: null }));
+    expect(await history()).toEqual({ byRoutine: withoutReports(kept.byRoutine), forAgent: withoutReports(kept.forAgent) });
   });
 });
 

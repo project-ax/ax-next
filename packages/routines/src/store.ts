@@ -228,12 +228,17 @@ export interface RoutinesStore {
    * A routine's runs, newest first; `limit` is clamped to 1-200. TASK-936: a
    * live routine's runs only when they ran as its current owner, so after a
    * change of owner the earlier owner's runs reach no one until the routine
-   * returns to them; every run of a routine that's gone. Each row carries the
-   * owner read in the same statement (`routineOwnerUserId`, `historyQuery`).
+   * returns to them. TASK-947: a gone routine's runs only when they ran as
+   * `actorUserId`, the person reading, so once a routine is deleted each run
+   * reaches only the person it ran as: never a later owner, and on a team agent
+   * never another member. Both rules hold before the limit. A run with no
+   * record of who it ran as (written by code from before version 9) lists for
+   * no one. Each row carries the owner read in the same statement
+   * (`routineOwnerUserId`, `historyQuery`), null for a routine that's gone.
    */
-  recentFires(input: RoutineKey & { limit?: number }): Promise<FireRow[]>;
-  /** An agent's runs, newest first, older than `before` when it's given, under `recentFires`' rule. */
-  recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
+  recentFires(input: RoutineKey & Actor & { limit?: number }): Promise<FireRow[]>;
+  /** An agent's runs, newest first, older than `before` when it's given, under `recentFires`' rule for the same reader. */
+  recentFiresForAgent(input: Actor & { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
   /**
    * TASK-908. A routine's latest reports, for its next check-in's message:
    * finished runs with a report, newest first, however many runs without one
@@ -296,8 +301,9 @@ export interface RoutinesStore {
    * `recentFiresForAgent`), and a check-in reads only the reports of runs that
    * ran as its own person, while that person owns the routine
    * (`recentReports`), so the earlier owner's runs list for no one until the
-   * routine returns to them. Once the routine is deleted, all its runs list
-   * again, with no report.
+   * routine returns to them. Once the routine is deleted, each run lists only
+   * for the person it ran as, still with no report (TASK-947), so a later
+   * owner never sees the earlier owner's runs.
    */
   reconcileOwners(input: { agents: ReadonlyArray<{ agentId: string; ownerUserId: string }> }): Promise<number>;
   setAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string; ownerUserId: string; enabled: boolean }): Promise<void>;
@@ -719,15 +725,20 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
  * (`fireViews`) can't disagree across a change of owner. A live routine's runs
  * list only when they ran as its current owner, so after a move the earlier
  * owner's runs reach no one, and list again only if the routine returns to
- * them. One with no record of who it ran as (written by code from before
- * version 9) lists for no one while its routine lives. Every run of a routine
- * that's gone lists, as before, with no owner, so it shows no report.
+ * them. TASK-947: a routine that's gone has no owner, so each of its runs lists
+ * only when it ran as `actorUserId`, the person reading, and with no owner, so
+ * it shows no report. One with no record of who it ran as (written by code from
+ * before version 9) lists for no one, its routine live or gone. Both rules are
+ * in the WHERE, before any limit.
  */
-function historyQuery(db: DB) {
+function historyQuery(db: DB, actorUserId: string) {
   return db.selectFrom('routines_v1_fires as f')
     .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'f.agent_id').onRef('r.routine_id', '=', 'f.routine_id'))
     .selectAll('f').select('r.owner_user_id as routine_owner_user_id')
-    .where(eb => eb.or([eb('r.routine_id', 'is', null), eb('f.run_as_user_id', '=', eb.ref('r.owner_user_id'))]));
+    .where(eb => eb.or([
+      eb.and([eb('r.routine_id', 'is', null), eb('f.run_as_user_id', '=', actorUserId)]),
+      eb('f.run_as_user_id', '=', eb.ref('r.owner_user_id')),
+    ]));
 }
 function rowToFire(r: Selectable<RoutinesFiresRow> & { routine_owner_user_id: string | null }): FireRow {
   return {
@@ -1564,7 +1575,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async recentFires(input) {
       const limit = Math.min(200, Math.max(1, input.limit ?? 20));
-      const rows = await historyQuery(db)
+      const rows = await historyQuery(db, input.actorUserId)
         .where('f.agent_id', '=', input.agentId)
         .where('f.routine_id', '=', input.routineId)
         .orderBy('f.fired_at', 'desc')
@@ -1575,7 +1586,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async recentFiresForAgent(input) {
       const limit = Math.min(200, Math.max(1, input.limit ?? 20));
-      let q = historyQuery(db).where('f.agent_id', '=', input.agentId);
+      let q = historyQuery(db, input.actorUserId).where('f.agent_id', '=', input.agentId);
       if (input.before !== undefined) q = q.where('f.fired_at', '<', input.before);
       const rows = await q
         .orderBy('f.fired_at', 'desc')

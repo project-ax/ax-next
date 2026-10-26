@@ -275,7 +275,7 @@ describe('routine_report (TASK-907)', () => {
     for (const fires of [mine.fires, mine.agentFires]) expect(fires.map(fire => fire.report)).toEqual([{ ...NEEDS_YOU, reading: OPEN_3 }]);
   });
 
-  it("a deleted team task's runs keep their reports hidden from everyone, its owner included", async () => {
+  it("a deleted team task's runs list only for the person they ran as, without their reports (TASK-947)", async () => {
     await start();
     const task = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.teamAgentId, requestId: 'team-task', definition: RoutineDefinitionSchema.parse(TASK) });
@@ -285,19 +285,17 @@ describe('routine_report (TASK-907)', () => {
       byRoutine: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires', person, key)).fires,
       forAgent: (await h.bus.call<unknown, { fires: RoutineFireView[] }>('routines:recent-fires-for-agent', person, { agentId: h.teamAgentId })).fires,
     });
-    // While the task exists, its owner sees the run's report.
+    // While the task exists, its owner sees the run's report, and a teammate sees the run without it.
     expect((await fires(h.owner)).byRoutine.map(fire => fire.report)).toEqual([{ ...NEEDS_YOU, reading: null }]);
-    // Deleting removes the definition row and nothing else: the run's rows stay. With no
-    // definition there is no owner to match, so nobody sees the report, the former owner included.
-    await createRoutinesStore(h.db).deleteAuthored({ ...key, expectedRevision: (await get(task)).revision, actorUserId: h.owner.userId, requestId: 'delete', now: new Date() });
-    for (const person of [h.teamMember, h.owner]) {
-      const seen = await fires(person);
-      for (const list of [seen.byRoutine, seen.forAgent]) {
-        expect(list.length, person.userId).toBe(1);
-        expect(list.map(fire => fire.report), person.userId).toEqual([null]);
-      }
-      expect(JSON.stringify(seen), person.userId).not.toContain(NEEDS_YOU.update);
-    }
+    expect((await fires(h.teamMember)).byRoutine.map(fire => fire.report)).toEqual([null]);
+    // A team admin deletes it (they may stop anyone's task). The run's rows stay. A routine that's
+    // gone lists a run only for the person it ran as, its owner, and still without its report.
+    expect(await h.bus.call('routines:delete', h.teamAdmin, { ...key, expectedRevision: (await get(task)).revision, requestId: 'delete' })).toMatchObject({ deleted: true });
+    const own = await fires(h.owner);
+    for (const list of [own.byRoutine, own.forAgent]) expect(list.map(fire => fire.report)).toEqual([null]);
+    expect(JSON.stringify(own)).not.toContain(NEEDS_YOU.update);
+    // The other members, the admin who deleted it included, no longer see it at all.
+    for (const person of [h.teamMember, h.teamAdmin]) expect(await fires(person), person.userId).toEqual({ byRoutine: [], forAgent: [] });
   });
 
   it('a failed lookup leaves one warn line for the operator, from pre-call and from the call: the ids and the database\'s words, none of the report', async () => {

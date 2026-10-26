@@ -1907,8 +1907,8 @@ describe('controlPaint', () => {
 /**
  * Routines' two error surfaces, in every state they can paint (TASK-548).
  *
- * `StatusChip`'s `error` arm (a routine's last-fire status, on every routine
- * row and every fire row) and `RoutinesList`'s error banner both painted
+ * `StatusChip`'s `error` arm (a run's status, on every row of a routine's run
+ * history, `FireRowsTable`) and `RoutinesList`'s error banner both painted
  * `text-destructive` on `bg-destructive/10`. That is the pairing TASK-538
  * measured on SessionRow's confirm row: over the white Settings page the /10
  * alpha drags the fill toward the red ink and lands at **4.44:1** in light
