@@ -17,12 +17,13 @@
  * steps aren't ticked (`TaskMarkDone`). When the row's `canMarkDone` is false
  * (its owner no longer manages the agent's tasks, TASK-956) Mark done is off
  * and the task page's reason (`MARK_DONE_NOT_ALLOWED`) shows under the
- * actions. Not yet opens the reply box in its `not-yet` mode, whose Send takes the claim back and starts a check-in. A
- * finished task leaves Today, so Mark done hands focus to the consent region
- * first. Not yet's block stays, as a Reply's does: its report still says Needs
- * you until the agent's next one, so the block now reads as an ask, with Reply,
- * and the open box keeps the mode it was opened in (its label and "Sent." line)
- * until it is opened again. A refused press says why under the actions.
+ * actions. Not yet opens the reply box in its `not-yet` mode, whose Send
+ * takes the claim back and starts a check-in. A finished task leaves Today,
+ * so Mark done hands focus to the consent region first. Not yet's block
+ * stays, as a Reply's does: its report still says Needs you until the agent's
+ * next one, so the block now reads as an ask, with Reply, and the open box
+ * keeps the mode it was opened in (its label and "Sent." line) until it is
+ * opened again. A refused press says why under the actions.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its ask and its update
  * were written by a model or a person; the server fenced each to one line and
@@ -42,7 +43,8 @@
  * `TaskRow` carries only whether its owner may mark it done (`canMarkDone`,
  * TASK-956), not whether a reply can start a check-in, so the box never
  * promises a check-in Today can't vouch for, and the server's answer says
- * what happened. A sent reply calls `onReplied`, so Today can read the tasks again.
+ * what happened. A sent reply calls `onReplied`, so Today can read the tasks
+ * again.
  *
  * OPEN TASK is always shown, in the block's own actions, and is a real link,
  * so it can open in a new tab too (`routeLinkProps`).
