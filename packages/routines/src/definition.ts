@@ -1,13 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, durationToSeconds, type RoutineDefinition } from '@ax/routines-contract';
+import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, durationToSeconds, type RoutineDefinition, type RoutinePatch } from '@ax/routines-contract';
 import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
 export function opaqueId(prefix: string): string { return `${prefix}_${randomUUID().replaceAll('-', '')}`; }
 export { editableDefinition } from '@ax/routines-contract';
 import { editableDefinition } from '@ax/routines-contract';
+/** Only an exact pause may use emergency-stop authority; additional fields require edit authority. */
+export function isStopOnlyPatch(patch: RoutinePatch): boolean {
+  return Object.keys(patch).length === 1 && patch.enabled === false;
+}
 /** Canonical key order makes semantically identical request objects share a receipt. */
 export function inputHash(input: unknown): string {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)

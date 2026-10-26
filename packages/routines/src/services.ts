@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
-import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
+import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
 
@@ -298,7 +298,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const row = receipt ? parseStoredRoutine(receipt) : await rowFor(input);
     const permissions = routinePermissions(row, ctx.userId, a.allowed, a.stopOthers);
     const own = permissions.edit;
-    const stopOnly = Object.keys(input.patch).length === 1 && input.patch.enabled === false;
+    const stopOnly = isStopOnlyPatch(input.patch);
     requireAllowed(own || (stopOnly && permissions.stop));
     if (receipt) return routineView(row, ctx.userId, a.allowed, a.stopOthers);
     const updated = await store.updateAuthored({ ...input, actorUserId: ctx.userId, now: now(), stopOnly: !own });
