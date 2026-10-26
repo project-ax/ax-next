@@ -279,13 +279,20 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
     expect(parts[1]).toBe('Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.');
     // Design §7: the agent's own steps are framed as its plan, not the person's instructions.
     expect(parts[2]).toBe([
-      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:',
+      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. Step ids are only for your step changes. In your update and ask, name a step by its words, never its id. A step the person wrote is in their words:',
       '- [x] saaaaaa (you added this):',
       '  > Export every article from the old help center',
       '- [ ] sbbbbbb (the person wrote this):',
       '  > Ask Dana to review the billing section',
     ].join('\n'));
     expect(parts[3]).toMatch(/^Your notes from earlier check-ins\./);
+  });
+
+  it('keeps step ids for changes and tells the agent to use their words in its update and ask (TASK-958)', () => {
+    const message = renderCheckInMessage({ ...SCHEDULED, steps });
+    expect(message).toContain('Step ids are only for your step changes. In your update and ask, name a step by its words, never its id.');
+    expect(message).toContain('- [x] saaaaaa (you added this):\n  > Export every article from the old help center');
+    expect(message).toContain('- [ ] sbbbbbb (the person wrote this):\n  > Ask Dana to review the billing section');
   });
 
   it('with no steps yet, it asks for a draft in their place, exactly', () => {
@@ -349,7 +356,7 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
       '',
       'Your last check-in ended without a report. Finish this one with routine_report, even if nothing changed.',
       '',
-      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:',
+      'The task’s steps, 1 of 2 done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. Step ids are only for your step changes. In your update and ask, name a step by its words, never its id. A step the person wrote is in their words:',
       '- [x] saaaaaa (you added this):',
       '  > Export every article from the old help center',
       '- [ ] sbbbbbb (the person wrote this):',
