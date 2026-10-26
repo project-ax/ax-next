@@ -14,7 +14,9 @@
  * update it came with, then (muted) the ask, if there is one. Its actions are
  * Mark done and Not yet, both outline (Approve stays Today's one primary
  * action), and Open task. Mark done finishes the task, asking first only when
- * steps aren't ticked (`TaskMarkDone`); Not yet opens the reply box in its
+ * steps aren't ticked (`TaskMarkDone`). When the row's `canMarkDone` is false
+ * (its owner no longer manages the agent's tasks, TASK-956) Mark done is off
+ * and the task page's reason (`MARK_DONE_NOT_ALLOWED`) shows under the actions; Not yet opens the reply box in its
  * `not-yet` mode, whose Send takes the claim back and starts a check-in. A
  * finished task leaves Today, so Mark done hands focus to the consent region
  * first. Not yet's block stays, as a Reply's does: its report still says Needs
@@ -37,8 +39,9 @@
  * in place, focused. The box stays mounted while it is closed, so a half-typed
  * reply and its retry id survive a collapse; `hidden` is what closes it,
  * because Radix keeps a force-mounted panel open. `canStart` is false: a
- * `TaskRow` carries no permissions, so the box never promises a check-in Today
- * can't vouch for, and the server's answer says what happened. A sent reply
+ * `TaskRow` carries only whether its owner may mark it done (`canMarkDone`,
+ * TASK-956), not whether a reply can start a check-in, so the box never
+ * promises a check-in Today can't vouch for, and the server's answer says what happened. A sent reply
  * calls `onReplied`, so Today can read the tasks again.
  *
  * OPEN TASK is always shown, in the block's own actions, and is a real link,
@@ -64,7 +67,7 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { isOpenDecision, type TaskRow } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
-import { MarkDoneConfirmation, useMarkDone } from './TaskMarkDone';
+import { MARK_DONE_NOT_ALLOWED, MarkDoneConfirmation, useMarkDone } from './TaskMarkDone';
 import { CANT_SHOW } from './TaskPage';
 import { TaskReplyBox } from './TaskReplyBox';
 
@@ -146,6 +149,8 @@ export function TodayTaskGroup({
   // The row of a claim (a claim always has one), else null.
   const claimedRow = group.reason === 'done-claimed' ? group.row : null;
   const claimed = claimedRow !== null;
+  const whyId = useId();
+  const mayMarkDone = claimedRow?.canMarkDone === true;
   // Mark done is only offered on a claim, but the hook runs for every block:
   // its press is simply never reachable otherwise.
   const unticked =
@@ -279,7 +284,8 @@ export function TodayTaskGroup({
                     ref={markDone.buttonRef}
                     variant="outline"
                     size="sm"
-                    disabled={markDone.busy}
+                    disabled={!mayMarkDone || markDone.busy}
+                    aria-describedby={mayMarkDone ? undefined : whyId}
                     onClick={markDone.press}
                   >
                     {markDone.busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
@@ -311,6 +317,11 @@ export function TodayTaskGroup({
                   </a>
                 </Button>
               </div>
+            )}
+            {claimed && !mayMarkDone && !markDone.confirming && (
+              <p id={whyId} className="text-[12px] text-muted-foreground">
+                {MARK_DONE_NOT_ALLOWED}
+              </p>
             )}
             {claimed && markDone.failure !== null && (
               <Alert variant={markDone.failure.register}>
