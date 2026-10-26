@@ -149,6 +149,16 @@ export const DECISION_GOING_OUT = 'You said yes — it is about to go ahead.';
 export const DECISION_GOING_OUT_NOTE =
   'Nothing has happened yet. Undo stops it before it runs. Once it has run, we cannot take it back.';
 
+/**
+ * TASK-941. A routine operation someone approved whose undo window has closed but whose
+ * outcome hasn't come back: the host is running the call, or has told the agent to. It is
+ * waiting, so it says so, in the going-ahead words above. Never "done": nobody has seen the
+ * outcome. The queue keeps re-reading such a row until it lands (`needsRoutineRead`), which
+ * is what "We’ll update this" promises. Only the routine branch of `decisionOutcome` reads it.
+ */
+export const DECISION_ROUTINE_UNDERWAY = 'You said yes — it is going ahead now.';
+export const DECISION_ROUTINE_UNDERWAY_NOTE = 'We’ll update this when it’s done.';
+
 /** The host tried the call and the tool threw. */
 export const DECISION_FAILED = 'It tried to do this, and it did not work.';
 export const DECISION_FAILED_NOTE =
@@ -332,7 +342,7 @@ export interface DecisionOutcome {
 
 /**
  * True while an approved action has been authorised but has NOT been performed
- * yet — an irreversible call the host deferred until the undo window closes.
+ * yet — a call whose host replay, or hand-over to the agent (TASK-574), waits for the undo window to close, routine operations included (TASK-941).
  *
  * For those few seconds the status says `executed` because the AUTHORISATION is
  * final, and the row must not read as though the email went. This is the check
@@ -371,7 +381,10 @@ export function decisionOutcome(
       note: null, tone: 'done',
     };
     if (d.routineOutcome === 'failed') return { line: 'The approved routine operation failed.', note: null, tone: 'bad' };
-    return { line: 'The approved routine operation has not completed.', note: 'We’re checking its outcome.', tone: 'quiet' };
+    // TASK-941. In its undo window nothing has run, as for any other approval. A recorded
+    // outcome above still wins: it was observed, and the clock is only a forecast.
+    if (isAboutToHappen(d, now)) return { line: DECISION_GOING_OUT, note: DECISION_GOING_OUT_NOTE, tone: 'quiet' };
+    return { line: DECISION_ROUTINE_UNDERWAY, note: DECISION_ROUTINE_UNDERWAY_NOTE, tone: 'quiet' };
   }
   switch (d.status) {
     case 'pending':

@@ -26,7 +26,10 @@ import {
   DECISION_EXPIRED,
   DECISION_FAILED,
   DECISION_GOING_OUT,
+  DECISION_GOING_OUT_NOTE,
   DECISION_PENDING_AGENT,
+  DECISION_ROUTINE_UNDERWAY,
+  DECISION_ROUTINE_UNDERWAY_NOTE,
   DECISION_STALE_LEAD,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
@@ -50,7 +53,7 @@ import {
 } from '../DecisionTaskBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
-import { ROUTINE_KIND_CHANGE_SENTENCE, decisionText } from '../../../../../decisions/src/templates.js';
+import { ROUTINE_FIRE_NOW_DETAIL, ROUTINE_KIND_CHANGE_SENTENCE, decisionText } from '../../../../../decisions/src/templates.js';
 
 const agent: WorkspaceAgent = {
   id: 'scheduler',
@@ -873,6 +876,84 @@ describe('TASK-932 — both renderers name the task a check-in raised it in', ()
       expect(screen.getByText(line)).toBeInTheDocument();
       expect(container.querySelector('img, strong, em')).toBeNull();
       unmount();
+    }
+  });
+});
+
+describe('a fire-now, before and while it waits (TASK-941)', () => {
+  const words = decisionText({ capability: 'run a routine now', toolName: 'routine_fire_now' });
+  const fireNow = (over: Partial<Decision> = {}): Decision =>
+    decisionFixture({
+      routineOperation: 'routine_fire_now', irreversible: true, freshness: null,
+      summary: words.summary, detail: words.detail, primaryLabel: words.primaryLabel,
+      secondaryLabel: words.secondaryLabel, ghostLabel: words.ghostLabel,
+      approvedText: words.approvedText, dismissedText: words.dismissedText,
+      ...over,
+    });
+  const answered = (over: Partial<Decision>): Decision =>
+    fireNow({
+      status: 'executed', resolvedAt: new Date().toISOString(), undoable: true,
+      approvalScope: 'once', consentDeliveryState: 'none', routineOutcome: null, ...over,
+    });
+
+  it('asks in its own words, in both places', () => {
+    for (const text of [queueText(fireNow()), cardText(fireNow())]) {
+      expect(text).toContain('Wants to run a routine now');
+      expect(text).toContain(ROUTINE_FIRE_NOW_DETAIL);
+      expect(text).not.toContain('Review the proposed routine change');
+    }
+  });
+
+  it('in its undo window, says it is about to go ahead and offers Undo, in both places', () => {
+    const waiting = answered({ pendingUntil: new Date(Date.now() + 9_000).toISOString() });
+    for (const text of [queueText(waiting), cardText(waiting)]) {
+      expect(text).toContain(DECISION_GOING_OUT);
+      expect(text).toContain(DECISION_GOING_OUT_NOTE);
+      expect(text).toMatch(/Undo/);
+      expect(text).not.toContain('has not completed');
+      expect(text).not.toContain('checking its outcome');
+      expect(text).not.toContain(words.approvedText);
+    }
+  });
+
+  it('after the window and before its outcome, says it is going ahead, in both places', () => {
+    const going = answered({
+      resolvedAt: new Date(Date.now() - 11_000).toISOString(),
+      pendingUntil: new Date(Date.now() - 1_000).toISOString(),
+      undoable: false,
+    });
+    for (const text of [queueText(going), cardText(going)]) {
+      expect(text).toContain(DECISION_ROUTINE_UNDERWAY);
+      expect(text).toContain(DECISION_ROUTINE_UNDERWAY_NOTE);
+      expect(text).not.toContain(DECISION_GOING_OUT);
+      expect(text).not.toContain('has not completed');
+    }
+  });
+
+  it('turns from about to go ahead into going ahead on its own clock', () => {
+    vi.useFakeTimers();
+    try {
+      const waiting = answered({ pendingUntil: new Date(Date.now() + 10_000).toISOString() });
+      const { container } = render(
+        <DecisionRow
+          decision={waiting}
+          agent={agent}
+          expanded={false}
+          onToggle={vi.fn()}
+          onOpenAgent={vi.fn()}
+          onApprove={vi.fn()}
+          onDismiss={vi.fn()}
+          onUndo={vi.fn()}
+        />,
+      );
+      expect(container.textContent).toContain(DECISION_GOING_OUT);
+      act(() => {
+        vi.advanceTimersByTime(11_000);
+      });
+      expect(container.textContent).toContain(DECISION_ROUTINE_UNDERWAY);
+      expect(container.textContent).not.toContain(DECISION_GOING_OUT);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
