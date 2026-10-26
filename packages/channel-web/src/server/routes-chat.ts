@@ -51,7 +51,9 @@ import {
 //   3. ACL-gates the agent via agents:resolve → 403 forbidden, 404 not-found.
 //   4. get-or-creates the conversation:
 //        - conversationId === null → conversations:create
-//        - else → conversations:get; on agent-mismatch → 400 (I10)
+//        - else → conversations:get; only stored origin 'web' admits a turn
+//        - any other origin → 404 before attachments, binding or dispatch
+//        - admitted web conversation with agent-mismatch → 400 (I10)
 //        - on conversations:get not-found OR forbidden → 404 (no leak)
 //   5. server-mints `reqId` (J9 — never client-supplied). The browser uses
 //      it to subscribe to `GET /api/chat/stream/:reqId` for streaming.
