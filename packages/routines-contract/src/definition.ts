@@ -2,7 +2,10 @@ import { HIDDEN_FORMAT_CHARS } from '@ax/core/surface-text';
 import { Cron } from 'croner';
 import { z } from 'zod';
 
-export const ROUTINE_DEFINITION_MAX_BYTES = 64 * 1024;
+export const ROUTINE_LEGACY_DEFINITION_MAX_BYTES = 64 * 1024;
+/** Replacing one `trigger` key with `schedule`/`webhook` and one null adds exactly 16 bytes. */
+export const ROUTINE_METHOD_NORMALIZATION_OVERHEAD_BYTES = 16;
+export const ROUTINE_DEFINITION_MAX_BYTES = ROUTINE_LEGACY_DEFINITION_MAX_BYTES + ROUTINE_METHOD_NORMALIZATION_OVERHEAD_BYTES;
 export const ROUTINE_OPAQUE_STRING_MAX_CHARS = 256;
 /** A routine's name, in UTF-16 units (zod's `max`), so at most this many code points too. */
 export const ROUTINE_NAME_MAX_CHARS = 128;
@@ -24,6 +27,8 @@ export function isTaskKind(kind: string): kind is TaskKind {
 export const ROUTINE_GOOD_WHEN_MAX_CHARS = 1024;
 /** A task checks in no more often than this. */
 export const TASK_CHECK_IN_FLOOR_SECONDS = 900;
+export const REPEAT_SCHEDULE_FLOOR_SECONDS = 60;
+const REPEAT_SCHEDULE_FLOOR_MESSAGE = 'Repeat jobs need to be at least 60 seconds apart.';
 /** How many occurrences of a cron the check-in floor inspects. `cronWrapsTooSoon` covers the gap they can miss. */
 export const TASK_CRON_FLOOR_RUNS = 48;
 const TASK_CHECK_IN_FLOOR_MESSAGE = 'Check-ins need to be at least 15 minutes apart.';
@@ -92,15 +97,15 @@ function cronMinuteAndHourFields(expr: string): { minute: string; hour: string }
  * starts at the floor's reference. UTC, so the answer depends on the field
  * alone. Null when croner can't read it.
  */
-function cronFieldValues(pattern: string, unit: 'minute' | 'hour'): number[] | null {
+function cronFieldValues(pattern: string, unit: 'second' | 'minute' | 'hour'): number[] | null {
   const start = TASK_CRON_FLOOR_FROM.getTime();
-  const end = start + (unit === 'minute' ? 3_600_000 : 86_400_000);
+  const end = start + (unit === 'second' ? 60_000 : unit === 'minute' ? 3_600_000 : 86_400_000);
   try {
     const cron = new Cron(pattern, { timezone: 'UTC' });
     const values: number[] = [];
     // From a second before the start, so a run at the start itself counts.
     for (let run = cron.nextRun(new Date(start - 1000)); run !== null && run.getTime() < end && values.length < 60; run = cron.nextRun(run)) {
-      values.push(unit === 'minute' ? run.getUTCMinutes() : run.getUTCHours());
+      values.push(unit === 'second' ? run.getUTCSeconds() : unit === 'minute' ? run.getUTCMinutes() : run.getUTCHours());
     }
     return values;
   } catch {
@@ -167,6 +172,37 @@ export const RoutineTriggerSchema = z.discriminatedUnion('kind', [IntervalTrigge
     try { new Cron(trigger.expr, { timezone: trigger.tz }); }
     catch { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['expr'], message: 'Invalid cron expression or timezone.' }); }
   });
+export const RoutineScheduleSchema = z.discriminatedUnion('kind', [IntervalTriggerSchema, CronTriggerSchema])
+  .superRefine((schedule, ctx) => {
+    if (schedule.kind !== 'cron') return;
+    try { new Cron(schedule.expr, { timezone: schedule.tz }); }
+    catch { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['expr'], message: 'Invalid cron expression or timezone.' }); }
+  });
+export type RoutineSchedule = z.output<typeof RoutineScheduleSchema>;
+export type WebhookTrigger = z.output<typeof WebhookTriggerSchema>;
+
+/**
+ * Authoring guard only: reads and completed receipts still accept legacy fast cron.
+ * A cron with one seconds value can run at most once a minute. Two distinct values
+ * necessarily put two runs less than 60 seconds apart in a matching minute, so
+ * inspect the seconds field directly rather than assuming 48 runs cover every gap.
+ * Question marks keep their existing repeat semantics: one clock-relative value is
+ * fine, while a list/range with another value is checked at both endpoints. This is
+ * independent of the current clock and does not add task-only recurrence rules.
+ */
+export function repeatScheduleWriteIssue(schedule: RoutineSchedule | null, previous?: RoutineSchedule | null): string | null {
+  if (schedule === null) return null;
+  if (previous !== undefined && previous !== null && schedule.kind === previous.kind &&
+      (schedule.kind === 'interval' && previous.kind === 'interval' && schedule.every === previous.every ||
+       schedule.kind === 'cron' && previous.kind === 'cron' && schedule.expr === previous.expr && schedule.tz === previous.tz)) return null;
+  if (schedule.kind === 'interval') return durationToSeconds(schedule.every) === null ? REPEAT_SCHEDULE_FLOOR_MESSAGE : null;
+  if (schedule.expr.includes(':') || schedule.expr.includes('@')) return null;
+  const parts = schedule.expr.replace(/\s+/g, ' ').split(' ');
+  if (parts.length !== 6) return null;
+  const seconds = parts[0]!;
+  const samples = seconds.includes('?') ? [seconds.replaceAll('?', '0'), seconds.replaceAll('?', '59')] : [seconds];
+  return samples.some(sample => (cronFieldValues(`${sample} * * * * *`, 'second')?.length ?? 0) > 1) ? REPEAT_SCHEDULE_FLOOR_MESSAGE : null;
+}
 export const ActiveHoursSchema = z.object({
   start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'Invalid start time.'),
   end: z.string().regex(/^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/, 'Invalid end time.'),
@@ -178,7 +214,8 @@ export const RoutineEditableShape = {
   description: z.string().max(2048),
   promptBody: z.string(),
   enabled: z.boolean(),
-  trigger: RoutineTriggerSchema,
+  schedule: RoutineScheduleSchema.nullable(),
+  webhook: WebhookTriggerSchema.nullable(),
   activeHours: ActiveHoursSchema.nullable(),
   silenceToken: z.string().max(128).nullable(),
   silenceMaxChars: z.number().int().min(0).max(65536),
@@ -186,6 +223,9 @@ export const RoutineEditableShape = {
   kind: RoutineKindSchema,
   goodWhen: z.string().max(ROUTINE_GOOD_WHEN_MAX_CHARS).nullable(),
 };
+const { schedule: _scheduleShape, webhook: _webhookShape, ...legacyCommonShape } = RoutineEditableShape;
+/** Legacy/default boundary fields only; authored values use RoutineEditableShape. */
+export const LegacyRoutineEditableShape = { ...legacyCommonShape, trigger: RoutineTriggerSchema };
 
 /*
  * A task's brief can't hide text from the card that asks (TASK-906).
@@ -345,8 +385,8 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
   if (new TextEncoder().encode(JSON.stringify(definition)).length > ROUTINE_DEFINITION_MAX_BYTES) {
     issue(['promptBody'], 'Routine definition is too large.');
   }
-  if (definition.trigger.kind === 'webhook' && definition.activeHours !== null) {
-    issue(['activeHours'], 'Webhook routines cannot have active hours.');
+  if (definition.schedule === null && definition.activeHours !== null) {
+    issue(['activeHours'], 'Active hours need a schedule.');
   }
   // Not `=== 'stay-on-top'`: a future kind is a task too.
   if (definition.kind !== 'repeat') {
@@ -360,6 +400,7 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
   switch (definition.kind) {
     case 'repeat':
       if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task can say when it’s going well.');
+      if (definition.schedule === null && definition.webhook === null) issue(['schedule'], 'Choose a schedule or updates from another app.');
       break;
     // TASK-948: both task kinds keep a schedule and a brief, so they share one set of rules, in words that fit either.
     case 'stay-on-top':
@@ -367,16 +408,17 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
       if (!flagged.has('goodWhen') && (definition.goodWhen === null || definition.goodWhen.trim() === '')) {
         issue(['goodWhen'], 'Say how we’ll know this task is going well.');
       }
-      const { trigger } = definition;
-      if (trigger.kind === 'webhook') issue(['trigger'], 'A task checks in on a schedule, not from an update from another app.');
+      const { schedule, webhook } = definition;
+      if (schedule === null && webhook === null) issue(['schedule'], 'A task needs a schedule.');
+      if (webhook !== null) issue(['webhook'], 'A task checks in on a schedule, not from an update from another app.');
       if (definition.conversation !== 'per-fire') issue(['conversation'], 'A task starts a fresh conversation for each check-in.');
       if (definition.silenceToken !== null) issue(['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.');
-      if (trigger.kind === 'interval') {
-        const seconds = durationToSeconds(trigger.every);
-        if (seconds !== null && seconds < TASK_CHECK_IN_FLOOR_SECONDS) issue(['trigger', 'every'], TASK_CHECK_IN_FLOOR_MESSAGE);
-      } else if (trigger.kind === 'cron') {
-        const floor = cronFloorIssue(trigger.expr, trigger.tz);
-        if (floor !== null) issue(['trigger', 'expr'], floor);
+      if (schedule?.kind === 'interval') {
+        const seconds = durationToSeconds(schedule.every);
+        if (seconds !== null && seconds < TASK_CHECK_IN_FLOOR_SECONDS) issue(['schedule', 'every'], TASK_CHECK_IN_FLOOR_MESSAGE);
+      } else if (schedule?.kind === 'cron') {
+        const floor = cronFloorIssue(schedule.expr, schedule.tz);
+        if (floor !== null) issue(['schedule', 'expr'], floor);
       }
       break;
     }
@@ -389,6 +431,8 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
 
 export const RoutineDefinitionObjectSchema = z.object({
   ...RoutineEditableShape,
+  schedule: RoutineEditableShape.schedule.default(null),
+  webhook: RoutineEditableShape.webhook.default(null),
   description: RoutineEditableShape.description.default(''),
   enabled: RoutineEditableShape.enabled.default(true),
   activeHours: RoutineEditableShape.activeHours.default(null),
@@ -398,28 +442,97 @@ export const RoutineDefinitionObjectSchema = z.object({
   kind: RoutineEditableShape.kind.default('repeat'),
   goodWhen: RoutineEditableShape.goodWhen.default(null),
 }).strict();
-export const RoutineDefinitionSchema = RoutineDefinitionObjectSchema.superRefine(validateDefinition);
+
+/** The legacy input object is a boundary DTO, never an authored definition or mirror. */
+export const LegacyRoutineDefinitionObjectSchema = RoutineDefinitionObjectSchema.omit({ schedule: true, webhook: true })
+  .extend({ trigger: RoutineTriggerSchema }).strict();
+const legacyDefinitionKeys = Object.keys(LegacyRoutineDefinitionObjectSchema.shape);
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+const ownFields = (value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> => Object.fromEntries(keys.map(key => [key, value[key]]));
+const encodedSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/**
+ * Preprocess a legacy definition or stored snapshot, preserving every other key for
+ * the caller's strict schema. Byte checks cover the editable definition alone, not
+ * a receipt's metadata. The parser reads known inherited/non-enumerable fields just
+ * as zod does; mixed method representations remain invalid rather than being lost.
+ */
+export function normalizeLegacyRoutineDefinition(value: unknown, ctx: z.RefinementCtx): unknown {
+  if (!isObject(value) || !('trigger' in value)) return value;
+  if ('schedule' in value || 'webhook' in value) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['schedule'], message: 'Use schedule and webhook, or the legacy trigger, without mixing them.' });
+    return z.NEVER;
+  }
+  const legacy = LegacyRoutineDefinitionObjectSchema.safeParse(ownFields(value, legacyDefinitionKeys));
+  if (!legacy.success) {
+    for (const issue of legacy.error.issues) ctx.addIssue(issue);
+    return z.NEVER;
+  }
+  if (encodedSize(legacy.data) > ROUTINE_LEGACY_DEFINITION_MAX_BYTES) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['promptBody'], message: 'Routine definition is too large.' });
+    return z.NEVER;
+  }
+  const { trigger, ...definition } = legacy.data;
+  const normalized: Record<string, unknown> = {
+    ...value, ...definition,
+    schedule: trigger.kind === 'webhook' ? null : trigger,
+    webhook: trigger.kind === 'webhook' ? trigger : null,
+  };
+  delete normalized.trigger;
+  return normalized;
+}
+export const RoutineDefinitionSchema = z.preprocess(normalizeLegacyRoutineDefinition, RoutineDefinitionObjectSchema.superRefine(validateDefinition));
 
 // Explicit optional fields keep create defaults from filling omissions in a patch.
-export const RoutinePatchSchema: z.ZodType<RoutinePatch> = z.object({
+const RoutinePatchObjectSchema = z.object({
   name: RoutineEditableShape.name.optional(),
   description: RoutineEditableShape.description.optional(),
   promptBody: RoutineEditableShape.promptBody.optional(),
   enabled: RoutineEditableShape.enabled.optional(),
-  trigger: RoutineEditableShape.trigger.optional(),
+  schedule: RoutineEditableShape.schedule.optional(),
+  webhook: RoutineEditableShape.webhook.optional(),
   activeHours: RoutineEditableShape.activeHours.optional(),
   silenceToken: RoutineEditableShape.silenceToken.optional(),
   silenceMaxChars: RoutineEditableShape.silenceMaxChars.optional(),
   conversation: RoutineEditableShape.conversation.optional(),
   kind: RoutineEditableShape.kind.optional(),
   goodWhen: RoutineEditableShape.goodWhen.optional(),
-}).strict().superRefine((patch, ctx) => {
+}).strict();
+const LegacyRoutinePatchObjectSchema = RoutinePatchObjectSchema.omit({ schedule: true, webhook: true }).extend({ trigger: RoutineTriggerSchema.optional() }).strict();
+const legacyPatchKeys = Object.keys(LegacyRoutinePatchObjectSchema.shape);
+export function normalizeLegacyRoutinePatch(value: unknown, ctx: z.RefinementCtx): unknown {
+  if (!isObject(value) || !('trigger' in value)) return value;
+  if ('schedule' in value || 'webhook' in value) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['schedule'], message: 'Use schedule and webhook, or the legacy trigger, without mixing them.' });
+    return z.NEVER;
+  }
+  const projected = Object.fromEntries(legacyPatchKeys.filter(key => key in value).map(key => [key, value[key]]));
+  const legacy = LegacyRoutinePatchObjectSchema.safeParse(projected);
+  if (!legacy.success) {
+    for (const issue of legacy.error.issues) ctx.addIssue(issue);
+    return z.NEVER;
+  }
+  if (encodedSize(legacy.data) > ROUTINE_LEGACY_DEFINITION_MAX_BYTES) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['promptBody'], message: 'Routine patch is too large.' });
+    return z.NEVER;
+  }
+  if (legacy.data.trigger === undefined) return value;
+  const { trigger, ...patch } = legacy.data;
+  const normalized: Record<string, unknown> = {
+    ...value, ...patch,
+    schedule: trigger.kind === 'webhook' ? null : trigger,
+    webhook: trigger.kind === 'webhook' ? trigger : null,
+  };
+  delete normalized.trigger;
+  return normalized;
+}
+export const RoutinePatchSchema: z.ZodType<RoutinePatch, z.ZodTypeDef, unknown> = z.preprocess(normalizeLegacyRoutinePatch, RoutinePatchObjectSchema.superRefine((patch, ctx) => {
   if (Object.keys(patch).length === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Routine patch must contain an editable field.' });
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: 'Omit unchanged fields.' });
   }
   if (new TextEncoder().encode(JSON.stringify(patch)).length > ROUTINE_DEFINITION_MAX_BYTES) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['promptBody'], message: 'Routine patch is too large.' });
-}) as unknown as z.ZodType<RoutinePatch>;
+})) as unknown as z.ZodType<RoutinePatch, z.ZodTypeDef, unknown>;
 
 export type RoutineDefinition = z.output<typeof RoutineDefinitionObjectSchema>;
 export type RoutinePatch = Partial<RoutineDefinition>;
@@ -428,7 +541,7 @@ export type ActiveHours = z.output<typeof ActiveHoursSchema>;
 
 export function applyRoutinePatch(current: RoutineDefinition, patch: RoutinePatch): RoutineDefinition {
   const checked = RoutinePatchSchema.parse(patch);
-  return RoutineDefinitionSchema.parse({ ...current, ...checked });
+  return RoutineDefinitionSchema.parse({ ...RoutineDefinitionSchema.parse(current), ...checked });
 }
 
 export const RoutinePermissionsSchema = z.object({ edit: z.boolean(), stop: z.boolean(), fire: z.boolean(), manageSecret: z.boolean() }).strict();
@@ -829,7 +942,7 @@ export type RoutineView = z.output<typeof RoutineViewSchema>;
 export function editableDefinition(row: RoutineDefinition): RoutineDefinition {
   return {
     name: row.name, description: row.description, promptBody: row.promptBody, enabled: row.enabled,
-    trigger: row.trigger, activeHours: row.activeHours, silenceToken: row.silenceToken,
+    schedule: row.schedule, webhook: row.webhook, activeHours: row.activeHours, silenceToken: row.silenceToken,
     silenceMaxChars: row.silenceMaxChars, conversation: row.conversation,
     kind: row.kind, goodWhen: row.goodWhen,
   };

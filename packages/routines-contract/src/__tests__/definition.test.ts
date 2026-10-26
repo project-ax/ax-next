@@ -20,11 +20,21 @@ const base = {
   kind: 'repeat' as const, goodWhen: null,
 };
 const webhook = (extra = {}) => ({ ...base, trigger: { kind: 'webhook', path: '/github', ...extra } });
+// Inputs below deliberately retain legacy triggers; public results are canonical.
+const canonical = <T extends { trigger: { kind: string } }>(value: T) => {
+  const { trigger, ...rest } = value;
+  return { ...rest, schedule: trigger.kind === 'webhook' ? null : trigger, webhook: trigger.kind === 'webhook' ? trigger : null };
+};
+const canonicalPatch = (patch: Record<string, unknown>) => {
+  if (!('trigger' in patch)) return patch;
+  const { trigger, ...rest } = patch;
+  return { ...rest, schedule: (trigger as { kind: string }).kind === 'webhook' ? null : trigger, webhook: (trigger as { kind: string }).kind === 'webhook' ? trigger : null };
+};
 
 describe('editable definitions', () => {
   it('fills only create defaults and preserves prompt bytes', () => {
     expect(RoutineDefinitionSchema.parse({ name: base.name, promptBody: base.promptBody, trigger: base.trigger }))
-      .toEqual({ ...base, description: '' });
+      .toEqual(canonical({ ...base, description: '' }));
     expect(RoutinePatchSchema.parse({ enabled: false })).toEqual({ enabled: false });
   });
   it('replaces nested objects and preserves omitted fields and prompt bytes', () => {
@@ -33,7 +43,7 @@ describe('editable definitions', () => {
       activeHours: { start: '22:00', end: '24:00', tz: 'UTC' },
     });
     expect(changed.promptBody).toBe('first\nsecond\n');
-    expect(changed.trigger).toEqual({ kind: 'cron', expr: '0 8 * * 1-5', tz: 'America/New_York' });
+    expect(changed.schedule).toEqual({ kind: 'cron', expr: '0 8 * * 1-5', tz: 'America/New_York' });
     expect(applyRoutinePatch(changed, { activeHours: null }).activeHours).toBeNull();
     expect(applyRoutinePatch({ ...base, silenceToken: 'quiet' }, { silenceToken: null }).silenceToken).toBeNull();
   });
@@ -42,12 +52,12 @@ describe('editable definitions', () => {
     { ...base, trigger: { kind: 'cron', expr: '0 8 * * 1-5', tz: 'America/New_York' }, activeHours: { start: '22:00', end: '06:00', tz: 'Europe/London' } },
     webhook({ events: ['push', 'release_v2'], hmac: { header: 'X-Hub-Signature-256', algorithm: 'sha256', prefix: 'sha256=' } }),
   ])('round-trips every editable field %#', value => {
-    expect(RoutineDefinitionSchema.parse(value)).toEqual(value);
-    expect(applyRoutinePatch(base, value)).toEqual(value);
+    expect(RoutineDefinitionSchema.parse(value)).toEqual(canonical(value));
+    expect(applyRoutinePatch(base, value)).toEqual(canonical(value));
   });
   it('replaces optional webhook fields rather than deep merging', () => {
     const current = RoutineDefinitionSchema.parse(webhook({ events: ['push'], hmac: { header: 'X-Sig' } }));
-    expect(applyRoutinePatch(current, { trigger: { kind: 'webhook', path: '/new' } }).trigger).toEqual({ kind: 'webhook', path: '/new' });
+    expect(applyRoutinePatch(current, { trigger: { kind: 'webhook', path: '/new' } }).webhook).toEqual({ kind: 'webhook', path: '/new' });
   });
   it.each([{}, { name: undefined }, { ownerUserId: 'u' }, { trigger: { kind: 'cron', expr: '* * * * *' } }, { activeHours: { start: '12:00' } }, { enabled: null }])('rejects empty, protected and incomplete patches %#', patch => {
     expect(RoutinePatchSchema.safeParse(patch).success).toBe(false);
@@ -127,14 +137,14 @@ describe('webhooks', () => {
   });
   it.each(['', 'X Sig', 'X:Sig', 'X\r\nInjected', '日本語'])('rejects malformed HMAC header %s', header => expect(RoutineDefinitionSchema.safeParse(webhook({ hmac: { header } })).success).toBe(false));
   it('defaults algorithm and supports both HMAC options without accepting credentials', () => {
-    expect(RoutineDefinitionSchema.parse(webhook({ hmac: { header: 'X-Sig' } })).trigger).toEqual({ kind: 'webhook', path: '/github', hmac: { header: 'X-Sig', algorithm: 'sha256' } });
+    expect(RoutineDefinitionSchema.parse(webhook({ hmac: { header: 'X-Sig' } })).webhook).toEqual({ kind: 'webhook', path: '/github', hmac: { header: 'X-Sig', algorithm: 'sha256' } });
     expect(RoutineDefinitionSchema.safeParse(webhook({ hmac: { header: 'X-Sig', algorithm: 'sha1', prefix: '' } })).success).toBe(true);
     for (const hmac of [{ header: 'X-Sig', algorithm: 'md5' }, { header: 'X-Sig', secretRef: 'private' }, { header: 'X-Sig', secret: 'private' }]) expect(RoutineDefinitionSchema.safeParse(webhook({ hmac })).success).toBe(false);
   });
 });
 
 describe('public services and tools', () => {
-  const view = { ...base, agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null };
+  const view = { ...canonical(base), agentId: 'a', routineId: 'legacy/default.id', revision: 'opaque revision', origin: 'authored', defaultRoutineId: null, nextRunAt: '2026-10-09T12:00:00.000Z', lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null };
   it('round-trips the full view and forbids protected state and Date objects', () => {
     expect(RoutineViewSchema.parse(view)).toEqual(view);
     for (const extra of [{ ownerUserId: 'u' }, { specHash: 'hash' }, { nextRunAt: new Date() }, { nextRunAt: 'not-a-date' }, { permissions: { ...view.permissions, isAdmin: true } }]) expect(RoutineViewSchema.safeParse({ ...view, ...extra }).success).toBe(false);
@@ -166,7 +176,7 @@ describe('public services and tools', () => {
     ['routine_fire_now', { routineId: 'r', requestId: 'req', expectedRevision: 'rev' }, 'write'],
     ['routine_report', { status: 'on-track', update: 'Queue is empty.', ask: null }, 'report'],
   ] as const)('strictly validates %s without caller identity', (name, input, kind) => {
-    expect(RoutineToolInputSchemas[name].parse(input)).toEqual(input);
+    expect(RoutineToolInputSchemas[name].parse(input)).toEqual(name === 'routine_create' ? { ...input, definition: canonical(base) } : input);
     expect(routineToolKind(name)).toBe(kind);
     for (const field of ['agentId', 'ownerUserId', 'isAdmin', 'source', 'payload']) expect(RoutineToolInputSchemas[name].safeParse({ ...input, [field]: 'injected' }).success).toBe(false);
     expect(RoutineToolJsonSchemas[name]).toMatchObject({ type: 'object', additionalProperties: false });
@@ -220,7 +230,7 @@ describe('public services and tools', () => {
     const cases = [
       [contract.RoutineListInputSchema, { agentId: 'a' }], [contract.RoutineGetInputSchema, key],
       [contract.RoutineListOutputSchema, { routines: [view] }], [contract.RoutineGetOutputSchema, view],
-      [contract.RoutineCreateInputSchema, { agentId: 'a', requestId: 'request', definition: base }], [contract.RoutineCreateOutputSchema, view],
+      [contract.RoutineCreateInputSchema, { agentId: 'a', requestId: 'request', definition: canonical(base) }], [contract.RoutineCreateOutputSchema, view],
       [contract.RoutineUpdateInputSchema, { ...mutation, patch: { enabled: false } }], [contract.RoutineUpdateOutputSchema, view],
       [contract.RoutineDeleteInputSchema, mutation], [contract.RoutineDeleteOutputSchema, { deleted: true, cleanupPending: false }],
       [contract.RoutineFireNowInputSchema, mutation], [contract.RoutineFireNowOutputSchema, { status: 'error' }],
@@ -272,7 +282,7 @@ describe('task kinds (TASK-906)', () => {
     trigger: { kind: 'interval' as const, every: '15m' },
   };
   const view = {
-    ...task, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+    ...canonical(task), agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
     permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
   };
@@ -290,7 +300,7 @@ describe('task kinds (TASK-906)', () => {
     { ...task, trigger: { kind: 'cron', expr: '*/15 * * * *', tz: 'UTC' } },
     { ...task, trigger: { kind: 'cron', expr: '0 9 * * 1-5', tz: 'America/New_York' } },
   ])('accepts a stay-on-top task at the floor %#', value => {
-    expect(RoutineDefinitionSchema.parse(value)).toEqual(value);
+    expect(RoutineDefinitionSchema.parse(value)).toEqual(canonical(value));
   });
 
   it.each([
@@ -298,17 +308,17 @@ describe('task kinds (TASK-906)', () => {
     [{ ...task, goodWhen: null }, ['goodWhen']],
     [{ ...task, goodWhen: '   ' }, ['goodWhen']],
     [{ ...task, goodWhen: 'a'.repeat(1025) }, ['goodWhen']],
-    [{ ...task, trigger: { kind: 'webhook', path: '/zendesk' } }, ['trigger']],
+    [{ ...task, trigger: { kind: 'webhook', path: '/zendesk' } }, ['webhook']],
     [{ ...task, conversation: 'shared' }, ['conversation']],
     [{ ...task, silenceToken: 'ALL_GOOD' }, ['silenceToken']],
-    [{ ...task, trigger: { kind: 'interval', every: '14m' } }, ['trigger', 'every']],
-    [{ ...task, trigger: { kind: 'interval', every: '899s' } }, ['trigger', 'every']],
-    [{ ...task, trigger: { kind: 'cron', expr: '*/10 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
-    [{ ...task, trigger: { kind: 'cron', expr: '*/14 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+    [{ ...task, trigger: { kind: 'interval', every: '14m' } }, ['schedule', 'every']],
+    [{ ...task, trigger: { kind: 'interval', every: '899s' } }, ['schedule', 'every']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/10 * * * *', tz: 'UTC' } }, ['schedule', 'expr']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/14 * * * *', tz: 'UTC' } }, ['schedule', 'expr']],
     // :00 :16 :32 :48 then :00 again: the 12-minute gap only shows at the hour boundary, so a floor that
     // inspects too few runs passes it.
-    [{ ...task, trigger: { kind: 'cron', expr: '*/16 * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
-    [{ ...task, trigger: { kind: 'cron', expr: '*/30 * * * * *', tz: 'UTC' } }, ['trigger', 'expr']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/16 * * * *', tz: 'UTC' } }, ['schedule', 'expr']],
+    [{ ...task, trigger: { kind: 'cron', expr: '*/30 * * * * *', tz: 'UTC' } }, ['schedule', 'expr']],
   ] as const)('rejects each per-kind rule with a field path %#', (value, path) => {
     const result = RoutineDefinitionSchema.safeParse(value);
     expect(result.success).toBe(false);
@@ -319,7 +329,7 @@ describe('task kinds (TASK-906)', () => {
     const result = RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'interval', every: '14m' } });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues.find(i => i.path.join('.') === 'trigger.every')?.message)
+      expect(result.error.issues.find(i => i.path.join('.') === 'schedule.every')?.message)
         .toBe('Check-ins need to be at least 15 minutes apart.');
     }
   });
@@ -372,7 +382,7 @@ describe('task kinds (TASK-906)', () => {
     const floor = 'Check-ins need to be at least 15 minutes apart.';
     const exprIssues = (expr: string, tz = 'UTC'): string[] => {
       const result = RoutineDefinitionSchema.safeParse({ ...task, trigger: { kind: 'cron', expr, tz } });
-      return result.success ? [] : result.error.issues.filter(i => i.path.join('.') === 'trigger.expr').map(i => i.message);
+      return result.success ? [] : result.error.issues.filter(i => ['schedule.expr', 'trigger.expr'].includes(i.path.join('.'))).map(i => i.message);
     };
 
     it.each([
@@ -392,7 +402,7 @@ describe('task kinds (TASK-906)', () => {
       // Decided: hours 23 and 0 refuse whatever the days say, so a Saturday-only schedule that never
       // runs 23:59 then 00:00 is refused too. It fails toward asking for a longer-looking schedule.
       ['0,59 0,23 * * 6', 'UTC'],
-    ])('refuses %s (%s) with the floor message on trigger.expr', (expr, tz) => {
+    ])('refuses %s (%s) with the floor message on schedule.expr', (expr, tz) => {
       expect(exprIssues(expr, tz)).toEqual([floor]);
     });
 
@@ -659,7 +669,7 @@ describe('routineBriefFields (TASK-906)', () => {
     ['a name and a pause', { name: 'Zero open tickets', enabled: false }],
     ['the whole brief with a kind', wholeBrief],
   ])('reads an edit of %s as a change, whatever the routine is', (_label, patch) => {
-    expect(routineBriefFields(upd(patch))).toEqual({ action: 'change', patch });
+    expect(routineBriefFields(upd(patch))).toEqual({ action: 'change', patch: canonicalPatch(patch) });
   });
 
   it.each<[string, Call]>([
@@ -795,7 +805,7 @@ describe('turning a routine into a task sends the whole brief (TASK-906)', () =>
     expect(RoutineUpdateToolInputSchema.parse(upd(wholeBrief).input).patch).toEqual(wholeBrief);
     expect(touchesTaskBrief(upd(wholeBrief))).toBe(true);
     const more = { ...wholeBrief, description: 'Support queue', trigger: { kind: 'interval', every: '1h' } };
-    expect(routineTaskProposal(upd(more))).toEqual({ action: 'change', patch: more });
+    expect(routineTaskProposal(upd(more))).toEqual({ action: 'change', patch: canonicalPatch(more) });
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -1275,16 +1285,16 @@ describe('get-done tasks (TASK-948)', () => {
     { ...getDone, trigger: { kind: 'interval', every: '1h' } },
     { ...getDone, trigger: { kind: 'cron', expr: '0 * * * *', tz: 'UTC' } },
   ])('parses unchanged %#', value => {
-    expect(RoutineDefinitionSchema.parse(value)).toEqual(value);
+    expect(RoutineDefinitionSchema.parse(value)).toEqual(canonical(value));
   });
 
   it.each([
     ['no goodWhen', { ...getDone, goodWhen: null }, ['goodWhen'], 'Say how we’ll know this task is going well.'],
-    ['an update from another app', { ...getDone, trigger: { kind: 'webhook', path: '/zendesk' } }, ['trigger'], 'A task checks in on a schedule, not from an update from another app.'],
+    ['an update from another app', { ...getDone, trigger: { kind: 'webhook', path: '/zendesk' } }, ['webhook'], 'A task checks in on a schedule, not from an update from another app.'],
     ['a shared conversation', { ...getDone, conversation: 'shared' }, ['conversation'], 'A task starts a fresh conversation for each check-in.'],
     ['a silence token', { ...getDone, silenceToken: 'OK' }, ['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.'],
-    ['check-ins 14 minutes apart', { ...getDone, trigger: { kind: 'interval', every: '14m' } }, ['trigger', 'every'], 'Check-ins need to be at least 15 minutes apart.'],
-    ['a single date', { ...getDone, trigger: { kind: 'cron', expr: '2026-11-01T09:00:00', tz: 'UTC' } }, ['trigger', 'expr'], 'A task checks in again and again, so its schedule can’t be a single date.'],
+    ['check-ins 14 minutes apart', { ...getDone, trigger: { kind: 'interval', every: '14m' } }, ['schedule', 'every'], 'Check-ins need to be at least 15 minutes apart.'],
+    ['a single date', { ...getDone, trigger: { kind: 'cron', expr: '2026-11-01T09:00:00', tz: 'UTC' } }, ['schedule', 'expr'], 'A task checks in again and again, so its schedule can’t be a single date.'],
   ] as const)('refuses %s with its path and words, the same for both task kinds', (_label, value, path, message) => {
     expect(messages(value)).toEqual([{ path, message }]);
     expect(messages({ ...value, kind: 'stay-on-top' })).toEqual([{ path, message }]);

@@ -75,9 +75,18 @@ describe('independent authored wake methods', () => {
     expect(RoutineDefinitionSchema.safeParse({ ...brief, schedule, webhook: { ...webhook, unknown: true } }).success).toBe(false);
     expect(RoutineDefinitionSchema.safeParse({ ...brief, schedule, webhook: { ...webhook, path: '/../outside' } }).success).toBe(false);
   });
+
+  it('refuses a mixed definition even when its legacy key is non-enumerable', () => {
+    const input = Object.defineProperty({ ...brief, schedule, webhook: null }, 'trigger', { value: schedule });
+    expect(RoutineDefinitionSchema.safeParse(input).success).toBe(false);
+  });
 });
 
 describe('independent wake-method patches', () => {
+  it('refuses a mixed patch even when its legacy key is non-enumerable', () => {
+    const input = Object.defineProperty({ schedule, webhook: null }, 'trigger', { value: schedule });
+    expect(RoutinePatchSchema.safeParse(input).success).toBe(false);
+  });
   it('leaves omitted methods absent from the patch rather than adding defaults', () => {
     expect(RoutinePatchSchema.parse({ enabled: false })).toEqual({ enabled: false });
     expect(RoutinePatchSchema.parse({ schedule: null })).toEqual({ schedule: null });
