@@ -67,8 +67,8 @@ describe('CredentialSlotRow', () => {
           }),
           { status: 200 },
         );
-      if (String(input).includes('/admin/credentials'))
-        return new Response(JSON.stringify({ credentials: [] }), {
+      if (String(input).includes('/settings/destinations/routine-hmac/credential'))
+        return new Response(JSON.stringify({ configured: false }), {
           status: 200,
         });
       return new Response(null, { status: 204 });

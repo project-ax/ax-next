@@ -15,7 +15,7 @@ const target = {
 };
 afterEach(() => vi.restoreAllMocks());
 describe('routine credential client', () => {
-  it('sends revision-bound set and delete to admin destination with no raw ref', async () => {
+  it('sends revision-bound set and delete to authenticated own destination with no raw ref', async () => {
     const fetch = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () => new Response(null, { status: 204 }));
@@ -26,7 +26,7 @@ describe('routine credential client', () => {
     });
     await removeDestinationCredential(target);
     expect(fetch.mock.calls.map((c) => c[0])).toEqual(
-      Array(2).fill('/admin/destinations/routine-hmac/credential'),
+      Array(2).fill('/settings/destinations/routine-hmac/credential'),
     );
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
       ...target,

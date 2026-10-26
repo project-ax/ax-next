@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ApiKeyField } from '@/components/credentials/ApiKeyField';
 import type { Destination } from '@ax/credentials';
-import { setDestinationCredential } from '@/lib/credentials';
+import { removeDestinationCredential, setDestinationCredential } from '@/lib/credentials';
 
 export interface CredentialSlotFormProps {
   destination: Destination;
@@ -27,6 +27,20 @@ export function CredentialSlotForm({
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function remove() {
+    if (busy || destination.kind !== 'routine-hmac') return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (!expectedRevision) throw new Error('Refresh the routine before removing its secret.');
+      await removeDestinationCredential({ destination, scope, expectedRevision });
+      setPayload('');
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove the signing secret.');
+    } finally { setBusy(false); }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -84,6 +98,7 @@ export function CredentialSlotForm({
           onChange={setPayload}
         />
         <div className="flex justify-end gap-2">
+          {destination.kind === 'routine-hmac' && current.set && <Button type="button" variant="outline" disabled={busy || !expectedRevision} onClick={() => void remove()}>Remove key</Button>}
           <Button type="submit" disabled={busy || payload.trim().length === 0}>
             {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
           </Button>
