@@ -26,8 +26,8 @@ const TABLE: Record<CheckInMiss, [string, string, string, boolean]> = {
   ],
   'brief-too-long': [
     'Its instructions are too long to load.',
-    'Shorten “What to do” in Quill’s settings.',
-    'Shorten “What to do” in Quill’s settings, then resume it.',
+    'Shorten “What should Quill do?” in Quill’s settings.',
+    'Shorten “What should Quill do?” in Quill’s settings, then resume it.',
     true,
   ],
   interrupted: [
@@ -79,13 +79,13 @@ describe('missWords', () => {
     const running = missWords('brief-too-long', 'Quill', false, { checkNow: true, edit: false });
     expect(running).toEqual({
       what: 'Its instructions are too long to load.',
-      fix: 'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings.',
+      fix: 'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Quill’s settings.',
       settingsLink: false,
     });
     const paused = missWords('brief-too-long', 'Quill', true, { checkNow: true, edit: false });
     expect(paused).toEqual({
       what: 'Its instructions are too long to load.',
-      fix: 'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings. Then they can resume it.',
+      fix: 'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Quill’s settings. Then they can resume it.',
       settingsLink: false,
     });
     for (const w of [running, paused]) {

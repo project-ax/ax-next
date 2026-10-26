@@ -85,7 +85,7 @@ describe('TaskUpdates (TASK-910)', () => {
     ]);
     const items = screen.getAllByRole('listitem');
     expect(within(items[0]!).getByText('Checked in but didn’t leave an update')).toBeInTheDocument();
-    expect(within(items[0]!).getByText('No update yet')).toHaveClass('sr-only');
+    expect(within(items[0]!).getByText('No recent update')).toHaveClass('sr-only');
     expect(within(items[1]!).getByText('It left an update we can’t show.')).toBeInTheDocument();
     expect(within(items[1]!).getByText('Needs you')).toHaveClass('sr-only');
   });
@@ -105,6 +105,7 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(within(items[0]!).getByText('This check-in didn’t finish.')).toBeInTheDocument();
     expect(within(items[0]!).getByText('The mailbox said no.')).toHaveClass('text-muted-foreground');
     expect(within(items[1]!).getByText('This check-in didn’t finish.')).toBeInTheDocument();
+    expect(within(items[0]!).getByText('No recent update')).toHaveClass('sr-only');
     expect(within(items[1]!).getByText('No reason was recorded.')).toBeInTheDocument();
     // A report that landed before the failure is still shown, with the reason under it.
     expect(within(items[2]!).getByText('Got partway through the inbox.')).toBeInTheDocument();

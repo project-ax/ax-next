@@ -393,7 +393,8 @@ function TaskList({
  * and the agent's reading from that update's report (TASK-952).
  * A get-done task's finish date, when it has one, ends the second line
  * ("2 of 5 steps · 9 days left", TASK-951), unless the task is done.
- * "checked" still dates the last real report. A never-reported task shows its agent's name alone:
+ * "checked" dates the last miss when present, otherwise the last real report.
+ * A task with neither shows its agent's name alone:
  * a time on a row is a claim, and the task's last-run time moves when a
  * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
  * A done task (TASK-950) says when it was marked done in place of either, and
@@ -409,7 +410,8 @@ function TaskItem({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const ago = row.task === null ? null : timeAgo(row.task.reportedAt, now);
+  const checkedAt = row.noRecentUpdate?.at ?? row.task?.reportedAt ?? null;
+  const ago = checkedAt === null ? null : timeAgo(checkedAt, now);
   // The third line, in order: why a paused-by-misses task is paused, why a task
   // has no recent update, else the last report's update (TASK-930). With
   // misses, the report isn't shown: it's usually from a check-in that started

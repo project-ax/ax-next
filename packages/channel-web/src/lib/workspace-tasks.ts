@@ -7,9 +7,11 @@
  * The shell reads it at mount, again on entering Today or Tasks, after a
  * reply sent from Today, when a Duplicate answer lands after the person
  * left the source task (TASK-953), and when an approved routine change goes
- * through (TASK-939). It doesn't poll.
+ * through (TASK-939). A reply that starts a check-in on Today also arms a
+ * bounded poll (TASK-940): every 10 seconds for up to five minutes, until
+ * a new report or miss appears.
  *
- * Two ways to read again. `retry` (Try again, entering Today or Tasks) joins a
+ * Two ways to read again. `retry` (Try again, entering Today or Tasks, bounded poll ticks) joins a
  * read already in flight instead of starting another: a read can take up to
  * 10 s when an agent's routines hang, and restarting it on every click or
  * route change would drop each answer before it lands. `reload` (after a

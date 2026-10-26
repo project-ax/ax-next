@@ -34,13 +34,16 @@
  * text while the box cleared. It is dropped on success and on a confirmed
  * refusal (any other 1xx-4xx answer), where a retry is a new attempt.
  *
+ * A running sent receipt clears when its parent observes the new check-in;
+ * drafts and paused/not-allowed receipts survive that read.
+ *
  * WHERE FOCUS GOES. A clicked Send goes disabled while it sends (and stays
  * disabled once the box clears), which drops focus on `<body>`. When the send
  * settles, if focus is on `<body>` or on Send it moves back to the textarea,
  * so the next reply can be typed at once. Someone who moved on meanwhile stays
  * where they went (TaskPage's rule).
  */
-import { useCallback, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react';
 import { RoutineReplyTextSchema } from '@ax/routines-contract';
 import { Button } from '@/components/ui/button';
 import {
@@ -128,6 +131,7 @@ export function TaskReplyBox({
   canStart,
   mode = 'reply',
   onSent,
+  completedCheckIn = null,
   inputRef,
 }: {
   agentId: string;
@@ -140,6 +144,8 @@ export function TaskReplyBox({
   /** `reply` unless this is a Not yet or a Reopen; see THREE MODES above. */
   mode?: TaskReplyMode;
   onSent: (checkIn: TaskReplyCheckIn) => void;
+  /** Identity of the completed check-in the parent observed; clears only its running receipt. */
+  completedCheckIn?: string | null;
   inputRef?: Ref<HTMLTextAreaElement>;
 }) {
   const ids = useId();
@@ -149,8 +155,21 @@ export function TaskReplyBox({
   const [sending, setSending] = useState(false);
   // The answer, with whether the task ran at send time: a pause or resume while the line shows
   // must not rewrite it (and make the status region announce it again).
-  const [sent, setSent] = useState<{ checkIn: TaskReplyCheckIn; enabled: boolean } | null>(null);
+  const [sent, setSent] = useState<{
+    checkIn: TaskReplyCheckIn;
+    enabled: boolean;
+    completionAtSend: string | null;
+  } | null>(null);
   const [failure, setFailure] = useState<{ line: string; rule: boolean } | null>(null);
+  const completion = useRef(completedCheckIn);
+  useEffect(() => {
+    completion.current = completedCheckIn;
+    if (completedCheckIn === null) return;
+    setSent((s) =>
+      s !== null && (s.checkIn === 'started' || s.checkIn === 'replayed') &&
+      s.completionAtSend !== completedCheckIn ? null : s,
+    );
+  }, [completedCheckIn, sent]);
   const pending = useRef<{ text: string; requestId: string } | null>(null);
   const inFlight = useRef(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
@@ -183,6 +202,7 @@ export function TaskReplyBox({
         ? pending.current
         : { text, requestId: crypto.randomUUID() };
     pending.current = op;
+    const completionAtSend = completion.current;
     try {
       const endpoint = mode === 'reply' ? workspaceApi.sendTaskReply : workspaceApi.reopenTask;
       const answer = await endpoint(agentId, routineId, {
@@ -193,7 +213,7 @@ export function TaskReplyBox({
       setText('');
       // A sent Reopen has switched the task on, whatever `enabled` said of the Done task:
       // `not-allowed` then still has a next check-in, and `paused` means paused again since.
-      setSent({ checkIn: answer.checkIn, enabled: enabled || mode === 'reopen' });
+      setSent({ checkIn: answer.checkIn, enabled: enabled || mode === 'reopen', completionAtSend });
       onSent(answer.checkIn);
     } catch (e) {
       logRequestFailure(e, mode === 'reply' ? 'task-reply' : 'task-reopen');

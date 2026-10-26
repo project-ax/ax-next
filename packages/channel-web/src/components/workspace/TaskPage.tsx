@@ -951,6 +951,7 @@ function TaskBody({
             enabled={detail.enabled}
             canStart={detail.permissions.fire}
             inputRef={boxRef}
+            completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
             onSent={onReplySent}
           />
         )}
@@ -1027,6 +1028,7 @@ function TaskBody({
           enabled={detail.enabled}
           canStart={detail.permissions.fire}
           inputRef={replyRef}
+          completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
           onSent={onReplySent}
         />
       )}

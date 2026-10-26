@@ -173,6 +173,8 @@ interface Props {
   onRetryTasks: () => void;
   /** A reply was sent from a task's block. */
   onReplied: () => void;
+  /** A bounded reply poll tick: join an in-flight tasks read. */
+  onPollTasks: () => void;
 }
 
 export function TodayView({
@@ -205,6 +207,7 @@ export function TodayView({
   unavailableTaskAgents,
   onRetryTasks,
   onReplied,
+  onPollTasks,
 }: Props) {
   const readable = error === null;
   const grantsUnknown = grantsError !== null;
@@ -583,6 +586,7 @@ export function TodayView({
                   group={g}
                   onNavigate={onNavigate}
                   onReplied={onReplied}
+                  onPollTasks={onPollTasks}
                 >
                   {g.decisions.map((d) => renderRow(d, isOpenDecision(d), { inBlock: true }))}
                 </TodayTaskGroup>

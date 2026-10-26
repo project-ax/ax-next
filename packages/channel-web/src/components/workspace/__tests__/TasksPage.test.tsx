@@ -864,3 +864,18 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
     expect(groupHeadings()).not.toContain('Done · 1');
   });
 });
+
+
+describe('missed check-in metadata (TASK-940)', () => {
+  it.each([true, false])('dates the miss even when an older report exists: %s', async (hasReport) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-26T15:00:00Z'));
+    tasksMock.mockResolvedValue(page([row('Inbox', {
+      task: hasReport ? report('on-track', { reportedAt: '2026-10-25T20:00:00Z' }) : null,
+      noRecentUpdate: { inARow: 1, reason: 'failed', at: '2026-10-26T14:59:00Z', autoPaused: false },
+    })]));
+    renderPage();
+    expect(await screen.findByText('Caveman · checked 1 min ago')).toBeInTheDocument();
+    expect(screen.queryByText(/checked 19 hr ago/)).toBeNull();
+  });
+});

@@ -939,6 +939,48 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(screen.queryByText(/We couldn’t check tasks from Ada/)).toBeNull();
   });
 
+  it('keeps reading after a Today reply, joins a slow read and removes the resolved ask/count/badge (TASK-940)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let land!: (page: { tasks: TaskRow[]; unavailableAgents: [] }) => void;
+    tasksMock
+      .mockResolvedValueOnce({ tasks: [taskRow()], unavailableAgents: [] })
+      .mockReturnValueOnce(new Promise((res) => (land = res)))
+      .mockResolvedValueOnce({ tasks: [onTrack()], unavailableAgents: [] });
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });
+    const view = renderShell();
+    const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(within(block).getByRole('textbox'), { target: { value: 'Please draft it.' } });
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+    await act(async () => land({ tasks: [taskRow()], unavailableAgents: [] }));
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(tasksMock).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();
+    expect(screen.getByText('Nothing is waiting on you.')).toBeInTheDocument();
+    expect(badge()).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(tasksMock).toHaveBeenCalledTimes(3);
+    view.unmount();
+  });
+
+  it('leaving Today for the Working tab clears a reply poll (TASK-940)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
+    sendTaskReplyMock.mockResolvedValue({ checkIn: 'replayed' });
+    renderShell();
+    const block = await screen.findByRole('group', { name: /Zero open support tickets/ });
+    fireEvent.click(within(block).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(within(block).getByRole('textbox'), { target: { value: 'Please draft it.' } });
+    fireEvent.click(within(block).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('radio', { name: /Working/ }));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(tasksMock).toHaveBeenCalledTimes(2);
+  });
+
   it('a reply sent from Today reads the tasks again', async () => {
     tasksMock.mockResolvedValue({ tasks: [taskRow()], unavailableAgents: [] });
     sendTaskReplyMock.mockResolvedValue({ checkIn: 'started' });

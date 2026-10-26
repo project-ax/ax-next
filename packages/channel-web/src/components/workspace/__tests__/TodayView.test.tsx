@@ -102,6 +102,7 @@ function renderToday(
       unavailableTaskAgents={[]}
       onRetryTasks={vi.fn()}
       onReplied={vi.fn()}
+      onPollTasks={vi.fn()}
       {...over}
     />,
   );
@@ -720,6 +721,7 @@ describe('what tasks need from you (TASK-933)', () => {
         unavailableTaskAgents={[]}
         onRetryTasks={onRetryTasks}
         onReplied={vi.fn()}
+      onPollTasks={vi.fn()}
       />,
     );
     expect(button()).toBeEnabled();
@@ -794,6 +796,7 @@ describe('what tasks need from you (TASK-933)', () => {
         unavailableTaskAgents={[]}
         onRetryTasks={vi.fn()}
         onReplied={vi.fn()}
+      onPollTasks={vi.fn()}
       />,
     );
     expect(screen.queryByRole('group', { name: /Zero open support tickets/ })).toBeNull();

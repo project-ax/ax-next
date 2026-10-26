@@ -1165,7 +1165,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const { onNavigate } = await renderReady();
     const latest = latestUpdate();
     expect(within(latest).getByText('Its instructions are too long to load.')).toBeInTheDocument();
-    expect(within(latest).getByText('Shorten “What to do” in Quill’s settings.')).toBeInTheDocument();
+    expect(within(latest).getByText('Shorten “What should Quill do?” in Quill’s settings.')).toBeInTheDocument();
     const link = within(latest).getByRole('link', { name: 'Open Quill’s settings' });
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith({
@@ -1186,7 +1186,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const latest = latestUpdate();
     expect(
       within(latest).getByText(
-        'Someone who manages this agent’s tasks needs to shorten “What to do” in Quill’s settings.',
+        'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Quill’s settings.',
       ),
     ).toBeInTheDocument();
     expect(within(latest).queryByRole('link', { name: /settings/ })).toBeNull();
@@ -1475,6 +1475,26 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     const line = await within(pageStatus()).findByText(CHECKING_IN);
     expect(line).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+  });
+
+  it('clears the reply receipt after its check-in arrives, keeps the box and does not revive it on Check now (TASK-940)', async () => {
+    taskMock.mockResolvedValue(detail());
+    replyMock.mockResolvedValue({ checkIn: 'started' });
+    await renderReady();
+    await sendReply('Please draft it.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Sent. Quill started checking in.')).toBeInTheDocument();
+    const box = screen.getByRole('textbox', { name: BOX });
+    box.focus();
+    taskMock.mockResolvedValue(landed());
+    await advance(10_000);
+    expect(screen.queryByText('Sent. Quill started checking in.')).toBeNull();
+    expect(screen.getByRole('textbox', { name: BOX })).toBe(box);
+    expect(document.activeElement).toBe(box);
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText('Sent. Quill started checking in.')).toBeNull();
   });
 
   it('a reply answering replayed starts the poll too: Checking in now…, and a re-read at 10 seconds', async () => {
