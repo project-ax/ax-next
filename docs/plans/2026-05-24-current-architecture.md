@@ -132,6 +132,13 @@ are now precisely:
    there is no `ax` field in `package.json` (see `2026-05-20-manifest-canonical-form-design.md`).
    `manifest.optionalCalls` is `{ hook, degradation }[]` (ARCH-4): a non-fatal
    dependency that still forms a real call-graph edge when the producer is present.
+   Once every `init()` has resolved and the graph is verified, `bootstrap()` calls
+   each plugin's optional `startAdmission()` in init order. `KernelHandle.shutdown()`
+   first calls each plugin's optional `stopAdmission()` in reverse order, then the
+   `shutdown()`s. `@ax/http-server` binds its public port in `startAdmission()` and
+   closes it in `stopAdmission()`, so during a host restart a request is refused
+   rather than answered 404 by a router whose routes aren't registered yet, or are
+   already gone (TASK-942).
 
 2. **The hook bus** (`hook-bus.ts`). Two flavors, unchanged in spirit from the
    04-22 doc: **service** (exactly one producer, DI-shaped) and **subscriber**

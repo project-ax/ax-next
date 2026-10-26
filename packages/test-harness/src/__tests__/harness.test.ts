@@ -82,6 +82,46 @@ describe('TestHarness.close()', () => {
     expect(calls).toEqual(['b', 'a']);
   });
 
+  it('stops admission on every plugin, in reverse, before the first shutdown (as the kernel does)', async () => {
+    const calls: string[] = [];
+    const a = makePlugin('a', { onShutdown: () => { calls.push('down:a'); } });
+    const b = makePlugin('b', { onShutdown: () => { calls.push('down:b'); } });
+    a.stopAdmission = () => { calls.push('stop:a'); };
+    b.stopAdmission = () => { calls.push('stop:b'); };
+    const h = await createTestHarness({ plugins: [a, b] });
+    await h.close();
+    expect(calls).toEqual(['stop:b', 'stop:a', 'down:b', 'down:a']);
+  });
+
+  it('a throwing stopAdmission is reported and does not block shutdown', async () => {
+    const calls: string[] = [];
+    const errors: string[] = [];
+    const a = makePlugin('a', { onShutdown: () => { calls.push('down:a'); } });
+    a.stopAdmission = () => { throw new Error('stuck'); };
+    const h = await createTestHarness({ plugins: [a] });
+    await h.close({ onError: (name, err) => { errors.push(`${name}: ${(err as Error).message}`); } });
+    expect(errors).toEqual(['a: stuck']);
+    expect(calls).toEqual(['down:a']);
+  });
+
+  it('a throwing onError sink does not stop the remaining stops and shutdowns', async () => {
+    const calls: string[] = [];
+    const a = makePlugin('a', { onShutdown: () => { calls.push('down:a'); } });
+    const b = makePlugin('b', {
+      onShutdown: () => {
+        calls.push('down:b');
+        throw new Error('down failed');
+      },
+    });
+    a.stopAdmission = () => { calls.push('stop:a'); };
+    b.stopAdmission = () => { throw new Error('stop failed'); };
+    const h = await createTestHarness({ plugins: [a, b] });
+    await expect(
+      h.close({ onError: () => { throw new Error('sink down'); } }),
+    ).resolves.toBeUndefined();
+    expect(calls).toEqual(['stop:a', 'down:b', 'down:a']);
+  });
+
   it('awaits async shutdown handlers', async () => {
     const completed: string[] = [];
     const slow = makePlugin('slow', {

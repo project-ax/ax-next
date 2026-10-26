@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { bootstrap } from '../bootstrap.js';
+import { PluginError } from '../errors.js';
 import { HookBus } from '../hook-bus.js';
 import type { Plugin } from '../plugin.js';
 
@@ -432,5 +433,154 @@ describe('bootstrap shutdown', () => {
     await handle.shutdown();
     // c (ok), b (throws — sink throws — swallowed), a (ok) all run.
     expect(order).toEqual(['c', 'a']);
+  });
+});
+
+describe('bootstrap admission', () => {
+  it('opens admission only after every init() resolved, in init order', async () => {
+    const events: string[] = [];
+    const a = makePlugin({ name: 'a', registers: ['a:do'] }, ({ bus }) => {
+      events.push('init:a');
+      bus.registerService('a:do', 'a', async () => 0);
+    });
+    // Async, like a real bind: bootstrap() has to await it.
+    a.startAdmission = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      events.push('start:a');
+    };
+    const b = makePlugin({ name: 'b', calls: ['a:do'] }, () => { events.push('init:b'); });
+    b.startAdmission = () => { events.push('start:b'); };
+
+    // b is listed first: admission follows init order, not array order.
+    await bootstrap({ bus: new HookBus(), plugins: [b, a], config: {} });
+    expect(events).toEqual(['init:a', 'init:b', 'start:a', 'start:b']);
+  });
+
+  it.each([
+    {
+      when: "b's init() throws",
+      code: 'init-failed',
+      makeB: () => makePlugin({ name: 'b' }, () => { throw new Error('b-init-failed'); }),
+    },
+    {
+      when: 'b calls a hook nobody registers',
+      code: 'missing-service',
+      makeB: () => makePlugin({ name: 'b', calls: ['missing:hook'] }),
+    },
+  ])('never opens admission when $when', async ({ code, makeB }) => {
+    const events: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    const b = makeB();
+    for (const p of [a, b]) {
+      const name = p.manifest.name;
+      p.startAdmission = () => { events.push(`start:${name}`); };
+      p.shutdown = () => { events.push(`down:${name}`); };
+    }
+
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} }),
+    ).rejects.toMatchObject({ name: 'PluginError', code });
+    expect(events.filter((e) => e.startsWith('start:'))).toEqual([]);
+    // The existing rollback still runs.
+    expect(events).toContain('down:a');
+  });
+
+  it('a startAdmission() throw unwinds: admitted plugins stop, then every initialized plugin shuts down', async () => {
+    const events: string[] = [];
+    const traced = (name: string): Plugin => {
+      const p = makePlugin({ name });
+      p.startAdmission = () => { events.push(`start:${name}`); };
+      p.stopAdmission = () => { events.push(`stop:${name}`); };
+      p.shutdown = () => { events.push(`down:${name}`); };
+      return p;
+    };
+    const a = traced('a');
+    const b = traced('b');
+    const c = traced('c');
+    // Rejects asynchronously, the way a failed bind does.
+    b.startAdmission = async () => { throw new Error('bind failed'); };
+
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b, c], config: {} }),
+    ).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'init-failed',
+      plugin: 'b',
+      message: expect.stringMatching(/startAdmission failed: bind failed/),
+    });
+    // Only a was admitted, so only a stops. b failed and c never started, but
+    // all three initialized, so all three shut down.
+    expect(events).toEqual(['start:a', 'stop:a', 'down:c', 'down:b', 'down:a']);
+  });
+
+  it('rethrows a PluginError from startAdmission() unchanged', async () => {
+    const thrown = new PluginError({ code: 'custom-code', plugin: 'b', message: 'x' });
+    const b = makePlugin({ name: 'b' });
+    b.startAdmission = () => { throw thrown; };
+
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [b], config: {} }),
+    ).rejects.toBe(thrown);
+  });
+
+  it('shutdown() stops admission on every plugin, in reverse, before the first shutdown(), once', async () => {
+    const events: string[] = [];
+    const a = makePlugin({ name: 'a', registers: ['a:do'] }, ({ bus }) => {
+      bus.registerService('a:do', 'a', async () => 0);
+    });
+    a.stopAdmission = () => { events.push('stop:a'); };
+    a.shutdown = () => { events.push('down:a'); };
+    const b = makePlugin({ name: 'b', calls: ['a:do'] });
+    b.stopAdmission = () => { events.push('stop:b'); };
+    b.shutdown = () => { events.push('down:b'); };
+
+    // Listed [b, a] so reverse init order (b, a) differs from reverse array order.
+    const handle = await bootstrap({ bus: new HookBus(), plugins: [b, a], config: {} });
+    await handle.shutdown();
+    await handle.shutdown();
+    expect(events).toEqual(['stop:b', 'stop:a', 'down:b', 'down:a']);
+  });
+
+  it('a throwing or hanging stopAdmission() is reported and never blocks shutdown()', async () => {
+    const events: string[] = [];
+    const errors: { plugin: string; err: unknown }[] = [];
+    const a = makePlugin({ name: 'a' });
+    a.stopAdmission = () => { throw new Error('boom'); };
+    a.shutdown = () => { events.push('down:a'); };
+    const b = makePlugin({ name: 'b' });
+    b.stopAdmission = () => new Promise<void>(() => {}); // never resolves
+    b.shutdown = () => { events.push('down:b'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b],
+      config: {},
+      shutdownTimeoutMs: 50,
+      onShutdownError: (plugin, err) => errors.push({ plugin, err }),
+    });
+    await handle.shutdown();
+    expect(errors.map((e) => e.plugin)).toEqual(['b', 'a']);
+    expect(String(errors[0]!.err)).toMatch(/stopAdmission exceeded 50ms/);
+    expect((errors[1]!.err as Error).message).toBe('boom');
+    expect(events).toEqual(['down:b', 'down:a']);
+  });
+
+  it('a throwing onShutdownError sink in the stop phase does not abort shutdown()', async () => {
+    const events: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    a.stopAdmission = () => { events.push('stop:a'); };
+    a.shutdown = () => { events.push('down:a'); };
+    const b = makePlugin({ name: 'b' });
+    b.stopAdmission = () => { throw new Error('boom'); };
+    b.shutdown = () => { events.push('down:b'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b],
+      config: {},
+      onShutdownError: () => { throw new Error('sink itself broken'); },
+    });
+    await handle.shutdown();
+    expect(events).toEqual(['stop:a', 'down:b', 'down:a']);
   });
 });

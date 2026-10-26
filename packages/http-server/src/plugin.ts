@@ -70,7 +70,10 @@ export interface CreateHttpServerPluginOptions {
 }
 
 export interface HttpServerPlugin extends Plugin {
-  /** Returns the bound TCP port. Throws if called before `init()` resolves. */
+  /**
+   * Returns the bound TCP port. Throws if called before the kernel opened
+   * admission (`startAdmission()`), i.e. before `bootstrap()` resolves.
+   */
   boundPort(): number;
 }
 
@@ -80,6 +83,32 @@ export function createHttpServerPlugin(
   const router = new Router();
   let server: http.Server | null = null;
   let boundPort: number | null = null;
+  // True from startAdmission() until the first stop. Requests are dropped
+  // while it is false (see the gate in the createServer callback).
+  let admitting = false;
+  // The listener's close, begun by the first stop. shutdown() awaits it.
+  let closing: Promise<void> | null = null;
+  // Requests the gate refused after the stop; shutdown() reports the count.
+  let dropped = 0;
+  const reportDropped = (): void => {
+    if (dropped === 0) return;
+    process.stderr.write(
+      `[ax/http-server] dropped ${dropped} request${dropped === 1 ? '' : 's'} that arrived after it stopped accepting\n`,
+    );
+    dropped = 0;
+  };
+
+  // Idempotent. Closing the listener also drops idle kept-alive sockets. It
+  // does not wait for open connections to end; shutdown() does that.
+  const stopAdmitting = (): void => {
+    admitting = false;
+    const srv = server;
+    if (srv === null || !srv.listening) return;
+    closing = new Promise<void>((resolve) => {
+      srv.close(() => resolve());
+    });
+    process.stderr.write('[ax/http-server] stopped accepting requests (shutting down)\n');
+  };
 
   const allowedOrigins = opts.allowedOrigins ?? [];
   const trustProxy = (): boolean => process.env.AX_TRUST_PROXY === '1';
@@ -126,7 +155,7 @@ export function createHttpServerPlugin(
         throw new PluginError({
           code: 'not-initialized',
           plugin: PLUGIN_NAME,
-          message: 'http-server boundPort() called before init()',
+          message: 'http-server boundPort() called before startAdmission() bound the listener',
         });
       }
       return boundPort;
@@ -209,6 +238,12 @@ export function createHttpServerPlugin(
       );
 
       const srv = http.createServer((req, res) => {
+        // Node keeps dispatching on a busy kept-alive socket after close(); drop those requests (TASK-942).
+        if (!admitting) {
+          dropped += 1;
+          req.socket.destroy();
+          return;
+        }
         void handle(
           req,
           res,
@@ -250,6 +285,22 @@ export function createHttpServerPlugin(
         );
       });
 
+      server = srv;
+    },
+    // TASK-942: the port is open only while the whole kernel is wired. Boot
+    // window: bound in init(), it let requests in while later plugins were
+    // still registering routes, and the router answered 404 for real routes.
+    // Drain window: shutdown runs in reverse init order, so channel-web's
+    // routes go long before this plugin's shutdown(); stopAdmission() closes first.
+    async startAdmission() {
+      const srv = server;
+      if (srv === null) {
+        throw new PluginError({
+          code: 'not-initialized',
+          plugin: PLUGIN_NAME,
+          message: 'http-server startAdmission() called before init()',
+        });
+      }
       await new Promise<void>((resolve, reject) => {
         const onErr = (e: Error): void => reject(e);
         srv.once('error', onErr);
@@ -261,19 +312,28 @@ export function createHttpServerPlugin(
 
       const addr = srv.address();
       boundPort = typeof addr === 'object' && addr !== null ? addr.port : opts.port;
-      server = srv;
+      admitting = true;
 
       process.stderr.write(
         `[ax/http-server] listening on http://${opts.host}:${boundPort}\n`,
       );
     },
+    stopAdmission() {
+      stopAdmitting();
+    },
     async shutdown() {
-      if (server === null) return;
-      const srv = server;
+      // Also runs without stopAdmission() first (a failed boot's rollback, the
+      // test harness), so it stops admission itself.
+      stopAdmitting();
+      // close() dropped only the sockets idle at the stop. One that was busy
+      // then and is idle now would hold the close for keep-alive (about 6 s).
+      server?.closeIdleConnections();
+      // Report before waiting: an open stream can hold the close past this
+      // plugin's shutdown timeout, and the process may exit before it settles.
+      reportDropped();
+      if (closing !== null) await closing;
       server = null;
-      await new Promise<void>((resolve) => {
-        srv.close(() => resolve());
-      });
+      reportDropped();
     },
   };
 }

@@ -18,25 +18,27 @@ export interface BootstrapOptions {
    */
   shutdownTimeoutMs?: number;
   /**
-   * Sink for shutdown errors. Invoked once per plugin whose
-   * `shutdown()` throws or times out. The kernel always logs to
-   * `process.stderr` if no sink is provided. Hosts that want
-   * structured logs (e.g., the `serve` binary feeding a JSON logger)
-   * pass an explicit sink.
+   * Sink for shutdown errors. Invoked once per plugin whose `shutdown()` or
+   * `stopAdmission()` throws or times out (once for each, if both do). The
+   * kernel always logs to `process.stderr` if no sink is provided. Hosts
+   * that want structured logs (e.g., the `serve` binary feeding a JSON
+   * logger) pass an explicit sink.
    *
-   * Init-failure rollback uses the same sink — that path also calls
-   * `shutdown()` on already-initialized plugins, and their failures
-   * deserve the same routing as a normal-shutdown failure.
+   * A failed boot's rollback uses the same sink — that path also calls
+   * `shutdown()` on already-initialized plugins (and `stopAdmission()` on
+   * admitted ones), and their failures deserve the same routing as a
+   * normal-shutdown failure.
    */
   onShutdownError?: (pluginName: string, err: unknown) => void;
 }
 
 /**
  * Returned by `bootstrap()`. The host calls `shutdown()` on SIGTERM /
- * SIGINT (or whenever the process needs a clean teardown). Idempotent:
- * the first call kicks off the shutdown sequence and caches its
- * promise; subsequent calls return the cached promise without
- * re-running any plugin's `shutdown()`.
+ * SIGINT (or whenever the process needs a clean teardown). It calls every
+ * plugin's `stopAdmission()`, then every `shutdown()`, each in reverse init
+ * order. Idempotent: the first call kicks off the shutdown sequence and
+ * caches its promise; subsequent calls return the cached promise without
+ * re-running any plugin's `stopAdmission()` or `shutdown()`.
  *
  * The kernel intentionally does NOT install signal handlers — that's
  * the host's job. Tests drive `shutdown()` directly; embedded uses
@@ -106,21 +108,74 @@ export async function bootstrap(opts: BootstrapOptions): Promise<KernelHandle> {
     throw err;
   }
 
+  // Outside work is let in only once the whole graph is wired: every init()
+  // resolved and verifyCalls passed. Init order, so a plugin opens after the
+  // plugins it calls. `admitted` holds the plugins that got through.
+  const admitted: Plugin[] = [];
+  for (const p of initialized) {
+    try {
+      if (typeof p.startAdmission === 'function') await p.startAdmission();
+      admitted.push(p);
+    } catch (err) {
+      // Stop what already opened, then shut down everything that initialized,
+      // the failing plugin included (its init() did complete).
+      await runStopAdmissionLoop(admitted, shutdownTimeoutMs, onShutdownError);
+      await runShutdownLoop(initialized, shutdownTimeoutMs, onShutdownError);
+      if (err instanceof PluginError) throw err;
+      // Reuses 'init-failed' so the code set stays the same; the message names the phase.
+      throw new PluginError({
+        code: 'init-failed',
+        plugin: p.manifest.name,
+        message: `plugin '${p.manifest.name}' startAdmission failed: ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
+  }
+
   // Idempotent handle: cache the first shutdown's promise so SIGINT-then-
   // SIGTERM (common during deploys) doesn't re-run plugin shutdowns.
   let shutdownPromise: Promise<void> | undefined;
   return {
     shutdown(): Promise<void> {
       if (shutdownPromise === undefined) {
-        shutdownPromise = runShutdownLoop(
-          initialized,
-          shutdownTimeoutMs,
-          onShutdownError,
-        );
+        shutdownPromise = (async () => {
+          // Every plugin stops admitting before any plugin starts tearing down.
+          await runStopAdmissionLoop(admitted, shutdownTimeoutMs, onShutdownError);
+          await runShutdownLoop(initialized, shutdownTimeoutMs, onShutdownError);
+        })();
       }
       return shutdownPromise;
     },
   };
+}
+
+// Walks `plugins` in REVERSE order, calling each plugin's optional
+// `stopAdmission()` under the per-plugin timeout. As in `runShutdownLoop`, a
+// failure is reported to `onError` and never stops the loop (I2). There is no
+// joined wait: stopping admission must not wait for work already admitted.
+async function runStopAdmissionLoop(
+  plugins: Plugin[],
+  timeoutMs: number,
+  onError: (pluginName: string, err: unknown) => void,
+): Promise<void> {
+  for (let i = plugins.length - 1; i >= 0; i--) {
+    const p = plugins[i]!;
+    if (typeof p.stopAdmission !== 'function') continue;
+    try {
+      await withTimeout(
+        Promise.resolve().then(() => p.stopAdmission!()),
+        timeoutMs,
+        () => new Error(`plugin '${p.manifest.name}' stopAdmission exceeded ${timeoutMs}ms`),
+      );
+    } catch (err) {
+      // Same guard as runShutdownLoop: a throwing sink must not abort the loop.
+      try {
+        onError(p.manifest.name, err);
+      } catch {
+        // Sink itself failed; swallow so peer plugins still stop.
+      }
+    }
+  }
 }
 
 // Walks `plugins` in REVERSE order, calling each plugin's optional
