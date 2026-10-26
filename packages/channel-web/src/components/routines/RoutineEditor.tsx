@@ -215,7 +215,9 @@ function RoutineForm({
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [optional, setOptional] = useState(false);
-  const [receiver, setReceiver] = useState<string | null>(null);
+  const [receiverForAgent, setReceiverForAgent] = useState<{ agentId: string; url: string } | null>(null);
+  // Scope the displayed bearer synchronously; passive cleanup runs after a commit.
+  const receiver = receiverForAgent !== null && receiverForAgent.agentId === agentId ? receiverForAgent.url : null;
   const [receiverError, setReceiverError] = useState(false);
   const [receiverAllowed, setReceiverAllowed] = useState<boolean | null>(null);
   const [receiverRetry, setReceiverRetry] = useState(0);
@@ -233,7 +235,7 @@ function RoutineForm({
   useEffect(() => {
     if (!agentId || !hasWebhook) return;
     let active = true;
-    setReceiver(null);
+    setReceiverForAgent(null);
     setReceiverAllowed(null);
     setReceiverError(false);
     void routineApi.getReceiverAccess(agentId).then(async access => {
@@ -241,7 +243,7 @@ function RoutineForm({
       setReceiverAllowed(access.allowed);
       if (!access.allowed) return;
       const result = await routineApi.getReceiver(agentId);
-      if (active) setReceiver(result.url);
+      if (active) setReceiverForAgent({ agentId, url: result.url });
     }).catch(() => { if (active) setReceiverError(true); });
     return () => { active = false; };
   }, [agentId, hasWebhook, receiverRetry]);

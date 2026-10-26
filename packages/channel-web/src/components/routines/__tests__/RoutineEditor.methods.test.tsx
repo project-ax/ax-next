@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { RoutineEditor } from '../RoutineEditor';
 import { routineFixture } from './routine-fixture';
 
@@ -95,6 +96,31 @@ describe('independent routine methods in the existing editor', () => {
 });
 
 describe('receiver capability is separate from owning a routine', () => {
+  it('never commits a previously resolved receiver URL under a different agent before effects clear it', async () => {
+    mocks.access.mockImplementation((agentId: string) => Promise.resolve({ allowed: agentId === 'a' }));
+    const commits: Array<{ agentId: string; url: string | null }> = [];
+    function CommitProbe({ agentId }: { agentId: string }) {
+      // Layout effects observe the committed DOM before the editor's passive cleanup.
+      useLayoutEffect(() => {
+        const input = screen.queryByLabelText('Webhook URL') as HTMLInputElement | null;
+        commits.push({ agentId, url: input?.value ?? null });
+      }, [agentId]);
+      return null;
+    }
+    const props = { mode: 'create' as const, agentName: 'Caveman', onSaved: vi.fn(), onCancel: vi.fn() };
+    const form = (agentId: string) => <><RoutineEditor {...props} agentId={agentId} /><CommitProbe agentId={agentId} /></>;
+    const result = render(form('a'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    const originalUrl = await screen.findByLabelText('Webhook URL') as HTMLInputElement;
+    expect(originalUrl.value).toContain('original-bearer');
+    result.rerender(form('b'));
+    const nextAgentCommits = commits.filter(commit => commit.agentId === 'b');
+    expect(nextAgentCommits.length).toBeGreaterThan(0);
+    for (const commit of nextAgentCommits) expect(commit.url ?? '').not.toContain('original-bearer');
+    await screen.findByText(/administrator.*connect.*app updates/i);
+    expect(mocks.receiver).toHaveBeenCalledTimes(1);
+  });
+
   it('does not obtain a bearer for a member denied agent-wide receiver access', async () => {
     mocks.access.mockResolvedValue({ allowed: false });
     await edit();
