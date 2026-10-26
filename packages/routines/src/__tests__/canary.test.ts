@@ -16,6 +16,140 @@ import { slowDatabase } from './support/slow-database.js';
 
 let h: RoutineHarness;
 afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
+
+describe('independent methods through real approval, restart and HTTP dispatch', () => {
+  async function holdRawCall(ctx: AgentContext, call: ToolCall): Promise<string> {
+    const held = await h.bus.fire('tool:pre-call', ctx, call);
+    expect(isHold(held)).toBe(true);
+    if (!isHold(held)) throw new Error('Expected a real decisions hold');
+    const saved = await h.bus.call<unknown, { decision: { call: ToolCall } }>('decisions:get', ctx, {
+      decisionId: held.hold.decisionId, userId: ctx.userId,
+    });
+    expect(saved.decision.call).toEqual(call);
+    return held.hold.decisionId;
+  }
+
+  async function approve(ctx: AgentContext, decisionId: string, approvalScope = 'once') {
+    const result = await h.bus.call('decisions:approve', ctx, { decisionId, userId: ctx.userId, approvalScope });
+    expect(result).toMatchObject({ executed: true, path: 'host-replays', error: null });
+  }
+
+  it('approves a canonical dual repeat, restarts, then fires its timer and unchanged signed URL independently', async () => {
+    let now = Date.parse('2026-10-09T12:00:00Z');
+    let wake: (() => void) | undefined;
+    const clock: Clock = {
+      now: () => new Date(now),
+      sleep: (_ms, signal) => new Promise<void>(resolve => {
+        const finish = () => { signal.removeEventListener('abort', finish); wake = undefined; resolve(); };
+        if (signal.aborted) return finish();
+        wake = finish;
+        signal.addEventListener('abort', finish, { once: true });
+      }),
+    };
+    h = await createRoutineHarness({ clock, strictCredentials: true });
+    h.setAttended(false);
+    const ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    const definition = {
+      name: 'Approved dual repeat', promptBody: 'Approved dual input: {{payload}}',
+      schedule: { kind: 'interval', every: '60s' },
+      webhook: { kind: 'webhook', path: '/approved-dual', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' } },
+      activeHours: { start: '09:00', end: '17:00', tz: 'UTC' },
+    };
+    const call: ToolCall = { id: 'dual-approved', name: 'routine_create', input: { requestId: 'dual-approved', definition } };
+    await approve(ctx, await holdRawCall(ctx, call));
+    let store = createRoutinesStore(h.db);
+    const row = (await store.list({ agentId: h.agentId })).find(item => item.name === definition.name)!;
+    expect(row).toMatchObject({ schedule: definition.schedule, webhook: definition.webhook, activeHours: definition.activeHours });
+    expect(row).not.toHaveProperty('trigger');
+    expect((await store.list({ agentId: h.agentId })).filter(item => item.definitionId === null)).toHaveLength(1);
+    await h.bus.call('routines:set-webhook-secret', ctx, { agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, operation: 'set', secret: Buffer.from('dual-fixture-key') });
+    const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, {
+      agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false },
+    });
+    const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
+    let http: Awaited<ReturnType<typeof createTestHarness>> | undefined;
+    async function mount(port: number) {
+      const server = createHttpServerPlugin({ host: '127.0.0.1', port, cookieKey: Buffer.alloc(32, 1), allowedOrigins: ['http://localhost'] });
+      http = await createTestHarness({ plugins: [server] });
+      await http.bus.call('http:register-route', http.ctx(), h.routes.find(route => route.path === '/webhooks/:token/*')!);
+      return server.boundPort();
+    }
+    try {
+      const port = await mount(0);
+      const originalUrl = `http://127.0.0.1:${port}/webhooks/${token}/approved-dual`;
+      await http!.close();
+      http = undefined;
+      // The fixture vault and database survive; the new host binds the same address.
+      h = await h.restart();
+      expect(await mount(port)).toBe(port);
+      store = createRoutinesStore(h.db);
+      expect((await store.findOne(row))?.webhook).toEqual(definition.webhook);
+      await expect.poll(() => Boolean(wake)).toBe(true);
+      now += 60_000;
+      wake!();
+      const history = () => store.recentFires({ agentId: row.agentId, routineId: row.routineId, actorUserId: ctx.userId });
+      await expect.poll(async () => (await history()).length).toBe(1);
+      expect((await history())[0]).toMatchObject({ triggerSource: 'tick', status: 'ok' });
+      await expect.poll(() => Boolean(wake)).toBe(true);
+      const nextRunAt = (await store.findOne(row))?.nextRunAt;
+      now = Date.parse('2026-10-09T18:00:00Z'); // Outside the timer's work window.
+      const body = '{"event":"push","title":"from the app"}';
+      const signature = createHmac('sha256', 'dual-fixture-key').update(body).digest('hex');
+      const response = await fetch(originalUrl, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${signature}` } });
+      expect(response.status).toBe(202);
+      await expect.poll(async () => (await history()).length).toBe(2);
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('from the app') });
+      expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
+      wake!();
+      await expect.poll(() => Boolean(wake)).toBe(true);
+      expect(await history()).toHaveLength(2);
+      expect(h.invokeCalls).toHaveLength(2);
+      expect(listening.messages).toHaveLength(2);
+    } finally {
+      await http?.close();
+      listening.restore();
+    }
+  });
+
+  it('replays a saved raw legacy task approval after restart and keeps brief consent under Always Allow', async () => {
+    h = await createRoutineHarness();
+    h.setAttended(false);
+    let ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    const repeat: ToolCall = {
+      id: 'legacy-consent', name: 'routine_create', input: { requestId: 'legacy-consent', definition: {
+        name: 'Legacy consent seed', promptBody: 'Summarize.', trigger: { kind: 'interval', every: '1h' },
+      } },
+    };
+    await approve(ctx, await holdRawCall(ctx, repeat), 'agent-routines');
+    expect(await h.bus.call('tool-policy:get-routine-consent', ctx, { agentId: h.agentId })).toMatchObject({ enabled: true });
+    const legacy: ToolCall = {
+      id: 'legacy-pending-task', name: 'routine_create', input: { requestId: 'legacy-pending-task', definition: {
+        name: 'Legacy pending task', promptBody: 'Check the queue.', kind: 'stay-on-top', goodWhen: 'Nothing waits.',
+        trigger: { kind: 'interval', every: '15m' },
+      } },
+    };
+    const decisionId = await holdRawCall(ctx, legacy);
+    h = await h.restart();
+    h.setAttended(false);
+    ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
+    const pending = await h.bus.call<unknown, { decision: { call: ToolCall } }>('decisions:get', ctx, { decisionId, userId: ctx.userId });
+    expect(pending.decision.call).toEqual(legacy);
+    expect(await h.bus.call('tool-policy:get-routine-consent', ctx, { agentId: h.agentId })).toMatchObject({ enabled: true });
+    await approve(ctx, decisionId);
+    const store = createRoutinesStore(h.db);
+    const row = (await store.list({ agentId: h.agentId })).find(item => item.name === 'Legacy pending task')!;
+    expect(row).toMatchObject({ kind: 'stay-on-top', promptBody: 'Check the queue.', goodWhen: 'Nothing waits.', schedule: { kind: 'interval', every: '15m' }, webhook: null });
+    expect(row).not.toHaveProperty('trigger');
+    const update: ToolCall = { id: 'legacy-brief-update', name: 'routine_update', input: {
+      requestId: 'legacy-brief-update', routineId: row.routineId, expectedRevision: row.revision,
+      patch: { promptBody: 'Check the approved queue only.', trigger: { kind: 'interval', every: '30m' } },
+    } };
+    await approve(ctx, await holdRawCall(ctx, update));
+    expect(await store.findOne(row)).toMatchObject({ promptBody: 'Check the approved queue only.', schedule: { kind: 'interval', every: '30m' }, webhook: null });
+    expect((await store.list({ agentId: h.agentId })).filter(item => item.name === 'Legacy pending task')).toHaveLength(1);
+  });
+});
+
 async function create(overrides = {}) {
   return h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
     agentId: h.agentId, requestId: randomUUID(),
