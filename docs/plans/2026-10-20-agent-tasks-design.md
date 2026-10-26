@@ -17,18 +17,16 @@ knows what it's for and says how it's going.
 
 - **Now:** §11 is done. The revert merged as #1004 (TASK-903) and the keepers
   as #1006 (TASK-904). Production and kind were wiped and redeployed on
-  2026-10-20, and the board is tidied. Open questions 2–7 and 9 are decided
-  (§15); 1 and 8 are still open.
+  2026-10-20, and the board is tidied. Open questions 1–7 and 9 are decided
+  (§15); 8 remains for a later sharing design.
 - **PR 1 is done.** §12 PR 1, "Stay on top of something", merged as TASK-906–911
   (#1009, #1011, #1014–#1016, #1019). The TASK-912 walk passed on kind on
   2026-10-22; the results and screenshots are in `deploy/kind/walks/2026-10-22-TASK-912/`.
-  Nothing from PR 1 is deployed yet.
 - **PR 2 is done.** §12 PR 2, "Replies and Today", merged as TASK-930–933
   (#1021–#1024). The TASK-934 walk passed on kind on 2026-10-23; the results,
   screenshots and the follow-up findings are in
-  `deploy/kind/walks/2026-10-23-TASK-934/`. Nothing from PR 1 or PR 2 is
-  deployed yet; production deploy is a separate, human-run step. Email for
-  Needs you stays later (§14 Q4).
+  `deploy/kind/walks/2026-10-23-TASK-934/`. Email for Needs you stays later
+  (§14 Q4).
 - **PR 3 is done.** §12 PR 3, "Get something done", merged as TASK-948–953
   (#1031–#1034, #1036, #1037). TASK-952 added an optional reading to each report,
   shown as a small trend (schema version 10); TASK-948 added the kind and the steps
@@ -41,9 +39,16 @@ knows what it's for and says how it's going.
   (⋯ › Duplicate on a task's page, a Done task's included) and made "Going well
   when" editable in Settings. The TASK-954 walk passed on kind on 2026-10-25; the
   results, screenshots and the follow-up findings are in
-  `deploy/kind/walks/2026-10-25-TASK-954/`. Nothing from PR 1, 2 or 3 is deployed
-  yet; production deploy is a separate, human-run step.
-- **Next:** §12 PR 4 (one list, the New task dialog, ⋯ › Edit).
+  `deploy/kind/walks/2026-10-25-TASK-954/`.
+- **Production is deployed.** PRs 1–3 and the subsequent fixes and polish are
+  live at `97429ce05`, Helm revision 54, routines schema version 14
+  (2026-10-26). First-time setup is complete. The user created a real
+  "Picnic checklist" task, received its three-item packing checklist from a
+  successful check-in, and marked it done; read-only database checks confirmed
+  all three steps done and the schedule stopped.
+- **Next:** §12 PR 4 (one list, the New task dialog, ⋯ › Edit). Its product
+  choices are settled: routines move into Tasks as Repeat a job, active hours
+  use simple day selectors, and Repeat a job keeps its 60-second minimum.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -185,14 +190,15 @@ When should Caveman work on it?     Tick all that apply
 [Start task]   Cancel
 ```
 
-> “Only 9 to 6 on weekdays” needs days of the week in active hours, which routines don’t have yet (one window every day). PR 4 adds them or builds that checkbox on a cron.
+> PR 4 adds simple day selectors to active hours, including weekdays. Until then, active hours are one window every day. A custom cron schedule remains under More options.
 
 > PR 3 (TASK-956): An agent's change that sets a task's kind still asks, and its card now says "Changing what kind of task this is clears its steps, latest update, notes and finish date." The card can't look up the task's current kind, so it says so whenever the change sets one, a change back to "Repeat a job" included.
 
 The agent picker only appears for people with more than one agent, the same
 rule the home composer follows. Time zone, a custom cron line and the rest of
-today's routine options sit behind More options. The shortest schedule we
-offer is every 15 minutes.
+today's routine options sit behind More options. Stay on top of something and
+Get something done offer schedules at least 15 minutes apart. Repeat a job
+keeps its existing 60-second minimum (§14 Q3).
 
 ### 3.3 The task page: "Stay on top of something"
 
@@ -227,7 +233,7 @@ Caveman reads your replies every time it checks in. Sending one starts a
 check-in now.
 ```
 
-> PR 1 (TASK-910): today’s active hours are one window every day, with no days of the week, so the header reads like “checks in every hour, 9:00 AM to 6:00 PM (America/New_York)”. A weekdays-only window needs a schedule that names the days (a cron) until PR 4’s New task dialog settles how people pick days.
+> PR 1 (TASK-910) shipped active hours as one window every day, with no days of the week, so the header reads like “checks in every hour, 9:00 AM to 6:00 PM (America/New_York)”. A weekdays-only window needs a schedule that names the days (a cron) until PR 4 adds the decided simple day selectors.
 
 - **See what it did** opens that check-in's transcript, read-only. That link is
   how people come to trust an update: they can read the actual tool calls.
@@ -675,9 +681,10 @@ suggest a short body for known apps.
   says when a field needs scrolling. The brief can't hold the characters the
   contract knows draw as nothing, or padding that pushes text out of the
   card's view (§4.2). The schedule and active hours are different: with
-  Always Allow the agent can change them without asking, but never to a
-  schedule whose check-ins are less than 15 minutes apart on its own clock,
-  or one that doesn't keep checking in. (A cron is checked over 48 runs from
+  Always Allow the agent can change them without asking. Stay on top and Get
+  something done must keep a schedule whose check-ins are at least 15 minutes
+  apart on its own clock; Repeat a job keeps its 60-second minimum. (A task's
+  cron is checked over 48 runs from
   a fixed date and, for the gap those can miss, from each hour's last run to
   the next hour's first. It can't use `?`, which croner fills in from the
   clock, and it can't be a single date or a date that never comes, such as
@@ -706,9 +713,10 @@ suggest a short body for known apps.
   A person can reword or delete any step on the task page (TASK-949), so an agent step injected through a ticket can be cleared. A step the person added (or reworded) is labelled theirs in the check-in message, and the brief says so; the agent can tick it but can’t reword or remove it. Deleting a step is not a block-list: a check-in already running can add the same text back, and so can any later check-in that re-reads the same source (the ticket the step came from, say), since nothing remembers the delete. The step comes back labelled the agent's, and deleting it again clears it. Duplicating a task (TASK-953) carries its steps into the copy, unticked and still labelled by who wrote them, so an injected step stays visible and deletable there too, and the copy stays paused until a person resumes it.
 - **A reply is the owner's own words.** Owner-only, read only while its author owns the task, screened before it's stored, and it reaches a model only in a check-in's message, quoted and labelled, never in the brief, never in run history anyone else reads, never in memory. Each reply starts at most one check-in, plus one more after each of its check-ins a host restart cut off before it reported (up to three), under the usual limits (TASK-931, TASK-937).
 - **A task's state is its owner's.** If the task moves to a new owner, it starts over: its report, notes and missed check-ins go, and so do the last run's status, error and warning. A run's report reaches only the person the run ran as, while they own the task. After a move, the earlier owner's runs list for no one, on the new owner's page or in their check-ins, until the task moves back. On a team agent every member sees a live task's runs, without their reports. Once a task is deleted, each of its runs lists only for the person it ran as, still without its report, so neither a later owner nor a teammate sees it (TASK-936, TASK-947).
-- **Cost stays bounded.** Check-ins are fresh, small sessions. The shortest
-  schedule is 15 minutes, "respond within" caps update check-ins, usage limits
-  apply as they do now, and five check-ins in a row that end without a report pause the task. Only a person's Resume, a change of kind or a change of owner starts the count over (TASK-930, TASK-936).
+- **Cost stays bounded.** Check-ins are fresh, small sessions. Stay on top and
+  Get something done keep a 15-minute minimum schedule; Repeat a job keeps its
+  existing 60-second minimum. "Respond within" will cap update check-ins in
+  PR 5. Usage limits apply as they do now, and five check-ins in a row that end without a report pause the task. Only a person's Resume, a change of kind or a change of owner starts the count over (TASK-930, TASK-936).
 - Run the `security-checklist` skill on `routine_report`, the W1 provider and
   the check-in message when they're built.
 
@@ -934,7 +942,9 @@ Five small PRs, each useful on its own:
    it's done" leads to Mark done or Not yet, and finished tasks stop checking
    in. An optional "Finish by" date, an optional number in each report shown as
    a small trend, and Duplicate task.
-4. **One list.** The New task dialog: one choice of kind, checkboxes for when.
+4. **One list.** The New task dialog: one choice of kind, checkboxes for when,
+   and simple day selectors for active hours. Repeat a job keeps its
+   60-second minimum; Stay on top and Get something done keep 15 minutes.
    Routines move out of Agent Settings into Tasks as "Repeat a job", with their
    webhooks unchanged, and a task's single trigger splits into a schedule and a
    webhook. Settings keeps Self-improvement. Remove Activity (§3.7): the page,
@@ -976,13 +986,12 @@ view-only sharing of a task and an "Also ask" list.
 
 ## 14. Open questions
 
-1. Fold routines into Tasks (PR 4), or keep Routines as its own settings page?
-   Recommend folding: two lists that both mean "work my agent does on its own"
-   will confuse people.
+1. ~~Fold routines into Tasks (PR 4), or keep Routines as its own settings
+   page?~~ **Decided: move routines into Tasks as Repeat a job** (§15).
 2. ~~"Tasks" or "Jobs"?~~ **Decided: Tasks** (§15).
-3. ~~Shortest check-in: 15 minutes?~~ **Decided: 15 minutes** (§15). Routines
-   allow 60 seconds today; whether "Repeat a job" keeps that is settled in PR 4,
-   when routines move into Tasks.
+3. ~~Shortest check-in: 15 minutes?~~ **Decided: 15 minutes** for Stay on top
+   and Get something done. **Repeat a job keeps its existing 60-second
+   minimum**, confirmed for PR 4 (§15).
 4. ~~Is Today enough for "Needs you" in v1, or do we need email?~~ **Decided:
    Today is enough for now** (§15). Email each new ask comes later, not in PR 2.
 5. ~~Should "Stay on top" tasks show a number trend?~~ **Decided: yes** (§15),
@@ -1070,3 +1079,6 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-26 | Decided | Today reads the tasks list again when an approved routine change goes through (in the approval's answer for an unattended create, edit or delete; on the queue's poll for a run-now or an attended approval), wherever it was approved. Other approvals, dismissals and Undo don't, since no task changes until its next check-in. While the queue's read or the first tasks read is in flight, Today's headline says "Checking what is waiting on you…" rather than that nothing is waiting; a count already read still shows (TASK-939). |
 | 2026-10-26 | Decided | After a reply starts a check-in on Today, Today owns a shared tasks-list refresh every 10 seconds for five minutes while Needs you stays open. It outlives row reports/disappearance so an older overlapping check-in cannot hide the reply’s later ask. The write starts a fresh read; poll ticks join an existing one. Tasks dates a missed check-in from the miss, and completed check-ins clear their running reply receipts (TASK-940). |
 | 2026-10-26 | Decided | Task-page landed writes reuse the shared tasks reload immediately; special successful forms close without remounting composers. Done metadata omits schedule, and Tasks rows give the same claim wording as Today and the task page (TASK-959). |
+| 2026-10-26 | Decided | PR 4 moves existing routines out of Agent Settings into Tasks as **Repeat a job**, preserving their webhook addresses and configuration. Settings keeps Self-improvement (§14 Q1, TASK-968). |
+| 2026-10-26 | Decided | PR 4 adds simple day selectors for active hours, including weekdays. Custom cron stays under More options (TASK-968). |
+| 2026-10-26 | Decided | **Repeat a job** keeps its existing **60-second** minimum repeat interval. **Stay on top of something** and **Get something done** keep **15-minute** minimum schedules. This settles the Repeat a job exception left for PR 4 by the original check-in floor decision (§14 Q3, TASK-968). |
