@@ -4,8 +4,10 @@ import { CompiledQuery, Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
+import { editableDefinition } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
+import { inputHash } from '../definition.js';
 
 const frozenSql = readFileSync(new URL('./fixtures/schema-v14.sql', import.meta.url), 'utf8');
 const frozen = JSON.parse(readFileSync(new URL('./fixtures/schema-v14-operations.json', import.meta.url), 'utf8'));
@@ -86,6 +88,45 @@ describe('independent-method migration from a genuine v14 database', () => {
       });
       expect(canonical).not.toHaveProperty('trigger');
     }
+  });
+
+  it('upgrades an exact 64 KiB legacy SQL definition and receipt without counting receipt metadata as brief bytes', async () => {
+    const operation = frozen.operations.find((row: { operation: string; input: { definition?: { name: string } } }) =>
+      row.operation === 'create' && row.input.definition?.name === 'Legacy signed webhook');
+    const old = frozen.receipts.find((row: { operation: string; request_id: string }) =>
+      row.operation === 'create' && row.request_id === operation.input.requestId);
+    // Confirm the frozen hash algorithm before constructing another valid v14 write.
+    expect(inputHash({ agentId: operation.input.agentId, definition: operation.input.definition })).toBe(old.input_hash);
+    const empty = { ...operation.input.definition, promptBody: '' };
+    const room = 65_536 - new TextEncoder().encode(JSON.stringify(empty)).length;
+    const promptBody = '🦕'.repeat(Math.floor(room / 4)) + 'a'.repeat(room % 4);
+    const legacy = { ...empty, promptBody };
+    expect(new TextEncoder().encode(JSON.stringify(legacy))).toHaveLength(65_536);
+    const hash = inputHash({ agentId: operation.input.agentId, definition: legacy });
+    const result = { ...old.result, promptBody };
+    // These are historical columns in the still-v14 database, before target migration.
+    await sql`UPDATE routines_v1_definitions SET prompt_body=${promptBody},spec_hash=${inputHash(legacy)}
+      WHERE agent_id=${old.agent_id} AND routine_id=${operation.routineId}`.execute(db);
+    await sql`UPDATE routines_v1_requests SET input_hash=${hash},result=${JSON.stringify(result)}::jsonb
+      WHERE agent_id=${old.agent_id} AND owner_user_id=${old.owner_user_id}
+      AND operation='create' AND request_id=${old.request_id}`.execute(db);
+
+    await runRoutinesMigration(db);
+    const store = createRoutinesStore(db);
+    const stored = await store.findOne({ agentId: old.agent_id, routineId: operation.routineId });
+    expect(stored?.promptBody).toBe(promptBody);
+    expect(stored).toMatchObject({ schedule: null, webhook: legacy.trigger });
+    expect(stored).not.toHaveProperty('trigger');
+    expect(new TextEncoder().encode(JSON.stringify(editableDefinition(stored!)))).toHaveLength(65_552);
+    const replay = await store.findOperationReceipt({
+      agentId: old.agent_id, actorUserId: old.owner_user_id,
+      operation: 'create', requestId: old.request_id, inputHash: hash,
+    });
+    expect(replay).toMatchObject({
+      routineId: operation.routineId, ownerUserId: old.owner_user_id,
+      promptBody, schedule: null, webhook: legacy.trigger,
+    });
+    expect(replay).not.toHaveProperty('trigger');
   });
 
   it('runs twice without rewriting definitions, catalog defaults, request receipts or accepted dispatches', async () => {
