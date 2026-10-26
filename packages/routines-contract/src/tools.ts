@@ -195,6 +195,24 @@ export function routineBriefFields(call: { name: string; input: unknown }): Rout
   return text ? { action: 'change', patch } : null;
 }
 
+/**
+ * TASK-956: true when a valid `routine_update`'s patch sets `kind`, to any
+ * value, a change back to "repeat" included. Approving one that changes the
+ * kind clears the task's steps, latest update, notes and finish date
+ * (`@ax/routines`' `NO_TASK_STATE` and `NO_FINISH_BY`), so `@ax/decisions`
+ * says so on the card that asks. The card can't look the routine up to learn
+ * its current kind (a lookup is a write, TASK-906 decisions row 10), so this
+ * reads only whether the patch sets one. A closed boolean, so no input text
+ * leaves it, and it never throws: `@ax/decisions` reads it while it holds the
+ * call, where a throw would refuse every `routine_update`. Never an authority
+ * (that's `touchesTaskBrief`, which asks for every call this answers true
+ * for): anything unreadable is false.
+ */
+export function routineUpdateSetsKind(call: { name: string; input: unknown }): boolean {
+  const write = readRoutineWrite(call);
+  return write !== null && 'patch' in write && Object.hasOwn(write.patch, 'kind');
+}
+
 const opaque = { type: 'string', minLength: 1, maxLength: 256 };
 const timezone = { type: 'string', minLength: 1, maxLength: 256, description: 'IANA timezone, for example America/New_York.' };
 const activeHours = {
