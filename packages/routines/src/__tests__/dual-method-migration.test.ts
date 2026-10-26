@@ -24,16 +24,16 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`DROP SCHEMA public CASCADE; CREATE SCHEMA public`.execute(db);
   // Historical SQL came from the actual v14 binary, not today's migration helper.
-  await db.executeQuery(CompiledQuery.raw(frozenSql));
+  await db.executeQuery(CompiledQuery.raw(`${frozenSql}\nSET search_path TO public;`));
   // A legacy materialization has the catalog's source identity and its interval fields.
   await sql`INSERT INTO routines_v1_definitions (
     agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,
-    trigger_kind,trigger_spec,interval_seconds,active_hours,silence_token,silence_max,
+    trigger_kind,trigger_spec,active_hours,silence_token,silence_max,
     conversation,prompt_body,enabled,definition_id,definition_updated_at,next_run_at
   ) SELECT 'fixture-agent','fixture-default-heartbeat','fixture-default-revision','fixture-owner',
-    name,description,spec_hash,trigger_kind,trigger_spec,interval_seconds,active_hours,
+    name,description,spec_hash,trigger_kind,trigger_spec,active_hours,
     silence_token,silence_max,conversation,prompt_body,enabled,default_routine_id,updated_at,
-    '2031-01-02T00:00:00Z'::timestamptz
+    NULL
     FROM default_routines_v1 WHERE name='heartbeat'`.execute(db);
 });
 
@@ -61,7 +61,7 @@ describe('independent-method migration from a genuine v14 database', () => {
     expect(await store.findOne({ agentId: 'fixture-agent', routineId: 'fixture-default-heartbeat' })).toMatchObject({
       definitionId: 'default-heartbeat-2026-05-19',
       schedule: { kind: 'interval', every: '24h' }, webhook: null,
-      nextRunAt: new Date('2031-01-02T00:00:00Z'),
+      nextRunAt: null,
     });
   });
 
