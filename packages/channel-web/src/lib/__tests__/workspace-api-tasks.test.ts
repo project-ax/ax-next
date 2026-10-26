@@ -38,6 +38,7 @@ const ROW = {
   },
   noRecentUpdate: null,
   doneAt: null,
+  canMarkDone: true,
 };
 
 const MISS = {
@@ -68,6 +69,20 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     const page = await workspaceApi.tasks();
     expect(page.tasks[0]!.finishBy).toEqual({ date: '2026-11-14', daysLeft: 9 });
     expect(page.tasks[1]!.finishBy).toBeNull();
+  });
+
+  it('reads whether its owner may mark it done, and an older host’s row without it as true (TASK-956)', async () => {
+    // An SPA synced onto an older host (`make dev-fast`): the host still refuses a press that isn't allowed.
+    const { canMarkDone: _canMarkDone, ...older } = ROW;
+    respondWith({ tasks: [{ ...ROW, canMarkDone: false }, { ...older, routineId: 'r-2' }], unavailableAgents: [] });
+    const page = await workspaceApi.tasks();
+    expect(page.tasks.map((t) => t.canMarkDone)).toEqual([false, true]);
+  });
+
+  it('refuses a row whose canMarkDone isn’t true or false (TASK-956)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith({ tasks: [{ ...ROW, canMarkDone: 'yes' }], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
   });
 
   it('refuses a row whose finish date is malformed (TASK-951)', async () => {

@@ -264,6 +264,7 @@ describe('landing on a URL', () => {
           task: null,
           noRecentUpdate: null,
           doneAt: null,
+          canMarkDone: true,
         },
       ],
       unavailableAgents: [],
@@ -773,6 +774,7 @@ describe('one tasks read (TASK-933)', () => {
             task: null,
             noRecentUpdate: null,
             doneAt: null,
+            canMarkDone: true,
           },
         ],
         unavailableAgents: [],
@@ -799,6 +801,7 @@ describe('one tasks read (TASK-933)', () => {
       task: null,
       noRecentUpdate: null,
       doneAt: null,
+      canMarkDone: true,
     });
     let landStale!: (page: Awaited<ReturnType<typeof workspaceApi.tasks>>) => void;
     tasksMock
@@ -967,6 +970,7 @@ describe('one tasks read (TASK-933)', () => {
           },
           noRecentUpdate: null,
           doneAt: null,
+          canMarkDone: true,
         },
       ],
       unavailableAgents: [],

@@ -61,6 +61,7 @@ function row(name: string, over: Partial<TaskRow> = {}): TaskRow {
     task: null,
     noRecentUpdate: null,
     doneAt: null,
+    canMarkDone: true,
     ...over,
   };
 }

@@ -3564,6 +3564,13 @@ function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
  * (`toTaskDoneAt`), host-written; who marked it never crosses. A report's
  * claim that the task is finished (`doneClaimed`) is the agent's word, one
  * flag: only a literal `true` crosses as a claim.
+ *
+ * TASK-956: `canMarkDone` is the services' `permissions.edit` for the caller on
+ * this agent, as the task page reads it: whether the owner may mark the task
+ * done. A task is listed for its report even after the owner stops managing the
+ * agent's tasks (`isOwnTask`), and that row can't be marked done. Only a literal
+ * `true` crosses, so a view the schema didn't parse (TASK-913) reads false, never
+ * a thrown request. One boolean; nothing of the permissions object rides along.
  */
 function toTaskRows(
   agent: { id: string; displayName: string },
@@ -3594,6 +3601,7 @@ function toTaskRows(
             },
       noRecentUpdate: toTaskNoRecentUpdate(view),
       doneAt: toTaskDoneAt(view),
+      canMarkDone: view.permissions.edit === true,
     }));
 }
 

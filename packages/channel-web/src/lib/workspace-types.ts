@@ -1437,6 +1437,12 @@ export interface TaskRow {
   noRecentUpdate: TaskNoRecentUpdate | null;
   /** TASK-950. When a person marked the task done, ISO; null while it isn't Done. */
   doneAt: string | null;
+  /**
+   * TASK-956. Whether the caller may mark this task done: the routines services' `edit` for it,
+   * the task page's `permissions.edit`. Only a literal `true` from the view crosses. Today draws
+   * Mark done off, saying why, when false; the host still refuses such a press (403).
+   */
+  canMarkDone: boolean;
 }
 
 /** An agent whose tasks couldn't be read, so the page can say so instead of looking complete. */
