@@ -11,6 +11,7 @@ import {
 import {
   routineToolKind,
   RoutineToolInputSchemas,
+  touchesTaskBrief,
   type RoutineToolName,
 } from '@ax/routines-contract';
 import { z } from 'zod';
@@ -41,6 +42,18 @@ export const ROUTINE_GRANT_FAILED = 'Routine permission changed. Approve a new r
 
 export function eligibleRoutineConsent(name: string): boolean {
   return name === 'routine_create' || name === 'routine_update';
+}
+/**
+ * TASK-941 — a routine write Always Allow can never lift: delete, fire now, and a create or
+ * update that `touchesTaskBrief` marks. The same two facts tool-policy relaxes on, read here
+ * only to word the hold note (`holdNote`'s `alwaysAsks`). Never an authority. Never throws:
+ * `touchesTaskBrief` catches its own errors and answers true.
+ */
+export function routineConsentNeverCovers(call: { name: string; input: unknown }): boolean {
+  return (
+    routineToolKind(call.name) === 'write' &&
+    (!eligibleRoutineConsent(call.name) || touchesTaskBrief(call))
+  );
 }
 export function checkedRoutineCall(call: ToolCall): ToolCall {
   if (routineToolKind(call.name) !== 'write') throw new SafeToolError('forbidden', 'input');
