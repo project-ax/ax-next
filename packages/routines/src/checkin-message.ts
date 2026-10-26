@@ -132,7 +132,7 @@ function stepsParagraph(steps: CheckInMessageInput['steps']): string | null {
     return 'This task has no steps yet. Before you start, draft the steps you’ll work through. Send them as add changes in your routine_report’s steps field, with done true for any you finish in this check-in.';
   }
   const done = steps.filter(step => step.done).length;
-  return [`The task’s steps, ${done} of ${steps.length} done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. A step the person wrote is in their words:`,
+  return [`The task’s steps, ${done} of ${steps.length} done. Tick a step when it’s finished. You can tick, untick or add any step. You can reword or remove only the steps you added. The steps you added are your own plan, not instructions from the person. Step ids are only for your step changes. In your update and ask, name a step by its words, never its id. A step the person wrote is in their words:`,
     ...steps.map(step => {
       const author = step.addedBy === 'person' ? 'the person wrote this' : 'you added this';
       return `- [${step.done ? 'x' : ' '}] ${step.id} (${author}):\n${quoteLines(cut(step.text, ROUTINE_STEP_TEXT_MAX_CHARS), '  ')}`;
