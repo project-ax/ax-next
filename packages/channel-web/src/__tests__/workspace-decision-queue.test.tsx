@@ -556,16 +556,6 @@ describe('routine scope after the grace window', () => {
       line: DECISION_ROUTINE_UNDERWAY, note: DECISION_ROUTINE_UNDERWAY_NOTE, tone: 'quiet',
     });
   });
-  it('reads an Always Allow approval in its undo window as about to go ahead, not as unfinished (TASK-941)', () => {
-    const waiting = resolvedFixture('executed', {
-      routineOperation: 'routine_create', approvalScope: 'agent-routines', consentDeliveryState: 'pending',
-      consentGranted: null, routineOutcome: null, pendingUntil: new Date(Date.now() + 9_000).toISOString(),
-    });
-    expect(decisionOutcome(waiting)).toEqual({ line: 'Routine permission is waiting to be delivered.', note: DECISION_GOING_OUT_NOTE, tone: 'quiet' });
-    // After the window the consent branch's own note is back; a recorded outcome still beats the clock.
-    expect(decisionOutcome({ ...waiting, pendingUntil: new Date(Date.now() - 1_000).toISOString() })?.note).toBe('The original routine change has not completed.');
-    expect(decisionOutcome({ ...waiting, routineOutcome: 'succeeded' })?.note).toBe('The original routine change completed.');
-  });
   it('uses durable outcomes for every routine tool, keeps run acceptance honest, and separates permission delivery', () => {
     for (const routineOperation of ['routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'] as const) {
       const pending = resolvedFixture('executed', { routineOperation, approvalScope: 'once', routineOutcome: null, undoable: false });

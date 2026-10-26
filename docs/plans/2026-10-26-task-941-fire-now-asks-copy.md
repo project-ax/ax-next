@@ -24,7 +24,7 @@
 - (b) "Give fire-now its own headline": it has one. "Wants to run a routine now" comes only from `routine_fire_now` (`templates.ts:192-199`, `:219-224`). Only the body was shared, so only the body changes. Row 6.
 
 **Refined.**
-- The undo-window bug is the routine branch's, not fire-now's: an attended create, edit or delete in chat (`pendingUntil` = `deliveryDueAt`) reads "has not completed" during its window too. Task 4's fix is generic.
+- The undo-window bug is the routine branch's, not fire-now's: an attended create, edit or delete in chat (`pendingUntil` = `deliveryDueAt`) reads "has not completed" during its window too. Task 4's fix is generic for Allow once. An Always Allow approval takes `decisionOutcome`'s consent-delivery branch, which this card leaves as it was (its note still says "The original routine change has not completed." in the window); see review round 2 in the decisions shard.
 - The renderers of these strings: `DecisionRow` (Today), `ApprovalCard` (agent chat and a check-in's See what it did page), `ConsentAnnouncement` (screen reader) and `thread-find` all read `decisionOutcome`; both cards draw `d.summary` / `d.detail` from the row. No other producer writes a routine row's detail or a hold note (`git grep` of `Review the`, `decisionText(`, `holdNote(` in `packages/decisions/src`).
 - Baseline at b02df4118 (pure suites, measured): decisions `templates.test.ts` + `pre-call.test.ts` 74 passed; routines-contract `definition.test.ts` 414; agent-runner-core `prompt-engine.test.ts` 37; channel-web `decision-renderers.test.tsx` + `workspace-decision-queue.test.tsx` + `ApprovalCard.test.tsx` 80.
 
@@ -37,7 +37,7 @@
 | fire-now summary (unchanged) | person | `Wants to run a routine now` |
 | `routine_fire_now` description (rewritten) | model | `Fire an enabled routine now using its current expectedRevision. Reuse requestId for retries. Firing always asks the person, even with Always Allow. No setting changes that, so never suggest turning on Always Allow or any other setting for it. Confirmation acknowledges dispatch acceptance; final execution status appears in history.` |
 | `routine_delete` description (rewritten) | model | `Delete an authored routine using its current expectedRevision. Deleting always asks the person, even with Always Allow. No setting changes that, so never suggest turning on Always Allow or any other setting for it. Defaults use separate default controls. Reuse requestId for retries.` |
-| `routineNote()`, new sentence | model, system prompt | `Deleting a routine or firing one now always asks the person too. Always Allow never covers any of these, so never suggest turning it on for them.` |
+| `routineNote()`, new sentence | model, system prompt | `Deleting a routine or firing one now always asks the person too. Always Allow never covers a call that always asks, so never offer it as a way past one.` |
 | in the undo window (existing `DECISION_GOING_OUT` / `_NOTE`) | person, row and card | `You said yes — it is about to go ahead.` / `Nothing has happened yet. Undo stops it before it runs. Once it has run, we cannot take it back.` |
 | `DECISION_ROUTINE_UNDERWAY` / `_NOTE`, `decision-copy.ts` (new) | person, after the window, before the outcome | `You said yes — it is going ahead now.` / `We’ll update this when it’s done.` |
 | outcome lines (unchanged) | person | `The routine run was accepted.` (fire-now), `The approved routine operation completed.`, `The approved routine operation failed.` |
@@ -137,7 +137,7 @@ describe('firing and deleting always ask, and the agent never offers a setting (
 ```ts
     // TASK-941: delete and fire-now ask every time, and the agent never offers Always Allow for them.
     expect(normal).toContain('Deleting a routine or firing one now always asks the person too.');
-    expect(normal).toContain('Always Allow never covers any of these, so never suggest turning it on for them.');
+    expect(normal).toContain('Always Allow never covers a call that always asks, so never offer it as a way past one.');
     expect(normal).not.toMatch(/\b(enable|turn on|switch on)\s+Always Allow\b/i);
 ```
 
@@ -150,7 +150,7 @@ export function routineNote(): string {
   return 'Use the routine tools to schedule unattended work with interval, cron, or webhook triggers. ' +
     'Use routine_list/routine_get to read current definitions and routine_get before editing. ' +
     `Creates and edits require approval unless the person enabled Always Allow for this agent. Creating a task (kind "stay-on-top" or "get-done"), or changing any routine's name, promptBody, goodWhen or kind, always asks the person. ` +
-    'Deleting a routine or firing one now always asks the person too. Always Allow never covers any of these, so never suggest turning it on for them. ' +
+    'Deleting a routine or firing one now always asks the person too. Always Allow never covers a call that always asks, so never offer it as a way past one. ' +
     'Report success only after the tool confirms it. Do not create routine files.';
 }
 ```

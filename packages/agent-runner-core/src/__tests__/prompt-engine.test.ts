@@ -524,7 +524,7 @@ describe('buildSystemPrompt — memoryRoot forwarding', () => {
     expect(normal).toContain('Creating a task (kind "stay-on-top" or "get-done")');
     // TASK-941: delete and fire-now ask every time, and the agent never offers Always Allow for them.
     expect(normal).toContain('Deleting a routine or firing one now always asks the person too.');
-    expect(normal).toContain('Always Allow never covers a call that always asks, so never suggest turning it on for one.');
+    expect(normal).toContain('Always Allow never covers a call that always asks, so never offer it as a way past one.');
     expect(normal).not.toMatch(/\b(enable|turn on|switch on)\s+Always Allow\b/i);
     expect(await buildSystemPrompt('Ada', '', dir, undefined)).not.toContain('Use the routine tools');
     await writeAx('BOOTSTRAP.md', 'bootstrap only');
