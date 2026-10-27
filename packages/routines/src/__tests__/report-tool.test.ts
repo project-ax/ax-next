@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql, type RawBuilder } from 'kysely';
@@ -393,9 +394,10 @@ describe('routine_report (TASK-907)', () => {
       await refused('a routine run with no conversation', makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'check-in', source: 'routine' }), 'no-conversation');
       await refused('a conversation no run is in', runner(ctx, { conversationId: 'elsewhere' }), 'no-open-run');
       await refused("someone other than the task's owner", runner(ctx, { userId: 'intruder' }), 'wrong-owner');
-      // A second open run in the same conversation: the lookup can't tell which one reports.
+      // Historical overlapping dispatches can survive an upgrade/rollback. Reproduce one directly:
+      // current admission refuses overlap, but its lookup must still refuse ambiguous old rows.
       const store = createRoutinesStore(h.db);
-      const extra = (await store.acceptDispatch({ agentId: task.agentId, routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', source: 'manual', requestId: 'extra', now: new Date() }))!.accepted;
+      const extra = (await acceptHistoricalDispatch(h.db,store,{ agentId: task.agentId, routineId: task.routineId, expectedRevision: task.revision, actorUserId: 'owner', source: 'manual', requestId: 'extra', now: new Date() }))!.accepted;
       await store.bindDispatchConversation({ dispatchId: extra.dispatchId, conversationId: ctx.conversationId! });
       await refused('two open runs in one conversation', runner(ctx), 'ambiguous');
       await store.finishDispatch({ dispatchId: extra.dispatchId, outcome: { status: 'ok', conversationId: null, error: null, renderedPrompt: null, warning: null } });

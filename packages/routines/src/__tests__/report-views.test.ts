@@ -67,7 +67,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     const bus = services();
     const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
     expect(created.task).toBeNull();
-    await checkIn(created, 'check-in', { report: needsYou, notes: NOTES, reading: OPEN_5 });
+    await finish((await checkIn(created, 'check-in', { report: needsYou, notes: NOTES, reading: OPEN_5 })).dispatchId);
     const task = { ...needsYou, reading: OPEN_5, doneClaimed: false, reportedAt: now.toISOString(), agentNotes: NOTES };
     expect((await get(bus, created.routineId)).task).toEqual(task);
     expect((await list(bus)).map(view => view.task)).toEqual([task]);
@@ -78,7 +78,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // A later check-in moves the task on. Replaying the edit answers from its
     // receipt, which keeps no task state: the edit's answer, with task null.
     // TASK-952: a report that sent no reading shows none, unlike notes it left out.
-    await checkIn(edited, 'after-edit', { at: later, report: onTrack });
+    await finish((await checkIn(edited, 'after-edit', { at: later, report: onTrack })).dispatchId);
     expect((await get(bus, created.routineId)).task).toEqual({ ...onTrack, reading: null, doneClaimed: false, reportedAt: later.toISOString(), agentNotes: NOTES });
     expect(await bus.call('routines:update', owner, edit)).toEqual({ ...edited, task: null });
     // The next check-in's dispatch holds the state as acceptDispatch read it,
@@ -90,7 +90,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
   it("receipts keep no copy of a task's state; the live answers keep it", async () => {
     const bus = services();
     const created = await bus.call<unknown, RoutineView>('routines:create', owner, { agentId: 'a', requestId: 'create', definition: taskInput('create').definition });
-    await checkIn(created, 'check-in', { report: needsYou, notes: NOTES });
+    await finish((await checkIn(created, 'check-in', { report: needsYou, notes: NOTES })).dispatchId);
     const edit = { agentId: 'a', routineId: created.routineId, requestId: 'edit', expectedRevision: created.revision, patch: { description: 'Edited.' } };
     const edited = await bus.call<unknown, RoutineView>('routines:update', owner, edit);
     expect(edited.task).toEqual({ ...needsYou, reading: null, doneClaimed: false, reportedAt: now.toISOString(), agentNotes: NOTES });
@@ -179,7 +179,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
   it('a task turned back into a repeat routine drops its state, and comes back a task with none', async () => {
     const bus = services();
     const row = await f.store.createAuthored(taskInput('convert'));
-    await checkIn(row, 'convert-run', { report: needsYou, notes: NOTES, reading: OPEN_5 });
+    await finish((await checkIn(row, 'convert-run', { report: needsYou, notes: NOTES, reading: OPEN_5 })).dispatchId);
     // TASK-952: its reading goes with the rest of its state.
     expect(await taskColumns(row.routineId)).toMatchObject({ task_reading_value: 5, task_reading_label: 'Open tickets', task_reading_reported_at: now });
     const repeat = await f.store.updateAuthored({

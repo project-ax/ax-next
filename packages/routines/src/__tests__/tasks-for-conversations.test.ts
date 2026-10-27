@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { describe, it, expect } from 'vitest';
 import { CompiledQuery, sql } from 'kysely';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
@@ -21,7 +22,7 @@ const create = (requestId: string, definition: RoutineDefinition, over: { agentI
   f.store.createAuthored({ ...createInput(requestId), ...over, definition });
 /** One run of `row`, bound to `conversationId` and left open. */
 const run = async (row: Key, requestId: string, conversationId: string) => {
-  const { accepted } = (await f.store.acceptDispatch({
+  const { accepted } = (await acceptHistoricalDispatch(f.db,f.store,{
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId });
@@ -41,9 +42,9 @@ const drop = (row: Key) => f.store.deleteAuthored({
 describe('tasksForConversations (store, TASK-932)', () => {
   it("names a check-in's conversation while its run is open and after it finishes", async () => {
     const task = await create('task', taskDefinition());
-    await run(task, 'open', 'c-open');
     const done = await run(task, 'done', 'c-done');
     expect(await finish(done.dispatchId)).toBe(true);
+    await run(task, 'open', 'c-open');
     const named = { routineId: task.routineId, name: 'Support queue' };
     expect(await ask(['c-open', 'c-done'])).toStrictEqual([{ conversationId: 'c-done', ...named }, { conversationId: 'c-open', ...named }]);
   });
@@ -65,7 +66,7 @@ describe('tasksForConversations (store, TASK-932)', () => {
 
   it('leaves out a conversation that more than one run shares, whichever routines they belong to', async () => {
     const task = await create('task', taskDefinition());
-    // A shared repeat routine's conversation, before it became a task.
+    // Historical overlapping runs still make a conversation ambiguous after upgrade/rollback.
     await run(task, 'first', 'c-shared');
     expect(await finish((await run(task, 'second', 'c-shared')).dispatchId)).toBe(true);
     // The runs are counted before any filter: another person's task, a repeat routine and a deleted
