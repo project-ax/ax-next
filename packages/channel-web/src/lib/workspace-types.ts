@@ -1522,6 +1522,8 @@ export interface TaskStep {
 
 /** Everything a task's own page shows (TASK-910). */
 export interface TaskDetail {
+  /** Saved app-update timing only. Private addresses and signing secrets never cross this view. */
+  appUpdates?: { respondWithin: string | null };
   agentName: string;
   name: string;
   /** TASK-948. The server reads a kind it doesn't know (a newer routines plugin) as `'stay-on-top'`. */

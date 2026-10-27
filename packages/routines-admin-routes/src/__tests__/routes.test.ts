@@ -464,3 +464,23 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
     expect(Object.keys(run ?? {}).sort()).toEqual([...RUN_KEYS].sort());
   });
 });
+
+describe('batched task update REST forwarding (TASK-983)', () => {
+  it.each(['stay-on-top', 'get-done'] as const)('round-trips %s app settings through the human adapter', async kind => {
+    const task = RoutineDefinitionSchema.parse({ ...definition, kind, goodWhen: 'No updates wait.', webhook: { kind: 'webhook', path: '/updates', respondWithin: '10m', hmac: { app: 'slack' } } });
+    const { h, calls } = setup({ answers: { view: { ...routine, ...task } } });
+    const created = response(); await h.create(req({ requestId: 'task-app-create', definition: task }), created.res);
+    expect(created.status).toBe(201);
+    expect(calls.find(call => call.hook === 'routines:create')?.input).toMatchObject({ definition: task });
+    expect(created.body).toMatchObject({ routine: { kind, webhook: task.webhook, schedule: task.schedule } });
+    const edited = response(); await h.update(req({ requestId: 'task-app-edit', expectedRevision: 'rev1', patch: { webhook: { ...task.webhook, respondWithin: '2m' } } }), edited.res);
+    expect(edited.status).toBe(200);
+    expect(calls.find(call => call.hook === 'routines:update')?.input).toMatchObject({ patch: { webhook: { ...task.webhook, respondWithin: '2m' } } });
+  });
+  it('rejects invalid response timing before the hook call', async () => {
+    const { h, calls } = setup(); const r = response();
+    await h.create(req({ requestId: 'bad-response', definition: { ...definition, kind: 'stay-on-top', goodWhen: 'All handled.', webhook: { kind: 'webhook', path: '/updates', respondWithin: '25h' } } }), r.res);
+    expect(r.status).toBe(400);
+    expect(calls.some(call => call.hook === 'routines:create')).toBe(false);
+  });
+});

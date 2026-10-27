@@ -1669,7 +1669,7 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/replies (TASK-931)', () 
     ]);
   });
 
-  it.each(['paused', 'not-allowed', 'replayed'] as const)(
+  it.each(['paused', 'not-allowed', 'replayed', 'queued'] as const)(
     'answers %s when that is what the service did',
     async (checkIn) => {
       const { reply } = setup({ replyAnswer: { replyId: 'REPLY-ID-0', checkIn } });
@@ -2482,7 +2482,7 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/reopen (TASK-950)', () =
     expect(order).toEqual(['routines:get', 'routines:reopen']);
   });
 
-  it.each(['started', 'paused', 'not-allowed', 'replayed'] as const)(
+  it.each(['started', 'paused', 'not-allowed', 'replayed', 'queued'] as const)(
     'answers %s when that is what the service did',
     async (checkIn) => {
       const { reopen } = setup({
@@ -2922,5 +2922,26 @@ describe('POST /api/workspace/tasks/:agentId/:routineId/duplicate (TASK-953)', (
     const captured = await duplicate();
     expect(captured.statusCode).toBe(200);
     expect(captured.body).toStrictEqual({ routineId: 'COPY-ID-1' });
+  });
+});
+
+describe('task app setup metadata (TASK-983)', () => {
+  it.each(['stay-on-top', 'get-done'] as const)('exposes only saved response timing for %s, never private setup values', async kind => {
+    const value = stored({ ...KEY, kind, webhook: { kind: 'webhook', path: '/PRIVATE-path', events: ['PRIVATE-event'], hmac: { app: 'slack' }, respondWithin: '10m' } });
+    const { detail } = setup({ rows: [value] });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(200);
+    expect(bodyOf(captured).appUpdates).toEqual({ respondWithin: '10m' });
+    const wire = JSON.stringify(captured.body);
+    expect(wire).not.toContain('PRIVATE-path');
+    expect(wire).not.toContain('PRIVATE-event');
+    expect(wire).not.toContain('hmac');
+    expect(wire).not.toContain('webhooks/');
+  });
+  it('uses the task default response time and omits app setup for scheduled-only tasks', async () => {
+    const app = setup({ rows: [stored({ ...KEY, webhook: { kind: 'webhook', path: '/updates' } })] });
+    expect(bodyOf(await app.detail()).appUpdates).toEqual({ respondWithin: '5m' });
+    const scheduled = setup({ rows: [stored(KEY)] });
+    expect(bodyOf(await scheduled.detail())).not.toHaveProperty('appUpdates');
   });
 });

@@ -358,7 +358,7 @@ describe('workspaceApi.sendTaskReply (TASK-931)', () => {
   });
 
   it('reads every answer the contract names', async () => {
-    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed']) {
+    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed', 'queued']) {
       respondWith({ checkIn });
       await expect(workspaceApi.sendTaskReply('a1', 't1', { text: 'Hi', requestId: 'r' })).resolves.toEqual({
         checkIn,
@@ -443,7 +443,7 @@ describe('workspaceApi.reopenTask (TASK-950)', () => {
   });
 
   it('reads every answer the contract names', async () => {
-    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed']) {
+    for (const checkIn of ['started', 'paused', 'not-allowed', 'replayed', 'queued']) {
       respondWith({ checkIn });
       await expect(workspaceApi.reopenTask('a1', 't1', { text: 'Hi', requestId: 'r' })).resolves.toEqual({
         checkIn,

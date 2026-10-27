@@ -310,7 +310,7 @@ describe('task kinds (TASK-906)', () => {
     [{ ...task, goodWhen: null }, ['goodWhen']],
     [{ ...task, goodWhen: '   ' }, ['goodWhen']],
     [{ ...task, goodWhen: 'a'.repeat(1025) }, ['goodWhen']],
-    [{ ...task, trigger: { kind: 'webhook', path: '/zendesk' } }, ['webhook']],
+    [{ ...task, trigger: { kind: 'webhook', path: '/zendesk' } }, ['schedule']],
     [{ ...task, conversation: 'shared' }, ['conversation']],
     [{ ...task, silenceToken: 'ALL_GOOD' }, ['silenceToken']],
     [{ ...task, trigger: { kind: 'interval', every: '14m' } }, ['schedule', 'every']],
@@ -1293,7 +1293,7 @@ describe('get-done tasks (TASK-948)', () => {
 
   it.each([
     ['no goodWhen', { ...getDone, goodWhen: null }, ['goodWhen'], 'Say how we’ll know this task is going well.'],
-    ['an update from another app', { ...getDone, trigger: { kind: 'webhook', path: '/zendesk' } }, ['webhook'], 'A task checks in on a schedule, not from an update from another app.'],
+    ['app updates without a safety schedule', { ...getDone, trigger: { kind: 'webhook', path: '/zendesk' } }, ['schedule'], 'A task needs a schedule as a safety check.'],
     ['a shared conversation', { ...getDone, conversation: 'shared' }, ['conversation'], 'A task starts a fresh conversation for each check-in.'],
     ['a silence token', { ...getDone, silenceToken: 'OK' }, ['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.'],
     ['check-ins 14 minutes apart', { ...getDone, trigger: { kind: 'interval', every: '14m' } }, ['schedule', 'every'], 'Check-ins need to be at least 15 minutes apart.'],
@@ -1336,7 +1336,7 @@ describe('get-done tasks (TASK-948)', () => {
 describe('the tools name both task kinds (TASK-948)', () => {
   it.each([
     ['routine_create', ['kind "get-done" is a "Get something done" task: it works through a checklist of steps until the person marks it done, and you draft its steps at its first check-in.']],
-    ['routine_update', ['A task of either kind keeps check-ins at least 15 minutes apart.', 'without its agentNotes. It leaves a "get-done" task’s steps out too.']],
+    ['routine_update', ['A task of either kind keeps its safety schedule at least 15 minutes apart;', 'without its agentNotes. It leaves a "get-done" task’s steps out too.']],
     ['routine_list', ['A "get-done" task’s steps are left out here too: read a task with routine_get to see its steps.']],
     ['routine_get', ['A "get-done" task’s steps field is its checklist, in order: each step’s id, its text, whether it is done, and who added it ("person" or "agent").']],
     ['routine_report', [

@@ -92,7 +92,7 @@ describe('TaskReplyBox — what it says', () => {
     [
       'enabled and can start',
       { enabled: true, canStart: true },
-      'Quill reads your replies every time it checks in. Sending one starts a check-in now.',
+      'Quill reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.',
     ],
     [
       'enabled, cannot start',
@@ -143,7 +143,9 @@ describe('TaskReplyBox — sending', () => {
 
   it.each<[TaskReplyCheckIn, string]>([
     ['replayed', 'Sent. Quill started checking in.'],
+    ['queued', 'Sent. Quill’s next check-in is queued. It will read your reply then.'],
     ['paused', 'Sent. Quill will read it when you resume the task.'],
+    ['queued', 'Sent. Quill’s next check-in is queued. It will read your reply then.'],
     ['not-allowed', 'Sent. Quill will read it at its next check-in.'],
   ])('says what %s means', async (checkIn, line) => {
     sendMock.mockResolvedValue({ checkIn });
@@ -369,7 +371,7 @@ describe('TaskReplyBox — Not yet and Reopen (TASK-950)', () => {
     [
       'not-yet, running, may start',
       { mode: 'not-yet', enabled: true, canStart: true },
-      'Quill reads this, and sending it starts a check-in now.',
+      'Quill reads this, and sending it starts a check-in, or queues it if one is running.',
     ],
     [
       'not-yet, running, may not start',
@@ -418,6 +420,7 @@ describe('TaskReplyBox — Not yet and Reopen (TASK-950)', () => {
   });
 
   it.each<[TaskReplyCheckIn, boolean, string]>([
+    ['queued', true, 'Sent. Quill’s next check-in is queued. It will read your reply then.'],
     ['started', true, 'Sent. Quill is checking in now.'],
     ['replayed', true, 'Sent. Quill is checking in now.'],
     ['paused', false, 'Sent. Quill will read it when you resume the task.'],
@@ -444,6 +447,7 @@ describe('TaskReplyBox — Not yet and Reopen (TASK-950)', () => {
   // A Reopen switches the task on, so the box's `enabled` (false: it was Done) no longer says
   // whether it runs. `paused` there means it was paused again before the check-in could start.
   it.each<[TaskReplyCheckIn, string]>([
+    ['queued', 'Sent. Quill’s next check-in is queued. It will read your reply then.'],
     ['not-allowed', 'Sent. Quill will read it at its next check-in.'],
     ['paused', 'Sent. Quill will read it when you resume the task.'],
   ])('reopen sent line for %s treats the reopened task as running', async (checkIn, line) => {

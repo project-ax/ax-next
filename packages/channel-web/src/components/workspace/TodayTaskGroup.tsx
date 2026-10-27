@@ -370,7 +370,7 @@ export function TodayTaskGroup({
                       replyTriggerRef.current?.focus();
                     }
                   }
-                  if (checkIn === 'started' || checkIn === 'replayed') onCheckInStarted();
+                  if (checkIn === 'started' || checkIn === 'replayed' || checkIn === 'queued') onCheckInStarted();
                   onReplied();
                 }}
                 inputRef={replyRef}

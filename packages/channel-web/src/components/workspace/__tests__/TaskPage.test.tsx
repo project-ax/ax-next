@@ -1416,7 +1416,7 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(updates.contains(box)).toBe(false);
     expect(updates.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
-      screen.getByText('Quill reads your replies every time it checks in. Sending one starts a check-in now.'),
+      screen.getByText('Quill reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.'),
     ).toBeInTheDocument();
   });
 
@@ -1432,7 +1432,7 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     taskMock.mockResolvedValue(detail({ permissions: { fire: false, stop: false, edit: false } }));
     await renderReady();
     expect(screen.getByText('Quill reads your replies every time it checks in.')).toBeInTheDocument();
-    expect(screen.queryByText(/Sending one starts a check-in now/)).toBeNull();
+    expect(screen.queryByText(/Sending one starts a check-in/)).toBeNull();
   });
 
   it('Reply on the latest card focuses the box', async () => {
@@ -1531,6 +1531,18 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     const line = within(pageStatus()).getByText(CHECKING_IN);
     expect(line).not.toHaveAttribute('aria-hidden');
     expect(line.closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('a queued reply refreshes the page and says it is saved without claiming a new check-in is running', async () => {
+    taskMock.mockResolvedValue(detail());
+    replyMock.mockResolvedValue({ checkIn: 'queued' });
+    await renderReady();
+    await sendReply('Read this after the current check-in.');
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Sent. Quill’s next check-in is queued. It will read your reply then.')).toBeInTheDocument();
+    expect(pageStatus()).toBeEmptyDOMElement();
+    await advance(30_000);
+    expect(taskMock).toHaveBeenCalledTimes(2);
   });
 
   it('a reply to a paused task reads the task again and doesn’t say it’s checking in', async () => {
@@ -2080,7 +2092,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     const box = screen.getByRole('textbox', { name: NOT_YET_BOX });
     expect(notYet).toHaveAttribute('aria-expanded', 'true');
     expect(document.activeElement).toBe(box);
-    expect(screen.getByText('Quill reads this, and sending it starts a check-in now.')).toBeInTheDocument();
+    expect(screen.getByText('Quill reads this, and sending it starts a check-in, or queues it if one is running.')).toBeInTheDocument();
     reopenMock.mockResolvedValue({ checkIn: 'started' });
     taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: ALL_TICKED }));
     fireEvent.change(box, { target: { value: 'Still two tickets left.' } });

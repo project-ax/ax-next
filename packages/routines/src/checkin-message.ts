@@ -18,6 +18,8 @@ export const CHECK_IN_REPLIES = 20;
 
 export type CheckInMessageInput = {
   source: FireSource;
+  /** Host-framed previews of the durable updates assigned to this check-in. */
+  updates?: string | null;
   /** The task's notes between check-ins: agent-written. */
   agentNotes: string | null;
   /**
@@ -191,6 +193,6 @@ export function renderCheckInMessage(input: CheckInMessageInput): string {
   const replies = repliesParagraph(input.replies, input.reports[0]?.firedAt);
   return [
     opening(input.source), ...(claimed === null ? [] : [claimed]), ...(missed === null ? [] : [missed]), ...(steps === null ? [] : [steps]),
-    notes, replies, recent, 'Work on the task now, then finish with one routine_report.',
+    notes, replies, recent, ...(input.updates ? [input.updates] : []), 'Work on the task now, then finish with one routine_report.',
   ].join('\n\n');
 }

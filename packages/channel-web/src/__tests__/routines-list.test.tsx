@@ -35,7 +35,7 @@ describe('routine list', () => {
     fireEvent.click(screen.getByRole('button',{name:`Recent runs for ${row.name}`}));
     await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Fire now'}));});
     expect(routineApi.list).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Three runs are already in progress. Try again when one finishes.')).toBeVisible();
+    expect(screen.getByText('This task is already at its run limit. Try again when a run finishes.')).toBeVisible();
     expect(screen.getByRole('button',{name:'Fire now'})).toBeEnabled();
   });
   it('reloads the original agent when a different agent read is still pending', async () => {
