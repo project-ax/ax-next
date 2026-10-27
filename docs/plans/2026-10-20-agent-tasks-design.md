@@ -47,6 +47,8 @@ knows what it's for and says how it's going.
   task smoke passed and its temporary fixtures were removed.
 - **Now: PR 5, updates from other apps.** TASK-981 implements provider
   signature verification through the existing Repeat editor and receiver.
+  TASK-980 supplied the required audited dependency updates on main;
+  TASK-986 adds a behavioral guard for the actual request parser.
   TASK-982 adds task-scoped addresses with explicit legacy cutover;
   TASK-983 depends on both and wires the durable FIFO inbox, serialized task
   check-ins and response/safety timers; TASK-984 completes connection/test
