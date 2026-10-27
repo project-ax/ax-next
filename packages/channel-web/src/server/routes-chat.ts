@@ -51,7 +51,9 @@ import {
 //   3. ACL-gates the agent via agents:resolve → 403 forbidden, 404 not-found.
 //   4. get-or-creates the conversation:
 //        - conversationId === null → conversations:create
-//        - else → conversations:get; on agent-mismatch → 400 (I10)
+//        - else → conversations:get; only stored origin 'web' admits a turn
+//        - any other origin → 404 before attachments, binding or dispatch
+//        - admitted web conversation with agent-mismatch → 400 (I10)
 //        - on conversations:get not-found OR forbidden → 404 (no leak)
 //   5. server-mints `reqId` (J9 — never client-supplied). The browser uses
 //      it to subscribe to `GET /api/chat/stream/:reqId` for streaming.
@@ -146,6 +148,8 @@ interface ConversationSummary {
   conversationId: string;
   userId: string;
   agentId: string;
+  /** Stored channel identity; only a confirmed web origin admits user turns. */
+  origin: unknown;
   title: string | null;
   activeSessionId: string | null;
   activeReqId: string | null;
@@ -486,6 +490,12 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             conversationId: body.conversationId,
             userId,
           });
+          if (got.conversation.origin !== 'web') {
+            // Routine histories cannot become interactive chats. Missing or
+            // malformed provider metadata cannot grant that capability either.
+            res.status(404).json({ error: 'conversation-not-found' });
+            return;
+          }
           if (got.conversation.agentId !== body.agentId) {
             // I10 — session-agent immutability. The conversation's agent
             // was frozen at create; sending a different agentId on a
