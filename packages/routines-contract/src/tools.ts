@@ -251,7 +251,7 @@ const editableProperties = {
   promptBody: { type: 'string', description: 'Instructions preserved exactly, including newlines. Complete canonical definition must fit 65,552 UTF-8 bytes (64 KiB plus 16 bytes of method metadata).' },
   enabled: { type: 'boolean' },
   schedule: { anyOf: [schedule, { type: 'null' }], description: 'An interval or cron schedule, or null. A repeat job may also have app updates. Required for both task kinds.' },
-  webhook: { anyOf: [webhook, { type: 'null' }], description: 'Updates from another app, or null. Available for repeat jobs only; may coexist with a schedule.' },
+  webhook: { anyOf: [webhook, { type: 'null' }], description: 'Updates from another app for repeat jobs only; may coexist with a schedule. For stay-on-top and get-done, omit this field or set it to null. Do not invent a webhook path for a scheduled task.' },
   activeHours: { anyOf: [activeHours, { type: 'null' }], description: 'Optional local-time window for scheduled runs, including overnight windows. App updates still run on arrival.' },
   silenceToken: { anyOf: [{ type: 'string', maxLength: 128 }, { type: 'null' }] },
   silenceMaxChars: { type: 'integer', minimum: 0, maximum: 65536 },
@@ -261,7 +261,25 @@ const editableProperties = {
 };
 export const RoutineDefinitionJsonSchema = {
   type: 'object', additionalProperties: false, required: ['name', 'promptBody'],
-  anyOf: [{ required: ['schedule'], properties: { schedule } }, { required: ['webhook'], properties: { webhook } }],
+  // The model must choose the kind before its wake methods. Advertising the
+  // Repeat-only webhook alternative for every kind led to repeated, unfixable
+  // task creates even though the host correctly refused those combinations.
+  anyOf: [
+    {
+      properties: { kind: { const: 'repeat' }, goodWhen: { type: 'null' } },
+      anyOf: [{ required: ['schedule'], properties: { schedule } }, { required: ['webhook'], properties: { webhook } }],
+    },
+    {
+      required: ['kind', 'schedule', 'goodWhen'],
+      properties: {
+        kind: { enum: ['stay-on-top', 'get-done'] }, schedule,
+        webhook: { type: 'null' },
+        goodWhen: { type: 'string', minLength: 1, maxLength: 1024 },
+        conversation: { const: 'per-fire' }, silenceToken: { type: 'null' },
+      },
+    },
+  ],
+  description: 'For a scheduled task, set kind to stay-on-top or get-done, supply schedule and goodWhen, and omit webhook or set webhook:null. Only repeat jobs accept app updates.',
   properties: { ...editableProperties,
     schedule: { ...editableProperties.schedule, default: null }, webhook: { ...editableProperties.webhook, default: null },
     description: { ...editableProperties.description, default: '' }, enabled: { ...editableProperties.enabled, default: true },
