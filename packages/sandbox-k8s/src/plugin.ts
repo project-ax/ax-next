@@ -1,4 +1,5 @@
 import type { Plugin } from '@ax/core';
+import { createSessionStatus, SessionStatusSchema } from './session-status.js';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
   ReadUserFilesInput,
@@ -74,7 +75,7 @@ export function createSandboxK8sPlugin(
       // the host pod (`userFilesHostReadRoot`) or, when that is unset, by a
       // short-lived pod that mounts the export read-only. Single-homed
       // registration either way — see user-files-ops.ts.
-      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
+      registers: ['sandbox:open-session', 'sandbox:read-user-files', 'sandbox:session-status'],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
       // host-side hooks are subprocess-impl-specific. Once the pod-side
@@ -164,6 +165,7 @@ export function createSandboxK8sPlugin(
 
       const nextPid = makePidGenerator();
       const impl = createOpenSession({ api: sessionApi, preparationApi: api, config, bus, nextPid });
+      bus.registerService('sandbox:session-status', PLUGIN_NAME, createSessionStatus(api, custom, config), { returns: SessionStatusSchema });
 
       // NO `stallWarnMs` override here, deliberately (TASK-505). This hook
       // declares a 300s timeout like `llm:call:*` does, and those opted OUT of

@@ -256,11 +256,20 @@ function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
 }
 
 export async function registerRoutineTools({ bus, store }: Dependencies & { now: () => Date }): Promise<void> {
+  async function recordRefusal(ctx: AgentContext, call: ToolCall, failure: SafeToolError): Promise<void> {
+    if (C.routineToolKind(call.name) !== 'write') return;
+    try {
+      await bus.callJoined('decisions:reject-unstarted-routine-call', ctx, { call, failureCode: failure.toolCode });
+    } catch {
+      ctx.logger.warn('routines_refusal_outcome_unavailable');
+    }
+  }
   bus.subscribe<ToolCall>('tool:pre-call', PLUGIN, async (ctx, call) => {
     if (C.routineToolKind(call.name) === null) return;
     try { await preflightRoutineCall({ bus, store, ctx, call }); }
     catch (error) {
       const safe = safeFailure(error);
+      await recordRefusal(ctx, call, safe);
       return reject({ source: PLUGIN, reason: safeToolMessage(safe.toolCode, safe.field) });
     }
   }, { priority: -100 });
@@ -274,7 +283,11 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       ctx.state.delete('decisions:routine-consent-grant');
       let prepared: Prepared;
       try { prepared = await prepare({ bus, store, ctx, call }); }
-      catch (error) { throw safeFailure(error); }
+      catch (error) {
+        const safe = safeFailure(error);
+        await recordRefusal(ctx, call, safe);
+        throw safe;
+      }
       if (!prepared.receiptKey) {
         try {
           const output = await bus.call(prepared.hook, ctx, prepared.input);

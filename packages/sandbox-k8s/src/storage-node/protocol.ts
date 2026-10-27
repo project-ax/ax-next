@@ -5,6 +5,7 @@ export const STORAGE_FINALIZER = 'ax.io/storage-cleanup';
 export const LATE_VOLUME = 'ax-late';
 export const CLAIM_POOL_LABEL = 'ax.io/shared-pool';
 export const CLAIM_AGENT_LABEL = 'ax.io/agent-id';
+export const SESSION_ID_ANNOTATION = 'ax.io/session-id';
 export const STANDBY_LABEL = 'ax.io/shared-standby';
 const name = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/);
 const uid = z.string().uuid();

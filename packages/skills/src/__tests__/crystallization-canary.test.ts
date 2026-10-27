@@ -152,6 +152,7 @@ async function makeFireBus(invoke: (ctx: AgentContext) => Promise<unknown>): Pro
       'tool:register': async () => ({}),
       'decisions:authorize-routine-call': unusedApproval,
       'decisions:settle-routine-call': unusedApproval,
+      'decisions:reject-unstarted-routine-call': unusedApproval,
       'http:register-route': httpRegisterRouteStub,
       'auth:require-user': async ctx => ({ user: { id: ctx.userId, isAdmin: false } }),
       'auth:get-user': async (_ctx, raw) => ({ id: (raw as { userId: string }).userId, isAdmin: false }),

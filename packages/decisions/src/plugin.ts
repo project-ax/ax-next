@@ -230,6 +230,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         'decisions:approve',
         'decisions:authorize-routine-call',
         'decisions:settle-routine-call',
+        'decisions:reject-unstarted-routine-call',
         'decisions:dismiss',
         'decisions:undo',
         'decisions:sweep',

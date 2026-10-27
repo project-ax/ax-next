@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { BootstrapAssignmentSchema, BOOTSTRAP_MAX_BYTES } from '@ax/sandbox-protocol';
 import { buildPodSpec, type PodSpec } from './pod-spec.js';
+import { SESSION_ID_ANNOTATION } from './storage-node/protocol.js';
 import { GKE_SANDBOX_NODE_PLACEMENT, type SandboxCustomApi } from './agent-sandbox.js';
 import type { K8sCoreApi, PodReadRequest } from './k8s-api.js';
 import type { ResolvedSandboxK8sConfig } from './config.js';
@@ -191,6 +192,7 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       const name = pod.metadata.name;
       const claim = await custom.createNamespacedCustomObject({ ...extension(req.namespace, 'sandboxclaims'), body: {
         apiVersion: 'extensions.agents.x-k8s.io/v1beta1', kind: 'SandboxClaim', metadata: { name, namespace: req.namespace,
+          annotations: { [SESSION_ID_ANNOTATION]: env.AX_SESSION_ID },
           labels: { [CLAIM_POOL_LABEL]: className, [CLAIM_AGENT_LABEL]: agentId } },
         spec: { warmPoolRef: { name: className }, lifecycle: { shutdownTime: new Date(Date.now() + config.activeDeadlineSeconds * 1000).toISOString(),
           shutdownPolicy: 'DeleteForeground' } },
