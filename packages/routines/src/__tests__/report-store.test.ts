@@ -3,7 +3,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
-import { RUN_INTERRUPTED } from '../store.js';
+import { createRoutinesStore, RUN_INTERRUPTED } from '../store.js';
 import type { DispatchReport, RecordReportInput, StoredReading } from '../types.js';
 
 // TASK-907: a check-in's conversation, its report and the task's state. Task
@@ -619,5 +619,50 @@ describe('isTaskConversation (TASK-908)', () => {
     await f.store.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', requestId: 'delete', now });
     expect(await f.store.findOne(row)).toBeNull();
     expect(await isTask('a', 'c-gone')).toBe(true);
+  });
+});
+
+
+describe('immutable dispatch classification (TASK-919)', () => {
+  it.each(['stay-on-top', 'get-done'] as const)('stamps %s at accept and preserves it across replay, owner/kind edits, restart and delete', async kind => {
+    const row = await f.store.createAuthored({ ...taskInput(`immutable-${kind}`), definition: RoutineDefinitionSchema.parse({
+      ...taskInput('unused').definition, kind,
+    }) });
+    const run = await bound(row, `immutable-run-${kind}`, `immutable-${kind}`);
+    expect((await sql`SELECT kind FROM routines_v1_dispatches WHERE dispatch_id=${run.dispatchId}`.execute(f.db)).rows)
+      .toEqual([{ kind }]);
+    // No report is necessary: the agent's check-in message is already private context.
+    await finish(run.dispatchId);
+    await f.store.updateAuthored({ agentId: row.agentId, routineId: row.routineId,
+      expectedRevision: row.revision, requestId: `repeat-${kind}`, actorUserId: 'owner', now: later, stopOnly: false,
+      patch: { kind: 'repeat', goodWhen: null },
+    });
+    const replay = await f.store.acceptDispatch({ agentId: row.agentId, routineId: row.routineId,
+      expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId: `immutable-run-${kind}`, now });
+    expect(replay).toMatchObject({ replayed: true, accepted: { dispatchId: run.dispatchId, row: { kind } } });
+    expect(await f.store.reconcileOwners({ agents: [{ agentId: 'a', ownerUserId: 'new-owner' }] })).toBe(1);
+    const changed = (await f.store.findOne(row))!;
+    const restarted = createRoutinesStore(f.db);
+    expect(await restarted.isTaskConversation({ agentId: 'a', conversationId: `immutable-${kind}` })).toBe(true);
+    await restarted.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: changed.revision,
+      actorUserId: 'new-owner', requestId: `delete-${kind}`, now: later });
+    expect(await createRoutinesStore(f.db).isTaskConversation({ agentId: 'a', conversationId: `immutable-${kind}` })).toBe(true);
+    expect((await sql`SELECT kind,run_as_user_id FROM routines_v1_dispatches WHERE dispatch_id=${run.dispatchId}`.execute(f.db)).rows)
+      .toEqual([{ kind, run_as_user_id: 'owner' }]);
+  });
+
+  it('keeps a proven repeat capturable after its definition becomes a task and is deleted', async () => {
+    const row = await f.store.createAuthored(createInput('immutable-repeat'));
+    const run = await bound(row, 'repeat-before-task', 'repeat-before-task');
+    await finish(run.dispatchId);
+    const changed = await f.store.updateAuthored({ agentId: 'a', routineId: row.routineId,
+      expectedRevision: row.revision, requestId: 'make-task', actorUserId: 'owner', now: later, stopOnly: false,
+      patch: { kind: 'stay-on-top', goodWhen: 'Nothing waits.', trigger: { kind: 'interval', every: '15m' } },
+    });
+    expect(await f.store.isTaskConversation({ agentId: 'a', conversationId: 'repeat-before-task' })).toBe(false);
+    await f.store.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: changed.revision,
+      actorUserId: 'owner', requestId: 'delete-repeat', now: later });
+    expect(await createRoutinesStore(f.db).isTaskConversation({ agentId: 'a', conversationId: 'repeat-before-task' })).toBe(false);
+    expect(await f.store.isTaskConversation({ agentId: 'a', conversationId: 'ordinary-web' })).toBe(false);
   });
 });

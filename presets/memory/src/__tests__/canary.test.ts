@@ -960,6 +960,80 @@ describe('@ax/preset-memory canary', () => {
     expect(extractions()).toBe(before + 1);
   });
 
+  it('TASK-919: converted task history never extracts or advances its cursor; known repeat and web still capture', async () => {
+    const owner = ctxFor(aliceAgentId, ALICE);
+    type View = { routineId: string; revision: string };
+    const createRoutine = (name: string, kind: 'repeat' | 'stay-on-top') => bus.call<unknown, View>(
+      'routines:create', owner, { agentId: aliceAgentId, requestId: `create-${name}`, definition: {
+        name, kind, goodWhen: kind === 'repeat' ? null : 'No ticket waits.', promptBody: 'Check the queue.',
+        trigger: { kind: 'interval', every: '15m' },
+      } },
+    );
+    const task = await createRoutine('Capture task 919', 'stay-on-top');
+    const repeat = await createRoutine('Capture repeat 919', 'repeat');
+    const createConversation = async (routine: View | null, kind: 'repeat' | 'stay-on-top' | null) => {
+      const { conversationId } = await bus.call<unknown, { conversationId: string }>(
+        'conversations:create', owner, { userId: ALICE, agentId: aliceAgentId,
+          ...(routine ? { origin: 'routine', hidden: true } : {}) },
+      );
+      if (routine) {
+        // Persist the accepted-run producer's contract. report-store/checkin
+        // prove the real accept/report/finish/edit path; this assembly proves
+        // memory's actual transcript, cursor and facts consumer against that history.
+        const { db } = await bus.call<unknown, { db: {
+          insertInto(table: string): { values(row: Record<string, unknown>): { execute(): Promise<unknown> } };
+        } }>('database:get-instance', owner, {});
+        await db.insertInto('routines_v1_dispatches').values({
+          dispatch_id: `dispatch-${conversationId}`, agent_id: aliceAgentId, routine_id: routine.routineId,
+          revision: routine.revision, req_id: `req-${conversationId}`, accepted_at: new Date(),
+          completed_at: new Date(), trigger_source: 'manual', conversation_id: conversationId,
+          run_as_user_id: ALICE, kind,
+        }).execute();
+      }
+      return ctxFor(aliceAgentId, ALICE, { conversationId, source: 'user' });
+    };
+    const taskCtx = await createConversation(task, 'stay-on-top');
+    const repeatCtx = await createConversation(repeat, 'repeat');
+    const webCtx = await createConversation(null, null);
+    const extractions = () => llmCalls.filter(c => String(c.system ?? '').includes('memory-extraction engine')).length;
+    const cursor = async (ctx: AgentContext) => (await bus.call<unknown, { value?: Uint8Array } | null>(
+      'storage:get', ctx, { key: `memory:observer-cursor:${ctx.conversationId}` },
+    ))?.value;
+    const transcript = async (ctx: AgentContext) => {
+      for (let i = 0; i < 4; i++) {
+        for (const [role, text] of [['user', 'The agent’s private earlier notes.'], ['assistant', 'noted']] as const) {
+          await bus.call('conversations:append-event', ctx, { conversationId: ctx.conversationId,
+            kind: 'turn', role, payload: { blocks: [{ type: 'text', text }] } });
+        }
+        await bus.fire('chat:turn-end', ctx, { role: 'assistant', reqId: `919-${ctx.conversationId}-${i}`, reason: 'user-message-wait' });
+      }
+      await settleObserver();
+    };
+    const before = extractions();
+    await transcript(taskCtx);
+    expect(extractions()).toBe(before);
+    expect(await cursor(taskCtx)).toBeUndefined();
+    await bus.call('routines:update', owner, { agentId: aliceAgentId, routineId: task.routineId,
+      expectedRevision: task.revision, requestId: 'capture-task-919-to-repeat', patch: { kind: 'repeat', goodWhen: null } });
+    await bus.fire('chat:end', taskCtx, { outcome: { kind: 'complete', messages: [] } });
+    await settleObserver();
+    expect(extractions()).toBe(before);
+    expect(await cursor(taskCtx)).toBeUndefined();
+    for (const [ctx, value] of [[repeatCtx, 'Known repeat 919'], [webCtx, 'Ordinary web 919']] as const) {
+      llmFacts = [{ subject: 'user', predicate: 'prefers', object: value }];
+      const old = extractions();
+      await transcript(ctx);
+      expect(extractions()).toBe(old + 1);
+      const storedCursor = await cursor(ctx);
+      expect(storedCursor).toBeDefined();
+      expect(JSON.parse(new TextDecoder().decode(storedCursor)).next).toBeGreaterThan(0);
+      const facts = await bus.call<unknown, { statements: Array<{ value: string; conversationId?: string }> }>(
+        'memory:facts:recall', ctx, { limit: 100, ownerUserId: ALICE });
+      expect(facts.statements).toContainEqual(expect.objectContaining({ value, conversationId: ctx.conversationId }));
+      expect(facts.statements.filter(fact => fact.conversationId === taskCtx.conversationId)).toEqual([]);
+    }
+  });
+
   it('TASK-626: an extraction pass reaches the conversation memory stream, and the conversation feed returns what it recorded', async () => {
     const created = await bus.call<{ userId: string; agentId: string }, { conversationId: string }>(
       'conversations:create',

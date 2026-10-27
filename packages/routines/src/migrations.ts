@@ -223,6 +223,8 @@ export interface DispatchesRow {
   dispatch_id: string; agent_id: string; routine_id: string; revision: string;
   req_id: string; accepted_at: Date; completed_at: Date | null;
   trigger_source: 'tick' | 'manual' | 'webhook';
+  /** Version 15 (TASK-919). Accepted kind, immutable; NULL means history cannot prove it. */
+  kind: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's conversation, bound once before its agent starts. */
   conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's latest report as JSON, until its fire row takes it. Written as `JSON.stringify(...)`. */
@@ -329,7 +331,42 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await addFinishByTimeZoneColumn(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (14)`.execute(trx);
     }
+    if (!await done(15)) {
+      await addDispatchKindColumn(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (15)`.execute(trx);
+    }
   });
+}
+
+/** Version 15 (TASK-919). A run's accepted kind never follows its mutable
+ * definition. Older rows remain unknown unless settled dispatch receipts
+ * explicitly and consistently prove the kind for this exact accepted run.
+ * No default: an older binary can still insert, but its unknown run refuses
+ * memory capture. The version lock serializes both the column and backfill.
+ */
+async function addDispatchKindColumn(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN IF NOT EXISTS kind TEXT`.execute(db);
+  await sql`
+    WITH proven AS (
+      SELECT d.dispatch_id, min(q.result #>> '{row,kind}') AS kind
+        FROM routines_v1_dispatches d
+        JOIN routines_v1_requests q
+          ON q.agent_id = d.agent_id AND q.operation = 'dispatch'
+         AND q.result->>'dispatchId' = d.dispatch_id
+         AND q.result->>'reqId' = d.req_id
+         AND q.result #>> '{row,agentId}' = d.agent_id
+         AND q.result #>> '{row,routineId}' = d.routine_id
+         AND q.result #>> '{row,revision}' = d.revision
+       WHERE d.kind IS NULL
+       GROUP BY d.dispatch_id
+      HAVING count(DISTINCT q.result #>> '{row,kind}') = 1
+         AND bool_and(COALESCE(
+           jsonb_typeof(q.result #> '{row,kind}') = 'string'
+           AND q.result #>> '{row,kind}' IN ('repeat','stay-on-top','get-done'), false))
+    )
+    UPDATE routines_v1_dispatches d SET kind = proven.kind
+      FROM proven WHERE d.dispatch_id = proven.dispatch_id AND d.kind IS NULL
+  `.execute(db);
 }
 
 /** Version 12 (TASK-951): a "get-done" task's finish date, which only a person

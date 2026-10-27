@@ -11,7 +11,9 @@ import type { RoutinesDatabase } from '../migrations.js';
 // the classification predicate. PostgreSQL migration/acceptance has its own tests.
 let sqlite: DatabaseSync;
 let db: Kysely<RoutinesDatabase>;
+let dispatchId = 0;
 beforeEach(() => {
+  dispatchId = 0;
   sqlite = new DatabaseSync(':memory:');
   sqlite.exec(`
     CREATE TABLE routines_v1_definitions (agent_id TEXT, routine_id TEXT, kind TEXT);
@@ -42,7 +44,7 @@ const dispatch = (kind: string | null, options: {
   agentId?: string; conversationId?: string; routineId?: string; report?: string | null;
 } = {}) => {
   sqlite.prepare('INSERT INTO routines_v1_dispatches VALUES (?, ?, ?, ?, ?, ?)')
-    .run(`dispatch-${Math.random()}`, options.agentId ?? 'agent', options.routineId ?? 'routine',
+    .run(`dispatch-${++dispatchId}`, options.agentId ?? 'agent', options.routineId ?? 'routine',
       options.conversationId ?? 'check-in', kind, options.report ?? null);
 };
 const capture = (conversationId = 'check-in', agentId = 'agent') => {
