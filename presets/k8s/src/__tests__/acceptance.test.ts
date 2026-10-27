@@ -3016,6 +3016,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               'conversations:create',
               'conversations:drop-turn',
               'conversations:hide',
+              'conversations:get-metadata',
               'agent:invoke',
               'workspace:apply',
               'tool:register',
@@ -3029,6 +3030,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             b.registerService('conversations:create', S, noop);
             b.registerService('conversations:drop-turn', S, noop);
             b.registerService('conversations:hide', S, noop);
+            b.registerService('conversations:get-metadata', S, async () => ({ activeSessionId: null }));
             b.registerService('agent:invoke', S, noop);
             b.registerService('workspace:apply', S, noop);
             b.registerService('tool:register', S, noop);

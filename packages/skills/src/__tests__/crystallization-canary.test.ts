@@ -147,6 +147,8 @@ async function makeFireBus(invoke: (ctx: AgentContext) => Promise<unknown>): Pro
   const unusedApproval = async () => { throw new Error('Human services must not call tool authorization'); };
   const h = await createTestHarness({
     services: {
+      ...blobStoreFakeServices(),
+      'conversations:get-metadata': async () => ({ activeSessionId: null }),
       'tool:register': async () => ({}),
       'decisions:authorize-routine-call': unusedApproval,
       'decisions:settle-routine-call': unusedApproval,

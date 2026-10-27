@@ -325,14 +325,6 @@ export function createRoutinesPlugin(
       let renewing = false;
       let draining = false;
       let nextHeartbeat = 0;
-      deliveryTimer = setInterval(() => {
-        if (!renewing && Date.now()>=nextHeartbeat) {
-          renewing=true;
-          void effects.admit(()=>localDeliveries.renew()).catch(()=>initCtx.logger.warn('repeat_heartbeat_failed')).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
-        }
-        if (!draining) { draining=true; void effects.admit(pump).catch(()=>initCtx.logger.warn('repeat_queue_drain_failed')).finally(()=>{draining=false;}); }
-      },REPEAT_DELIVERY_LIMITS.drainMs);
-      deliveryTimer.unref?.();
 
       registerRoutineServices({ bus, store: localStore, now: () => clock.now(), deliveryStatus:(key,owner)=>localDeliveries.status(key,owner), admitDispatch: effects.admit, dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
       await registerRoutineTools({ bus, store: localStore, now: () => clock.now() });
@@ -382,6 +374,15 @@ export function createRoutinesPlugin(
       }).catch((err) => {
         process.stderr.write(`[ax/routines] tick loop died: ${err}\n`);
       });
+      // No native worker survives a failed service/route setup.
+      deliveryTimer = setInterval(() => {
+        if (!renewing && Date.now()>=nextHeartbeat) {
+          renewing=true;
+          void effects.admit(()=>localDeliveries.renew()).catch(()=>initCtx.logger.warn('repeat_heartbeat_failed')).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
+        }
+        if (!draining) { draining=true; void effects.admit(pump).catch(()=>initCtx.logger.warn('repeat_queue_drain_failed')).finally(()=>{draining=false;}); }
+      },REPEAT_DELIVERY_LIMITS.drainMs);
+      deliveryTimer.unref?.();
     },
     async shutdown() {
       if (deliveryTimer) clearInterval(deliveryTimer);

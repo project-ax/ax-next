@@ -198,6 +198,23 @@ describe('single registered request-time DB webhook route', () => {
 });
 
 describe('durable signed repeat-delivery canary', () => {
+  it('keeps queue counts private and refuses a removed creator when waiting work reaches runtime',async()=>{
+    h=await createRoutineHarness();
+    const row=await h.bus.call<unknown,RoutineView>('routines:create',h.teamMember,{agentId:h.teamAgentId,requestId:'member-queued',definition:definition()});
+    const {token}=await h.bus.call<unknown,{token:string}>('agents:ensure-webhook-token',h.teamAdmin,{agentId:h.teamAgentId,actor:{userId:h.teamAdmin.userId,isAdmin:false}});
+    const store=createRoutinesStore(h.db),active=[];
+    for(let i=0;i<3;i++)active.push((await store.acceptDispatch({...row,actorUserId:'member',expectedRevision:row.revision,requestId:`hold-${i}`,source:'manual',now:new Date()}))!);
+    expect(await request(token,{body:'{"title":"PRIVATE removed member"}',headers:{'x-github-event':'push','x-github-delivery':'member-private'}})).toBe(202);
+    const key={agentId:row.agentId,routineId:row.routineId};
+    expect((await h.bus.call<unknown,RoutineView>('routines:get',h.teamMember,key)).delivery).toEqual({active:3,waiting:1});
+    expect((await h.bus.call<unknown,RoutineView>('routines:get',h.teamAdmin,key)).delivery).toBeNull();
+    h.setTeamRole('member',null);
+    for(const accepted of active)await store.finishDispatch({dispatchId:accepted.accepted.dispatchId,outcome:{status:'ok',error:null,conversationId:null,renderedPrompt:null,warning:null}});
+    await expect.poll(async()=>(await sql<{n:number}>`SELECT count(*)::int AS n FROM routines_v1_deliveries WHERE routine_id=${row.routineId} AND completed_at IS NOT NULL AND blob_ref IS NULL`.execute(h.db)).rows[0]!.n).toBe(1);
+    expect(h.invokeCalls).toHaveLength(0);
+    const fire=(await sql`SELECT run_as_user_id,status,error,rendered_prompt FROM routines_v1_fires WHERE routine_id=${row.routineId} AND trigger_source='webhook'`.execute(h.db)).rows;
+    expect(fire).toEqual([{run_as_user_id:'member',status:'error',error:'This app update could not run.',rendered_prompt:null}]);
+  });
   it('deduplicates only authenticated accepted IDs, survives restart, and drains queued private payloads once', async () => {
     const messages: string[] = [], owners: string[] = [];
     h=await createRoutineHarness({strictCredentials:true,invoke:async(ctx,bus,input)=>{
