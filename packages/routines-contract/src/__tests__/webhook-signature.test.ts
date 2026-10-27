@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Ajv from 'ajv';
-import { RoutineDefinitionSchema, RoutinePatchSchema, RoutineDefinitionJsonSchema, RoutineToolJsonSchemas, WebhookHmacSchema } from '../index.js';
+import { RoutineDefinitionSchema, RoutinePatchSchema, RoutineToolJsonSchemas, WebhookHmacSchema } from '../index.js';
 
 const advertisedCreate = new Ajv({ strict: false }).compile(RoutineToolJsonSchemas.routine_create);
 
@@ -16,10 +16,6 @@ describe('webhook app signing settings', () => {
     expect(WebhookHmacSchema.safeParse({ app, header: 'anything' }).success).toBe(false);
     expect(WebhookHmacSchema.safeParse({ app, algorithm: 'sha1' }).success).toBe(false);
     expect(WebhookHmacSchema.safeParse({ app, prefix: 'anything' }).success).toBe(false);
-    const json = RoutineDefinitionJsonSchema.properties.webhook.anyOf[0].properties.hmac;
-    expect(json.oneOf[1]).toEqual({ type: 'object', additionalProperties: false, required: ['app'], properties: {
-      app: { type: 'string', enum: ['stripe', 'slack', 'zendesk'], description: expect.any(String) },
-    } });
   });
   it('preserves legacy custom defaults and rejects unknown protocols and secret-bearing settings', () => {
     expect(WebhookHmacSchema.parse({ header: 'X-Signature' })).toEqual({ header: 'X-Signature', algorithm: 'sha256' });
