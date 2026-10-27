@@ -359,7 +359,7 @@ function RoutineForm({
   }
   const savedWebhook =
     initial.webhook !== null &&
-    JSON.stringify(initial.webhook) === JSON.stringify(draftDefinition.webhook) &&
+    initial.webhook.path === form.webhook?.path &&
     mode === 'edit';
   const scheduleFields = (form.schedule !== null && (
           <>

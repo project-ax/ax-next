@@ -139,6 +139,13 @@ describe('independent routine methods in the existing editor', () => {
 });
 
 describe('private task address controls', () => {
+  it('labels an unchanged address as saved when event filters and a signature are configured', async () => {
+    await edit();
+    await screen.findByLabelText('Webhook URL');
+    expect(screen.getByText('This address belongs only to this task.')).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Webhook path'), { target: { value: '/draft-path' } });
+    expect(screen.getByText('Preview only — save to apply path changes.')).toBeVisible();
+  });
   it('waits for Save when adding app updates to an existing scheduled job', async () => {
     mocks.get.mockResolvedValue({ ...view(), webhook: null });
     await edit();
