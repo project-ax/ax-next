@@ -11,13 +11,30 @@ const configurationHash = repeatConfigurationHash;
 export type RepeatDeliveryStatus = { active: number; waiting: number };
 export type DeliveryClaim = { deliveryId: string; blobRef: string; accepted: AcceptedDispatch };
 
+const admissionTails = new WeakMap<DB, Promise<void>>();
+async function serializeAdmission<T>(db: DB, run: () => Promise<T>): Promise<T> {
+  const previous = admissionTails.get(db);
+  let release!: () => void;
+  const tail = new Promise<void>(resolve => { release = resolve; });
+  admissionTails.set(db, tail);
+  // Payload storage may query this same pool. Wait before opening a transaction,
+  // so lock contenders cannot take every connection storage needs to finish.
+  // SQL locks still own cross-host deduplication and quota decisions.
+  await previous;
+  try { return await run(); }
+  finally {
+    release();
+    if (admissionTails.get(db) === tail) admissionTails.delete(db);
+  }
+}
+
 /** SQL owns admission/claims; the blob facade owns bytes and their existing quota accounting. */
 export function createRepeatDeliveryStore(db: DB, executorId: string) {
   return {
     async admit(input: { row: StoredRoutine; payload: unknown; deliveryId: string | null; now: Date }, persist: (bytes: Uint8Array, owner: string) => Promise<{ sha256: string; size: number }>): Promise<'accepted' | 'duplicate' | 'full' | 'missing'> {
       const id = githubDeliveryId(input.deliveryId ?? undefined);
       const hash = id === null ? null : createHash('sha256').update(id).digest('hex');
-      return db.transaction().execute(async trx => {
+      return serializeAdmission(db, () => db.transaction().execute(async trx => {
         if (!await lockLiveAgent(trx, input.row.agentId)) return 'missing';
         // Same owner across agents/tasks: task creation cannot evade aggregate admission.
         await sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.row.ownerUserId},18427134))`.execute(trx);
@@ -36,7 +53,7 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         await trx.insertInto('routines_v1_deliveries').values({ delivery_id: opaqueId('delivery'), agent_id: row.agentId, routine_id: row.routineId, owner_user_id: row.ownerUserId,
           accepted_at: input.now, expires_at: new Date(input.now.getTime()+LIMIT.retentionMs), github_id_hash: hash, configuration_hash: configurationHash(row), blob_ref: stored.sha256, byte_length: bytes.length, dispatch_id: null, invalidated_reason: null, completed_at: null }).execute();
         return 'accepted';
-      });
+      }));
     },
     async claim(now: Date, skipped=0): Promise<DeliveryClaim | null> {
       // Skip paused/busy heads before the batch limit, without holding queue locks before definition locks.
