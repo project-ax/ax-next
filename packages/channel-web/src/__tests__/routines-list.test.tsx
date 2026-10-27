@@ -24,6 +24,13 @@ function show() {
   render(<RoutinesList agentId="a" agentName="Caveman" onFired={vi.fn()} />);
 }
 describe('routine list', () => {
+  it('shows the scheduled-run repair warning before opening history (TASK-924)', async () => {
+    const warning = 'Scheduled runs need repair. Choose different start and end times for active hours.';
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, activeHours: { start: '09:00', end: '09:00', tz: 'UTC' }, lastWarning: warning, nextRunAt: null }]);
+    show();
+    expect(await screen.findByText(warning)).toBeVisible();
+    expect(screen.getByRole('switch', { name: `Enabled for ${row.name}` })).toBeEnabled();
+  });
   it('shows only authored routines, and loads fires by opaque ID on disclosure', async () => {
     vi.mocked(routineApi.list).mockResolvedValue([
       row,

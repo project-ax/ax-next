@@ -40,6 +40,63 @@ function edit() {
   );
 }
 describe('structured routine form', () => {
+  describe('selected active days (TASK-924)', () => {
+    async function hours(start = '09:00', end = '17:00') {
+      vi.mocked(routineApi.get).mockResolvedValue({ ...row, activeHours: { start, end, tz: 'UTC' } });
+      edit();
+      await screen.findByDisplayValue(row.name);
+      fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
+    }
+    it('shows omitted days as seven selected days while preserving omission on a time-only save', async () => {
+      await hours();
+      for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) {
+        expect(screen.getByRole('button', { name: day })).toHaveAttribute('aria-pressed', 'true');
+      }
+      fill('Start', '10:00');
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch.activeHours).toStrictEqual({ start: '10:00', end: '17:00', tz: 'UTC' });
+    });
+    it('saves weekdays in canonical order', async () => {
+      await hours();
+      fireEvent.click(screen.getByRole('button', { name: 'Sunday' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Saturday' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch.activeHours).toStrictEqual({ start: '09:00', end: '17:00', tz: 'UTC', days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
+    });
+    it('keeps an empty selection editable but refuses its real submit with an accessible error', async () => {
+      await hours();
+      for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) fireEvent.click(screen.getByRole('button', { name: day }));
+      expect(screen.getByRole('group', { name: 'Active days' })).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByText('Choose at least one active day.')).toBeVisible();
+      const save = screen.getByRole('button', { name: 'Save' });
+      expect(save).toBeDisabled();
+      fireEvent.submit(save.closest('form')!);
+      expect(routineApi.update).not.toHaveBeenCalled();
+    });
+    it('refuses equal times on the real submit rather than saving a window that never runs', async () => {
+      await hours();
+      fill('End', '09:00');
+      const save = screen.getByRole('button', { name: 'Save' });
+      expect(save).toBeDisabled();
+      expect(screen.getByText('Choose different start and end times for active hours.')).toBeVisible();
+      fireEvent.submit(save.closest('form')!);
+      expect(routineApi.update).not.toHaveBeenCalled();
+    });
+    it('explains overnight start-day selection and preserves independent methods when clearing hours', async () => {
+      vi.mocked(routineApi.get).mockResolvedValue({ ...row, webhook: { kind: 'webhook', path: '/updates' }, activeHours: { start: '22:00', end: '06:00', tz: 'UTC', days: ['mon'] } });
+      edit();
+      await screen.findByDisplayValue(row.name);
+      fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
+      expect(screen.getByText(/Selected days name when the window starts/)).toBeVisible();
+      expect(screen.getByText(/Overnight hours continue into the next morning/)).toBeVisible();
+      fireEvent.click(screen.getByRole('switch', { name: 'Active hours' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ activeHours: null });
+    });
+  });
   it('explains owner signing-secret setup to a member configuring HMAC', async () => {
     const memberRow = { ...row, schedule: null, webhook: { kind: 'webhook' as const, path: '/member' }, permissions: { edit: true, stop: true, fire: true, manageSecret: true } };
     vi.mocked(routineApi.get).mockResolvedValue(memberRow);

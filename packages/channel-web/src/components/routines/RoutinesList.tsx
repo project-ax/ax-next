@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ACTIVE_HOURS_REPAIR_MESSAGE } from '@ax/routines-contract';
 import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -284,6 +285,7 @@ export function RoutinesList({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{row.name}</p>
                 <TriggerChip schedule={row.schedule} webhook={row.webhook} />
+                {row.lastWarning === ACTIVE_HOURS_REPAIR_MESSAGE && <p className="text-sm text-muted-foreground">{row.lastWarning}</p>}
                 {!agentId && (
                   <p className="text-xs text-muted-foreground">
                     {nameFor(row.agentId)}

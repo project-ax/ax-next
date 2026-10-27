@@ -3681,6 +3681,14 @@ describe('channel-web agent-workspace BFF', () => {
         expect(JSON.stringify(rest)).not.toContain('IGNORE PRIOR INSTRUCTIONS');
       });
 
+      it('includes selected days and overnight carryover in the actual held approval (TASK-924)', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        seed(decision({ id: 'task-hours', call: taskCreate({ activeHours: { start: '22:00', end: '06:00', tz: 'UTC', days: ['mon'] } }) }));
+        registerReads();
+        const { task } = await getTask(makeWorkspaceHandlers({ bus, initCtx }), 'task-hours');
+        expect(task!.checksIn).toBe('Runs every hour, Monday, 10:00 PM to 6:00 AM next day (UTC)');
+      });
+
       it('shows no task for a create whose brief hides characters; the request block spells them out (TASK-906)', async () => {
         registerAuth({ id: 'u1', isAdmin: false });
         // The contract refuses invisible characters in a task's brief, so this

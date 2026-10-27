@@ -190,7 +190,7 @@ When should Caveman work on it?     Tick all that apply
 [Start task]   Cancel
 ```
 
-> PR 4 adds simple day selectors to active hours, including weekdays. Until then, active hours are one window every day. A custom cron schedule remains under More options.
+> PR 4 prerequisite (TASK-924) adds simple day selectors to active hours, including weekdays. Omitted days keep the existing every-day behavior. Selected days name when the window starts: Monday 22:00–06:00 includes Tuesday before 06:00. Start is inclusive and end exclusive. New equal-time windows are refused. Historical empty windows stay visible for repair and block scheduled runs; app updates remain independent. A custom cron schedule remains under More options.
 
 > PR 3 (TASK-956): An agent's change that sets a task's kind still asks, and its card now says "Changing what kind of task this is clears its steps, latest update, notes and finish date." The card can't look up the task's current kind, so it says so whenever the change sets one, a change back to "Repeat a job" included.
 
@@ -233,7 +233,7 @@ Caveman reads your replies every time it checks in. Sending one starts a
 check-in now.
 ```
 
-> PR 1 (TASK-910) shipped active hours as one window every day, with no days of the week, so the header reads like “checks in every hour, 9:00 AM to 6:00 PM (America/New_York)”. A weekdays-only window needs a schedule that names the days (a cron) until PR 4 adds the decided simple day selectors.
+> PR 4 prerequisite (TASK-924) includes selected active days and overnight carryover in the task header and held approval. An overnight weekday window reads “every hour, weekdays, 10:00 PM to 6:00 AM next day (America/New_York)”. “Next check” uses the same local-day and daylight-saving rules as the scheduler. A historical empty window shows repair guidance and no next check.
 
 - **See what it did** opens that check-in's transcript, read-only. That link is
   how people come to trust an update: they can read the actual tool calls.

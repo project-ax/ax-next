@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Copy } from 'lucide-react';
 import {
   RoutineDefinitionSchema,
+  activeHoursWriteIssue,
   repeatScheduleWriteIssue,
   type RoutineSchedule,
   type WebhookTrigger,
@@ -22,6 +23,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
   FieldSet,
@@ -39,6 +41,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
+import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -259,6 +262,10 @@ function RoutineForm({
   }, [form, eventsDraft]);
   const validation = useMemo(() => {
     const parsed = RoutineDefinitionSchema.safeParse(draftDefinition);
+    if (parsed.success) {
+      const issue = activeHoursWriteIssue(parsed.data.activeHours);
+      if (issue !== null) return { success: false as const, error: { issues: [{ path: ['activeHours', 'end'], message: issue }] } };
+    }
     if (parsed.success && parsed.data.kind === 'repeat') {
       const issue = repeatScheduleWriteIssue(parsed.data.schedule, mode === 'edit' ? initial.schedule : undefined);
       if (issue !== null) return { success: false as const, error: { issues: [{ path: ['schedule', 'expr'], message: issue }] } };
@@ -270,8 +277,9 @@ function RoutineForm({
   // goodWhen, so its invalid state is the contract's own check here, which
   // already keeps Save off (TASK-953, row 10).
   const firstIssue =
-    !validation.success && dirty ? validation.error.issues[0] : undefined;
+    !validation.success && (dirty || activeHoursWriteIssue(draftDefinition.activeHours) !== null) ? validation.error.issues[0] : undefined;
   const goodWhenInvalid = firstIssue?.path[0] === 'goodWhen';
+  const activeDaysInvalid = (firstIssue?.path[0] === 'activeHours' && firstIssue?.path[1] === 'days') || invalidField === 'activeHours.days';
   const disabled = busy || uncertain || !canEdit;
   useEffect(() => {
     onPendingChange?.(busy || uncertain);
@@ -620,6 +628,18 @@ function RoutineForm({
               </Field>
               {form.webhook !== null && <FieldDescription>App updates run when received. Active hours apply to the schedule.</FieldDescription>}
               {form.activeHours && (
+                <>
+                <Field data-invalid={activeDaysInvalid || undefined}>
+                  <FieldLabel>Active days</FieldLabel>
+                  <ActiveHoursDaySelector value={form.activeHours.days} disabled={disabled}
+                    invalid={activeDaysInvalid}
+                    describedBy={activeDaysInvalid ? `${id}-days-error ${id}-days-help` : `${id}-days-help`}
+                    onChange={days => { if (form.activeHours) update('activeHours', { ...form.activeHours, days }); }} />
+                  <FieldDescription id={`${id}-days-help`}>
+                    Selected days name when the window starts. Overnight hours continue into the next morning.
+                  </FieldDescription>
+                  {activeDaysInvalid && <FieldError id={`${id}-days-error`}>Choose at least one active day.</FieldError>}
+                </Field>
                 <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   {textField(
                     'Start',
@@ -652,6 +672,7 @@ function RoutineForm({
                     },
                   )}
                 </FieldGroup>
+                </>
               )}
               {textField(
                 'Silence token',
@@ -787,7 +808,7 @@ function RoutineForm({
           </AlertDescription>
         </Alert>
       )}
-      {!validation.success && dirty && (
+      {!validation.success && firstIssue && !activeDaysInvalid && (
         <p className="text-sm text-destructive" role="status">
           {validation.error.issues[0]?.message}
         </p>

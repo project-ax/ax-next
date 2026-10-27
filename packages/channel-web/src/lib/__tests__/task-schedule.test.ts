@@ -12,6 +12,13 @@ import type { ActiveHours } from '@ax/routines-contract';
 import { checkInSchedule, describeCheckIns } from '../task-schedule';
 
 describe('checkInSchedule', () => {
+  it('includes weekday and overnight start-day meaning', () => {
+    expect(checkInSchedule({ kind: 'interval', every: '1h' }, { start: '22:00', end: '06:00', tz: 'UTC', days: ['mon', 'tue', 'wed', 'thu', 'fri'] })).toBe('every hour, weekdays, 10:00 PM to 6:00 AM next day (UTC)');
+  });
+  it('names an individual selected day and refuses to promise a run for an empty legacy window', () => {
+    expect(checkInSchedule({ kind: 'interval', every: '1h' }, { start: '22:00', end: '06:00', tz: 'UTC', days: ['sun'] })).toContain('Sunday');
+    expect(checkInSchedule({ kind: 'interval', every: '1h' }, { start: '09:00', end: '09:00', tz: 'UTC' })).toBe('after active hours are repaired');
+  });
   it.each([
     ['15m', 'every 15 minutes'],
     ['1h', 'every hour'],
