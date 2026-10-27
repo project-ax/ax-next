@@ -8,7 +8,8 @@ it('keeps a queued app body out of fire diagnostics and pending history', async 
   const bus=new HookBus();
   bus.registerService('agents:resolve','test',async()=>({agent:{id:'a'}}));
   bus.registerService('conversations:create','test',async()=>({conversationId:'c'}));
-  bus.registerService('agent:invoke','test',async()=>{throw new Error('PRIVATE body from provider');});
+  const invoke=vi.fn(async()=>{throw new Error('PRIVATE body from provider');});
+  bus.registerService('agent:invoke','test',invoke);
   const accepted:AcceptedDispatch={dispatchId:'d',reqId:'req',source:'webhook',acceptedAt:new Date(),row:{
     ...RoutineDefinitionSchema.parse({name:'Job',promptBody:'Review {{payload.title}}',webhook:{kind:'webhook',path:'/hook'}}),
     agentId:'a',routineId:'r',revision:'v',ownerUserId:'owner',definitionId:null,definitionUpdatedAt:null,
@@ -20,6 +21,7 @@ it('keeps a queued app body out of fire diagnostics and pending history', async 
   try {
     expect((await fire(accepted,{title:'PRIVATE app title'})).renderedPrompt).toBeNull();
     await fire.shutdown();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({userId:'owner'}),{message:{role:'user',content:'Review PRIVATE app title'}});
     expect(JSON.stringify(output.mock.calls)).not.toContain('PRIVATE');
     expect(JSON.stringify(finishDispatch.mock.calls)).not.toContain('PRIVATE');
   } finally {await fire.shutdown();output.mockRestore();}

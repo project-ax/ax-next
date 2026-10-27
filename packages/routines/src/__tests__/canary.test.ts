@@ -46,7 +46,12 @@ describe('independent methods through real approval, restart and HTTP dispatch',
         signal.addEventListener('abort', finish, { once: true });
       }),
     };
-    h = await createRoutineHarness({ clock, strictCredentials: true });
+    const invocations: Array<{ reqId: string; userId: string; input: unknown }> = [];
+    h = await createRoutineHarness({ clock, strictCredentials: true, invoke: async (runCtx, bus, input) => {
+      invocations.push({ reqId: runCtx.reqId, userId: runCtx.userId, input });
+      await bus.fire('chat:turn-end', runCtx, { reqId: runCtx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
+      return { kind: 'complete' };
+    } });
     h.setAttended(false);
     const ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
     const definition = {
@@ -99,7 +104,10 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       const response = await fetch(originalUrl, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${signature}` } });
       expect(response.status).toBe(202);
       await expect.poll(async () => (await history()).length).toBe(2);
-      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('from the app') });
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: null });
+      expect(invocations).toContainEqual(expect.objectContaining({ userId: ctx.userId, input: {
+        message: { role: 'user', content: `Approved dual input: ${body}` },
+      } }));
       expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
       now = Date.parse('2026-10-10T12:00:00Z'); // Clock hours match, but Saturday is not selected.
       const unselectedBody = '{"event":"push","title":"on an unselected day"}';
@@ -109,7 +117,10 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       } });
       expect(unselectedResponse.status).toBe(202);
       await expect.poll(async () => (await history()).length).toBe(3);
-      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('on an unselected day') });
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: null });
+      expect(invocations).toContainEqual(expect.objectContaining({ userId: ctx.userId, input: {
+        message: { role: 'user', content: `Approved dual input: ${unselectedBody}` },
+      } }));
       expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
       wake!();
       await expect.poll(() => Boolean(wake)).toBe(true);
@@ -120,6 +131,7 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       const targetRequests = new Set(dispatches.map(dispatch => dispatch.req_id));
       // The harness also runs background defaults; each target dispatch must invoke exactly once.
       expect(h.invokeCalls.filter(reqId => targetRequests.has(reqId)).sort()).toEqual([...targetRequests].sort());
+      expect(invocations.filter(call => targetRequests.has(call.reqId)).map(call => call.reqId).sort()).toEqual([...targetRequests].sort());
       expect(listening.messages).toHaveLength(2);
     } finally {
       await http?.close();
