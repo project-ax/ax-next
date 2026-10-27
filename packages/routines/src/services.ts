@@ -45,7 +45,8 @@ export function routineView(row: StoredRoutine, userId: string, allowed: boolean
     ownedByCaller: row.ownerUserId === userId,
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
-    lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
+    lastStatus: row.lastStatus, lastError: row.lastError,
+    lastWarning: C.activeHoursWriteIssue(row.activeHours) === null ? row.lastWarning : C.ACTIVE_HOURS_REPAIR_MESSAGE,
     permissions: routinePermissions(row, userId, allowed, stopOthers), task: taskView(row, userId),
     noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row),
     finishByTimeZone: finishByTimeZoneView(row), done: doneView(row, userId) };

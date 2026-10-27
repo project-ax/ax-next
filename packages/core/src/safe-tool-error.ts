@@ -19,7 +19,7 @@ const TOOL_FIELDS = ['input','name','description','promptBody','enabled','trigge
   'schedule','schedule.every','schedule.expr','schedule.tz',
   'webhook','webhook.path','webhook.events','webhook.hmac',
   'webhook.hmac.header','webhook.hmac.algorithm','webhook.hmac.prefix',
-  'activeHours','activeHours.start','activeHours.end','activeHours.tz',
+  'activeHours','activeHours.start','activeHours.end','activeHours.tz','activeHours.days',
   'silenceToken','silenceMaxChars','conversation','routineId','expectedRevision','requestId',
   // A task check-in's report (TASK-907): routine_report's own input fields (TASK-948: steps; TASK-950: done).
   'status','update','ask','notes','steps','done',

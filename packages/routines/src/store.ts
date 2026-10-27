@@ -1,6 +1,6 @@
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
-import {
+import { activeHoursWriteIssue,
   applyRoutinePatch, CheckInMissSchema, durationToSeconds, isTaskKind, ROUTINE_REPLIES_MAX_LIMIT, RoutineCompleteOutputSchema, RoutineDeleteOutputSchema, RoutineDuplicateOutputSchema, RoutineFinishBySchema, RoutineTimezoneSchema, TASK_AUTO_PAUSE_AFTER_MISSES,
   type CheckInMiss, type RoutineCreateInput, type RoutineUpdateInput, type RoutineDeleteInput, type RoutineDeleteOutput,
   type RoutineKey, type RoutineSecretInput, type RoutineUpsertDefaultInput, type RoutineDefinition, type RoutineStepOp,
@@ -984,7 +984,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         let next: RoutineDefinition;
         try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch (error) { throw validationError(error); }
-        validateScheduleWrite(next, current);
+        validateScheduleWrite(next, current, input.patch);
         if (hasHmac(next)) await assertNoCleanup(trx, current);
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
         const row = await trx.updateTable('routines_v1_definitions').set({
@@ -1681,6 +1681,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async upsertDefault(input) {
       const id = opaqueId('default');
       const definition = validateDefaultDefinition({ ...input, enabled: input.enabled ?? true });
+      if (activeHoursWriteIssue(definition.activeHours) !== null)
+        throw new SafeToolError('validation', 'activeHours.end');
       const insertEnabled = input.enabled ?? true;
       const enabledUpdateFragment =
         input.enabled === undefined ? sql`` : sql`enabled = EXCLUDED.enabled,`;
@@ -1694,7 +1696,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           VALUES
             (${id}, ${input.name}, ${input.description}, ${inputHash(definition)},
              ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
-             ${durationToSeconds(input.trigger.every)}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
+             ${durationToSeconds(input.trigger.every)}, ${definition.activeHours === null ? null : JSON.stringify(definition.activeHours)}::jsonb,
              ${input.silenceToken}, ${input.silenceMaxChars}, ${input.conversation},
              ${input.promptBody}, ${insertEnabled})
           ON CONFLICT (name) DO UPDATE SET
