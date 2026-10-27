@@ -1391,7 +1391,7 @@ function laTask(over: Partial<StoredRoutine> = {}): StoredRoutine {
     agentId: 'a1',
     routineId: 't1',
     kind: 'get-done',
-    trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
+    schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
     finishBy: '2026-11-14',
     ...over,
   });
@@ -1455,7 +1455,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, the finish date (TASK-95
     // was checked on this runtime; counting in an unknown one would throw.
     const { detail } = setup({
       unvalidated: true,
-      viewPatch: { trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Mars/Olympus_Mons' } },
+      viewPatch: { schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Mars/Olympus_Mons' } },
       rows: [laTask()],
       now: LA_EVENING,
     });
@@ -1472,14 +1472,14 @@ describe('GET /api/workspace/tasks/:agentId/:routineId, the finish date (TASK-95
  */
 const zonelessLaTask = (): StoredRoutine =>
   laTask({
-    trigger: { kind: 'interval', every: '1h' },
+    schedule: { kind: 'interval', every: '1h' },
     finishBy: '2026-10-25',
     finishByTimeZone: 'America/Los_Angeles',
   });
 const AT_BOUNDARY = (): Date => new Date('2026-10-26T01:00:00.000Z');
 /** A task with no zone of its own and no date yet, so no zone stored either: the PUT's (TASK-955). */
 const undatedZonelessTask = (): StoredRoutine =>
-  laTask({ trigger: { kind: 'interval', every: '1h' }, finishBy: null });
+  laTask({ schedule: { kind: 'interval', every: '1h' }, finishBy: null });
 
 /** The warn lines the PUT route writes about a zone the browser sent that it couldn't use (TASK-955). */
 function zoneWarnings(warn: { mock: { calls: unknown[][] } }): unknown[][] {

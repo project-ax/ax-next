@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  IntervalTriggerSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema,
+  IntervalTriggerSchema, LegacyRoutineDefinitionObjectSchema, LegacyRoutineEditableShape, RoutineDefinitionSchema,
   RoutineEditableShape, RoutineInstantSchema, RoutineOpaqueStringSchema,
   RoutinePatchSchema, RoutineReadingViewSchema, RoutineReplyTextSchema, RoutineReportFieldShape, RoutineReportStatusSchema,
   RoutineReportStepsOutcomeSchema, RoutineReportStepsSchema, RoutineListToolViewSchema, RoutineStatusSchema, RoutineStepViewSchema,
@@ -245,7 +245,7 @@ export const RoutineDefaultSummarySchema = z.object({
 }).strict();
 export const RoutineListDefaultsOutputSchema = z.object({ defaults: z.array(RoutineDefaultSummarySchema) }).strict();
 export const RoutineGetDefaultOutputSchema = z.object({
-  ...RoutineEditableShape, trigger: IntervalTriggerSchema,
+  ...LegacyRoutineEditableShape, trigger: IntervalTriggerSchema,
   kind: z.literal('repeat'), goodWhen: z.null(),
   defaultRoutineId: RoutineOpaqueStringSchema, updatedAt: RoutineInstantSchema,
 }).strict().superRefine((detail, ctx) => {
@@ -253,7 +253,7 @@ export const RoutineGetDefaultOutputSchema = z.object({
   const result = RoutineDefinitionSchema.safeParse(definition);
   if (!result.success) for (const issue of result.error.issues) ctx.addIssue(issue);
 });
-export const RoutineUpsertDefaultInputSchema = RoutineDefinitionObjectSchema.extend({
+export const RoutineUpsertDefaultInputSchema = LegacyRoutineDefinitionObjectSchema.extend({
   trigger: IntervalTriggerSchema, enabled: z.boolean().optional(),
   kind: z.literal('repeat').default('repeat'), goodWhen: z.null().default(null),
 }).strict().superRefine((input, ctx) => {

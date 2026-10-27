@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ActiveHours, RoutineTrigger } from './definition.js';
+import type { ActiveHours, RoutineSchedule } from './definition.js';
 
 /*
  * A "get-done" task's finish date (TASK-951).
@@ -74,8 +74,8 @@ export const RoutineFinishBySchema = z.string().superRefine((value, ctx) => {
  * rather than quietly counting in UTC. Callers pass a zone the contract's rule
  * (`RoutineTimezoneSchema`) accepted on this runtime, or null.
  */
-export function taskTimeZone(row: { trigger: RoutineTrigger; activeHours: ActiveHours | null; finishByTimeZone: string | null }): string {
-  if (row.trigger.kind === 'cron') return row.trigger.tz;
+export function taskTimeZone(row: { schedule: RoutineSchedule | null; activeHours: ActiveHours | null; finishByTimeZone: string | null }): string {
+  if (row.schedule?.kind === 'cron') return row.schedule.tz;
   return row.activeHours?.tz ?? row.finishByTimeZone ?? 'UTC';
 }
 

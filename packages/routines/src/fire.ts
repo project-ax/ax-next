@@ -279,8 +279,8 @@ export function createFireRoutine(deps: FireDeps) {
       // while the task is still theirs, so an earlier owner's reports and
       // words never steer it, and one that moved since the accept gets none.
       // A failed read is recorded like any other setup failure, and the agent
-      // never starts. A task's trigger is never a webhook (validateDefinition),
-      // so it has no payload.
+      // never starts. Task kinds have no app-update method until their inbox exists
+      // (validateDefinition), so a check-in has no webhook payload.
       let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
       let replies: Awaited<ReturnType<RoutinesStore['recentReplies']>>;
       try {

@@ -92,7 +92,7 @@ describe("a task's missed check-ins, read back (TASK-930)", () => {
     // schema has no such key, still reads them after a rollback.
     const keyed = (await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests WHERE result ? 'noRecentUpdate' OR result->'row' ? 'noRecentUpdate'`.execute(f.db)).rows[0];
     expect(keyed?.n).toBe(0);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ noRecentUpdate: true });
+    const beforeThisField = StoredRoutineSchema.innerType().innerType().omit({ noRecentUpdate: true });
     for (const { operation, result } of receipts) {
       const routine = operation === 'dispatch' ? (result as { row: unknown }).row : result;
       expect(beforeThisField.safeParse(routine).success, operation).toBe(true);

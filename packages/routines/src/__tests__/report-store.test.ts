@@ -657,7 +657,7 @@ describe('immutable dispatch classification (TASK-919)', () => {
     await finish(run.dispatchId);
     const changed = await f.store.updateAuthored({ agentId: 'a', routineId: row.routineId,
       expectedRevision: row.revision, requestId: 'make-task', actorUserId: 'owner', now: later, stopOnly: false,
-      patch: { kind: 'stay-on-top', goodWhen: 'Nothing waits.', trigger: { kind: 'interval', every: '15m' } },
+      patch: { kind: 'stay-on-top', goodWhen: 'Nothing waits.', schedule: { kind: 'interval', every: '15m' } },
     });
     expect(await f.store.isTaskConversation({ agentId: 'a', conversationId: 'repeat-before-task' })).toBe(false);
     await f.store.deleteAuthored({ agentId: 'a', routineId: row.routineId, expectedRevision: changed.revision,

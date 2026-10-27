@@ -16,8 +16,8 @@ export interface RoutinesDefinitionsRow {
   name: string;
   description: string;
   spec_hash: string;
-  trigger_kind: 'interval' | 'cron' | 'webhook';
-  trigger_spec: unknown;
+  schedule_spec: unknown | null;
+  webhook_spec: unknown | null;
   active_hours: unknown | null;
   silence_token: string | null;
   silence_max: number;
@@ -223,7 +223,7 @@ export interface DispatchesRow {
   dispatch_id: string; agent_id: string; routine_id: string; revision: string;
   req_id: string; accepted_at: Date; completed_at: Date | null;
   trigger_source: 'tick' | 'manual' | 'webhook';
-  /** Version 15 (TASK-919). Accepted kind, immutable; NULL means history cannot prove it. */
+  /** Version 16 (TASK-919). Accepted kind, immutable; NULL means history cannot prove it. */
   kind: ColumnType<string | null, string | null | undefined, string | null>;
   /** Version 4 (TASK-907). The run's conversation, bound once before its agent starts. */
   conversation_id: ColumnType<string | null, string | null | undefined, string | null>;
@@ -332,13 +332,17 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`INSERT INTO routines_schema_versions (version) VALUES (14)`.execute(trx);
     }
     if (!await done(15)) {
-      await addDispatchKindColumn(trx);
+      await splitAuthoredWakeMethods(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (15)`.execute(trx);
+    }
+    if (!await done(16)) {
+      await addDispatchKindColumn(trx);
+      await sql`INSERT INTO routines_schema_versions (version) VALUES (16)`.execute(trx);
     }
   });
 }
 
-/** Version 15 (TASK-919). A run's accepted kind never follows its mutable
+/** Version 16 (TASK-919). A run's accepted kind never follows its mutable
  * definition. Older rows remain unknown unless settled dispatch receipts
  * explicitly and consistently prove the kind for this exact accepted run.
  * No default: an older binary can still insert, but its unknown run refuses
@@ -367,6 +371,27 @@ async function addDispatchKindColumn(db: Kysely<RoutinesDatabase>): Promise<void
     UPDATE routines_v1_dispatches d SET kind = proven.kind
       FROM proven WHERE d.dispatch_id = proven.dispatch_id AND d.kind IS NULL
   `.execute(db);
+}
+
+/** Version 15 replaces authored trigger storage; catalog defaults remain interval-only.
+ * Run with the host quiescent (the current deployment uses Recreate): old binaries
+ * cannot use these replaced columns. The existing migration transaction/lock makes
+ * the conversion atomic, preserving identities, credentials and scheduling dates.
+ */
+async function splitAuthoredWakeMethods(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS schedule_spec JSONB,
+    ADD COLUMN IF NOT EXISTS webhook_spec JSONB`.execute(db);
+  const legacy = await sql`SELECT 1 FROM information_schema.columns
+    WHERE table_schema=current_schema() AND table_name='routines_v1_definitions' AND column_name='trigger_spec'`.execute(db);
+  if (legacy.rows.length !== 0) {
+    await sql`UPDATE routines_v1_definitions SET
+      schedule_spec=CASE WHEN trigger_kind IN ('interval','cron') THEN trigger_spec ELSE NULL END,
+      webhook_spec=CASE WHEN trigger_kind='webhook' THEN trigger_spec ELSE NULL END`.execute(db);
+    await sql`DROP INDEX IF EXISTS routines_v1_webhook_path_unique`.execute(db);
+    await sql`ALTER TABLE routines_v1_definitions DROP COLUMN trigger_kind, DROP COLUMN trigger_spec`.execute(db);
+  }
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_path_unique
+    ON routines_v1_definitions (agent_id, (webhook_spec->>'path')) WHERE webhook_spec IS NOT NULL`.execute(db);
 }
 
 /** Version 12 (TASK-951): a "get-done" task's finish date, which only a person
@@ -719,8 +744,13 @@ async function createLifecycleTables(db: Kysely<RoutinesDatabase>): Promise<void
     completed_at timestamptz, trigger_source text NOT NULL
   )`.execute(db);
   await sql`ALTER TABLE routines_v1_fires ADD COLUMN IF NOT EXISTS dispatch_id text UNIQUE`.execute(db);
-  await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_path_unique
+  // Older-version repair runs may revisit this helper after v15 replaced the columns.
+  const legacy = await sql`SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+    AND table_name='routines_v1_definitions' AND column_name='trigger_spec'`.execute(db);
+  if (legacy.rows.length !== 0) await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_path_unique
     ON routines_v1_definitions (agent_id, (trigger_spec->>'path')) WHERE trigger_kind='webhook'`.execute(db);
+  else await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_path_unique
+    ON routines_v1_definitions (agent_id, (webhook_spec->>'path')) WHERE webhook_spec IS NOT NULL`.execute(db);
 }
 async function createFreshSchema(db: Kysely<RoutinesDatabase>): Promise<void> {
   await sql`

@@ -97,8 +97,10 @@ describe('registered routine services with real agents', () => {
   it('requires actual auth admin status for the structured catalog', async () => {
     h = await createRoutineHarness();
     await expect(h.bus.call('routines:list-defaults', h.owner, {})).rejects.toMatchObject({ toolCode: 'forbidden' });
-    const saved = await h.bus.call<unknown, { defaultRoutineId: string }>('routines:upsert-default', h.teamAdmin, definition);
-    await expect(h.bus.call('routines:get-default', h.teamAdmin, { defaultRoutineId: saved.defaultRoutineId })).resolves.toMatchObject(definition);
+    const { schedule, webhook: _webhook, ...fields } = definition;
+    const defaultFields = { ...fields, trigger: schedule };
+    const saved = await h.bus.call<unknown, { defaultRoutineId: string }>('routines:upsert-default', h.teamAdmin, defaultFields);
+    await expect(h.bus.call('routines:get-default', h.teamAdmin, { defaultRoutineId: saved.defaultRoutineId })).resolves.toMatchObject(defaultFields);
     await expect(h.bus.call('routines:list-defaults', h.teamAdmin, {})).resolves.toHaveProperty('defaults');
     await expect(h.bus.call('routines:set-agent-default-enabled', h.owner, { agentId: h.agentId, defaultRoutineId: saved.defaultRoutineId, enabled: false })).resolves.toEqual({});
     await expect(h.bus.call('routines:list-agent-defaults', h.owner, { agentId: h.agentId })).resolves.toMatchObject({ defaults: expect.arrayContaining([{ defaultRoutineId: saved.defaultRoutineId, name: definition.name, enabled: false }]) });

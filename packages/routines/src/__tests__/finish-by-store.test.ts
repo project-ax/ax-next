@@ -219,7 +219,7 @@ describe("a get-done task's stored finish date (TASK-951)", () => {
     // such key) still reads every receipt after a rollback.
     expect((await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests
       WHERE result ? 'finishBy' OR result->'row' ? 'finishBy' OR result ? 'finishByTimeZone' OR result->'row' ? 'finishByTimeZone'`.execute(f.db)).rows[0]?.n).toBe(0);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ finishBy: true, finishByTimeZone: true });
+    const beforeThisField = StoredRoutineSchema.innerType().innerType().omit({ finishBy: true, finishByTimeZone: true });
     for (const { operation, result } of kept) {
       expect(beforeThisField.safeParse(operation === 'dispatch' ? (result as { row: unknown }).row : result).success, operation).toBe(true);
     }

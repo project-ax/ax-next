@@ -6,8 +6,8 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore, OperationKey } from './store.js';
 import {
-  createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash,
-  editableDefinition, isStopOnlyPatch, parseStoredRoutine, validationError,
+  createRequestHashes, updateRequestHashes, deleteRequestHash, dispatchRequestHash,
+  editableDefinition, isStopOnlyPatch, parseStoredRoutine, validateScheduleWrite, validationError,
 } from './definition.js';
 import { AcceptedDispatchSchema } from './dispatch.js';
 import { parseRoutineInput, reportRefused, resolveRoutineAccess, routinePermissions, routineView } from './services.js';
@@ -117,10 +117,12 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   const scope = { agentId: ctx.agentId, actorUserId: ctx.userId };
   if (name === 'routine_create') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineCreateToolInputSchema, call.input) };
-    prepared = { hook: 'routines:create', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'create', inputHash: createRequestHash(input) } };
+    const hashes = createRequestHashes(input);
+    prepared = { hook: 'routines:create', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'create', inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1) } };
   } else if (name === 'routine_update') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineUpdateToolInputSchema, call.input) };
-    prepared = { hook: 'routines:update', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'update', inputHash: updateRequestHash(input) } };
+    const hashes = updateRequestHashes(input);
+    prepared = { hook: 'routines:update', input, receiptKey: { ...scope, requestId: input.requestId, operation: 'update', inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1) } };
   } else if (name === 'routine_delete' || name === 'routine_fire_now') {
     const input = { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineDeleteToolInputSchema, call.input) };
     const fire = name === 'routine_fire_now';
@@ -148,7 +150,10 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   }
   let next: C.RoutineDefinition | undefined;
   let routineId: string | undefined;
-  if (name === 'routine_create') next = (prepared.input as C.RoutineCreateInput).definition;
+  if (name === 'routine_create') {
+    next = (prepared.input as C.RoutineCreateInput).definition;
+    validateScheduleWrite(next);
+  }
   else {
     const input = prepared.input as C.RoutineDeleteInput;
     routineId = input.routineId;
@@ -176,11 +181,12 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
       requireAllowed(permissions.edit || (permissions.stop && isStopOnlyPatch(patch)));
       try { next = C.applyRoutinePatch(editableDefinition(row), patch); }
       catch (error) { throw validationError(error); }
+      validateScheduleWrite(next, row);
     }
   }
-  if (next?.trigger.kind === 'webhook') {
-    const duplicate = await store.findWebhook({ agentId: ctx.agentId, path: next.trigger.path });
-    if (duplicate && duplicate.routineId !== routineId) throw new SafeToolError('webhook-path-conflict', 'trigger.path');
+  if (next?.webhook !== undefined && next.webhook !== null) {
+    const duplicate = await store.findWebhook({ agentId: ctx.agentId, path: next.webhook.path });
+    if (duplicate && duplicate.routineId !== routineId) throw new SafeToolError('webhook-path-conflict', 'webhook.path');
   }
   return prepared;
 }

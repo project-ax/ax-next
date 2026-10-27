@@ -104,7 +104,7 @@ describe('routine list', () => {
     await waitFor(() => expect(routineApi.remove).toHaveBeenCalledWith({ agentId: 'a', routineId: row.routineId, expectedRevision: 'disabled-v', requestId: expect.any(String) }));
   });
   it('shows HMAC credential controls to a member owner with secret-management permission', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, trigger: { kind: 'webhook', path: '/member', hmac: { header: 'sig', algorithm: 'sha256' } } }]);
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member', hmac: { header: 'sig', algorithm: 'sha256' } } }]);
     show(); // isAdmin=false, while the real owner shape has manageSecret=true
     await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));

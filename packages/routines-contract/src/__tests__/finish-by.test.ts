@@ -58,10 +58,10 @@ describe("a task's calendar (TASK-951)", () => {
     const tokyoHours = { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' };
     const setFrom = 'America/Los_Angeles';
     // The task's own zone wins over the one its date was set from.
-    expect(taskTimeZone({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/New_York');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('Asia/Tokyo');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
-    expect(taskTimeZone({ trigger: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: null })).toBe('UTC');
+    expect(taskTimeZone({ schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/New_York');
+    expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('Asia/Tokyo');
+    expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
+    expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: null })).toBe('UTC');
   });
 
   it('reads a calendar date in a time zone, whatever the host’s zone is', () => {

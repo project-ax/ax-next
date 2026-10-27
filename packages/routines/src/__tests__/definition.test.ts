@@ -31,8 +31,8 @@ describe('a refused routine input names its field', () => {
 
   it('names promptBody for a task brief with hidden text, and the trigger field for a schedule that checks in too often', () => {
     expect(refusal(() => validateDefinition({ ...task, promptBody: hidden }))).toMatchObject({ toolCode: 'validation', field: 'promptBody' });
-    expect(refusal(() => validateDefinition({ ...task, trigger: tooOften }))).toMatchObject({ toolCode: 'validation', field: 'trigger.expr' });
-    expect(refusal(() => validateDefinition({ ...task, trigger: { kind: 'interval', every: '5m' } }))).toMatchObject({ field: 'trigger.every' });
+    expect(refusal(() => validateDefinition({ ...task, trigger: tooOften }))).toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
+    expect(refusal(() => validateDefinition({ ...task, trigger: { kind: 'interval', every: '5m' } }))).toMatchObject({ field: 'schedule.every' });
     expect(refusal(() => validateDefinition({ ...task, name: 'Zero\nopen' }))).toMatchObject({ field: 'name' });
   });
 
@@ -40,7 +40,7 @@ describe('a refused routine input names its field', () => {
     expect(refusal(() => parseRoutineInput(C.RoutineCreateToolInputSchema, { requestId: 'q', definition: { ...task, promptBody: hidden } })))
       .toMatchObject({ toolCode: 'validation', field: 'promptBody' });
     expect(refusal(() => parseRoutineInput(C.RoutineCreateToolInputSchema, { requestId: 'q', definition: { ...task, trigger: tooOften } })))
-      .toMatchObject({ field: 'trigger.expr' });
+      .toMatchObject({ field: 'schedule.expr' });
     expect(refusal(() => parseRoutineInput(C.RoutineUpdateToolInputSchema, update({ trigger: { kind: 'interval', every: '1s' } }))))
       .toMatchObject({ field: 'trigger.every' });
     expect(refusal(() => parseRoutineInput(C.RoutineUpdateToolInputSchema, update({ enabled: false }, { routineId: '' }))))
