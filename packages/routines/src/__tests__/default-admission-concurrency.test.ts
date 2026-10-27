@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { sql, type KyselyPlugin, type QueryId } from 'kysely';
 import { createRoutinesStore } from '../store.js';
-import { fixture, createInput, now } from './store-fixture.js';
+import { fixture, defaultDefinition, now } from './store-fixture.js';
 
 const f = fixture();
 describe('default control and committed admission ordering (actual PostgreSQL)', () => {
   it.each(['override-disable', 'catalog-disable', 'catalog-edit', 'catalog-delete'] as const)(
     '%s waits for admission paused after effective-enabled read', async control => {
-      const definition = { ...createInput().definition, name: 'concurrent-default', trigger: { kind: 'interval' as const, every: '60s' } };
+      const definition = { ...defaultDefinition(), name: 'concurrent-default', trigger: { kind: 'interval' as const, every: '60s' } };
       const { defaultRoutineId } = await f.store.upsertDefault(definition);
       await f.store.materializeMissing({ agents: [{ agentId: 'a', ownerUserId: 'owner' }], now });
       const row = (await f.store.list({ agentId: 'a' })).find(r => r.definitionId === defaultRoutineId)!;

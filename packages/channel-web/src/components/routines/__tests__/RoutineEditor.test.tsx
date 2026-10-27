@@ -11,6 +11,7 @@ vi.mock('@/lib/routines', async (original) => ({
     create: vi.fn(),
     update: vi.fn(),
     getReceiver: vi.fn(),
+    getReceiverAccess: vi.fn(),
   },
 }));
 beforeEach(() => {
@@ -18,6 +19,7 @@ beforeEach(() => {
   vi.mocked(routineApi.get).mockResolvedValue(row);
   vi.mocked(routineApi.create).mockResolvedValue(row);
   vi.mocked(routineApi.update).mockResolvedValue(row);
+  vi.mocked(routineApi.getReceiverAccess).mockResolvedValue({ allowed: true });
   vi.mocked(routineApi.getReceiver).mockResolvedValue({
     url: '/webhooks/test-receiver',
   });
@@ -39,7 +41,7 @@ function edit() {
 }
 describe('structured routine form', () => {
   it('explains owner signing-secret setup to a member configuring HMAC', async () => {
-    const memberRow = { ...row, trigger: { kind: 'webhook' as const, path: '/member' }, permissions: { edit: true, stop: true, fire: true, manageSecret: true } };
+    const memberRow = { ...row, schedule: null, webhook: { kind: 'webhook' as const, path: '/member' }, permissions: { edit: true, stop: true, fire: true, manageSecret: true } };
     vi.mocked(routineApi.get).mockResolvedValue(memberRow);
     render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={memberRow} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue(row.name);
@@ -91,7 +93,7 @@ describe('structured routine form', () => {
       ...row,
       kind: 'stay-on-top' as const,
       goodWhen: 'Inbox at zero.',
-      trigger: { kind: 'interval' as const, every: '1h' },
+      schedule: { kind: 'interval' as const, every: '1h' },
     };
     beforeEach(() => {
       vi.mocked(routineApi.get).mockResolvedValue(task);
@@ -120,16 +122,12 @@ describe('structured routine form', () => {
       ).toBeVisible();
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     });
-    it("explains that a task can't run from a webhook and blocks Save", async () => {
+    it('keeps the task schedule enabled without offering unsupported app updates', async () => {
       edit();
       await screen.findByDisplayValue(row.name);
-      fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
-      expect(
-        screen.getByText(
-          'A task checks in on a schedule, not from an update from another app.',
-        ),
-      ).toBeVisible();
-      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeDisabled();
+      expect(screen.queryByRole('checkbox', { name: 'When another app sends an update' })).not.toBeInTheDocument();
     });
   });
   describe("a task's Going well when (TASK-953)", () => {
@@ -232,7 +230,7 @@ describe('structured routine form', () => {
         patch: {
           silenceToken: null,
           activeHours: null,
-          trigger: { kind: 'interval', every: '2h' },
+          schedule: { kind: 'interval', every: '2h' },
         },
       }),
     );
@@ -285,19 +283,10 @@ describe('structured routine form', () => {
       />,
     );
     fill('Name', 'Webhook');
-    fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
-    expect(screen.getByRole('radio', { name: 'Webhook' })).toHaveAttribute(
-      'data-state',
-      'on',
-    );
-    expect(screen.getByRole('radio', { name: 'Schedule' })).toHaveAttribute(
-      'data-state',
-      'off',
-    );
-    expect(screen.getByRole('radio', { name: 'Interval' })).toHaveAttribute(
-      'data-state',
-      'off',
-    );
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    expect(screen.getByRole('checkbox', { name: 'When another app sends an update' })).toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'On a schedule' }));
+    expect(screen.getByRole('checkbox', { name: 'On a schedule' })).not.toBeChecked();
     fill('Webhook path', '/changed');
     expect(
       await screen.findByDisplayValue(
@@ -323,7 +312,8 @@ describe('structured routine form', () => {
       expect(routineApi.create).toHaveBeenCalledWith(
         expect.objectContaining({
           definition: expect.objectContaining({
-            trigger: {
+            schedule: null,
+            webhook: {
               kind: 'webhook',
               path: '/changed',
               events: ['push', 'update'],
@@ -346,7 +336,7 @@ describe('structured routine form', () => {
     render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
     fill('Name', 'Events');
     fill('What should Caveman do?', 'Handle events');
-    fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
     const input = screen.getByLabelText('Events (comma-separated)') as HTMLInputElement;
     for (const character of 'push, update') {
       fireEvent.change(input, { target: { value: input.value + character } });
@@ -363,7 +353,7 @@ describe('structured routine form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
     await waitFor(() => expect(routineApi.create).toHaveBeenCalledWith(
       expect.objectContaining({ definition: expect.objectContaining({
-        trigger: { kind: 'webhook', path: '/project-updates', events: ['push', 'update'] },
+        webhook: { kind: 'webhook', path: '/project-updates', events: ['push', 'update'] },
       }) }),
     ));
   });
@@ -380,10 +370,10 @@ describe('structured routine form', () => {
         onCancel={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('radio', { name: 'Webhook' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
     expect(
       await screen.findByText(
-        'Webhook URL is unavailable. Receiver permission may be missing.',
+        'We couldn’t check app setup. Try again.',
       ),
     ).toBeVisible();
     expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();

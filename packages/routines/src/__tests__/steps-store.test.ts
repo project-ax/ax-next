@@ -110,7 +110,7 @@ describe("a get-done task's stored checklist (TASK-948)", () => {
     expect(JSON.stringify(receipts)).not.toContain('STEP-TEXT');
     // The key is left out rather than stored as [], so code from before this field still reads every receipt.
     expect((await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests WHERE result ? 'steps' OR result->'row' ? 'steps'`.execute(f.db)).rows[0]?.n).toBe(0);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ steps: true });
+    const beforeThisField = StoredRoutineSchema.innerType().innerType().omit({ steps: true });
     for (const { operation, result } of receipts) {
       expect(beforeThisField.safeParse(operation === 'dispatch' ? (result as { row: unknown }).row : result).success, operation).toBe(true);
     }

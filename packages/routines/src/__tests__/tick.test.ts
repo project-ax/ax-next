@@ -84,7 +84,7 @@ describe('DB scheduler', () => {
     expect((await f.store.findOne(row))!.nextRunAt).toEqual(new Date(now.getTime() + (offset === 90000 ? 120000 : 660000)));
   });
   it('uses the cron engine and records an unexpected dispatcher error once', async () => {
-    const row = await f.store.createAuthored({ ...createInput(), definition: { ...createInput().definition, trigger: { kind: 'cron', expr: '* * * * *', tz: 'UTC' } } });
+    const row = await f.store.createAuthored({ ...createInput(), definition: { ...createInput().definition, schedule: { kind: 'cron', expr: '* * * * *', tz: 'UTC' } } });
     await tick({ fire: async () => { throw new Error('dispatch failed'); } });
     expect((await f.store.findOne(row))!.nextRunAt).toEqual(new Date(due.getTime() + 60000));
     expect((await f.store.recentFires(row))[0]).toMatchObject({ status: 'error', error: 'dispatch failed' });

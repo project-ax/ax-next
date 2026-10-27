@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
-import { fixture, createInput, now } from './store-fixture.js';
+import { fixture, createInput, defaultDefinition, now } from './store-fixture.js';
 const f = fixture();
 const agents = [{ agentId: 'a', ownerUserId: 'owner' }, { agentId: 'b', ownerUserId: 'owner-b' }];
 describe('canonical default store', () => {
@@ -15,7 +15,7 @@ describe('canonical default store', () => {
     expect((await f.store.findOne(a[0]!))?.ownerUserId).toBe('new-owner');
   });
   it('upserts canonical fields by name and preserves omitted enabled; refresh invalidates old revision', async () => {
-    const input = { ...createInput().definition, name: 'custom-default', trigger: { kind: 'interval' as const, every: '60s' }, enabled: false };
+    const input = { ...defaultDefinition(), name: 'custom-default', trigger: { kind: 'interval' as const, every: '60s' }, enabled: false };
     const first = await f.store.upsertDefault(input); expect(first.created).toBe(true);
     const { enabled: _, ...omitted } = input;
     const second = await f.store.upsertDefault({ ...omitted, promptBody: '\nnew\n' }); expect(second).toEqual({ ...first, created: false });
@@ -28,7 +28,7 @@ describe('canonical default store', () => {
     await f.store.deleteDefault(first.defaultRoutineId); expect(await f.store.findOne(before)).toBeNull();
   });
   it('stores every contract-valid interval without a narrower database integer limit', async () => {
-    const saved = await f.store.upsertDefault({ ...createInput().definition, name: 'long-interval', trigger: { kind: 'interval', every: '100000d' } });
+    const saved = await f.store.upsertDefault({ ...defaultDefinition(), name: 'long-interval', trigger: { kind: 'interval', every: '100000d' } });
     expect((await f.store.getDefault(saved.defaultRoutineId))?.trigger).toEqual({ kind: 'interval', every: '100000d' });
   });
   it('disabled authored names shadow defaults; enabled flags and overrides gate due work', async () => {

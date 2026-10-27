@@ -316,7 +316,7 @@ describe("a task's claim and Done, as the store keeps them (TASK-950)", () => {
       SELECT operation, result, result ? 'done' AS keyed FROM routines_v1_requests WHERE agent_id = 'a' ORDER BY operation`.execute(f.db)).rows;
     // The key is left out rather than stored as null, so code from before this field still reads every receipt.
     expect(receipts.map(receipt => [receipt.operation, receipt.keyed])).toEqual([['create', false], ['update', false]]);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ done: true });
+    const beforeThisField = StoredRoutineSchema.innerType().innerType().omit({ done: true });
     for (const { operation, result } of receipts) expect(beforeThisField.safeParse(result).success, operation).toBe(true);
     // An exact replay answers from its receipt: not Done.
     expect(await f.store.updateAuthored(rename)).toEqual({ ...renamed, done: null });

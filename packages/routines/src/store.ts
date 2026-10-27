@@ -8,7 +8,7 @@ import {
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
 import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
-import { createRequestHash, updateRequestHash, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validationError } from './definition.js';
+import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
@@ -17,8 +17,8 @@ type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
 export type CleanupJob = { agentId: string; routineId: string; credentialRef: string; ownerUserId: string };
 export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
-export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string };
-export type DefaultRoutineDetailRow = RoutineDefinition & { defaultRoutineId: string; updatedAt: Date };
+export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string; compatibleInputHashes?: readonly string[] };
+export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').RoutineGetDefaultOutput, 'updatedAt'> & { updatedAt: Date };
 export interface RoutinesStore {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
@@ -356,7 +356,7 @@ export function tasksForConversationsQuery(input: { agentId: string; actorUserId
 function definitionColumns(d: RoutineDefinition) {
   return {
     name: d.name, description: d.description, prompt_body: d.promptBody, enabled: d.enabled,
-    trigger_kind: d.trigger.kind, trigger_spec: d.trigger as unknown, active_hours: d.activeHours as unknown,
+    schedule_spec: d.schedule as unknown, webhook_spec: d.webhook as unknown, active_hours: d.activeHours as unknown,
     silence_token: d.silenceToken, silence_max: d.silenceMaxChars, conversation: d.conversation,
     kind: d.kind, good_when: d.goodWhen, spec_hash: inputHash(d)
   };
@@ -710,7 +710,7 @@ function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   const finishBy = storedFinishBy(row.finish_by);
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
-    name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, trigger: row.trigger_spec,
+    name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, schedule: row.schedule_spec, webhook: row.webhook_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
     kind: row.kind, goodWhen: row.good_when, definitionId: row.definition_id, definitionUpdatedAt: row.definition_updated_at, nextRunAt: row.next_run_at, lastRunAt: row.last_run_at,
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
@@ -753,12 +753,18 @@ function rowToFire(r: Selectable<RoutinesFiresRow> & { routine_owner_user_id: st
 }
 function defaultRowToDetail(row: Selectable<DefaultRoutinesRow>): DefaultRoutineDetailRow {
   return {
-    ...validateDefinition({
+    ...validateDefaultDefinition({
       name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled,
       trigger: row.trigger_spec, activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation
     }),
     defaultRoutineId: row.default_routine_id, updatedAt: row.updated_at
   };
+}
+function validateDefaultDefinition(input: unknown) {
+  const { schedule, webhook, ...rest } = validateDefinition(input);
+  if (schedule?.kind !== 'interval' || webhook !== null || rest.kind !== 'repeat' || rest.goodWhen !== null)
+    throw new SafeToolError('validation', 'trigger');
+  return { ...rest, kind: 'repeat' as const, goodWhen: null, trigger: schedule };
 }
 function parseReceipt(operation: string, value: unknown): unknown {
   if (operation === 'create' || operation === 'update') return parseStoredRoutine(value);
@@ -811,6 +817,9 @@ function receiptQuery(db: DB, key: OperationKey) {
   return db.selectFrom('routines_v1_requests').selectAll().where('agent_id', '=', key.agentId)
     .where('owner_user_id', '=', key.actorUserId).where('operation', '=', key.operation).where('request_id', '=', key.requestId);
 }
+function matchesReceiptHash(key: OperationKey, hash: string): boolean {
+  return hash === key.inputHash || key.compatibleInputHashes?.includes(hash) === true;
+}
 /** Shared lifecycle fence allows routine concurrency; purge uses the same key exclusively.
  * The durable tombstone prevents a request authorized before deletion from recreating data.
  */
@@ -849,7 +858,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
         request_id: key.requestId, input_hash: key.inputHash, result: null, routine_id: null
       }).onConflict(oc => oc.doNothing()).execute();
       const receipt = await receiptQuery(trx, key).forUpdate().executeTakeFirstOrThrow();
-      if (receipt.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
+      if (!matchesReceiptHash(key, receipt.input_hash)) throw new SafeToolError('request-conflict', 'requestId');
       if (receipt.result !== null) { await onReplay?.(trx); return parseReceipt(key.operation, receipt.result) as T; }
       const result = await effect(trx);
       // SQL NULL means pending; JSON null is not used as a settled dispatch receipt.
@@ -859,7 +868,7 @@ async function receiptTransaction<T>(db: DB, key: OperationKey, effect: (trx: Tr
       return parseReceipt(key.operation, result) as T;
     });
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505' && 'constraint' in error && error.constraint === 'routines_v1_webhook_path_unique') throw new SafeToolError('webhook-path-conflict', 'trigger.path');
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505' && 'constraint' in error && error.constraint === 'routines_v1_webhook_path_unique') throw new SafeToolError('webhook-path-conflict', 'webhook.path');
     throw error;
   }
 }
@@ -920,8 +929,9 @@ class StepsRefused extends Error {
 class DuplicateRefused extends Error {
   constructor(readonly reason: 'not-found' | 'forbidden') { super(reason); }
 }
-function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string): OperationKey {
-  return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hash };
+function operationKey(input: RoutineKey & Actor & { requestId: string }, operation: string, hash: string | readonly string[]): OperationKey {
+  const hashes = typeof hash === 'string' ? [hash] : hash;
+  return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1) };
 }
 async function lockRoutine(db: DB, input: RoutineKey & { expectedRevision: string }): Promise<StoredRoutine> {
   const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
@@ -931,7 +941,7 @@ async function lockRoutine(db: DB, input: RoutineKey & { expectedRevision: strin
 }
 async function assertNoCleanup(db: DB, key: RoutineKey): Promise<void> {
   const job = await db.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', key.agentId).where('credential_ref', '=', credentialRef(key)).forUpdate().executeTakeFirst();
-  if (job) throw new SafeToolError('cleanup-pending', 'trigger.hmac');
+  if (job) throw new SafeToolError('cleanup-pending', 'webhook.hmac');
 }
 async function queueCleanup(db: DB, row: StoredRoutine): Promise<void> {
   if (!hasHmac(row)) return;
@@ -953,10 +963,12 @@ export function createRoutinesStore(db: DB): RoutinesStore {
   return {
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
+      const hashes = createRequestHashes(input);
       return receiptTransaction(db, {
         agentId: input.agentId, actorUserId: input.actorUserId, operation: 'create', requestId: input.requestId,
-        inputHash: createRequestHash(input)
+        inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1)
       }, async trx => {
+        validateScheduleWrite(definition);
         const row = await trx.insertInto('routines_v1_definitions').values({
           ...definitionColumns(definition), agent_id: input.agentId,
           routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
@@ -967,11 +979,12 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     },
     async updateAuthored(input) {
       if (input.stopOnly && (Object.keys(input.patch).length !== 1 || input.patch.enabled !== false)) throw new SafeToolError('forbidden', 'input');
-      return receiptTransaction(db, operationKey(input, 'update', updateRequestHash(input)), async trx => {
+      return receiptTransaction(db, operationKey(input, 'update', updateRequestHashes(input)), async trx => {
         const current = await lockRoutine(trx, input);
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         let next: RoutineDefinition;
         try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch (error) { throw validationError(error); }
+        validateScheduleWrite(next, current);
         if (hasHmac(next)) await assertNoCleanup(trx, current);
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
         const row = await trx.updateTable('routines_v1_definitions').set({
@@ -1007,12 +1020,12 @@ export function createRoutinesStore(db: DB): RoutinesStore {
     async findOperationReceipt(key) {
       const row = await receiptQuery(db, key).executeTakeFirst();
       if (!row) return null;
-      if (row.input_hash !== key.inputHash) throw new SafeToolError('request-conflict', 'requestId');
+      if (!matchesReceiptHash(key, row.input_hash)) throw new SafeToolError('request-conflict', 'requestId');
       return row.result === null ? null : parseReceipt(key.operation, row.result);
     },
     async findWebhook(input) {
-      const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('trigger_kind', '=', 'webhook')
-        .where(sql<string>`trigger_spec->>'path'`, '=', input.path).executeTakeFirst();
+      const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('webhook_spec', 'is not', null)
+        .where(sql<string>`webhook_spec->>'path'`, '=', input.path).executeTakeFirst();
       return row ? rowToRoutine(row) : null;
     },
     async acceptDispatch(input) {
@@ -1450,10 +1463,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           // a caller that names anyone else is refused instead of handing the task to them.
           if (input.ownerUserId !== raw.owner_user_id) throw new DuplicateRefused('forbidden');
           // No task has a webhook trigger (validateDefinition): no path, HMAC or credential to copy.
-          if (raw.trigger_kind === 'webhook') throw new DuplicateRefused('not-found');
+          if (raw.webhook_spec !== null) throw new DuplicateRefused('not-found');
           let source: StoredRoutine;
           try { source = rowToRoutine(raw); } catch (error) { throw validationError(error); }
           const definition = validateDefinition({ ...editableDefinition(source), name: duplicateName(source.name), enabled: false });
+          validateScheduleWrite(definition);
           // Every column left out takes its default: no task state, stamps, warning, finish date (TASK-951) or the
           // zone it was set from (TASK-955).
           const row = await trx.insertInto('routines_v1_definitions').values({
@@ -1481,7 +1495,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       return db.transaction().execute(async trx => {
         const row = await lockRoutine(trx, input);
         await assertNoCleanup(trx, row);
-        if (!hasHmac(row)) throw new SafeToolError('validation', 'trigger.hmac');
+        if (!hasHmac(row)) throw new SafeToolError('validation', 'webhook.hmac');
         await effect();
         return { saved: true as const };
       });
@@ -1526,7 +1540,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
            WHERE definition_id IS NULL AND enabled
              AND next_run_at IS NOT NULL
              AND next_run_at <= ${input.now}
-             AND trigger_kind IN ('interval', 'cron')
+             AND schedule_spec IS NOT NULL
            ORDER BY next_run_at ASC
            LIMIT ${input.limit}
            FOR UPDATE SKIP LOCKED
@@ -1664,7 +1678,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
 
     async upsertDefault(input) {
       const id = opaqueId('default');
-      const definition = validateDefinition({ ...input, enabled: input.enabled ?? true });
+      const definition = validateDefaultDefinition({ ...input, enabled: input.enabled ?? true });
       const insertEnabled = input.enabled ?? true;
       const enabledUpdateFragment =
         input.enabled === undefined ? sql`` : sql`enabled = EXCLUDED.enabled,`;
@@ -1745,13 +1759,13 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         await sql`
         INSERT INTO routines_v1_definitions
           (agent_id, routine_id, owner_user_id, name, description, spec_hash,
-           trigger_kind, trigger_spec, active_hours, silence_token, silence_max,
+           schedule_spec, webhook_spec, active_hours, silence_token, silence_max,
            conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
            created_at, updated_at, revision, enabled)
         SELECT
           a.agent_id, 'default:' || d.default_routine_id, a.owner_user_id,
           d.name, d.description, d.spec_hash,
-          d.trigger_kind, d.trigger_spec, d.active_hours, d.silence_token, d.silence_max,
+          d.trigger_spec, NULL, d.active_hours, d.silence_token, d.silence_max,
           d.conversation, d.prompt_body, NULL,
           d.default_routine_id, d.updated_at,
           ${input.now}, ${input.now}, a.revision, d.enabled
@@ -1788,7 +1802,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           const source = await trx.selectFrom('default_routines_v1').selectAll().where('default_routine_id', '=', row.definition_id!).executeTakeFirstOrThrow();
           await trx.updateTable('routines_v1_definitions').set({
             name: source.name, description: source.description, spec_hash: source.spec_hash,
-            trigger_kind: source.trigger_kind, trigger_spec: source.trigger_spec, active_hours: source.active_hours,
+            schedule_spec: source.trigger_spec, webhook_spec: null, active_hours: source.active_hours,
             silence_token: source.silence_token, silence_max: source.silence_max, conversation: source.conversation,
             prompt_body: source.prompt_body, enabled: source.enabled, revision: opaqueId('rev'),
             definition_updated_at: source.updated_at, updated_at: input.now

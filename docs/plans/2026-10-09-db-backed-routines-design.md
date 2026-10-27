@@ -4,6 +4,32 @@ Date: 2026-10-09. Status: design and implementation plan approved; Tasks 1–11 
 
 Worktree: `/Users/vpulim/dev/ai/ax-next-db-routines`; branch: `codex/db-backed-routines`, based on `origin/main` at `a730c4c6e`.
 
+## Current shape — TASK-970, 2026-10-26
+
+The original design below records the exclusive `trigger` contract. TASK-970
+replaces that authored field with independent nullable `schedule` and `webhook`
+fields, in the shared contract, host tools, services, Settings and stored views.
+A Repeat job needs at least one and may use both. Stay-on-top and get-done tasks
+still require a schedule and cannot receive app updates until PR 5.
+
+Migration 15 preserves routine IDs, revisions, webhook paths and configuration,
+credential references and completed operation receipts. A legacy `trigger` input
+still means an exclusive replacement; canonical patches preserve omitted methods
+and remove a method with explicit `null`. Default catalog APIs remain a separate,
+interval-only `trigger` DTO, adapted when edited or materialized.
+
+New or changed Repeat schedules have a 60-second floor, including custom cron.
+Saved faster cron schedules keep working and survive unrelated edits and completed
+receipt replay. Task schedules keep their 15-minute floor. Work hours constrain
+scheduled runs; Repeat webhook arrivals run when they arrive. Legacy inputs retain
+their 65,536-byte bound; canonical definitions and patches have one 65,552-byte
+bound, including the fixed 16 bytes added by method normalization.
+
+The receiver bearer stays restricted to the agent's existing setup authority. A
+read-only access check lets the editor distinguish an administrator-needed setup
+from an unavailable service without reading or creating a token. This note
+describes TASK-970's implementation, not a production deployment.
+
 ## Intent and agreed decisions
 
 Chat and Agent Settings must manage the same durable routine definition. A successful change becomes available to the scheduler and webhook receiver without a workspace commit. A routine runs unattended as a real human owner, so creating one must be an explicit host capability.

@@ -30,7 +30,7 @@ import type {
   DefaultRoutineSummary,
 } from '@/lib/default-routines';
 import {
-  editableDefinition,
+  RoutineDefinitionSchema,
   type RoutineDefinition,
 } from '@ax/routines-contract';
 import { DefaultRoutineEditor } from '@/components/routines/RoutineEditor';
@@ -85,7 +85,10 @@ export function DefaultRoutinesSection() {
     setEditLoadError(null);
     getDefaultRoutine(editingId)
       .then((detail) => {
-        if (!cancelled) setEditingInitial(editableDefinition(detail));
+        if (!cancelled) {
+          const { defaultRoutineId: _id, updatedAt: _updated, ...definition } = detail;
+          setEditingInitial(RoutineDefinitionSchema.parse(definition));
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {

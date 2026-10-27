@@ -40,8 +40,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       'agents:resolve-by-webhook-token', requestCtx, { token });
     if (!resolved?.agent) { res.status(404).end(); return; }
     const row = await deps.store.findWebhook({ agentId: resolved.agent.id, path });
-    if (!row || !row.enabled || row.trigger.kind !== 'webhook') { res.status(404).end(); return; }
-    const trigger = row.trigger;
+    if (!row || !row.enabled || row.webhook === null) { res.status(404).end(); return; }
+    const trigger = row.webhook;
     const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
     // Step 2: HMAC verify (if configured)
     if (trigger.hmac !== undefined) {

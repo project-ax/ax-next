@@ -34,18 +34,19 @@ export async function materializePersonalDefaults(harness: RoutineHarness): Prom
 export async function createRoutineHarness(options: { clock?: Clock; strictCredentials?: boolean; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   /** Stands in for agent:invoke. `input` is what the caller sent: fire.ts sends the run's user message (TASK-908). */
   invoke?: (ctx: AgentContext, bus: HookBus, input: unknown) => Promise<unknown>;
-  reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number } } = {}): Promise<RoutineHarness> {
+  reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number; secrets?: Map<string, Uint8Array> } } = {}): Promise<RoutineHarness> {
   const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   let clock = options.reuse?.clock ?? Date.parse('2026-10-09T12:00:00Z');
   let attended = true;
-  const secrets = new Map<string, Uint8Array>();
+  // The fixture vault, like production credentials, survives a host restart.
+  const secrets = options.reuse?.secrets ?? new Map<string, Uint8Array>();
   const descriptors: ToolDescriptor[] = [];
   const routes: HttpRegisterRouteInput[] = [];
   const credentialCalls: RoutineHarness['credentialCalls'] = [];
   const cleanupWarnings: RoutineHarness['cleanupWarnings'] = [];
   let failDelete = false;
   let teamFailure: 'missing' | 'outage' | null = null;
-  const teamRoles = new Map<string, 'admin' | 'member'>([['owner', 'admin'], ['admin', 'admin'], ['member', 'member'], ['peer', 'member']]);
+  const teamRoles = new Map<string, 'admin' | 'member'>([['owner', 'admin'], ['admin', 'admin'], ['member', 'member'], ['peer', 'member'], ['team-admin', 'admin']]);
   const invokeCalls: string[] = [];
   let gate: Promise<void> | undefined;
   let started: (() => void) | undefined;
@@ -140,7 +141,7 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
   const agentId = options.reuse?.agentId ?? await create(false), teamAgentId = options.reuse?.teamAgentId ?? await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock, secrets } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),

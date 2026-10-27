@@ -86,14 +86,14 @@ describe('transactional authored store', () => {
     const row = await f.store.createAuthored(webhookInput());
     const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'webhook', path: '/hook' } }, 'remove-hmac'));
     const oldJob = (await f.store.pendingCleanup({ limit: 10 }))[0]!;
-    await expect(f.store.updateAuthored(update(removed, { trigger: row.trigger }, 'reconfigure'))).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
+    await expect(f.store.updateAuthored(update(removed, { trigger: row.webhook }, 'reconfigure'))).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
     const fail = vi.fn(async () => { throw new Error('vault down'); });
     await expect(f.store.runCredentialCleanup(oldJob, fail)).rejects.toThrow('vault down');
     expect(await f.store.pendingCleanup({ limit: 10 })).toHaveLength(1);
     const cleanup = vi.fn(async () => { });
     expect((await Promise.all([f.store.runCredentialCleanup(oldJob, cleanup), f.store.runCredentialCleanup(oldJob, cleanup)])).sort()).toEqual([false, true]);
     expect(cleanup).toHaveBeenCalledTimes(1);
-    const configured = await f.store.updateAuthored(update(removed, { trigger: row.trigger }, 'reconfigure'));
+    const configured = await f.store.updateAuthored(update(removed, { trigger: row.webhook }, 'reconfigure'));
     let secret = 'old'; await f.store.withLockedWebhookSecret({ ...configured, expectedRevision: configured.revision, operation: 'set', secret: new Uint8Array([1]) }, async () => { secret = 'new'; });
     expect(await f.store.runCredentialCleanup(oldJob, async () => { secret = 'deleted'; })).toBe(false);
     expect(secret).toBe('new');

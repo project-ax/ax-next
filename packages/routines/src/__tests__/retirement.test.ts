@@ -47,7 +47,7 @@ describe('authored retirement', () => {
     expect((await sql`SELECT routine_id,conversation_id FROM routines_v1_fires ORDER BY id`.execute(db)).rows).toEqual([{ routine_id: 'default:skill-reflection', conversation_id: null }, { routine_id: 'default:deleted-catalog-entry', conversation_id: null }, { routine_id: 'default:default-heartbeat-2026-05-19', conversation_id: 'existing-conversation' }]);
     expect((await sql`SELECT prompt_body,enabled FROM default_routines_v1 WHERE name='heartbeat'`.execute(db)).rows).toEqual([{ prompt_body: 'custom body', enabled: true }]);
     expect((await sql`SELECT * FROM agent_default_routine_overrides_v1`.execute(db)).rows).toHaveLength(1);
-    await sql`INSERT INTO routines_v1_definitions (agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,trigger_kind,trigger_spec,conversation,prompt_body) VALUES ('a','r_new','rev_new','owner','new','','hash','interval','{"kind":"interval","every":"60s"}','per-fire','new')`.execute(db);
+    await sql`INSERT INTO routines_v1_definitions (agent_id,routine_id,revision,owner_user_id,name,description,spec_hash,schedule_spec,webhook_spec,conversation,prompt_body) VALUES ('a','r_new','rev_new','owner','new','','hash','{"kind":"interval","every":"60s"}',NULL,'per-fire','new')`.execute(db);
     await runRoutinesMigration(db);
     expect((await sql`SELECT * FROM routines_v1_definitions`.execute(db)).rows).toHaveLength(2);
     expect(await columns('default_routines_v1')).not.toContain('source_md');
