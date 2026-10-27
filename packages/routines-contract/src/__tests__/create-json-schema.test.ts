@@ -1,6 +1,6 @@
 import Ajv from 'ajv';
 import { describe, expect, it } from 'vitest';
-import { RoutineCreateToolInputSchema, RoutineToolJsonSchemas } from '../index.js';
+import { RoutineCreateToolInputSchema, RoutineDefinitionJsonSchema, RoutineToolJsonSchemas } from '../index.js';
 
 const validate = new Ajv({ strict: false }).compile(RoutineToolJsonSchemas.routine_create);
 const schedule = { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' };
@@ -45,6 +45,31 @@ describe('advertised task creation schema', () => {
     ]) {
       expect(validate(input)).toBe(false);
       expect(RoutineCreateToolInputSchema.safeParse(input).success).toBe(false);
+    }
+  });
+});
+
+// Providers may compile one object alternative independently, rather than
+// inheriting sibling properties. It must still describe the whole definition.
+describe('independently compiled definition alternatives', () => {
+  it.each([
+    { name: 'Repeat', promptBody: 'Do the job.', schedule },
+    { name: 'Repeat', promptBody: 'Do the job.', webhook },
+    { ...definition, kind: 'stay-on-top', webhook: null },
+    { ...definition, kind: 'get-done', webhook: null },
+  ])('retains required brief fields and refuses unknown fields in alternative %#', input => {
+    const matches = RoutineDefinitionJsonSchema.anyOf
+      .map(branch => new Ajv({ strict: false }).compile(branch))
+      .filter(accepts => accepts(input));
+    expect(matches.length).toBeGreaterThan(0);
+    for (const accepts of matches) {
+      for (const field of ['name', 'promptBody']) {
+        const missing: Record<string, unknown> = { ...input };
+        delete missing[field];
+        expect(RoutineCreateToolInputSchema.safeParse({ requestId: 'probe', definition: missing }).success).toBe(false);
+        expect(accepts(missing), field).toBe(false);
+      }
+      expect(accepts({ ...input, unknown: true })).toBe(false);
     }
   });
 });
