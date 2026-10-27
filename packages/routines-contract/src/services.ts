@@ -34,6 +34,8 @@ export const RoutineSecretInputSchema = z.discriminatedUnion('operation', [
   z.object({ ...secretKey, operation: z.literal('delete') }).strict(),
 ]);
 export const RoutineSecretOutputSchema = z.object({ saved: z.literal(true) }).strict();
+/** Owner-only HTTP presence response. Never credential metadata or secret bytes. */
+export const RoutineSecretStatusOutputSchema = z.object({ configured: z.boolean() }).strict();
 
 const limit = z.number().int().min(1).max(ROUTINE_HISTORY_MAX_LIMIT).optional();
 export const RoutineRecentFiresInputSchema = RoutineKeySchema.extend({ limit }).strict();

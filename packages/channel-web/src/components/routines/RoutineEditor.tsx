@@ -760,7 +760,7 @@ function RoutineForm({
                         { maxLength: 128 },
                       )}
                       <FieldDescription>
-                        Only an administrator who owns this routine and has routine edit permission can manage its HMAC secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.
+                        The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.
                       </FieldDescription>
                     </>
                   )}

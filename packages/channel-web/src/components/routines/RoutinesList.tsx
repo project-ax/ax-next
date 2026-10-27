@@ -53,7 +53,6 @@ export function RoutinesList({
   agentName,
   refreshKey = 0,
   onFired,
-  isAdmin = false,
   origin = 'authored',
   createRequest = 0,
   hideCreateAction = false,
@@ -349,8 +348,7 @@ export function RoutinesList({
                 )}
                 {row.webhook !== null &&
                   row.webhook.hmac &&
-                  row.permissions.manageSecret &&
-                  isAdmin && (
+                  row.permissions.manageSecret && (
                     <CredentialSlotRow
                       destination={{
                         kind: 'routine-hmac',

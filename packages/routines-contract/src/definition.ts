@@ -848,6 +848,8 @@ export type RoutineDoneView = z.output<typeof RoutineDoneViewSchema>;
 const RoutineViewShape = {
   ...RoutineEditableShape,
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema, revision: RoutineOpaqueStringSchema,
+  /** Caller-relative ownership, independent of report presence and present write authority. */
+  ownedByCaller: z.boolean(),
   origin: z.enum(['authored', 'default']), defaultRoutineId: RoutineOpaqueStringSchema.nullable(),
   nextRunAt: RoutineInstantSchema.nullable(), lastRunAt: RoutineInstantSchema.nullable(),
   lastStatus: RoutineStatusSchema.nullable(), lastError: z.string().nullable(), lastWarning: z.string().nullable(),

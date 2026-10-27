@@ -63,18 +63,22 @@ it('boots actual agents, teams and policy; enforces ACL/scoped grants and purges
   expect(await verdict('bob', teamAgent)).toBe('hold');
   await grant('bob', teamAgent, 'team-bob');
   expect(await verdict('bob', teamAgent)).toBe('allow');
-  await expect(grant('member', teamAgent, 'team-member')).rejects.toMatchObject({ code: 'forbidden' });
+  expect(await verdict('member', teamAgent)).toBe('hold');
+  await grant('member', teamAgent, 'team-member');
+  expect(await verdict('member', teamAgent)).toBe('allow');
   await expect(grant('outsider', teamAgent, 'team-outsider')).rejects.toMatchObject({ code: 'forbidden' });
-  await h.bus.call('teams:remove-member', ctx('alice'), { actor: { userId: 'alice' }, teamId: team.id, userId: 'bob' });
-  expect(await verdict('bob', teamAgent)).toBe('hold');
-  await expect(h.bus.call('tool-policy:get-routine-consent', ctx('bob', teamAgent), { agentId: teamAgent })).rejects.toMatchObject({ code: 'forbidden' });
+  for (const userId of ['bob', 'member']) {
+    await h.bus.call('teams:remove-member', ctx('alice'), { actor: { userId: 'alice' }, teamId: team.id, userId });
+    expect(await verdict(userId, teamAgent)).toBe('hold');
+    await expect(h.bus.call('tool-policy:get-routine-consent', ctx(userId, teamAgent), { agentId: teamAgent })).rejects.toMatchObject({ code: 'forbidden' });
+  }
   await h.bus.call('agents:delete', ctx('alice', personal), { actor: { userId: 'alice', isAdmin: false }, agentId: personal });
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
     expect((await client.query('SELECT * FROM tool_policy_v1_routine_consent WHERE agent_id=$1', [personal])).rows).toHaveLength(0);
     expect((await client.query('SELECT * FROM tool_policy_v1_routine_consent_deliveries WHERE agent_id=$1', [personal])).rows).toHaveLength(0);
-    expect((await client.query('SELECT * FROM tool_policy_v1_routine_consent WHERE agent_id=$1', [teamAgent])).rows).toHaveLength(2);
+    expect((await client.query('SELECT * FROM tool_policy_v1_routine_consent WHERE agent_id=$1', [teamAgent])).rows).toHaveLength(3);
   } finally { await client.end(); }
   await expect(grant('alice', personal, 'late-personal')).rejects.toMatchObject({ code: 'not-found' });
 });

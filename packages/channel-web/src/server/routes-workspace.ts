@@ -798,6 +798,7 @@ type TaskListView = Pick<
   | 'kind'
   | 'enabled'
   | 'permissions'
+  | 'ownedByCaller'
   | 'task'
   | 'noRecentUpdate'
   | 'steps'
@@ -825,6 +826,7 @@ type TaskDetailView = Pick<
   | 'enabled'
   | 'revision'
   | 'permissions'
+  | 'ownedByCaller'
   | 'schedule'
   | 'activeHours'
   | 'nextRunAt'
@@ -3510,24 +3512,13 @@ export const TASKS_AGENT_READ_DEADLINE_MS = 10_000;
 /**
  * Is this task the caller's own? (TASK-909 decisions row 2)
  *
- * The view carries no owner, so this reads what the services already decided
- * for this caller: they show `task` only to the routine's owner (`taskView`),
- * and give `permissions.fire` only to an owner who may manage the agent's
- * routines (`routinePermissions`). On a personal agent every routine is the
- * viewer's (`reconcileOwners`); on a team agent, everyone else's tasks fail
- * both halves.
- *
- * The accepted gap: a task that has never reported, owned by someone who can
- * no longer manage the agent's routines (a team admin who lost the role), is
- * left out until its first report. Design PR 4, where team members start
- * tasks that run as themselves, must keep `fire` true for an owner who may
- * run their own task, or revisit this.
- *
- * The task page (TASK-910) uses it too, so a task's own page opens for
- * exactly the tasks the Tasks page lists, and for no one else.
+ * The host projects caller-relative ownership independently of reports and
+ * current write permissions. No raw execution-owner identifier reaches the SPA.
+ * The task page and list use the same rule, including never-reported tasks whose
+ * owner can still view the agent but can no longer manage its work.
  */
-function isOwnTask(view: Pick<RoutineView, 'task' | 'permissions'>): boolean {
-  return view.task !== null || view.permissions.fire;
+function isOwnTask(view: Pick<RoutineView, 'ownedByCaller'>): boolean {
+  return view.ownedByCaller === true;
 }
 
 /**

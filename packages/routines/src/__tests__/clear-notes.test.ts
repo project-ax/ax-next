@@ -69,7 +69,14 @@ describe('routines:clear-notes (TASK-910)', () => {
     const task = await createTask(h.teamAdmin, h.teamAgentId);
     await withNotes(task.routineId, NOTES);
     await sql`UPDATE routines_v1_definitions SET owner_user_id = 'member' WHERE routine_id = ${task.routineId}`.execute(h.db);
-    expect(await h.bus.call('agents:can-manage-routines', h.teamMember, { agentId: h.teamAgentId })).toEqual({ allowed: false });
+    expect(await h.bus.call('agents:can-manage-routines', h.teamMember, { agentId: h.teamAgentId })).toEqual({ allowed: true, stopOthers: false });
+    // An alternate authority provider can allow viewing while refusing management.
+    // Ordinary members now manage their own work under the real agents provider.
+    const callJoined = h.bus.callJoined.bind(h.bus);
+    vi.spyOn(h.bus, 'callJoined').mockImplementation((hook, ctx, input, options) =>
+      hook === 'agents:can-manage-routines'
+        ? Promise.resolve({ allowed: false, stopOthers: false })
+        : callJoined(hook, ctx, input, options));
     // They're shown the notes, with nothing they can change...
     const seen = await get(h.teamMember, task);
     expect(seen.permissions).toEqual({ edit: false, stop: false, fire: false, manageSecret: false });

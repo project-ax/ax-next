@@ -698,9 +698,10 @@ suggest a short body for known apps.
   the next hour's first. It can't use `?`, which croner fills in from the
   clock, and it can't be a single date or a date that never comes, such as
   31 February. A daylight-saving jump can still shorten one real gap a
-  year.) Who may create or change a task follows today's routine permissions
-  (`agents:can-manage-routines`: personal agent → its owner, team agent →
-  team admins).
+  year.) TASK-969: a personal agent's owner and current team members may start
+  their own tasks. Edit, fire and signing-secret controls stay with the task's
+  creator; team admins retain emergency stop and delete. Connector administration
+  and the agent-wide webhook address stay restricted to their existing roles.
 - **Only a person** marks a task done or resumes a paused one. (TASK-950: no tool reaches `routines:complete` or `routines:reopen`, a report on a Done task is refused, and the agent's resume of it is refused like any paused task's.)
 - **The host ties each report to its run** (§4.3). The model never names the
   task it's reporting on.
@@ -759,7 +760,7 @@ people.
 | Junior CSM | "Onboard Acme" | Get done · daily + product updates | Strains: the same six steps every week, and "live by Dec 1" has no home. |
 | Junior CSM | "Keep my book of 40 accounts healthy" | Stay on top · every 4 hours + CS-platform updates | Fits well: 40 accounts are one task. The manager wants this view across the team. |
 | Junior CSM | "Follow up every NPS detractor within 2 days" | Stay on top · daily + survey updates | Found a spec bug: the inbox could drop the only copy of a response. Fixed in §5.4. |
-| Junior CSM | Starting a task on the team's Support agent | Team-owned agent | Strains: only team admins can start tasks on a team agent, and a task's asks reach one person (a decision has one `ownerUserId`). |
+| Junior CSM | Starting a task on the team's Support agent | Team-owned agent | TASK-969: members start their own tasks, running as themselves within their own limits. A task's asks still reach one person; sharing comes later. |
 | Family | "Get the kids into summer camp" | Get done · daily | The deposit is a held spend. Strains: either parent should be able to say yes, neither opens ax every day, and registration closes March 1. |
 | Family | "Never pay a bill late" | Stay on top · daily | Fits. Payments stay held. Another case for a number over time. |
 
@@ -777,7 +778,7 @@ ordinary task.
 | "Needs you" only shows on Today, and the CEO and the parents don't open ax every day | Email each new ask, with a daily cap; push later | Later, not PR 2 (decided, §15) |
 | "Get something done" has no due date | An optional "Finish by" date: on the row, in the brief ("9 days left"), and the agent reports Off track when the remaining steps won't fit. A person sets it, so it isn't an estimate. | PR 3 |
 | A task has one owner, and its asks reach one person | View-only sharing of a task, plus an "Also ask" list. This is the finding that pulls hardest toward the projects work. | After PR 5, in its own short design |
-| Only team admins can start tasks on a team agent | Members start tasks that run as themselves, within their own usage limits | PR 4 (decided, §15) |
+| Team members need to start their own work on a team agent | Members start tasks that run as themselves, within their own usage limits | TASK-969; owner-scoped controls, admin emergency stop/delete |
 | The update inbox could drop data when an update is the only copy | First in, first out; unseen updates stay; the agent can read a cut-off update in full | PR 5 |
 | Numbers over time live only in sentences | An optional number in each report, shown as a small trend and labelled as the agent's reading | PR 3 |
 | The same plan every week | Duplicate task; a procedure that repeats becomes a skill the agent drafts from | PR 3 |
@@ -1010,7 +1011,8 @@ view-only sharing of a task and an "Also ask" list.
 6. ~~Give each task its own webhook address token?~~ **Decided: yes** (§15),
    in PR 5.
 7. ~~Can team members start tasks on a team agent, running as themselves?~~
-   **Decided: yes** (§15), in PR 4. Today only team admins can.
+   **Decided: yes** (§15), implemented by TASK-969 in PR 4. Members manage
+   their own tasks; team admins retain emergency stop and delete.
 8. Who else can see a task or answer its asks? Recommend view-only sharing plus
    an "Also ask" list after PR 5, in its own short design rather than as a
    bolt-on.
@@ -1092,3 +1094,5 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-26 | Decided | PR 4 adds simple day selectors for active hours, including weekdays. Custom cron stays under More options (TASK-968). |
 | 2026-10-26 | Decided | **Repeat a job** keeps its existing **60-second** minimum repeat interval. **Stay on top of something** and **Get something done** keep **15-minute** minimum schedules. This settles the Repeat a job exception left for PR 4 by the original check-in floor decision (§14 Q3, TASK-968). |
 | 2026-10-26 | Implemented in TASK-970 | Repeat uses independent nullable schedule and webhook methods, with at least one enabled. Canonical patches preserve omitted methods; legacy trigger replacement remains exclusive. New or changed Repeat schedules, custom cron included, enforce 60 seconds while unchanged saved faster cron and completed receipts remain valid. Stay-on-top and get-done schedules remain required with a 15-minute floor, and their app updates remain PR 5. The default catalog keeps its separate interval-only DTO. This is the PR 4-B contract and current editor, not the complete Tasks move or a production deployment. |
+| 2026-10-26 | Implemented (TASK-969) | Current team members may start their own tasks. Saved runs keep their creator’s identity and usage limits; edit, fire and signing-secret controls stay with that creator. Team admins may stop or delete another member’s work, never adopt its execution identity. Connector/shared-credential and agent-wide webhook-token authority is unchanged. Host-derived ownedByCaller keeps never-reported tasks visible to their owner independently of write permission. |
+| 2026-10-26 | Implemented (TASK-969) | A member manages their own webhook signing secret through authenticated settings, including its configured status, Save and Remove. The global credential list and generic admin routes stay restricted. The shared receiver-address token retains its existing manager gate until PR 5; owning a signing secret does not grant that token. |

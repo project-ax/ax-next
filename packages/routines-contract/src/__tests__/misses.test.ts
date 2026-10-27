@@ -47,7 +47,7 @@ describe('a view’s noRecentUpdate (TASK-930)', () => {
     kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
   });
   const view = {
-    ...brief, agentId: 'a', routineId: 'r', revision: 'rev', origin: 'authored', defaultRoutineId: null,
+    ...brief, agentId: 'a', routineId: 'r', revision: 'rev', ownedByCaller: true, origin: 'authored', defaultRoutineId: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null,
     permissions: { edit: true, stop: true, fire: true, manageSecret: false }, task: null, finishBy: null, finishByTimeZone: null, done: null,
   } as const;

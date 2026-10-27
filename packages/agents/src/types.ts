@@ -565,6 +565,7 @@ export interface AgentsConfig {
 }
 
 export const CanManageRoutinesInputSchema = z.object({ agentId: z.string().min(1).max(256) }).strict();
-export const CanManageRoutinesOutputSchema = z.object({ allowed: z.boolean() }).strict();
+/** Membership permits one's own routines; only a current team admin may stop another member's work. */
+export const CanManageRoutinesOutputSchema = z.object({ allowed: z.boolean(), stopOthers: z.boolean() }).strict();
 export type CanManageRoutinesInput = z.infer<typeof CanManageRoutinesInputSchema>;
 export type CanManageRoutinesOutput = z.infer<typeof CanManageRoutinesOutputSchema>;
