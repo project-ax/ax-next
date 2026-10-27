@@ -306,7 +306,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
         kind: 'webhook', path: '/canary', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' },
       } },
     });
-    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual(changed);
+    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual({ ...changed, delivery: { active: 0, waiting: 0 } });
     await expect(h.bus.call('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId })).rejects.toThrow();
     await h.bus.call('routines:set-webhook-secret', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, operation: 'set', secret: Buffer.from('canary-only-key') });
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, { agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false } });
@@ -321,7 +321,9 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
       now += 1_000;
       expect((await post()).status).toBe(202);
       await expect.poll(async () => (await store.recentFires(row)).length).toBe(2);
-      expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: changed.promptBody });
+      expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: null });
+      expect(calls.mock.calls.filter(([hook]) => hook === 'agent:invoke').map(([, runCtx, input]) => ({ userId: runCtx.userId, input })))
+        .toContainEqual({ userId: ctx.userId, input: { message: { role: 'user', content: changed.promptBody } } });
       expect(await h.bus.call('routines:delete', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, requestId: 'delete-canary' })).toEqual({ deleted: true, cleanupPending: true });
       const secretRef = h.credentialCalls.find(item => item.operation === 'set')!.ref;
       expect(h.credentialCalls).toContainEqual({ operation: 'delete', ref: secretRef });

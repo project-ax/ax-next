@@ -253,7 +253,8 @@ describe('durable signed repeat-delivery canary', () => {
       const history=await createRoutinesStore(h.db).recentFires({...row,actorUserId:'owner'});
       expect(history.filter(x=>x.triggerSource==='webhook')).toHaveLength(3);
       expect(JSON.stringify(history)).not.toContain('PRIVATE');
-      expect((await sql<{n:number}>`SELECT count(*)::int AS n FROM routines_v1_deliveries WHERE blob_ref IS NOT NULL`.execute(h.db)).rows[0]!.n).toBe(0);
+      // Terminal accounting and reference release are separate joined writes; observe the completed drain.
+      await expect.poll(async()=>(await sql<{n:number}>`SELECT count(*)::int AS n FROM routines_v1_deliveries WHERE agent_id=${row.agentId} AND routine_id=${row.routineId} AND blob_ref IS NOT NULL`.execute(h.db)).rows[0]!.n).toBe(0);
     } finally {await transport.close();}
   });
 });

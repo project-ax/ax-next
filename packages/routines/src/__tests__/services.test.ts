@@ -13,7 +13,7 @@ describe('registered routine services with real agents', () => {
     expect(row).not.toHaveProperty('ownerUserId');
     expect(row.permissions).toEqual({ edit: true, stop: true, fire: true, manageSecret: true });
     const { routines } = await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId });
-    expect(routines.filter(r => r.origin === 'authored')).toEqual([row]);
+    expect(routines.filter(r => r.origin === 'authored')).toEqual([{ ...row, delivery: { active: 0, waiting: 0 } }]);
     expect(routines.filter(r => r.origin === 'default').map(r => r.name)).toEqual(['heartbeat']);
     await expect(h.bus.call('routines:get', h.owner, { agentId: h.teamAgentId, routineId: row.routineId })).rejects.toMatchObject({ toolCode: 'not-found' });
     await expect(h.bus.call('routines:list', h.teamAdmin, { agentId: h.agentId })).rejects.toMatchObject({ code: 'forbidden' });
@@ -23,13 +23,13 @@ describe('registered routine services with real agents', () => {
     const task = RoutineDefinitionSchema.parse({ name: 'Inbox', promptBody: 'Keep the inbox under control.', trigger: { kind: 'interval', every: '15m' }, kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
     const created = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'task', definition: task });
     expect(created).toMatchObject({ kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
-    await expect(h.bus.call('routines:get', h.owner, { agentId: h.agentId, routineId: created.routineId })).resolves.toEqual(created);
+    await expect(h.bus.call('routines:get', h.owner, { agentId: h.agentId, routineId: created.routineId })).resolves.toEqual({ ...created, delivery: null });
     await materializePersonalDefaults(h);
     const { routines } = await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', h.owner, { agentId: h.agentId });
-    expect(routines.filter(r => r.origin === 'authored')).toEqual([created]);
+    expect(routines.filter(r => r.origin === 'authored')).toEqual([{ ...created, delivery: null }]);
     expect(routines.filter(r => r.origin === 'default')).toEqual([expect.objectContaining({ name: 'heartbeat', kind: 'repeat', goodWhen: null })]);
     const agentCtx = makeAgentContext({ ...h.owner, agentId: h.agentId });
-    await expect(h.bus.call('tool:execute:routine_get', agentCtx, { id: 'get', name: 'routine_get', input: { routineId: created.routineId } })).resolves.toEqual(created);
+    await expect(h.bus.call('tool:execute:routine_get', agentCtx, { id: 'get', name: 'routine_get', input: { routineId: created.routineId } })).resolves.toEqual({ ...created, delivery: null });
   });
   it('pins team creator, lets another admin stop only, and denies ordinary member mutations', async () => {
     h = await createRoutineHarness(); const row = await create(h.teamAgentId);
