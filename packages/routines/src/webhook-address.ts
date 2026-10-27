@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { SafeToolError } from '@ax/core';
+import { serializeAdmission } from './admission-order.js';
 import type { Kysely, Selectable, Transaction } from 'kysely';
 import type { RoutineKey } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow } from './migrations.js';
@@ -20,7 +21,7 @@ export function createWebhookAddressStore(db: DB, helpers: {
   rowToRoutine: (row: Raw) => StoredRoutine;
 }) {
   async function address(input: RoutineKey & { actorUserId: string; expectedVersion?: string }) {
-    return db.transaction().execute(async trx => {
+    return serializeAdmission(db, () => db.transaction().execute(async trx => {
       if (!await helpers.lockLiveAgent(trx, input.agentId)) throw new SafeToolError('not-found', 'routineId');
       const row = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
       if (!row || row.owner_user_id !== input.actorUserId || row.definition_id !== null || row.webhook_spec === null) throw new SafeToolError('not-found', 'routineId');
@@ -30,7 +31,7 @@ export function createWebhookAddressStore(db: DB, helpers: {
       const legacyActive = !replace && row.webhook_legacy_enabled;
       await trx.updateTable('routines_v1_definitions').set({ webhook_address_token: token, webhook_legacy_enabled: legacyActive }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
       return { token, version: version(token), legacyActive };
-    });
+    }));
   }
   return {
     ensureWebhookAddress: (input: RoutineKey & { actorUserId: string }) => address(input),

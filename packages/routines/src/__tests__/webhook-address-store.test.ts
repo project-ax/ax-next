@@ -6,7 +6,7 @@ import { createRoutinesStore } from '../store.js';
 import { createRepeatDeliveryStore } from '../repeat-deliveries.js';
 import { runRoutinesMigration } from '../migrations.js';
 
-const f = fixture();
+const f = fixture({ max: 2, connectionTimeoutMillis: 1500 });
 const task = (id: string) => {
   const input = webhookInput(id);
   return { ...input, definition: { ...input.definition, name: id, webhook: { kind: 'webhook' as const, path: `/${id}` } } };
@@ -15,6 +15,26 @@ const owner = { actorUserId: 'owner' };
 const persist = (bytes: Uint8Array) => Promise.resolve({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
 
 describe('private task webhook addresses', () => {
+  it('keeps setup lock waiters from taking the connection needed to persist an incoming update', async () => {
+    const a = await f.store.createAuthored(task('pool'));
+    const old = await f.store.ensureWebhookAddress({ ...a, ...owner });
+    let started!: () => void, release!: () => void;
+    const entered = new Promise<void>(r => { started = r; });
+    const gate = new Promise<void>(r => { release = r; });
+    const admission = createRepeatDeliveryStore(f.db, 'test').admit({ row: a, payload: {}, deliveryId: null, now, address: { kind: 'task', token: old.token } }, async bytes => {
+      started(); await gate;
+      // The real blob facade uses the same database pool outside this transaction.
+      await sql`SELECT 1`.execute(f.db);
+      return persist(bytes);
+    });
+    await entered;
+    const replace = f.store.replaceWebhookAddress({ ...a, ...owner, expectedVersion: old.version });
+    await new Promise(r => setTimeout(r, 50));
+    release();
+    const results = await Promise.allSettled([admission, replace]);
+    expect(results[0]).toMatchObject({ status: 'fulfilled', value: 'accepted' });
+    expect(results[1]).toMatchObject({ status: 'fulfilled' });
+  });
   it('gives new tasks independent addresses without a shared alias or any generic-view/receipt/payload leak', async () => {
     const a = await f.store.createAuthored(task('a'));
     const b = await f.store.createAuthored(task('b'));

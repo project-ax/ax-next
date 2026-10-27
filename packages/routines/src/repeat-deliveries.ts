@@ -1,3 +1,4 @@
+import { serializeAdmission } from './admission-order.js';
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { BlobRef } from '@ax/core';
@@ -11,23 +12,6 @@ type DB = Kysely<RoutinesDatabase>;
 const configurationHash = repeatConfigurationHash;
 export type RepeatDeliveryStatus = { active: number; waiting: number };
 export type DeliveryClaim = { deliveryId: string; blobRef: string; accepted: AcceptedDispatch };
-
-const admissionTails = new WeakMap<DB, Promise<void>>();
-async function serializeAdmission<T>(db: DB, run: () => Promise<T>): Promise<T> {
-  const previous = admissionTails.get(db);
-  let release!: () => void;
-  const tail = new Promise<void>(resolve => { release = resolve; });
-  admissionTails.set(db, tail);
-  // Payload storage may query this same pool. Wait before opening a transaction,
-  // so lock contenders cannot take every connection storage needs to finish.
-  // SQL locks still own cross-host deduplication and quota decisions.
-  await previous;
-  try { return await run(); }
-  finally {
-    release();
-    if (admissionTails.get(db) === tail) admissionTails.delete(db);
-  }
-}
 
 /** SQL owns admission/claims; the blob facade owns bytes and their existing quota accounting. */
 export function createRepeatDeliveryStore(db: DB, executorId: string) {
