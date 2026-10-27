@@ -29,6 +29,24 @@ describe('routine list', () => {
     show();
     expect(await screen.findByText('2 app updates waiting.')).toBeVisible();
   });
+  it('keeps a definitive busy response visible when the fire control releases its pending lock', async () => {
+    vi.mocked(routineApi.fireNow).mockRejectedValue(new RoutineApiError(409,'busy','routineId'));
+    show();await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button',{name:`Recent runs for ${row.name}`}));
+    await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Fire now'}));});
+    expect(routineApi.list).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Three runs are already in progress. Try again when one finishes.')).toBeVisible();
+    expect(screen.getByRole('button',{name:'Fire now'})).toBeEnabled();
+  });
+  it('reloads the original agent when a different agent read is still pending', async () => {
+    const props={agentName:'Caveman',onFired:vi.fn()};
+    const view=render(<RoutinesList {...props} agentId="a"/>);await screen.findByText(row.name);
+    vi.mocked(routineApi.list).mockImplementation(async id=>id==='b'?new Promise(()=>{}):[row]);
+    view.rerender(<RoutinesList {...props} agentId="b"/>);
+    view.rerender(<RoutinesList {...props} agentId="a"/>);
+    expect(routineApi.list).toHaveBeenCalledTimes(3);
+    expect(await screen.findByText(row.name)).toBeVisible();
+  });
   it('shows only authored routines, and loads fires by opaque ID on disclosure', async () => {
     vi.mocked(routineApi.list).mockResolvedValue([
       row,

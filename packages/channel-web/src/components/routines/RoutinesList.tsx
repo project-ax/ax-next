@@ -80,6 +80,7 @@ export function RoutinesList({
   }
   const flight = useRef(false);
   const previousCreateRequest = useRef(createRequest);
+  const loadedRead = useRef<string | null>(null);
   useEffect(() => {
     if (createRequest !== previousCreateRequest.current && agentId) setCreating(agentId);
     previousCreateRequest.current = createRequest;
@@ -94,6 +95,10 @@ export function RoutinesList({
     // Preserve the child and its exact retry identity. A changed refresh key is
     // picked up when the operation is confirmed or explicitly refused.
     if (fireProtectedRef.current) return;
+    const readKey = JSON.stringify([idKey, agentsStatus, version, refreshKey, origin]);
+    // Releasing a definite refusal changes the lock, not the query. Keep its mounted result.
+    if (loadedRead.current === readKey) return;
+    loadedRead.current = null;
     let active = true;
     setList(null);
     setError(null);
@@ -104,7 +109,10 @@ export function RoutinesList({
     }
     void Promise.all(ids.map((id) => routineApi.list(id)))
       .then((rows) => {
-        if (active) setList(rows.flat().filter((r) => r.origin === origin));
+        if (active) {
+          loadedRead.current = readKey;
+          setList(rows.flat().filter((r) => r.origin === origin));
+        }
       })
       .catch(() => {
         if (active) setError('We couldn’t load routines.');

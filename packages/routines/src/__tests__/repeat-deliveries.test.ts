@@ -146,4 +146,13 @@ describe('repeat admission lifecycle and metadata ceilings',()=>{
     expect(await f.store.finishDispatch({dispatchId:claim.accepted.dispatchId,onlyIfExpired:{conversationId:null},outcome:interrupted})).toBe(false);
     expect(await f.store.finishDispatch({dispatchId:claim.accepted.dispatchId,onlyIfExpired:{conversationId:'bound-after-observation'},outcome:interrupted})).toBe(true);
   });
+  it('releases only the shutting-down executor reservations',async()=>{
+    const r=await row();await queue().admit({row:r,payload:{},deliveryId:'one',now},persist);const own=(await queue().claim(now))!;
+    const foreign=(await createRoutinesStore(f.db,'foreign-host').acceptDispatch({...r,expectedRevision:r.revision,actorUserId:'owner',source:'manual',requestId:'foreign',now}))!;
+    await queue().release();
+    const released=await f.db.selectFrom('routines_v1_dispatches').select(['dispatch_id','executor_released']).orderBy('dispatch_id').execute();
+    expect(released.find(x=>x.dispatch_id===own.accepted.dispatchId)?.executor_released).toBe(true);
+    expect(released.find(x=>x.dispatch_id===foreign.accepted.dispatchId)?.executor_released).toBe(false);
+    expect((await queue().expired()).map(x=>x.dispatch_id)).toEqual([own.accepted.dispatchId]);
+  });
 });
