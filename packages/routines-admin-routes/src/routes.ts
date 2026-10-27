@@ -116,6 +116,21 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
   const item = (req: RouteRequest, res: RouteResponse) =>
     key(req, res, true) as C.RoutineKey | undefined;
   return {
+    taskReceiver: scoped(deps, async (req, res, ctx) => {
+      const input = item(req, res);
+      if (!input) return;
+      const out = await call('routines:webhook-address', ctx, input, C.RoutineWebhookAddressOutputSchema);
+      res.header?.('Cache-Control', 'no-store');
+      res.status(200).json({ url: `/webhooks/${out.token}`, version: out.version, legacyActive: out.legacyActive });
+    }),
+    replaceTaskReceiver: scoped(deps, async (req, res, ctx) => {
+      const input = item(req, res);
+      const change = body(req, res, C.RoutineReplaceWebhookAddressInputSchema.omit({ agentId: true, routineId: true }));
+      if (!input || !change) return;
+      const out = await call('routines:replace-webhook-address', ctx, { ...input, ...change }, C.RoutineWebhookAddressOutputSchema);
+      res.header?.('Cache-Control', 'no-store');
+      res.status(200).json({ url: `/webhooks/${out.token}`, version: out.version, legacyActive: out.legacyActive });
+    }),
     list: scoped(deps, async (req, res, ctx) => {
       const input = key(req, res, false);
       if (input)
@@ -350,6 +365,8 @@ export async function registerRoutinesAdminRoutes(
     { method: 'DELETE', path: `${base}/consent`, handler: h.revokeConsent },
     { method: 'GET', path: `${base}/receiver`, handler: h.receiver },
     { method: 'GET', path: `${base}/receiver-access`, handler: h.receiverAccess },
+    { method: 'GET', path: `${base}/:routineId/receiver`, handler: h.taskReceiver },
+    { method: 'POST', path: `${base}/:routineId/receiver/replace`, handler: h.replaceTaskReceiver },
     { method: 'GET', path: base, handler: h.list },
     { method: 'POST', path: base, handler: h.create },
     { method: 'GET', path: `${base}/:routineId`, handler: h.get },

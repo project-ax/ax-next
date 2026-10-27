@@ -1,6 +1,7 @@
 import { httpFetch, REQUEST_TIMEOUT_MS, RequestTimeoutError, withRequestTimeout } from './http';
 import type {
   RoutineDefinition,
+  RoutineKey,
   RoutinePatch,
   RoutineView,
   RoutineFireView,
@@ -31,6 +32,7 @@ export interface RoutineConsent {
   enabled: boolean;
   revision: string;
 }
+export interface RoutineReceiver { url: string; version: string; legacyActive: boolean }
 export interface AgentDefaultState {
   defaultRoutineId: string;
   name: string;
@@ -230,6 +232,12 @@ export const routineApi = {
   },
   getReceiver(agentId: string): Promise<{ url: string }> {
     return request(`${collection(agentId)}/receiver`);
+  },
+  getTaskReceiver(key: RoutineKey): Promise<RoutineReceiver> {
+    return request(`${collection(key.agentId)}/${encodeURIComponent(key.routineId)}/receiver`);
+  },
+  replaceTaskReceiver(key: RoutineKey, expectedVersion: string): Promise<RoutineReceiver> {
+    return request(`${collection(key.agentId)}/${encodeURIComponent(key.routineId)}/receiver/replace`, 'POST', { expectedVersion });
   },
   getReceiverAccess(agentId: string): Promise<{ allowed: boolean }> {
     return request(`${collection(agentId)}/receiver-access`);

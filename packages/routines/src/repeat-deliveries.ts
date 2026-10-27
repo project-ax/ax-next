@@ -6,6 +6,7 @@ import { lockLiveAgent, rowToRoutine } from './store.js';
 import type { RepeatDeliveryRow, RoutinesDatabase } from './migrations.js';
 import type { AcceptedDispatch, StoredRoutine } from './types.js';
 import { githubDeliveryId, repeatQueueFits, REPEAT_DELIVERY_LIMITS as LIMIT } from './repeat-limits.js';
+import { webhookAddressMatches, type WebhookAddressProof } from './webhook-address.js';
 type DB = Kysely<RoutinesDatabase>;
 const configurationHash = repeatConfigurationHash;
 export type RepeatDeliveryStatus = { active: number; waiting: number };
@@ -31,7 +32,7 @@ async function serializeAdmission<T>(db: DB, run: () => Promise<T>): Promise<T> 
 /** SQL owns admission/claims; the blob facade owns bytes and their existing quota accounting. */
 export function createRepeatDeliveryStore(db: DB, executorId: string) {
   return {
-    async admit(input: { row: StoredRoutine; payload: unknown; deliveryId: string | null; now: Date }, persist: (bytes: Uint8Array, owner: string) => Promise<{ sha256: string; size: number }>): Promise<'accepted' | 'duplicate' | 'full' | 'missing'> {
+    async admit(input: { row: StoredRoutine; payload: unknown; deliveryId: string | null; now: Date; address?: WebhookAddressProof }, persist: (bytes: Uint8Array, owner: string) => Promise<{ sha256: string; size: number }>, authorizeLegacy?: () => Promise<boolean>): Promise<'accepted' | 'duplicate' | 'full' | 'missing'> {
       const id = githubDeliveryId(input.deliveryId ?? undefined);
       const hash = id === null ? null : createHash('sha256').update(id).digest('hex');
       return serializeAdmission(db, () => db.transaction().execute(async trx => {
@@ -40,6 +41,7 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         await sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.row.ownerUserId},18427134))`.execute(trx);
         const raw = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id','=',input.row.agentId).where('routine_id','=',input.row.routineId).forUpdate().executeTakeFirst();
         if (!raw || raw.revision !== input.row.revision || raw.owner_user_id !== input.row.ownerUserId || raw.kind !== 'repeat' || raw.webhook_spec === null) return 'missing';
+        if (input.address && (!webhookAddressMatches(raw, input.address) || (input.address.kind === 'legacy' && (!authorizeLegacy || !await authorizeLegacy())))) return 'missing';
         await trx.deleteFrom('routines_v1_deliveries').where('completed_at','is not',null).where('expires_at','<=',input.now).where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).execute();
         if (hash !== null && await trx.selectFrom('routines_v1_deliveries').select('delivery_id').where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).where('github_id_hash','=',hash).executeTakeFirst()) return 'duplicate';
         if (!raw.enabled) return 'missing';

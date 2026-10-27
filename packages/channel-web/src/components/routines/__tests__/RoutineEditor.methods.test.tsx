@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Profiler, useLayoutEffect } from 'react';
 import { RoutineEditor } from '../RoutineEditor';
 import { routineFixture } from './routine-fixture';
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn(), create: vi.fn(), access: vi.fn(), receiver: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn(), create: vi.fn(), access: vi.fn(), receiver: vi.fn(), replace: vi.fn(), shared: vi.fn() }));
 vi.mock('@/lib/routines', async original => ({
   ...(await original<typeof import('@/lib/routines')>()),
-  routineApi: { get: mocks.get, update: mocks.update, create: mocks.create, getReceiverAccess: mocks.access, getReceiver: mocks.receiver },
+  routineApi: { get: mocks.get, update: mocks.update, create: mocks.create, getReceiverAccess: mocks.access, getReceiver: mocks.shared, getTaskReceiver: mocks.receiver, replaceTaskReceiver: mocks.replace },
 }));
 const schedule = { kind: 'interval' as const, every: '1h' };
 const webhook = { kind: 'webhook' as const, path: '/original', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256' as const, prefix: 'sha256=' } };
@@ -22,7 +22,7 @@ beforeEach(() => {
   mocks.update.mockResolvedValue(view());
   mocks.create.mockResolvedValue(view());
   mocks.access.mockResolvedValue({ allowed: true });
-  mocks.receiver.mockResolvedValue({ url: '/webhooks/original-bearer' });
+  mocks.receiver.mockResolvedValue({ url: '/webhooks/original-bearer', version: 'a'.repeat(64), legacyActive: true });
 });
 
 describe('app signature settings', () => {
@@ -138,98 +138,85 @@ describe('independent routine methods in the existing editor', () => {
   });
 });
 
-describe('receiver capability is separate from owning a routine', () => {
-  it('does not reuse an old address while re-enabling updates waits for fresh permission', async () => {
-    const committedUrls: Array<string | null> = [];
-    render(<Profiler id="receiver" onRender={() => {
-      const input = screen.queryByLabelText('Webhook URL') as HTMLInputElement | null;
-      committedUrls.push(input?.value ?? null);
-    }}><RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} /></Profiler>);
-    const updates = screen.getByRole('checkbox', { name: 'When another app sends an update' });
-    fireEvent.click(updates);
-    expect((await screen.findByLabelText('Webhook URL') as HTMLInputElement).value).toContain('original-bearer');
-    fireEvent.click(updates);
-    committedUrls.length = 0;
-    mocks.access.mockResolvedValue({ allowed: false });
-    fireEvent.click(updates);
-    expect(committedUrls.length).toBeGreaterThan(0);
-    for (const url of committedUrls) expect(url ?? '').not.toContain('original-bearer');
-    await screen.findByText(/administrator.*connect.*app updates/i);
-    expect(mocks.receiver).toHaveBeenCalledTimes(1);
+describe('private task address controls', () => {
+  it('waits for Save when adding app updates to an existing scheduled job', async () => {
+    mocks.get.mockResolvedValue({ ...view(), webhook: null });
+    await edit();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    expect(screen.getByText('Save this task to get its own webhook address.')).toBeVisible();
+    expect(mocks.receiver).not.toHaveBeenCalled();
   });
-
-  it('never commits a previously resolved receiver URL under a different agent before effects clear it', async () => {
-    mocks.access.mockImplementation((agentId: string) => Promise.resolve({ allowed: agentId === 'a' }));
-    const commits: Array<{ agentId: string; url: string | null }> = [];
-    function CommitProbe({ agentId }: { agentId: string }) {
-      // Layout effects observe the committed DOM before the editor's passive cleanup.
-      useLayoutEffect(() => {
-        const input = screen.queryByLabelText('Webhook URL') as HTMLInputElement | null;
-        commits.push({ agentId, url: input?.value ?? null });
-      }, [agentId]);
+  it('waits for task creation before obtaining any address', async () => {
+    render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    expect(screen.getByText('Save this task to get its own webhook address.')).toBeVisible();
+    expect(mocks.receiver).not.toHaveBeenCalled();
+    expect(mocks.shared).not.toHaveBeenCalled();
+    expect(mocks.access).not.toHaveBeenCalled();
+  });
+  it('lets a task owner obtain their task address without shared agent-token authority', async () => {
+    mocks.access.mockResolvedValue({ allowed: false });
+    await edit();
+    expect((await screen.findByLabelText('Webhook URL') as HTMLInputElement).value).toContain('original-bearer');
+    expect(mocks.receiver).toHaveBeenCalledWith({ agentId: 'a', routineId: routineFixture.routineId });
+    expect(mocks.shared).not.toHaveBeenCalled();
+    expect(mocks.access).not.toHaveBeenCalled();
+    expect(screen.getByText(/Existing app addresses still work/)).toBeVisible();
+  });
+  it('does not obtain another owner’s address even when their task can be stopped', async () => {
+    mocks.get.mockResolvedValue({ ...view(), ownedByCaller: false, permissions: { edit: false, stop: true, fire: false, manageSecret: false } });
+    await edit();
+    expect(mocks.receiver).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
+  });
+  it('keeps the draft on read failure and retries without exposing backend details', async () => {
+    mocks.receiver.mockRejectedValueOnce(new Error('private backend details'));
+    await edit();
+    fireEvent.change(screen.getByLabelText('Webhook path'), { target: { value: '/draft' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry app setup' }));
+    expect((await screen.findByLabelText('Webhook URL') as HTMLInputElement).value).toContain('/draft');
+    expect(screen.queryByText(/private backend/)).not.toBeInTheDocument();
+    expect(mocks.receiver).toHaveBeenCalledTimes(2);
+  });
+  it('confirms replacement, scopes it to the task and presents the new address', async () => {
+    mocks.replace.mockResolvedValue({ url: '/webhooks/new-bearer', version: 'b'.repeat(64), legacyActive: false });
+    await edit();
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace address' }));
+    expect(mocks.replace).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: 'Replace this task’s address?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace address' }));
+    await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith({ agentId: 'a', routineId: routineFixture.routineId }, 'a'.repeat(64)));
+    await waitFor(() => expect(screen.getByLabelText('Webhook URL')).toHaveValue(`${window.location.origin}/webhooks/new-bearer/original`));
+    expect(screen.queryByText(/Existing app addresses still work/)).not.toBeInTheDocument();
+  });
+  it('hides a possibly replaced address after a lost response and reads current state before another replacement', async () => {
+    mocks.replace.mockRejectedValue(new Error('response lost'));
+    await edit();
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace address' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Replace address' }));
+    const retry = await screen.findByRole('button', { name: 'Retry app setup' });
+    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
+    mocks.receiver.mockResolvedValue({ url: '/webhooks/landed-bearer', version: 'b'.repeat(64), legacyActive: false });
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByLabelText('Webhook URL')).toHaveValue(`${window.location.origin}/webhooks/landed-bearer/original`));
+    expect(mocks.replace).toHaveBeenCalledTimes(1);
+  });
+  it('never commits an earlier task’s bearer after changing the selected task on the same agent', async () => {
+    const commits: Array<{ task: string; url: string }> = [];
+    let selected = routineFixture.routineId;
+    function Probe() {
+      useLayoutEffect(() => { commits.push({ task: selected, url: (screen.queryByLabelText('Webhook URL') as HTMLInputElement | null)?.value ?? '' }); });
       return null;
     }
-    const props = { mode: 'create' as const, agentName: 'Caveman', onSaved: vi.fn(), onCancel: vi.fn() };
-    const form = (agentId: string) => <><RoutineEditor {...props} agentId={agentId} /><CommitProbe agentId={agentId} /></>;
-    const result = render(form('a'));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
-    const originalUrl = await screen.findByLabelText('Webhook URL') as HTMLInputElement;
-    expect(originalUrl.value).toContain('original-bearer');
-    result.rerender(form('b'));
-    const nextAgentCommits = commits.filter(commit => commit.agentId === 'b');
-    expect(nextAgentCommits.length).toBeGreaterThan(0);
-    for (const commit of nextAgentCommits) expect(commit.url ?? '').not.toContain('original-bearer');
-    await screen.findByText(/administrator.*connect.*app updates/i);
-    expect(mocks.receiver).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not obtain a bearer for a member denied agent-wide receiver access', async () => {
-    mocks.access.mockResolvedValue({ allowed: false });
-    await edit();
-    await screen.findByText(/administrator.*connect.*app updates/i);
-    expect(mocks.receiver).not.toHaveBeenCalled();
-    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
-  });
-
-  it('treats an access lookup fault as unavailable, preserves the draft and allows retry', async () => {
-    mocks.access.mockRejectedValueOnce(new Error('private backend details'));
-    await edit();
-    const retry = await screen.findByRole('button', { name: 'Retry app setup' });
-    expect(mocks.receiver).not.toHaveBeenCalled();
-    expect(screen.queryByText(/private backend/)).not.toBeInTheDocument();
-    fireEvent.click(retry);
+    const props = { mode: 'edit' as const, agentId: 'a', agentName: 'Caveman', onSaved: vi.fn(), onCancel: vi.fn() };
+    const form = () => <Profiler id="addresses" onRender={() => {}}><RoutineEditor {...props} routine={{ routineId: selected }} /><Probe /></Profiler>;
+    const result = render(form());
     await screen.findByLabelText('Webhook URL');
-    expect(mocks.access).toHaveBeenCalledTimes(2);
-    expect(mocks.receiver).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText('Webhook path')).toHaveValue('/original');
-  });
-
-  it('does not request a URL when a previously pending allowed answer arrives after unmount', async () => {
-    let finish!: (value: { allowed: boolean }) => void;
-    mocks.access.mockReturnValue(new Promise(resolve => { finish = resolve; }));
-    const result = await edit();
-    await waitFor(() => expect(mocks.access).toHaveBeenCalledOnce());
-    result.unmount();
-    finish({ allowed: true });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.receiver).not.toHaveBeenCalled();
-  });
-
-  it('ignores an allowed answer from the previous agent after the create form changes agents', async () => {
-    let finish!: (value: { allowed: boolean }) => void;
-    mocks.access.mockImplementation((agentId: string) => agentId === 'a'
-      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ allowed: false }));
-    const props = { mode: 'create' as const, agentName: 'Caveman', onSaved: vi.fn(), onCancel: vi.fn() };
-    const result = render(<RoutineEditor {...props} agentId="a" />);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
-    await waitFor(() => expect(mocks.access).toHaveBeenCalledWith('a'));
-    result.rerender(<RoutineEditor {...props} agentId="b" />);
-    await screen.findByText(/administrator.*connect.*app updates/i);
-    finish({ allowed: true });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.receiver).not.toHaveBeenCalled();
-    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
+    selected = 'different-task';
+    mocks.get.mockResolvedValue({ ...view(), routineId: selected });
+    mocks.receiver.mockResolvedValue({ url: '/webhooks/different-bearer', version: 'c'.repeat(64), legacyActive: false });
+    result.rerender(form());
+    await waitFor(() => expect(screen.getByLabelText('Webhook URL')).toHaveValue(`${window.location.origin}/webhooks/different-bearer/original`));
+    for (const commit of commits.filter(x => x.task === selected)) expect(commit.url).not.toContain('original-bearer');
   });
 });

@@ -18,9 +18,15 @@ const definition = (hmac?: {
   algorithm: 'sha256' | 'sha1';
   prefix?: string;
 }) => RoutineDefinitionSchema.parse({ name: 'Hook', promptBody: 'Review {{payload.title}}', trigger: { kind: 'webhook', path: '/hook', events: ['push'], ...(hmac ? { hmac } : {}) } });
+// These pre-PR5 canaries exercise migrated shared addresses. New task addresses
+// and the real v17 upgrade are covered by webhook-address tests.
+async function legacyRow(row: RoutineView) {
+  await h.db.updateTable('routines_v1_definitions').set({ webhook_legacy_enabled: true }).where('agent_id', '=', row.agentId).where('routine_id', '=', row.routineId).execute();
+}
 async function setup(hmac?: Parameters<typeof definition>[0]) {
   h = await createRoutineHarness({ invoke: async (ctx, bus) => { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' }; } });
   const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create', definition: definition(hmac) });
+  await legacyRow(row);
   const { token } = await h.bus.call<unknown, {
     token: string;
   }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
@@ -50,6 +56,7 @@ describe('single registered request-time DB webhook route', () => {
     let row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.agentId, requestId: 'create-hook', definition: definition({ header: 'X-Signature', algorithm: 'sha256' }),
     });
+    await legacyRow(row);
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
     row = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
       agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'add-schedule',
@@ -155,6 +162,7 @@ describe('single registered request-time DB webhook route', () => {
   it('keeps a team routine but refuses execution after the creator loses membership', async () => {
     await setup();
     const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.teamAgentId, requestId: 'team', definition: definition() });
+    await legacyRow(row);
     const { token } = await h.bus.call<unknown, {
       token: string;
     }>('agents:ensure-webhook-token', h.owner, { agentId: h.teamAgentId, actor: { userId: h.owner.userId, isAdmin: false } });
@@ -201,6 +209,7 @@ describe('durable signed repeat-delivery canary', () => {
   it('keeps queue counts private and refuses a removed creator when waiting work reaches runtime',async()=>{
     h=await createRoutineHarness();
     const row=await h.bus.call<unknown,RoutineView>('routines:create',h.teamMember,{agentId:h.teamAgentId,requestId:'member-queued',definition:definition()});
+    await legacyRow(row);
     const {token}=await h.bus.call<unknown,{token:string}>('agents:ensure-webhook-token',h.teamAdmin,{agentId:h.teamAgentId,actor:{userId:h.teamAdmin.userId,isAdmin:false}});
     const store=createRoutinesStore(h.db),active=[];
     for(let i=0;i<3;i++)active.push((await store.acceptDispatch({...row,actorUserId:'member',expectedRevision:row.revision,requestId:`hold-${i}`,source:'manual',now:new Date()}))!);
@@ -223,6 +232,7 @@ describe('durable signed repeat-delivery canary', () => {
     }});
     const row=await h.bus.call<unknown,RoutineView>('routines:create',h.owner,{agentId:h.agentId,requestId:'bounded-hook',definition:definition({header:'sig',algorithm:'sha256'})});
     await h.bus.call('routines:set-webhook-secret',h.owner,{agentId:h.agentId,routineId:row.routineId,expectedRevision:row.revision,operation:'set',secret:new TextEncoder().encode('signed-fixture-key')});
+    await legacyRow(row);
     const {token}=await h.bus.call<unknown,{token:string}>('agents:ensure-webhook-token',h.owner,{agentId:h.agentId,actor:{userId:h.owner.userId,isAdmin:false}});
     const store=createRoutinesStore(h.db);
     for(let i=0;i<3;i++)await store.acceptDispatch({...row,actorUserId:h.owner.userId,expectedRevision:row.revision,requestId:`occupied-${i}`,source:'manual',now:new Date('2026-10-09T12:00:00Z')});

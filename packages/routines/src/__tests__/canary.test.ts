@@ -68,6 +68,8 @@ describe('independent methods through real approval, restart and HTTP dispatch',
     expect(row).not.toHaveProperty('trigger');
     expect((await store.list({ agentId: h.agentId })).filter(item => item.definitionId === null)).toHaveLength(1);
     await h.bus.call('routines:set-webhook-secret', ctx, { agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, operation: 'set', secret: Buffer.from('dual-fixture-key') });
+    // Preserve the legacy shared-address canary; new jobs use their own token.
+    await h.db.updateTable('routines_v1_definitions').set({ webhook_legacy_enabled: true }).where('routine_id', '=', row.routineId).execute();
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, {
       agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false },
     });
@@ -309,6 +311,8 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual({ ...changed, delivery: { active: 0, waiting: 0 } });
     await expect(h.bus.call('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId })).rejects.toThrow();
     await h.bus.call('routines:set-webhook-secret', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, operation: 'set', secret: Buffer.from('canary-only-key') });
+    // Preserve the legacy shared-address canary; new jobs use their own token.
+    await h.db.updateTable('routines_v1_definitions').set({ webhook_legacy_enabled: true }).where('routine_id', '=', row.routineId).execute();
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, { agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false } });
     const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
     const server = createHttpServerPlugin({ host: '127.0.0.1', port: 0, cookieKey: Buffer.alloc(32, 1), allowedOrigins: ['http://localhost'] });

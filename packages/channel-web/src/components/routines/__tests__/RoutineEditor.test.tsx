@@ -11,12 +11,15 @@ vi.mock('@/lib/routines', async (original) => ({
     create: vi.fn(),
     update: vi.fn(),
     getReceiver: vi.fn(),
+    getTaskReceiver: vi.fn(),
+    replaceTaskReceiver: vi.fn(),
     getReceiverAccess: vi.fn(),
   },
 }));
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(routineApi.get).mockResolvedValue(row);
+  vi.mocked(routineApi.getTaskReceiver).mockResolvedValue({ url: '/webhooks/test-receiver', version: 'a'.repeat(64), legacyActive: false });
   vi.mocked(routineApi.create).mockResolvedValue(row);
   vi.mocked(routineApi.update).mockResolvedValue(row);
   vi.mocked(routineApi.getReceiverAccess).mockResolvedValue({ allowed: true });
@@ -397,14 +400,8 @@ describe('structured routine form', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'On a schedule' }));
     expect(screen.getByRole('checkbox', { name: 'On a schedule' })).not.toBeChecked();
     fill('Webhook path', '/changed');
-    expect(
-      await screen.findByDisplayValue(
-        `${window.location.origin}/webhooks/test-receiver/changed`,
-      ),
-    ).toBeVisible();
-    expect(
-      screen.getByText('Preview only — inactive until Create routine.'),
-    ).toBeVisible();
+    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
+    expect(screen.getByText('Save this task to get its own webhook address.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
     expect(screen.getByRole('switch', { name: 'Active hours' })).toBeDisabled();
     fill('Events (comma-separated)', 'push, update');
@@ -467,7 +464,7 @@ describe('structured routine form', () => {
       }) }),
     ));
   });
-  it('represents missing receiver permission explicitly', async () => {
+  it('keeps a new task address inactive until it is saved', async () => {
     vi.mocked(routineApi.getReceiver).mockRejectedValue(
       new RoutineApiError(404),
     );
@@ -483,7 +480,7 @@ describe('structured routine form', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
     expect(
       await screen.findByText(
-        'We couldn’t check app setup. Try again.',
+        'Save this task to get its own webhook address.',
       ),
     ).toBeVisible();
     expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();

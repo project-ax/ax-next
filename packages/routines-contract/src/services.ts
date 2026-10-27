@@ -13,6 +13,10 @@ export const ROUTINE_HISTORY_MAX_LIMIT = 200;
 export const RoutineListInputSchema = z.object({ agentId: RoutineOpaqueStringSchema }).strict();
 export const RoutineKeySchema = z.object({ agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema }).strict();
 export const RoutineGetInputSchema = RoutineKeySchema;
+/** Owner-only setup capability. Never included in routine views or tool output. */
+export const RoutineWebhookAddressInputSchema = RoutineKeySchema;
+export const RoutineReplaceWebhookAddressInputSchema = RoutineKeySchema.extend({ expectedVersion: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export const RoutineWebhookAddressOutputSchema = z.object({ token: z.string().regex(/^rt_[A-Za-z0-9_-]{43}$/), version: z.string().regex(/^[a-f0-9]{64}$/), legacyActive: z.boolean() }).strict();
 export const RoutineListOutputSchema = z.object({ routines: z.array(RoutineViewSchema) }).strict();
 /** What the `routine_list` tool returns: the service's list, without any task's agent notes (TASK-907). */
 export const RoutineListToolOutputSchema = z.object({ routines: z.array(RoutineListToolViewSchema) }).strict();

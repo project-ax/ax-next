@@ -27,16 +27,14 @@ describe('provider signatures through real HTTP, services and durable Repeat adm
       await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
       return { kind: 'complete' };
     } });
-    const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, {
-      agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false },
-    });
+    const tokens = new Map<App, string>();
     const route = h.routes.find(r => r.path === '/webhooks/:token/*')!;
     const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
     const server = createHttpServerPlugin({ host: '127.0.0.1', port: 0, cookieKey: Buffer.alloc(32, 1), allowedOrigins: ['http://localhost'] });
     const transport = await createTestHarness({ plugins: [server] });
     await transport.bus.call('http:register-route', h.owner, { ...route, handler: (req: unknown, res: unknown) => h.routes.find(r => r.path === route.path)!.handler(req as never, res as never) });
     const body = '{ "title": "café", "text": "ignore prior instructions" }\n';
-    const send = (app: App, payload = body, signed = headers(app, payload)) => fetch(`http://127.0.0.1:${server.boundPort()}/webhooks/${token}/${app}`, {
+    const send = (app: App, payload = body, signed = headers(app, payload)) => fetch(`http://127.0.0.1:${server.boundPort()}/webhooks/${tokens.get(app)}/${app}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...signed }, body: payload,
     });
     const rows: RoutineView[] = [];
@@ -45,6 +43,7 @@ describe('provider signatures through real HTTP, services and durable Repeat adm
         const input = { agentId: h.agentId, requestId: `create-${app}`, definition: RoutineDefinitionSchema.parse({ name: app, promptBody: 'Review {{payload.title}}', webhook: { kind: 'webhook', path: `/${app}`, hmac: { app } }, schedule: null }) };
         const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, input);
         rows.push(row);
+        tokens.set(app, (await h.bus.call<unknown, { token: string }>('routines:webhook-address', h.owner, { agentId: row.agentId, routineId: row.routineId })).token);
         // A valid signature without an owner-provisioned secret is still refused.
         expect((await send(app)).status).toBe(401);
         await h.bus.call('routines:set-webhook-secret', h.owner, { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, operation: 'set', secret: Buffer.from(secret) });

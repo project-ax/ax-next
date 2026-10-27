@@ -282,7 +282,9 @@ describe('canonical routine return schemas', () => {
     });
   });
   it("declares every canonical service, including the host-only secret lifecycle, a check-in's report and clearing its notes, naming a check-in's task, a person's replies and step changes, a task's finish date, finishing or reopening a task, and a person's copy of a task", () => {
-    expect(ROUTINE_SERVICES).toHaveLength(25);
+    expect(ROUTINE_SERVICES).toHaveLength(27);
+    expect(ROUTINE_SERVICES).toContain('routines:webhook-address');
+    expect(ROUTINE_SERVICES).toContain('routines:replace-webhook-address');
     expect(ROUTINE_SERVICES).toContain('routines:set-webhook-secret');
     expect(ROUTINE_SERVICES).toContain('routines:report');
     expect(ROUTINE_SERVICES).toContain('routines:clear-notes');
