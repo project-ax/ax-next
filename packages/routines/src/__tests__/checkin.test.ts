@@ -345,6 +345,23 @@ describe('memory capture of a check-in (TASK-908)', () => {
     expect(await h.bus.fire('memory:pre-capture', chat, { conversationId: 'chat' })).toMatchObject({ rejected: false });
   });
 
+  it('TASK-919: a reported check-in stays refused after conversion to Repeat a job', async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task-kind-change');
+    const { ctx: runCtx } = await h.checkIn(task, 'run-kind-change', async ctx => {
+      expect(await report(ctx, { ...NEEDS_YOU, notes: NOTES })).toStrictEqual({ recorded: true });
+    });
+    await expect.poll(async () => (await storedRuns(task)).length).toBe(1);
+    const changed = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
+      agentId: h.agentId, routineId: task.routineId, expectedRevision: task.revision,
+      requestId: 'change-to-repeat', patch: { kind: 'repeat', goodWhen: null },
+    });
+    expect(changed.kind).toBe('repeat');
+    const asPerson = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: runCtx.conversationId!, source: 'user' });
+    expect(await h.bus.fire('memory:pre-capture', asPerson, { conversationId: runCtx.conversationId }))
+      .toMatchObject({ rejected: true, reason: 'task-check-in' });
+  });
+
   it("a repeat routine's run conversation is captured as before", async () => {
     // A harness of its own: this one gives every run the same conversation id.
     h = await createCheckInHarness();
