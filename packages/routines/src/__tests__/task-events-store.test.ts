@@ -155,4 +155,14 @@ describe('durable task update inbox',()=>{
     expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(1);expect(results.filter(result=>result.status==='rejected')).toHaveLength(1);expect((await rows()).filter(event=>event.dispatch_id!==null)).toHaveLength(1);
   });
 
+  it('preserves an idempotently queued owner reply across the two batched task kinds',async()=>{
+    const row=await task();const run=await accept(row);const request={...row,actorUserId:'owner',requestId:'queued-before-kind-change',now:at(6)};
+    expect(await f.store.requestTaskCheckIn(request)).toBe('queued');
+    const changed=await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'queued-kind-change',now:at(7),stopOnly:false,patch:{kind:'get-done'}});
+    expect(await f.store.hasTaskCheckInRequest(changed)).toBe(true);expect(await f.store.requestTaskCheckIn(request)).toBe('replayed');
+    await report(row,run.dispatchId);await finish(run.dispatchId);expect(await f.store.hasTaskCheckInRequest(changed)).toBe(true);
+    expect((await f.store.findOne(changed))!.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now()+1000);
+    await accept(changed,'queued-after-kind-change',at(8));expect(await f.store.hasTaskCheckInRequest(changed)).toBe(false);
+  });
+
 });

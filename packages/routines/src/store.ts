@@ -1007,7 +1007,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           ...(next.webhook === null ? { webhook_address_token: null, webhook_legacy_enabled: false } : {}),
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
           task_safety_due_at: next.kind==='repeat' ? null : schedulingChanged(current,next) || next.kind!==current.kind ? nextRun(next,input.now) : sql<Date|null>`task_safety_due_at`,
-          ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY,task_check_in_requested:false }),
+          ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY }),
+          ...(isTaskKind(next.kind) === isTaskKind(current.kind) ? {} : {task_check_in_requested:false}),
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
           // shortening instructions that were too long leaves the task paused, and counted.
           ...(!current.enabled && next.enabled ? NO_MISSES : {}),
