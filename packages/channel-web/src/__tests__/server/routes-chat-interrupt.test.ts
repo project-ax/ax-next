@@ -69,6 +69,8 @@ interface Calls {
 
 function makeBus(opts: {
   authFails?: boolean;
+  conversationOrigin?: 'web' | 'routine';
+  conversationActive?: boolean;
   conversationsGetThrows?: unknown;
   agentsResolveThrows?: unknown;
   /** Omit the hook entirely (a preset that doesn't load the orchestrator). */
@@ -92,9 +94,10 @@ function makeBus(opts: {
         conversationId: 'cnv1',
         userId: 'userA',
         agentId: 'agt_test',
+        origin: opts.conversationOrigin ?? 'web',
         title: null,
-        activeSessionId: 'sess-1',
-        activeReqId: 'req-1',
+        activeSessionId: opts.conversationActive === false ? null : 'sess-1',
+        activeReqId: opts.conversationActive === false ? null : 'req-1',
         createdAt: 't',
         updatedAt: 't',
       },
@@ -120,6 +123,26 @@ const pluginError = (code: string) =>
   new PluginError({ code, plugin: 'mock', message: code });
 
 describe('POST /api/chat/conversations/:id/interrupt', () => {
+  it.each([true, false])('preserves authenticated cancellation of a routine-origin conversation (active=%s)', async (active) => {
+    const { bus, calls } = makeBus({
+      conversationOrigin: 'routine',
+      conversationActive: active,
+      interruptResult: { interrupted: active },
+    });
+    const handlers = createChatRouteHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handlers.postInterrupt(fakeReq({
+      body: { origin: 'web', source: 'web', userId: 'userA' },
+      query: { origin: 'web', source: 'web' },
+    }), res);
+
+    expect(captured.status).toBe(200);
+    expect(captured.json).toEqual({ interrupted: active });
+    expect(calls.conversationsGet).toEqual([{ conversationId: 'cnv1', userId: 'userA' }]);
+    expect(calls.interrupt).toHaveLength(1);
+    expect(calls.interrupt[0]?.input).toEqual({ conversationId: 'cnv1', userId: 'userA' });
+  });
+
   it('401 when unauthenticated, and nothing downstream runs', async () => {
     const { bus, calls } = makeBus({ authFails: true });
     const handlers = createChatRouteHandlers({ bus, initCtx });

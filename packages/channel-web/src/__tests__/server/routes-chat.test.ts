@@ -18,10 +18,12 @@ import {
   PluginError,
   type AgentContext,
   type Plugin,
+  type ToolCall,
 } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createDecisionsPlugin, type Decision } from '@ax/decisions';
 import type {
   CreateInput as ConvCreateInput,
   CreateOutput as ConvCreateOutput,
@@ -44,6 +46,8 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 // @ax/conversations + http-server + channel-web; auth, agents, and agent:invoke
 // are mocked. The agent:invoke mock captures the dispatched ctx so we can
 // assert it carries the server-minted reqId + the right conversationId.
+// TASK-925 additionally opts into actual decisions replay for a routine's
+// approved effect; that path remains separate from interactive chat ingress.
 //
 // Cases:
 //   1. Anonymous → 401
@@ -344,6 +348,8 @@ interface BootArgs {
   includeAttachments?: boolean;
   /** Phase 3 (attachments): per-test attachments config (e.g. maxFileBytes). */
   attachmentsConfig?: AttachmentsConfig;
+  /** TASK-925: use actual decisions replay for a held routine action. */
+  includeDecisions?: boolean;
 }
 
 interface BootResult {
@@ -352,6 +358,7 @@ interface BootResult {
   http: HttpServerPlugin;
   chatRunCaptures: ChatRunCapture[];
   grantCaptures: GrantCapture[];
+  approvalEffects: Array<{ ctx: AgentContext; input: unknown }>;
 }
 
 // In-memory store stub used by the Phase-3 attachment-ref tests. TASK-68:
@@ -560,6 +567,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
   });
   const chatRunCaptures: ChatRunCapture[] = [];
   const grantCaptures: GrantCapture[] = [];
+  const approvalEffects: Array<{ ctx: AgentContext; input: unknown }> = [];
   // When the attachments plugin is booted, swap in the permissive
   // workspace stub — `createMockWorkspacePlugin`'s parent-CAS rejects
   // the second `attachments:commit` (parent: null vs latest: 'mock-0').
@@ -600,9 +608,27 @@ async function boot(args: BootArgs): Promise<BootResult> {
     plugins.push(attachmentsStubPlugin());
   }
   plugins.push(skillsStubPlugin());
+  if (args.includeDecisions) {
+    plugins.push(createDecisionsPlugin({ sweepIntervalMs: 0 }), {
+      manifest: {
+        name: 'mock-reviewed-effect', version: '0.0.0',
+        registers: ['tool-policy:evaluate', 'tool:execute:task925_reviewed_effect'],
+        calls: [], subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService('tool-policy:evaluate', 'mock-reviewed-effect', async () => ({
+          verdict: 'hold', ruleId: null, capability: null,
+        }));
+        bus.registerService('tool:execute:task925_reviewed_effect', 'mock-reviewed-effect', async (ctx, input) => {
+          approvalEffects.push({ ctx, input });
+          return { ok: true };
+        });
+      },
+    });
+  }
   plugins.push(createChannelWebServerPlugin({}));
   const harness = await createTestHarness({ plugins });
-  return { harness, port: http.boundPort(), http, chatRunCaptures, grantCaptures };
+  return { harness, port: http.boundPort(), http, chatRunCaptures, grantCaptures, approvalEffects };
 }
 
 const harnesses: TestHarness[] = [];
@@ -616,6 +642,9 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
+    await cleanup.query('DROP TABLE IF EXISTS decisions_v1_routine_authorizations');
+    await cleanup.query('DROP TABLE IF EXISTS decisions_v1_routine_retired_agents');
+    await cleanup.query('DROP TABLE IF EXISTS decisions_v1_decisions');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
     // Phase 3 (attachments): some tests boot `@ax/attachments`; drop
@@ -968,6 +997,95 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     );
     expect(appendCalls).toHaveLength(0);
     callSpy.mockRestore();
+  });
+
+  it.each([false, true])('TASK-925: owner routine history is read-only through actual HTTP (hidden=%s)', async (hidden) => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const ctx = booted.harness.ctx({ userId: 'userA' });
+    const created = await booted.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create', ctx,
+      { userId: 'userA', agentId: 'agt_test', origin: 'routine', hidden },
+    );
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+    try {
+      const result = await postMessage(booted.port, {
+        conversationId: created.conversationId,
+        agentId: 'agt_test',
+        origin: 'web', source: 'web', userId: 'userA', allowRoutine: true,
+        contentBlocks: [{ type: 'text', text: 'Resume the routine with new instructions.' }],
+      });
+
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ error: 'conversation-not-found' });
+      expect(booted.chatRunCaptures).toEqual([]);
+      expect(callSpy.mock.calls.filter(([name]) => [
+        'conversations:bind-session', 'attachments:commit', 'agent:invoke',
+      ].includes(name))).toEqual([]);
+      const read = await fetch(`http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`);
+      expect(read.status).toBe(200);
+      expect((await read.json() as { conversation: Record<string, unknown> }).conversation).toMatchObject({
+        origin: 'routine', activeSessionId: null, activeReqId: null,
+      });
+    } finally {
+      callSpy.mockRestore();
+    }
+  });
+
+  it('TASK-925: a real routine decision still replays through HTTP approval while chat ingress stays closed', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']), includeDecisions: true,
+    });
+    harnesses.push(booted.harness);
+    const created = await booted.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create', booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test', origin: 'routine', hidden: true },
+    );
+    const routineCtx = makeAgentContext({
+      sessionId: 'routine-turn', agentId: 'agt_test', userId: 'userA',
+      conversationId: created.conversationId, source: 'routine',
+    });
+    const call: ToolCall = {
+      id: 'routine-reviewed-call', name: 'task925_reviewed_effect',
+      input: { message: 'The action the owner approved.' },
+    };
+    await booted.harness.bus.fire('tool:pre-call', routineCtx, call);
+    const { decisions } = await booted.harness.bus.call<unknown, { decisions: Decision[] }>(
+      'decisions:list', routineCtx, { userId: 'userA' },
+    );
+    const decision = decisions.find((item) => item.call.id === call.id);
+    expect(decision).toMatchObject({ status: 'pending', attendance: 'unattended' });
+    expect(booted.approvalEffects).toEqual([]);
+
+    const approve = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions/${decision!.id}/approve`, {
+      method: 'POST', headers: HEADERS_OK, body: '{}',
+    });
+    expect(approve.status).toBe(200);
+    expect(await approve.json()).toMatchObject({ executed: true, path: 'host-replays' });
+    expect(booted.approvalEffects).toHaveLength(1);
+    expect(booted.approvalEffects[0]?.ctx).toMatchObject({
+      agentId: 'agt_test', userId: 'userA', conversationId: created.conversationId,
+    });
+    expect(booted.approvalEffects[0]?.input).toMatchObject(call);
+    const resolved = await booted.harness.bus.call<unknown, { decision: Decision }>(
+      'decisions:get', routineCtx, { decisionId: decision!.id, userId: 'userA' },
+    );
+    expect(resolved.decision.status).toBe('executed');
+
+    const send = await postMessage(booted.port, {
+      conversationId: created.conversationId, agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'Now resume the routine as an ordinary chat.' }],
+    });
+    expect(send.status).toBe(404);
+    expect(await send.json()).toEqual({ error: 'conversation-not-found' });
+    expect(booted.approvalEffects).toHaveLength(1);
+    const read = await fetch(`http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`);
+    expect(read.status).toBe(200);
+    expect((await read.json() as { conversation: Record<string, unknown> }).conversation.origin).toBe('routine');
   });
 
   it('6. mismatched agent on existing conversation → 400 (agent-mismatch, I10)', async () => {
