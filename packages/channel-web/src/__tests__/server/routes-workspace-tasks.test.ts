@@ -1032,7 +1032,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
           agentId: 'a1',
           routineId: 'la',
           kind: 'get-done',
-          trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
+          schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/Los_Angeles' },
           finishBy: '2026-11-14',
         }),
         // An interval, no active hours and no zone stored with its date: UTC's calendar.
@@ -1050,7 +1050,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
           agentId: 'a1',
           routineId: 'tokyo',
           kind: 'get-done',
-          trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' },
+          schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' },
           finishBy: '2026-11-14',
           finishByTimeZone: 'America/Los_Angeles',
         }),

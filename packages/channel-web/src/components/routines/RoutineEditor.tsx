@@ -2,6 +2,9 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Copy } from 'lucide-react';
 import {
   RoutineDefinitionSchema,
+  repeatScheduleWriteIssue,
+  type RoutineSchedule,
+  type WebhookTrigger,
   editableDefinition,
   isTaskKind,
   ROUTINE_GOOD_WHEN_MAX_CHARS,
@@ -15,11 +18,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Field,
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldSet,
+  FieldLegend,
 } from '@/components/ui/field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -44,7 +50,7 @@ interface Props {
   onPendingChange?: ((pending: boolean) => void) | undefined;
 }
 interface DefaultProps {
-  initial?: RoutineDefinition;
+  initial?: RoutineDefinition | RoutineUpsertDefaultInput;
   onSave: (definition: RoutineUpsertDefaultInput) => Promise<unknown>;
   onSaved: () => void;
   onCancel: () => void;
@@ -55,11 +61,12 @@ const empty = (): RoutineDefinition => ({
   description: '',
   promptBody: '',
   enabled: true,
-  trigger: {
+  schedule: {
     kind: 'cron',
     expr: '0 8 * * 1-5',
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   },
+  webhook: null,
   activeHours: null,
   silenceToken: null,
   silenceMaxChars: 300,
@@ -72,7 +79,8 @@ const editableKeys = [
   'description',
   'promptBody',
   'enabled',
-  'trigger',
+  'schedule',
+  'webhook',
   'activeHours',
   'silenceToken',
   'silenceMaxChars',
@@ -154,12 +162,9 @@ export function RoutineEditor(props: Props) {
 export function DefaultRoutineEditor(props: DefaultProps) {
   return (
     <RoutineForm
-      initial={
-        props.initial ?? {
-          ...empty(),
-          trigger: { kind: 'interval', every: '1h' },
-        }
-      }
+      initial={props.initial ? RoutineDefinitionSchema.parse(props.initial) : {
+        ...empty(), schedule: { kind: 'interval', every: '1h' }, webhook: null,
+      }}
       agentName="The agent"
       mode={props.initial ? 'edit' : 'create'}
       defaults
@@ -167,8 +172,9 @@ export function DefaultRoutineEditor(props: DefaultProps) {
       onSaved={props.onSaved}
       onPendingChange={props.onPendingChange}
       save={async (definition) => {
-        if (definition.trigger.kind !== 'interval') return;
-        await props.onSave({ ...definition, kind: 'repeat', goodWhen: null, trigger: definition.trigger });
+        if (definition.schedule?.kind !== 'interval') return;
+        const { schedule, webhook: _webhook, ...fields } = definition;
+        await props.onSave({ ...fields, kind: 'repeat', goodWhen: null, trigger: schedule });
       }}
     />
   );
@@ -201,9 +207,7 @@ function RoutineForm({
   const id = useId();
   const [form, setForm] = useState(initial);
   const [eventsDraft, setEventsDraft] = useState(
-    initial.trigger.kind === 'webhook'
-      ? (initial.trigger.events ?? []).join(', ')
-      : '',
+    (initial.webhook?.events ?? []).join(', '),
   );
   const [error, setError] = useState<string | null>(null);
   const [invalidField, setInvalidField] = useState<string | undefined>();
@@ -211,8 +215,16 @@ function RoutineForm({
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [optional, setOptional] = useState(false);
-  const [receiver, setReceiver] = useState<string | null>(null);
+  const [receiverForAgent, setReceiverForAgent] = useState<{ agentId: string; url: string } | null>(null);
+  // Scope the displayed bearer synchronously; passive cleanup runs after a commit.
+  const receiver = receiverForAgent !== null && receiverForAgent.agentId === agentId ? receiverForAgent.url : null;
   const [receiverError, setReceiverError] = useState(false);
+  const [receiverAllowed, setReceiverAllowed] = useState<boolean | null>(null);
+  const [receiverRetry, setReceiverRetry] = useState(0);
+  const scheduleDraft = useRef<RoutineSchedule>(initial.schedule ?? { kind: 'interval', every: '1h' });
+  const webhookDraft = useRef<WebhookTrigger>(initial.webhook ?? { kind: 'webhook', path: '/project-updates' });
+  const hoursDraft = useRef(initial.activeHours);
+  const hasWebhook = form.webhook !== null;
   const [copyState, setCopyState] = useState('');
   const flight = useRef(false);
   // Exact payload and request ID survive a response-loss retry. Draft controls freeze meanwhile.
@@ -221,36 +233,38 @@ function RoutineForm({
     definition: RoutineDefinition;
   } | null>(null);
   useEffect(() => {
-    if (!agentId || form.trigger.kind !== 'webhook') return;
+    if (!agentId || !hasWebhook) return;
     let active = true;
-    setReceiver(null);
+    setReceiverForAgent(null);
+    setReceiverAllowed(null);
     setReceiverError(false);
-    void routineApi
-      .getReceiver(agentId)
-      .then((r) => {
-        if (active) setReceiver(r.url);
-      })
-      .catch(() => {
-        if (active) setReceiverError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [agentId, form.trigger.kind]);
+    void routineApi.getReceiverAccess(agentId).then(async access => {
+      if (!active) return;
+      setReceiverAllowed(access.allowed);
+      if (!access.allowed) return;
+      const result = await routineApi.getReceiver(agentId);
+      if (active) setReceiverForAgent({ agentId, url: result.url });
+    }).catch(() => { if (active) setReceiverError(true); });
+    return () => { active = false; };
+  }, [agentId, hasWebhook, receiverRetry]);
   // Keep separators in the input; normalize only the definition being validated/saved.
   const draftDefinition = useMemo(() => {
-    if (form.trigger.kind !== 'webhook') return form;
-    const { events: _events, ...trigger } = form.trigger;
+    if (form.webhook === null) return form;
+    const { events: _events, ...webhook } = form.webhook;
     const events = eventsDraft
       .split(',')
       .map((event) => event.trim())
       .filter(Boolean);
-    return { ...form, trigger: events.length ? { ...trigger, events } : trigger };
+    return { ...form, webhook: events.length ? { ...webhook, events } : webhook };
   }, [form, eventsDraft]);
-  const validation = useMemo(
-    () => RoutineDefinitionSchema.safeParse(draftDefinition),
-    [draftDefinition],
-  );
+  const validation = useMemo(() => {
+    const parsed = RoutineDefinitionSchema.safeParse(draftDefinition);
+    if (parsed.success && parsed.data.kind === 'repeat') {
+      const issue = repeatScheduleWriteIssue(parsed.data.schedule, mode === 'edit' ? initial.schedule : undefined);
+      if (issue !== null) return { success: false as const, error: { issues: [{ path: ['schedule', 'expr'], message: issue }] } };
+    }
+    return parsed;
+  }, [draftDefinition, initial.schedule, mode]);
   const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
   // Neither the host (core's TOOL_FIELDS) nor RoutineApiError can name
   // goodWhen, so its invalid state is the contract's own check here, which
@@ -266,10 +280,30 @@ function RoutineForm({
     key: K,
     value: RoutineDefinition[K],
   ) {
+    if (key === 'schedule' && value !== null) scheduleDraft.current = value as RoutineSchedule;
+    if (key === 'webhook' && value !== null) webhookDraft.current = value as WebhookTrigger;
+    if (key === 'activeHours') hoursDraft.current = value as RoutineDefinition['activeHours'];
     setForm((f) => ({ ...f, [key]: value }));
     setError(null);
     setInvalidField(undefined);
     setCopyState('');
+  }
+  function toggleSchedule(on: boolean) {
+    if (!on) {
+      if (form.schedule !== null) scheduleDraft.current = form.schedule;
+      hoursDraft.current = form.activeHours;
+    }
+    setForm(f => ({ ...f, schedule: on ? scheduleDraft.current : null, activeHours: on ? hoursDraft.current : null }));
+    setError(null); setInvalidField(undefined);
+  }
+  function toggleWebhook(on: boolean) {
+    if (!on && form.webhook !== null) webhookDraft.current = form.webhook;
+    if (!on) {
+      setReceiverForAgent(null);
+      setReceiverAllowed(null);
+      setReceiverError(false);
+    }
+    update('webhook', on ? webhookDraft.current : null);
   }
   function textField(
     label: string,
@@ -279,7 +313,8 @@ function RoutineForm({
     options: { type?: string; maxLength?: number; disabled?: boolean } = {},
   ) {
     const invalid =
-      invalidField === field || invalidField?.startsWith(`${field}.`) === true;
+      invalidField === field || invalidField?.startsWith(`${field}.`) === true ||
+      firstIssue?.path.join('.') === field || firstIssue?.path.join('.').startsWith(`${field}.`) === true;
     return (
       <Field
         data-invalid={invalid || undefined}
@@ -336,18 +371,18 @@ function RoutineForm({
   let preview: string | null = null;
   if (
     receiver &&
-    form.trigger.kind === 'webhook' &&
-    validateWebhookPath(form.trigger.path)
+    form.webhook !== null &&
+    validateWebhookPath(form.webhook.path)
   ) {
     try {
-      preview = `${new URL(receiver, window.location.origin).href.replace(/\/$/, '')}${form.trigger.path}`;
+      preview = `${new URL(receiver, window.location.origin).href.replace(/\/$/, '')}${form.webhook.path}`;
     } catch {
       /* Unavailable receiver is never an example token. */
     }
   }
   const savedWebhook =
-    initial.trigger.kind === 'webhook' &&
-    JSON.stringify(initial.trigger) === JSON.stringify(draftDefinition.trigger) &&
+    initial.webhook !== null &&
+    JSON.stringify(initial.webhook) === JSON.stringify(draftDefinition.webhook) &&
     mode === 'edit';
   return (
     <form
@@ -363,7 +398,7 @@ function RoutineForm({
         </p>
       )}
       <p className="text-sm text-muted-foreground">
-        {agentName} runs this work when its trigger fires.
+        {agentName} runs this work on its schedule or when an app sends an update.
       </p>
       <FieldGroup className="gap-4">
         <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -406,89 +441,64 @@ function RoutineForm({
             />
           </Field>
         )}
-        <Field>
-          <FieldLabel>When to run</FieldLabel>
-          <ToggleGroup
-            type="single"
-            aria-label="When to run"
-            value={form.trigger.kind}
-            disabled={disabled}
-            onValueChange={(v) => {
-              if (v === 'interval')
-                update('trigger', { kind: 'interval', every: '1h' });
-              if (v === 'cron')
-                update('trigger', {
-                  kind: 'cron',
-                  expr: '0 8 * * 1-5',
-                  tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-                });
-              if (v === 'webhook') {
-                setEventsDraft('');
-                setForm((f) => ({
-                  ...f,
-                  activeHours: null,
-                  trigger: { kind: 'webhook', path: '/project-updates' },
-                }));
-              }
-            }}
-            className="justify-start flex-wrap"
-          >
-            {!defaults && (
-              <ToggleGroupItem value="cron">Schedule</ToggleGroupItem>
+        {!defaults && (
+          <FieldSet className="gap-3">
+            <FieldLegend variant="label">When to run</FieldLegend>
+            <Field orientation="horizontal">
+              <Checkbox id={`${id}-scheduled`} checked={form.schedule !== null} disabled={disabled || isTaskKind(form.kind)} onCheckedChange={value => toggleSchedule(value === true)} />
+              <FieldLabel htmlFor={`${id}-scheduled`}>On a schedule</FieldLabel>
+            </Field>
+            {isTaskKind(form.kind) ? (
+              <FieldDescription>The schedule stays on for full check-ins. Updates from another app come later.</FieldDescription>
+            ) : (
+              <Field orientation="horizontal">
+                <Checkbox id={`${id}-updates`} checked={form.webhook !== null} disabled={disabled} onCheckedChange={value => toggleWebhook(value === true)} />
+                <FieldLabel htmlFor={`${id}-updates`}>When another app sends an update</FieldLabel>
+              </Field>
             )}
-            <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
-            {!defaults && (
-              <ToggleGroupItem value="webhook">Webhook</ToggleGroupItem>
-            )}
-          </ToggleGroup>
-        </Field>
-        {form.trigger.kind === 'interval' &&
-          textField('Interval', form.trigger.every, 'trigger.every', (v) =>
-            update('trigger', { kind: 'interval', every: v }),
-          )}
-        {form.trigger.kind === 'cron' && (
+          </FieldSet>
+        )}
+        {form.schedule !== null && (
           <>
-            <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {textField(
-                'Schedule',
-                form.trigger.expr,
-                'trigger.expr',
-                (v) => {
-                  if (form.trigger.kind === 'cron')
-                    update('trigger', { ...form.trigger, expr: v });
-                },
-                { maxLength: 256 },
-              )}
-              {textField('Time zone', form.trigger.tz, 'trigger.tz', (v) => {
-                if (form.trigger.kind === 'cron')
-                  update('trigger', { ...form.trigger, tz: v });
-              })}
-            </FieldGroup>
-            <p className="text-xs text-muted-foreground">
-              {describeCron(form.trigger.expr).kind === 'described'
-                ? (describeCron(form.trigger.expr) as { text: string }).text
-                : 'Custom schedule'}{' '}
-              · {form.trigger.tz}
-            </p>
+            <Field>
+              <FieldLabel>Schedule</FieldLabel>
+              <ToggleGroup type="single" aria-label="Schedule" value={form.schedule.kind} disabled={disabled} onValueChange={value => {
+                if (value === 'interval') update('schedule', { kind: 'interval', every: '1h' });
+                if (value === 'cron' && !defaults) update('schedule', { kind: 'cron', expr: '0 8 * * 1-5', tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
+              }} className="justify-start flex-wrap">
+                <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
+                {!defaults && <ToggleGroupItem value="cron">Custom schedule</ToggleGroupItem>}
+              </ToggleGroup>
+            </Field>
+            {form.schedule.kind === 'interval' && textField('Interval', form.schedule.every, 'schedule.every', value => update('schedule', { kind: 'interval', every: value }))}
+            {form.schedule.kind === 'cron' && (
+              <>
+                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {textField('Cron expression', form.schedule.expr, 'schedule.expr', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, expr: value }); })}
+                  {textField('Time zone', form.schedule.tz, 'schedule.tz', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, tz: value }); })}
+                </FieldGroup>
+                <FieldDescription>{describeCron(form.schedule.expr).kind === 'described' ? (describeCron(form.schedule.expr) as { text: string }).text : 'Custom schedule'} · {form.schedule.tz}</FieldDescription>
+              </>
+            )}
           </>
         )}
-        {form.trigger.kind === 'webhook' && (
+        {form.webhook !== null && (
           <>
             <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {textField(
                 'Webhook path',
-                form.trigger.path,
-                'trigger.path',
+                form.webhook.path,
+                'webhook.path',
                 (v) => {
-                  if (form.trigger.kind === 'webhook')
-                    update('trigger', { ...form.trigger, path: v });
+                  if (form.webhook !== null)
+                    update('webhook', { ...form.webhook, path: v });
                 },
                 { maxLength: 128 },
               )}
               {textField(
                 'Events (comma-separated)',
                 eventsDraft,
-                'trigger.events',
+                'webhook.events',
                 (v) => {
                   setEventsDraft(v);
                   setError(null);
@@ -497,11 +507,13 @@ function RoutineForm({
                 },
               )}
             </FieldGroup>
-            {receiverError ? (
+            {receiverAllowed === false ? (
+              <FieldDescription>An agent administrator can connect app updates. The signing secret remains in the task owner's settings.</FieldDescription>
+            ) : receiverError ? (
               <Alert variant="destructive">
                 <AlertDescription>
-                  Webhook URL is unavailable. Receiver permission may be
-                  missing.
+                  We couldn’t check app setup. Try again.
+                  <Button type="button" variant="outline" onClick={() => setReceiverRetry(v => v + 1)}>Retry app setup</Button>
                 </AlertDescription>
               </Alert>
             ) : receiver === null ? (
@@ -589,7 +601,7 @@ function RoutineForm({
                 <Switch
                   id={`${id}-hours`}
                   checked={form.activeHours !== null}
-                  disabled={disabled || form.trigger.kind === 'webhook'}
+                  disabled={disabled || form.schedule === null}
                   onCheckedChange={(v) =>
                     update(
                       'activeHours',
@@ -606,11 +618,7 @@ function RoutineForm({
                   }
                 />
               </Field>
-              {form.trigger.kind === 'webhook' && (
-                <FieldDescription>
-                  Webhooks run when received; active hours is unavailable.
-                </FieldDescription>
-              )}
+              {form.webhook !== null && <FieldDescription>App updates run when received. Active hours apply to the schedule.</FieldDescription>}
               {form.activeHours && (
                 <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   {textField(
@@ -659,7 +667,7 @@ function RoutineForm({
                 (v) => update('silenceMaxChars', Number(v)),
                 { type: 'number' },
               )}
-              {form.trigger.kind === 'webhook' && (
+              {form.webhook !== null && (
                 <>
                   <Field orientation="horizontal">
                     <FieldLabel htmlFor={`${id}-hmac`}>
@@ -667,13 +675,13 @@ function RoutineForm({
                     </FieldLabel>
                     <Switch
                       id={`${id}-hmac`}
-                      checked={form.trigger.hmac !== undefined}
+                      checked={form.webhook.hmac !== undefined}
                       disabled={disabled}
                       onCheckedChange={(v) => {
-                        if (form.trigger.kind === 'webhook') {
-                          const { hmac: _hmac, ...rest } = form.trigger;
+                        if (form.webhook !== null) {
+                          const { hmac: _hmac, ...rest } = form.webhook;
                           update(
-                            'trigger',
+                            'webhook',
                             v
                               ? {
                                   ...rest,
@@ -688,20 +696,20 @@ function RoutineForm({
                       }}
                     />
                   </Field>
-                  {form.trigger.hmac && (
+                  {form.webhook.hmac && (
                     <>
                       {textField(
                         'Signature header',
-                        form.trigger.hmac.header,
-                        'trigger.hmac.header',
+                        form.webhook.hmac.header,
+                        'webhook.hmac.header',
                         (v) => {
                           if (
-                            form.trigger.kind === 'webhook' &&
-                            form.trigger.hmac
+                            form.webhook !== null &&
+                            form.webhook.hmac
                           )
-                            update('trigger', {
-                              ...form.trigger,
-                              hmac: { ...form.trigger.hmac, header: v },
+                            update('webhook', {
+                              ...form.webhook,
+                              hmac: { ...form.webhook.hmac, header: v },
                             });
                         },
                         { maxLength: 128 },
@@ -711,17 +719,17 @@ function RoutineForm({
                         <ToggleGroup
                           type="single"
                           aria-label="Signature algorithm"
-                          value={form.trigger.hmac.algorithm}
+                          value={form.webhook.hmac.algorithm}
                           disabled={disabled}
                           onValueChange={(v) => {
                             if (
                               (v === 'sha256' || v === 'sha1') &&
-                              form.trigger.kind === 'webhook' &&
-                              form.trigger.hmac
+                              form.webhook !== null &&
+                              form.webhook.hmac
                             )
-                              update('trigger', {
-                                ...form.trigger,
-                                hmac: { ...form.trigger.hmac, algorithm: v },
+                              update('webhook', {
+                                ...form.webhook,
+                                hmac: { ...form.webhook.hmac, algorithm: v },
                               });
                           }}
                           className="justify-start"
@@ -734,17 +742,17 @@ function RoutineForm({
                       </Field>
                       {textField(
                         'Signature prefix',
-                        form.trigger.hmac.prefix ?? '',
-                        'trigger.hmac.prefix',
+                        form.webhook.hmac.prefix ?? '',
+                        'webhook.hmac.prefix',
                         (v) => {
                           if (
-                            form.trigger.kind === 'webhook' &&
-                            form.trigger.hmac
+                            form.webhook !== null &&
+                            form.webhook.hmac
                           ) {
                             const { prefix: _prefix, ...hmac } =
-                              form.trigger.hmac;
-                            update('trigger', {
-                              ...form.trigger,
+                              form.webhook.hmac;
+                            update('webhook', {
+                              ...form.webhook,
                               hmac: v ? { ...hmac, prefix: v } : hmac,
                             });
                           }

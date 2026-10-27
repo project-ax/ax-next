@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineDuplicateOutput } from '@ax/routines-contract';
-import { fixture, createInput, now } from './store-fixture.js';
+import { fixture, createInput, defaultDefinition, now } from './store-fixture.js';
 import { logged } from './support/report-log.js';
 import { registerRoutineServices } from '../services.js';
 import type { RoutinesStore } from '../store.js';
@@ -138,7 +138,7 @@ describe('routines:duplicate (TASK-953)', () => {
   });
 
   it('a default is forbidden, as routines:update refuses it, and the store is never asked', async () => {
-    const { defaultRoutineId } = await f.store.upsertDefault({ ...createInput().definition, name: 'copy-check', trigger: { kind: 'interval', every: '60s' } });
+    const { defaultRoutineId } = await f.store.upsertDefault({ ...defaultDefinition(), name: 'copy-check', trigger: { kind: 'interval', every: '60s' } });
     await f.store.materializeMissing({ agents: [{ agentId: 'a', ownerUserId: 'owner' }], now });
     const materialized = (await f.store.list({ agentId: 'a' })).find(row => row.definitionId === defaultRoutineId)!;
     expect(materialized.ownerUserId).toBe('owner');

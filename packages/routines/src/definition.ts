@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, durationToSeconds, type RoutineDefinition, type RoutinePatch } from '@ax/routines-contract';
+import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutinePatchSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, durationToSeconds, normalizeLegacyRoutineDefinition, repeatScheduleWriteIssue, type RoutineDefinition, type RoutinePatch } from '@ax/routines-contract';
 import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
@@ -44,17 +44,22 @@ export function validateDefinition(input: unknown): RoutineDefinition {
   return parsed.data;
 }
 export function nextRun(definition: RoutineDefinition, now: Date): Date | null {
-  if (!definition.enabled || definition.trigger.kind === 'webhook') return null;
-  if (definition.trigger.kind === 'cron') return new Cron(definition.trigger.expr, { timezone: definition.trigger.tz }).nextRun(now);
-  return new Date(now.getTime() + durationToSeconds(definition.trigger.every)! * 1000);
+  if (!definition.enabled || definition.schedule === null) return null;
+  if (definition.schedule.kind === 'cron') return new Cron(definition.schedule.expr, { timezone: definition.schedule.tz }).nextRun(now);
+  return new Date(now.getTime() + durationToSeconds(definition.schedule.every)! * 1000);
 }
 export function schedulingChanged(a: RoutineDefinition, b: RoutineDefinition): boolean {
-  return inputHash({ enabled: a.enabled, trigger: a.trigger, activeHours: a.activeHours }) !== inputHash({ enabled: b.enabled, trigger: b.trigger, activeHours: b.activeHours });
+  return inputHash({ enabled: a.enabled, schedule: a.schedule, activeHours: a.activeHours }) !== inputHash({ enabled: b.enabled, schedule: b.schedule, activeHours: b.activeHours });
 }
 export function credentialRef(key: { agentId: string; routineId: string }): string { return `routine:${key.agentId}:${key.routineId}:hmac`; }
-export function hasHmac(row: RoutineDefinition): boolean { return row.trigger.kind === 'webhook' && row.trigger.hmac !== undefined; }
+export function hasHmac(row: RoutineDefinition): boolean { return row.webhook !== null && row.webhook.hmac !== undefined; }
+/** New effects only: a completed receipt is returned before this authoring rule runs. */
+export function validateScheduleWrite(next: RoutineDefinition, previous?: RoutineDefinition): void {
+  if (next.kind === 'repeat' && repeatScheduleWriteIssue(next.schedule, previous?.schedule) !== null)
+    throw new SafeToolError('validation', next.schedule?.kind === 'cron' ? 'schedule.expr' : 'schedule.every');
+}
 // Strict receipt parser also rehydrates JSON dates. Private state never enters RoutineView.
-export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
+const CanonicalStoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   agentId: z.string(), routineId: z.string(), revision: z.string(), ownerUserId: z.string(),
   definitionId: z.string().nullable(), definitionUpdatedAt: z.coerce.date().nullable(),
   nextRunAt: z.coerce.date().nullable(), lastRunAt: z.coerce.date().nullable(),
@@ -101,6 +106,7 @@ export const StoredRoutineSchema = RoutineDefinitionObjectSchema.extend({
   const checked = RoutineDefinitionSchema.safeParse(editableDefinition(row));
   if (!checked.success) for (const issue of checked.error.issues) ctx.addIssue(issue);
 });
+export const StoredRoutineSchema = z.preprocess(normalizeLegacyRoutineDefinition, CanonicalStoredRoutineSchema);
 export function parseStoredRoutine(value: unknown): StoredRoutine { return StoredRoutineSchema.parse(value); }
 
 /** Hash exactly the canonical public effect. Actor, owner, request ID, clock and authority
@@ -110,7 +116,21 @@ export function createRequestHash(input: import('@ax/routines-contract').Routine
   return inputHash({ agentId: input.agentId, definition: validateDefinition(input.definition) });
 }
 export function updateRequestHash(input: import('@ax/routines-contract').RoutineUpdateInput): string {
-  return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, patch: input.patch });
+  return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, patch: RoutinePatchSchema.parse(input.patch) });
+}
+/** v14 receipts retain their original hashes. Only an exactly representable old effect is compatible. */
+export function createRequestHashes(input: import('@ax/routines-contract').RoutineCreateInput): string[] {
+  const definition = validateDefinition(input.definition);
+  const { schedule, webhook, ...rest } = definition;
+  const trigger = schedule !== null && webhook === null ? schedule : schedule === null && webhook !== null ? webhook : null;
+  return [...new Set([createRequestHash(input), ...(trigger === null ? [] : [inputHash({ agentId: input.agentId, definition: { ...rest, trigger } })])])];
+}
+export function updateRequestHashes(input: import('@ax/routines-contract').RoutineUpdateInput): string[] {
+  const patch = RoutinePatchSchema.parse(input.patch);
+  const { schedule, webhook, ...rest } = patch;
+  const trigger = schedule !== undefined && schedule !== null && webhook === null ? schedule
+    : schedule === null && webhook !== undefined && webhook !== null ? webhook : null;
+  return [...new Set([updateRequestHash(input), ...(trigger === null ? [] : [inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, patch: { ...rest, trigger } })])])];
 }
 export function deleteRequestHash(input: import('@ax/routines-contract').RoutineDeleteInput): string {
   return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision });

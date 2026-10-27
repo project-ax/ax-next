@@ -1,4 +1,4 @@
-import { durationToSeconds, type RoutineTrigger as TriggerSpec } from '@ax/routines-contract';
+import { durationToSeconds, type RoutineSchedule as TriggerSpec } from '@ax/routines-contract';
 
 export interface TriggerEngine {
   nextRun(spec: TriggerSpec, from: Date): Date | null;

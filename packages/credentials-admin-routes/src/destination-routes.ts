@@ -546,7 +546,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actor.id, agentId: input.data.agentId });
       try {
         const routine = RoutineGetOutputSchema.parse(await deps.bus.call('routines:get', routineCtx, input.data));
-        if (!routine.permissions.manageSecret || routine.trigger.kind !== 'webhook' || !routine.trigger.hmac) {
+        if (!routine.permissions.manageSecret || routine.webhook === null || !routine.webhook.hmac) {
           res.status(404).json({ code: 'not-found', error: 'The routine is unavailable.' });
           return;
         }

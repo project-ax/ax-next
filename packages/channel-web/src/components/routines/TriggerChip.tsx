@@ -5,6 +5,7 @@
  */
 import { describeCron } from '@/lib/cron-describe';
 import type { TriggerSpec } from '../../lib/routines';
+import type { RoutineSchedule, WebhookTrigger } from '@ax/routines-contract';
 
 function summarize(t: TriggerSpec): string {
   switch (t.kind) {
@@ -19,13 +20,14 @@ function summarize(t: TriggerSpec): string {
   }
 }
 
-export function TriggerChip({ trigger }: { trigger: TriggerSpec }) {
+export function TriggerChip({ schedule, webhook }: { schedule: RoutineSchedule | null; webhook: WebhookTrigger | null }) {
+  const text = [schedule === null ? null : summarize(schedule), webhook === null ? null : summarize(webhook)].filter(Boolean).join(' · ');
   return (
     <span
       className="text-xs text-muted-foreground"
-      title={`Trigger: ${trigger.kind}`}
+      title="When it runs"
     >
-      {summarize(trigger)}
+      {text}
     </span>
   );
 }

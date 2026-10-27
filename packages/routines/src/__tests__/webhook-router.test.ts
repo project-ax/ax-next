@@ -9,6 +9,8 @@ import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { runTickOnce } from '../tick.js';
+import { systemClock } from '../clock.js';
 let h: RoutineHarness;
 afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
 const definition = (hmac?: {
@@ -39,6 +41,31 @@ async function request(token: string, options: {
   return code;
 }
 describe('single registered request-time DB webhook route', () => {
+  it('keeps the original signed URL after adding a schedule, restart and work-hour deferral', async () => {
+    const time = new Date('2031-01-01T12:00:00Z');
+    h = await createRoutineHarness({ clock: { now: () => time, sleep: systemClock.sleep }, invoke: async (ctx, bus) => {
+      await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
+      return { kind: 'complete' };
+    } });
+    let row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
+      agentId: h.agentId, requestId: 'create-hook', definition: definition({ header: 'X-Signature', algorithm: 'sha256' }),
+    });
+    const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
+    row = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
+      agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'add-schedule',
+      patch: { schedule: { kind: 'interval', every: '60s' }, activeHours: { start: '09:00', end: '10:00', tz: 'UTC' } },
+    });
+    const scheduledFire = vi.fn(async () => ({ status: 'ok' as const, error: null, renderedPrompt: 'done' }));
+    await runTickOnce({ store: createRoutinesStore(h.db), fire: scheduledFire, now: new Date(time.getTime() + 60_000), claimBatchSize: 50, claimWindowMinutes: 5 });
+    expect(scheduledFire).not.toHaveBeenCalled();
+    expect((await createRoutinesStore(h.db).findOne(row))?.nextRunAt).toEqual(new Date('2031-01-02T09:00:00Z'));
+    h = await h.restart();
+    const body = '{"title":"arrival outside work hours"}';
+    const signature = createHmac('sha256', 'test-secret').update(body).digest('hex');
+    expect(await request(token, { body, headers: { 'x-signature': signature, 'x-github-event': 'push' } })).toBe(202);
+    expect(h.invokeCalls).toHaveLength(1);
+    expect((await createRoutinesStore(h.db).findOne(row))?.nextRunAt).toEqual(new Date('2031-01-02T09:00:00Z'));
+  });
   it('registers once and dispatches JSON and forms through the current DB definition', async () => {
     const { row, token } = await setup();
     expect(await request(token)).toBe(202);

@@ -805,7 +805,7 @@ type TaskListView = Pick<
   | 'finishBy'
   | 'finishByTimeZone'
   | 'done'
-  | 'trigger'
+  | 'schedule'
   | 'activeHours'
 >;
 interface TaskListOutput {
@@ -827,7 +827,7 @@ type TaskDetailView = Pick<
   | 'revision'
   | 'permissions'
   | 'ownedByCaller'
-  | 'trigger'
+  | 'schedule'
   | 'activeHours'
   | 'nextRunAt'
   | 'promptBody'
@@ -2911,9 +2911,9 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
   const instructions = fenceBlock(fields.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
   const goodWhen = fenceBlock(fields.goodWhen, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES);
   const checksIn =
-    fields.trigger === undefined
+    fields.schedule === undefined
       ? null
-      : fenceLine(describeCheckIns(fields.trigger), DECISION_TASK_CHECKS_IN_MAX_CHARS);
+      : fenceLine(describeCheckIns(fields.schedule), DECISION_TASK_CHECKS_IN_MAX_CHARS);
   // A change whose drawn fields all fence to nothing (a patch of only a blank
   // `goodWhen` or blank instructions) would be a heading over no rows. No
   // block; the raw request block still shows the change. A kind change always
@@ -3722,7 +3722,7 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
  * text, reads as none: the date still shows, counted on UTC's calendar.
  */
 function toTaskFinishBy(
-  view: Pick<RoutineView, 'kind' | 'finishBy' | 'finishByTimeZone' | 'trigger' | 'activeHours'>,
+  view: Pick<RoutineView, 'kind' | 'finishBy' | 'finishByTimeZone' | 'schedule' | 'activeHours'>,
   now: Date,
 ): TaskFinishBy | null {
   const date: unknown = view.finishBy;
@@ -3730,7 +3730,7 @@ function toTaskFinishBy(
   if (!RoutineFinishBySchema.safeParse(date).success) return null;
   const setFrom = RoutineTimezoneSchema.safeParse(view.finishByTimeZone);
   const tz = taskTimeZone({
-    trigger: view.trigger,
+    schedule: view.schedule,
     activeHours: view.activeHours,
     finishByTimeZone: setFrom.success ? setFrom.data : null,
   });
@@ -3983,7 +3983,7 @@ function toTaskDetail(
       edit: view.permissions.edit,
     },
     schedule: fenceLine(
-      checkInSchedule(view.trigger, view.activeHours),
+      checkInSchedule(view.schedule, view.activeHours),
       DECISION_TASK_CHECKS_IN_MAX_CHARS,
     ),
     nextCheckAt: view.nextRunAt,

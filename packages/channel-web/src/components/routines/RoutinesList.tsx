@@ -283,7 +283,7 @@ export function RoutinesList({
               </Button>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{row.name}</p>
-                <TriggerChip trigger={row.trigger} />
+                <TriggerChip schedule={row.schedule} webhook={row.webhook} />
                 {!agentId && (
                   <p className="text-xs text-muted-foreground">
                     {nameFor(row.agentId)}
@@ -346,8 +346,8 @@ export function RoutinesList({
                     <AlertDescription>{row.lastError}</AlertDescription>
                   </Alert>
                 )}
-                {row.trigger.kind === 'webhook' &&
-                  row.trigger.hmac &&
+                {row.webhook !== null &&
+                  row.webhook.hmac &&
                   row.permissions.manageSecret && (
                     <CredentialSlotRow
                       destination={{

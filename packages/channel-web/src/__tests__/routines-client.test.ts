@@ -150,6 +150,26 @@ describe('a routine request that never answers (TASK-937)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  for (const method of ['getReceiverAccess', 'getReceiver'] as const) {
+    for (const stalled of ['fetch', 'body'] as const) {
+      it(`${method} bounds a stalled ${stalled} and aborts at the shared deadline`, async () => {
+        const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(() => stalled === 'fetch'
+          ? new Promise<Response>(() => {})
+          : Promise.resolve({ ok: true, status: 200, json: () => new Promise(() => {}) } as Response));
+        const result = routineApi[method]('agent / with spaces');
+        const settled = vi.fn();
+        result.then(settled, settled);
+        const assertion = expect(result).rejects.toMatchObject({ name: 'RoutineApiError', status: 0 });
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await assertion;
+        expect((fetch.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
+        expect(fetch.mock.calls[0]![0]).toBe(`/settings/routines/agent%20%2F%20with%20spaces/${method === 'getReceiverAccess' ? 'receiver-access' : 'receiver'}`);
+      });
+    }
+  }
+
   it('fails at the deadline as RoutineApiError(0), its fetch aborted', async () => {
     const fetch = vi
       .spyOn(globalThis, 'fetch')

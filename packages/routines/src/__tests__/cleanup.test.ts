@@ -14,7 +14,7 @@ describe('durable HMAC lifecycle through registered services', () => {
     h.failNextCredentialDelete();
     const removed = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId: 'remove', patch: { trigger: { kind: 'interval', every: '1h' } } });
     const store = createRoutinesStore(h.db); const [oldJob] = await store.pendingCleanup({ limit: 10 });
-    const readd = { agentId: h.agentId, routineId: row.routineId, expectedRevision: removed.revision, requestId: 'readd', patch: { trigger: definition.trigger } };
+    const readd = { agentId: h.agentId, routineId: row.routineId, expectedRevision: removed.revision, requestId: 'readd', patch: { trigger: definition.webhook } };
     await expect(h.bus.call('routines:update', h.owner, readd)).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
     await h.drainCleanup();
     const current = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, readd);
