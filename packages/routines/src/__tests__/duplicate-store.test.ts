@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
 import { editableDefinition, ROUTINE_DEFINITION_MAX_BYTES, RoutineDefinitionSchema, type RoutineDefinition, type RoutineKey } from '@ax/routines-contract';
-import { fixture, createInput, now } from './store-fixture.js';
+import { fixture, createInput, defaultDefinition, now } from './store-fixture.js';
 import type { StoredStep } from '../types.js';
 
 // TASK-953: a person's copy of their own task, as the store makes it (duplicateAuthored). Under one receipt, so a
@@ -190,7 +190,7 @@ describe("a person's copy of their task (store, TASK-953)", () => {
   it('a repeat routine, a default, a missing task and someone else’s are refused, and nothing is written', async () => {
     const task = await createTask('task');
     const repeat = await f.store.createAuthored(createInput('repeat'));
-    const { defaultRoutineId } = await f.store.upsertDefault({ ...createInput().definition, name: 'copy-check', trigger: { kind: 'interval', every: '60s' } });
+    const { defaultRoutineId } = await f.store.upsertDefault({ ...defaultDefinition(), name: 'copy-check', trigger: { kind: 'interval', every: '60s' } });
     await f.store.materializeMissing({ agents: [{ agentId: 'a', ownerUserId: 'owner' }], now });
     const materialized = (await f.store.list({ agentId: 'a' })).find(row => row.definitionId === defaultRoutineId)!;
     expect(materialized.ownerUserId).toBe('owner');

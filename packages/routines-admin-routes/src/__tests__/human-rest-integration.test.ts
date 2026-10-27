@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   RoutineDefinitionSchema,
+  RoutineUpsertDefaultInputSchema,
   type RoutineFireView,
   type RoutineView,
 } from '@ax/routines-contract';
@@ -260,9 +261,10 @@ describe('human REST through registered DB services and real agent ACL', () => {
     );
     expect(deleted.status).toBe(404);
     const catalog = createAdminDefaultRoutinesHandlers({ bus: h.bus });
+    const { schedule: _schedule, webhook: _webhook, ...defaultFields } = definition;
     const { enabled: _enabled, ...defaultDefinition } =
-      RoutineDefinitionSchema.parse({
-        ...definition,
+      RoutineUpsertDefaultInputSchema.parse({
+        ...defaultFields,
         trigger: { kind: 'interval', every: '1h' },
       });
     const created = response();

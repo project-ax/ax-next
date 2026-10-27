@@ -3,7 +3,7 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, RoutineUpsertDefaultInputSchema } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
 export function fixture() {
@@ -28,4 +28,9 @@ export function createInput(requestId = 'create-1') {
 }
 export function webhookInput(requestId = 'hook-1') {
   return { ...createInput(requestId), definition: RoutineDefinitionSchema.parse({ name: 'hook', promptBody: 'body', trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'x-signature', algorithm: 'sha256' } } }) };
+}
+/** The separate housekeeping catalog keeps its interval-only legacy DTO. */
+export function defaultDefinition() {
+  const { schedule, webhook: _webhook, ...fields } = createInput().definition;
+  return RoutineUpsertDefaultInputSchema.parse({ ...fields, trigger: schedule });
 }

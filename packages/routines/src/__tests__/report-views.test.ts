@@ -107,7 +107,7 @@ describe("a task's latest report on the views (TASK-907)", () => {
     // schema has no task key, still reads them after a rollback.
     const keyed = (await sql<{ n: number }>`SELECT count(*)::int AS n FROM routines_v1_requests WHERE result ? 'task' OR result->'row' ? 'task'`.execute(f.db)).rows[0];
     expect(keyed?.n).toBe(0);
-    const beforeThisField = StoredRoutineSchema.innerType().omit({ task: true });
+    const beforeThisField = StoredRoutineSchema.innerType().innerType().omit({ task: true });
     for (const { operation, result } of receipts) {
       const routine = operation === 'dispatch' ? (result as { row: unknown }).row : result;
       expect(beforeThisField.safeParse(routine).success, operation).toBe(true);

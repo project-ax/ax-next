@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, RoutinePatchSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
 import { checkInBrief } from '../brief.js';
 import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
@@ -27,7 +27,7 @@ async function setup(options: {
   /** TASK-955. The time zone that date is set from. */
   finishByTimeZone?: string;
 } = {}) {
-  const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...options.definition }) });
+  const row = await f.store.createAuthored({ ...createInput(), definition: RoutineDefinitionSchema.parse({ ...createInput().definition, ...(options.definition === undefined ? {} : RoutinePatchSchema.parse(options.definition)) }) });
   if (options.finishBy !== undefined) {
     const finishByTimeZone = options.finishByTimeZone ?? null;
     expect(await f.store.setFinishBy({ agentId: row.agentId, routineId: row.routineId, actorUserId: 'owner', finishBy: options.finishBy, finishByTimeZone }))

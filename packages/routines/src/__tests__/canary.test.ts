@@ -429,8 +429,8 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
     const often = { id: 'often', name: 'routine_create', input: { requestId: 'often', definition: {
       name: 'Too often', promptBody: 'Keep the queue empty.', kind: 'stay-on-top', goodWhen,
       trigger: { kind: 'cron', expr: '*/10 * * * *', tz: 'UTC' } } } };
-    expect(await h.bus.fire('tool:pre-call', ctx, often)).toMatchObject(refused('trigger.expr'));
-    await expect(h.bus.call('tool:execute:routine_create', ctx, often)).rejects.toMatchObject({ toolCode: 'validation', field: 'trigger.expr' });
+    expect(await h.bus.fire('tool:pre-call', ctx, often)).toMatchObject(refused('schedule.expr'));
+    await expect(h.bus.call('tool:execute:routine_create', ctx, often)).rejects.toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
     // 2. An existing task, made the way Settings makes one, and an edit that is a valid patch on its own but
     //    would give the task's instructions a hidden sentence. The merged definition is what refuses it.
     const task = await h.bus.call<unknown, RoutineView>('routines:create', ctx, { agentId: h.agentId, requestId: 'settings-task', definition: {
@@ -1304,7 +1304,7 @@ describe('duplicate canary (TASK-953)', () => {
     const copy = await get(copyId);
     expect(copy).toMatchObject({
       name: 'Copy of Move the help docs', enabled: false, nextRunAt: null, kind: 'get-done',
-      goodWhen: task.goodWhen, promptBody: task.promptBody, trigger: task.trigger, task: null, finishBy: null, done: null,
+      goodWhen: task.goodWhen, promptBody: task.promptBody, schedule: task.schedule, webhook: null, task: null, finishBy: null, done: null,
     });
     expect(copy.steps).toEqual([
       { id: expect.any(String), text: 'Export every article from the old help center', done: false, addedBy: 'agent' },

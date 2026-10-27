@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { RoutineDefinitionSchema, editableDefinition, type RoutineView, type RoutineDefinition } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, RoutineUpsertDefaultInputSchema, type RoutineView, type RoutineGetDefaultOutput } from '@ax/routines-contract';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { createRoutinesStore } from '../store.js';
 let h: RoutineHarness;
@@ -20,14 +20,15 @@ describe('registered default services with real ACL', () => {
   });
   it('admin edits structured defaults, controls Enabled, and deletion removes materialized rows', async () => {
     h = await createRoutineHarness();
-    const definition = RoutineDefinitionSchema.parse({ name: 'Admin check', promptBody: 'body', trigger: { kind: 'interval', every: '1h' } });
+    const definition = RoutineUpsertDefaultInputSchema.parse({ name: 'Admin check', promptBody: 'body', trigger: { kind: 'interval', every: '1h' } });
     await expect(h.bus.call('routines:upsert-default', h.owner, definition)).rejects.toThrow();
     const created = await h.bus.call<unknown, {
       defaultRoutineId: string;
     }>('routines:upsert-default', h.teamAdmin, definition);
-    const read = await h.bus.call<unknown, RoutineDefinition>('routines:get-default', h.teamAdmin, { defaultRoutineId: created.defaultRoutineId });
+    const read = await h.bus.call<unknown, RoutineGetDefaultOutput>('routines:get-default', h.teamAdmin, { defaultRoutineId: created.defaultRoutineId });
     expect(read.promptBody).toBe('body');
-    await h.bus.call('routines:upsert-default', h.teamAdmin, { ...editableDefinition(read), enabled: false });
+    const { defaultRoutineId: _id, updatedAt: _updatedAt, ...defaultFields } = read;
+    await h.bus.call('routines:upsert-default', h.teamAdmin, { ...defaultFields, enabled: false });
     const store = createRoutinesStore(h.db);
     expect((await store.getDefault(created.defaultRoutineId))?.enabled).toBe(false);
     await h.bus.call('routines:upsert-default', h.teamAdmin, { ...definition, enabled: true });
@@ -38,7 +39,7 @@ describe('registered default services with real ACL', () => {
   });
   it.each([{ kind: 'webhook', path: '/hook' }, { kind: 'cron', expr: '* * * * *', tz: 'UTC' }])('rejects unsupported default trigger $kind', async (trigger) => {
     h = await createRoutineHarness();
-    const definition = RoutineDefinitionSchema.parse({ name: 'Invalid', promptBody: 'body', trigger });
+    const definition = { name: 'Invalid', promptBody: 'body', trigger };
     await expect(h.bus.call('routines:upsert-default', h.teamAdmin, definition)).rejects.toMatchObject({ toolCode: 'validation' });
   });
   it('lists DB definitions only and reports a missing fire target distinctly', async () => {
