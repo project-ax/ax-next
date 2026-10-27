@@ -114,7 +114,12 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       wake!();
       await expect.poll(() => Boolean(wake)).toBe(true);
       expect(await history()).toHaveLength(3);
-      expect(h.invokeCalls).toHaveLength(3);
+      const dispatches = await h.db.selectFrom('routines_v1_dispatches').select('req_id')
+        .where('agent_id', '=', row.agentId).where('routine_id', '=', row.routineId).execute();
+      expect(dispatches).toHaveLength(3);
+      const targetRequests = new Set(dispatches.map(dispatch => dispatch.req_id));
+      // The harness also runs background defaults; each target dispatch must invoke exactly once.
+      expect(h.invokeCalls.filter(reqId => targetRequests.has(reqId)).sort()).toEqual([...targetRequests].sort());
       expect(listening.messages).toHaveLength(2);
     } finally {
       await http?.close();
