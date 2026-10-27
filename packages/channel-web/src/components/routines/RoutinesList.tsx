@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ACTIVE_HOURS_REPAIR_MESSAGE } from '@ax/routines-contract';
 import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -295,6 +296,7 @@ export function RoutinesList({
                 {row.delivery !== null && row.delivery !== undefined && row.delivery.waiting > 0 && (
                   <p role="status" className="text-sm text-muted-foreground">{row.delivery.waiting} app {row.delivery.waiting === 1 ? 'update' : 'updates'} waiting.</p>
                 )}
+                {row.lastWarning === ACTIVE_HOURS_REPAIR_MESSAGE && <p className="text-sm text-muted-foreground">{row.lastWarning}</p>}
                 {!agentId && (
                   <p className="text-xs text-muted-foreground">
                     {nameFor(row.agentId)}

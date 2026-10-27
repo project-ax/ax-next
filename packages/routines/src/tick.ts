@@ -91,11 +91,11 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
   for (const row of claimed) {
     if (row.activeHours !== null) {
       const adjusted = advanceToNextActiveWindow(input.now, row.activeHours);
-      if (adjusted.getTime() > input.now.getTime()) {
+      if (adjusted === null || adjusted.getTime() > input.now.getTime()) {
         await input.store.advance({
           agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
           nextRunAt: row.definitionId === null ? adjusted : null,
-          lastRunAt: row.definitionId === null ? input.now : adjusted,
+          lastRunAt: row.definitionId === null ? input.now : adjusted ?? input.now,
         });
         continue;
       }

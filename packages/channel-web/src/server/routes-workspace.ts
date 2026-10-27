@@ -2913,7 +2913,7 @@ function wireTask(stored: StoredDecision): DecisionTask | null {
   const checksIn =
     fields.schedule === undefined
       ? null
-      : fenceLine(describeCheckIns(fields.schedule), DECISION_TASK_CHECKS_IN_MAX_CHARS);
+      : fenceLine(describeCheckIns(fields.schedule, fields.activeHours ?? null), DECISION_TASK_CHECKS_IN_MAX_CHARS);
   // A change whose drawn fields all fence to nothing (a patch of only a blank
   // `goodWhen` or blank instructions) would be a heading over no rows. No
   // block; the raw request block still shows the change. A kind change always

@@ -8,7 +8,7 @@
  * put into words (a wrong description is worse than none). A webhook doesn't
  * check in on a schedule, so it has no sentence.
  *
- * Pure and browser-safe: no DOM, and nothing from the contract at runtime. The
+ * Pure and browser-safe: no DOM; shared day values come from the contract. The
  * server builds the approval card's line from it (`wireTask` in
  * `server/routes-workspace.ts`), which is why its sibling is imported
  * relatively, with `.js`, like every lib module the server loads. The `@/`
@@ -18,13 +18,13 @@
  * The output carries the trigger's own text (a cron expression, a timezone),
  * so a caller putting it on the wire fences it first.
  */
-import type { ActiveHours, RoutineTrigger } from '@ax/routines-contract';
+import { activeHoursWriteIssue, ACTIVE_HOURS_REPAIR_MESSAGE, type ActiveHours, type ActiveHoursDay, type RoutineTrigger } from '@ax/routines-contract';
 import { clockTime, describeCron, describeCronPhrase } from './cron-describe.js';
 
 const UNIT_WORDS = { s: 'second', m: 'minute', h: 'hour', d: 'day' } as const;
 
 /** One sentence saying when a trigger runs, or `null` when it doesn't run on a schedule. */
-export function describeCheckIns(trigger: RoutineTrigger | null): string | null {
+function describeBaseCheckIns(trigger: RoutineTrigger | null): string | null {
   if (trigger === null) return null;
   switch (trigger.kind) {
     case 'interval': {
@@ -47,6 +47,28 @@ export function describeCheckIns(trigger: RoutineTrigger | null): string | null 
     default:
       return null;
   }
+}
+
+export const ACTIVE_DAY_NAMES: Record<ActiveHoursDay, string> = {
+  mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
+};
+
+/** Include restrictions in the real approval producer as well as the task header. */
+export function describeCheckIns(trigger: RoutineTrigger | null, activeHours: ActiveHours | null = null): string | null {
+  const base = describeBaseCheckIns(trigger);
+  if (base === null || activeHours === null) return base;
+  if (activeHoursWriteIssue(activeHours) !== null) return ACTIVE_HOURS_REPAIR_MESSAGE;
+  const hours = describeActiveHours(activeHours);
+  // Keep restrictions visible even when a long custom expression is fenced on the wire.
+  return base.startsWith('Custom schedule:') ? `Active hours: ${hours}; ${base}` : `${base}, ${hours}`;
+}
+
+function describeActiveHours(hours: ActiveHours): string {
+  const days = hours.days;
+  const dayLabel = days === undefined ? '' : days.length === 7 ? 'every day, '
+    : days.join(',') === 'mon,tue,wed,thu,fri' ? 'weekdays, '
+    : `${days.map(day => ACTIVE_DAY_NAMES[day]).join(', ')}, `;
+  return `${dayLabel}${hm(hours.start)} to ${hm(hours.end)}${hours.start > hours.end ? ' next day' : ''} (${hours.tz})`;
 }
 
 /** `'09:00'` → "9:00 AM"; the day's two edges read as "midnight". */
@@ -85,5 +107,6 @@ export function checkInSchedule(
       return null;
   }
   if (activeHours === null) return phrase;
-  return `${phrase}, ${hm(activeHours.start)} to ${hm(activeHours.end)} (${activeHours.tz})`;
+  if (activeHoursWriteIssue(activeHours) !== null) return 'after active hours are repaired';
+  return `${phrase}, ${describeActiveHours(activeHours)}`;
 }

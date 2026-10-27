@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  ACTIVE_HOURS_DAYS,
   ROUTINE_STEP_ID_MAX_CHARS, ROUTINE_STEP_TEXT_MAX_CHARS, ROUTINE_STEPS_MAX,
   RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema, RoutineReportFieldShape, RoutineReportStepsSchema,
   TASK_AUTO_PAUSE_AFTER_MISSES, refuseDoneWithoutNeedsYou,
@@ -224,6 +225,8 @@ const activeHours = {
   properties: {
     start: { type: 'string', pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$' },
     end: { type: 'string', pattern: '^(?:(?:[01]\\d|2[0-3]):[0-5]\\d|24:00)$' }, tz: timezone,
+    days: { type: 'array', minItems: 1, maxItems: 7, uniqueItems: true, items: { type: 'string', enum: ACTIVE_HOURS_DAYS },
+      description: 'Selected local days when the window starts, Monday through Sunday. Omit for every day. Overnight hours continue into the following morning.' },
   },
 };
 const trigger = {

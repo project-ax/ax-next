@@ -181,7 +181,7 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
       requireAllowed(permissions.edit || (permissions.stop && isStopOnlyPatch(patch)));
       try { next = C.applyRoutinePatch(editableDefinition(row), patch); }
       catch (error) { throw validationError(error); }
-      validateScheduleWrite(next, row);
+      validateScheduleWrite(next, row, patch);
     }
   }
   if (next?.webhook !== undefined && next.webhook !== null) {

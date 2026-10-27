@@ -117,6 +117,10 @@ describe('structured routine client', () => {
     });
     await expect(failure).rejects.toHaveProperty('field', undefined);
   });
+  it('preserves the closed active-days error field without server text', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ code: 'invalid', field: 'activeHours.days', error: 'SECRET' }), { status: 400 }));
+    await expect(routineApi.get({ agentId: 'a', routineId: 'r' })).rejects.toMatchObject({ field: 'activeHours.days', message: expect.not.stringContaining('SECRET') });
+  });
   it('scopes list, history, consent and receiver calls, returning only receiver prefix', async () => {
     const fetch = vi
       .spyOn(globalThis, 'fetch')

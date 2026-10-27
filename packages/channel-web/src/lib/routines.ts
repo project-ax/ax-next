@@ -81,6 +81,7 @@ const fields = [
   'activeHours.start',
   'activeHours.end',
   'activeHours.tz',
+  'activeHours.days',
   'silenceToken',
   'silenceMaxChars',
   'conversation',
