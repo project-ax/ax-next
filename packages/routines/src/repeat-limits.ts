@@ -12,7 +12,7 @@ export const REPEAT_DELIVERY_LIMITS = Object.freeze({
   drainMs: 1000,
 });
 
-/** Validate only after authentication, signature/body validation and event filtering. */
+/** Check the delivery identifier after verifying the sender, checking the body and selecting the event. */
 export function githubDeliveryId(value: string | undefined): string | null {
   if (value === undefined) return null;
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) throw new Error('Invalid delivery ID.');

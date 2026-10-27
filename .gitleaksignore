@@ -2,3 +2,7 @@
 # The generic-api-key rule matched the log filename, not a credential.
 # Scope this exception to the historical commit, file, rule, and line.
 8134581308d417d2f771c6c38be55cfecb4457e7:deploy/gke/shared-pool-resumed-acceptance-2026-10-02.json:generic-api-key:467
+
+# TASK-972: fixed delivery-ID validation prose was misclassified; no credential.
+# Limit this exception to the historical commit, file, rule and line.
+78fa5dc1885eed6dfa073513a29432a27306e91e:packages/routines/src/repeat-limits.ts:generic-api-key:15
