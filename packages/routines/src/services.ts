@@ -10,7 +10,7 @@ import { advanceToNextActiveWindow } from './active-hours.js';
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
-  'set-webhook-secret', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
+  'set-webhook-secret', 'webhook-address', 'replace-webhook-address', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
   'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen', 'duplicate',
 ].map(name => `routines:${name}`);
@@ -347,6 +347,16 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const { before } = input;
     const fires = await store.recentFiresForAgent({ agentId: input.agentId, actorUserId: ctx.userId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
     return { fires: fireViews(ctx.userId, fires) };
+  });
+  register('webhook-address', C.RoutineWebhookAddressInputSchema, C.RoutineWebhookAddressOutputSchema, async (ctx, input) => {
+    const a = await access(ctx, input.agentId);
+    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).edit);
+    return store.ensureWebhookAddress({ ...input, actorUserId: ctx.userId });
+  });
+  register('replace-webhook-address', C.RoutineReplaceWebhookAddressInputSchema, C.RoutineWebhookAddressOutputSchema, async (ctx, input) => {
+    const a = await access(ctx, input.agentId);
+    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).edit);
+    return store.replaceWebhookAddress({ ...input, actorUserId: ctx.userId });
   });
   register('set-webhook-secret', C.RoutineSecretInputSchema, C.RoutineSecretOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);

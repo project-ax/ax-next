@@ -18,6 +18,9 @@ export interface RoutinesDefinitionsRow {
   spec_hash: string;
   schedule_spec: unknown | null;
   webhook_spec: unknown | null;
+  /** Private setup state: never project into StoredRoutine, receipts or payload blobs. */
+  webhook_address_token: Generated<string | null>;
+  webhook_legacy_enabled: Generated<boolean>;
   active_hours: unknown | null;
   silence_token: string | null;
   silence_max: number;
@@ -365,6 +368,14 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`CREATE INDEX routines_v1_delivery_owner ON routines_v1_deliveries(owner_user_id)`.execute(trx);
       await sql`CREATE INDEX routines_v1_delivery_waiting ON routines_v1_deliveries(sequence_id) WHERE completed_at IS NULL AND dispatch_id IS NULL`.execute(trx);
       await sql`INSERT INTO routines_schema_versions(version) VALUES(17)`.execute(trx);
+    }
+    if (!await done(18)) {
+      await sql`ALTER TABLE routines_v1_definitions ADD COLUMN IF NOT EXISTS webhook_address_token text, ADD COLUMN IF NOT EXISTS webhook_legacy_enabled boolean`.execute(trx);
+      // Only jobs already configured at upgrade inherit the old shared address.
+      await sql`UPDATE routines_v1_definitions SET webhook_legacy_enabled=(webhook_spec IS NOT NULL) WHERE webhook_legacy_enabled IS NULL`.execute(trx);
+      await sql`ALTER TABLE routines_v1_definitions ALTER COLUMN webhook_legacy_enabled SET DEFAULT false, ALTER COLUMN webhook_legacy_enabled SET NOT NULL`.execute(trx);
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_address_token ON routines_v1_definitions(webhook_address_token) WHERE webhook_address_token IS NOT NULL`.execute(trx);
+      await sql`INSERT INTO routines_schema_versions(version) VALUES(18)`.execute(trx);
     }
   });
 }

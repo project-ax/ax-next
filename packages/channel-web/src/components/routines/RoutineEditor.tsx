@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Copy } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import {
   RoutineDefinitionSchema,
   activeHoursWriteIssue,
@@ -9,7 +9,6 @@ import {
   editableDefinition,
   isTaskKind,
   ROUTINE_GOOD_WHEN_MAX_CHARS,
-  validateWebhookPath,
   type RoutineDefinition,
   type RoutinePatch,
   type RoutineView,
@@ -43,6 +42,7 @@ import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
 import { WebhookSignatureFields } from './WebhookSignatureFields';
+import { WebhookAddressFields } from './WebhookAddressFields';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -104,7 +104,8 @@ function changed(
   return patch;
 }
 export function RoutineEditor(props: Props) {
-  const [loaded, setLoaded] = useState<RoutineView | null>(null);
+  const [loadedState, setLoaded] = useState<RoutineView | null>(null);
+  const loaded = props.mode === 'edit' && loadedState?.agentId === props.agentId && loadedState.routineId === props.routine?.routineId ? loadedState : null;
   const [loadError, setLoadError] = useState(false);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -141,6 +142,7 @@ export function RoutineEditor(props: Props) {
     <RoutineForm
       key={loaded?.revision ?? 'create'}
       agentId={props.agentId}
+      routineId={loaded?.routineId}
       agentName={props.agentName}
       initial={loaded ? editableDefinition(loaded) : empty(props.taskMode)}
       taskMode={props.taskMode === true}
@@ -188,6 +190,7 @@ export function DefaultRoutineEditor(props: DefaultProps) {
 function RoutineForm({
   initial,
   agentId,
+  routineId,
   agentName,
   mode,
   defaults = false,
@@ -201,6 +204,7 @@ function RoutineForm({
 }: {
   initial: RoutineDefinition;
   agentId?: string | undefined;
+  routineId?: string | undefined;
   agentName: string;
   mode: 'create' | 'edit';
   defaults?: boolean;
@@ -223,38 +227,16 @@ function RoutineForm({
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [optional, setOptional] = useState(false);
-  const [receiverForAgent, setReceiverForAgent] = useState<{ agentId: string; url: string } | null>(null);
-  // Scope the displayed bearer synchronously; passive cleanup runs after a commit.
-  const receiver = receiverForAgent !== null && receiverForAgent.agentId === agentId ? receiverForAgent.url : null;
-  const [receiverError, setReceiverError] = useState(false);
-  const [receiverAllowed, setReceiverAllowed] = useState<boolean | null>(null);
-  const [receiverRetry, setReceiverRetry] = useState(0);
+  const [addressBusy, setAddressBusy] = useState(false);
   const scheduleDraft = useRef<RoutineSchedule>(initial.schedule ?? { kind: 'interval', every: '1h' });
   const webhookDraft = useRef<WebhookTrigger>(initial.webhook ?? { kind: 'webhook', path: '/project-updates' });
   const hoursDraft = useRef(initial.activeHours);
-  const hasWebhook = form.webhook !== null;
-  const [copyState, setCopyState] = useState('');
   const flight = useRef(false);
   // Exact payload and request ID survive a response-loss retry. Draft controls freeze meanwhile.
   const operation = useRef<{
     requestId: string;
     definition: RoutineDefinition;
   } | null>(null);
-  useEffect(() => {
-    if (!agentId || !hasWebhook) return;
-    let active = true;
-    setReceiverForAgent(null);
-    setReceiverAllowed(null);
-    setReceiverError(false);
-    void routineApi.getReceiverAccess(agentId).then(async access => {
-      if (!active) return;
-      setReceiverAllowed(access.allowed);
-      if (!access.allowed) return;
-      const result = await routineApi.getReceiver(agentId);
-      if (active) setReceiverForAgent({ agentId, url: result.url });
-    }).catch(() => { if (active) setReceiverError(true); });
-    return () => { active = false; };
-  }, [agentId, hasWebhook, receiverRetry]);
   // Keep separators in the input; normalize only the definition being validated/saved.
   const draftDefinition = useMemo(() => {
     if (form.webhook === null) return form;
@@ -285,10 +267,10 @@ function RoutineForm({
     !validation.success && (dirty || activeHoursWriteIssue(draftDefinition.activeHours) !== null) ? validation.error.issues[0] : undefined;
   const goodWhenInvalid = firstIssue?.path[0] === 'goodWhen';
   const activeDaysInvalid = (firstIssue?.path[0] === 'activeHours' && firstIssue?.path[1] === 'days') || invalidField === 'activeHours.days';
-  const disabled = busy || uncertain || !canEdit;
+  const disabled = busy || uncertain || addressBusy || !canEdit;
   useEffect(() => {
-    onPendingChange?.(busy || uncertain);
-  }, [busy, uncertain, onPendingChange]);
+    onPendingChange?.(busy || uncertain || addressBusy);
+  }, [busy, uncertain, addressBusy, onPendingChange]);
   function update<K extends keyof RoutineDefinition>(
     key: K,
     value: RoutineDefinition[K],
@@ -299,7 +281,6 @@ function RoutineForm({
     setForm((f) => ({ ...f, [key]: value }));
     setError(null);
     setInvalidField(undefined);
-    setCopyState('');
   }
   function toggleSchedule(on: boolean) {
     if (!on) {
@@ -311,11 +292,6 @@ function RoutineForm({
   }
   function toggleWebhook(on: boolean) {
     if (!on && form.webhook !== null) webhookDraft.current = form.webhook;
-    if (!on) {
-      setReceiverForAgent(null);
-      setReceiverAllowed(null);
-      setReceiverError(false);
-    }
     update('webhook', on ? webhookDraft.current : null);
   }
   function textField(
@@ -381,21 +357,9 @@ function RoutineForm({
       setBusy(false);
     }
   }
-  let preview: string | null = null;
-  if (
-    receiver &&
-    form.webhook !== null &&
-    validateWebhookPath(form.webhook.path)
-  ) {
-    try {
-      preview = `${new URL(receiver, window.location.origin).href.replace(/\/$/, '')}${form.webhook.path}`;
-    } catch {
-      /* Unavailable receiver is never an example token. */
-    }
-  }
   const savedWebhook =
     initial.webhook !== null &&
-    JSON.stringify(initial.webhook) === JSON.stringify(draftDefinition.webhook) &&
+    initial.webhook.path === form.webhook?.path &&
     mode === 'edit';
   const scheduleFields = (form.schedule !== null && (
           <>
@@ -629,63 +593,11 @@ function RoutineForm({
                   setEventsDraft(v);
                   setError(null);
                   setInvalidField(undefined);
-                  setCopyState('');
                 },
               )}
             </FieldGroup>
-            {receiverAllowed === false ? (
-              <FieldDescription>{taskMode ? 'An agent administrator can connect app updates. The task owner manages its signing secret in Task options.' : "An agent administrator can connect app updates. The signing secret remains in the task owner's settings."}</FieldDescription>
-            ) : receiverError ? (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  We couldn’t check app setup. Try again.
-                  <Button type="button" variant="outline" onClick={() => setReceiverRetry(v => v + 1)}>Retry app setup</Button>
-                </AlertDescription>
-              </Alert>
-            ) : receiver === null ? (
-              <Skeleton
-                aria-label="Loading webhook URL"
-                className="h-10 w-full"
-              />
-            ) : preview ? (
-              <Field>
-                <FieldLabel>Webhook URL</FieldLabel>
-                <div className="flex min-w-0 gap-2">
-                  <Input aria-label="Webhook URL" readOnly value={preview} />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    aria-label="Copy webhook URL"
-                    onClick={() => {
-                      void navigator.clipboard
-                        ?.writeText(preview)
-                        .then(() => setCopyState('Copied webhook URL.'))
-                        .catch(() =>
-                          setCopyState(
-                            'Couldn’t copy. Select the URL to copy it.',
-                          ),
-                        );
-                    }}
-                  >
-                    <Copy data-icon="inline-start" />
-                  </Button>
-                </div>
-                <FieldDescription>
-                  {savedWebhook
-                    ? 'Saved receiver URL.'
-                    : mode === 'create'
-                      ? taskMode ? 'Preview only — inactive until Start task.' : 'Preview only — inactive until Create routine.'
-                      : 'Preview only — inactive until Save. Save to apply path changes.'}
-                </FieldDescription>
-                <span role="status" className="text-xs text-muted-foreground">
-                  {copyState}
-                </span>
-              </Field>
-            ) : (
-              <FieldDescription>
-                Enter a valid path to preview the webhook URL.
-              </FieldDescription>
-            )}
+            {agentId && canEdit && <WebhookAddressFields key={`${agentId}/${routineId ?? 'create'}`} agentId={agentId} routineId={initial.webhook === null ? undefined : routineId}
+              path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />}
           </>
         )}
         {taskMode && hoursFields}
@@ -786,7 +698,7 @@ function RoutineForm({
           <Button
             type="button"
             variant="outline"
-            disabled={busy || uncertain}
+            disabled={busy || uncertain || addressBusy}
             onClick={onCancel}
           >
             Cancel
@@ -794,7 +706,7 @@ function RoutineForm({
           <Button
             type="submit"
             disabled={
-              busy ||
+              busy || addressBusy ||
               !canEdit ||
               (!uncertain &&
                 (!validation.success || (mode === 'edit' && !dirty)))

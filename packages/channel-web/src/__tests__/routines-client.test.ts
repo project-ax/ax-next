@@ -22,6 +22,17 @@ const routine = {
   permissions: { edit: true, stop: true, fire: true, manageSecret: true },
 };
 afterEach(() => vi.restoreAllMocks());
+describe('task-specific receiver client', () => {
+  it('encodes the task key and uses a guarded POST for replacement', async () => {
+    const value = { url: '/webhooks/private-task', version: 'a'.repeat(64), legacyActive: true };
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(value), { status: 200 }));
+    const key = { agentId: 'team / a', routineId: 'task / b' };
+    expect(await routineApi.getTaskReceiver(key)).toEqual(value);
+    expect(await routineApi.replaceTaskReceiver(key, value.version)).toEqual(value);
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/settings/routines/team%20%2F%20a/task%20%2F%20b/receiver', '/settings/routines/team%20%2F%20a/task%20%2F%20b/receiver/replace']);
+    expect(fetch.mock.calls[1]![1]).toMatchObject({ method: 'POST', credentials: 'include', body: JSON.stringify({ expectedVersion: value.version }) });
+  });
+});
 describe('structured routine client', () => {
   it('reports a full Repeat job as busy without trusting server error text', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ code: 'busy', field: 'routineId', error: 'PRIVATE' }), { status: 409 }));

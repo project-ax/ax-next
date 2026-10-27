@@ -39,6 +39,8 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         'agents:ensure-webhook-token',
         'routines:list',
         'routines:get',
+        'routines:webhook-address',
+        'routines:replace-webhook-address',
         'routines:create',
         'routines:update',
         'routines:delete',

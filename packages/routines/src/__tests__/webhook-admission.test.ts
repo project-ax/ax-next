@@ -14,7 +14,7 @@ function fixture(result: 'accepted'|'duplicate'|'full'|'missing'='accepted') {
   bus.registerService('blob:put-internal','test',writes); registerBlobPutFacade(bus,'test');
   const admit=vi.fn(async(_input:unknown,persist:(bytes:Uint8Array,owner:string)=>Promise<unknown>)=> { if(result==='accepted')await persist(new Uint8Array([1]),'owner'); return result; });
   const pump=vi.fn(async()=>{});
-  const handler=createWebhookRouter({bus,store:{findWebhook:async()=>row} as unknown as RoutinesStore,deliveries:{admit} as unknown as RepeatDeliveryStore,pump,now:()=>new Date('2026-10-26')});
+  const handler=createWebhookRouter({bus,store:{findWebhook:async()=>row,findWebhookByToken:async()=>null} as unknown as RoutinesStore,deliveries:{admit} as unknown as RepeatDeliveryStore,pump,now:()=>new Date('2026-10-26')});
   return {bus,writes,admit,pump,handler};
 }
 function request(over:Partial<HttpRequest>={}):HttpRequest {
@@ -36,7 +36,7 @@ describe('authenticated webhook durable admission',()=>{
   });
   it.each([['accepted',202],['duplicate',202],['full',429],['missing',404]] as const)('answers %s truthfully',async(result,code)=>{
     const f=fixture(result),r=response();await f.handler(request(),r.res);expect(r.state.code).toBe(code);
-    expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({row,deliveryId:'delivery-1',payload:{private:'payload'}}),expect.any(Function));
+    expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({row,deliveryId:'delivery-1',payload:{private:'payload'},address:{kind:'legacy',token:'token'}}),expect.any(Function),expect.any(Function));
     expect(f.pump).toHaveBeenCalledTimes(result==='accepted'?1:0);
   });
   it('uses the existing quota facade as the pinned creator and never acknowledges its veto',async()=>{

@@ -110,6 +110,8 @@ function setup(
     return { agent: { ownerId: 'team' } };
   });
   for (const [hook, result] of Object.entries({
+    'routines:webhook-address': { token: 'rt_' + 'a'.repeat(43), version: 'a'.repeat(64), legacyActive: true },
+    'routines:replace-webhook-address': { token: 'rt_' + 'b'.repeat(43), version: 'b'.repeat(64), legacyActive: false },
     'routines:list': { routines: [view] },
     'routines:get': view,
     'routines:create': view,
@@ -407,6 +409,8 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
     revokeConsent: req({}),
     receiver: req(),
     receiverAccess: req(),
+    taskReceiver: req(),
+    replaceTaskReceiver: req({ expectedVersion: 'a'.repeat(64) }),
   };
   /** The routines services answer as they do the task's owner: the task's state and the runs' reports. */
   const asOwner = () => setup({ answers: { view: taskView, fires: [runView] } });

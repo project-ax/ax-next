@@ -14,6 +14,7 @@ import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRe
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
+import { createWebhookAddressStore } from './webhook-address.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -21,13 +22,13 @@ export type CleanupJob = { agentId: string; routineId: string; credentialRef: st
 export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
 export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string; compatibleInputHashes?: readonly string[] };
 export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').RoutineGetDefaultOutput, 'updatedAt'> & { updatedAt: Date };
-export interface RoutinesStore {
+export interface RoutinesStore extends ReturnType<typeof createWebhookAddressStore> {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
-  findWebhook(input: { agentId: string; path: string }): Promise<StoredRoutine | null>;
+  findWebhook(input: { agentId: string; path: string; legacyOnly?: boolean }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
   /**
@@ -963,6 +964,7 @@ function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: s
  */
 export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore {
   return {
+    ...createWebhookAddressStore(db, { lockLiveAgent, rowToRoutine }),
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
       const hashes = createRequestHashes(input);
@@ -994,6 +996,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         }
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
+          ...(next.webhook === null ? { webhook_address_token: null, webhook_legacy_enabled: false } : {}),
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
           ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY }),
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
@@ -1031,6 +1034,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
     },
     async findWebhook(input) {
       const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('webhook_spec', 'is not', null)
+        .$if(input.legacyOnly === true, q => q.where('webhook_legacy_enabled', '=', true))
         .where(sql<string>`webhook_spec->>'path'`, '=', input.path).executeTakeFirst();
       return row ? rowToRoutine(row) : null;
     },
@@ -1858,6 +1862,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
                last_status = NULL,
                last_error = NULL,
                last_warning = NULL,
+               webhook_address_token = NULL,
+               webhook_legacy_enabled = false,
                ${sql.join(Object.entries(NO_TASK_STATE).map(([column, value]) => sql`${sql.ref(column)} = ${value}`))}
           FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
             AS a(agent_id, owner_user_id)

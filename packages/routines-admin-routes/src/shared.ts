@@ -38,6 +38,7 @@ export interface RouteRequest {
 }
 
 export interface RouteResponse {
+  header?(name: string, value: string): RouteResponse;
   status(n: number): RouteResponse;
   json(v: unknown): void;
   text(s: string): void;
