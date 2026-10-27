@@ -16,6 +16,19 @@ const edit = (row: {
   revision: string;
 }) => ({ ...row, expectedRevision: row.revision, actorUserId: 'editor', requestId: 'edit', now, stopOnly: false });
 describe('DB scheduler', () => {
+  it('keeps a capped Repeat schedule due and starts it when capacity returns', async () => {
+    const row=await f.store.createAuthored(createInput());
+    const active=[];
+    for(let i=0;i<3;i++)active.push((await f.store.acceptDispatch({...row,actorUserId:'owner',expectedRevision:row.revision,source:'manual',requestId:`occupy-${i}`,now}))!);
+    const fire=vi.fn(async()=>result);
+    await tick({fire});
+    expect(fire).not.toHaveBeenCalled();
+    expect(await f.store.findOne(row)).toMatchObject({nextRunAt:due,lastRunAt:null});
+    await f.store.finishDispatch({dispatchId:active[0]!.accepted.dispatchId,outcome:{status:'ok',error:null,conversationId:null,renderedPrompt:null,warning:null}});
+    await tick({fire});
+    expect(fire).toHaveBeenCalledTimes(1);
+    expect((await f.store.findOne(row))!.nextRunAt).toEqual(new Date(due.getTime()+60000));
+  });
   it('preserves the due target on a prompt edit and dispatches the current revision once', async () => {
     const row = await f.store.createAuthored(createInput());
     const changed = await f.store.updateAuthored({ ...edit(row), patch: { promptBody: 'new' } });

@@ -284,6 +284,9 @@ export function RoutinesList({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{row.name}</p>
                 <TriggerChip schedule={row.schedule} webhook={row.webhook} />
+                {row.delivery !== null && row.delivery !== undefined && row.delivery.waiting > 0 && (
+                  <p role="status" className="text-sm text-muted-foreground">{row.delivery.waiting} app {row.delivery.waiting === 1 ? 'update' : 'updates'} waiting.</p>
+                )}
                 {!agentId && (
                   <p className="text-xs text-muted-foreground">
                     {nameFor(row.agentId)}

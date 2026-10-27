@@ -24,6 +24,11 @@ function show() {
   render(<RoutinesList agentId="a" agentName="Caveman" onFired={vi.fn()} />);
 }
 describe('routine list', () => {
+  it('shows the admitted waiting count without payload content', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, delivery: { active: 3, waiting: 2 } }]);
+    show();
+    expect(await screen.findByText('2 app updates waiting.')).toBeVisible();
+  });
   it('shows only authored routines, and loads fires by opaque ID on disclosure', async () => {
     vi.mocked(routineApi.list).mockResolvedValue([
       row,

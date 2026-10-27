@@ -120,6 +120,7 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
               'webhook-path-conflict',
               'request-conflict',
               'cleanup-pending',
+              'busy',
             ].includes(checked.toolCode)
           ? 409
           : checked.toolCode === 'unavailable'

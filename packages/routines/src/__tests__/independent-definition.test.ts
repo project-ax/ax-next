@@ -50,3 +50,12 @@ describe('compatible legacy request fingerprints', () => {
     expect(candidates('updateRequestHashes', { ...base, patch: { schedule, webhook } })).toHaveLength(1);
   });
 });
+
+describe('accepted webhook execution configuration', () => {
+  it('keeps schedule and cosmetic edits independent from accepted app updates', () => {
+    const row = RoutineDefinitionSchema.parse({name:'Job',promptBody:'Review',schedule:{kind:'interval',every:'60s'},webhook:{kind:'webhook',path:'/hook'}});
+    const base = D.repeatConfigurationHash(row);
+    expect(D.repeatConfigurationHash({...row,name:'Renamed',description:'Cosmetic',enabled:false,schedule:{kind:'interval',every:'1h'},activeHours:{start:'09:00',end:'17:00',tz:'UTC'}})).toBe(base);
+    for(const change of [{promptBody:'Different'},{conversation:'shared' as const},{webhook:{kind:'webhook' as const,path:'/other'}}]) expect(D.repeatConfigurationHash({...row,...change})).not.toBe(base);
+  });
+});

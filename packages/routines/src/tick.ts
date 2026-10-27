@@ -109,6 +109,10 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     } catch (err) {
       // A previous row in this batch may have discovered and purged the same agent.
       if (err instanceof SafeToolError && err.toolCode === 'not-found') continue;
+      if (err instanceof SafeToolError && err.toolCode === 'busy') {
+        await input.store.advance({agentId:row.agentId,routineId:row.routineId,expectedRevision:row.revision,nextRunAt:row.nextRunAt===null?null:new Date(row.nextRunAt.getTime()-input.claimWindowMinutes*60_000)});
+        continue;
+      }
       throw err;
     }
     if (!dispatch || dispatch.replayed) continue;
@@ -157,6 +161,7 @@ function computeNextRunAt(row: StoredRoutine, originalNextRunAt: Date | null, no
 
 export interface TickLoopInput {
   db: Kysely<RoutinesDatabase>;
+  executorId?: string;
   fire: FireRoutineFn;
   /**
    * Threaded straight through to `runTickOnce`. Optional for the same
@@ -189,7 +194,7 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
     const acquired = await input.db.connection().execute(async (pinned) => {
       const locked = await tryAcquireAdvisoryLock(pinned);
       if (!locked) return false;
-      const pinnedStore = createRoutinesStore(pinned);
+      const pinnedStore = createRoutinesStore(pinned,input.executorId);
       try {
         while (!input.signal.aborted) {
           try {

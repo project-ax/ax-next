@@ -175,7 +175,7 @@ export function createFireRoutine(deps: FireDeps) {
     const { row, source, reqId, dispatchId, acceptedAt } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
-      const error = err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
+      const error = source === 'webhook' ? 'This app update could not run.' : err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
       if (agentGone) await deps.purgeAgent(row.agentId);
       else await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
       return { status: 'error', error, conversationId: null, renderedPrompt: null, ...(agentGone ? { agentGone: true as const } : {}) };
@@ -300,7 +300,7 @@ export function createFireRoutine(deps: FireDeps) {
     // whatever its outcome. Every member of a team agent can read a routine's
     // run history, and the message carries the owner's notes, reports and
     // replies (TASK-931).
-    const renderedPrompt = isTaskRun(row) ? null : prompt;
+    const renderedPrompt = isTaskRun(row) || source === 'webhook' ? null : prompt;
 
     deps.pending.set(reqId, {
       row, dispatchId, conversationId, source, acceptedAt,
@@ -340,7 +340,7 @@ export function createFireRoutine(deps: FireDeps) {
     ): Promise<void> => {
       const entry = deps.pending.get(reqId);
       if (entry === undefined || !deps.pending.delete(reqId)) return;
-      const error = typeof errorFor === 'string' ? errorFor : errorFor(entry);
+      const error = source === 'webhook' ? 'This app update could not run.' : typeof errorFor === 'string' ? errorFor : errorFor(entry);
       const miss = missFor?.(entry) ?? null;
       process.stderr.write(
         `[ax/routines] agent:invoke failed for ${row.agentId}/${row.routineId}: ${error}\n`,
@@ -353,7 +353,7 @@ export function createFireRoutine(deps: FireDeps) {
         } });
       } catch (err) {
         process.stderr.write(
-          `[ax/routines] recording failed fire for ${row.agentId}/${row.routineId} failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[ax/routines] recording failed fire for ${row.agentId}/${row.routineId} failed: ${source === 'webhook' ? 'app update accounting unavailable' : err instanceof Error ? err.message : String(err)}\n`,
         );
       }
     };

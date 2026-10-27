@@ -220,6 +220,10 @@ export interface CredentialCleanupRow {
   created_at: Generated<Date>;
 }
 export interface DispatchesRow {
+  executor_id: ColumnType<string | null, string | null | undefined, string | null>;
+  executor_released: ColumnType<boolean, boolean | undefined, boolean>;
+  lease_expires_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  delivery_id: ColumnType<string | null, string | null | undefined, string | null>;
   dispatch_id: string; agent_id: string; routine_id: string; revision: string;
   req_id: string; accepted_at: Date; completed_at: Date | null;
   trigger_source: 'tick' | 'manual' | 'webhook';
@@ -255,7 +259,13 @@ export interface RepliesRow {
   reply_id: string; agent_id: string; routine_id: string; author_user_id: string;
   request_id: string; body: string; created_at: Date;
 }
+export interface RepeatDeliveryRow {
+  sequence_id: Generated<number>; delivery_id: string; agent_id: string; routine_id: string; owner_user_id: string;
+  accepted_at: Date; expires_at: Date; github_id_hash: string | null; configuration_hash: string;
+  blob_ref: string | null; byte_length: number; dispatch_id: string | null; invalidated_reason: string | null; completed_at: Date | null;
+}
 export interface RoutinesDatabase {
+  routines_v1_deliveries: RepeatDeliveryRow;
   routines_v1_retired_agents: { agent_id: string; retired_at: Generated<Date> };
   routines_v1_requests: RoutinesRequestsRow;
   routines_v1_credential_cleanup: CredentialCleanupRow;
@@ -338,6 +348,23 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
     if (!await done(16)) {
       await addDispatchKindColumn(trx);
       await sql`INSERT INTO routines_schema_versions (version) VALUES (16)`.execute(trx);
+    }
+    if (!await done(17)) {
+      await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN executor_id text, ADD COLUMN executor_released boolean NOT NULL DEFAULT false, ADD COLUMN lease_expires_at timestamptz, ADD COLUMN delivery_id text`.execute(trx);
+      await sql`CREATE TABLE routines_v1_deliveries (
+        sequence_id bigserial PRIMARY KEY, delivery_id text NOT NULL UNIQUE,
+        agent_id text NOT NULL, routine_id text NOT NULL, owner_user_id text NOT NULL,
+        accepted_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
+        github_id_hash text, configuration_hash text NOT NULL,
+        blob_ref text, byte_length bigint NOT NULL CHECK(byte_length>=0),
+        dispatch_id text UNIQUE, invalidated_reason text, completed_at timestamptz
+      )`.execute(trx);
+      await sql`CREATE UNIQUE INDEX routines_v1_delivery_dedupe ON routines_v1_deliveries(agent_id,routine_id,github_id_hash) WHERE github_id_hash IS NOT NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_active_admission ON routines_v1_dispatches(agent_id,routine_id) WHERE completed_at IS NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_delivery_expiry ON routines_v1_deliveries(expires_at) WHERE completed_at IS NOT NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_delivery_owner ON routines_v1_deliveries(owner_user_id)`.execute(trx);
+      await sql`CREATE INDEX routines_v1_delivery_waiting ON routines_v1_deliveries(sequence_id) WHERE completed_at IS NULL AND dispatch_id IS NULL`.execute(trx);
+      await sql`INSERT INTO routines_schema_versions(version) VALUES(17)`.execute(trx);
     }
   });
 }

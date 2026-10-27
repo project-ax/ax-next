@@ -1,10 +1,10 @@
+import { githubDeliveryId } from './repeat-limits.js';
+import type { RepeatDeliveryStore } from './repeat-deliveries.js';
 export { githubDeliveryId, repeatQueueFits } from './repeat-limits.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { makeAgentContext, type HookBus } from '@ax/core';
 import { validateWebhookPath } from '@ax/routines-contract';
 import { credentialRef } from './definition.js';
-import type { AcceptedDispatch } from './types.js';
-import type { FireResult } from './tick.js';
 import type { RoutinesStore } from './store.js';
 
 // HTTP is duck-typed here: no runtime dependency on another plugin.
@@ -23,7 +23,8 @@ export type HttpRouteHandler = (req: HttpRequest, res: HttpResponse) => Promise<
 export interface WebhookRouterDeps {
   bus: HookBus;
   store: RoutinesStore;
-  fire: (accepted: AcceptedDispatch, payload?: unknown) => Promise<FireResult>;
+  deliveries: RepeatDeliveryStore;
+  pump: () => Promise<void>;
   now: () => Date;
 }
 
@@ -41,7 +42,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       'agents:resolve-by-webhook-token', requestCtx, { token });
     if (!resolved?.agent) { res.status(404).end(); return; }
     const row = await deps.store.findWebhook({ agentId: resolved.agent.id, path });
-    if (!row || !row.enabled || row.webhook === null) { res.status(404).end(); return; }
+    if (!row || row.webhook === null) { res.status(404).end(); return; }
     const trigger = row.webhook;
     const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
     // Step 2: HMAC verify (if configured)
@@ -111,11 +112,22 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       }
     }
 
-    const dispatch = await deps.store.acceptDispatch({ agentId: row.agentId, routineId: row.routineId,
-      expectedRevision: row.revision, actorUserId: row.ownerUserId, source: 'webhook',
-      requestId: crypto.randomUUID(), now: deps.now() });
-    if (!dispatch) { res.status(404).end(); return; }
-    if (!dispatch.replayed) await deps.fire(dispatch.accepted, payload);
+    let deliveryId: string | null;
+    try { deliveryId=githubDeliveryId(req.headers['x-github-delivery']); }
+    catch { res.status(400).end(); return; }
+    let admitted: 'accepted' | 'duplicate' | 'full' | 'missing';
+    try {
+      admitted = await deps.deliveries.admit({row,payload,deliveryId,now:deps.now()},async(bytes,owner)=>
+        deps.bus.callJoined('blob:put',makeAgentContext({sessionId:'repeat-delivery-admission',agentId:row.agentId,userId:owner}),{bytes}));
+    } catch (error) {
+      res.status(error !== null && typeof error==='object' && 'code' in error && error.code==='rejected' ? 429 : 503).end(); return;
+    }
+    if (admitted==='missing') { res.status(404).end(); return; }
+    if (admitted==='full') { res.status(429).end(); return; }
+    // Admission is already durable. Pump failure never turns an accepted delivery into a retryable write.
+    if (admitted==='accepted') {
+      try { await deps.pump(); } catch { ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId}); }
+    }
     res.status(202).end();
   };
 }

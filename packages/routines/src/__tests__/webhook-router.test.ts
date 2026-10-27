@@ -196,3 +196,47 @@ describe('single registered request-time DB webhook route', () => {
   });
 
 });
+
+describe('durable signed repeat-delivery canary', () => {
+  it('deduplicates only authenticated accepted IDs, survives restart, and drains queued private payloads once', async () => {
+    const messages: string[] = [], owners: string[] = [];
+    h=await createRoutineHarness({strictCredentials:true,invoke:async(ctx,bus,input)=>{
+      owners.push(ctx.userId);messages.push((input as {message:{content:string}}).message.content);
+      await bus.fire('chat:turn-end',ctx,{reqId:ctx.reqId,contentBlocks:[{type:'text',text:'done'}]});return{kind:'complete'};
+    }});
+    const row=await h.bus.call<unknown,RoutineView>('routines:create',h.owner,{agentId:h.agentId,requestId:'bounded-hook',definition:definition({header:'sig',algorithm:'sha256'})});
+    await h.bus.call('routines:set-webhook-secret',h.owner,{agentId:h.agentId,routineId:row.routineId,expectedRevision:row.revision,operation:'set',secret:new TextEncoder().encode('signed-fixture-key')});
+    const {token}=await h.bus.call<unknown,{token:string}>('agents:ensure-webhook-token',h.owner,{agentId:h.agentId,actor:{userId:h.owner.userId,isAdmin:false}});
+    const store=createRoutinesStore(h.db);
+    for(let i=0;i<3;i++)await store.acceptDispatch({...row,actorUserId:h.owner.userId,expectedRevision:row.revision,requestId:`occupied-${i}`,source:'manual',now:new Date('2026-10-09T12:00:00Z')});
+    const server=createHttpServerPlugin({host:'127.0.0.1',port:0,cookieKey:Buffer.alloc(32,1),allowedOrigins:['http://localhost']});
+    const transport=await createTestHarness({plugins:[server]});
+    const route=h.routes.find(r=>r.path==='/webhooks/:token/*')!;
+    await transport.bus.call('http:register-route',h.owner,{...route,handler:(req:HttpRequest,res:HttpResponse)=>h.routes.find(r=>r.path==='/webhooks/:token/*')!.handler(req,res)});
+    const send=(id:string,body:string,event='push',valid=true)=>new Promise<number>((resolve,reject)=>{
+      const req=httpRequest({hostname:'127.0.0.1',port:server.boundPort(),method:'POST',path:`/webhooks/${token}/hook`,headers:{'content-type':'application/json','x-github-delivery':id,'x-github-event':event,sig:valid?createHmac('sha256','signed-fixture-key').update(body).digest('hex'):'invalid'}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode!));});req.on('error',reject);req.end(body);
+    });
+    try {
+      const first=JSON.stringify({title:'PRIVATE first'}),second=JSON.stringify({title:'PRIVATE second'}),third=JSON.stringify({title:'PRIVATE third'});
+      expect(await Promise.all([send('one',first),send('one',first)])).toEqual([202,202]);
+      expect(await send('two',second)).toBe(202);
+      expect(await send('three',third,'push',false)).toBe(401);
+      expect(await send('three',third,'ignored')).toBe(204);
+      expect(await send('three',third)).toBe(202);
+      expect(messages).toHaveLength(0);
+      expect((await h.bus.call<unknown,RoutineView>('routines:get',h.owner,{agentId:row.agentId,routineId:row.routineId})).delivery).toEqual({active:3,waiting:3});
+      const refs=(await sql<{blob_ref:string}>`SELECT blob_ref FROM routines_v1_deliveries WHERE blob_ref IS NOT NULL`.execute(h.db)).rows.map(x=>x.blob_ref);
+      const collected=await h.bus.fire<{candidates:string[];answers:Array<{holder:string;ok:boolean;refs:Array<{sha256:string;userIds:string[]}>}>}>('blob:collect-refs',h.owner,{candidates:refs,answers:[]});
+      const held=collected.payload.answers.find(x=>x.holder==='@ax/routines');
+      expect(held?.ok).toBe(true);expect(held?.refs).toHaveLength(3);expect(held?.refs.every(x=>x.userIds.includes('owner'))).toBe(true);
+      h=await h.restart();
+      await expect.poll(()=>messages.length).toBe(3);
+      expect(messages[0]).toContain('PRIVATE first');expect(messages[1]).toContain('PRIVATE second');expect(messages[2]).toContain('PRIVATE third');expect(owners).toEqual(['owner','owner','owner']);
+      expect(await send('one',first)).toBe(202);expect(messages).toHaveLength(3);
+      const history=await createRoutinesStore(h.db).recentFires({...row,actorUserId:'owner'});
+      expect(history.filter(x=>x.triggerSource==='webhook')).toHaveLength(3);
+      expect(JSON.stringify(history)).not.toContain('PRIVATE');
+      expect((await sql<{n:number}>`SELECT count(*)::int AS n FROM routines_v1_deliveries WHERE blob_ref IS NOT NULL`.execute(h.db)).rows[0]!.n).toBe(0);
+    } finally {await transport.close();}
+  });
+});

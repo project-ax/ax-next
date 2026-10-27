@@ -141,3 +141,9 @@ export function completeRequestHash(input: import('@ax/routines-contract').Routi
 export function dispatchRequestHash(input: import('@ax/routines-contract').RoutineFireNowInput & { source: import('./types.js').FireSource }): string {
   return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, source: input.source });
 }
+
+/** Only configuration that affects an accepted app update; schedule and cosmetic edits remain independent. */
+export function repeatConfigurationHash(row: RoutineDefinition): string {
+  const { kind, promptBody, webhook, conversation, silenceToken, silenceMaxChars } = row;
+  return inputHash({ kind, promptBody, webhook, conversation, silenceToken, silenceMaxChars });
+}

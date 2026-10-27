@@ -23,6 +23,10 @@ const routine = {
 };
 afterEach(() => vi.restoreAllMocks());
 describe('structured routine client', () => {
+  it('reports a full Repeat job as busy without trusting server error text', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ code: 'busy', field: 'routineId', error: 'PRIVATE' }), { status: 409 }));
+    await expect(routineApi.fireNow({ agentId: 'a', routineId: 'r', requestId: 'busy', expectedRevision: 'rev' })).rejects.toMatchObject({ code: 'busy', status: 409, message: 'Three runs are already in progress. Try again when one finishes.' });
+  });
   it('uses collection and item IDs, preserves request/revision input, keeps ISO dates', async () => {
     const fetch = vi
       .spyOn(globalThis, 'fetch')
