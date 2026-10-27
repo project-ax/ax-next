@@ -44,9 +44,7 @@ import {
 import { makeWorkspaceHandlers } from '@/server/routes-workspace';
 import type { RouteRequest, RouteResponse } from '@/server/routes-chat';
 import { AgentConversation } from '@/components/workspace/AgentConversation';
-import { ActivityFeed } from '@/components/workspace/ActivityFeed';
 import type {
-  ActivityEvent,
   PastConversation,
   ThreadMessage,
   WorkspaceAgent,
@@ -108,37 +106,6 @@ function readClock(container: HTMLElement): string {
   if (hits.length === 0) throw new Error('no clock was rendered');
   if (hits.length > 1) {
     throw new Error(`expected one clock, found: ${hits.join(' / ')}`);
-  }
-  return hits[0]!;
-}
-
-/**
- * The feed's day heading — the bucket label, not the row count beside it.
- *
- * Found by SHAPE rather than by position. "The first `span` in the container"
- * happens to be the heading today only because this test scopes the feed to one
- * agent, which drops the agent-name button that would otherwise come first; a
- * fixture that stopped passing `agentId` would silently start reading a
- * different node and the assertion below would be about the wrong thing.
- *
- * `Today` / `Yesterday` / a rendered date, and nothing else, so a wrong node is
- * a thrown error rather than a quiet pass.
- */
-function readDayLabel(container: HTMLElement): string {
-  const seen = new Set<string>();
-  for (const el of container.querySelectorAll('span')) {
-    const text = (el.textContent ?? '').trim();
-    if (text === 'Today' || text === 'Yesterday' || /\d/.test(text)) {
-      // The count badge is a bare number; the heading never is.
-      if (/^\d+$/.test(text)) continue;
-      if (/^\d{1,2}:\d{2}(\s?[AP]M)?$/i.test(text)) continue;
-      seen.add(text);
-    }
-  }
-  const hits = [...seen];
-  if (hits.length === 0) throw new Error('no day heading was rendered');
-  if (hits.length > 1) {
-    throw new Error(`expected one day heading, found: ${hits.join(' / ')}`);
   }
   return hits[0]!;
 }
@@ -267,17 +234,6 @@ function conversationProps(
   };
 }
 
-/** The same event, as the `did` feed carries it: an instant and nothing else. */
-const activityRow: ActivityEvent = {
-  id: `a1|invoice|${INSTANT}`,
-  agentId: 'a1',
-  at: INSTANT,
-  text: REPLY,
-  kind: 'done',
-  detail: null,
-  tag: null,
-  decisionId: null,
-};
 
 describe('one event, two tabs', () => {
   let savedTz: string | undefined;
@@ -321,25 +277,8 @@ describe('one event, two tabs', () => {
     const chatClock = readClock(chat.container);
     chat.unmount();
 
-    const did = render(
-      <ActivityFeed events={[activityRow]} agents={[quill]} agentId="a1" />,
-    );
-    const didClock = readClock(did.container);
-    const didDay = readDayLabel(did.container);
-
-    // ---- what the card asks for -------------------------------------------
-    // The one assertion the card is named after. Against the unfixed code the
-    // two sides read `12:56 AM` and `8:56 PM`.
-    expect(chatClock).toBe(didClock);
-    // ...and what they agree on is the READER's reading of the instant, not
-    // the host's. Both halves matter: the first alone would pass if BOTH
-    // surfaces regressed to the server's zone together.
     expect(chatClock).toBe(readerReading);
     expect(chatClock).not.toBe(hostReading);
-    // The date boundary, which is the half that turns a four-hour error into a
-    // wrong day: this event is the evening BEFORE the day the reader is in.
-    expect(didDay).toBe('Yesterday');
-    did.unmount();
   });
 
   it('carries an instant on the wire and no display string at all', async () => {

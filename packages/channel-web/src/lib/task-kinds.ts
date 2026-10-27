@@ -16,12 +16,17 @@
 import { isTaskKind, type TaskKind } from '@ax/routines-contract';
 
 /** What each kind of task is called, in the words a person reads. */
-export const TASK_KIND_LABELS: Record<TaskKind, string> = {
+export const TASK_KIND_LABELS: Record<TaskKind | 'repeat', string> = {
   'stay-on-top': 'Stay on top of something',
   'get-done': 'Get something done',
+  repeat: 'Repeat a job',
 };
 
 /** A kind channel-web doesn't know reads as 'stay-on-top', the never-finishing default. */
 export function toTaskKind(kind: unknown): TaskKind {
   return typeof kind === 'string' && isTaskKind(kind) ? kind : 'stay-on-top';
+}
+
+export function toWorkspaceTaskKind(kind: unknown): TaskKind | 'repeat' {
+  return kind === 'repeat' ? 'repeat' : toTaskKind(kind);
 }

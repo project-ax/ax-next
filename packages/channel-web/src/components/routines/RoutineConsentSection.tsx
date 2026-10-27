@@ -34,7 +34,7 @@ export function RoutineConsentSection({
         .catch(() => {
           if (active && version === readVersion.current) {
             setConsent(null);
-            setError('Routine permissions are unavailable.');
+            setError('Task permissions are unavailable.');
           }
         });
     };
@@ -68,17 +68,17 @@ export function RoutineConsentSection({
         }),
       );
     } catch {
-      setError('We couldn’t revoke routine permission. Try again.');
+      setError('We couldn’t revoke task permission. Try again.');
     } finally {
       flight.current = false;
       setBusy(false);
     }
   }
   return (
-    <section aria-label="Routine permissions" className="flex flex-col gap-2">
+    <section aria-label="Task permissions" className="flex flex-col gap-2">
       {consent === null && error === null && (
         <Skeleton
-          aria-label="Loading routine permissions"
+          aria-label="Loading task permissions"
           className="h-8 w-full"
         />
       )}
@@ -88,11 +88,11 @@ export function RoutineConsentSection({
             <p className="text-sm font-medium">
               {consent.enabled
                 ? 'Always allow for this agent'
-                : 'Ask before creating or editing routines'}
+                : 'Ask before creating or editing tasks'}
             </p>
             <p className="text-sm text-muted-foreground">
               {consent.enabled
-                ? `${agentName} may create and edit routines for you. ${ALWAYS_ALLOW_STILL_ASKS}`
+                ? `${agentName} may create and edit tasks for you. ${ALWAYS_ALLOW_STILL_ASKS}`
                 : `Choose Always Allow on a request from ${agentName} to permit future creates and edits.`}
             </p>
           </div>

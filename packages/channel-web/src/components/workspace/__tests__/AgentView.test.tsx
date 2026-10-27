@@ -151,8 +151,6 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
       onApprove={vi.fn()}
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
-      activity={[]}
-      agents={[quill]}
       onBack={vi.fn()}
       decisionsError={null}
       version={0}
@@ -611,52 +609,7 @@ describe('a reply that did not finish', () => {
   the bug to fix — so what is pinned here is the two observable consequences of
   the prop being set, not the prop itself.
 */
-describe('the "What it did" tab', () => {
-  it('renders the shared feed scoped to this agent', async () => {
-    agentMock.mockResolvedValue(detail());
 
-    renderView({
-      tab: 'activity',
-      activity: [
-        {
-          id: 'a-quill|daily.md|1',
-          agentId: 'a-quill',
-          at: new Date().toISOString(),
-          text: 'Morning inbox sweep',
-          kind: 'done',
-          detail: null,
-          tag: 'Scheduled',
-          decisionId: null,
-        },
-      ],
-    });
-
-    expect(await screen.findByText('Morning inbox sweep')).toBeTruthy();
-    // Scoped: no per-row "open this agent" button, because every row is this
-    // agent. An unscoped feed renders one on every row.
-    expect(screen.queryByRole('button', { name: 'Quill' })).toBeNull();
-  });
-
-  it('says the RECORD is empty, not that the agent did nothing', async () => {
-    agentMock.mockResolvedValue(detail());
-
-    renderView({ tab: 'activity', activity: [] });
-
-    // The scoped phrasing — "what Quill does", not "what your agents do".
-    expect(
-      await screen.findByText(/The record of what Quill does is empty so far/),
-    ).toBeTruthy();
-  });
-
-  it('shows a read failure instead of an empty record', async () => {
-    agentMock.mockResolvedValue(detail());
-
-    renderView({ tab: 'activity', activity: [], activityError: 'boom' });
-
-    expect(await screen.findByText(/could not load the record/i)).toBeTruthy();
-    expect(screen.queryByText(/Nothing recorded yet/)).toBeNull();
-  });
-});
 
 /*
   The approval notice.

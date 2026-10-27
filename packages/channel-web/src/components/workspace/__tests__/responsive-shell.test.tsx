@@ -62,8 +62,8 @@ vi.mock('@/lib/workspace-api', async () => {
       board: vi.fn(),
       agent: vi.fn(),
       route: vi.fn(),
-      activity: vi.fn(),
       decisions: vi.fn(),
+      conversationDecisions: vi.fn(async () => ({decisions: []})),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -79,7 +79,6 @@ vi.mock('@/lib/workspace-api', async () => {
 
 const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
-const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
 const tasksMock = vi.mocked(workspaceApi.tasks);
@@ -142,8 +141,6 @@ function renderAgentView(over: { onOpenNav?: () => void } = {}) {
         notices={new Map<string, string>()}
         decisionsError={null}
         onDecisionRaised={() => {}}
-        activity={[]}
-        agents={[quill]}
         onBack={() => {}}
         version={0}
         pendingReply={null}
@@ -160,8 +157,6 @@ beforeEach(() => {
   boardMock.mockResolvedValue({ agents: [quill] });
   agentMock.mockReset();
   agentMock.mockResolvedValue(detail());
-  activityMock.mockReset();
-  activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
   grantsMock.mockReset();
@@ -211,7 +206,7 @@ describe('the workspace shell below md', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
     const nav = await screen.findByRole('navigation');
 
-    fireEvent.click(screen.getByRole('button', { name: /Activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Tasks/ }));
 
     await waitFor(() => expect(nav.isConnected).toBe(false));
   });

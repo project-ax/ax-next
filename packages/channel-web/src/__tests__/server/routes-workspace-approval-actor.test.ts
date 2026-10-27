@@ -198,3 +198,40 @@ describe('workspace approve adapter with the actual decisions service', () => {
     },
   );
 });
+
+
+describe('durable late failure with real decisions and PostgreSQL', () => {
+  it.each(['gmail_send','routine_update'])('retains %s failure after grace for a fresh conversation read', async name => {
+    let clock=new Date('2026-10-26T12:00:00Z');
+    const ctx=makeAgentContext({sessionId:'history-turn',agentId:'a1',userId:'u1',conversationId:'c1'});
+    const h=await createTestHarness({plugins:[createDatabasePostgresPlugin({connectionString:container.getConnectionUri()}),createDecisionsPlugin({now:()=>clock,sweepIntervalMs:0,attendanceFor:()=> 'unattended'})],services:{
+      'auth:require-user':async()=>({user:{id:'u1',isAdmin:false}}),
+      'agents:resolve':async()=>({agent:{id:'a1',displayName:'Agent'}}),
+      'agents:can-manage-routines':async()=>({allowed:true}),
+      'tool-policy:get-routine-consent':async()=>({enabled:false,revision:'v1'}),
+      'tool-policy:evaluate':async()=>({verdict:'hold',ruleId:null,capability:null,irreversible:true}),
+      'conversations:get':async()=>({conversation:{agentId:'a1',userId:'u1',conversationId:'c1'}}),
+    }}); harnesses.push(h);
+    let executions=0;
+    h.bus.registerService(`tool:execute:${name}`,'@ax/test-effect',async()=>{executions++;throw new Error('provider refused the operation');});
+    await h.bus.fire('tool:pre-call',ctx,{id:`history-${name}`,name,input:name==='routine_update'?{requestId:'history-edit',routineId:'r1',expectedRevision:'v1',patch:{name:'Updated'}}:{body:'A reviewed message'}});
+    const listed=await h.bus.call<unknown,{decisions:Decision[]}>('decisions:list',ctx,{userId:'u1',agentId:'a1'});
+    const held=listed.decisions.find(d=>d.call.id===`history-${name}`)!; expect(held).toBeTruthy();
+    const approved=await h.bus.call<unknown,DecisionsApproveOutput>('decisions:approve',ctx,{decisionId:held.id,userId:'u1'});
+    expect(approved.decision?.status).toBe('executed'); expect(executions).toBe(0);
+    clock=new Date(clock.getTime()+61000);
+    await h.bus.call('decisions:sweep',ctx,{}); expect(executions).toBe(1);
+    const request:RouteRequest={headers:{},body:Buffer.alloc(0),cookies:{},query:{},params:{agentId:'a1',conversationId:'c1'},signedCookie:()=>null};
+    for(let visit=0;visit<2;visit++) {
+      let status=0,body:unknown;
+      const response:RouteResponse={status(n){status=n;return response;},json(value){body=value;},text(){},end(){}};
+      await makeWorkspaceHandlers({bus:h.bus,initCtx}).conversationDecisions(request,response);
+      expect(status).toBe(200);
+      const row=(body as {decisions:Array<{id:string;status:string;routineOutcome?:string;undoable:boolean}>}).decisions.find(d=>d.id===held.id)!;
+      expect(row).toBeTruthy(); expect(row.undoable).toBe(false);
+      if(name==='routine_update') expect(row.routineOutcome).toBe('failed'); else expect(row.status).toBe('failed');
+      const bytes=JSON.stringify(body); expect(bytes).not.toContain('A reviewed message'); expect(bytes).not.toContain('callFingerprint');
+    }
+    await expect(h.bus.call('decisions:recent-for-conversation',makeAgentContext({sessionId:'peer',agentId:'a1',userId:'peer'}),{userId:'u1',agentId:'a1',conversationId:'c1'})).rejects.toThrow(/scope/);
+  });
+});

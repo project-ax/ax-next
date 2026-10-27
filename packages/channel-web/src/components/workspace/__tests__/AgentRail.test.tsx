@@ -58,7 +58,7 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   };
 }
 
-let initialTab = 'activity' as const;
+let initialTab = 'chat' as const;
 /**
  * `container` is the whole document: the permissions list now lives in a
  * Dialog (TASK-738), which portals out of the render root.
@@ -90,7 +90,7 @@ async function openGrants(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  initialTab = 'activity';
+  initialTab = 'chat';
   railMock.mockResolvedValue(rail());
   abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
 });
@@ -100,12 +100,12 @@ describe('AgentRail — simplified tabs', () => {
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
       learned={<p>Learned in this chat fixture</p>} />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Chats', 'Files', 'Activity']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Chats', 'Files']);
     tabs.forEach((tab) => expect(tab.querySelector('svg')).toBeTruthy());
     expect(screen.queryByRole('tab', { name: 'Memory' })).toBeNull();
     const learned = screen.getByText('Learned in this chat fixture');
     expect(learned.closest('[role="tabpanel"]')).toBeNull();
-    for (const label of ['Files', 'Activity', 'Chats']) {
+    for (const label of ['Files', 'Chats']) {
       fireEvent.mouseDown(screen.getByRole('tab', { name: label }), { button: 0, ctrlKey: false });
       expect(learned).toBeVisible();
     }
@@ -132,19 +132,19 @@ describe('AgentRail — simplified tabs', () => {
       activity: { status: 'ok', activity: railActivity({ phrase: 'Reading the Q3 notes' }) },
     }));
     render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
-      panels={{ activity: <p>Finished the inbox sweep</p> }} />);
-    expect(screen.getAllByRole('tab')).toHaveLength(3);
+      panels={{ chat: <p>Finished the inbox sweep</p> }} />);
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
     expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Right now' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'What it did' })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Activity' }), { button: 0, ctrlKey: false });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Chats' }), { button: 0, ctrlKey: false });
     expect(await screen.findByText('Reading the Q3 notes')).toBeTruthy();
-    expect(screen.getByText('Finished the inbox sweep')).toBeTruthy();
+    expect(screen.queryByRole('tab', {name:'Activity'})).toBeNull();
   });
 });
 
 describe('AgentRail — "Right now"', () => {
-  beforeEach(() => { initialTab = 'activity'; });
+  beforeEach(() => { initialTab = 'chat'; });
   it('says only the state word when nothing is reporting an activity line', async () => {
     renderRail(detail({ agent: agent({ state: 'resting' }) }));
 
@@ -883,9 +883,9 @@ describe('AgentSettings — rules are disclosed behind "See everything it can do
 describe('AgentRail icon tabs', () => {
   it('preserves Radix active styling while each tab has a tooltip', () => {
     renderRail();
-    const selected = screen.getByRole('tab', { name: 'Activity' });
+    const selected = screen.getByRole('tab', { name: 'Chats' });
     expect(selected).toHaveAttribute('data-state', 'active');
-    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('data-state', 'inactive');
+    expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'inactive');
   });
   it('expands even when the clicked icon is the already selected tab', () => {
     const expand = vi.fn();
@@ -988,10 +988,10 @@ describe('AgentSettings — "Granted by you"', () => {
   the kind of green that reads as a guarantee and is not one.
 */
 describe('AgentRail — "This week"', () => {
-  beforeEach(() => { initialTab = 'activity'; });
+  beforeEach(() => { initialTab = 'chat'; });
   it('renders no panel at all when there is no number to put in it', async () => {
     renderRail();
-    await screen.findByRole('heading', { name: 'Activity' });
+    await screen.findByRole('heading', { name: 'Chats' });
     expect(screen.queryByText('This week')).toBeNull();
   });
 

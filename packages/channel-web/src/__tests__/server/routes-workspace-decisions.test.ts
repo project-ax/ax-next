@@ -141,6 +141,10 @@ interface ApproveBody {
 }
 
 interface BootOpts {
+  history?: unknown[];
+  historyFails?: boolean;
+  conversation?: {userId:string;agentId:string};
+
   /**
    * Override the `decisions:approve` mock. Receives the route's input so a
    * test can echo the continuation id back the way the real plugin does.
@@ -226,6 +230,16 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
       return opts.bind!(typed);
     };
   }
+  if (opts.history !== undefined || opts.historyFails) {
+    services['decisions:list'] = async () => ({decisions:[]});
+    services['decisions:recent-for-conversation'] = async (ctx, input) => {
+      expect(ctx).toMatchObject({userId:'u1',agentId:'a1'});
+      expect(input).toEqual({userId:'u1',agentId:'a1',conversationId:'c1'});
+      if (opts.historyFails) throw new Error('history backend unavailable');
+      return {decisions:opts.history};
+    };
+    services['conversations:get'] = async () => ({conversation:opts.conversation ?? {userId:'u1',agentId:'a1'}});
+  }
   const harness = await createTestHarness({ services, plugins: [http] });
   await registerWorkspaceRoutes(harness.bus, initCtx);
   return { harness, port: http.boundPort(), approveInputs, binds };
@@ -239,6 +253,24 @@ describe('the decision routes over a real socket', () => {
       await harness.close({ onError: () => {} });
       harness = null;
     }
+  });
+
+  it('reads a durable failed outcome in its exact owned conversation, with a narrow projection', async () => {
+    const failed = {...STORED,status:'failed',resolvedAt:'2026-08-21T11:00:00.000Z',replayedAt:'2026-08-21T11:01:00.000Z',replayError:'Provider refused'};
+    const h=await boot({history:[failed,{...failed,id:'peer',ownerUserId:'peer'},{...failed,id:'other-thread',conversationId:'c2'},{...failed,id:'other-agent',agentId:'a2'}]}); harness=h.harness;
+    const response=await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`);
+    expect(response.status).toBe(200);
+    const raw=await response.text(); const rows=JSON.parse(raw).decisions;
+    expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({id:'d1',status:'failed',undoable:false});
+    expectNarrowerThanTheRow(raw,rows[0]);
+  });
+  it.each([{userId:'peer',agentId:'a1'},{userId:'u1',agentId:'a2'}])('refuses a foreign conversation before reading outcomes: %j', async (conversation) => {
+    const h=await boot({historyFails:true,conversation}); harness=h.harness;
+    expect((await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`)).status).toBe(404);
+  });
+  it('reports history failure instead of an empty success', async () => {
+    const h=await boot({historyFails:true}); harness=h.harness;
+    expect((await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`)).status).toBe(500);
   });
 
   it('approves through the real route when the client sends the CSRF header', async () => {

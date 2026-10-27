@@ -40,6 +40,48 @@ function edit() {
   );
 }
 describe('structured routine form', () => {
+  describe('shared Tasks form (PR4)', () => {
+    it.each(['stay-on-top', 'get-done', 'repeat'] as const)('creates %s through the same human form and returns the saved ID', async kind => {
+      const saved = vi.fn();
+      render(<RoutineEditor taskMode mode="create" agentId="a" agentName="Caveman" onSaved={saved} onCancel={vi.fn()} />);
+      fireEvent.click(screen.getByRole('radio', { name: kind === 'repeat' ? 'Repeat a job' : kind === 'get-done' ? 'Get something done' : 'Stay on top of something' }));
+      fill('Name', 'Useful work'); fill('What should Caveman do?', 'Do the useful work.');
+      if (kind !== 'repeat') {
+        fill('Going well when', 'The work is in good shape.');
+        expect(screen.queryByRole('checkbox', { name: 'When another app sends an update' })).not.toBeInTheDocument();
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
+      await waitFor(() => expect(routineApi.create).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.create).mock.calls[0]![0].definition).toMatchObject({ kind, name: 'Useful work' });
+      expect(saved).toHaveBeenCalledWith(row);
+    });
+    it('keeps cron and time zones under More options and refuses the kind-specific interval floor', () => {
+      render(<RoutineEditor taskMode mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+      fill('Name', 'Useful work'); fill('What should Caveman do?', 'Do it.'); fill('Going well when', 'All done.');
+      fill('Interval', '14m');
+      expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled();
+      expect(screen.queryByRole('radio', { name: 'Custom schedule' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('radio', { name: 'Repeat a job' }));
+      fill('Interval', '59s');
+      expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled();
+      fill('Interval', '60s');
+      expect(screen.getByRole('button', { name: 'Start task' })).toBeEnabled();
+      fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+      expect(screen.getByRole('radio', { name: 'Custom schedule' })).toBeVisible();
+    });
+    it('warns about changing a Done task kind without accidentally enabling it', async () => {
+      const done = { ...row, kind: 'get-done' as const, goodWhen: 'All done.', enabled: false, done: { at: '2026-10-26T12:00:00Z' } };
+      vi.mocked(routineApi.get).mockResolvedValue(done);
+      render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={done} onSaved={vi.fn()} onCancel={vi.fn()} />);
+      await screen.findByDisplayValue(row.name);
+      fireEvent.click(screen.getByRole('radio', { name: 'Repeat a job' }));
+      expect(screen.getByText(/Changing the kind clears/)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toMatchObject({ kind: 'repeat' });
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).not.toHaveProperty('enabled');
+    });
+  });
   describe('selected active days (TASK-924)', () => {
     async function hours(start = '09:00', end = '17:00') {
       vi.mocked(routineApi.get).mockResolvedValue({ ...row, activeHours: { start, end, tz: 'UTC' } });
@@ -56,6 +98,16 @@ describe('structured routine form', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(1));
       expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch.activeHours).toStrictEqual({ start: '10:00', end: '17:00', tz: 'UTC' });
+    });
+    it('preserves legacy omitted days in the shared Tasks editor on an unrelated Save', async () => {
+      vi.mocked(routineApi.get).mockResolvedValue({...row,activeHours:{start:'09:00',end:'17:00',tz:'UTC'}});
+      render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={row} onSaved={vi.fn()} onCancel={vi.fn()}/>);
+      await screen.findByDisplayValue(row.name);
+      fill('Name','Renamed task');
+      for(const day of ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']) expect(screen.getByRole('button',{name:day})).toHaveAttribute('aria-pressed','true');
+      fireEvent.click(screen.getByRole('button',{name:'Save'}));
+      await waitFor(()=>expect(routineApi.update).toHaveBeenCalledOnce());
+      expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).not.toHaveProperty('activeHours');
     });
     it('saves weekdays in canonical order', async () => {
       await hours();

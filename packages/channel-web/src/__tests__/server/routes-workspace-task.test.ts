@@ -74,7 +74,7 @@ import {
   type RoutineSetStepsOutput,
 } from '@ax/routines-contract';
 import {
-  ACTIVITY_DETAIL_MAX_CHARS,
+  TASK_ERROR_MAX_CHARS,
   makeWorkspaceHandlers,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -832,14 +832,14 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     ]);
   });
 
-  it('404s a repeat routine, and reads none of its history or replies', async () => {
+  it('opens an owned repeat with its history but no task reports or replies (PR4)', async () => {
     const { detail, firesCalls, repliesCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null })],
     });
     const captured = await detail();
-    expect(captured.statusCode).toBe(404);
-    expect(captured.body).toEqual({ error: 'task-not-found' });
-    expect(firesCalls).toEqual([]);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toMatchObject({ kind: 'repeat', task: null, steps: [], replies: [], repeat: { active: null, waiting: null } });
+    expect(firesCalls).toHaveLength(1);
     expect(repliesCalls).toEqual([]);
   });
 
@@ -1063,7 +1063,7 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(captured.statusCode).toBe(200);
     const errors = bodyOf(captured).updates.map((u) => u.error);
     expect(errors[0]).toBe('The provider said: slow down');
-    expect([...(errors[1] ?? '')].length).toBe(ACTIVITY_DETAIL_MAX_CHARS);
+    expect([...(errors[1] ?? '')].length).toBe(TASK_ERROR_MAX_CHARS);
     expect(errors[1]?.endsWith('…')).toBe(true);
     expect(errors.slice(2)).toEqual([null, null, null]);
     expect(JSON.stringify(captured.body)).not.toContain('STALE-ERROR');

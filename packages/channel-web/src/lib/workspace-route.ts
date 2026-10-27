@@ -18,7 +18,7 @@
  */
 
 /** The tabs an agent view offers, in the order they appear. */
-export const WORKSPACE_AGENT_TABS = ['chat', 'files', 'activity'] as const;
+export const WORKSPACE_AGENT_TABS = ['chat', 'files'] as const;
 
 export type AgentTab = (typeof WORKSPACE_AGENT_TABS)[number];
 
@@ -57,7 +57,6 @@ export type WorkspaceRoute =
   | { kind: 'tasks' }
   | { kind: 'task'; agentId: string; routineId: string }
   | { kind: 'task-checkin'; agentId: string; routineId: string; conversationId: string }
-  | { kind: 'activity' }
   | { kind: 'agent'; id: string; tab: AgentTab }
   | { kind: 'agent-settings'; id: string; section: AgentSettingsSection };
 
@@ -139,7 +138,7 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
     }
     return { kind: 'tasks' };
   }
-  if (section === 'activity') return { kind: 'activity' };
+  if (section === 'activity') return { kind: 'tasks' };
   if (section !== 'agents' || third === undefined) return TODAY;
 
   const id = parseIdSegment(third);
@@ -161,10 +160,8 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
     return { kind: 'agent-settings', id, section: 'memory' };
   }
 
-  // Preserve links to the two panels now combined into Activity.
-  const tab = fourth === 'now' || fourth === 'did'
-    ? 'activity'
-    : fourth !== undefined && isAgentTab(fourth) ? fourth : DEFAULT_TAB;
+  if (fourth === 'activity' || fourth === 'now' || fourth === 'did') return {kind:'tasks'};
+  const tab = fourth !== undefined && isAgentTab(fourth) ? fourth : DEFAULT_TAB;
   return { kind: 'agent', id, tab };
 }
 
@@ -179,8 +176,6 @@ export function workspaceRoutePath(route: WorkspaceRoute): string {
       return `${WORKSPACE_ROOT_PATH}/tasks/${encodeURIComponent(route.agentId)}/${encodeURIComponent(route.routineId)}`;
     case 'task-checkin':
       return `${WORKSPACE_ROOT_PATH}/tasks/${encodeURIComponent(route.agentId)}/${encodeURIComponent(route.routineId)}/checkins/${encodeURIComponent(route.conversationId)}`;
-    case 'activity':
-      return `${WORKSPACE_ROOT_PATH}/activity`;
     case 'agent': {
       const base = `${WORKSPACE_ROOT_PATH}/agents/${encodeURIComponent(route.id)}`;
       return route.tab === DEFAULT_TAB ? base : `${base}/${route.tab}`;

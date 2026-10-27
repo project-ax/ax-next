@@ -48,7 +48,7 @@ import {
   type RoutineStepOp,
 } from '@ax/routines-contract';
 import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
-import { toTaskKind } from './task-kinds';
+import { toWorkspaceTaskKind as toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
 import { readStorageFull } from './storage-full';
@@ -77,7 +77,6 @@ import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
 import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
-  ActivityEvent,
   AgentAbilitiesRead,
   AgentAbility,
   AgentAbilityWrite,
@@ -122,7 +121,6 @@ CounterRow,
 } from '@/lib/workspace-types';
 
 export type {
-  ActivityEvent,
   AgentMemoryRead,
   AgentRailData,
   CounterRow,
@@ -231,13 +229,6 @@ export interface DecisionRead {
   decision: Decision;
 }
 
-/** One page of the activity collection — see `workspaceApi.activity`. */
-export interface ActivityPage {
-  events: ActivityEvent[];
-  /** Pass back as `before` to fetch the next page. `null` = nothing older. */
-  nextBefore: string | null;
-}
-
 /**
  * One pending grant as `GET /api/workspace/grants` carries it (TASK-373).
  *
@@ -268,14 +259,6 @@ export interface AgentFilesPage {
   files: WorkspaceFileSummary[];
   /** `true` when the agent has more files than one response will carry. */
   truncated: boolean;
-}
-
-export interface ActivityQuery {
-  /** Scope to one agent's rows. Omitted = every agent. */
-  agentId?: string;
-  /** ISO instant — fetch rows older than this. Omitted = the newest page. */
-  before?: string;
-  limit?: number;
 }
 
 export interface AgentDetail {
@@ -589,6 +572,14 @@ function isTaskNoRecentUpdate(v: unknown): boolean {
  * (TASK-956) the row carries must be true or false; left out, it is an older
  * host's and reads as true (`withRowDefaults`).
  */
+function isRepeatTaskState(v: unknown): boolean {
+  return isRecord(v) && isStringOrNull(v.lastRunAt) &&
+    (v.status === null || v.status === 'ok' || v.status === 'silenced' || v.status === 'error') &&
+    isStringOrNull(v.error) && isStringOrNull(v.warning) &&
+    [v.active, v.waiting].every(n => n === null || (typeof n === 'number' && Number.isInteger(n) && n >= 0)) &&
+    typeof v.sharedThread === 'boolean' && typeof v.appUpdates === 'boolean';
+}
+
 function isTaskRow(v: unknown): boolean {
   return (
     isRecord(v) &&
@@ -598,6 +589,7 @@ function isTaskRow(v: unknown): boolean {
     isString(v.name) &&
     typeof v.enabled === 'boolean' &&
     (!('kind' in v) || isString(v.kind)) &&
+    (v.kind !== 'repeat' || isRepeatTaskState(v.repeat)) &&
     (!('steps' in v) || v.steps === null || isTaskStepCounts(v.steps)) &&
     (!('finishBy' in v) || v.finishBy === null || isTaskFinishBy(v.finishBy)) &&
     (v.task === null || isTaskReport(v.task)) &&
@@ -733,6 +725,7 @@ function isTaskDetail(b: unknown): boolean {
     isString(b.agentName) &&
     isString(b.name) &&
     isString(b.kind) &&
+    (b.kind !== 'repeat' || isRepeatTaskState(b.repeat)) &&
     typeof b.enabled === 'boolean' &&
     isString(b.revision) &&
     isTaskPermissions(b.permissions) &&
@@ -1200,6 +1193,12 @@ export const workspaceApi = {
    * has to answer; if it is ever long enough to need a page break, the product
    * has a much bigger problem than a missing cursor.
    */
+  conversationDecisions: async (agentId: string, conversationId: string) => {
+    const path = `/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}/decisions`;
+    const page = checkedRead<DecisionsPage>(path, await req<unknown>(path), b => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isDecisionRecord));
+    return { ...page, decisions: page.decisions.map(withReadableCheckIn) };
+  },
+
   decisions: async () => {
     const body = await req<unknown>('/decisions');
     // Every ELEMENT too, not just the array. `undoSecondsLeft(d)` and
@@ -1235,6 +1234,12 @@ export const workspaceApi = {
    * left open across a deploy that adds a kind still opens the task under a
    * kind it has words for. Its steps are drawn for get-done only.
    */
+  taskAgents: async () => {
+    const path = '/tasks/agents';
+    return checkedRead<{ agents: Array<{ agentId: string; agentName: string }> }>(path, await taskReq<unknown>(path), body =>
+      isRecord(body) && Array.isArray(body.agents) && body.agents.every(agent => isRecord(agent) && isString(agent.agentId) && isString(agent.agentName)));
+  },
+
   task: async (agentId: string, routineId: string) => {
     const path = taskPath(agentId, routineId);
     const body = await taskReq<unknown>(path);
@@ -1933,19 +1938,6 @@ export const workspaceApi = {
    */
   route: (_text: string) => req<RouteProposal>('/route', { method: 'POST' }),
 
-  /**
-   * One page of the activity collection (design §7). `agentId` scopes to one
-   * agent's rows; `before` pages backward through older ones; `nextBefore` in
-   * the response is `null` exactly when there is nothing older to page into.
-   */
-  activity: (q: ActivityQuery = {}) => {
-    const params = new URLSearchParams();
-    if (q.agentId !== undefined) params.set('agentId', q.agentId);
-    if (q.before !== undefined) params.set('before', q.before);
-    if (q.limit !== undefined) params.set('limit', String(q.limit));
-    const qs = params.toString();
-    return req<ActivityPage>(`/activity${qs ? `?${qs}` : ''}`);
-  },
 
   /**
    * Start a turn on the SHIPPED chat wire. Returns the conversation the turn

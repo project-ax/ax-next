@@ -637,6 +637,18 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
     expect(own.statusCode).toBe(200);
   });
 
+  it('opens an owned Repeat shared thread with an explicit multi-run caveat (PR4)', async () => {
+    const { checkin } = setup({
+      rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null, conversation: 'shared' })],
+      fires: [fire({ conversationId: 'c-shared' }), fire({ conversationId: 'c-shared', firedAt: '2026-10-20T09:57:00.000Z' })],
+      conversations: { 'c-shared': { userId: 'alice', agentId: 'a1', turns: saying('SHARED-TEXT') } },
+    });
+    const captured = await checkin({ agentId: 'a1', routineId: 't1', conversationId: 'c-shared' });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toMatchObject({ kind: 'repeat', sharedThread: true });
+    expect(JSON.stringify(captured.body)).toContain('SHARED-TEXT');
+  });
+
   it('404s another task’s check-in on the same agent, without reading it', async () => {
     const { checkin, firesCalls, convCalls } = setup({
       rows: [
@@ -716,15 +728,15 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
     },
   );
 
-  it('404s a repeat routine, and reads neither', async () => {
+  it('opens a bound owned Repeat conversation (PR4)', async () => {
     const { checkin, firesCalls, convCalls } = setup({
       rows: [stored({ agentId: 'a1', routineId: 't1', kind: 'repeat', goodWhen: null })],
     });
     const captured = await checkin();
-    expect(captured.statusCode).toBe(404);
-    expect(captured.body).toEqual({ error: 'task-not-found' });
-    expect(firesCalls).toEqual([]);
-    expect(convCalls).toEqual([]);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toMatchObject({ kind: 'repeat' });
+    expect(firesCalls).toHaveLength(1);
+    expect(convCalls).toHaveLength(1);
   });
 
   it('404s a task that isn’t there, and reads neither', async () => {

@@ -478,7 +478,34 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+          persist-credentials: false
+      # Same CLI version as the previous pinned wrapper. SHA256 verified against
+      # https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_checksums.txt
+      - name: Install pinned Gitleaks CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks_8.24.3_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o "$archive"
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+      - name: Verify real secret detection and redaction
+        run: python3 scripts/gitleaks-positive-control.py "$RUNNER_TEMP/gitleaks"
+      - name: Select the event commit range
+        id: secret-range
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ignore
+        run: |
+          set -euo pipefail
+          log_opts=$(python3 scripts/gitleaks-range.py)
+          echo "log_opts=$log_opts" >> "$GITHUB_OUTPUT"
+      - name: Scan selected Git history
+        env:
+          SCAN_LOG_OPTS: ${{ steps.secret-range.outputs.log_opts }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks" detect --redact -v --exit-code=2 \
+            --report-format=sarif --report-path="$RUNNER_TEMP/gitleaks-results.sarif" \
+            --log-level=debug --log-opts="$SCAN_LOG_OPTS"

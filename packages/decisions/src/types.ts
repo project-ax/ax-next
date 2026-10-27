@@ -379,6 +379,9 @@ export interface DecisionsListInput {
   status?: DecisionStatus | undefined;
 }
 
+/** Bounded authoritative history in one owned conversation, across statuses. */
+export interface DecisionsConversationInput { userId: string; agentId: string; conversationId: string; }
+
 export interface DecisionsListOutput {
   decisions: Decision[];
 }

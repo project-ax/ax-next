@@ -142,7 +142,7 @@ export function TaskCheckinPage({
   return (
     <>
       <WorkspaceHeader
-        title={when === null ? 'Check-in' : `Check-in ${when}`}
+        title={page?.kind === 'repeat' ? page.sharedThread ? 'Shared run thread' : 'Run transcript' : when === null ? 'Check-in' : `Check-in ${when}`}
         leading={
           <>
             {leading}
@@ -208,7 +208,9 @@ export function TaskCheckinPage({
                 </Alert>
               </div>
             )}
-            <CheckinSummary page={state.page} />
+            {state.page.kind === 'repeat' ? <p className="mx-auto w-full max-w-[900px] px-6 py-3 text-sm text-muted-foreground">
+              {state.page.sharedThread ? 'This shared thread can contain several runs. It is read-only.' : 'This run transcript is read-only.'}
+            </p> : <CheckinSummary page={state.page} />}
             {state.page.thread.length === 0 ? (
               <p className="mx-auto w-full max-w-[900px] px-6 py-6 text-[13px] text-muted-foreground">
                 {NOTHING_ELSE}

@@ -13,13 +13,13 @@ describe('routine permissions', () => {
     );
     render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
     expect(
-      await screen.findByText('Routine permissions are unavailable.'),
+      await screen.findByText('Task permissions are unavailable.'),
     ).toBeVisible();
     expect(
       screen.queryByRole('button', { name: 'Revoke' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText('Ask before creating or editing routines'),
+      screen.queryByText('Ask before creating or editing tasks'),
     ).not.toBeInTheDocument();
   });
   it('loads without guessing permission and has no grant toggle', async () => {
@@ -28,9 +28,9 @@ describe('routine permissions', () => {
       revision: 'v1',
     });
     render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
-    expect(screen.getByLabelText('Loading routine permissions')).toBeVisible();
+    expect(screen.getByLabelText('Loading task permissions')).toBeVisible();
     expect(
-      await screen.findByText('Ask before creating or editing routines'),
+      await screen.findByText('Ask before creating or editing tasks'),
     ).toBeVisible();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
@@ -42,7 +42,7 @@ describe('routine permissions', () => {
     render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
     expect(
       await screen.findByText(
-        "Caveman may create and edit routines for you. Delete, Fire now and a task's instructions still ask.",
+        "Caveman may create and edit tasks for you. Delete, Fire now and a task's instructions still ask.",
       ),
     ).toBeVisible();
   });
@@ -72,7 +72,7 @@ describe('routine permissions', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
     expect(
       await screen.findByText(
-        'We couldn’t revoke routine permission. Try again.',
+        'We couldn’t revoke task permission. Try again.',
       ),
     ).toBeVisible();
     expect(screen.getByText('Always allow for this agent')).toBeVisible();
@@ -82,7 +82,7 @@ describe('routine permissions', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
     expect(
-      await screen.findByText('Ask before creating or editing routines'),
+      await screen.findByText('Ask before creating or editing tasks'),
     ).toBeVisible();
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     window.removeEventListener('ax:routine-permissions-changed', changed);

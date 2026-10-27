@@ -109,10 +109,10 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
     summary: () => 'Instructions this agent can reuse',
   },
   routines: {
-    label: 'Routines',
+    label: 'Housekeeping',
     Icon: Clock,
     description: () => null,
-    summary: () => 'Scheduled runs, intervals and webhooks',
+    summary: () => 'Built-in maintenance and self-improvement',
   },
 };
 
