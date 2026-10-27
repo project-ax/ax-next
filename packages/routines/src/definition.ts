@@ -34,7 +34,8 @@ export function inputHash(input: unknown): string {
 export function validationError(error: unknown): SafeToolError {
   const path = error instanceof z.ZodError ? error.issues[0]?.path ?? [] : [];
   const unwrapped = path[0] === 'definition' || path[0] === 'patch' ? path.slice(1) : path;
-  const field = unwrapped[0] === 'steps' ? ['steps'] : unwrapped;
+  const field = unwrapped[0] === 'steps' ? ['steps']
+    : unwrapped[0] === 'activeHours' && unwrapped[1] === 'days' ? ['activeHours', 'days'] : unwrapped;
   return new SafeToolError('validation', field.join('.') as SafeToolField);
 }
 export function validateDefinition(input: unknown): RoutineDefinition {

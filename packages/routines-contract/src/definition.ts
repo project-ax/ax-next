@@ -167,11 +167,27 @@ export const RoutineTriggerSchema = z.discriminatedUnion('kind', [IntervalTrigge
     try { new Cron(trigger.expr, { timezone: trigger.tz }); }
     catch { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['expr'], message: 'Invalid cron expression or timezone.' }); }
   });
-export const ActiveHoursSchema = z.object({
+/** Monday-first canonical ordering. Omitted days remain omitted in saved definitions and receipts. */
+export const ACTIVE_HOURS_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+export const ActiveHoursDaySchema = z.enum(ACTIVE_HOURS_DAYS);
+export type ActiveHoursDay = z.output<typeof ActiveHoursDaySchema>;
+const ActiveHoursObjectSchema = z.object({
   start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'Invalid start time.'),
   end: z.string().regex(/^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/, 'Invalid end time.'),
   tz: RoutineTimezoneSchema,
+  days: z.array(ActiveHoursDaySchema).min(1).max(7)
+    .refine(days => new Set(days).size === days.length, 'Choose each day only once.')
+    .transform(days => ACTIVE_HOURS_DAYS.filter(day => days.includes(day))).optional(),
 }).strict();
+export const ActiveHoursSchema = z.custom<z.input<typeof ActiveHoursObjectSchema>>(value =>
+  value === null || typeof value !== 'object' || !('days' in value) || Object.hasOwn(value, 'days'),
+{ path: ['days'], message: 'Choose active days directly.' }).pipe(ActiveHoursObjectSchema);
+
+/** Effect-time validation only: historical equal-time windows and settled receipts stay readable. */
+export function activeHoursWriteIssue(hours: ActiveHours | null): string | null {
+  return hours !== null && hours.start === hours.end ? 'Choose different start and end times for active hours.' : null;
+}
+export const ACTIVE_HOURS_REPAIR_MESSAGE = 'Scheduled runs need repair. Choose different start and end times for active hours.';
 
 export const RoutineEditableShape = {
   name: z.string().min(1).max(ROUTINE_NAME_MAX_CHARS),

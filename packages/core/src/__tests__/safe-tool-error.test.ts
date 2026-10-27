@@ -3,6 +3,12 @@ import { PluginError } from '../errors.js';
 import { SafeToolError, safeToolMessage, type SafeToolCode, type SafeToolField } from '../safe-tool-error.js';
 
 describe('safe routine tool failures', () => {
+  it('names the selected active days without accepting arbitrary day values', () => {
+    const error = new SafeToolError('validation', 'activeHours.days' as SafeToolField);
+    expect(error.field).toBe('activeHours.days');
+    expect(error.message).toBe('Routine input is invalid. Check the indicated field. Field: activeHours.days');
+    expect(new SafeToolError('validation', 'activeHours.days.evil' as SafeToolField).field).toBe('input');
+  });
   it('is a PluginError and carries closed actionable fields', () => {
     const error = new SafeToolError('revision-conflict', 'expectedRevision');
     expect(error).toBeInstanceOf(PluginError);
