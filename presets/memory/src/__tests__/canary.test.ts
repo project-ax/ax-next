@@ -1020,7 +1020,7 @@ describe('@ax/preset-memory canary', () => {
     expect(extractions()).toBe(before);
     expect(await cursor(taskCtx)).toBeUndefined();
     for (const [ctx, value] of [[repeatCtx, 'Known repeat 919'], [webCtx, 'Ordinary web 919']] as const) {
-      llmFacts = [{ subject: 'user', predicate: 'prefers', object: value }];
+      llmFacts = [{ subject: 'user', predicate: 'prefers', object: value, validStart: '2023-01-15T00:00:00Z' }];
       const old = extractions();
       await transcript(ctx);
       expect(extractions()).toBe(old + 1);
